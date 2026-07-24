@@ -11,6 +11,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,15 @@ DEFAULT_MANIFEST = DEFAULT_STATE_DIR / "herdr-agent-sessions.json"
 DEFAULT_MISSING_JSON = DEFAULT_STATE_DIR / "herdr-agent-missing-sessions.json"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
+MANIFEST_FIELD_ORDER = (
+    "workspace_label",
+    "workspace_id",
+    "tab_label",
+    "tab_id",
+    "pane_label",
+    "pane_id",
+    "session_id",
+)
 
 
 @dataclass
@@ -107,9 +117,22 @@ def existing_records_by_pane(path: Path) -> dict[str, dict[str, Any]]:
 
 def write_manifest(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    ordered_panes: list[dict[str, Any]] = []
+    for item in data.get("panes", []):
+        if not isinstance(item, dict):
+            continue
+        ordered: dict[str, Any] = {}
+        for field in MANIFEST_FIELD_ORDER:
+            if field in item:
+                ordered[field] = item[field]
+        for field, value in item.items():
+            if field not in ordered:
+                ordered[field] = value
+        ordered_panes.append(ordered)
+    data["panes"] = ordered_panes
     data["updated_at"] = now_iso()
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
     tmp.replace(path)
 
 
@@ -251,6 +274,53 @@ def pane_read_text(pane_id: str, *, lines: int, source: str) -> str | None:
     return result.stdout
 
 
+def pane_send_status(pane_id: str) -> bool:
+    text_result = subprocess.run(
+        ["herdr", "pane", "send-text", pane_id, "/status"],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    if text_result.returncode != 0:
+        return False
+    key_result = subprocess.run(
+        ["herdr", "pane", "send-keys", pane_id, "Enter"],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    if key_result.returncode != 0:
+        return False
+    time.sleep(0.25)
+    return True
+
+
+def pane_process_entries(pane_id: str) -> list[tuple[int | None, str]]:
+    data = run_json(["herdr", "pane", "process-info", "--pane", pane_id])
+    if not data:
+        return []
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return []
+    process_info = result.get("process_info")
+    if not isinstance(process_info, dict):
+        return []
+    processes = process_info.get("foreground_processes")
+    if not isinstance(processes, list):
+        return []
+    entries: list[tuple[int | None, str]] = []
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        cmdline = process.get("cmdline")
+        if isinstance(cmdline, str) and cmdline:
+            pid = process.get("pid")
+            entries.append((pid if isinstance(pid, int) else None, cmdline))
+    return entries
+
+
 def git_context(cwd: str) -> tuple[str | None, str | None]:
     def run_text(cmd: list[str]) -> str | None:
         try:
@@ -328,23 +398,23 @@ def build_record(
     restore_policy: str,
 ) -> dict[str, Any]:
     return {
+        "workspace_label": pane.workspace_label or pane.workspace_id,
+        "workspace_id": pane.workspace_id,
+        "tab_label": pane.tab_label or pane.tab_id,
+        "tab_id": pane.tab_id,
+        "pane_label": pane.label or pane.pane_id,
+        "pane_id": pane.pane_id,
+        "session_id": session_id,
         "agent_status": pane.agent_status,
         "branch": branch,
         "client": client,
         "cwd": cwd,
         "foreground_cwd": pane.foreground_cwd,
         "label": pane.label,
-        "pane_id": pane.pane_id,
-        "pane_label": pane.label or pane.pane_id,
         "restore_policy": restore_policy,
         "resume_command": resume_command,
-        "session_id": session_id,
         "status": status,
-        "tab_id": pane.tab_id,
-        "tab_label": pane.tab_label or pane.tab_id,
         "updated_at": now_iso(),
-        "workspace_id": pane.workspace_id,
-        "workspace_label": pane.workspace_label or pane.workspace_id,
         "worktree": worktree,
     }
 
@@ -532,6 +602,55 @@ def detect_from_capture(pane: PaneInfo, *, lines: int, source: str) -> tuple[str
     return None
 
 
+def detect_from_process(pane: PaneInfo) -> tuple[str, str] | None:
+    client = pane.agent if pane.agent in {"codex", "claude"} else None
+    if not client:
+        return None
+    if client == "codex":
+        pattern = rf"(?:^|/)(?:codex)(?:\s+[^\s]+)?\s+resume\s+{SESSION_TOKEN}"
+    else:
+        pattern = rf"(?:^|/)(?:claude)(?:\s+code)?\s+(?:resume|--resume|--session-id)\s+{SESSION_TOKEN}"
+    for pid, command in pane_process_entries(pane.pane_id):
+        match = re.search(pattern, command)
+        if match:
+            session_id = clean_session_id(match.group(1))
+            if session_id:
+                return client, session_id
+        if client == "claude" and pid is not None and command.strip() == "claude":
+            session_path = Path.home() / ".claude" / "sessions" / f"{pid}.json"
+            try:
+                session_data = json.loads(session_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            session_id = session_data.get("sessionId") if isinstance(session_data, dict) else None
+            session_cwd = session_data.get("cwd") if isinstance(session_data, dict) else None
+            pane_cwd = pane.foreground_cwd or pane.cwd
+            if (
+                isinstance(session_id, str)
+                and isinstance(session_cwd, str)
+                and normalize_path(session_cwd) == normalize_path(pane_cwd)
+            ):
+                return client, session_id
+    return None
+
+
+def detect_from_status(pane: PaneInfo, *, lines: int) -> tuple[str, str] | None:
+    if pane.agent not in {"codex", "claude"} or pane.agent_status != "idle":
+        return None
+    if not pane_send_status(pane.pane_id):
+        return None
+    for _ in range(6):
+        text = pane_read_text(pane.pane_id, lines=lines, source="recent-unwrapped")
+        if text:
+            match = re.search(r"\bSession(?:\s+ID)?\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]{5,})", text)
+            if match:
+                session_id = clean_session_id(match.group(1))
+                if session_id:
+                    return pane.agent, session_id
+        time.sleep(0.4)
+    return None
+
+
 def write_missing_json(path: Path, items: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -574,11 +693,18 @@ def scan(args: argparse.Namespace) -> int:
             print(f"KEEP {pane.pane_id} {client} {existing_record.get('session_id')} already registered")
             continue
 
-        detection = detect_from_capture(
-            pane,
-            lines=args.lines,
-            source=args.source,
-        )
+        detection = detect_from_process(pane)
+        detection_source = "process_info"
+        if not detection and args.status:
+            detection = detect_from_status(pane, lines=max(args.lines, 120))
+            detection_source = "status_command"
+        if not detection:
+            detection = detect_from_capture(
+                pane,
+                lines=args.lines,
+                source=args.source,
+            )
+            detection_source = "pane_capture"
         pane_cwd = pane.foreground_cwd or pane.cwd or normalize_path(os.getcwd())
         if detection and pane_cwd:
             _client, session_id = detection
@@ -595,7 +721,7 @@ def scan(args: argparse.Namespace) -> int:
                 restore_policy="manual_confirm",
             )
             records.append(record)
-            print(f"FOUND {pane.pane_id} {client} {session_id} source=pane_capture")
+            print(f"FOUND {pane.pane_id} {client} {session_id} source={detection_source}")
             continue
 
         missing_items.append(
@@ -611,7 +737,11 @@ def scan(args: argparse.Namespace) -> int:
                 "client": client,
                 "cwd": pane_cwd,
                 "label": pane.label,
-                "reason": "resume session id not visible in pane scrollback",
+                "reason": (
+                    "no session id found in foreground process metadata, /status response, or pane scrollback"
+                    if args.status
+                    else "resume session id not visible in pane scrollback or foreground process metadata"
+                ),
                 "register": True,
                 "restore_policy": "manual_confirm",
                 "status": "active",
@@ -757,6 +887,15 @@ def print_path(args: argparse.Namespace) -> int:
     return 0
 
 
+def normalize_manifest(args: argparse.Namespace) -> int:
+    path = manifest_path(args)
+    with manifest_lock(path):
+        data = read_manifest(path)
+        write_manifest(path, data)
+    print(f"normalized manifest: {path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", help="override manifest path")
@@ -788,6 +927,9 @@ def build_parser() -> argparse.ArgumentParser:
     path_parser = sub.add_parser("path", help="print manifest path")
     path_parser.set_defaults(func=print_path)
 
+    normalize_parser = sub.add_parser("normalize", help="rewrite manifest fields in canonical order")
+    normalize_parser.set_defaults(func=normalize_manifest)
+
     capture_missing_parser = sub.add_parser("capture-missing", help="write one editable missing-session row")
     capture_missing_parser.add_argument("--client", required=True, choices=["codex", "claude"])
     capture_missing_parser.add_argument("--cwd")
@@ -809,6 +951,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--client", choices=["codex", "claude"])
     scan_parser.add_argument("--lines", type=int, default=400)
     scan_parser.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped"])
+    scan_parser.add_argument("--status", action="store_true", help="query unresolved idle panes with /status")
     scan_parser.add_argument("--no-missing-json", action="store_true")
     scan_parser.add_argument("--verbose", action="store_true")
 
@@ -832,6 +975,8 @@ def main() -> int:
         return scan(args)
     if args.command == "path":
         return print_path(args)
+    if args.command == "normalize":
+        return normalize_manifest(args)
     parser.error(f"unsupported command: {args.command}")
     return 2
 

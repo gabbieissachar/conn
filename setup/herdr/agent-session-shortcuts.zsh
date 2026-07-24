@@ -42,6 +42,14 @@ herdr-agent-scan() {
   python3 "$_pmos_herdr_agent_registry" scan "$@"
 }
 
+herdr-agent-capture-history() {
+  python3 "$_pmos_herdr_agent_registry" scan "$@"
+}
+
+herdr-agent-capture-status() {
+  python3 "$_pmos_herdr_agent_registry" scan --status "$@"
+}
+
 herdr-agent-autoregister() {
   python3 "$_pmos_herdr_agent_registry" scan --execute "$@"
 }

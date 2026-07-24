@@ -10,8 +10,13 @@ needs a replay contract for resumable Codex and Claude sessions.
 - `herdr-agent-register` records `pane_id -> client -> session_id -> cwd ->
   resume_command`.
 - `herdr-agent-scan` and `herdr-agent-autoregister` enumerate live herdr panes,
-  auto-register panes whose resume ids are visible in scrollback, and park the
-  rest in missing-session JSON.
+  auto-register panes whose resume ids are visible in scrollback or in the
+  foreground process command, and park the rest in missing-session JSON.
+- `herdr-agent-capture-history` is an explicit alias for that evidence-based
+  scan; process metadata is preferred after scrollback and is safe to rerun.
+- `herdr-agent-capture-status` opt-in queries `/status` in unresolved idle
+  agent panes and parses the returned session ID; it does not query working or
+  blocked panes.
 - `herdr-agent-restore` safely replays `codex-r` or `claude-r` into registered
   panes.
 - `herdr-agent-capture-missing` preserves the tmux-era manual repair pattern
@@ -47,12 +52,23 @@ List registered replay targets:
 herdr-agent-list
 ```
 
+Normalize the manifest field order after manual edits or migrations:
+
+```sh
+python3 /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-registry.py normalize
+```
+
 Best-effort bulk scan:
 
 ```sh
 herdr-agent-scan
 herdr-agent-autoregister
+herdr-agent-capture-history
+herdr-agent-capture-status
 ```
+
+The status capture is opt-in because it sends a diagnostic command into idle
+agent panes. It registers only panes whose response contains a session ID.
 
 This tries to detect `session_id` values from pane scrollback, keeps already
 registered panes, and writes unresolved panes into the missing-session JSON for
