@@ -24,9 +24,11 @@ PMOS_REPO = SCRIPT_DIR.parents[3]
 DEFAULT_STATE_DIR = SCRIPT_DIR / "state"
 DEFAULT_MANIFEST = DEFAULT_STATE_DIR / "herdr-agent-sessions.json"
 DEFAULT_MISSING_JSON = DEFAULT_STATE_DIR / "herdr-agent-missing-sessions.json"
+DEFAULT_STATUS_LOG = DEFAULT_STATE_DIR / "herdr-agent-status-capture.jsonl"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
 MANIFEST_FIELD_ORDER = (
+    "herdr_session",
     "workspace_label",
     "workspace_id",
     "tab_label",
@@ -39,6 +41,7 @@ MANIFEST_FIELD_ORDER = (
 
 @dataclass
 class PaneInfo:
+    herdr_session: str | None
     pane_id: str
     workspace_id: str
     tab_id: str
@@ -53,6 +56,11 @@ class PaneInfo:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def current_herdr_session() -> str | None:
+    value = os.environ.get("HERDR_SESSION")
+    return value.strip() if value and value.strip() else None
 
 
 def run_json(cmd: list[str]) -> dict[str, Any] | None:
@@ -87,6 +95,32 @@ def missing_json_path(args: argparse.Namespace) -> Path:
     ).expanduser()
 
 
+def status_log_path() -> Path:
+    return Path(
+        os.environ.get("PMOS_HERDR_AGENT_STATUS_LOG") or DEFAULT_STATUS_LOG
+    ).expanduser()
+
+
+def log_status_event(pane: PaneInfo, event: str, **fields: Any) -> None:
+    payload = {
+        "timestamp": now_iso(),
+        "event": event,
+        "pane_id": pane.pane_id,
+        "workspace_id": pane.workspace_id,
+        "tab_id": pane.tab_id,
+        "client": pane.agent,
+        **fields,
+    }
+    try:
+        path = status_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            handle.write(json.dumps(payload) + "\n")
+    except OSError:
+        # Capture diagnostics must never prevent the registry scan from running.
+        pass
+
+
 def read_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": 1, "updated_at": now_iso(), "panes": []}
@@ -103,7 +137,9 @@ def read_manifest(path: Path) -> dict[str, Any]:
     return data
 
 
-def existing_records_by_pane(path: Path) -> dict[str, dict[str, Any]]:
+def existing_records_by_pane(
+    path: Path, *, herdr_session: str | None
+) -> dict[tuple[str | None, str], dict[str, Any]]:
     data = read_manifest(path)
     records: dict[str, dict[str, Any]] = {}
     for item in data["panes"]:
@@ -111,7 +147,8 @@ def existing_records_by_pane(path: Path) -> dict[str, dict[str, Any]]:
             continue
         pane_id = item.get("pane_id")
         if isinstance(pane_id, str) and pane_id:
-            records[pane_id] = item
+            record_session = item.get("herdr_session") or herdr_session
+            records[(record_session, pane_id)] = item
     return records
 
 
@@ -173,6 +210,7 @@ def current_pane_info() -> PaneInfo | None:
     if not all(isinstance(item, str) and item for item in [pane_id, workspace_id, tab_id]):
         return None
     current = PaneInfo(
+        herdr_session=current_herdr_session(),
         pane_id=pane_id,
         workspace_id=workspace_id,
         tab_id=tab_id,
@@ -241,6 +279,7 @@ def snapshot_panes() -> list[PaneInfo]:
             continue
         found.append(
             PaneInfo(
+                herdr_session=current_herdr_session(),
                 pane_id=pane_id,
                 workspace_id=workspace_id,
                 tab_id=tab_id,
@@ -321,6 +360,30 @@ def pane_process_entries(pane_id: str) -> list[tuple[int | None, str]]:
     return entries
 
 
+def detect_from_native(pane: PaneInfo) -> tuple[str, str] | None:
+    client = pane.agent if pane.agent in {"codex", "claude"} else None
+    if not client:
+        return None
+    data = run_json(["herdr", "pane", "get", pane.pane_id])
+    if not data:
+        return None
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return None
+    pane_data = result.get("pane")
+    if not isinstance(pane_data, dict):
+        return None
+    agent_session = pane_data.get("agent_session")
+    if not isinstance(agent_session, dict):
+        return None
+    reported_agent = agent_session.get("agent")
+    session_id = agent_session.get("value")
+    if reported_agent not in (None, client) or not isinstance(session_id, str):
+        return None
+    session_id = clean_session_id(session_id)
+    return (client, session_id) if session_id else None
+
+
 def git_context(cwd: str) -> tuple[str | None, str | None]:
     def run_text(cmd: list[str]) -> str | None:
         try:
@@ -371,6 +434,13 @@ def pane_id_matches(item: dict[str, Any], pane_id: str) -> bool:
     return item.get("pane_id") == pane_id
 
 
+def pane_identity_matches(item: dict[str, Any], pane: PaneInfo) -> bool:
+    return (
+        item.get("pane_id") == pane.pane_id
+        and (item.get("herdr_session") or pane.herdr_session) == pane.herdr_session
+    )
+
+
 def existing_registration_matches(pane: PaneInfo, record: dict[str, Any] | None) -> bool:
     if not record:
         return False
@@ -398,6 +468,7 @@ def build_record(
     restore_policy: str,
 ) -> dict[str, Any]:
     return {
+        "herdr_session": pane.herdr_session,
         "workspace_label": pane.workspace_label or pane.workspace_id,
         "workspace_id": pane.workspace_id,
         "tab_label": pane.tab_label or pane.tab_id,
@@ -433,6 +504,7 @@ def register(args: argparse.Namespace) -> int:
             )
             return 2
         pane = PaneInfo(
+            herdr_session=args.herdr_session or current_herdr_session(),
             pane_id=args.pane_id,
             workspace_id=args.workspace_id,
             tab_id=args.tab_id,
@@ -458,7 +530,7 @@ def register(args: argparse.Namespace) -> int:
             status=args.status,
             restore_policy=args.restore_policy,
         )
-        panes = [item for item in data["panes"] if not pane_id_matches(item, pane.pane_id)]
+        panes = [item for item in data["panes"] if not pane_identity_matches(item, pane)]
         panes.append(record)
         data["panes"] = sorted(panes, key=lambda item: str(item.get("pane_id", "")))
         write_manifest(path, data)
@@ -484,6 +556,7 @@ def list_records(args: argparse.Namespace) -> int:
         print(
             "\t".join(
                 [
+                    str(item.get("herdr_session") or ""),
                     str(item.get("pane_id", "")),
                     str(item.get("workspace_id", "")),
                     str(item.get("tab_id", "")),
@@ -498,11 +571,22 @@ def list_records(args: argparse.Namespace) -> int:
 
 
 def remove_record(args: argparse.Namespace) -> int:
+    herdr_session = args.herdr_session or current_herdr_session()
+    if not herdr_session:
+        print("--herdr-session or HERDR_SESSION is required to remove a pane safely", file=sys.stderr)
+        return 2
     path = manifest_path(args)
     with manifest_lock(path):
         data = read_manifest(path)
         before = len(data["panes"])
-        data["panes"] = [item for item in data["panes"] if item.get("pane_id") != args.pane_id]
+        data["panes"] = [
+            item
+            for item in data["panes"]
+            if not (
+                item.get("pane_id") == args.pane_id
+                and (item.get("herdr_session") or herdr_session) == herdr_session
+            )
+        ]
         if len(data["panes"]) == before:
             print(f"pane not found: {args.pane_id}", file=sys.stderr)
             return 1
@@ -524,6 +608,7 @@ def capture_missing(args: argparse.Namespace) -> int:
             )
             return 2
         pane = PaneInfo(
+            herdr_session=args.herdr_session or current_herdr_session(),
             pane_id=args.pane_id,
             workspace_id=args.workspace_id,
             tab_id=args.tab_id,
@@ -536,6 +621,7 @@ def capture_missing(args: argparse.Namespace) -> int:
         raise SystemExit("unable to determine cwd")
     worktree, branch = git_context(cwd)
     item = {
+        "herdr_session": pane.herdr_session,
         "workspace_label": pane.workspace_label or pane.workspace_id,
         "workspace_id": pane.workspace_id,
         "tab_label": pane.tab_label or pane.tab_id,
@@ -636,18 +722,23 @@ def detect_from_process(pane: PaneInfo) -> tuple[str, str] | None:
 
 def detect_from_status(pane: PaneInfo, *, lines: int) -> tuple[str, str] | None:
     if pane.agent not in {"codex", "claude"} or pane.agent_status != "idle":
+        log_status_event(pane, "skipped", reason="pane_not_idle_or_not_supported")
         return None
     if not pane_send_status(pane.pane_id):
+        log_status_event(pane, "send_failed", command="/status")
         return None
-    for _ in range(6):
+    log_status_event(pane, "sent", command="/status")
+    for attempt in range(1, 7):
         text = pane_read_text(pane.pane_id, lines=lines, source="recent-unwrapped")
         if text:
             match = re.search(r"\bSession(?:\s+ID)?\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]{5,})", text)
             if match:
                 session_id = clean_session_id(match.group(1))
                 if session_id:
+                    log_status_event(pane, "found", session_id=session_id, poll_attempt=attempt)
                     return pane.agent, session_id
         time.sleep(0.4)
+    log_status_event(pane, "not_found", poll_attempts=6)
     return None
 
 
@@ -671,7 +762,11 @@ def scan(args: argparse.Namespace) -> int:
         print("no herdr panes found; is a herdr session running?", file=sys.stderr)
         return 1
 
-    manifest_by_pane = existing_records_by_pane(manifest_path(args))
+    herdr_session = current_herdr_session()
+    if not herdr_session:
+        print("HERDR_SESSION is not set; attach a named Herdr session first", file=sys.stderr)
+        return 2
+    manifest_by_pane = existing_records_by_pane(manifest_path(args), herdr_session=herdr_session)
     records: list[dict[str, Any]] = []
     missing_items: list[dict[str, Any]] = []
     already_registered = 0
@@ -687,14 +782,17 @@ def scan(args: argparse.Namespace) -> int:
                 print(f"SKIP {pane.pane_id} no codex/claude agent")
             continue
 
-        existing_record = manifest_by_pane.get(pane.pane_id)
+        existing_record = manifest_by_pane.get((herdr_session, pane.pane_id))
         if existing_registration_matches(pane, existing_record):
             already_registered += 1
             print(f"KEEP {pane.pane_id} {client} {existing_record.get('session_id')} already registered")
             continue
 
-        detection = detect_from_process(pane)
-        detection_source = "process_info"
+        detection = detect_from_native(pane)
+        detection_source = "native_agent_session"
+        if not detection:
+            detection = detect_from_process(pane)
+            detection_source = "process_info"
         if not detection and args.status:
             detection = detect_from_status(pane, lines=max(args.lines, 120))
             detection_source = "status_command"
@@ -726,6 +824,7 @@ def scan(args: argparse.Namespace) -> int:
 
         missing_items.append(
             {
+                "herdr_session": pane.herdr_session,
                 "workspace_label": pane.workspace_label or pane.workspace_id,
                 "workspace_id": pane.workspace_id,
                 "tab_label": pane.tab_label or pane.tab_id,
@@ -823,6 +922,7 @@ def apply_missing(args: argparse.Namespace) -> int:
             continue
         validate_session_id(session_id)
         pane = PaneInfo(
+            herdr_session=item.get("herdr_session") if isinstance(item.get("herdr_session"), str) else current_herdr_session(),
             pane_id=pane_id,
             workspace_id=workspace_id,
             tab_id=tab_id,
@@ -864,8 +964,13 @@ def apply_missing(args: argparse.Namespace) -> int:
 
     with manifest_lock(path):
         data = read_manifest(path)
-        pane_ids = {record["pane_id"] for record in records}
-        panes = [item for item in data["panes"] if item.get("pane_id") not in pane_ids]
+        identities = {(record.get("herdr_session"), record["pane_id"]) for record in records}
+        panes = [
+            item
+            for item in data["panes"]
+            if (item.get("herdr_session") or current_herdr_session(), item.get("pane_id"))
+            not in identities
+        ]
         panes.extend(records)
         data["panes"] = sorted(panes, key=lambda item: str(item.get("pane_id", "")))
         if args.execute:
@@ -889,8 +994,13 @@ def print_path(args: argparse.Namespace) -> int:
 
 def normalize_manifest(args: argparse.Namespace) -> int:
     path = manifest_path(args)
+    herdr_session = args.herdr_session or current_herdr_session()
     with manifest_lock(path):
         data = read_manifest(path)
+        if herdr_session:
+            for item in data["panes"]:
+                if isinstance(item, dict) and not item.get("herdr_session"):
+                    item["herdr_session"] = herdr_session
         write_manifest(path, data)
     print(f"normalized manifest: {path}")
     return 0
@@ -915,6 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--pane-id")
     register_parser.add_argument("--workspace-id")
     register_parser.add_argument("--tab-id")
+    register_parser.add_argument("--herdr-session")
 
     list_parser = sub.add_parser("list", help="list registered panes")
     list_parser.add_argument("--client", choices=["codex", "claude"])
@@ -923,11 +1034,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     remove_parser = sub.add_parser("remove", help="remove one pane registration")
     remove_parser.add_argument("pane_id")
+    remove_parser.add_argument("--herdr-session")
 
     path_parser = sub.add_parser("path", help="print manifest path")
     path_parser.set_defaults(func=print_path)
 
     normalize_parser = sub.add_parser("normalize", help="rewrite manifest fields in canonical order")
+    normalize_parser.add_argument("--herdr-session")
     normalize_parser.set_defaults(func=normalize_manifest)
 
     capture_missing_parser = sub.add_parser("capture-missing", help="write one editable missing-session row")
@@ -942,6 +1055,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture_missing_parser.add_argument("--pane-id")
     capture_missing_parser.add_argument("--workspace-id")
     capture_missing_parser.add_argument("--tab-id")
+    capture_missing_parser.add_argument("--herdr-session")
 
     apply_missing_parser = sub.add_parser("apply-missing", help="import filled missing-session JSON")
     apply_missing_parser.add_argument("--execute", action="store_true", help="write manifest and remove JSON")

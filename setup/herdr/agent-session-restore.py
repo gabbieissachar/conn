@@ -73,8 +73,12 @@ def pane_list() -> dict[str, dict[str, Any]]:
 
 
 def filtered_records(args: argparse.Namespace, data: dict[str, Any]) -> list[dict[str, Any]]:
+    herdr_session = args.herdr_session or os.environ.get("HERDR_SESSION")
     records: list[dict[str, Any]] = []
     for item in data["panes"]:
+        record_session = item.get("herdr_session") or herdr_session
+        if herdr_session and record_session != herdr_session:
+            continue
         if args.pane_id and item.get("pane_id") != args.pane_id:
             continue
         if args.client and item.get("client") != args.client:
@@ -147,7 +151,7 @@ def restore(args: argparse.Namespace) -> int:
             continue
         command = restore_line(item)
         label = str(item.get("label") or "")
-        target = f"{pane_id} {item.get('client')} {item.get('session_id')}"
+        target = f"{item.get('herdr_session') or os.environ.get('HERDR_SESSION') or '?'}:{pane_id} {item.get('client')} {item.get('session_id')}"
         if label:
             target = f"{target} [{label}]"
         print(target)
@@ -174,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-id")
     parser.add_argument("--workspace-id")
     parser.add_argument("--tab-id")
+    parser.add_argument("--herdr-session", help="named Herdr session to restore")
     return parser
 
 

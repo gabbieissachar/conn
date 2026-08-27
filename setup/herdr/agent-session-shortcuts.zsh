@@ -62,6 +62,12 @@ herdr-agent-restore() {
   python3 "$_pmos_herdr_agent_restore" "$@"
 }
 
+herdr-agent-recover() {
+  herdr-agent-capture-history --execute
+  herdr-agent-capture-status --execute
+  herdr-agent-restore --execute --all
+}
+
 claude-real-bin() {
   print -r -- "${PMOS_CLAUDE_REAL_BIN:-$_pmos_claude_real_bin}"
 }

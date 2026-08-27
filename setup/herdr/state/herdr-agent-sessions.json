@@ -1,6 +1,7 @@
 {
   "panes": [
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "BC-30 Product Specs",
@@ -21,6 +22,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "CC:CRM Messages",
@@ -41,6 +43,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "StakeholderReviewProcess",
@@ -61,6 +64,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "WBR Metrics",
@@ -81,6 +85,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "FaQ-task-adjoe",
@@ -97,10 +102,11 @@
       "restore_policy": "manual_confirm",
       "resume_command": "source /Users/nguyen.tran/workspace/pmos/setup/codex-shortcuts.zsh && source /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-shortcuts.zsh && codex-r 019f892b-d305-7073-b448-359376ca29ab",
       "status": "active",
-      "updated_at": "2026-07-24T07:47:53+07:00",
+      "updated_at": "2026-07-24T09:18:14+07:00",
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM",
       "workspace_id": "w1",
       "tab_label": "eSIM cashback",
@@ -121,6 +127,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM2",
       "workspace_id": "w2",
       "tab_label": "BC-16-ProfileForChatbot",
@@ -141,6 +148,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM2",
       "workspace_id": "w2",
       "tab_label": "eSIM Release message",
@@ -161,6 +169,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM2",
       "workspace_id": "w2",
       "tab_label": "eSIM Plan Status",
@@ -181,6 +190,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM2",
       "workspace_id": "w2",
       "tab_label": "ListingOpsScript",
@@ -201,6 +211,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "eSIM2",
       "workspace_id": "w2",
       "tab_label": "CC:ProductReleasePosting",
@@ -221,6 +232,49 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
+      "workspace_label": "eSIM2",
+      "workspace_id": "w2",
+      "tab_label": "BC-16-ProfileForChatbot",
+      "tab_id": "w2:t1",
+      "pane_label": "w2:pF",
+      "pane_id": "w2:pF",
+      "session_id": "019dd987-3e6b-7841-bd0e-4fb8f84f1a75",
+      "agent_status": "idle",
+      "branch": "nguyen/workspace",
+      "client": "codex",
+      "cwd": "/Users/nguyen.tran/workspace/pmos",
+      "foreground_cwd": "/Users/nguyen.tran/workspace/pmos",
+      "label": null,
+      "restore_policy": "manual_confirm",
+      "resume_command": "source /Users/nguyen.tran/workspace/pmos/setup/codex-shortcuts.zsh && source /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-shortcuts.zsh && codex-r 019dd987-3e6b-7841-bd0e-4fb8f84f1a75",
+      "status": "active",
+      "updated_at": "2026-07-25T15:23:16+07:00",
+      "worktree": "/Users/nguyen.tran/workspace/pmos"
+    },
+    {
+      "herdr_session": "esim",
+      "workspace_label": "eSIM2",
+      "workspace_id": "w2",
+      "tab_label": "BC-29/improvement",
+      "tab_id": "w2:t7",
+      "pane_label": "w2:pG",
+      "pane_id": "w2:pG",
+      "session_id": "019f9328-1b09-77c1-9177-ff79a2232cf3",
+      "agent_status": "idle",
+      "branch": "nguyen/workspace",
+      "client": "codex",
+      "cwd": "/Users/nguyen.tran/workspace/pmos",
+      "foreground_cwd": "/Users/nguyen.tran/workspace/pmos",
+      "label": null,
+      "restore_policy": "manual_confirm",
+      "resume_command": "source /Users/nguyen.tran/workspace/pmos/setup/codex-shortcuts.zsh && source /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-shortcuts.zsh && codex-r 019f9328-1b09-77c1-9177-ff79a2232cf3",
+      "status": "active",
+      "updated_at": "2026-07-25T15:23:17+07:00",
+      "worktree": "/Users/nguyen.tran/workspace/pmos"
+    },
+    {
+      "herdr_session": "esim",
       "workspace_id": "w3",
       "tab_id": "w3:t1",
       "pane_id": "w3:p1",
@@ -238,6 +292,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "Misc",
       "workspace_id": "w3",
       "tab_label": "IntegrationAssistant-N8N",
@@ -258,6 +313,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "Misc",
       "workspace_id": "w3",
       "tab_label": "DataContext Submodule",
@@ -278,6 +334,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "Misc",
       "workspace_id": "w3",
       "tab_label": "mcp fix",
@@ -298,6 +355,7 @@
       "worktree": "/Users/nguyen.tran/workspace/pmos"
     },
     {
+      "herdr_session": "esim",
       "workspace_label": "Misc",
       "workspace_id": "w3",
       "tab_label": "9router toggle",
@@ -316,8 +374,29 @@
       "status": "active",
       "updated_at": "2026-07-24T07:36:44+07:00",
       "worktree": "/Users/nguyen.tran/workspace/pmos"
+    },
+    {
+      "herdr_session": "esim",
+      "workspace_label": "Misc",
+      "workspace_id": "w3",
+      "tab_label": "Fixthewording panel",
+      "tab_id": "w3:t7",
+      "pane_label": "w3:pD",
+      "pane_id": "w3:pD",
+      "session_id": "019f9224-a457-78d1-a5d3-58bfdfff1e34",
+      "agent_status": "idle",
+      "branch": "nguyen/workspace",
+      "client": "codex",
+      "cwd": "/Users/nguyen.tran/workspace/pmos",
+      "foreground_cwd": "/Users/nguyen.tran/workspace/pmos",
+      "label": null,
+      "restore_policy": "manual_confirm",
+      "resume_command": "source /Users/nguyen.tran/workspace/pmos/setup/codex-shortcuts.zsh && source /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-shortcuts.zsh && codex-r 019f9224-a457-78d1-a5d3-58bfdfff1e34",
+      "status": "active",
+      "updated_at": "2026-07-25T15:23:17+07:00",
+      "worktree": "/Users/nguyen.tran/workspace/pmos"
     }
   ],
-  "updated_at": "2026-07-24T07:47:55+07:00",
+  "updated_at": "2026-07-25T15:23:18+07:00",
   "version": 1
 }
