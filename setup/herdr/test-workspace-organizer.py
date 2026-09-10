@@ -185,6 +185,80 @@ class WorkspaceOrganizerTests(unittest.TestCase):
                 self.assertTrue(ORGANIZER.codex_session_exists(session_id))
             ORGANIZER.cached_codex_session_exists.cache_clear()
 
+    def test_interactive_codex_match_requires_two_visible_prompts_and_matching_cwd(self):
+        session_id = "01a013cd-9bc3-74a3-bb56-a0b806e74f9c"
+        with tempfile.TemporaryDirectory() as temporary:
+            sessions = Path(temporary) / "sessions" / "2026" / "09" / "10"
+            sessions.mkdir(parents=True)
+            rollout = sessions / f"rollout-{session_id}.jsonl"
+            rollout.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "session_meta",
+                                "payload": {"session_id": session_id, "cwd": "/workspace/project"},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "response_item",
+                                "payload": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "input_text", "text": "Please investigate the first release failure."}
+                                    ],
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "response_item",
+                                "payload": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "input_text", "text": "Then update the release notes for me."}
+                                    ],
+                                },
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+            prompts = (
+                "please investigate the first release failure.",
+                "then update the release notes for me.",
+            )
+            with patch.object(ORGANIZER, "CODEX_SESSIONS_DIR", Path(temporary) / "sessions"):
+                self.assertEqual(
+                    ORGANIZER.matching_codex_rollout_sessions(prompts, "/workspace/project", set()),
+                    {session_id},
+                )
+                self.assertEqual(
+                    ORGANIZER.matching_codex_rollout_sessions(prompts, "/wrong/project", set()), set()
+                )
+                self.assertEqual(
+                    ORGANIZER.matching_codex_rollout_sessions(prompts, "/workspace/project", {session_id}), set()
+                )
+                self.assertEqual(
+                    ORGANIZER.matching_codex_rollout_sessions(prompts[:1], "/workspace/project", set()), set()
+                )
+
+    def test_interactive_codex_match_becomes_a_resumable_record(self):
+        panes = [{"pane_id": "w1:p1", "agent": "codex"}]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=None), patch.object(
+            ORGANIZER, "native_codex_session", return_value=None
+        ), patch.object(
+            ORGANIZER, "codex_interactive_resume_session", return_value=("codex", "session-123")
+        ):
+            restore = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual(restore[0]["restore_status"], "resumable")
+        self.assertEqual(restore[0]["restore_source"], "local_rollout")
+        self.assertEqual(restore[0]["resume_command"], "codex resume session-123")
+
     def test_process_session_becomes_a_resumable_record(self):
         panes = [{"pane_id": "w1:p1", "agent": "claude"}]
         with patch.object(ORGANIZER, "agent_session_from_process", return_value=("claude", "session-123")):

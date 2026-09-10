@@ -34,6 +34,8 @@ CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 SHELL_PROCESS_NAMES = {"bash", "fish", "sh", "starship", "zsh"}
+CODEX_INTERACTIVE_PROMPT_COUNT = 2
+CODEX_INTERACTIVE_PROMPT_MINIMUM_LENGTH = 24
 
 
 class OrganizerError(RuntimeError):
@@ -249,6 +251,149 @@ def native_codex_session(pane: dict[str, Any]) -> tuple[str, str] | None:
     return ("codex", session_id) if codex_session_exists(session_id) else None
 
 
+def normalized_text(value: object) -> str:
+    """Make terminal and rollout text comparable without weakening word matching."""
+    return re.sub(r"\s+", " ", str(value)).strip().casefold()
+
+
+def codex_message_text(content: object) -> str:
+    """Extract the user text from Codex's string or typed-content message shapes."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    text: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            text.append(item["text"])
+    return "\n".join(text)
+
+
+def codex_interactive_resume_process(pane: dict[str, Any], session: str | None) -> bool:
+    """Return true only for Codex's ID-less interactive resume picker."""
+    pane_id = pane.get("pane_id")
+    if pane.get("agent") != "codex" or not isinstance(pane_id, str):
+        return False
+    try:
+        process_info = result_of(run_json(["pane", "process-info", "--pane", pane_id], session)).get(
+            "process_info", {}
+        )
+    except OrganizerError:
+        return False
+    processes = process_info.get("foreground_processes", []) if isinstance(process_info, dict) else []
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        command = str(process.get("cmdline") or "").strip()
+        # `codex resume <id>` is handled above from process metadata. This is
+        # the picker form, whose selected ID is intentionally absent from argv.
+        if re.search(r"(?:^|/)codex(?:\s+[^\s]+)*\s+resume\s*$", command):
+            return True
+    return False
+
+
+def codex_visible_prompt_signatures(pane_id: str, session: str | None) -> tuple[str, ...]:
+    """Get strong user-authored prompt signatures from an otherwise ID-less pane."""
+    try:
+        text = run_command(
+            ["pane", "read", pane_id, "--source", "recent-unwrapped", "--lines", "160"], session
+        )
+    except OrganizerError:
+        return ()
+    prompts: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*›\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        prompt = normalized_text(match.group(1))
+        if (
+            len(prompt) >= CODEX_INTERACTIVE_PROMPT_MINIMUM_LENGTH
+            and prompt != "ask codex to do anything"
+            and prompt not in prompts
+        ):
+            prompts.append(prompt)
+    return tuple(prompts[-CODEX_INTERACTIVE_PROMPT_COUNT:])
+
+
+def known_native_codex_session_ids(session: str | None) -> set[str]:
+    """Never infer a second pane's active native Codex session from copied text."""
+    try:
+        snapshot = session_snapshot(session)
+    except OrganizerError:
+        return set()
+    known: set[str] = set()
+    for pane in snapshot.get("panes", []):
+        if not isinstance(pane, dict):
+            continue
+        agent_session = pane.get("agent_session")
+        if not isinstance(agent_session, dict) or agent_session.get("agent") != "codex":
+            continue
+        session_id = agent_session.get("value")
+        if isinstance(session_id, str):
+            known.add(session_id)
+    return known
+
+
+def matching_codex_rollout_sessions(
+    prompt_signatures: tuple[str, ...], pane_cwd: object, excluded_session_ids: set[str]
+) -> set[str]:
+    """Find local Codex rollouts containing every visible prompt signature.
+
+    This deliberately requires two distinct prompts and a unique result at the
+    call site. A terminal transcript alone is not enough evidence to guess a
+    resumable session ID.
+    """
+    if len(prompt_signatures) < CODEX_INTERACTIVE_PROMPT_COUNT or not CODEX_SESSIONS_DIR.exists():
+        return set()
+    expected_cwd = normalized_text(pane_cwd) if isinstance(pane_cwd, str) and pane_cwd else ""
+    matches: set[str] = set()
+    for rollout in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
+        try:
+            with rollout.open(errors="replace") as handle:
+                metadata = json.loads(handle.readline()).get("payload", {})
+                if not isinstance(metadata, dict):
+                    continue
+                session_id = metadata.get("session_id") or metadata.get("id")
+                if (
+                    not isinstance(session_id, str)
+                    or not re.fullmatch(r"[0-9a-f-]{36}", session_id)
+                    or session_id in excluded_session_ids
+                ):
+                    continue
+                rollout_cwd = metadata.get("cwd")
+                if expected_cwd and normalized_text(rollout_cwd) != expected_cwd:
+                    continue
+                messages: list[str] = []
+                for line in handle:
+                    row = json.loads(line)
+                    payload = row.get("payload", {})
+                    if (
+                        row.get("type") == "response_item"
+                        and isinstance(payload, dict)
+                        and payload.get("type") == "message"
+                        and payload.get("role") == "user"
+                    ):
+                        messages.append(normalized_text(codex_message_text(payload.get("content"))))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if all(any(signature in message for message in messages) for signature in prompt_signatures):
+            matches.add(session_id)
+    return matches
+
+
+def codex_interactive_resume_session(pane: dict[str, Any], session: str | None) -> tuple[str, str] | None:
+    """Recover a picker-selected Codex session only when local evidence is unique."""
+    if not codex_interactive_resume_process(pane, session):
+        return None
+    pane_id = pane.get("pane_id")
+    if not isinstance(pane_id, str):
+        return None
+    signatures = codex_visible_prompt_signatures(pane_id, session)
+    pane_cwd = pane.get("foreground_cwd") or pane.get("cwd")
+    matches = matching_codex_rollout_sessions(signatures, pane_cwd, known_native_codex_session_ids(session))
+    return ("codex", next(iter(matches))) if len(matches) == 1 else None
+
+
 def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tuple[str, str] | None:
     """Return a real CLI session ID, never Herdr's display-only agent ID."""
     client = pane.get("agent")
@@ -303,6 +448,7 @@ def agent_restore_records(
         registered = by_pane.get(pane_id, {})
         detected = agent_session_from_process(pane, session)
         native = native_codex_session(pane)
+        interactive = codex_interactive_resume_session(pane, session) if not detected and not native else None
         registered_client = registered.get("client")
         registered_session_id = registered.get("session_id")
         registered_valid = bool(
@@ -313,8 +459,28 @@ def agent_restore_records(
                 or (registered_client == "codex" and codex_session_exists(registered_session_id))
             )
         )
-        client = detected[0] if detected else native[0] if native else registered_client if registered_valid else pane.get("agent")
-        agent_session_id = detected[1] if detected else native[1] if native else registered_session_id if registered_valid else None
+        client = (
+            detected[0]
+            if detected
+            else native[0]
+            if native
+            else interactive[0]
+            if interactive
+            else registered_client
+            if registered_valid
+            else pane.get("agent")
+        )
+        agent_session_id = (
+            detected[1]
+            if detected
+            else native[1]
+            if native
+            else interactive[1]
+            if interactive
+            else registered_session_id
+            if registered_valid
+            else None
+        )
         command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
         restores.append(
@@ -324,7 +490,17 @@ def agent_restore_records(
                 "session_id": agent_session_id,
                 "resume_command": command if resumable else None,
                 "restore_status": "resumable" if resumable else "shell_only",
-                "restore_source": "process" if detected else "native_codex" if native else "manifest" if registered_valid else "unavailable",
+                "restore_source": (
+                    "process"
+                    if detected
+                    else "native_codex"
+                    if native
+                    else "local_rollout"
+                    if interactive
+                    else "manifest"
+                    if registered_valid
+                    else "unavailable"
+                ),
             }
         )
     return restores
@@ -333,7 +509,7 @@ def agent_restore_records(
 def is_trusted_restore(restore: dict[str, Any]) -> bool:
     return (
         restore.get("restore_status") == "resumable"
-        and restore.get("restore_source") in {"manifest", "process", "native_codex"}
+        and restore.get("restore_source") in {"manifest", "process", "native_codex", "local_rollout"}
     )
 
 
