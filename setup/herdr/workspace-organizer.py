@@ -1219,87 +1219,106 @@ def resume_move_command(args: argparse.Namespace) -> None:
     print(f"Resumed {sum(outcome.get('status') == 'sent' for outcome in outcomes)} moved agent session(s).")
 
 
-def restore_tab_command(args: argparse.Namespace) -> None:
+def restore_tabs_command(args: argparse.Namespace) -> None:
     archive_path, archive = archive_by_id(args.archive)
     status = archive.get("status")
     if status not in {"archived", "restored", "resumed", "restore_partial"}:
         raise OrganizerError(f"Archive {args.archive!r} is in {status!r} state and cannot restore tabs.")
     snapshot = session_snapshot(args.session)
     destination = workspace_by_id(snapshot, args.to_workspace)
-    tabs = archive.get("capture", {}).get("tabs", [])
-    tab = next((item for item in tabs if item.get("source_tab_id") == args.tab), None)
-    if not isinstance(tab, dict):
-        raise OrganizerError(f"Archive {args.archive!r} does not contain tab {args.tab!r}.")
-    unavailable = unavailable_agent_restores([tab])
+    selected_ids = list(args.tab)
+    if len(set(selected_ids)) != len(selected_ids):
+        raise OrganizerError("Each --tab value must be unique.")
+    selected_tabs = [archived_tab_by_id(archive, tab_id) for tab_id in selected_ids]
+    unavailable = unavailable_agent_restores(selected_tabs)
     preview = {
         "archive_id": args.archive,
-        "source_tab_id": args.tab,
-        "tab_label": tab.get("label"),
         "destination_workspace_id": args.to_workspace,
         "destination_label": destination.get("label") or args.to_workspace,
-        "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
-        "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+        "tabs": [
+            {
+                "source_tab_id": tab_id,
+                "tab_label": tab.get("label"),
+                "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
+                "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+            }
+            for tab_id, tab in zip(selected_ids, selected_tabs, strict=True)
+        ],
         "unresumable_agent_count": len(unavailable),
     }
     if not args.execute:
         print(json.dumps(preview, indent=2))
         print(
-            f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore this tab into {args.to_workspace}."
+            f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore {len(selected_tabs)} archived tab(s) into {args.to_workspace}."
         )
         return
-    require_execute_confirmation(args.execute, args.confirm, args.archive, "Restore archived tab")
+    require_execute_confirmation(args.execute, args.confirm, args.archive, "Restore archived tabs")
     if unavailable and not args.allow_unresumable_agents:
         pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
         raise OrganizerError(
-            f"Archived tab {args.tab} has {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
-            "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent session is acceptable."
+            f"The selected archived tabs have {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
+            "Nothing was restored. Use --allow-unresumable-agents only if restoring the layouts without their agent sessions is acceptable."
         )
-    operation = {
-        "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-restore-{args.tab}-to-{args.to_workspace}",
-        "source_tab_id": args.tab,
-        "destination_workspace_id": args.to_workspace,
-        "started_at": now(),
-    }
-    archive.setdefault("tab_restores", []).append(operation)
+    operations = [
+        {
+            "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-restore-{tab_id}-to-{args.to_workspace}",
+            "source_tab_id": tab_id,
+            "destination_workspace_id": args.to_workspace,
+            "started_at": now(),
+            "status": "prepared",
+        }
+        for tab_id in selected_ids
+    ]
+    archive.setdefault("tab_restores", []).extend(operations)
     write_json(archive_path, archive)
-    try:
-        applied = socket_call(
-            args.session,
-            "layout.apply",
-            {
-                "workspace_id": args.to_workspace,
-                "tab_label": tab.get("label"),
-                "focus": False,
-                "root": tab.get("layout", {}).get("root"),
-            },
-        )
-        layout = applied.get("layout")
-        if not isinstance(layout, dict):
-            raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
-        pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
-        outcomes = resume_captured_tabs([tab], pane_map, args.session) if args.resume_agents else []
-        failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
-        operation.update(
-            {
-                "destination_tab_id": layout.get("tab_id"),
-                "pane_map": pane_map,
-                "agent_resume": outcomes,
-                "status": "resume_partial" if failures else "completed",
-                "completed_at": now(),
-            }
-        )
+    all_outcomes: list[dict[str, Any]] = []
+    for tab, operation in zip(selected_tabs, operations, strict=True):
+        try:
+            applied = socket_call(
+                args.session,
+                "layout.apply",
+                {
+                    "workspace_id": args.to_workspace,
+                    "tab_label": tab.get("label"),
+                    "focus": False,
+                    "root": tab.get("layout", {}).get("root"),
+                },
+            )
+            layout = applied.get("layout")
+            if not isinstance(layout, dict):
+                raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
+            pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
+            outcomes = resume_captured_tabs([tab], pane_map, args.session) if args.resume_agents else []
+            failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+            operation.update(
+                {
+                    "destination_tab_id": layout.get("tab_id"),
+                    "pane_map": pane_map,
+                    "agent_resume": outcomes,
+                    "status": "resume_partial" if failures else "completed",
+                    "completed_at": now(),
+                }
+            )
+            all_outcomes.extend(outcomes)
+        except OrganizerError as error:
+            operation["status"] = "failed"
+            operation["error"] = str(error)
+            operation["failed_at"] = now()
+            write_json(archive_path, archive)
+            raise OrganizerError(
+                f"Some archived tabs may already have been restored. The recovery records were retained: {error}"
+            ) from error
         write_json(archive_path, archive)
-        if failures:
-            raise OrganizerError("Archived tab was restored, but one or more agent resumes failed. The recovery record was retained.")
-    except OrganizerError as error:
-        operation["status"] = "failed"
-        operation["error"] = str(error)
-        operation["failed_at"] = now()
-        write_json(archive_path, archive)
-        raise
-    resumed = sum(outcome.get("action") == "resumed" for outcome in operation["agent_resume"])
-    print(f"Restored archived tab {args.tab} into workspace {args.to_workspace}.")
+    if any(outcome.get("status") == "failed" for outcome in all_outcomes):
+        raise OrganizerError("Archived tabs were restored, but one or more agent resumes failed. The recovery records were retained.")
+    resumed = sum(outcome.get("action") == "resumed" for outcome in all_outcomes)
+    print(f"Restored {len(selected_tabs)} archived tab(s) into workspace {args.to_workspace}.")
     print(f"Resumed {resumed} verified agent session(s).")
+
+
+def restore_tab_command(args: argparse.Namespace) -> None:
+    args.tab = [args.tab]
+    restore_tabs_command(args)
 
 
 def restore_command(args: argparse.Namespace) -> None:
@@ -1442,6 +1461,22 @@ def parser() -> argparse.ArgumentParser:
     restore_tab.add_argument("--execute", action="store_true")
     restore_tab.add_argument("--confirm")
     restore_tab.set_defaults(func=restore_tab_command, resume_agents=True)
+
+    restore_tabs = commands.add_parser(
+        "restore-tabs", help="Restore selected archived tabs into an active workspace."
+    )
+    restore_tabs.add_argument("--archive", required=True)
+    restore_tabs.add_argument("--tab", action="append", required=True, help="Archived source tab ID. Repeat for each tab.")
+    restore_tabs.add_argument("--to-workspace", required=True)
+    restore_tabs.add_argument(
+        "--allow-unresumable-agents",
+        action="store_true",
+        help="Restore layouts for selected tabs whose agent sessions cannot be verified.",
+    )
+    restore_tabs.add_argument("--no-resume-agents", dest="resume_agents", action="store_false")
+    restore_tabs.add_argument("--execute", action="store_true")
+    restore_tabs.add_argument("--confirm")
+    restore_tabs.set_defaults(func=restore_tabs_command, resume_agents=True)
 
     delete_archive = commands.add_parser("delete-archive", help="Permanently delete one saved archive.")
     delete_archive.add_argument("--archive", required=True)

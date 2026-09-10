@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for workspace-organizer.py that do not require a Herdr server."""
 
+import argparse
 import importlib.util
 import json
 import tempfile
@@ -67,6 +68,93 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(summary["pane_count"], 2)
         self.assertEqual(summary["resumable_pane_count"], 1)
         self.assertEqual(summary["shell_only_pane_count"], 1)
+
+    def test_restore_tabs_preview_includes_every_selected_tab(self):
+        archive = {
+            "archive_id": "example",
+            "status": "archived",
+            "capture": {
+                "tabs": [
+                    {"source_tab_id": "w1:t1", "label": "First", "layout": {"root": {"type": "pane", "pane_id": "p1"}}},
+                    {"source_tab_id": "w1:t2", "label": "Second", "layout": {"root": {"type": "pane", "pane_id": "p2"}}},
+                ]
+            },
+        }
+        args = argparse.Namespace(
+            archive="example",
+            tab=["w1:t1", "w1:t2"],
+            to_workspace="w9",
+            session="esim",
+            execute=False,
+            confirm=None,
+            allow_unresumable_agents=False,
+            resume_agents=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "archive_by_id", return_value=(Path(temporary) / "example.json", archive)
+        ), patch.object(ORGANIZER, "session_snapshot", return_value={}), patch.object(
+            ORGANIZER, "workspace_by_id", return_value={"workspace_id": "w9", "label": "Destination"}
+        ):
+            ORGANIZER.restore_tabs_command(args)
+        self.assertEqual(args.tab, ["w1:t1", "w1:t2"])
+
+    def test_restore_tabs_rejects_duplicate_tab_selection(self):
+        archive = {"archive_id": "example", "status": "archived", "capture": {"tabs": []}}
+        args = argparse.Namespace(
+            archive="example",
+            tab=["w1:t1", "w1:t1"],
+            to_workspace="w9",
+            session="esim",
+            execute=False,
+            confirm=None,
+            allow_unresumable_agents=False,
+            resume_agents=True,
+        )
+        with patch.object(ORGANIZER, "archive_by_id", return_value=(Path("/tmp/example.json"), archive)), patch.object(
+            ORGANIZER, "session_snapshot", return_value={}
+        ), patch.object(ORGANIZER, "workspace_by_id", return_value={"workspace_id": "w9"}):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "must be unique"):
+                ORGANIZER.restore_tabs_command(args)
+
+    def test_restore_tabs_rebuilds_each_selected_tab_and_keeps_recovery_records(self):
+        archive = {
+            "archive_id": "example",
+            "status": "archived",
+            "capture": {
+                "tabs": [
+                    {"source_tab_id": "w1:t1", "label": "First", "layout": {"root": {"type": "pane", "pane_id": "p1"}}},
+                    {"source_tab_id": "w1:t2", "label": "Second", "layout": {"root": {"type": "pane", "pane_id": "p2"}}},
+                ]
+            },
+        }
+        args = argparse.Namespace(
+            archive="example",
+            tab=["w1:t1", "w1:t2"],
+            to_workspace="w9",
+            session="esim",
+            execute=True,
+            confirm="example",
+            allow_unresumable_agents=False,
+            resume_agents=True,
+        )
+        layouts = [
+            {"layout": {"tab_id": "w9:t1", "root": {"type": "pane", "pane_id": "new-p1"}}},
+            {"layout": {"tab_id": "w9:t2", "root": {"type": "pane", "pane_id": "new-p2"}}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "example.json"
+            with patch.object(ORGANIZER, "archive_by_id", return_value=(archive_path, archive)), patch.object(
+                ORGANIZER, "session_snapshot", return_value={}
+            ), patch.object(
+                ORGANIZER, "workspace_by_id", return_value={"workspace_id": "w9", "label": "Destination"}
+            ), patch.object(ORGANIZER, "socket_call", side_effect=layouts) as socket_call, patch.object(
+                ORGANIZER, "resume_captured_tabs", return_value=[]
+            ):
+                ORGANIZER.restore_tabs_command(args)
+            self.assertEqual(socket_call.call_count, 2)
+            saved = json.loads(archive_path.read_text())
+        self.assertEqual([item["status"] for item in saved["tab_restores"]], ["completed", "completed"])
+        self.assertEqual([item["destination_tab_id"] for item in saved["tab_restores"]], ["w9:t1", "w9:t2"])
 
     def test_active_agents_uses_herdr_tab_id_field(self):
         snapshot = {
