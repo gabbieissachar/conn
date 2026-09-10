@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -84,7 +85,7 @@ def resolve_session(requested_session: str | None) -> str | None:
     raise OrganizerError(f"Multiple Herdr sessions are running ({choices}). Re-run with --session <name>.")
 
 
-def run_json(arguments: list[str], session: str | None) -> dict[str, Any]:
+def run_command(arguments: list[str], session: str | None) -> str:
     command = herdr_prefix(session) + arguments
     try:
         completed = subprocess.run(command, check=False, text=True, capture_output=True)
@@ -94,11 +95,17 @@ def run_json(arguments: list[str], session: str | None) -> dict[str, Any]:
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "unknown Herdr error"
         raise OrganizerError(f"{' '.join(command)} failed: {message}")
+    return completed.stdout
+
+
+def run_json(arguments: list[str], session: str | None) -> dict[str, Any]:
+    command = herdr_prefix(session) + arguments
+    stdout = run_command(arguments, session)
     try:
-        return json.loads(completed.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as error:
         raise OrganizerError(
-            f"Herdr returned invalid JSON for {' '.join(command)}: {completed.stdout.strip()}"
+            f"Herdr returned invalid JSON for {' '.join(command)}: {stdout.strip()}"
         ) from error
 
 
@@ -187,12 +194,51 @@ def manifest_records() -> list[dict[str, Any]]:
 
 
 def default_resume_command(client: str, session_id: str) -> str | None:
-    shortcuts = ROOT / "agent-session-shortcuts.zsh"
-    codex_shortcuts = ROOT.parent / "codex-shortcuts.zsh"
+    quoted_session = shlex.quote(session_id)
     if client == "codex":
-        return f"source {codex_shortcuts} && source {shortcuts} && codex-r {session_id}"
+        return f"codex resume {quoted_session}"
     if client == "claude":
-        return f"source {shortcuts} && claude-r {session_id}"
+        return f"claude --resume {quoted_session}"
+    return None
+
+
+def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tuple[str, str] | None:
+    """Return a real CLI session ID, never Herdr's display-only agent ID."""
+    client = pane.get("agent")
+    pane_id = pane.get("pane_id")
+    if client not in {"codex", "claude"} or not isinstance(pane_id, str):
+        return None
+    try:
+        process_info = result_of(run_json(["pane", "process-info", "--pane", pane_id], session)).get("process_info", {})
+    except OrganizerError:
+        return None
+    processes = process_info.get("foreground_processes", []) if isinstance(process_info, dict) else []
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        command = str(process.get("cmdline") or "")
+        if client == "codex":
+            match = re.search(r"(?:^|/)codex(?:\s+\S+)*\s+resume\s+([^\s]+)", command)
+            if match:
+                return client, match.group(1)
+        if client == "claude":
+            match = re.search(r"(?:^|/)claude(?:\s+code)?\s+(?:--resume|resume)\s+([^\s]+)", command)
+            if match:
+                return client, match.group(1)
+            argv = process.get("argv")
+            executable = ""
+            if isinstance(argv, list) and argv:
+                executable = Path(str(argv[0])).name
+            if executable != "claude":
+                continue
+            pid = process.get("pid")
+            if not isinstance(pid, int):
+                continue
+            session_path = Path.home() / ".claude" / "sessions" / f"{pid}.json"
+            session_data = read_json(session_path, {})
+            session_id = session_data.get("sessionId") if isinstance(session_data, dict) else None
+            if isinstance(session_id, str) and session_id:
+                return client, session_id
     return None
 
 
@@ -207,15 +253,11 @@ def agent_restore_records(
     restores: list[dict[str, Any]] = []
     for pane in panes:
         pane_id = pane.get("pane_id")
-        agent = pane.get("agent_session") if isinstance(pane.get("agent_session"), dict) else {}
-        if not agent and isinstance(pane.get("agent"), dict):
-            agent = pane["agent"]
         registered = by_pane.get(pane_id, {})
-        client = registered.get("client") or agent.get("client") or agent.get("agent")
-        agent_session_id = registered.get("session_id") or agent.get("session_id") or agent.get("value")
-        command = registered.get("resume_command")
-        if not command and client and agent_session_id:
-            command = default_resume_command(str(client), str(agent_session_id))
+        detected = agent_session_from_process(pane, session)
+        client = registered.get("client") or (detected[0] if detected else pane.get("agent"))
+        agent_session_id = registered.get("session_id") or (detected[1] if detected else None)
+        command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
         restores.append(
             {
@@ -224,9 +266,17 @@ def agent_restore_records(
                 "session_id": agent_session_id,
                 "resume_command": command if resumable else None,
                 "restore_status": "resumable" if resumable else "shell_only",
+                "restore_source": "manifest" if registered else "process" if detected else "unavailable",
             }
         )
     return restores
+
+
+def is_trusted_restore(restore: dict[str, Any]) -> bool:
+    return (
+        restore.get("restore_status") == "resumable"
+        and restore.get("restore_source") in {"manifest", "process"}
+    )
 
 
 def capture_workspace(snapshot: dict[str, Any], workspace_id: str, session: str | None) -> dict[str, Any]:
@@ -327,8 +377,8 @@ def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
         "restored_workspace_id": archive.get("restore", {}).get("workspace_id"),
         "tab_count": len(tabs),
         "pane_count": sum(len(leaf_panes(tab.get("layout", {}).get("root"))) for tab in tabs),
-        "resumable_pane_count": sum(item.get("restore_status") == "resumable" for item in restores),
-        "shell_only_pane_count": sum(item.get("restore_status") != "resumable" for item in restores),
+        "resumable_pane_count": sum(is_trusted_restore(item) for item in restores),
+        "shell_only_pane_count": sum(not is_trusted_restore(item) for item in restores),
     }
 
 
@@ -523,12 +573,11 @@ def resume_captured_tabs(
             old_pane_id = restore.get("source_pane_id")
             new_pane_id = pane_map.get(str(old_pane_id))
             command = restore.get("resume_command")
-            if restore.get("restore_status") != "resumable" or not command or not new_pane_id:
+            if not is_trusted_restore(restore) or not command or not new_pane_id:
                 outcomes.append({"source_pane_id": old_pane_id, "status": "skipped"})
                 continue
             try:
-                run_json(["pane", "send-text", new_pane_id, str(command)], session)
-                run_json(["pane", "send-keys", new_pane_id, "Enter"], session)
+                run_command(["pane", "run", new_pane_id, str(command)], session)
                 outcomes.append({"source_pane_id": old_pane_id, "pane_id": new_pane_id, "status": "sent"})
             except OrganizerError as error:
                 outcomes.append(
@@ -675,7 +724,7 @@ def resume_move_command(args: argparse.Namespace) -> None:
         raise OrganizerError(f"Move {args.move!r} is in {move.get('status')!r} state and cannot resume agents yet.")
     source_tabs = move.get("source_tabs", [])
     resumable = sum(
-        item.get("restore_status") == "resumable"
+        is_trusted_restore(item)
         for tab in source_tabs
         for item in tab.get("agent_restores", [])
     )

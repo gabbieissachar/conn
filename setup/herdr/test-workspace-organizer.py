@@ -51,7 +51,7 @@ class WorkspaceOrganizerTests(unittest.TestCase):
                 "tabs": [
                     {
                         "layout": {"root": {"type": "pane", "pane_id": "p1"}},
-                        "agent_restores": [{"restore_status": "resumable"}],
+                        "agent_restores": [{"restore_status": "resumable", "restore_source": "manifest"}],
                     },
                     {
                         "layout": {"root": {"type": "pane", "pane_id": "p2"}},
@@ -76,18 +76,28 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         }
         self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
 
-    def test_native_agent_metadata_becomes_a_resumable_record(self):
+    def test_native_agent_metadata_is_not_treated_as_a_cli_resume_id(self):
         panes = [
             {
                 "pane_id": "w1:p1",
                 "agent_session": {"agent": "codex", "kind": "id", "value": "session-123"},
+                "agent": "codex",
             }
         ]
-        restore = ORGANIZER.agent_restore_records(panes, "esim", [])
-        self.assertEqual(restore[0]["restore_status"], "resumable")
-        self.assertIn("codex-r session-123", restore[0]["resume_command"])
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=None):
+            restore = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual(restore[0]["restore_status"], "shell_only")
+        self.assertEqual(restore[0]["restore_source"], "unavailable")
 
-    def test_resume_captured_tabs_sends_text_then_enter(self):
+    def test_process_session_becomes_a_resumable_record(self):
+        panes = [{"pane_id": "w1:p1", "agent": "claude"}]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=("claude", "session-123")):
+            restore = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual(restore[0]["restore_status"], "resumable")
+        self.assertEqual(restore[0]["resume_command"], "claude --resume session-123")
+        self.assertEqual(restore[0]["restore_source"], "process")
+
+    def test_resume_captured_tabs_uses_atomic_pane_run(self):
         tabs = [
             {
                 "agent_restores": [
@@ -95,18 +105,15 @@ class WorkspaceOrganizerTests(unittest.TestCase):
                         "source_pane_id": "old-pane",
                         "restore_status": "resumable",
                         "resume_command": "resume-command",
+                        "restore_source": "process",
                     }
                 ]
             }
         ]
-        with patch.object(ORGANIZER, "run_json") as run_json:
+        with patch.object(ORGANIZER, "run_command") as run_command:
             outcomes = ORGANIZER.resume_captured_tabs(tabs, {"old-pane": "new-pane"}, "test")
         self.assertEqual(outcomes, [{"source_pane_id": "old-pane", "pane_id": "new-pane", "status": "sent"}])
-        self.assertEqual(
-            run_json.call_args_list[0].args,
-            (["pane", "send-text", "new-pane", "resume-command"], "test"),
-        )
-        self.assertEqual(run_json.call_args_list[1].args, (["pane", "send-keys", "new-pane", "Enter"], "test"))
+        run_command.assert_called_once_with(["pane", "run", "new-pane", "resume-command"], "test")
 
 
 if __name__ == "__main__":

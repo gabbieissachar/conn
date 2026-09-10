@@ -376,6 +376,11 @@ def detect_from_native(pane: PaneInfo) -> tuple[str, str] | None:
     agent_session = pane_data.get("agent_session")
     if not isinstance(agent_session, dict):
         return None
+    source = agent_session.get("source")
+    if isinstance(source, str) and source.startswith("herdr:"):
+        # Herdr assigns these IDs for display and lifecycle reporting. They
+        # are not IDs accepted by the Codex or Claude resume commands.
+        return None
     reported_agent = agent_session.get("agent")
     session_id = agent_session.get("value")
     if reported_agent not in (None, client) or not isinstance(session_id, str):
@@ -417,16 +422,10 @@ def clean_session_id(value: str | None) -> str | None:
 
 def default_resume_command(client: str, session_id: str) -> str:
     quoted_session = shlex.quote(session_id)
-    codex_source = shlex.quote(str(PMOS_REPO / "setup/codex-shortcuts.zsh"))
-    herdr_source = shlex.quote(str(SCRIPT_DIR / "agent-session-shortcuts.zsh"))
     if client == "codex":
-        return (
-            f"{SHELL_SOURCE} {codex_source} && "
-            f"{SHELL_SOURCE} {herdr_source} && "
-            f"codex-r {quoted_session}"
-        )
+        return f"codex resume {quoted_session}"
     if client == "claude":
-        return f"{SHELL_SOURCE} {herdr_source} && claude-r {quoted_session}"
+        return f"claude --resume {quoted_session}"
     raise SystemExit(f"unsupported client: {client}")
 
 
