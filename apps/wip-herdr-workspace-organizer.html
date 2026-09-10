@@ -126,7 +126,7 @@ created: 2026-09-10
   <div class="toast" id="toast" role="status"></div>
   <script>
     const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
-    const state = { data: null, query: '', selectedTabs: new Set(), destinationWorkspace: '' };
+    const state = { data: null, query: '', selectedTabs: new Set(), destinationWorkspace: '', archiveDestinations: {} };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -171,6 +171,19 @@ created: 2026-09-10
         <label>Destination workspace<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === state.destinationWorkspace ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
         <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy move + resume</button>`;
     };
+    const archivedTabView = (archive, tab) => {
+      const key = `${archive.archive_id}:${tab.id}`;
+      const destinations = state.data.workspaces || [];
+      if (!destinations.some(workspace => workspace.id === state.archiveDestinations[key])) state.archiveDestinations[key] = destinations[0]?.id || '';
+      const destination = state.archiveDestinations[key];
+      const command = destination ? `herdr-organizer restore-tab --archive ${archive.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${archive.archive_id}` : '';
+      return `<div class="tab" style="margin: 10px 0">
+        <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span></div>
+        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'} · ${tab.resumable_agent_count} resumable${tab.unresumable_agent_count ? ` · ${tab.unresumable_agent_count} unavailable` : ''}</div>
+        <label>Restore into<select data-archive-destination="${escapeHtml(key)}" ${destinations.length ? '' : 'disabled'}>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
+        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy restore tab + resume</button></div>
+      </div>`;
+    };
     const archiveView = archive => {
       const restore = `herdr-organizer restore --archive ${archive.archive_id}`;
       const execute = `${restore} --execute --confirm ${archive.archive_id}`;
@@ -179,6 +192,7 @@ created: 2026-09-10
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
         <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} shell-only</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button></div>
+        <div class="archive-meta" style="margin-top: 12px">Restore one archived tab into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
     };
     const render = () => {
@@ -205,6 +219,10 @@ created: 2026-09-10
         state.destinationWorkspace = event.target.value;
         render();
       });
+      document.querySelectorAll('[data-archive-destination]').forEach(select => select.addEventListener('change', event => {
+        state.archiveDestinations[event.target.dataset.archiveDestination] = event.target.value;
+        render();
+      }));
       document.querySelector('#updated').textContent = data.generated_at ? `Snapshot ${new Date(data.generated_at).toLocaleString()}${data.herdr_session ? ` · ${data.herdr_session}` : ''}` : 'No timestamp';
     };
     const load = async () => {
