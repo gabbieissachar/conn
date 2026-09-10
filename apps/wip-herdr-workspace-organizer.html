@@ -176,12 +176,13 @@ created: 2026-09-10
       const destinations = state.data.workspaces || [];
       if (!destinations.some(workspace => workspace.id === state.archiveDestinations[key])) state.archiveDestinations[key] = destinations[0]?.id || '';
       const destination = state.archiveDestinations[key];
-      const command = destination ? `herdr-organizer restore-tab --archive ${archive.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${archive.archive_id}` : '';
+      const canResume = tab.unresumable_agent_count === 0;
+      const command = destination && canResume ? `herdr-organizer restore-tab --archive ${archive.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${archive.archive_id}` : '';
       return `<div class="tab" style="margin: 10px 0">
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span></div>
-        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'} · ${tab.resumable_agent_count} resumable${tab.fresh_agent_count ? ` · ${tab.fresh_agent_count} starts fresh` : ''}${tab.unresumable_agent_count ? ` · ${tab.unresumable_agent_count} unavailable` : ''}</div>
+        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'} · ${tab.resumable_agent_count} resumable${tab.unresumable_agent_count ? ` · ${tab.unresumable_agent_count} unavailable` : ''}</div>
         <label>Restore into<select data-archive-destination="${escapeHtml(key)}" ${destinations.length ? '' : 'disabled'}>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy restore tab + resume</button></div>
+        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${canResume ? 'Copy restore tab + resume' : 'Agent session unavailable'}</button></div>
       </div>`;
     };
     const archiveView = archive => {
@@ -190,7 +191,7 @@ created: 2026-09-10
       const resume = `${restore} --resume-agents --execute --confirm ${archive.archive_id}`;
       return `<article class="archive">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
-        <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.fresh_agent_pane_count || 0} start fresh · ${archive.shell_only_pane_count} unavailable</div>
+        <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button></div>
         <div class="archive-meta" style="margin-top: 12px">Restore one archived tab into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
