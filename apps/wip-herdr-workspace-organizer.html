@@ -48,9 +48,6 @@ created: 2026-09-10
     button:focus-visible, input:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 2px; }
     main { max-width: 1240px; margin: 0 auto; padding: 26px 24px 60px; }
     .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
-    .guide { margin: 0 0 28px; padding: 15px 17px; border: 1px solid #d9d2f7; border-radius: 10px; color: #3d3567; background: #f3f0ff; }
-    .guide strong { display: block; margin-bottom: 5px; font-size: 13px; }
-    .guide p { max-width: 850px; font-size: 13px; line-height: 1.45; }
     .move-panel { position: fixed; right: 24px; bottom: 22px; z-index: 4; display: grid; grid-template-columns: minmax(220px, 1fr) 190px auto; align-items: end; gap: 11px; width: min(720px, calc(100vw - 48px)); padding: 15px 16px; border: 1px solid #cfd7e7; border-radius: 10px; background: rgba(255,255,255,.96); backdrop-filter: blur(14px); box-shadow: 0 14px 34px rgba(33, 47, 83, .18); }
     .move-panel:empty { display: none; }
     .move-panel strong { display: block; font-size: 14px; }
@@ -120,13 +117,9 @@ created: 2026-09-10
     </nav>
   </header>
   <main>
-    <aside class="guide">
-      <strong>How to use this page</strong>
-      <p>This page refreshes a read-only live snapshot whenever it loads. Every workspace action still copies a command instead of changing Herdr directly. Tick tabs, choose a destination workspace, then copy the multi-tab move command. It rebuilds fresh tabs, closes the original tabs, and resumes Codex or Claude sessions only when the real CLI session is available.</p>
-    </aside>
-    <section class="summary" id="summary"></section>
     <section class="move-panel" id="move-panel" aria-live="polite"></section>
     <section id="workspaces-section">
+      <section class="summary" id="summary"></section>
       <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
       <div class="workspaces" id="workspaces"></div>
     </section>
