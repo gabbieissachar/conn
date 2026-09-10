@@ -634,12 +634,23 @@ def empty_tab_cleanup_candidates(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     eligible: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
+    records = manifest_records()
     for tab in tabs_for_workspace(snapshot, workspace_id):
         tab_id = str(tab.get("tab_id"))
         panes = panes_for_tab(snapshot, tab_id)
         agent_panes = [pane.get("pane_id") for pane in panes if pane.get("agent")]
         if agent_panes:
             protected.append({"tab_id": tab_id, "reason": "agent_detected", "pane_ids": agent_panes})
+            continue
+        resumable_panes = [
+            restore.get("source_pane_id")
+            for restore in agent_restore_records(panes, session, records)
+            if is_trusted_restore(restore)
+        ]
+        if resumable_panes:
+            protected.append(
+                {"tab_id": tab_id, "reason": "resumable_session", "pane_ids": resumable_panes}
+            )
             continue
         non_shell_panes = [
             pane.get("pane_id")
@@ -1405,7 +1416,9 @@ def parser() -> argparse.ArgumentParser:
     archive.add_argument("--confirm")
     archive.set_defaults(func=archive_command)
 
-    cleanup_empty = commands.add_parser("cleanup-empty-tabs", help="Close shell-only tabs without detected agents.")
+    cleanup_empty = commands.add_parser(
+        "cleanup-empty-tabs", help="Close shell-only tabs without agents or preserved sessions."
+    )
     cleanup_empty.add_argument("--workspace", required=True)
     cleanup_empty.add_argument("--execute", action="store_true")
     cleanup_empty.add_argument("--confirm")

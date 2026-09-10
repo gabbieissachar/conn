@@ -102,6 +102,29 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             ],
         )
 
+    def test_empty_tab_cleanup_keeps_shell_tab_with_a_resumable_session(self):
+        snapshot = {
+            "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}],
+            "panes": [{"tab_id": "w1:t1", "pane_id": "w1:p1", "agent_status": "unknown"}],
+        }
+        restores = [
+            {
+                "source_pane_id": "w1:p1",
+                "client": "codex",
+                "restore_status": "resumable",
+                "restore_source": "manifest",
+            }
+        ]
+        with patch.object(ORGANIZER, "agent_restore_records", return_value=restores), patch.object(
+            ORGANIZER, "pane_is_shell_prompt", return_value=True
+        ):
+            eligible, protected = ORGANIZER.empty_tab_cleanup_candidates(snapshot, "w1", "esim")
+        self.assertEqual(eligible, [])
+        self.assertEqual(
+            protected,
+            [{"tab_id": "w1:t1", "reason": "resumable_session", "pane_ids": ["w1:p1"]}],
+        )
+
     def test_public_workspace_exposes_agent_resume_state_without_session_id(self):
         snapshot = {
             "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "Example"}],
