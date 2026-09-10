@@ -52,6 +52,7 @@ created: 2026-09-10
     .move-panel:empty { display: none; }
     .move-panel strong { display: block; font-size: 14px; }
     .move-panel p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .move-panel .mode-switch { margin-top: 8px; padding: 6px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
     .move-panel label { display: block; color: var(--muted); font: 11px "DM Mono", monospace; }
     .move-panel select { width: 100%; margin-top: 6px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--paper); }
     .move-panel .primary { color: white; background: var(--purple); }
@@ -131,7 +132,7 @@ created: 2026-09-10
   <div class="toast" id="toast" role="status"></div>
   <script>
     const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
-    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', archiveDestinations: {}, view: 'workspaces' };
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'workspaces' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -172,16 +173,29 @@ created: 2026-09-10
       const allTabs = data.workspaces.flatMap(workspace => workspace.tabs.map(tab => ({ ...tab, workspace })));
       const selected = allTabs.filter(tab => state.selectedTabs.has(tab.id));
       if (!selected.length) return '';
+      const archiving = state.selectedTabsAction === 'archive';
       const sourceWorkspaces = new Set(selected.map(tab => tab.workspace.id));
-      const destinationChoices = data.workspaces.filter(workspace => !sourceWorkspaces.has(workspace.id));
-      if (!destinationChoices.some(workspace => workspace.id === state.destinationWorkspace)) state.destinationWorkspace = destinationChoices[0]?.id || '';
-      const command = state.destinationWorkspace
-        ? `herdr-organizer move-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --to-workspace ${state.destinationWorkspace} --execute --confirm ${state.destinationWorkspace}`
+      const destinationChoices = archiving
+        ? (data.archives || []).filter(archive => ['archived', 'restored', 'resumed', 'restore_partial'].includes(archive.status))
+        : data.workspaces.filter(workspace => !sourceWorkspaces.has(workspace.id));
+      if (archiving && !destinationChoices.some(archive => archive.archive_id === state.selectedTabsArchive)) state.selectedTabsArchive = destinationChoices[0]?.archive_id || '';
+      if (!archiving && !destinationChoices.some(workspace => workspace.id === state.destinationWorkspace)) state.destinationWorkspace = destinationChoices[0]?.id || '';
+      const destination = archiving ? state.selectedTabsArchive : state.destinationWorkspace;
+      const command = destination
+        ? archiving
+          ? `herdr-organizer archive-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --into-archive ${destination} --execute --confirm ${destination}`
+          : `herdr-organizer move-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --to-workspace ${destination} --execute --confirm ${destination}`
         : '';
-      const detail = `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
-      return `<div><strong>Move selected tabs to another workspace</strong><p>${escapeHtml(detail)}</p></div>
-        <label>Destination workspace<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === state.destinationWorkspace ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy move + resume</button>`;
+      const detail = archiving
+        ? `${selected.length} selected. The command adds them to the archive, then closes only their live tabs. Each live workspace keeps at least one tab.`
+        : `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
+      const label = archiving ? 'Existing archive' : 'Destination workspace';
+      const options = archiving
+        ? destinationChoices.map(archive => `<option value="${escapeHtml(archive.archive_id)}" ${archive.archive_id === destination ? 'selected' : ''}>${escapeHtml(archive.workspace_label || archive.archive_id)} (${escapeHtml(archive.archive_id)})</option>`).join('')
+        : destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('');
+      return `<div><strong>${archiving ? 'Archive selected tabs' : 'Move selected tabs to another workspace'}</strong><p>${escapeHtml(detail)}</p><button class="mode-switch" type="button" id="toggle-selected-tabs-action">${archiving ? 'Move selected tabs instead' : 'Archive selected tabs instead'}</button></div>
+        <label>${label}<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${options}</select></label>
+        <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${archiving ? 'Copy archive selected tabs' : 'Copy move + resume'}</button>`;
     };
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
     const restorePanelView = data => {
@@ -267,7 +281,12 @@ created: 2026-09-10
         render();
       }));
       document.querySelector('#move-destination')?.addEventListener('change', event => {
-        state.destinationWorkspace = event.target.value;
+        if (state.selectedTabsAction === 'archive') state.selectedTabsArchive = event.target.value;
+        else state.destinationWorkspace = event.target.value;
+        render();
+      });
+      document.querySelector('#toggle-selected-tabs-action')?.addEventListener('click', () => {
+        state.selectedTabsAction = state.selectedTabsAction === 'archive' ? 'move' : 'archive';
         render();
       });
       document.querySelector('#restore-destination')?.addEventListener('change', event => {
