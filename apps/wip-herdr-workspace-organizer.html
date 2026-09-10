@@ -79,6 +79,8 @@ created: 2026-09-10
     .status { display: inline-block; padding: 2px 5px; margin-left: 4px; border-radius: 4px; color: #506079; background: #edf0f5; font: 10px "DM Mono", monospace; }
     .status.working, .status.blocked { color: #925a08; background: #fff0d9; }
     .status.idle { color: #27806b; background: #dcf5ee; }
+    .status.resumable { color: #27806b; background: #dcf5ee; }
+    .status.needs-registration { color: #a9273b; background: #ffe6ea; }
     .focused { color: var(--purple); font: 10px "DM Mono", monospace; text-transform: uppercase; }
     .tab-select { display: flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--muted); font-size: 11px; cursor: pointer; }
     .tab-select input { margin: 0; accent-color: var(--purple); }
@@ -90,6 +92,8 @@ created: 2026-09-10
     .archive-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
     .archive-actions button.primary { color: white; background: var(--purple); }
     .archive-actions button.primary:hover { background: #5a43ba; }
+    .archive-actions button.danger, .tab-actions button.danger { color: #a9273b; background: #ffe6ea; }
+    .archive-actions button.danger:hover, .tab-actions button.danger:hover { background: #ffd7dd; }
     .empty { min-height: 140px; justify-content: center; padding: 20px; color: var(--muted); text-align: center; background: var(--paper); border: 1px dashed #cbd3e0; border-radius: 10px; }
     .toast { position: fixed; right: 24px; bottom: 22px; z-index: 5; padding: 10px 13px; color: white; background: var(--navy); border-radius: 7px; box-shadow: var(--shadow); font-size: 12px; transform: translateY(80px); opacity: 0; transition: .2s ease; }
     .toast.show { transform: translateY(0); opacity: 1; }
@@ -104,13 +108,13 @@ created: 2026-09-10
     </div>
     <div class="controls">
       <input id="search" class="search" type="search" placeholder="Filter workspaces, tabs, or archives" aria-label="Filter organizer data">
-      <button id="reload" type="button">Reload view</button>
+      <button id="reload" type="button">Refresh snapshot</button>
     </div>
   </header>
   <main>
     <aside class="guide">
       <strong>How to use this page</strong>
-      <p>This is a safe viewer. Every action copies a command instead of changing Herdr directly. Tick tabs, choose a destination workspace, then copy the multi-tab move command. It rebuilds fresh tabs, closes the original tabs, and resumes Codex or Claude sessions only when the real CLI session is available.</p>
+      <p>This page refreshes a read-only live snapshot whenever it loads. Every workspace action still copies a command instead of changing Herdr directly. Tick tabs, choose a destination workspace, then copy the multi-tab move command. It rebuilds fresh tabs, closes the original tabs, and resumes Codex or Claude sessions only when the real CLI session is available.</p>
     </aside>
     <section class="summary" id="summary"></section>
     <section class="move-panel" id="move-panel"></section>
@@ -137,12 +141,20 @@ created: 2026-09-10
     let toastTimer;
     const showToast = message => { const toast = document.querySelector('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2600); };
     const tabStatuses = statuses => Object.entries(statuses || {}).map(([name, count]) => `<span class="status ${escapeHtml(name)}">${escapeHtml(name)} ${count}</span>`).join('');
+    const resumeStatuses = agents => (agents || []).map(agent => {
+      const resumable = agent.status === 'resumable';
+      const label = resumable ? `${agent.client} resumable` : `${agent.client} needs registration`;
+      const detail = resumable
+        ? `${agent.pane_id}: verified from ${agent.source}`
+        : `${agent.pane_id}: no verified resumable session. Archive and move will stop until it is registered.`;
+      return `<span class="status ${resumable ? 'resumable' : 'needs-registration'}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
+    }).join('');
     const tabView = (tab, total) => {
       const before = Math.max(0, Number(tab.index) - 1);
       const after = Math.min(total - 1, Number(tab.index) + 1);
       return `<article class="tab">
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</div>
-        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}</div>
+        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}${resumeStatuses(tab.agent_resume)}</div>
         <label class="tab-select"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}> Select this tab for a cross-workspace move</label>
         <div class="tab-actions">
           <button type="button" title="Copy a command that places this tab one position closer to the first tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Copy move tab left</button>
@@ -177,22 +189,25 @@ created: 2026-09-10
       if (!destinations.some(workspace => workspace.id === state.archiveDestinations[key])) state.archiveDestinations[key] = destinations[0]?.id || '';
       const destination = state.archiveDestinations[key];
       const canResume = tab.unresumable_agent_count === 0;
+      const canDelete = (archive.tabs || []).length > 1;
       const command = destination && canResume ? `herdr-organizer restore-tab --archive ${archive.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${archive.archive_id}` : '';
+      const deleteCommand = canDelete ? `herdr-organizer delete-archived-tab --archive ${archive.archive_id} --tab ${tab.id} --execute --confirm ${archive.archive_id}:${tab.id}` : '';
       return `<div class="tab" style="margin: 10px 0">
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span></div>
         <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'} · ${tab.resumable_agent_count} resumable${tab.unresumable_agent_count ? ` · ${tab.unresumable_agent_count} unavailable` : ''}</div>
         <label>Restore into<select data-archive-destination="${escapeHtml(key)}" ${destinations.length ? '' : 'disabled'}>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${canResume ? 'Copy restore tab + resume' : 'Agent session unavailable'}</button></div>
+        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${canResume ? 'Copy restore tab + resume' : 'Agent session unavailable'}</button><button class="danger" type="button" ${deleteCommand ? '' : 'disabled'} title="Permanently removes this tab from the saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(deleteCommand)}">${canDelete ? 'Copy delete archived tab' : 'Delete archive instead'}</button></div>
       </div>`;
     };
     const archiveView = archive => {
       const restore = `herdr-organizer restore --archive ${archive.archive_id}`;
       const execute = `${restore} --execute --confirm ${archive.archive_id}`;
       const resume = `${restore} --resume-agents --execute --confirm ${archive.archive_id}`;
+      const remove = `herdr-organizer delete-archive --archive ${archive.archive_id} --execute --confirm ${archive.archive_id}`;
       return `<article class="archive">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
         <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
-        <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button></div>
+        <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button><button class="danger" type="button" title="Permanently removes this saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(remove)}">Copy delete archive</button></div>
         <div class="archive-meta" style="margin-top: 12px">Restore one archived tab into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
     };
@@ -237,9 +252,27 @@ created: 2026-09-10
         document.querySelector('#updated').textContent = 'Snapshot unavailable';
       }
     };
+    const refreshSnapshot = async () => {
+      const button = document.querySelector('#reload');
+      button.disabled = true;
+      button.textContent = 'Refreshing…';
+      try {
+        const response = await fetch('/api/herdr-workspace-organizer/snapshot', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok || result.status !== 'ok') throw new Error(result.message || `HTTP ${response.status}`);
+        await load();
+        showToast('Live snapshot refreshed');
+      } catch (error) {
+        await load();
+        showToast(`Could not refresh live snapshot: ${error.message}`);
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Refresh snapshot';
+      }
+    };
     document.querySelector('#search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); render(); });
-    document.querySelector('#reload').addEventListener('click', load);
-    load();
+    document.querySelector('#reload').addEventListener('click', refreshSnapshot);
+    refreshSnapshot();
   </script>
 </body>
 </html>
