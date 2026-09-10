@@ -24,6 +24,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = ROOT / "state" / "workspace-organizer"
 ARCHIVE_DIR = STATE_DIR / "archives"
+MOVE_DIR = STATE_DIR / "moves"
 LIVE_SNAPSHOT_PATH = STATE_DIR / "live-snapshot.json"
 AGENT_MANIFEST_PATH = ROOT / "state" / "herdr-agent-sessions.json"
 MAX_LAYOUT_PANES = 24
@@ -180,9 +181,9 @@ def panes_for_tab(snapshot: dict[str, Any], tab_id: str) -> list[dict[str, Any]]
 
 
 def manifest_records() -> list[dict[str, Any]]:
-    manifest = read_json(AGENT_MANIFEST_PATH, {"sessions": []})
-    sessions = manifest.get("sessions", []) if isinstance(manifest, dict) else []
-    return [record for record in sessions if isinstance(record, dict)]
+    manifest = read_json(AGENT_MANIFEST_PATH, {"panes": []})
+    records = manifest.get("panes", manifest.get("sessions", [])) if isinstance(manifest, dict) else []
+    return [record for record in records if isinstance(record, dict)]
 
 
 def default_resume_command(client: str, session_id: str) -> str | None:
@@ -210,7 +211,7 @@ def agent_restore_records(
         if not agent and isinstance(pane.get("agent"), dict):
             agent = pane["agent"]
         registered = by_pane.get(pane_id, {})
-        client = registered.get("client") or agent.get("client")
+        client = registered.get("client") or agent.get("client") or agent.get("agent")
         agent_session_id = registered.get("session_id") or agent.get("session_id") or agent.get("value")
         command = registered.get("resume_command")
         if not command and client and agent_session_id:
@@ -390,6 +391,10 @@ def archive_id_for(label: str) -> str:
         candidate = f"{base}-{sequence}"
         sequence += 1
     return candidate
+
+
+def move_id_for(destination_workspace_id: str) -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-move-to-{destination_workspace_id}"
 
 
 def require_execute_confirmation(execute: bool, confirmation: str | None, expected: str, action: str) -> None:
@@ -577,6 +582,21 @@ def move_tabs_command(args: argparse.Namespace) -> None:
         return
 
     require_execute_confirmation(args.execute, args.confirm, args.to_workspace, "Move selected tabs")
+    operation_id = move_id_for(args.to_workspace)
+    move_path = MOVE_DIR / f"{operation_id}.json"
+    move_record = {
+        "version": 1,
+        "operation_id": operation_id,
+        "status": "prepared",
+        "created_at": now(),
+        "herdr_session": args.session,
+        "destination_workspace_id": args.to_workspace,
+        "source_tabs": captured_tabs,
+        "destination_tabs": [],
+        "pane_map": {},
+        "resume_outcomes": [],
+    }
+    write_json(move_path, move_record)
     created_tabs: list[dict[str, Any]] = []
     pane_map: dict[str, str] = {}
     try:
@@ -596,8 +616,14 @@ def move_tabs_command(args: argparse.Namespace) -> None:
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab['label']!r}.")
             pane_map.update(matching_pane_map(tab["layout"].get("root"), new_layout.get("root")))
             created_tabs.append({"source_tab_id": tab["source_tab_id"], "tab_id": new_layout.get("tab_id")})
+            move_record["destination_tabs"] = created_tabs
+            move_record["pane_map"] = pane_map
+            write_json(move_path, move_record)
     except OrganizerError as error:
         created = ", ".join(str(tab.get("tab_id")) for tab in created_tabs) or "none"
+        move_record["status"] = "layout_partial"
+        move_record["error"] = str(error)
+        write_json(move_path, move_record)
         raise OrganizerError(
             f"Move stopped before closing any source tabs. Rebuilt destination tab(s): {created}. {error}"
         ) from error
@@ -607,18 +633,66 @@ def move_tabs_command(args: argparse.Namespace) -> None:
         for tab in captured_tabs:
             run_json(["tab", "close", tab["source_tab_id"]], args.session)
             closed.append(tab["source_tab_id"])
+            move_record["closed_source_tabs"] = closed
+            write_json(move_path, move_record)
     except OrganizerError as error:
+        move_record["status"] = "close_partial"
+        move_record["error"] = str(error)
+        write_json(move_path, move_record)
         raise OrganizerError(
             f"Destination tabs were rebuilt, but only these source tabs were closed: {', '.join(closed) or 'none'}. "
             f"Do not retry blindly. {error}"
         ) from error
+    move_record["status"] = "sources_closed"
+    write_json(move_path, move_record)
     if args.resume_agents:
         outcomes = resume_captured_tabs(captured_tabs, pane_map, args.session)
+        move_record["resume_outcomes"] = outcomes
         failed = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+        move_record["status"] = "resume_partial" if failed else "completed"
+        move_record["completed_at"] = now()
+        write_json(move_path, move_record)
         if failed:
-            raise OrganizerError("Tabs moved, but one or more requested agent resume commands failed.")
+            raise OrganizerError(
+                f"Tabs moved, but one or more agent resumes failed. Review and retry with resume-move --move {operation_id}."
+            )
+    else:
+        move_record["status"] = "completed_without_resume"
+        move_record["completed_at"] = now()
+        write_json(move_path, move_record)
     print(f"Moved {len(captured_tabs)} tab(s) into workspace {args.to_workspace}.")
     print("The original tabs were closed and their processes stopped. The destination contains fresh panes.")
+    if args.resume_agents:
+        print(f"Supported agent sessions were resumed. Recovery record: {operation_id}.")
+
+
+def resume_move_command(args: argparse.Namespace) -> None:
+    move_path = MOVE_DIR / f"{args.move}.json"
+    if not move_path.exists():
+        raise OrganizerError(f"Move recovery record {args.move!r} was not found.")
+    move = read_json(move_path, {})
+    if move.get("status") not in {"sources_closed", "resume_partial", "completed", "completed_without_resume"}:
+        raise OrganizerError(f"Move {args.move!r} is in {move.get('status')!r} state and cannot resume agents yet.")
+    source_tabs = move.get("source_tabs", [])
+    resumable = sum(
+        item.get("restore_status") == "resumable"
+        for tab in source_tabs
+        for item in tab.get("agent_restores", [])
+    )
+    if not args.execute:
+        print(f"Move {args.move} has {resumable} supported agent session(s) available to resume.")
+        print(f"Preview only. Re-run with --execute --confirm {args.move!r} to send resume commands.")
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.move, "Resume moved agents")
+    outcomes = resume_captured_tabs(source_tabs, move.get("pane_map", {}), args.session)
+    move["resume_outcomes"] = outcomes
+    failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+    move["status"] = "resume_partial" if failures else "completed"
+    move["resumed_at"] = now()
+    write_json(move_path, move)
+    if failures:
+        raise OrganizerError("One or more moved-agent resume commands failed. The recovery record was retained.")
+    print(f"Resumed {sum(outcome.get('status') == 'sent' for outcome in outcomes)} moved agent session(s).")
 
 
 def restore_command(args: argparse.Namespace) -> None:
@@ -737,10 +811,21 @@ def parser() -> argparse.ArgumentParser:
     move.add_argument("--tab", action="append", required=True, help="Selected tab ID. Repeat for each tab.")
     move.add_argument("--to-workspace", required=True, help="Destination workspace ID.")
     move.add_argument("--allow-active", action="store_true", help="Allow working or blocked agent panes.")
-    move.add_argument("--resume-agents", action="store_true", help="Send supported agent resume commands after close.")
+    move.add_argument(
+        "--no-resume-agents",
+        dest="resume_agents",
+        action="store_false",
+        help="Do not resume supported agents after the source tabs are closed.",
+    )
     move.add_argument("--execute", action="store_true")
     move.add_argument("--confirm")
-    move.set_defaults(func=move_tabs_command)
+    move.set_defaults(func=move_tabs_command, resume_agents=True)
+
+    resume_move = commands.add_parser("resume-move", help="Retry supported agent resumes for a completed tab move.")
+    resume_move.add_argument("--move", required=True, help="Move recovery record ID.")
+    resume_move.add_argument("--execute", action="store_true")
+    resume_move.add_argument("--confirm")
+    resume_move.set_defaults(func=resume_move_command)
 
     reorder = commands.add_parser("reorder-tab", help="Reorder a tab within its current workspace.")
     reorder.add_argument("--tab", required=True)

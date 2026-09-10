@@ -231,9 +231,13 @@ herdr-organizer reorder-tab --tab w3:t2 --index 0 --execute
 Move selected tabs to another workspace with the organizer's multi-select UI,
 or repeat `--tab` in the terminal. This is an archive-stop style operation: it
 rebuilds layouts in the destination and only then closes the original tabs.
-It does not preserve their running processes.
+It does not preserve their running processes, but it automatically sends
+supported Codex and Claude resume commands into the replacement panes. It
+writes a recovery record before it closes any source tab, so a failed resume
+can be retried.
 
 ```sh
 herdr-organizer move-tabs --tab w3:t2 --tab w3:t4 --to-workspace w5
 herdr-organizer move-tabs --tab w3:t2 --tab w3:t4 --to-workspace w5 --execute --confirm w5
+herdr-organizer resume-move --move <move_id> --execute --confirm <move_id>
 ```

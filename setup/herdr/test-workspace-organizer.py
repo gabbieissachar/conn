@@ -4,6 +4,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("workspace-organizer.py")
@@ -74,6 +75,38 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             ],
         }
         self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
+
+    def test_native_agent_metadata_becomes_a_resumable_record(self):
+        panes = [
+            {
+                "pane_id": "w1:p1",
+                "agent_session": {"agent": "codex", "kind": "id", "value": "session-123"},
+            }
+        ]
+        restore = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual(restore[0]["restore_status"], "resumable")
+        self.assertIn("codex-r session-123", restore[0]["resume_command"])
+
+    def test_resume_captured_tabs_sends_text_then_enter(self):
+        tabs = [
+            {
+                "agent_restores": [
+                    {
+                        "source_pane_id": "old-pane",
+                        "restore_status": "resumable",
+                        "resume_command": "resume-command",
+                    }
+                ]
+            }
+        ]
+        with patch.object(ORGANIZER, "run_json") as run_json:
+            outcomes = ORGANIZER.resume_captured_tabs(tabs, {"old-pane": "new-pane"}, "test")
+        self.assertEqual(outcomes, [{"source_pane_id": "old-pane", "pane_id": "new-pane", "status": "sent"}])
+        self.assertEqual(
+            run_json.call_args_list[0].args,
+            (["pane", "send-text", "new-pane", "resume-command"], "test"),
+        )
+        self.assertEqual(run_json.call_args_list[1].args, (["pane", "send-keys", "new-pane", "Enter"], "test"))
 
 
 if __name__ == "__main__":
