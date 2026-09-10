@@ -25,6 +25,7 @@ DEFAULT_STATE_DIR = SCRIPT_DIR / "state"
 DEFAULT_MANIFEST = DEFAULT_STATE_DIR / "herdr-agent-sessions.json"
 DEFAULT_MISSING_JSON = DEFAULT_STATE_DIR / "herdr-agent-missing-sessions.json"
 DEFAULT_STATUS_LOG = DEFAULT_STATE_DIR / "herdr-agent-status-capture.jsonl"
+CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
 MANIFEST_FIELD_ORDER = (
@@ -377,7 +378,7 @@ def detect_from_native(pane: PaneInfo) -> tuple[str, str] | None:
     if not isinstance(agent_session, dict):
         return None
     source = agent_session.get("source")
-    if isinstance(source, str) and source.startswith("herdr:"):
+    if isinstance(source, str) and source.startswith("herdr:") and client != "codex":
         # Herdr assigns these IDs for display and lifecycle reporting. They
         # are not IDs accepted by the Codex or Claude resume commands.
         return None
@@ -386,6 +387,8 @@ def detect_from_native(pane: PaneInfo) -> tuple[str, str] | None:
     if reported_agent not in (None, client) or not isinstance(session_id, str):
         return None
     session_id = clean_session_id(session_id)
+    if client == "codex" and session_id and not codex_session_exists(session_id):
+        return None
     return (client, session_id) if session_id else None
 
 
@@ -416,6 +419,19 @@ def claude_session_exists(session_id: str) -> bool:
         return False
     project_root = Path.home() / ".claude" / "projects"
     return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
+
+
+def codex_session_exists(session_id: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+        return False
+    try:
+        with CODEX_SESSION_INDEX_PATH.open() as index:
+            for line in index:
+                if line.strip() and json.loads(line).get("id") == session_id:
+                    return True
+    except (OSError, json.JSONDecodeError):
+        return False
+    return False
 
 
 def clean_session_id(value: str | None) -> str | None:

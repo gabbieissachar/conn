@@ -107,6 +107,22 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(restore[0]["restore_status"], "shell_only")
         self.assertEqual(restore[0]["restore_source"], "unavailable")
 
+    def test_verified_native_codex_session_is_resumable(self):
+        panes = [
+            {
+                "pane_id": "w1:p1",
+                "agent": "codex",
+                "agent_session": {"agent": "codex", "source": "herdr:codex", "value": "session-123"},
+            }
+        ]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=None), patch.object(
+            ORGANIZER, "codex_session_exists", return_value=True
+        ):
+            restore = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual(restore[0]["restore_status"], "resumable")
+        self.assertEqual(restore[0]["restore_source"], "native_codex")
+        self.assertEqual(restore[0]["resume_command"], "codex resume session-123")
+
     def test_resume_captured_tabs_uses_atomic_pane_run(self):
         tabs = [
             {
