@@ -8,6 +8,7 @@ export PMOS_REPO="${PMOS_REPO:-$_pmos_repo}"
 _pmos_herdr_agent_root="$_pmos_repo/personal/01-System/setup/herdr"
 _pmos_herdr_agent_registry="$_pmos_herdr_agent_root/agent-session-registry.py"
 _pmos_herdr_agent_restore="$_pmos_herdr_agent_root/agent-session-restore.py"
+_pmos_herdr_workspace_organizer="$_pmos_herdr_agent_root/workspace-organizer.py"
 _pmos_claude_real_bin="${PMOS_CLAUDE_REAL_BIN:-$(whence -p claude 2>/dev/null)}"
 
 herdr-agent-register() {
@@ -66,6 +67,14 @@ herdr-agent-recover() {
   herdr-agent-capture-history --execute
   herdr-agent-capture-status --execute
   herdr-agent-restore --execute --all
+}
+
+herdr-organizer() {
+  python3 "$_pmos_herdr_workspace_organizer" "$@"
+}
+
+herdr-organizer-ui() {
+  herdr-organizer snapshot "$@" && open "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
 }
 
 claude-real-bin() {

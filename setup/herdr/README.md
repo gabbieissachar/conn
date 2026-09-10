@@ -112,8 +112,10 @@ herdr integration status
 
 Herdr's native integrations report the agent session references and let Herdr
 restore them with the layout. Keep native agent restore enabled in Herdr
-configuration. This is the preferred path, but it is not yet enabled or
-verified in this environment.
+configuration. As verified on 2026-09-06, the local Claude v7, Codex v7, and
+Copilot v2 integrations are installed and current, and live Herdr panes expose
+native agent-session metadata. Keep this sidecar as a fallback for panes that
+lack native metadata.
 
 Current sidecar fallback after Herdr is running again. Attach each selected
 non-default named session in its own terminal, because each attach exposes a
@@ -170,6 +172,51 @@ herdr-agent-apply-missing
 ## Current Scope
 
 This v1 intentionally does not port tmux layout restore, tmux snapshot listing,
-or tmux pane scanning. Herdr already owns layout persistence, and integration or
-runtime-based auto-detection should only be added after explicit replay has been
-proven on the live runtime.
+or tmux pane scanning. Herdr already owns layout persistence and native agent
+resume. It can move individual panes between workspaces, but it cannot move a
+complete tab atomically or archive a workspace non-destructively. Those gaps
+belong in Herdr rather than this sidecar.
+
+## Workspace Organizer MVP
+
+`herdr-organizer` is a local bridge for the immediate workflow. It reorders
+tabs within their current workspace without disrupting processes. It can also
+archive a whole workspace by saving its tab layouts and supported agent resume
+references, then closing the workspace. Restore creates a new workspace and
+fresh shells from that archive.
+
+It does not preserve running processes, terminal scrollback, or an atomic
+cross-workspace tab move. An archive with working or blocked agents is refused
+unless you explicitly acknowledge that those processes will stop.
+
+Write the snapshot consumed by the local viewer:
+
+```sh
+herdr-organizer snapshot
+herdr-organizer-ui
+```
+
+Preview an archive, then execute it with the exact workspace ID:
+
+```sh
+herdr-organizer archive --workspace w3
+herdr-organizer archive --workspace w3 --execute --confirm w3
+```
+
+Restore an archive as fresh shells. Add `--resume-agents` only when you want
+the organizer to send supported Codex or Claude resume commands into those
+new panes:
+
+```sh
+herdr-organizer list-archives
+herdr-organizer restore --archive <archive_id>
+herdr-organizer restore --archive <archive_id> --execute --confirm <archive_id>
+herdr-organizer restore --archive <archive_id> --resume-agents --execute --confirm <archive_id>
+```
+
+Reorder a tab with a zero-based destination index:
+
+```sh
+herdr-organizer reorder-tab --tab w3:t2 --index 0
+herdr-organizer reorder-tab --tab w3:t2 --index 0 --execute
+```
