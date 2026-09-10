@@ -65,6 +65,16 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(summary["resumable_pane_count"], 1)
         self.assertEqual(summary["shell_only_pane_count"], 1)
 
+    def test_active_agents_uses_herdr_tab_id_field(self):
+        snapshot = {
+            "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}],
+            "panes": [
+                {"tab_id": "w1:t1", "agent_status": "working"},
+                {"tab_id": "w1:t2", "agent_status": "working"},
+            ],
+        }
+        self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -227,3 +227,13 @@ Reorder a tab with a zero-based destination index:
 herdr-organizer reorder-tab --tab w3:t2 --index 0
 herdr-organizer reorder-tab --tab w3:t2 --index 0 --execute
 ```
+
+Move selected tabs to another workspace with the organizer's multi-select UI,
+or repeat `--tab` in the terminal. This is an archive-stop style operation: it
+rebuilds layouts in the destination and only then closes the original tabs.
+It does not preserve their running processes.
+
+```sh
+herdr-organizer move-tabs --tab w3:t2 --tab w3:t4 --to-workspace w5
+herdr-organizer move-tabs --tab w3:t2 --tab w3:t4 --to-workspace w5 --execute --confirm w5
+```

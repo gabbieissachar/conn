@@ -265,8 +265,45 @@ def capture_workspace(snapshot: dict[str, Any], workspace_id: str, session: str 
     }
 
 
+def capture_selected_tabs(snapshot: dict[str, Any], tab_ids: list[str], session: str | None) -> list[dict[str, Any]]:
+    selected_ids = set(tab_ids)
+    if len(selected_ids) != len(tab_ids):
+        raise OrganizerError("Each --tab value must be unique.")
+    known_tabs = {str(tab.get("tab_id")): tab for tab in snapshot.get("tabs", [])}
+    missing = [tab_id for tab_id in tab_ids if tab_id not in known_tabs]
+    if missing:
+        raise OrganizerError(f"Selected tab(s) do not exist: {', '.join(missing)}.")
+    records = manifest_records()
+    captured: list[dict[str, Any]] = []
+    # Preserve display order within each source workspace rather than click order.
+    for position, tab in enumerate(snapshot.get("tabs", [])):
+        tab_id = str(tab.get("tab_id"))
+        if tab_id not in selected_ids:
+            continue
+        layout_result = socket_call(session, "layout.export", {"tab_id": tab_id})
+        layout = layout_result.get("layout")
+        if not isinstance(layout, dict):
+            raise OrganizerError(f"Herdr did not return a layout for tab {tab_id}.")
+        leaves = leaf_panes(layout.get("root"))
+        if len(leaves) > MAX_LAYOUT_PANES:
+            raise OrganizerError(
+                f"Tab {tab_id} has {len(leaves)} panes. Herdr restore accepts at most {MAX_LAYOUT_PANES}."
+            )
+        captured.append(
+            {
+                "source_tab_id": tab_id,
+                "source_workspace_id": tab.get("workspace_id"),
+                "label": tab.get("label") or tab_id,
+                "index": position,
+                "layout": layout,
+                "agent_restores": agent_restore_records(panes_for_tab(snapshot, tab_id), session, records),
+            }
+        )
+    return captured
+
+
 def active_agents(snapshot: dict[str, Any], workspace_id: str) -> list[dict[str, Any]]:
-    tab_ids = {tab.get("id") for tab in tabs_for_workspace(snapshot, workspace_id)}
+    tab_ids = {tab.get("tab_id") for tab in tabs_for_workspace(snapshot, workspace_id)}
     return [
         pane
         for pane in snapshot.get("panes", [])
@@ -469,8 +506,14 @@ def first_cwd(capture: dict[str, Any]) -> str | None:
 def resume_agents(
     archive: dict[str, Any], pane_map: dict[str, str], session: str | None
 ) -> list[dict[str, Any]]:
+    return resume_captured_tabs(archive.get("capture", {}).get("tabs", []), pane_map, session)
+
+
+def resume_captured_tabs(
+    captured_tabs: list[dict[str, Any]], pane_map: dict[str, str], session: str | None
+) -> list[dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
-    for tab in archive.get("capture", {}).get("tabs", []):
+    for tab in captured_tabs:
         for restore in tab.get("agent_restores", []):
             old_pane_id = restore.get("source_pane_id")
             new_pane_id = pane_map.get(str(old_pane_id))
@@ -487,6 +530,95 @@ def resume_agents(
                     {"source_pane_id": old_pane_id, "pane_id": new_pane_id, "status": "failed", "error": str(error)}
                 )
     return outcomes
+
+
+def move_tabs_command(args: argparse.Namespace) -> None:
+    snapshot = session_snapshot(args.session)
+    destination = workspace_by_id(snapshot, args.to_workspace)
+    captured_tabs = capture_selected_tabs(snapshot, args.tab, args.session)
+    same_workspace = [tab["source_tab_id"] for tab in captured_tabs if tab["source_workspace_id"] == args.to_workspace]
+    if same_workspace:
+        raise OrganizerError(
+            f"The destination {args.to_workspace} already contains selected tab(s): {', '.join(same_workspace)}. "
+            "Use reorder-tab for tabs that stay in the same workspace."
+        )
+    selected_ids = {tab["source_tab_id"] for tab in captured_tabs}
+    active = [
+        pane
+        for pane in snapshot.get("panes", [])
+        if pane.get("tab_id") in selected_ids and pane.get("agent_status") in ACTIVE_AGENT_STATUSES
+    ]
+    if active and not args.allow_active:
+        raise OrganizerError(
+            f"The selected tabs contain {len(active)} working or blocked agent pane(s). "
+            "Resolve them first, or explicitly use --allow-active."
+        )
+    preview = {
+        "destination_workspace_id": args.to_workspace,
+        "destination_label": destination.get("label") or args.to_workspace,
+        "tabs": [
+            {
+                "tab_id": tab["source_tab_id"],
+                "label": tab["label"],
+                "source_workspace_id": tab["source_workspace_id"],
+                "pane_count": len(leaf_panes(tab["layout"].get("root"))),
+            }
+            for tab in captured_tabs
+        ],
+        "active_agent_panes": len(active),
+        "processes_preserved": False,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            "Preview only. Execution rebuilds the selected tabs in the destination, then closes the originals. "
+            f"Re-run with --execute --confirm {args.to_workspace!r}."
+        )
+        return
+
+    require_execute_confirmation(args.execute, args.confirm, args.to_workspace, "Move selected tabs")
+    created_tabs: list[dict[str, Any]] = []
+    pane_map: dict[str, str] = {}
+    try:
+        for tab in captured_tabs:
+            applied = socket_call(
+                args.session,
+                "layout.apply",
+                {
+                    "workspace_id": args.to_workspace,
+                    "tab_label": tab["label"],
+                    "focus": False,
+                    "root": tab["layout"].get("root"),
+                },
+            )
+            new_layout = applied.get("layout")
+            if not isinstance(new_layout, dict):
+                raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab['label']!r}.")
+            pane_map.update(matching_pane_map(tab["layout"].get("root"), new_layout.get("root")))
+            created_tabs.append({"source_tab_id": tab["source_tab_id"], "tab_id": new_layout.get("tab_id")})
+    except OrganizerError as error:
+        created = ", ".join(str(tab.get("tab_id")) for tab in created_tabs) or "none"
+        raise OrganizerError(
+            f"Move stopped before closing any source tabs. Rebuilt destination tab(s): {created}. {error}"
+        ) from error
+
+    closed: list[str] = []
+    try:
+        for tab in captured_tabs:
+            run_json(["tab", "close", tab["source_tab_id"]], args.session)
+            closed.append(tab["source_tab_id"])
+    except OrganizerError as error:
+        raise OrganizerError(
+            f"Destination tabs were rebuilt, but only these source tabs were closed: {', '.join(closed) or 'none'}. "
+            f"Do not retry blindly. {error}"
+        ) from error
+    if args.resume_agents:
+        outcomes = resume_captured_tabs(captured_tabs, pane_map, args.session)
+        failed = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+        if failed:
+            raise OrganizerError("Tabs moved, but one or more requested agent resume commands failed.")
+    print(f"Moved {len(captured_tabs)} tab(s) into workspace {args.to_workspace}.")
+    print("The original tabs were closed and their processes stopped. The destination contains fresh panes.")
 
 
 def restore_command(args: argparse.Namespace) -> None:
@@ -600,6 +732,15 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("--execute", action="store_true")
     restore.add_argument("--confirm")
     restore.set_defaults(func=restore_command)
+
+    move = commands.add_parser("move-tabs", help="Recreate selected tabs in another workspace, then close originals.")
+    move.add_argument("--tab", action="append", required=True, help="Selected tab ID. Repeat for each tab.")
+    move.add_argument("--to-workspace", required=True, help="Destination workspace ID.")
+    move.add_argument("--allow-active", action="store_true", help="Allow working or blocked agent panes.")
+    move.add_argument("--resume-agents", action="store_true", help="Send supported agent resume commands after close.")
+    move.add_argument("--execute", action="store_true")
+    move.add_argument("--confirm")
+    move.set_defaults(func=move_tabs_command)
 
     reorder = commands.add_parser("reorder-tab", help="Reorder a tab within its current workspace.")
     reorder.add_argument("--tab", required=True)
