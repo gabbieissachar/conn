@@ -1,0 +1,180 @@
+<!--
+name: herdr-workspace-organizer
+description: Local live viewer for Herdr workspace organization and archive restore commands
+source: personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json
+loading: live
+created: 2026-09-10
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herdr Workspace Organizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #1b2234;
+      --muted: #69758a;
+      --line: #dce2ec;
+      --wash: #f4f6fb;
+      --paper: #ffffff;
+      --navy: #202f54;
+      --purple: #6f55d9;
+      --mint: #35b99a;
+      --amber: #e99b2e;
+      --red: #cd5164;
+      --shadow: 0 10px 28px rgba(33, 47, 83, .08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--wash); font-family: "DM Sans", system-ui, sans-serif; }
+    button, input { font: inherit; }
+    .topbar { position: sticky; top: 0; z-index: 3; padding: 18px max(24px, calc((100vw - 1240px) / 2)); background: rgba(244,246,251,.92); backdrop-filter: blur(15px); border-bottom: 1px solid rgba(220,226,236,.8); }
+    .topline, .controls, .section-heading, .workspace-head, .tab-line, .archive-line, .empty { display: flex; align-items: center; }
+    .topline { justify-content: space-between; gap: 20px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 22px; letter-spacing: -.04em; color: var(--navy); }
+    .subtitle { margin-top: 3px; color: var(--muted); font-size: 13px; }
+    .badge { padding: 5px 9px; border-radius: 999px; background: #e7e2fb; color: #514194; font: 500 11px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
+    .controls { margin-top: 16px; gap: 10px; }
+    .search { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--paper); outline-color: var(--purple); }
+    button { cursor: pointer; border: 0; border-radius: 7px; padding: 10px 12px; color: var(--navy); background: #e7ebf4; font-weight: 600; font-size: 12px; }
+    button:hover { background: #dce2ed; }
+    button:focus-visible, input:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 2px; }
+    main { max-width: 1240px; margin: 0 auto; padding: 26px 24px 60px; }
+    .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
+    .metric { min-height: 100px; padding: 17px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+    .metric span { color: var(--muted); font-size: 12px; }
+    .metric strong { display: block; margin-top: 10px; color: var(--navy); font-size: 29px; letter-spacing: -.05em; }
+    .section-heading { justify-content: space-between; margin: 28px 0 12px; }
+    h2 { font-size: 15px; letter-spacing: -.01em; }
+    .updated { color: var(--muted); font: 11px "DM Mono", monospace; }
+    .workspaces { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; }
+    .workspace, .archive { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+    .workspace-head { justify-content: space-between; padding: 15px 16px; background: linear-gradient(110deg, #fbfcff, #f1effc); border-bottom: 1px solid var(--line); }
+    .workspace-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .workspace-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+    .id { color: var(--muted); font: 11px "DM Mono", monospace; }
+    .counts { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .tabs { padding: 8px; }
+    .tab { padding: 10px 8px; border-bottom: 1px solid #eef1f6; }
+    .tab:last-child { border-bottom: 0; }
+    .tab-line { justify-content: space-between; gap: 8px; }
+    .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; }
+    .tab-meta, .archive-meta { margin-top: 4px; color: var(--muted); font: 11px "DM Mono", monospace; }
+    .tab-actions { display: flex; gap: 5px; margin-top: 8px; }
+    .tab-actions button, .archive button { padding: 6px 8px; font-size: 11px; }
+    .status { display: inline-block; padding: 2px 5px; margin-left: 4px; border-radius: 4px; color: #506079; background: #edf0f5; font: 10px "DM Mono", monospace; }
+    .status.working, .status.blocked { color: #925a08; background: #fff0d9; }
+    .status.idle { color: #27806b; background: #dcf5ee; }
+    .focused { color: var(--purple); font: 10px "DM Mono", monospace; text-transform: uppercase; }
+    .archives { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+    .archive { padding: 14px 15px; }
+    .archive-line { justify-content: space-between; gap: 10px; }
+    .archive-name { font-weight: 700; font-size: 13px; }
+    .archive-state { color: #514194; background: #e9e5fc; border-radius: 999px; padding: 4px 7px; font: 10px "DM Mono", monospace; white-space: nowrap; }
+    .archive-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+    .archive-actions button.primary { color: white; background: var(--purple); }
+    .archive-actions button.primary:hover { background: #5a43ba; }
+    .empty { min-height: 140px; justify-content: center; padding: 20px; color: var(--muted); text-align: center; background: var(--paper); border: 1px dashed #cbd3e0; border-radius: 10px; }
+    .toast { position: fixed; right: 24px; bottom: 22px; z-index: 5; padding: 10px 13px; color: white; background: var(--navy); border-radius: 7px; box-shadow: var(--shadow); font-size: 12px; transform: translateY(80px); opacity: 0; transition: .2s ease; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    @media (max-width: 640px) { .summary { grid-template-columns: 1fr; } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topline">
+      <div><h1>Workspace organizer</h1><p class="subtitle">Herdr layouts, tab order, and archive restore plans</p></div>
+      <span class="badge">live snapshot</span>
+    </div>
+    <div class="controls">
+      <input id="search" class="search" type="search" placeholder="Filter workspaces, tabs, or archives" aria-label="Filter organizer data">
+      <button id="reload" type="button">Reload view</button>
+    </div>
+  </header>
+  <main>
+    <section class="summary" id="summary"></section>
+    <section>
+      <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
+      <div class="workspaces" id="workspaces"></div>
+    </section>
+    <section>
+      <div class="section-heading"><h2>Archives</h2><span class="updated">Layouts and resumable identities only</span></div>
+      <div class="archives" id="archives"></div>
+    </section>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
+  <script>
+    const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
+    const state = { data: null, query: '' };
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
+    const searchText = value => String(value ?? '').toLowerCase();
+    const matches = value => !state.query || searchText(value).includes(state.query);
+    const copy = async text => {
+      try { await navigator.clipboard.writeText(text); showToast('Command copied'); }
+      catch { showToast(`Copy this command: ${text}`); }
+    };
+    let toastTimer;
+    const showToast = message => { const toast = document.querySelector('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2600); };
+    const tabStatuses = statuses => Object.entries(statuses || {}).map(([name, count]) => `<span class="status ${escapeHtml(name)}">${escapeHtml(name)} ${count}</span>`).join('');
+    const tabView = (tab, total) => {
+      const before = Math.max(0, Number(tab.index) - 1);
+      const after = Math.min(total - 1, Number(tab.index) + 1);
+      return `<article class="tab">
+        <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</div>
+        <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}</div>
+        <div class="tab-actions">
+          <button type="button" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Move earlier</button>
+          <button type="button" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${after} --execute">Move later</button>
+        </div>
+      </article>`;
+    };
+    const workspaceView = workspace => `<article class="workspace">
+      <div class="workspace-head"><div class="workspace-title"><strong>${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${workspace.tab_count} tabs · ${workspace.pane_count} panes</span></div>
+      <div class="tabs">${workspace.tabs.map(tab => tabView(tab, workspace.tab_count)).join('') || '<div class="tab-meta">No tabs</div>'}</div>
+      <div class="tab-actions" style="padding: 0 16px 14px"><button type="button" data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)}">Preview archive</button></div>
+    </article>`;
+    const archiveView = archive => {
+      const restore = `herdr-organizer restore --archive ${archive.archive_id}`;
+      const execute = `${restore} --execute --confirm ${archive.archive_id}`;
+      const resume = `${restore} --resume-agents --execute --confirm ${archive.archive_id}`;
+      return `<article class="archive">
+        <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
+        <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} shell-only</div>
+        <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Preview restore</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume</button></div>
+      </article>`;
+    };
+    const render = () => {
+      const data = state.data;
+      if (!data) return;
+      const workspaces = (data.workspaces || []).filter(workspace => matches(`${workspace.label} ${workspace.id} ${workspace.tabs.map(tab => `${tab.label} ${tab.id}`).join(' ')}`));
+      const archives = (data.archives || []).filter(archive => matches(`${archive.workspace_label} ${archive.archive_id} ${archive.status}`));
+      const paneCount = workspaces.reduce((total, workspace) => total + workspace.pane_count, 0);
+      document.querySelector('#summary').innerHTML = [
+        ['Visible workspaces', workspaces.length], ['Visible tabs', workspaces.reduce((total, workspace) => total + workspace.tab_count, 0)], ['Visible panes', paneCount]
+      ].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`).join('');
+      document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
+      document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
+      document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command)));
+      document.querySelector('#updated').textContent = data.generated_at ? `Snapshot ${new Date(data.generated_at).toLocaleString()}${data.herdr_session ? ` · ${data.herdr_session}` : ''}` : 'No timestamp';
+    };
+    const load = async () => {
+      try {
+        const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        state.data = await response.json(); render();
+      } catch (error) {
+        state.data = { workspaces: [], archives: [] }; render();
+        document.querySelector('#workspaces').innerHTML = '<div class="empty">Run <code>herdr-organizer snapshot</code>, then reload this page. The viewer never changes Herdr itself.</div>';
+        document.querySelector('#updated').textContent = 'Snapshot unavailable';
+      }
+    };
+    document.querySelector('#search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); render(); });
+    document.querySelector('#reload').addEventListener('click', load);
+    load();
+  </script>
+</body>
+</html>
