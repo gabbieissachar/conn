@@ -110,7 +110,7 @@ created: 2026-09-10
   <main>
     <aside class="guide">
       <strong>How to use this page</strong>
-      <p>This is a safe viewer. Every action copies a command instead of changing Herdr directly. Tick tabs, choose a destination workspace, then copy the multi-tab move command. It rebuilds fresh tabs in that workspace and closes the original tabs, so their running processes stop.</p>
+      <p>This is a safe viewer. Every action copies a command instead of changing Herdr directly. Tick tabs, choose a destination workspace, then copy the multi-tab move command. It rebuilds fresh tabs, closes the original tabs, and resumes supported Codex and Claude sessions in the replacement panes.</p>
     </aside>
     <section class="summary" id="summary"></section>
     <section class="move-panel" id="move-panel"></section>
@@ -165,11 +165,11 @@ created: 2026-09-10
         ? `herdr-organizer move-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --to-workspace ${state.destinationWorkspace} --execute --confirm ${state.destinationWorkspace}`
         : '';
       const detail = selected.length
-        ? `${selected.length} selected. The command rebuilds their layouts in the destination, then closes the originals. Running processes stop.`
+        ? `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes supported Codex and Claude sessions in the replacement panes.`
         : 'Select one or more tabs below. This is for moving tabs between workspaces, not changing their order.';
       return `<div><strong>Move selected tabs to another workspace</strong><p>${escapeHtml(detail)}</p></div>
         <label>Destination workspace<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === state.destinationWorkspace ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy move command</button>`;
+        <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy move + resume</button>`;
     };
     const archiveView = archive => {
       const restore = `herdr-organizer restore --archive ${archive.archive_id}`;
