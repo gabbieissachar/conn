@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ DEFAULT_MANIFEST = DEFAULT_STATE_DIR / "herdr-agent-sessions.json"
 DEFAULT_MISSING_JSON = DEFAULT_STATE_DIR / "herdr-agent-missing-sessions.json"
 DEFAULT_STATUS_LOG = DEFAULT_STATE_DIR / "herdr-agent-status-capture.jsonl"
 CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
 MANIFEST_FIELD_ORDER = (
@@ -421,6 +423,7 @@ def claude_session_exists(session_id: str) -> bool:
     return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
 
 
+@lru_cache(maxsize=2048)
 def codex_session_exists(session_id: str) -> bool:
     if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
         return False
@@ -430,7 +433,17 @@ def codex_session_exists(session_id: str) -> bool:
                 if line.strip() and json.loads(line).get("id") == session_id:
                     return True
     except (OSError, json.JSONDecodeError):
+        pass
+    if not CODEX_SESSIONS_DIR.exists():
         return False
+    for rollout in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
+        try:
+            with rollout.open() as handle:
+                metadata = json.loads(handle.readline()).get("payload", {})
+        except (OSError, json.JSONDecodeError):
+            continue
+        if metadata.get("session_id") == session_id or metadata.get("id") == session_id:
+            return True
     return False
 
 

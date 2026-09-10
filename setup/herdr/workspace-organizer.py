@@ -18,6 +18,7 @@ import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +30,7 @@ MOVE_DIR = STATE_DIR / "moves"
 LIVE_SNAPSHOT_PATH = STATE_DIR / "live-snapshot.json"
 AGENT_MANIFEST_PATH = ROOT / "state" / "herdr-agent-sessions.json"
 CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 
@@ -213,13 +215,28 @@ def claude_session_exists(session_id: object) -> bool:
 def codex_session_exists(session_id: object) -> bool:
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", session_id):
         return False
+    return cached_codex_session_exists(session_id)
+
+
+@lru_cache(maxsize=2048)
+def cached_codex_session_exists(session_id: str) -> bool:
     try:
         with CODEX_SESSION_INDEX_PATH.open() as index:
             for line in index:
                 if line.strip() and json.loads(line).get("id") == session_id:
                     return True
     except (OSError, json.JSONDecodeError):
+        pass
+    if not CODEX_SESSIONS_DIR.exists():
         return False
+    for rollout in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
+        try:
+            with rollout.open() as handle:
+                metadata = json.loads(handle.readline()).get("payload", {})
+        except (OSError, json.JSONDecodeError):
+            continue
+        if metadata.get("session_id") == session_id or metadata.get("id") == session_id:
+            return True
     return False
 
 

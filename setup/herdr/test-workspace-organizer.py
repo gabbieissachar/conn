@@ -2,6 +2,8 @@
 """Unit tests for workspace-organizer.py that do not require a Herdr server."""
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -143,6 +145,21 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(restore[0]["restore_status"], "shell_only")
         self.assertEqual(restore[0]["restore_source"], "unavailable")
         self.assertIsNone(restore[0]["resume_command"])
+
+    def test_codex_rollout_file_verifies_a_native_session(self):
+        session_id = "01a013cd-9bc3-74a3-bb56-a0b806e74f9c"
+        with tempfile.TemporaryDirectory() as temporary:
+            sessions = Path(temporary) / "sessions" / "2026" / "09" / "10"
+            sessions.mkdir(parents=True)
+            (sessions / f"rollout-{session_id}.jsonl").write_text(
+                json.dumps({"type": "session_meta", "payload": {"session_id": session_id}}) + "\n"
+            )
+            ORGANIZER.cached_codex_session_exists.cache_clear()
+            with patch.object(ORGANIZER, "CODEX_SESSION_INDEX_PATH", Path(temporary) / "missing.jsonl"), patch.object(
+                ORGANIZER, "CODEX_SESSIONS_DIR", Path(temporary) / "sessions"
+            ):
+                self.assertTrue(ORGANIZER.codex_session_exists(session_id))
+            ORGANIZER.cached_codex_session_exists.cache_clear()
 
     def test_process_session_becomes_a_resumable_record(self):
         panes = [{"pane_id": "w1:p1", "agent": "claude"}]
