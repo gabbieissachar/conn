@@ -156,6 +156,79 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in saved["tab_restores"]], ["completed", "completed"])
         self.assertEqual([item["destination_tab_id"] for item in saved["tab_restores"]], ["w9:t1", "w9:t2"])
 
+    def test_archive_tabs_appends_to_existing_archive_and_closes_only_selected_tabs(self):
+        archive = {
+            "archive_id": "example",
+            "status": "archived",
+            "capture": {
+                "tabs": [{"source_tab_id": "old:t1", "layout": {"root": {"type": "pane", "pane_id": "old:p1"}}}]
+            },
+        }
+        snapshot = {
+            "tabs": [
+                {"workspace_id": "w1", "tab_id": "w1:t1"},
+                {"workspace_id": "w1", "tab_id": "w1:t2"},
+            ],
+            "panes": [],
+        }
+        captured = [
+            {
+                "source_tab_id": "w1:t1",
+                "source_workspace_id": "w1",
+                "label": "First",
+                "layout": {"root": {"type": "pane", "pane_id": "w1:p1"}},
+                "agent_restores": [],
+            }
+        ]
+        args = argparse.Namespace(
+            into_archive="example",
+            tab=["w1:t1"],
+            session="esim",
+            execute=True,
+            confirm="example",
+            allow_active=False,
+            allow_unresumable_agents=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "example.json"
+            with patch.object(ORGANIZER, "archive_by_id", return_value=(archive_path, archive)), patch.object(
+                ORGANIZER, "session_snapshot", return_value=snapshot
+            ), patch.object(ORGANIZER, "capture_selected_tabs", return_value=captured), patch.object(
+                ORGANIZER, "run_json", return_value={}
+            ) as run_json:
+                ORGANIZER.archive_tabs_command(args)
+            saved = json.loads(archive_path.read_text())
+        self.assertEqual(run_json.call_args_list[0].args, (["tab", "close", "w1:t1"], "esim"))
+        self.assertEqual([tab["source_tab_id"] for tab in saved["capture"]["tabs"]], ["old:t1", "w1:t1"])
+        self.assertEqual(saved["tab_archives"][0]["status"], "completed")
+
+    def test_archive_tabs_keeps_one_live_tab_in_each_workspace(self):
+        archive = {"archive_id": "example", "status": "archived", "capture": {"tabs": []}}
+        snapshot = {"tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}], "panes": []}
+        captured = [
+            {
+                "source_tab_id": "w1:t1",
+                "source_workspace_id": "w1",
+                "label": "Only tab",
+                "layout": {"root": {"type": "pane", "pane_id": "w1:p1"}},
+                "agent_restores": [],
+            }
+        ]
+        args = argparse.Namespace(
+            into_archive="example",
+            tab=["w1:t1"],
+            session="esim",
+            execute=False,
+            confirm=None,
+            allow_active=False,
+            allow_unresumable_agents=False,
+        )
+        with patch.object(ORGANIZER, "archive_by_id", return_value=(Path("/tmp/example.json"), archive)), patch.object(
+            ORGANIZER, "session_snapshot", return_value=snapshot
+        ), patch.object(ORGANIZER, "capture_selected_tabs", return_value=captured):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Keep at least one tab"):
+                ORGANIZER.archive_tabs_command(args)
+
     def test_active_agents_uses_herdr_tab_id_field(self):
         snapshot = {
             "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}],

@@ -872,6 +872,111 @@ def archive_command(args: argparse.Namespace) -> None:
     print("The original processes were stopped. Restore will create fresh shells and can resume supported agents.")
 
 
+def archive_tabs_command(args: argparse.Namespace) -> None:
+    """Append selected live tabs to an existing archive, then close those tabs."""
+    archive_path, archive = archive_by_id(args.into_archive)
+    if archive.get("status") not in {"archived", "restored", "resumed", "restore_partial"}:
+        raise OrganizerError(
+            f"Archive {args.into_archive!r} is in {archive.get('status')!r} state and cannot accept tabs."
+        )
+    snapshot = session_snapshot(args.session)
+    captured_tabs = capture_selected_tabs(snapshot, args.tab, args.session)
+    selected_by_workspace: dict[str, int] = {}
+    for tab in captured_tabs:
+        workspace_id = str(tab.get("source_workspace_id"))
+        selected_by_workspace[workspace_id] = selected_by_workspace.get(workspace_id, 0) + 1
+    emptied_workspaces = [
+        workspace_id
+        for workspace_id, selected_count in selected_by_workspace.items()
+        if selected_count >= len(tabs_for_workspace(snapshot, workspace_id))
+    ]
+    if emptied_workspaces:
+        raise OrganizerError(
+            "Archiving these tabs would leave workspace(s) with no tabs: "
+            f"{', '.join(emptied_workspaces)}. Keep at least one tab in each live workspace."
+        )
+    selected_ids = {str(tab["source_tab_id"]) for tab in captured_tabs}
+    active = [
+        pane
+        for pane in snapshot.get("panes", [])
+        if pane.get("tab_id") in selected_ids and pane.get("agent_status") in ACTIVE_AGENT_STATUSES
+    ]
+    if active and not args.allow_active:
+        raise OrganizerError(
+            f"The selected tabs contain {len(active)} working or blocked agent pane(s). "
+            "Resolve them first, or explicitly use --allow-active."
+        )
+    unavailable = unavailable_agent_restores(captured_tabs)
+    if unavailable and not args.allow_unresumable_agents:
+        pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
+        raise OrganizerError(
+            f"The selected tabs have {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
+            "Do not archive them. Resume or register the sessions first, or explicitly use --allow-unresumable-agents."
+        )
+    archived_ids = {
+        str(tab.get("source_tab_id")) for tab in archive.get("capture", {}).get("tabs", []) if isinstance(tab, dict)
+    }
+    duplicates = sorted(selected_ids & archived_ids)
+    if duplicates:
+        raise OrganizerError(
+            f"Archive {args.into_archive!r} already contains tab(s): {', '.join(duplicates)}."
+        )
+    preview = {
+        "archive_id": args.into_archive,
+        "tabs": [
+            {
+                "tab_id": tab["source_tab_id"],
+                "label": tab["label"],
+                "source_workspace_id": tab["source_workspace_id"],
+                "pane_count": len(leaf_panes(tab["layout"].get("root"))),
+            }
+            for tab in captured_tabs
+        ],
+        "active_agent_panes": len(active),
+        "unresumable_agent_panes": len(unavailable),
+        "processes_preserved": False,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            "Preview only. Execution appends the selected tabs to the archive, then closes their live tabs. "
+            f"Re-run with --execute --confirm {args.into_archive!r}."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.into_archive, "Archive selected tabs")
+    operation = {
+        "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-archive-tabs-into-{args.into_archive}",
+        "source_tabs": [tab["source_tab_id"] for tab in captured_tabs],
+        "started_at": now(),
+        "status": "prepared",
+        "close_outcomes": [],
+    }
+    archive.setdefault("capture", {}).setdefault("tabs", []).extend(captured_tabs)
+    archive.setdefault("tab_archives", []).append(operation)
+    archive["updated_at"] = now()
+    write_json(archive_path, archive)
+    try:
+        for tab in captured_tabs:
+            tab_id = str(tab["source_tab_id"])
+            run_json(["tab", "close", tab_id], args.session)
+            operation["close_outcomes"].append({"source_tab_id": tab_id, "status": "closed"})
+            write_json(archive_path, archive)
+    except OrganizerError as error:
+        operation["status"] = "close_partial"
+        operation["error"] = str(error)
+        operation["failed_at"] = now()
+        write_json(archive_path, archive)
+        raise OrganizerError(
+            "The archive capture was retained, but one or more source tabs could not be closed. "
+            "Review the operation record before retrying."
+        ) from error
+    operation["status"] = "completed"
+    operation["completed_at"] = now()
+    write_json(archive_path, archive)
+    print(f"Archived {len(captured_tabs)} tab(s) into {args.into_archive}.")
+    print("The source tabs were closed and their processes stopped.")
+
+
 def archive_by_id(archive_id: str) -> tuple[Path, dict[str, Any]]:
     if not archive_id or Path(archive_id).name != archive_id:
         raise OrganizerError("Archive ID must be a single archive name, not a path.")
@@ -1434,6 +1539,21 @@ def parser() -> argparse.ArgumentParser:
     archive.add_argument("--execute", action="store_true")
     archive.add_argument("--confirm")
     archive.set_defaults(func=archive_command)
+
+    archive_tabs = commands.add_parser(
+        "archive-tabs", help="Append selected live tabs to an existing archive, then close their source tabs."
+    )
+    archive_tabs.add_argument("--tab", action="append", required=True, help="Selected live tab ID. Repeat for each tab.")
+    archive_tabs.add_argument("--into-archive", required=True)
+    archive_tabs.add_argument("--allow-active", action="store_true", help="Allow working or blocked agent panes.")
+    archive_tabs.add_argument(
+        "--allow-unresumable-agents",
+        action="store_true",
+        help="Archive agent panes without verified resumable sessions.",
+    )
+    archive_tabs.add_argument("--execute", action="store_true")
+    archive_tabs.add_argument("--confirm")
+    archive_tabs.set_defaults(func=archive_tabs_command)
 
     cleanup_empty = commands.add_parser(
         "cleanup-empty-tabs", help="Close shell-only tabs without agents or preserved sessions."
