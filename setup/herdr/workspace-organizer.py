@@ -58,6 +58,31 @@ def herdr_prefix(session: str | None) -> list[str]:
     return ["herdr", "--session", session] if session else ["herdr"]
 
 
+def resolve_session(requested_session: str | None) -> str | None:
+    """Use the shell's session, an explicit session, or one unambiguous server."""
+    if requested_session or os.environ.get("HERDR_SESSION"):
+        return requested_session
+    try:
+        completed = subprocess.run(
+            ["herdr", "session", "list", "--json"], check=False, text=True, capture_output=True
+        )
+    except FileNotFoundError as error:
+        raise OrganizerError("Herdr is not installed or is not on PATH.") from error
+    if completed.returncode != 0:
+        raise OrganizerError("Could not inspect Herdr sessions. Start Herdr or pass --session <name>.")
+    try:
+        sessions = json.loads(completed.stdout).get("sessions", [])
+    except json.JSONDecodeError as error:
+        raise OrganizerError("Herdr returned invalid JSON while listing named sessions.") from error
+    running = [str(item["name"]) for item in sessions if item.get("running") and item.get("name")]
+    if len(running) == 1:
+        return running[0]
+    if not running:
+        raise OrganizerError("No Herdr server is running. Start Herdr, then run this command again.")
+    choices = ", ".join(running)
+    raise OrganizerError(f"Multiple Herdr sessions are running ({choices}). Re-run with --session <name>.")
+
+
 def run_json(arguments: list[str], session: str | None) -> dict[str, Any]:
     command = herdr_prefix(session) + arguments
     try:
@@ -589,6 +614,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = parser().parse_args()
     try:
+        if arguments.command != "list-archives":
+            arguments.session = resolve_session(arguments.session)
         arguments.func(arguments)
         return 0
     except OrganizerError as error:

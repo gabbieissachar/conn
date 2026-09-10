@@ -196,6 +196,13 @@ herdr-organizer snapshot
 herdr-organizer-ui
 ```
 
+When only one named Herdr server is running, the organizer selects it
+automatically. When more than one is running, choose the target explicitly:
+
+```sh
+herdr-organizer-ui --session esim
+```
+
 Preview an archive, then execute it with the exact workspace ID:
 
 ```sh
