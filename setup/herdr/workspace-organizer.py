@@ -299,14 +299,15 @@ def agent_restore_records(
         agent_session_id = detected[1] if detected else native[1] if native else registered_session_id if registered_valid else None
         command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
+        restartable = bool(not resumable and client in {"codex", "claude"})
         restores.append(
             {
                 "source_pane_id": pane_id,
                 "client": client,
                 "session_id": agent_session_id,
-                "resume_command": command if resumable else None,
-                "restore_status": "resumable" if resumable else "shell_only",
-                "restore_source": "process" if detected else "native_codex" if native else "manifest" if registered_valid else "unavailable",
+                "resume_command": command if resumable else str(client) if restartable else None,
+                "restore_status": "resumable" if resumable else "restartable" if restartable else "shell_only",
+                "restore_source": "process" if detected else "native_codex" if native else "manifest" if registered_valid else "agent_shell" if restartable else "unavailable",
             }
         )
     return restores
@@ -319,12 +320,20 @@ def is_trusted_restore(restore: dict[str, Any]) -> bool:
     )
 
 
+def is_restartable_agent(restore: dict[str, Any]) -> bool:
+    return restore.get("restore_status") == "restartable" and restore.get("restore_source") == "agent_shell"
+
+
+def is_available_restore(restore: dict[str, Any]) -> bool:
+    return is_trusted_restore(restore) or is_restartable_agent(restore)
+
+
 def unavailable_agent_restores(captured_tabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         restore
         for tab in captured_tabs
         for restore in tab.get("agent_restores", [])
-        if restore.get("client") in {"codex", "claude"} and not is_trusted_restore(restore)
+        if restore.get("client") in {"codex", "claude"} and not is_available_restore(restore)
     ]
 
 
@@ -427,14 +436,16 @@ def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
         "tab_count": len(tabs),
         "pane_count": sum(len(leaf_panes(tab.get("layout", {}).get("root"))) for tab in tabs),
         "resumable_pane_count": sum(is_trusted_restore(item) for item in restores),
-        "shell_only_pane_count": sum(not is_trusted_restore(item) for item in restores),
+        "fresh_agent_pane_count": sum(is_restartable_agent(item) for item in restores),
+        "shell_only_pane_count": sum(not is_available_restore(item) for item in restores),
         "tabs": [
             {
                 "id": tab.get("source_tab_id"),
                 "label": tab.get("label") or tab.get("source_tab_id"),
                 "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
                 "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
-                "unresumable_agent_count": sum(not is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+                "fresh_agent_count": sum(is_restartable_agent(item) for item in tab.get("agent_restores", [])),
+                "unresumable_agent_count": sum(not is_available_restore(item) for item in tab.get("agent_restores", [])),
             }
             for tab in tabs
         ],
@@ -537,6 +548,13 @@ def archive_command(args: argparse.Namespace) -> None:
         "tab_count": len(capture["tabs"]),
         "pane_count": sum(len(leaf_panes(tab["layout"].get("root"))) for tab in capture["tabs"]),
         "active_agent_panes": len(active),
+        "resumable_agent_panes": sum(
+            is_trusted_restore(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
+        ),
+        "fresh_agent_panes": sum(
+            is_restartable_agent(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
+        ),
+        "unresumable_agent_panes": len(unavailable),
     }
     if not args.execute:
         print(json.dumps(summary, indent=2))
@@ -639,12 +657,19 @@ def resume_captured_tabs(
             old_pane_id = restore.get("source_pane_id")
             new_pane_id = pane_map.get(str(old_pane_id))
             command = restore.get("resume_command")
-            if not is_trusted_restore(restore) or not command or not new_pane_id:
+            if not is_available_restore(restore) or not command or not new_pane_id:
                 outcomes.append({"source_pane_id": old_pane_id, "status": "skipped"})
                 continue
             try:
                 run_command(["pane", "run", new_pane_id, str(command)], session)
-                outcomes.append({"source_pane_id": old_pane_id, "pane_id": new_pane_id, "status": "sent"})
+                outcomes.append(
+                    {
+                        "source_pane_id": old_pane_id,
+                        "pane_id": new_pane_id,
+                        "status": "sent",
+                        "action": "resumed" if is_trusted_restore(restore) else "started_fresh",
+                    }
+                )
             except OrganizerError as error:
                 outcomes.append(
                     {"source_pane_id": old_pane_id, "pane_id": new_pane_id, "status": "failed", "error": str(error)}
@@ -785,7 +810,9 @@ def move_tabs_command(args: argparse.Namespace) -> None:
     print(f"Moved {len(captured_tabs)} tab(s) into workspace {args.to_workspace}.")
     print("The original tabs were closed and their processes stopped. The destination contains fresh panes.")
     if args.resume_agents:
-        print(f"Supported agent sessions were resumed. Recovery record: {operation_id}.")
+        resumed = sum(outcome.get("action") == "resumed" for outcome in outcomes)
+        started = sum(outcome.get("action") == "started_fresh" for outcome in outcomes)
+        print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s). Recovery record: {operation_id}.")
 
 
 def resume_move_command(args: argparse.Namespace) -> None:
@@ -895,9 +922,10 @@ def restore_tab_command(args: argparse.Namespace) -> None:
         operation["failed_at"] = now()
         write_json(archive_path, archive)
         raise
-    resumed = sum(outcome.get("status") == "sent" for outcome in operation["agent_resume"])
+    resumed = sum(outcome.get("action") == "resumed" for outcome in operation["agent_resume"])
+    started = sum(outcome.get("action") == "started_fresh" for outcome in operation["agent_resume"])
     print(f"Restored archived tab {args.tab} into workspace {args.to_workspace}.")
-    print(f"Resumed {resumed} verified agent session(s).")
+    print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s).")
 
 
 def restore_command(args: argparse.Namespace) -> None:
@@ -972,8 +1000,9 @@ def restore_command(args: argparse.Namespace) -> None:
         raise
     print(f"Restored archive {args.archive} into workspace {workspace_id}.")
     if args.resume_agents:
-        sent = sum(outcome.get("status") == "sent" for outcome in restore["agent_resume"])
-        print(f"Resumed {sent} verified agent session(s).")
+        resumed = sum(outcome.get("action") == "resumed" for outcome in restore["agent_resume"])
+        started = sum(outcome.get("action") == "started_fresh" for outcome in restore["agent_resume"])
+        print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s).")
     else:
         print("Layouts are restored as fresh shells. Re-run with --resume-agents to send supported resume commands.")
 
