@@ -321,7 +321,13 @@ def snapshot_command(args: argparse.Namespace) -> None:
 
 def archive_id_for(label: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "workspace"
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slug}"
+    base = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slug}"
+    candidate = base
+    sequence = 2
+    while (ARCHIVE_DIR / f"{candidate}.json").exists():
+        candidate = f"{base}-{sequence}"
+        sequence += 1
+    return candidate
 
 
 def require_execute_confirmation(execute: bool, confirmation: str | None, expected: str, action: str) -> None:
