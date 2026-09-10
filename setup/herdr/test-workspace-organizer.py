@@ -78,6 +78,30 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         }
         self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
 
+    def test_empty_tab_cleanup_keeps_agent_and_non_shell_tabs(self):
+        snapshot = {
+            "tabs": [
+                {"workspace_id": "w1", "tab_id": "w1:t1"},
+                {"workspace_id": "w1", "tab_id": "w1:t2"},
+                {"workspace_id": "w1", "tab_id": "w1:t3"},
+            ],
+            "panes": [
+                {"tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex"},
+                {"tab_id": "w1:t2", "pane_id": "w1:p2"},
+                {"tab_id": "w1:t3", "pane_id": "w1:p3"},
+            ],
+        }
+        with patch.object(ORGANIZER, "pane_is_shell_prompt", side_effect=lambda pane_id, session: pane_id == "w1:p2"):
+            eligible, protected = ORGANIZER.empty_tab_cleanup_candidates(snapshot, "w1", "esim")
+        self.assertEqual([tab["tab_id"] for tab in eligible], ["w1:t2"])
+        self.assertEqual(
+            protected,
+            [
+                {"tab_id": "w1:t1", "reason": "agent_detected", "pane_ids": ["w1:p1"]},
+                {"tab_id": "w1:t3", "reason": "non_shell_process", "pane_ids": ["w1:p3"]},
+            ],
+        )
+
     def test_public_workspace_exposes_agent_resume_state_without_session_id(self):
         snapshot = {
             "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "Example"}],

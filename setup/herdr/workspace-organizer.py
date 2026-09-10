@@ -33,6 +33,7 @@ CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
+SHELL_PROCESS_NAMES = {"bash", "fish", "sh", "starship", "zsh"}
 
 
 class OrganizerError(RuntimeError):
@@ -426,6 +427,84 @@ def active_agents(snapshot: dict[str, Any], workspace_id: str) -> list[dict[str,
         for pane in snapshot.get("panes", [])
         if pane.get("tab_id") in tab_ids and pane.get("agent_status") in ACTIVE_AGENT_STATUSES
     ]
+
+
+def pane_is_shell_prompt(pane_id: str, session: str | None) -> bool:
+    """Return true only when the foreground group is the shell and prompt helpers."""
+    try:
+        process_info = result_of(run_json(["pane", "process-info", "--pane", pane_id], session)).get("process_info", {})
+    except OrganizerError:
+        return False
+    if not isinstance(process_info, dict):
+        return False
+    shell_pid = process_info.get("shell_pid")
+    processes = process_info.get("foreground_processes")
+    if not isinstance(shell_pid, int) or not isinstance(processes, list):
+        return False
+    process_names = set()
+    includes_shell = False
+    for process in processes:
+        if not isinstance(process, dict):
+            return False
+        name = str(process.get("name") or process.get("argv0") or "")
+        process_names.add(name.lstrip("-").lower())
+        if process.get("pid") == shell_pid:
+            includes_shell = True
+    return includes_shell and bool(process_names) and process_names <= SHELL_PROCESS_NAMES
+
+
+def empty_tab_cleanup_candidates(
+    snapshot: dict[str, Any], workspace_id: str, session: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    eligible: list[dict[str, Any]] = []
+    protected: list[dict[str, Any]] = []
+    for tab in tabs_for_workspace(snapshot, workspace_id):
+        tab_id = str(tab.get("tab_id"))
+        panes = panes_for_tab(snapshot, tab_id)
+        agent_panes = [pane.get("pane_id") for pane in panes if pane.get("agent")]
+        if agent_panes:
+            protected.append({"tab_id": tab_id, "reason": "agent_detected", "pane_ids": agent_panes})
+            continue
+        non_shell_panes = [
+            pane.get("pane_id")
+            for pane in panes
+            if not isinstance(pane.get("pane_id"), str) or not pane_is_shell_prompt(str(pane["pane_id"]), session)
+        ]
+        if non_shell_panes:
+            protected.append({"tab_id": tab_id, "reason": "non_shell_process", "pane_ids": non_shell_panes})
+            continue
+        eligible.append(
+            {"tab_id": tab_id, "label": tab.get("label") or tab_id, "pane_ids": [pane.get("pane_id") for pane in panes]}
+        )
+    return eligible, protected
+
+
+def cleanup_empty_tabs_command(args: argparse.Namespace) -> None:
+    snapshot = session_snapshot(args.session)
+    workspace_by_id(snapshot, args.workspace)
+    eligible, protected = empty_tab_cleanup_candidates(snapshot, args.workspace, args.session)
+    kept_tab_id = None
+    if len(eligible) == len(tabs_for_workspace(snapshot, args.workspace)) and eligible:
+        kept_tab_id = eligible[-1]["tab_id"]
+        eligible = eligible[:-1]
+    preview = {
+        "workspace_id": args.workspace,
+        "tabs_to_close": eligible,
+        "protected_tabs": protected,
+        "kept_tab_id": kept_tab_id,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {args.workspace!r} to close {len(eligible)} empty shell tab(s)."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.workspace, "Clean up empty tabs")
+    for tab in eligible:
+        run_json(["tab", "close", str(tab["tab_id"])], args.session)
+    print(f"Closed {len(eligible)} empty shell tab(s) in workspace {args.workspace}.")
+    if kept_tab_id:
+        print(f"Kept {kept_tab_id} so the workspace remains available.")
 
 
 def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
@@ -1149,6 +1228,12 @@ def parser() -> argparse.ArgumentParser:
     archive.add_argument("--execute", action="store_true")
     archive.add_argument("--confirm")
     archive.set_defaults(func=archive_command)
+
+    cleanup_empty = commands.add_parser("cleanup-empty-tabs", help="Close shell-only tabs without detected agents.")
+    cleanup_empty.add_argument("--workspace", required=True)
+    cleanup_empty.add_argument("--execute", action="store_true")
+    cleanup_empty.add_argument("--confirm")
+    cleanup_empty.set_defaults(func=cleanup_empty_tabs_command)
 
     restore = commands.add_parser("restore", help="Create a workspace from an archive.")
     restore.add_argument("--archive", required=True)
