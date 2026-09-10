@@ -131,7 +131,7 @@ created: 2026-09-10
   <div class="toast" id="toast" role="status"></div>
   <script>
     const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
-    const state = { data: null, query: '', selectedTabs: new Set(), destinationWorkspace: '', archiveDestinations: {}, view: 'workspaces' };
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', archiveDestinations: {}, view: 'workspaces' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -183,20 +183,36 @@ created: 2026-09-10
         <label>Destination workspace<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === state.destinationWorkspace ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
         <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy move + resume</button>`;
     };
+    const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
+    const restorePanelView = data => {
+      const selected = data.archives.flatMap(archive => (archive.tabs || []).map(tab => ({ archive, tab }))).filter(({ archive, tab }) => state.selectedArchivedTabs.has(archiveTabKey(archive.archive_id, tab.id)));
+      if (!selected.length) return '';
+      const archiveIds = new Set(selected.map(({ archive }) => archive.archive_id));
+      if (archiveIds.size !== 1) return '<div><strong>Restore selected archived tabs</strong><p>Select tabs from one archive at a time.</p></div><button type="button" disabled>Choose one archive</button>';
+      const archiveId = selected[0].archive.archive_id;
+      const destinations = data.workspaces || [];
+      if (!destinations.some(workspace => workspace.id === state.archiveDestinations[archiveId])) state.archiveDestinations[archiveId] = destinations[0]?.id || '';
+      const destination = state.archiveDestinations[archiveId];
+      const unavailable = selected.filter(({ tab }) => tab.unresumable_agent_count > 0);
+      const command = destination && !unavailable.length
+        ? `herdr-organizer restore-tabs --archive ${archiveId} ${selected.map(({ tab }) => `--tab ${tab.id}`).join(' ')} --to-workspace ${destination} --execute --confirm ${archiveId}`
+        : '';
+      const detail = unavailable.length
+        ? `${unavailable.length} selected tab${unavailable.length === 1 ? ' has' : 's have'} an unavailable agent session. Register it before restoring.`
+        : `${selected.length} selected from this archive. The command rebuilds them in the destination and resumes verified Codex or Claude sessions.`;
+      return `<div><strong>Restore selected archived tabs</strong><p>${escapeHtml(detail)}</p></div>
+        <label>Destination workspace<select id="restore-destination" ${destinations.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
+        <button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy restore + resume</button>`;
+    };
     const archivedTabView = (archive, tab) => {
-      const key = `${archive.archive_id}:${tab.id}`;
-      const destinations = state.data.workspaces || [];
-      if (!destinations.some(workspace => workspace.id === state.archiveDestinations[key])) state.archiveDestinations[key] = destinations[0]?.id || '';
-      const destination = state.archiveDestinations[key];
-      const canResume = tab.unresumable_agent_count === 0;
+      const key = archiveTabKey(archive.archive_id, tab.id);
       const canDelete = (archive.tabs || []).length > 1;
-      const command = destination && canResume ? `herdr-organizer restore-tab --archive ${archive.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${archive.archive_id}` : '';
       const deleteCommand = canDelete ? `herdr-organizer delete-archived-tab --archive ${archive.archive_id} --tab ${tab.id} --execute --confirm ${archive.archive_id}:${tab.id}` : '';
       return `<div class="tab" style="margin: 10px 0">
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span></div>
         <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'} · ${tab.resumable_agent_count} resumable${tab.unresumable_agent_count ? ` · ${tab.unresumable_agent_count} unavailable` : ''}</div>
-        <label>Restore into<select data-archive-destination="${escapeHtml(key)}" ${destinations.length ? '' : 'disabled'}>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <div class="tab-actions"><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${canResume ? 'Copy restore tab + resume' : 'Agent session unavailable'}</button><button class="danger" type="button" ${deleteCommand ? '' : 'disabled'} title="Permanently removes this tab from the saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(deleteCommand)}">${canDelete ? 'Copy delete archived tab' : 'Delete archive instead'}</button></div>
+        <label class="tab-select"><input type="checkbox" data-select-archive-tab="${escapeHtml(key)}" data-archive-id="${escapeHtml(archive.archive_id)}" ${state.selectedArchivedTabs.has(key) ? 'checked' : ''}> Select this tab for restore</label>
+        <div class="tab-actions"><button class="danger" type="button" ${deleteCommand ? '' : 'disabled'} title="Permanently removes this tab from the saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(deleteCommand)}">${canDelete ? 'Copy delete archived tab' : 'Delete archive instead'}</button></div>
       </div>`;
     };
     const archiveView = archive => {
@@ -208,7 +224,7 @@ created: 2026-09-10
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
         <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button><button class="danger" type="button" title="Permanently removes this saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(remove)}">Copy delete archive</button></div>
-        <div class="archive-meta" style="margin-top: 12px">Restore one archived tab into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
+        <div class="archive-meta" style="margin-top: 12px">Select one or more archived tabs to restore into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
     };
     const render = () => {
@@ -218,11 +234,13 @@ created: 2026-09-10
       const archives = (data.archives || []).filter(archive => matches(`${archive.workspace_label} ${archive.archive_id} ${archive.status}`));
       const allTabIds = new Set((data.workspaces || []).flatMap(workspace => workspace.tabs.map(tab => tab.id)));
       state.selectedTabs = new Set([...state.selectedTabs].filter(tabId => allTabIds.has(tabId)));
+      const archivedTabKeys = new Set((data.archives || []).flatMap(archive => (archive.tabs || []).map(tab => archiveTabKey(archive.archive_id, tab.id))));
+      state.selectedArchivedTabs = new Set([...state.selectedArchivedTabs].filter(key => archivedTabKeys.has(key)));
       const paneCount = workspaces.reduce((total, workspace) => total + workspace.pane_count, 0);
       document.querySelector('#summary').innerHTML = [
         ['Visible workspaces', workspaces.length], ['Visible tabs', workspaces.reduce((total, workspace) => total + workspace.tab_count, 0)], ['Visible panes', paneCount]
       ].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`).join('');
-      document.querySelector('#move-panel').innerHTML = movePanelView(data);
+      document.querySelector('#move-panel').innerHTML = state.view === 'archives' ? restorePanelView(data) : movePanelView(data);
       document.querySelector('#workspaces-section').hidden = state.view !== 'workspaces';
       document.querySelector('#archives-section').hidden = state.view !== 'archives';
       document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.view === state.view)));
@@ -234,6 +252,16 @@ created: 2026-09-10
         else state.selectedTabs.delete(event.target.dataset.selectTab);
         render();
       }));
+      document.querySelectorAll('[data-select-archive-tab]').forEach(input => input.addEventListener('change', event => {
+        const key = event.target.dataset.selectArchiveTab;
+        const archiveId = event.target.dataset.archiveId;
+        if (event.target.checked) {
+          const hasAnotherArchive = [...state.selectedArchivedTabs].some(item => !item.startsWith(`${archiveId}::`));
+          if (hasAnotherArchive) state.selectedArchivedTabs.clear();
+          state.selectedArchivedTabs.add(key);
+        } else state.selectedArchivedTabs.delete(key);
+        render();
+      }));
       document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
         state.view = button.dataset.view;
         render();
@@ -242,10 +270,12 @@ created: 2026-09-10
         state.destinationWorkspace = event.target.value;
         render();
       });
-      document.querySelectorAll('[data-archive-destination]').forEach(select => select.addEventListener('change', event => {
-        state.archiveDestinations[event.target.dataset.archiveDestination] = event.target.value;
+      document.querySelector('#restore-destination')?.addEventListener('change', event => {
+        const selectedKey = [...state.selectedArchivedTabs][0];
+        const archiveId = selectedKey?.split('::')[0];
+        if (archiveId) state.archiveDestinations[archiveId] = event.target.value;
         render();
-      }));
+      });
       document.querySelector('#updated').textContent = data.generated_at ? `Snapshot ${new Date(data.generated_at).toLocaleString()}${data.herdr_session ? ` · ${data.herdr_session}` : ''}` : 'No timestamp';
     };
     const load = async () => {
