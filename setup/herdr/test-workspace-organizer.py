@@ -76,6 +76,60 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         }
         self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
 
+    def test_public_workspace_exposes_agent_resume_state_without_session_id(self):
+        snapshot = {
+            "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "Example"}],
+            "panes": [{"tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "idle"}],
+        }
+        restores = [
+            {
+                "source_pane_id": "w1:p1",
+                "client": "codex",
+                "restore_status": "shell_only",
+                "restore_source": "unavailable",
+            }
+        ]
+        with patch.object(ORGANIZER, "agent_restore_records", return_value=restores):
+            workspace = ORGANIZER.public_workspace(snapshot, {"workspace_id": "w1", "label": "Workspace"}, "esim", [])
+        self.assertEqual(
+            workspace["tabs"][0]["agent_resume"],
+            [{"pane_id": "w1:p1", "client": "codex", "status": "needs_registration", "source": "unavailable"}],
+        )
+
+    def test_delete_archived_tab_removes_its_recovery_metadata(self):
+        archive = {
+            "archive_id": "example",
+            "capture": {
+                "tabs": [
+                    {"source_tab_id": "w1:t1", "layout": {"root": {"type": "pane", "pane_id": "p1"}}},
+                    {"source_tab_id": "w1:t2", "layout": {"root": {"type": "pane", "pane_id": "p2"}}},
+                ]
+            },
+            "tab_restores": [
+                {"source_tab_id": "w1:t1", "pane_map": {"p1": "new-p1"}},
+                {"source_tab_id": "w1:t2", "pane_map": {"p2": "new-p2"}},
+            ],
+            "restore": {
+                "tabs": [{"source_tab_id": "w1:t1"}, {"source_tab_id": "w1:t2"}],
+                "agent_resume": [{"source_pane_id": "p1"}, {"source_pane_id": "p2"}],
+                "pane_map": {"p1": "new-p1", "p2": "new-p2"},
+            },
+        }
+        ORGANIZER.delete_archived_tab(archive, "w1:t1")
+        self.assertEqual([tab["source_tab_id"] for tab in archive["capture"]["tabs"]], ["w1:t2"])
+        self.assertEqual([item["source_tab_id"] for item in archive["tab_restores"]], ["w1:t2"])
+        self.assertEqual([item["source_tab_id"] for item in archive["restore"]["tabs"]], ["w1:t2"])
+        self.assertEqual(archive["restore"]["agent_resume"], [{"source_pane_id": "p2"}])
+        self.assertEqual(archive["restore"]["pane_map"], {"p2": "new-p2"})
+
+    def test_delete_archived_tab_rejects_the_last_tab(self):
+        archive = {
+            "archive_id": "example",
+            "capture": {"tabs": [{"source_tab_id": "w1:t1", "layout": {"root": {"type": "pane", "pane_id": "p1"}}}]},
+        }
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "last tab"):
+            ORGANIZER.delete_archived_tab(archive, "w1:t1")
+
     def test_unverified_native_codex_metadata_is_not_resumable(self):
         panes = [
             {

@@ -448,7 +448,9 @@ def load_archives() -> list[dict[str, Any]]:
     return sorted(archives, key=lambda archive: str(archive.get("created_at", "")), reverse=True)
 
 
-def public_workspace(snapshot: dict[str, Any], workspace: dict[str, Any]) -> dict[str, Any]:
+def public_workspace(
+    snapshot: dict[str, Any], workspace: dict[str, Any], session: str | None, records: list[dict[str, Any]]
+) -> dict[str, Any]:
     workspace_id = str(workspace["workspace_id"])
     tabs: list[dict[str, Any]] = []
     for position, tab in enumerate(tabs_for_workspace(snapshot, workspace_id)):
@@ -457,6 +459,16 @@ def public_workspace(snapshot: dict[str, Any], workspace: dict[str, Any]) -> dic
         for pane in panes:
             status = str(pane.get("agent_status") or "idle")
             statuses[status] = statuses.get(status, 0) + 1
+        agent_resume = [
+            {
+                "pane_id": restore.get("source_pane_id"),
+                "client": restore.get("client"),
+                "status": "resumable" if is_trusted_restore(restore) else "needs_registration",
+                "source": restore.get("restore_source"),
+            }
+            for restore in agent_restore_records(panes, session, records)
+            if restore.get("client") in {"codex", "claude"}
+        ]
         tabs.append(
             {
                 "id": tab.get("tab_id"),
@@ -465,6 +477,7 @@ def public_workspace(snapshot: dict[str, Any], workspace: dict[str, Any]) -> dic
                 "focused": bool(tab.get("focused")),
                 "pane_count": len(panes),
                 "agent_statuses": statuses,
+                "agent_resume": agent_resume,
             }
         )
     return {
@@ -479,11 +492,14 @@ def public_workspace(snapshot: dict[str, Any], workspace: dict[str, Any]) -> dic
 
 def snapshot_command(args: argparse.Namespace) -> None:
     snapshot = session_snapshot(args.session)
+    records = manifest_records()
     document = {
         "version": 1,
         "generated_at": now(),
         "herdr_session": args.session or os.environ.get("HERDR_SESSION"),
-        "workspaces": [public_workspace(snapshot, workspace) for workspace in snapshot.get("workspaces", [])],
+        "workspaces": [
+            public_workspace(snapshot, workspace, args.session, records) for workspace in snapshot.get("workspaces", [])
+        ],
         "archives": [archive_summary(archive) for archive in load_archives()],
     }
     write_json(LIVE_SNAPSHOT_PATH, document)
@@ -574,10 +590,101 @@ def archive_command(args: argparse.Namespace) -> None:
 
 
 def archive_by_id(archive_id: str) -> tuple[Path, dict[str, Any]]:
+    if not archive_id or Path(archive_id).name != archive_id:
+        raise OrganizerError("Archive ID must be a single archive name, not a path.")
     path = ARCHIVE_DIR / f"{archive_id}.json"
     if not path.exists():
         raise OrganizerError(f"Archive {archive_id!r} was not found.")
     return path, read_json(path, {})
+
+
+def archived_tab_by_id(archive: dict[str, Any], tab_id: str) -> dict[str, Any]:
+    tabs = archive.get("capture", {}).get("tabs", [])
+    tab = next((item for item in tabs if item.get("source_tab_id") == tab_id), None)
+    if not isinstance(tab, dict):
+        raise OrganizerError(f"Archive {archive.get('archive_id')!r} does not contain tab {tab_id!r}.")
+    return tab
+
+
+def delete_archived_tab(archive: dict[str, Any], tab_id: str) -> dict[str, Any]:
+    """Remove one tab and all archive metadata that identifies its old panes."""
+    tab = archived_tab_by_id(archive, tab_id)
+    capture = archive.get("capture", {})
+    tabs = capture.get("tabs", [])
+    if not isinstance(tabs, list) or len(tabs) <= 1:
+        raise OrganizerError("This is the archive's last tab. Delete the whole archive instead.")
+    source_pane_ids = {
+        str(pane_id)
+        for pane in leaf_panes(tab.get("layout", {}).get("root"))
+        if (pane_id := pane.get("pane_id"))
+    }
+    capture["tabs"] = [item for item in tabs if item.get("source_tab_id") != tab_id]
+    archive["tab_restores"] = [
+        item
+        for item in archive.get("tab_restores", [])
+        if isinstance(item, dict) and item.get("source_tab_id") != tab_id
+    ]
+    restore = archive.get("restore")
+    if isinstance(restore, dict):
+        restore["tabs"] = [
+            item
+            for item in restore.get("tabs", [])
+            if isinstance(item, dict) and item.get("source_tab_id") != tab_id
+        ]
+        restore["agent_resume"] = [
+            item
+            for item in restore.get("agent_resume", [])
+            if isinstance(item, dict) and str(item.get("source_pane_id")) not in source_pane_ids
+        ]
+        pane_map = restore.get("pane_map")
+        if isinstance(pane_map, dict):
+            restore["pane_map"] = {
+                old_pane_id: new_pane_id
+                for old_pane_id, new_pane_id in pane_map.items()
+                if str(old_pane_id) not in source_pane_ids
+            }
+    archive["updated_at"] = now()
+    return tab
+
+
+def delete_archive_command(args: argparse.Namespace) -> None:
+    archive_path, archive = archive_by_id(args.archive)
+    if not args.execute:
+        print(json.dumps(archive_summary(archive), indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {args.archive!r} to permanently delete this archive. "
+            "This does not change any restored or active workspace."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.archive, "Delete archive")
+    archive_path.unlink()
+    print(f"Deleted archive {args.archive}. No active or restored workspace was changed.")
+
+
+def delete_archived_tab_command(args: argparse.Namespace) -> None:
+    archive_path, archive = archive_by_id(args.archive)
+    tab = archived_tab_by_id(archive, args.tab)
+    if len(archive.get("capture", {}).get("tabs", [])) <= 1:
+        raise OrganizerError("This is the archive's last tab. Delete the whole archive instead.")
+    confirmation = f"{args.archive}:{args.tab}"
+    preview = {
+        "archive_id": args.archive,
+        "source_tab_id": args.tab,
+        "tab_label": tab.get("label") or args.tab,
+        "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
+        "remaining_tab_count": len(archive.get("capture", {}).get("tabs", [])) - 1,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {confirmation!r} to permanently delete this archived tab. "
+            "This does not change any restored or active workspace."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, confirmation, "Delete archived tab")
+    delete_archived_tab(archive, args.tab)
+    write_json(archive_path, archive)
+    print(f"Deleted archived tab {args.tab} from {args.archive}. No active or restored workspace was changed.")
 
 
 def extract_workspace_id(result: dict[str, Any]) -> str:
@@ -1045,6 +1152,19 @@ def parser() -> argparse.ArgumentParser:
     restore_tab.add_argument("--confirm")
     restore_tab.set_defaults(func=restore_tab_command, resume_agents=True)
 
+    delete_archive = commands.add_parser("delete-archive", help="Permanently delete one saved archive.")
+    delete_archive.add_argument("--archive", required=True)
+    delete_archive.add_argument("--execute", action="store_true")
+    delete_archive.add_argument("--confirm")
+    delete_archive.set_defaults(func=delete_archive_command)
+
+    delete_archived_tab = commands.add_parser("delete-archived-tab", help="Permanently delete one tab from a saved archive.")
+    delete_archived_tab.add_argument("--archive", required=True)
+    delete_archived_tab.add_argument("--tab", required=True, help="Archived source tab ID, e.g. w1:t2.")
+    delete_archived_tab.add_argument("--execute", action="store_true")
+    delete_archived_tab.add_argument("--confirm")
+    delete_archived_tab.set_defaults(func=delete_archived_tab_command)
+
     move = commands.add_parser("move-tabs", help="Recreate selected tabs in another workspace, then close originals.")
     move.add_argument("--tab", action="append", required=True, help="Selected tab ID. Repeat for each tab.")
     move.add_argument("--to-workspace", required=True, help="Destination workspace ID.")
@@ -1079,7 +1199,7 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = parser().parse_args()
     try:
-        if arguments.command != "list-archives":
+        if arguments.command not in {"list-archives", "delete-archive", "delete-archived-tab"}:
             arguments.session = resolve_session(arguments.session)
         arguments.func(arguments)
         return 0
