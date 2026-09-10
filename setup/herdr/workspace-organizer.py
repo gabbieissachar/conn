@@ -299,15 +299,14 @@ def agent_restore_records(
         agent_session_id = detected[1] if detected else native[1] if native else registered_session_id if registered_valid else None
         command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
-        restartable = bool(not resumable and client in {"codex", "claude"})
         restores.append(
             {
                 "source_pane_id": pane_id,
                 "client": client,
                 "session_id": agent_session_id,
-                "resume_command": command if resumable else str(client) if restartable else None,
-                "restore_status": "resumable" if resumable else "restartable" if restartable else "shell_only",
-                "restore_source": "process" if detected else "native_codex" if native else "manifest" if registered_valid else "agent_shell" if restartable else "unavailable",
+                "resume_command": command if resumable else None,
+                "restore_status": "resumable" if resumable else "shell_only",
+                "restore_source": "process" if detected else "native_codex" if native else "manifest" if registered_valid else "unavailable",
             }
         )
     return restores
@@ -320,20 +319,12 @@ def is_trusted_restore(restore: dict[str, Any]) -> bool:
     )
 
 
-def is_restartable_agent(restore: dict[str, Any]) -> bool:
-    return restore.get("restore_status") == "restartable" and restore.get("restore_source") == "agent_shell"
-
-
-def is_available_restore(restore: dict[str, Any]) -> bool:
-    return is_trusted_restore(restore) or is_restartable_agent(restore)
-
-
 def unavailable_agent_restores(captured_tabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         restore
         for tab in captured_tabs
         for restore in tab.get("agent_restores", [])
-        if restore.get("client") in {"codex", "claude"} and not is_available_restore(restore)
+        if restore.get("client") in {"codex", "claude"} and not is_trusted_restore(restore)
     ]
 
 
@@ -436,16 +427,14 @@ def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
         "tab_count": len(tabs),
         "pane_count": sum(len(leaf_panes(tab.get("layout", {}).get("root"))) for tab in tabs),
         "resumable_pane_count": sum(is_trusted_restore(item) for item in restores),
-        "fresh_agent_pane_count": sum(is_restartable_agent(item) for item in restores),
-        "shell_only_pane_count": sum(not is_available_restore(item) for item in restores),
+        "shell_only_pane_count": sum(not is_trusted_restore(item) for item in restores),
         "tabs": [
             {
                 "id": tab.get("source_tab_id"),
                 "label": tab.get("label") or tab.get("source_tab_id"),
                 "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
                 "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
-                "fresh_agent_count": sum(is_restartable_agent(item) for item in tab.get("agent_restores", [])),
-                "unresumable_agent_count": sum(not is_available_restore(item) for item in tab.get("agent_restores", [])),
+                "unresumable_agent_count": sum(not is_trusted_restore(item) for item in tab.get("agent_restores", [])),
             }
             for tab in tabs
         ],
@@ -551,9 +540,6 @@ def archive_command(args: argparse.Namespace) -> None:
         "resumable_agent_panes": sum(
             is_trusted_restore(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
         ),
-        "fresh_agent_panes": sum(
-            is_restartable_agent(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
-        ),
         "unresumable_agent_panes": len(unavailable),
     }
     if not args.execute:
@@ -657,7 +643,7 @@ def resume_captured_tabs(
             old_pane_id = restore.get("source_pane_id")
             new_pane_id = pane_map.get(str(old_pane_id))
             command = restore.get("resume_command")
-            if not is_available_restore(restore) or not command or not new_pane_id:
+            if not is_trusted_restore(restore) or not command or not new_pane_id:
                 outcomes.append({"source_pane_id": old_pane_id, "status": "skipped"})
                 continue
             try:
@@ -667,7 +653,7 @@ def resume_captured_tabs(
                         "source_pane_id": old_pane_id,
                         "pane_id": new_pane_id,
                         "status": "sent",
-                        "action": "resumed" if is_trusted_restore(restore) else "started_fresh",
+                        "action": "resumed",
                     }
                 )
             except OrganizerError as error:
@@ -811,8 +797,7 @@ def move_tabs_command(args: argparse.Namespace) -> None:
     print("The original tabs were closed and their processes stopped. The destination contains fresh panes.")
     if args.resume_agents:
         resumed = sum(outcome.get("action") == "resumed" for outcome in outcomes)
-        started = sum(outcome.get("action") == "started_fresh" for outcome in outcomes)
-        print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s). Recovery record: {operation_id}.")
+        print(f"Resumed {resumed} verified agent session(s). Recovery record: {operation_id}.")
 
 
 def resume_move_command(args: argparse.Namespace) -> None:
@@ -877,7 +862,7 @@ def restore_tab_command(args: argparse.Namespace) -> None:
         pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
         raise OrganizerError(
             f"Archived tab {args.tab} has {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
-            "It was not restored. Use --allow-unresumable-agents only if a fresh shell is acceptable."
+            "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent session is acceptable."
         )
     operation = {
         "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-restore-{args.tab}-to-{args.to_workspace}",
@@ -923,9 +908,8 @@ def restore_tab_command(args: argparse.Namespace) -> None:
         write_json(archive_path, archive)
         raise
     resumed = sum(outcome.get("action") == "resumed" for outcome in operation["agent_resume"])
-    started = sum(outcome.get("action") == "started_fresh" for outcome in operation["agent_resume"])
     print(f"Restored archived tab {args.tab} into workspace {args.to_workspace}.")
-    print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s).")
+    print(f"Resumed {resumed} verified agent session(s).")
 
 
 def restore_command(args: argparse.Namespace) -> None:
@@ -948,7 +932,7 @@ def restore_command(args: argparse.Namespace) -> None:
         pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
         raise OrganizerError(
             f"Archive {args.archive!r} has {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
-            "It was not restored. Use --allow-unresumable-agents only if fresh shells are acceptable."
+            "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent sessions is acceptable."
         )
     cwd = first_cwd(capture)
     command = ["workspace", "create", "--label", str(workspace.get("label") or "Restored workspace")]
@@ -1001,8 +985,7 @@ def restore_command(args: argparse.Namespace) -> None:
     print(f"Restored archive {args.archive} into workspace {workspace_id}.")
     if args.resume_agents:
         resumed = sum(outcome.get("action") == "resumed" for outcome in restore["agent_resume"])
-        started = sum(outcome.get("action") == "started_fresh" for outcome in restore["agent_resume"])
-        print(f"Resumed {resumed} verified agent session(s) and started {started} fresh agent shell(s).")
+        print(f"Resumed {resumed} verified agent session(s).")
     else:
         print("Layouts are restored as fresh shells. Re-run with --resume-agents to send supported resume commands.")
 

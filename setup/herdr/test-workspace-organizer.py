@@ -76,7 +76,7 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         }
         self.assertEqual(len(ORGANIZER.active_agents(snapshot, "w1")), 1)
 
-    def test_unverified_native_codex_metadata_restarts_a_fresh_agent(self):
+    def test_unverified_native_codex_metadata_is_not_resumable(self):
         panes = [
             {
                 "pane_id": "w1:p1",
@@ -86,9 +86,9 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         ]
         with patch.object(ORGANIZER, "agent_session_from_process", return_value=None):
             restore = ORGANIZER.agent_restore_records(panes, "esim", [])
-        self.assertEqual(restore[0]["restore_status"], "restartable")
-        self.assertEqual(restore[0]["restore_source"], "agent_shell")
-        self.assertEqual(restore[0]["resume_command"], "codex")
+        self.assertEqual(restore[0]["restore_status"], "shell_only")
+        self.assertEqual(restore[0]["restore_source"], "unavailable")
+        self.assertIsNone(restore[0]["resume_command"])
 
     def test_process_session_becomes_a_resumable_record(self):
         panes = [{"pane_id": "w1:p1", "agent": "claude"}]
@@ -98,16 +98,16 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(restore[0]["resume_command"], "claude --resume session-123")
         self.assertEqual(restore[0]["restore_source"], "process")
 
-    def test_invalid_claude_manifest_session_restarts_a_fresh_agent(self):
+    def test_invalid_claude_manifest_session_is_not_resumable(self):
         panes = [{"pane_id": "w1:p1", "agent": "claude"}]
         manifest = [{"pane_id": "w1:p1", "herdr_session": "esim", "client": "claude", "session_id": "invalid"}]
         with patch.object(ORGANIZER, "agent_session_from_process", return_value=None), patch.object(
             ORGANIZER, "claude_session_exists", return_value=False
         ):
             restore = ORGANIZER.agent_restore_records(panes, "esim", manifest)
-        self.assertEqual(restore[0]["restore_status"], "restartable")
-        self.assertEqual(restore[0]["restore_source"], "agent_shell")
-        self.assertEqual(restore[0]["resume_command"], "claude")
+        self.assertEqual(restore[0]["restore_status"], "shell_only")
+        self.assertEqual(restore[0]["restore_source"], "unavailable")
+        self.assertIsNone(restore[0]["resume_command"])
 
     def test_verified_native_codex_session_is_resumable(self):
         panes = [
