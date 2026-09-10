@@ -45,6 +45,9 @@ created: 2026-09-10
     button:focus-visible, input:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 2px; }
     main { max-width: 1240px; margin: 0 auto; padding: 26px 24px 60px; }
     .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
+    .guide { margin: 0 0 28px; padding: 15px 17px; border: 1px solid #d9d2f7; border-radius: 10px; color: #3d3567; background: #f3f0ff; }
+    .guide strong { display: block; margin-bottom: 5px; font-size: 13px; }
+    .guide p { max-width: 850px; font-size: 13px; line-height: 1.45; }
     .metric { min-height: 100px; padding: 17px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
     .metric span { color: var(--muted); font-size: 12px; }
     .metric strong { display: block; margin-top: 10px; color: var(--navy); font-size: 29px; letter-spacing: -.05em; }
@@ -87,7 +90,7 @@ created: 2026-09-10
 <body>
   <header class="topbar">
     <div class="topline">
-      <div><h1>Workspace organizer</h1><p class="subtitle">Herdr layouts, tab order, and archive restore plans</p></div>
+      <div><h1>Workspace organizer</h1><p class="subtitle">Review Herdr tabs, then copy a command to run in your terminal</p></div>
       <span class="badge">live snapshot</span>
     </div>
     <div class="controls">
@@ -96,6 +99,10 @@ created: 2026-09-10
     </div>
   </header>
   <main>
+    <aside class="guide">
+      <strong>How to use this page</strong>
+      <p>This is a safe viewer. Every action copies a command instead of changing Herdr directly. “Move tab left” and “Move tab right” only change a tab’s order inside its current workspace. Copy a command, paste it into a Herdr terminal, and press Enter.</p>
+    </aside>
     <section class="summary" id="summary"></section>
     <section>
       <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
@@ -127,15 +134,15 @@ created: 2026-09-10
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</div>
         <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}</div>
         <div class="tab-actions">
-          <button type="button" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Move earlier</button>
-          <button type="button" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${after} --execute">Move later</button>
+          <button type="button" title="Copy a command that places this tab one position closer to the first tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Copy move tab left</button>
+          <button type="button" title="Copy a command that places this tab one position closer to the last tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${after} --execute">Copy move tab right</button>
         </div>
       </article>`;
     };
     const workspaceView = workspace => `<article class="workspace">
       <div class="workspace-head"><div class="workspace-title"><strong>${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${workspace.tab_count} tabs · ${workspace.pane_count} panes</span></div>
       <div class="tabs">${workspace.tabs.map(tab => tabView(tab, workspace.tab_count)).join('') || '<div class="tab-meta">No tabs</div>'}</div>
-      <div class="tab-actions" style="padding: 0 16px 14px"><button type="button" data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)}">Preview archive</button></div>
+      <div class="tab-actions" style="padding: 0 16px 14px"><button type="button" data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)}">Copy archive preview</button><button type="button" title="Copies a command that captures this layout and closes this workspace. Its processes will stop." data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)} --execute --confirm ${escapeHtml(workspace.id)}">Copy archive and close</button></div>
     </article>`;
     const archiveView = archive => {
       const restore = `herdr-organizer restore --archive ${archive.archive_id}`;
@@ -144,7 +151,7 @@ created: 2026-09-10
       return `<article class="archive">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
         <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} shell-only</div>
-        <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Preview restore</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume</button></div>
+        <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button></div>
       </article>`;
     };
     const render = () => {
