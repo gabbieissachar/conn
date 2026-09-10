@@ -74,9 +74,10 @@ herdr-organizer() {
 }
 
 herdr-organizer-ui() {
+  local organizer_port="${HERDR_ORGANIZER_UI_PORT:-8766}"
   herdr-organizer snapshot "$@" || return
-  (cd "$_pmos_repo" && bash setup/serve.sh) || return
-  open "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
+  (cd "$_pmos_repo" && bash setup/serve.sh --port "$organizer_port") || return
+  open "http://localhost:${organizer_port}/apps/wip-herdr-workspace-organizer.html"
 }
 
 claude-real-bin() {
