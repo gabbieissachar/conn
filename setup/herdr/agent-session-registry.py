@@ -411,6 +411,13 @@ def validate_session_id(session_id: str) -> None:
         raise SystemExit("session id must be non-empty and must not contain whitespace")
 
 
+def claude_session_exists(session_id: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+        return False
+    project_root = Path.home() / ".claude" / "projects"
+    return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
+
+
 def clean_session_id(value: str | None) -> str | None:
     if not value:
         return None
@@ -491,6 +498,9 @@ def build_record(
 
 def register(args: argparse.Namespace) -> int:
     validate_session_id(args.session_id)
+    if args.client == "claude" and not claude_session_exists(args.session_id):
+        print("Claude session ID is not present in the local session store", file=sys.stderr)
+        return 2
     pane = current_pane_info()
     if not pane and not args.allow_no_herdr:
         print("not inside a reachable herdr pane; use --allow-no-herdr with explicit ids", file=sys.stderr)

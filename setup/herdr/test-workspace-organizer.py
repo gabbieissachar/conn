@@ -97,6 +97,16 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(restore[0]["resume_command"], "claude --resume session-123")
         self.assertEqual(restore[0]["restore_source"], "process")
 
+    def test_invalid_claude_manifest_session_is_not_resumable(self):
+        panes = [{"pane_id": "w1:p1", "agent": "claude"}]
+        manifest = [{"pane_id": "w1:p1", "herdr_session": "esim", "client": "claude", "session_id": "invalid"}]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=None), patch.object(
+            ORGANIZER, "claude_session_exists", return_value=False
+        ):
+            restore = ORGANIZER.agent_restore_records(panes, "esim", manifest)
+        self.assertEqual(restore[0]["restore_status"], "shell_only")
+        self.assertEqual(restore[0]["restore_source"], "unavailable")
+
     def test_resume_captured_tabs_uses_atomic_pane_run(self):
         tabs = [
             {

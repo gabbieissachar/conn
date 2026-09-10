@@ -202,6 +202,13 @@ def default_resume_command(client: str, session_id: str) -> str | None:
     return None
 
 
+def claude_session_exists(session_id: object) -> bool:
+    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+        return False
+    project_root = Path.home() / ".claude" / "projects"
+    return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
+
+
 def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tuple[str, str] | None:
     """Return a real CLI session ID, never Herdr's display-only agent ID."""
     client = pane.get("agent")
@@ -222,9 +229,6 @@ def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tup
             if match:
                 return client, match.group(1)
         if client == "claude":
-            match = re.search(r"(?:^|/)claude(?:\s+code)?\s+(?:--resume|resume)\s+([^\s]+)", command)
-            if match:
-                return client, match.group(1)
             argv = process.get("argv")
             executable = ""
             if isinstance(argv, list) and argv:
@@ -237,8 +241,11 @@ def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tup
             session_path = Path.home() / ".claude" / "sessions" / f"{pid}.json"
             session_data = read_json(session_path, {})
             session_id = session_data.get("sessionId") if isinstance(session_data, dict) else None
-            if isinstance(session_id, str) and session_id:
+            if claude_session_exists(session_id):
                 return client, session_id
+            match = re.search(r"(?:^|/)claude(?:\s+code)?\s+(?:--resume|resume)\s+([^\s]+)", command)
+            if match and claude_session_exists(match.group(1)):
+                return client, match.group(1)
     return None
 
 
@@ -255,8 +262,15 @@ def agent_restore_records(
         pane_id = pane.get("pane_id")
         registered = by_pane.get(pane_id, {})
         detected = agent_session_from_process(pane, session)
-        client = registered.get("client") or (detected[0] if detected else pane.get("agent"))
-        agent_session_id = registered.get("session_id") or (detected[1] if detected else None)
+        registered_client = registered.get("client")
+        registered_session_id = registered.get("session_id")
+        registered_valid = bool(
+            registered_client in {"codex", "claude"}
+            and isinstance(registered_session_id, str)
+            and (registered_client != "claude" or claude_session_exists(registered_session_id))
+        )
+        client = detected[0] if detected else registered_client if registered_valid else pane.get("agent")
+        agent_session_id = detected[1] if detected else registered_session_id if registered_valid else None
         command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
         restores.append(
@@ -266,7 +280,7 @@ def agent_restore_records(
                 "session_id": agent_session_id,
                 "resume_command": command if resumable else None,
                 "restore_status": "resumable" if resumable else "shell_only",
-                "restore_source": "manifest" if registered else "process" if detected else "unavailable",
+                "restore_source": "process" if detected else "manifest" if registered_valid else "unavailable",
             }
         )
     return restores
