@@ -74,7 +74,9 @@ herdr-organizer() {
 }
 
 herdr-organizer-ui() {
-  herdr-organizer snapshot "$@" && open "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
+  herdr-organizer snapshot "$@" || return
+  (cd "$_pmos_repo" && bash setup/serve.sh) || return
+  open "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
 }
 
 claude-real-bin() {
