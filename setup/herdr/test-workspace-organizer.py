@@ -533,18 +533,22 @@ class RestartRecoveryTests(unittest.TestCase):
     def layout(tab_id="w1:t1", pane_id="w1:p1"):
         return {"tab_id": tab_id, "root": {"type": "pane", "pane_id": pane_id}}
 
-    def source_workspace(self, session="lab", workspace_id="w1", *, agent_restore=None, label="One"):
+    def source_workspace(
+        self, session="lab", workspace_id="w1", *, agent_restore=None, label="One", focused=False
+    ):
         agent_restore = agent_restore or {"source_pane_id": "w1:p1", "restore_status": "shell_only"}
         layout = self.layout(f"{workspace_id}:t1", f"{workspace_id}:p1")
         tab = {
             "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1"),
             "label": "One tab",
             "index": 0,
+            "focused": False,
             "layout": layout,
             "layout_shape_fingerprint": ORGANIZER.layout_shape_fingerprint(layout),
             "panes": [
                 {
                     "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1", f"{workspace_id}:p1"),
+                    "cwd": tempfile.gettempdir(),
                     "agent_restore": agent_restore,
                 }
             ],
@@ -553,6 +557,7 @@ class RestartRecoveryTests(unittest.TestCase):
             "identity": ORGANIZER.recovery_identity(session, workspace_id),
             "label": label,
             "cwd": tempfile.gettempdir(),
+            "focused": focused,
             "tabs": [tab],
         }
         source["fingerprint"] = ORGANIZER.recovery_workspace_fingerprint(source)
@@ -612,7 +617,7 @@ class RestartRecoveryTests(unittest.TestCase):
             args = argparse.Namespace(bundle=bundle_id, confirm=None, copy_ambiguous=False, confirm_extra=None, resume_agents=False)
             with patch.object(ORGANIZER, "plan_recovery_session", return_value={"session": "lab", "workspaces": []}):
                 ORGANIZER.reconcile_all_command(args)
-            self.assertFalse((Path(temporary) / "journals" / f"{bundle_id}.json").exists())
+            self.assertFalse((Path(temporary) / "journals").exists())
             (session_path).write_text("tampered")
             with self.assertRaisesRegex(ORGANIZER.OrganizerError, "checksum"):
                 ORGANIZER.load_recovery_bundle(bundle_id)
@@ -663,6 +668,53 @@ class RestartRecoveryTests(unittest.TestCase):
         ):
             preflight = ORGANIZER.recovery_preflight_session("lab", set())
         self.assertEqual({item["kind"] for item in preflight["failures"]}, {"missing_workspace_cwd", "missing_pane_cwd", "missing_registered_worktree"})
+
+    def test_preflight_rejects_unknown_trusted_agent_status(self):
+        restore = {
+            "source_pane_id": "w1:p1",
+            "client": "codex",
+            "session_id": "verified-id",
+            "resume_command": "codex resume verified-id",
+            "restore_status": "resumable",
+            "restore_source": "manifest",
+        }
+        classified, failure = ORGANIZER.recovery_pane_classification(
+            {
+                "workspace_id": "w1",
+                "tab_id": "w1:t1",
+                "pane_id": "w1:p1",
+                "agent": "codex",
+                "agent_status": "unknown",
+            },
+            restore,
+            "lab",
+            set(),
+        )
+        self.assertEqual(classified["classification"], "unresolved_supported_agent")
+        self.assertEqual(failure["kind"], "unresolved_supported_agent")
+
+    def test_preflight_rejects_null_and_empty_workspace_and_pane_cwds(self):
+        for location, value in (
+            ("workspace", None),
+            ("workspace", ""),
+            ("pane", None),
+            ("pane", ""),
+        ):
+            with self.subTest(location=location, value=value):
+                snapshot = self.snapshot()
+                if location == "workspace":
+                    snapshot["workspaces"][0]["cwd"] = value
+                else:
+                    snapshot["panes"][0]["cwd"] = value
+                    snapshot["panes"][0]["foreground_cwd"] = value
+                with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+                    ORGANIZER, "agent_restore_records", return_value=[]
+                ), patch.object(
+                    ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+                ):
+                    preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
+                expected = "missing_workspace_cwd" if location == "workspace" else "missing_pane_cwd"
+                self.assertIn(expected, {item["kind"] for item in preflight["failures"]})
 
     def test_native_partial_restore_adopts_rebuilds_and_refuses_ambiguous(self):
         adopted = self.source_workspace("lab", "w1")
@@ -723,7 +775,7 @@ class RestartRecoveryTests(unittest.TestCase):
                         return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
                     self.assertEqual(method, "layout.apply")
                     model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
-                    model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+                    model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1", "cwd": tempfile.gettempdir(), "foreground_cwd": tempfile.gettempdir()}]
                     return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
                 tripped = {"value": False}
                 def inject(current):
@@ -748,6 +800,75 @@ class RestartRecoveryTests(unittest.TestCase):
                 journal = ORGANIZER.validate_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), bundle_id, [capture])
                 self.assertEqual(len(creates), 1)
                 self.assertEqual(journal["status"], "completed")
+
+    def test_rebuild_restores_non_last_source_workspace_focus(self):
+        first = self.source_workspace("lab", "w1", label="First", focused=True)
+        second = self.source_workspace("lab", "w2", label="Second", focused=False)
+        capture = {"session": "lab", "workspaces": [first, second]}
+        plans = [{"session": "lab", "workspaces": [{"source": first, "action": "rebuild"}, {"source": second, "action": "rebuild"}]}]
+        model = {"workspaces": [], "tabs": [], "panes": []}
+        calls = []
+
+        def snapshot(_session):
+            return copy.deepcopy(model)
+
+        def run_json(command, session):
+            self.assertEqual(session, "lab")
+            calls.append(command)
+            if command[:2] == ["workspace", "create"]:
+                workspace_id = f"new-{len(model['workspaces']) + 1}"
+                for workspace in model["workspaces"]:
+                    workspace["focused"] = False
+                model["workspaces"].append(
+                    {"workspace_id": workspace_id, "label": command[3], "cwd": command[-1], "focused": True}
+                )
+                tab_id = f"{workspace_id}:t1"
+                model["tabs"].append({"workspace_id": workspace_id, "tab_id": tab_id, "label": "initial", "focused": False})
+                return {"result": {"workspace_id": workspace_id, "tab_id": tab_id}}
+            if command[:2] == ["workspace", "focus"]:
+                for workspace in model["workspaces"]:
+                    workspace["focused"] = workspace["workspace_id"] == command[2]
+                return {"result": {"workspace_id": command[2]}}
+            raise AssertionError(command)
+
+        def socket_call(session, method, params):
+            self.assertEqual(session, "lab")
+            if method == "layout.export":
+                tab = next(tab for tab in model["tabs"] if tab["tab_id"] == params["tab_id"])
+                return {"layout": {"tab_id": tab["tab_id"], "root": {"type": "pane", "pane_id": f"{tab['workspace_id']}:p1"}}}
+            self.assertEqual(method, "layout.apply")
+            tab_id = params.get("tab_id")
+            if tab_id:
+                tab = next(tab for tab in model["tabs"] if tab["tab_id"] == tab_id)
+            else:
+                tab = next(tab for tab in model["tabs"] if tab["workspace_id"] == params["workspace_id"])
+            tab["label"] = params["tab_label"]
+            tab["focused"] = bool(params["focus"])
+            model["panes"] = [pane for pane in model["panes"] if pane["workspace_id"] != tab["workspace_id"]]
+            model["panes"].append(
+                {
+                    "workspace_id": tab["workspace_id"],
+                    "tab_id": tab["tab_id"],
+                    "pane_id": f"{tab['workspace_id']}:p1",
+                    "cwd": tempfile.gettempdir(),
+                    "foreground_cwd": tempfile.gettempdir(),
+                }
+            )
+            return {"layout": {"tab_id": tab["tab_id"], "root": {"type": "pane", "pane_id": f"{tab['workspace_id']}:p1"}}}
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+        ), patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+            ORGANIZER, "run_json", side_effect=run_json
+        ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call):
+            journal = ORGANIZER.execute_recovery_reconciliation(
+                "recovery-20261002T000000Z-fffffffff0", [capture], plans, False
+            )
+        self.assertEqual(journal["status"], "completed")
+        self.assertIn(["workspace", "focus", "new-1"], calls)
+        self.assertEqual(
+            [workspace["workspace_id"] for workspace in model["workspaces"] if workspace["focused"]], ["new-1"]
+        )
 
     def test_implicit_recovery_scope_rejects_running_default(self):
         response = argparse.Namespace(
@@ -792,7 +913,7 @@ class RestartRecoveryTests(unittest.TestCase):
                 return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
             self.assertEqual(method, "layout.apply")
             model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
-            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1", "cwd": tempfile.gettempdir(), "foreground_cwd": tempfile.gettempdir()}]
             return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
         with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"), patch.object(
             ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
@@ -836,7 +957,7 @@ class RestartRecoveryTests(unittest.TestCase):
             if method == "layout.export":
                 return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
             model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
-            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1", "cwd": tempfile.gettempdir(), "foreground_cwd": tempfile.gettempdir()}]
             if not lost["value"]:
                 lost["value"] = True
                 raise ORGANIZER.OrganizerError("lost tab response")
@@ -883,6 +1004,88 @@ class RestartRecoveryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ORGANIZER.OrganizerError, "operation marker"):
                     ORGANIZER.rollback_reconcile_command(args)
             run_json.assert_not_called()
+
+    def test_rollback_resumes_after_second_workspace_close_fails(self):
+        first = self.source_workspace("lab", "w1", label="First")
+        second = self.source_workspace("lab", "w2", label="Second")
+        capture = {"session": "lab", "workspaces": [first, second]}
+        plans = [{"session": "lab", "workspaces": [{"source": first, "action": "rebuild"}, {"source": second, "action": "rebuild"}]}]
+        model = {"workspaces": [], "tabs": [], "panes": []}
+
+        def snapshot(_session):
+            return copy.deepcopy(model)
+
+        def socket_call(session, method, params):
+            self.assertEqual(session, "lab")
+            self.assertEqual(method, "layout.export")
+            tab = next(tab for tab in model["tabs"] if tab["tab_id"] == params["tab_id"])
+            return {"layout": {"tab_id": tab["tab_id"], "root": {"type": "pane", "pane_id": f"{tab['workspace_id']}:p1"}}}
+
+        failed = {"value": False}
+
+        def first_run_json(command, session):
+            self.assertEqual(session, "lab")
+            self.assertEqual(command[:2], ["workspace", "close"])
+            workspace_id = command[2]
+            if workspace_id == "new-w2" and not failed["value"]:
+                failed["value"] = True
+                raise ORGANIZER.OrganizerError("second close failed")
+            model["workspaces"] = [item for item in model["workspaces"] if item["workspace_id"] != workspace_id]
+            model["tabs"] = [item for item in model["tabs"] if item["workspace_id"] != workspace_id]
+            model["panes"] = [item for item in model["panes"] if item["workspace_id"] != workspace_id]
+            return {"result": {"workspace_id": workspace_id}}
+
+        retried = []
+
+        def retry_run_json(command, session):
+            self.assertEqual(session, "lab")
+            self.assertEqual(command[:2], ["workspace", "close"])
+            retried.append(command[2])
+            workspace_id = command[2]
+            model["workspaces"] = [item for item in model["workspaces"] if item["workspace_id"] != workspace_id]
+            model["tabs"] = [item for item in model["tabs"] if item["workspace_id"] != workspace_id]
+            model["panes"] = [item for item in model["panes"] if item["workspace_id"] != workspace_id]
+            return {"result": {"workspace_id": workspace_id}}
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"
+        ), patch.object(ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"):
+            bundle_id = ORGANIZER.write_recovery_bundle([capture])
+            journal = ORGANIZER.new_recovery_journal(bundle_id, plans)
+            states = journal["sessions"]["lab"]["workspaces"]
+            for source, workspace_id in ((first, "new-w1"), (second, "new-w2")):
+                state = states[ORGANIZER.recovery_workspace_plan_key(source)]
+                tab = source["tabs"][0]
+                state.update({"created_workspace_id": workspace_id, "initial_tab_id": f"{workspace_id}:t1"})
+                state["tabs"][ORGANIZER.source_tab_key(tab)]["destination_tab_id"] = f"{workspace_id}:t1"
+                model["workspaces"].append(
+                    {"workspace_id": workspace_id, "label": state["expected_label"], "cwd": tempfile.gettempdir()}
+                )
+                model["tabs"].append(
+                    {"workspace_id": workspace_id, "tab_id": f"{workspace_id}:t1", "label": state["tabs"][ORGANIZER.source_tab_key(tab)]["expected_label"]}
+                )
+                model["panes"].append(
+                    {"workspace_id": workspace_id, "tab_id": f"{workspace_id}:t1", "pane_id": f"{workspace_id}:p1"}
+                )
+            ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+            ORGANIZER.write_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), journal)
+            args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id)
+            with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+                ORGANIZER, "socket_call", side_effect=socket_call
+            ), patch.object(ORGANIZER, "run_json", side_effect=first_run_json):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "second close failed"):
+                    ORGANIZER.rollback_reconcile_command(args)
+            interrupted = ORGANIZER.validate_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), bundle_id, [capture])
+            interrupted_states = interrupted["sessions"]["lab"]["workspaces"]
+            self.assertEqual(interrupted_states[ORGANIZER.recovery_workspace_plan_key(first)]["rollback"]["status"], "closed")
+            self.assertEqual(interrupted_states[ORGANIZER.recovery_workspace_plan_key(second)]["rollback"]["status"], "close_intent")
+            with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+                ORGANIZER, "socket_call", side_effect=socket_call
+            ), patch.object(ORGANIZER, "run_json", side_effect=retry_run_json):
+                ORGANIZER.rollback_reconcile_command(args)
+            completed = ORGANIZER.validate_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), bundle_id, [capture])
+        self.assertEqual(retried, ["new-w2"])
+        self.assertEqual(completed["status"], "rolled_back")
 
     def test_verification_reexports_layout_and_checks_focus_and_duplicates(self):
         source = self.source_workspace()

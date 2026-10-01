@@ -39,6 +39,10 @@ CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
+# A resume record is not enough to establish that an agent is quiescent.  Herdr
+# currently reports an explicitly idle agent with this value; all other values
+# must be treated as unresolved until they have a reviewed recovery policy.
+SAFE_RESUMABLE_AGENT_STATUSES = {"idle"}
 SHELL_PROCESS_NAMES = {"bash", "fish", "sh", "starship", "zsh"}
 CODEX_INTERACTIVE_PROMPT_COUNT = 2
 CODEX_INTERACTIVE_PROMPT_MINIMUM_LENGTH = 24
@@ -1725,9 +1729,9 @@ def recovery_acknowledgements(values: Iterable[str] | None) -> set[str]:
 
 
 def recovery_path_issue(value: Any, kind: str, identity: dict[str, str | None]) -> dict[str, Any] | None:
-    if not isinstance(value, str) or not value:
-        return None
-    path = Path(value).expanduser()
+    if not isinstance(value, str) or not value.strip():
+        return {"kind": kind, "identity": identity, "path": None}
+    path = Path(value.strip()).expanduser()
     if path.is_dir():
         return None
     return {"kind": kind, "identity": identity, "path": str(path)}
@@ -1752,6 +1756,13 @@ def recovery_pane_classification(
         return {"identity": identity, "classification": "unresolved_supported_agent", "agent": agent, "agent_status": status}, {
             "kind": "unresolved_supported_agent", "identity": identity
         }
+    if agent and status not in SAFE_RESUMABLE_AGENT_STATUSES:
+        return {
+            "identity": identity,
+            "classification": "unresolved_supported_agent",
+            "agent": agent,
+            "agent_status": status,
+        }, {"kind": "unresolved_supported_agent", "identity": identity}
     try:
         process_info = recovery_process_info(session, pane_id)
     except OrganizerError:
@@ -1826,9 +1837,10 @@ def recovery_preflight_snapshot(
         if issue:
             failures.append(issue)
         registered = records_by_pane.get(pane_id, {})
-        issue = recovery_path_issue(registered.get("worktree"), "missing_registered_worktree", identity)
-        if issue:
-            failures.append(issue)
+        if "worktree" in registered:
+            issue = recovery_path_issue(registered.get("worktree"), "missing_registered_worktree", identity)
+            if issue:
+                failures.append(issue)
         classification, failure = recovery_pane_classification(
             pane, restores.get(pane_id, {}), selected, acknowledgements
         )
@@ -2372,6 +2384,14 @@ def validate_recovery_journal(path: Path, bundle_id: str, captures: list[dict[st
             raise OrganizerError("Recovery journal has an invalid session state.")
         if session_state.get("verification") is not None and not isinstance(session_state.get("verification"), dict):
             raise OrganizerError("Recovery journal has an invalid verification state.")
+        workspace_focus = session_state.get("workspace_focus")
+        if workspace_focus is not None and (
+            not isinstance(workspace_focus, dict)
+            or workspace_focus.get("source_identity") not in [source.get("identity") for source in capture.get("workspaces", [])]
+            or not isinstance(workspace_focus.get("workspace_id"), str)
+            or workspace_focus.get("status") not in {"focus_intent", "focused", "already_focused"}
+        ):
+            raise OrganizerError("Recovery journal workspace-focus state is invalid.")
         states = session_state["workspaces"]
         expected_workspace_keys = {recovery_workspace_plan_key(source) for source in capture.get("workspaces", [])}
         if set(states) != expected_workspace_keys:
@@ -2390,6 +2410,13 @@ def validate_recovery_journal(path: Path, bundle_id: str, captures: list[dict[st
             for field in ("created_workspace_id", "initial_tab_id", "native_workspace_id"):
                 if state.get(field) is not None and not isinstance(state.get(field), str):
                     raise OrganizerError("Recovery journal workspace ID state is invalid.")
+            rollback = state.get("rollback")
+            if rollback is not None and (
+                not isinstance(rollback, dict)
+                or rollback.get("status") not in {"close_intent", "closed", "closed_recovered"}
+                or rollback.get("workspace_id") != state.get("created_workspace_id")
+            ):
+                raise OrganizerError("Recovery journal rollback state is invalid.")
             tabs = state.get("tabs")
             if not isinstance(tabs, dict):
                 raise OrganizerError("Recovery journal tab state is invalid.")
@@ -2413,7 +2440,6 @@ def validate_recovery_journal(path: Path, bundle_id: str, captures: list[dict[st
 
 
 def load_existing_recovery_journal(bundle_id: str, captures: list[dict[str, Any]]) -> tuple[Path, dict[str, Any]] | None:
-    ensure_private_directory(RECOVERY_JOURNAL_DIR)
     path = recovery_journal_path(bundle_id)
     if not path.exists():
         return None
@@ -2444,18 +2470,24 @@ def snapshot_tab_ids(snapshot: dict[str, Any], workspace_id: str) -> set[str]:
 
 
 def verified_marked_workspace(snapshot: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = marked_recovery_workspaces(snapshot, state)
     workspace_id = state.get("created_workspace_id")
+    if workspace_id:
+        candidates = [item for item in candidates if item.get("workspace_id") == workspace_id]
+    return candidates[0] if candidates else None
+
+
+def marked_recovery_workspaces(snapshot: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
     candidates = [
         item
         for item in snapshot.get("workspaces", [])
         if isinstance(item, dict)
         and item.get("label") == state.get("expected_label")
         and item.get("cwd") == state.get("expected_cwd")
-        and (not workspace_id or item.get("workspace_id") == workspace_id)
     ]
     if len(candidates) > 1:
         raise OrganizerError("Multiple workspaces carry this recovery operation marker. Manual repair is required.")
-    return candidates[0] if candidates else None
+    return candidates
 
 
 def verify_created_workspace(snapshot: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -2613,6 +2645,60 @@ def rebuild_recovery_workspace(
     state["status"] = "layouts_rebuilt"
     session_state["last_workspace"] = state["source_identity"]
     record_recovery_stage(journal_path, journal, "layouts_rebuilt")
+
+
+def snapshot_has_exclusive_workspace_focus(snapshot: dict[str, Any], workspace_id: str) -> bool:
+    focused = [
+        str(workspace.get("workspace_id"))
+        for workspace in snapshot.get("workspaces", [])
+        if isinstance(workspace, dict) and workspace.get("focused") and workspace.get("workspace_id")
+    ]
+    return focused == [workspace_id]
+
+
+def restore_recovery_session_focus(
+    journal_path: Path, journal: dict[str, Any], session: str, capture: dict[str, Any]
+) -> None:
+    """Restore the source's active workspace after all rebuilt layouts exist."""
+    session_state = journal["sessions"][session]
+    workspace_states = session_state["workspaces"]
+    sources = [source for source in capture.get("workspaces", []) if isinstance(source, dict)]
+    if not any(
+        workspace_states.get(recovery_workspace_plan_key(source), {}).get("planned_action") == "rebuild"
+        for source in sources
+    ):
+        return
+    focused_sources = [source for source in sources if source.get("focused")]
+    if not focused_sources:
+        return
+    if len(focused_sources) != 1:
+        raise OrganizerError("Recovery bundle does not identify exactly one focused workspace for this session.")
+    source = focused_sources[0]
+    state = workspace_states[recovery_workspace_plan_key(source)]
+    target_id = state.get("native_workspace_id") if state.get("planned_action") == "adopt" else state.get("created_workspace_id")
+    if not isinstance(target_id, str) or not target_id:
+        raise OrganizerError("Recovery journal has no target workspace for the focused source workspace.")
+    focus_state = session_state.setdefault("workspace_focus", {})
+    if not isinstance(focus_state, dict):
+        raise OrganizerError("Recovery journal workspace-focus state is invalid.")
+    focus_state.update(
+        {
+            "source_identity": source["identity"],
+            "workspace_id": target_id,
+            "status": "focus_intent",
+        }
+    )
+    current = session_snapshot(session)
+    if snapshot_has_exclusive_workspace_focus(current, target_id):
+        focus_state["status"] = "already_focused"
+        record_recovery_stage(journal_path, journal, "workspace_focus_verified")
+        return
+    record_recovery_stage(journal_path, journal, "workspace_focus_intent")
+    run_json(["workspace", "focus", target_id], session)
+    if not snapshot_has_exclusive_workspace_focus(session_snapshot(session), target_id):
+        raise OrganizerError("Herdr did not restore the expected recovery workspace focus. Stop for manual repair.")
+    focus_state["status"] = "focused"
+    record_recovery_stage(journal_path, journal, "workspace_focused")
 
 
 def recovery_pane_map(state: dict[str, Any]) -> dict[str, str]:
@@ -2802,6 +2888,7 @@ def execute_recovery_reconciliation(
             else:
                 rebuild_recovery_workspace(journal_path, journal, session, source, state)
             dispatch_recovery_agents(journal_path, journal, session, source, state, resume_agents)
+        restore_recovery_session_focus(journal_path, journal, session, capture)
         verification = verify_recovery_session(session, capture, journal)
         journal["sessions"][session]["verification"] = verification
         record_recovery_stage(journal_path, journal, "session_verified")
@@ -2812,28 +2899,40 @@ def execute_recovery_reconciliation(
     return journal
 
 
+def recovery_reconciliation_plans(
+    captures: list[dict[str, Any]], existing_journal: tuple[Path, dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    if not existing_journal:
+        return [plan_recovery_session(capture) for capture in captures]
+    for capture in captures:
+        session = require_recovery_session(capture.get("session"))
+        try:
+            session_snapshot(session)
+        except OrganizerError as error:
+            raise OrganizerError(
+                f"Recovery session {session!r} is not attached. Attach it interactively before reconciling: {error}"
+            ) from error
+    return recovery_resume_plans(captures, existing_journal[1])
+
+
 def reconcile_all_command(args: argparse.Namespace) -> None:
     _path, _manifest, captures = load_recovery_bundle(args.bundle)
+    existing_journal = load_existing_recovery_journal(args.bundle, captures)
+    if not args.confirm:
+        plans = recovery_reconciliation_plans(captures, existing_journal)
+        summary = recovery_plan_summary(plans)
+        print(json.dumps(summary, indent=2))
+        print(f"Preview only. Re-run with --confirm {args.bundle!r} after attaching every bundled named session.")
+        return
+    if args.confirm != args.bundle:
+        raise OrganizerError(f"Reconcile requires --confirm {args.bundle!r}.")
     with recovery_bundle_lock(args.bundle):
+        # Reload under the mutation lock so a concurrent confirmed command
+        # cannot change the persisted plan between preview and execution.
         existing_journal = load_existing_recovery_journal(args.bundle, captures)
-        if existing_journal:
-            for capture in captures:
-                session = require_recovery_session(capture.get("session"))
-                try:
-                    session_snapshot(session)
-                except OrganizerError as error:
-                    raise OrganizerError(f"Recovery session {session!r} is not attached. Attach it interactively before reconciling: {error}") from error
-            plans = recovery_resume_plans(captures, existing_journal[1])
-        else:
-            plans = [plan_recovery_session(capture) for capture in captures]
+        plans = recovery_reconciliation_plans(captures, existing_journal)
         summary = recovery_plan_summary(plans)
         ambiguous = [plan for session in plans for plan in session["workspaces"] if plan["action"] == "ambiguous"]
-        if not args.confirm:
-            print(json.dumps(summary, indent=2))
-            print(f"Preview only. Re-run with --confirm {args.bundle!r} after attaching every bundled named session.")
-            return
-        if args.confirm != args.bundle:
-            raise OrganizerError(f"Reconcile requires --confirm {args.bundle!r}.")
         if ambiguous:
             if not args.copy_ambiguous:
                 print(json.dumps(summary, indent=2))
@@ -2855,40 +2954,88 @@ def reconcile_all_command(args: argparse.Namespace) -> None:
     print("Agent dispatch and observed recovery are recorded separately in the private reconciliation journal.")
 
 
+def recovery_rollback_workspaces(
+    captures: list[dict[str, Any]], journal: dict[str, Any]
+) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    created: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for capture in captures:
+        session = require_recovery_session(capture.get("session"))
+        states = journal["sessions"][session]["workspaces"]
+        for source in capture.get("workspaces", []):
+            state = states[recovery_workspace_plan_key(source)]
+            if state.get("planned_action") == "rebuild" and isinstance(state.get("created_workspace_id"), str):
+                created.append((session, source, state))
+    return created
+
+
+def rollback_recovery_workspaces(
+    journal_path: Path, journal: dict[str, Any], captures: list[dict[str, Any]]
+) -> int:
+    created = recovery_rollback_workspaces(captures, journal)
+    for session, source, state in created:
+        snapshot = session_snapshot(session)  # Refuse unattached sessions before any mutation.
+        rollback = state.get("rollback")
+        marked = marked_recovery_workspaces(snapshot, state)
+        if isinstance(rollback, dict) and rollback.get("status") in {"closed", "closed_recovered"}:
+            if marked:
+                raise OrganizerError(
+                    "A workspace recorded as closed still carries this recovery marker. Stop for manual repair."
+                )
+            continue
+        if isinstance(rollback, dict) and rollback.get("status") == "close_intent" and not marked:
+            state["rollback"] = {
+                "status": "closed_recovered",
+                "workspace_id": state["created_workspace_id"],
+                "closed_at": now(),
+            }
+            record_recovery_stage(journal_path, journal, "rollback_workspace_closed_recovered")
+            continue
+        workspace = verify_created_workspace(snapshot, state)
+        workspace_id = str(workspace["workspace_id"])
+        for source_tab in source.get("tabs", []):
+            tab_state = state["tabs"][source_tab_key(source_tab)]
+            if not verified_marked_tab(session, source_tab, tab_state, workspace_id, snapshot):
+                raise OrganizerError("Recovery tab ownership marker is missing. Rollback refused; manual repair is required.")
+        state["rollback"] = {
+            "status": "close_intent",
+            "workspace_id": workspace_id,
+            "started_at": now(),
+        }
+        record_recovery_stage(journal_path, journal, "rollback_workspace_close_intent")
+        run_json(["workspace", "close", workspace_id], session)
+        if marked_recovery_workspaces(session_snapshot(session), state):
+            raise OrganizerError("Herdr did not close the marked recovery workspace. Stop for manual repair.")
+        state["rollback"] = {
+            "status": "closed",
+            "workspace_id": workspace_id,
+            "closed_at": now(),
+        }
+        record_recovery_stage(journal_path, journal, "rollback_workspace_closed")
+    journal["status"] = "rolled_back"
+    journal["rolled_back_at"] = now()
+    record_recovery_stage(journal_path, journal, "rollback_completed")
+    return len(created)
+
+
 def rollback_reconcile_command(args: argparse.Namespace) -> None:
     _path, _manifest, captures = load_recovery_bundle(args.bundle)
+    existing = load_existing_recovery_journal(args.bundle, captures)
+    if not existing:
+        raise OrganizerError("No reconciliation journal exists for this bundle.")
+    if not args.confirm:
+        created = recovery_rollback_workspaces(captures, existing[1])
+        print(json.dumps({"bundle_id": args.bundle, "created_workspace_count": len(created)}, indent=2))
+        print(f"Preview only. Re-run with --confirm {args.bundle!r} to close only workspaces created by this journal.")
+        return
+    if args.confirm != args.bundle:
+        raise OrganizerError(f"Rollback requires --confirm {args.bundle!r}.")
     with recovery_bundle_lock(args.bundle):
         existing = load_existing_recovery_journal(args.bundle, captures)
         if not existing:
             raise OrganizerError("No reconciliation journal exists for this bundle.")
         journal_path, journal = existing
-        created: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
-        for capture in captures:
-            session = require_recovery_session(capture.get("session"))
-            states = journal["sessions"][session]["workspaces"]
-            for source in capture.get("workspaces", []):
-                state = states[recovery_workspace_plan_key(source)]
-                if state.get("planned_action") == "rebuild" and isinstance(state.get("created_workspace_id"), str):
-                    created.append((session, source, state))
-        if not args.confirm:
-            print(json.dumps({"bundle_id": args.bundle, "created_workspace_count": len(created)}, indent=2))
-            print(f"Preview only. Re-run with --confirm {args.bundle!r} to close only workspaces created by this journal.")
-            return
-        if args.confirm != args.bundle:
-            raise OrganizerError(f"Rollback requires --confirm {args.bundle!r}.")
-        for session, source, state in created:
-            snapshot = session_snapshot(session)  # Explicit attached-session refusal before any mutation.
-            workspace = verify_created_workspace(snapshot, state)
-            workspace_id = str(workspace["workspace_id"])
-            for source_tab in source.get("tabs", []):
-                tab_state = state["tabs"][source_tab_key(source_tab)]
-                if not verified_marked_tab(session, source_tab, tab_state, workspace_id, snapshot):
-                    raise OrganizerError("Recovery tab ownership marker is missing. Rollback refused; manual repair is required.")
-            run_json(["workspace", "close", workspace_id], session)
-        journal["status"] = "rolled_back"
-        journal["rolled_back_at"] = now()
-        write_recovery_journal(journal_path, journal)
-    print(f"Closed {len(created)} workspace(s) created by this recovery journal. Adopted native workspaces were not touched.")
+        created_count = rollback_recovery_workspaces(journal_path, journal, captures)
+    print(f"Rolled back {created_count} workspace(s) created by this recovery journal. Adopted native workspaces were not touched.")
 
 
 def parser() -> argparse.ArgumentParser:
