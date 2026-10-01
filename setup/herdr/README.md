@@ -236,8 +236,9 @@ preview and can close only workspace IDs created by that bundle's journal. It
 never closes adopted native workspaces. Both previews are read-only and do not
 create a journal directory or lock file. A confirmed rebuild restores the
 captured active workspace after all layouts exist. A confirmed rollback records
-each workspace close before and after it happens, so an interrupted rollback
-can resume without touching a workspace that was already closed.
+each workspace close before it happens and only marks it closed after a
+snapshot confirms that workspace ID is absent. An interrupted rollback can
+then resume without touching a workspace that was already closed.
 
 During a confirmed rebuild, the organizer gives each newly created workspace
 and tab a durable private-operation suffix such as `[rrb:…]`. The journal

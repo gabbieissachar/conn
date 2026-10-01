@@ -1150,6 +1150,67 @@ class RestartRecoveryTests(unittest.TestCase):
                 self.assertEqual(saved["status"], "prepared")
                 self.assertEqual(saved_state["rollback"]["status"], "close_intent")
 
+    def test_rollback_post_close_confirmation_requires_created_workspace_id_absent(self):
+        for changed_field, changed_value in (("label", "Renamed"), ("cwd", "/changed/worktree")):
+            with self.subTest(changed_field=changed_field):
+                source = self.source_workspace()
+                capture = {"session": "lab", "workspaces": [source]}
+                plans = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+                model = {"workspaces": [], "tabs": [], "panes": []}
+
+                def snapshot(_session):
+                    return copy.deepcopy(model)
+
+                def socket_call(session, method, params):
+                    self.assertEqual(session, "lab")
+                    self.assertEqual(method, "layout.export")
+                    return {
+                        "layout": {
+                            "tab_id": params["tab_id"],
+                            "root": {"type": "pane", "pane_id": "new-w:p1"},
+                        }
+                    }
+
+                close_calls = []
+
+                def run_json(command, session):
+                    self.assertEqual(session, "lab")
+                    self.assertEqual(command, ["workspace", "close", "new-w"])
+                    close_calls.append(command)
+                    model["workspaces"][0][changed_field] = changed_value
+                    return {"result": {"workspace_id": "new-w"}}
+
+                with tempfile.TemporaryDirectory() as temporary, patch.object(
+                    ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"
+                ), patch.object(ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"):
+                    bundle_id = ORGANIZER.write_recovery_bundle([capture])
+                    journal = ORGANIZER.new_recovery_journal(bundle_id, plans)
+                    state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+                    source_tab = source["tabs"][0]
+                    tab_state = state["tabs"][ORGANIZER.source_tab_key(source_tab)]
+                    state.update({"created_workspace_id": "new-w", "initial_tab_id": "new-w:t1"})
+                    tab_state["destination_tab_id"] = "new-w:t1"
+                    model["workspaces"] = [
+                        {"workspace_id": "new-w", "label": state["expected_label"], "cwd": state["expected_cwd"]}
+                    ]
+                    model["tabs"] = [
+                        {"workspace_id": "new-w", "tab_id": "new-w:t1", "label": tab_state["expected_label"]}
+                    ]
+                    ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+                    journal_path = ORGANIZER.recovery_journal_path(bundle_id)
+                    ORGANIZER.write_recovery_journal(journal_path, journal)
+                    args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id)
+                    with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+                        ORGANIZER, "socket_call", side_effect=socket_call
+                    ), patch.object(ORGANIZER, "run_json", side_effect=run_json):
+                        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "did not close the recovery workspace ID"):
+                            ORGANIZER.rollback_reconcile_command(args)
+                    saved = ORGANIZER.validate_recovery_journal(journal_path, bundle_id, [capture])
+                saved_state = next(iter(saved["sessions"]["lab"]["workspaces"].values()))
+                self.assertEqual(close_calls, [["workspace", "close", "new-w"]])
+                self.assertEqual(saved["status"], "prepared")
+                self.assertEqual(saved_state["rollback"]["status"], "close_intent")
+
     def test_verification_reexports_layout_and_checks_focus_and_duplicates(self):
         source = self.source_workspace()
         capture = {"session": "lab", "workspaces": [source]}

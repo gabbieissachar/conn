@@ -3004,6 +3004,11 @@ def rollback_recovery_workspaces(
         if isinstance(rollback, dict) and rollback.get("status") == "close_intent":
             live_created = snapshot_workspace_with_id(snapshot, created_workspace_id)
             if not live_created:
+                if marked_recovery_workspaces(snapshot, state):
+                    raise OrganizerError(
+                        "A close-intent recovery operation marker remains after its created workspace ID disappeared. "
+                        "Stop for manual repair."
+                    )
                 state["rollback"] = {
                     "status": "closed_recovered",
                     "workspace_id": created_workspace_id,
@@ -3018,6 +3023,10 @@ def rollback_recovery_workspaces(
                 )
         marked = marked_recovery_workspaces(snapshot, state)
         if isinstance(rollback, dict) and rollback.get("status") in {"closed", "closed_recovered"}:
+            if snapshot_workspace_with_id(snapshot, created_workspace_id):
+                raise OrganizerError(
+                    "A recovery workspace recorded as closed still exists. Stop for manual repair."
+                )
             if marked:
                 raise OrganizerError(
                     "A workspace recorded as closed still carries this recovery marker. Stop for manual repair."
@@ -3036,7 +3045,10 @@ def rollback_recovery_workspaces(
         }
         record_recovery_stage(journal_path, journal, "rollback_workspace_close_intent")
         run_json(["workspace", "close", workspace_id], session)
-        if marked_recovery_workspaces(session_snapshot(session), state):
+        confirmed = session_snapshot(session)
+        if snapshot_workspace_with_id(confirmed, workspace_id):
+            raise OrganizerError("Herdr did not close the recovery workspace ID. Stop for manual repair.")
+        if marked_recovery_workspaces(confirmed, state):
             raise OrganizerError("Herdr did not close the marked recovery workspace. Stop for manual repair.")
         state["rollback"] = {
             "status": "closed",
