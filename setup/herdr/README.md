@@ -209,10 +209,11 @@ herdr-organizer reconcile-all --bundle <bundle_id>
 herdr-organizer reconcile-all --bundle <bundle_id> --confirm <bundle_id>
 ```
 
-The preparation preflight refuses busy or unresolved Codex and Claude panes,
-missing CWDs or registered worktrees, unknown foreground process state, and
-unclassified non-shell processes. To acknowledge one intentionally volatile
-process, name its complete identity. There is no global bypass:
+The preparation preflight refuses a session without exactly one focused
+workspace, busy or unresolved Codex and Claude panes, missing CWDs or
+registered worktrees, unknown foreground process state, and unclassified
+non-shell processes. To acknowledge one intentionally volatile process, name
+its complete identity. There is no global bypass:
 
 ```sh
 herdr-organizer prepare-restart-recovery --session project-a \

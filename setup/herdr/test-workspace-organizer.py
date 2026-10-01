@@ -511,7 +511,7 @@ class WorkspaceOrganizerTests(unittest.TestCase):
 
 
 class RestartRecoveryTests(unittest.TestCase):
-    def snapshot(self, *, pane_agent=None, pane_status=None, cwd=None):
+    def snapshot(self, *, pane_agent=None, pane_status=None, cwd=None, focused=True):
         path = cwd or tempfile.gettempdir()
         pane = {
             "workspace_id": "w1",
@@ -524,7 +524,7 @@ class RestartRecoveryTests(unittest.TestCase):
             pane["agent"] = pane_agent
             pane["agent_status"] = pane_status or "idle"
         return {
-            "workspaces": [{"workspace_id": "w1", "label": "One", "cwd": path}],
+            "workspaces": [{"workspace_id": "w1", "label": "One", "cwd": path, "focused": focused}],
             "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "One tab"}],
             "panes": [pane],
         }
@@ -715,6 +715,29 @@ class RestartRecoveryTests(unittest.TestCase):
                     preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
                 expected = "missing_workspace_cwd" if location == "workspace" else "missing_pane_cwd"
                 self.assertIn(expected, {item["kind"] for item in preflight["failures"]})
+
+    def test_preflight_rejects_session_without_a_focused_workspace(self):
+        snapshot = self.snapshot(focused=False)
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
+        self.assertIn("no_focused_workspace", {item["kind"] for item in preflight["failures"]})
+
+    def test_preflight_rejects_session_with_multiple_focused_workspaces(self):
+        snapshot = self.snapshot()
+        snapshot["workspaces"].append(
+            {"workspace_id": "w2", "label": "Two", "cwd": tempfile.gettempdir(), "focused": True}
+        )
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
+        self.assertIn("multiple_focused_workspaces", {item["kind"] for item in preflight["failures"]})
 
     def test_native_partial_restore_adopts_rebuilds_and_refuses_ambiguous(self):
         adopted = self.source_workspace("lab", "w1")
@@ -1086,6 +1109,46 @@ class RestartRecoveryTests(unittest.TestCase):
             completed = ORGANIZER.validate_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), bundle_id, [capture])
         self.assertEqual(retried, ["new-w2"])
         self.assertEqual(completed["status"], "rolled_back")
+
+    def test_rollback_close_intent_refuses_a_live_workspace_with_changed_marker(self):
+        for changed_field, changed_value in (("label", "Renamed"), ("cwd", "/changed/worktree")):
+            with self.subTest(changed_field=changed_field):
+                source = self.source_workspace()
+                capture = {"session": "lab", "workspaces": [source]}
+                plans = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+                with tempfile.TemporaryDirectory() as temporary, patch.object(
+                    ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"
+                ), patch.object(ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"):
+                    bundle_id = ORGANIZER.write_recovery_bundle([capture])
+                    journal = ORGANIZER.new_recovery_journal(bundle_id, plans)
+                    state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+                    state.update(
+                        {
+                            "created_workspace_id": "new-w",
+                            "initial_tab_id": "new-w:t1",
+                            "rollback": {"status": "close_intent", "workspace_id": "new-w", "started_at": "now"},
+                        }
+                    )
+                    live_workspace = {
+                        "workspace_id": "new-w",
+                        "label": state["expected_label"],
+                        "cwd": state["expected_cwd"],
+                    }
+                    live_workspace[changed_field] = changed_value
+                    ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+                    journal_path = ORGANIZER.recovery_journal_path(bundle_id)
+                    ORGANIZER.write_recovery_journal(journal_path, journal)
+                    args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id)
+                    with patch.object(
+                        ORGANIZER, "session_snapshot", return_value={"workspaces": [live_workspace], "tabs": [], "panes": []}
+                    ), patch.object(ORGANIZER, "run_json") as run_json:
+                        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "close-intent recovery workspace still exists"):
+                            ORGANIZER.rollback_reconcile_command(args)
+                    run_json.assert_not_called()
+                    saved = ORGANIZER.validate_recovery_journal(journal_path, bundle_id, [capture])
+                saved_state = next(iter(saved["sessions"]["lab"]["workspaces"].values()))
+                self.assertEqual(saved["status"], "prepared")
+                self.assertEqual(saved_state["rollback"]["status"], "close_intent")
 
     def test_verification_reexports_layout_and_checks_focus_and_duplicates(self):
         source = self.source_workspace()

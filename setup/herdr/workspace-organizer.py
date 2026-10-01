@@ -1819,7 +1819,25 @@ def recovery_preflight_snapshot(
     }
     classifications: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for workspace in snapshot.get("workspaces", []):
+    workspaces = snapshot.get("workspaces", [])
+    focused_workspaces = [
+        workspace
+        for workspace in workspaces
+        if isinstance(workspace, dict) and workspace.get("focused") and workspace.get("workspace_id")
+    ]
+    if not focused_workspaces:
+        failures.append(
+            {"kind": "no_focused_workspace", "identity": recovery_identity(selected), "focused_workspace_count": 0}
+        )
+    elif len(focused_workspaces) != 1:
+        failures.append(
+            {
+                "kind": "multiple_focused_workspaces",
+                "identity": recovery_identity(selected),
+                "focused_workspace_count": len(focused_workspaces),
+            }
+        )
+    for workspace in workspaces:
         if not isinstance(workspace, dict) or not workspace.get("workspace_id"):
             raise OrganizerError("Herdr snapshot contains a workspace without an ID.")
         identity = recovery_identity(selected, str(workspace["workspace_id"]))
@@ -2490,6 +2508,13 @@ def marked_recovery_workspaces(snapshot: dict[str, Any], state: dict[str, Any]) 
     return candidates
 
 
+def snapshot_workspace_with_id(snapshot: dict[str, Any], workspace_id: str) -> dict[str, Any] | None:
+    for workspace in snapshot.get("workspaces", []):
+        if isinstance(workspace, dict) and workspace.get("workspace_id") == workspace_id:
+            return workspace
+    return None
+
+
 def verify_created_workspace(snapshot: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     workspace = verified_marked_workspace(snapshot, state)
     if not workspace or not isinstance(workspace.get("workspace_id"), str):
@@ -2975,20 +3000,28 @@ def rollback_recovery_workspaces(
     for session, source, state in created:
         snapshot = session_snapshot(session)  # Refuse unattached sessions before any mutation.
         rollback = state.get("rollback")
+        created_workspace_id = state["created_workspace_id"]
+        if isinstance(rollback, dict) and rollback.get("status") == "close_intent":
+            live_created = snapshot_workspace_with_id(snapshot, created_workspace_id)
+            if not live_created:
+                state["rollback"] = {
+                    "status": "closed_recovered",
+                    "workspace_id": created_workspace_id,
+                    "closed_at": now(),
+                }
+                record_recovery_stage(journal_path, journal, "rollback_workspace_closed_recovered")
+                continue
+            if not verified_marked_workspace(snapshot, state):
+                raise OrganizerError(
+                    "A close-intent recovery workspace still exists but no longer verifies its operation marker. "
+                    "Stop for manual repair."
+                )
         marked = marked_recovery_workspaces(snapshot, state)
         if isinstance(rollback, dict) and rollback.get("status") in {"closed", "closed_recovered"}:
             if marked:
                 raise OrganizerError(
                     "A workspace recorded as closed still carries this recovery marker. Stop for manual repair."
                 )
-            continue
-        if isinstance(rollback, dict) and rollback.get("status") == "close_intent" and not marked:
-            state["rollback"] = {
-                "status": "closed_recovered",
-                "workspace_id": state["created_workspace_id"],
-                "closed_at": now(),
-            }
-            record_recovery_stage(journal_path, journal, "rollback_workspace_closed_recovered")
             continue
         workspace = verify_created_workspace(snapshot, state)
         workspace_id = str(workspace["workspace_id"])
