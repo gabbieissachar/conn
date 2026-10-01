@@ -177,6 +177,62 @@ resume. It can move individual panes between workspaces, but it cannot move a
 complete tab atomically or archive a workspace non-destructively. Those gaps
 belong in Herdr rather than this sidecar.
 
+## Restart-Recovery Bundles
+
+`prepare-restart-recovery` is separate from `archive`. It does not close a
+workspace or tab, send a status command to a busy pane, or dispatch an agent
+resume command. `backup-all` is an alias for the same non-destructive command.
+
+Use this safe order when a computer restart could interrupt Herdr:
+
+1. Attach the exact named sessions that need recovery, then run a strict
+   preflight and seal the bundle. Repeat `--session`; without it, the command
+   selects only sessions running at preflight time. It never selects every
+   saved session directory.
+2. Restart only after the command reports that the bundle is `ready`.
+3. After boot, attach each bundled session through Herdr's normal interactive
+   path. Recovery does not start sessions for you.
+4. Run the reconciliation preview. It adopts matching native workspaces and
+   identifies only proven-missing workspaces for rebuilding.
+5. Confirm the preview, then check the recorded verification result. Agent
+   command dispatch and observed agent recovery are reported separately.
+
+For example:
+
+```sh
+herdr-organizer prepare-restart-recovery --session project-a --session project-b
+# Keep the printed bundle ID private and local.
+
+# Restart the computer, then attach each selected session in the normal Herdr UI.
+herdr-organizer reconcile-all --bundle <bundle_id>
+herdr-organizer reconcile-all --bundle <bundle_id> --confirm <bundle_id>
+```
+
+The preparation preflight refuses busy or unresolved Codex and Claude panes,
+missing CWDs or registered worktrees, unknown foreground process state, and
+unclassified non-shell processes. To acknowledge one intentionally volatile
+process, name its complete identity. There is no global bypass:
+
+```sh
+herdr-organizer prepare-restart-recovery --session project-a \
+  --allow-volatile-pane 'project-a|w3|w3:t2|w3:p1'
+```
+
+Bundles, per-session captures, checksums, and reconciliation journals live in
+`state/workspace-organizer/restart-recovery/`. They are local-only, gitignored,
+and created with private permissions. They contain paths and supported-agent
+resume metadata, so do not commit, upload, or share them. Keep the pre-boot
+bundle and post-boot journal until you accept the result, then delete them
+manually under your normal local retention policy. The tool never silently
+prunes them.
+
+`reconcile-all` is preview-first. It refuses an unattached bundle session and
+never starts one. It does not rebuild an ambiguous native match. An intentional
+additional copy requires both `--copy-ambiguous` and the second confirmation
+`--confirm-extra copy:<bundle_id>`. `rollback-reconcile` also starts as a
+preview and can close only workspace IDs created by that bundle's journal. It
+never closes adopted native workspaces.
+
 ## Workspace Organizer MVP
 
 `herdr-organizer` is a local bridge for the immediate workflow. It reorders

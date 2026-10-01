@@ -2,8 +2,11 @@
 """Unit tests for workspace-organizer.py that do not require a Herdr server."""
 
 import argparse
+import copy
 import importlib.util
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +18,13 @@ SPEC = importlib.util.spec_from_file_location("workspace_organizer", MODULE_PATH
 assert SPEC and SPEC.loader
 ORGANIZER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORGANIZER)
+
+REGISTRY_PATH = Path(__file__).with_name("agent-session-registry.py")
+REGISTRY_SPEC = importlib.util.spec_from_file_location("agent_session_registry", REGISTRY_PATH)
+assert REGISTRY_SPEC and REGISTRY_SPEC.loader
+REGISTRY = importlib.util.module_from_spec(REGISTRY_SPEC)
+sys.modules[REGISTRY_SPEC.name] = REGISTRY
+REGISTRY_SPEC.loader.exec_module(REGISTRY)
 
 
 class WorkspaceOrganizerTests(unittest.TestCase):
@@ -498,6 +508,233 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             [{"source_pane_id": "old-pane", "pane_id": "new-pane", "status": "sent", "action": "resumed"}],
         )
         run_command.assert_called_once_with(["pane", "run", "new-pane", "resume-command"], "test")
+
+
+class RestartRecoveryTests(unittest.TestCase):
+    def snapshot(self, *, pane_agent=None, pane_status=None, cwd=None):
+        path = cwd or tempfile.gettempdir()
+        pane = {
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "cwd": path,
+            "foreground_cwd": path,
+        }
+        if pane_agent:
+            pane["agent"] = pane_agent
+            pane["agent_status"] = pane_status or "idle"
+        return {
+            "workspaces": [{"workspace_id": "w1", "label": "One", "cwd": path}],
+            "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "One tab"}],
+            "panes": [pane],
+        }
+
+    @staticmethod
+    def layout(tab_id="w1:t1", pane_id="w1:p1"):
+        return {"tab_id": tab_id, "root": {"type": "pane", "pane_id": pane_id}}
+
+    def source_workspace(self, session="lab", workspace_id="w1", *, agent_restore=None, label="One"):
+        agent_restore = agent_restore or {"source_pane_id": "w1:p1", "restore_status": "shell_only"}
+        tab = {
+            "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1"),
+            "label": "One tab",
+            "index": 0,
+            "layout": self.layout(f"{workspace_id}:t1", f"{workspace_id}:p1"),
+            "layout_shape_fingerprint": "shape-one",
+            "panes": [
+                {
+                    "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1", f"{workspace_id}:p1"),
+                    "agent_restore": agent_restore,
+                }
+            ],
+        }
+        source = {
+            "identity": ORGANIZER.recovery_identity(session, workspace_id),
+            "label": label,
+            "cwd": tempfile.gettempdir(),
+            "tabs": [tab],
+        }
+        source["fingerprint"] = ORGANIZER.recovery_workspace_fingerprint(source)
+        return source
+
+    def test_compound_identity_preserves_all_namespace_fields(self):
+        first = ORGANIZER.recovery_identity("esim", "w1", "w1:t1", "w1:p1")
+        second = ORGANIZER.recovery_identity("Misc", "w1", "w1:t1", "w1:p1")
+        self.assertEqual(set(first), {"herdr_session", "workspace_id", "tab_id", "pane_id"})
+        self.assertNotEqual(ORGANIZER.recovery_identity_key(first), ORGANIZER.recovery_identity_key(second))
+
+    def test_registry_scan_replaces_only_same_session_and_pane(self):
+        session_id = "01a013cd-9bc3-74a3-bb56-a0b806e74f9c"
+        pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir(), "codex", "idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "manifest.json"
+            REGISTRY.write_manifest(
+                manifest,
+                {"panes": [{"herdr_session": "Misc", "pane_id": "w1:p1", "session_id": "kept", "client": "codex"}]},
+            )
+            args = argparse.Namespace(
+                manifest=str(manifest), missing_json=str(Path(temporary) / "missing.json"), client=None,
+                execute=True, status=False, lines=20, source="recent", no_missing_json=True, verbose=False,
+            )
+            with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
+                REGISTRY, "current_herdr_session", return_value="esim"
+            ), patch.object(REGISTRY, "detect_from_native", return_value=("codex", session_id)), patch.object(
+                REGISTRY, "git_context", return_value=(tempfile.gettempdir(), "main")
+            ):
+                self.assertEqual(REGISTRY.scan(args), 0)
+            records = REGISTRY.read_manifest(manifest)["panes"]
+        self.assertEqual({(row["herdr_session"], row["pane_id"]) for row in records}, {("Misc", "w1:p1"), ("esim", "w1:p1")})
+
+    def test_recovery_commands_use_named_session_and_reject_unattached(self):
+        snapshot = self.snapshot()
+        with patch.object(ORGANIZER, "socket_call", return_value={"layout": self.layout()}) as socket_call:
+            ORGANIZER.recovery_layouts(snapshot, "lab")
+        self.assertEqual(socket_call.call_args.args[0], "lab")
+        capture = {"session": "lab", "workspaces": []}
+        with patch.object(ORGANIZER, "session_snapshot", side_effect=ORGANIZER.OrganizerError("socket absent")):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "not attached"):
+                ORGANIZER.plan_recovery_session(capture)
+
+    def test_bundle_checksums_permissions_and_preview_have_no_side_effects(self):
+        capture = {"session": "lab", "workspaces": [], "structure": {}, "layout_fingerprints": {}, "preflight": {}}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"), patch.object(
+            ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+        ):
+            bundle_id = ORGANIZER.write_recovery_bundle([capture])
+            bundle_path, manifest, loaded = ORGANIZER.load_recovery_bundle(bundle_id)
+            self.assertEqual(loaded, [capture])
+            self.assertEqual(manifest["schema_version"], ORGANIZER.RECOVERY_SCHEMA_VERSION)
+            self.assertEqual(os.stat(bundle_path).st_mode & 0o777, 0o700)
+            self.assertEqual(os.stat(bundle_path / "manifest.json").st_mode & 0o777, 0o600)
+            session_path = bundle_path / next(iter(manifest["checksums"]))
+            self.assertEqual(os.stat(session_path).st_mode & 0o777, 0o600)
+            args = argparse.Namespace(bundle=bundle_id, confirm=None, copy_ambiguous=False, confirm_extra=None, resume_agents=False)
+            with patch.object(ORGANIZER, "plan_recovery_session", return_value={"session": "lab", "workspaces": []}):
+                ORGANIZER.reconcile_all_command(args)
+            self.assertFalse((Path(temporary) / "journals" / f"{bundle_id}.json").exists())
+            (session_path).write_text("tampered")
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "checksum"):
+                ORGANIZER.load_recovery_bundle(bundle_id)
+
+    def test_stable_capture_refuses_changed_structure(self):
+        first = self.snapshot()
+        second = copy.deepcopy(first)
+        second["tabs"].append({"workspace_id": "w1", "tab_id": "w1:t2"})
+        preflight = {"classifications": [], "failures": []}
+        with patch.object(ORGANIZER, "session_snapshot", side_effect=[first, second]), patch.object(
+            ORGANIZER, "recovery_layouts", side_effect=[{"w1:t1": self.layout()}, {"w1:t1": self.layout()}]
+        ):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "changed during"):
+                ORGANIZER.stable_recovery_capture("lab", preflight, 1)
+
+    def test_preflight_classifies_every_blocking_and_acknowledged_case(self):
+        identity = ORGANIZER.recovery_identity("lab", "w1", "w1:t1", "w1:p1")
+        busy, failure = ORGANIZER.recovery_pane_classification(
+            {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "working"}, {}, "lab", set()
+        )
+        unresolved, unresolved_failure = ORGANIZER.recovery_pane_classification(
+            {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "idle"}, {}, "lab", set()
+        )
+        with patch.object(ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 2, "name": "node"}]}):
+            blocker, blocker_failure = ORGANIZER.recovery_pane_classification(
+                {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1"}, {}, "lab", set()
+            )
+            volatile, volatile_failure = ORGANIZER.recovery_pane_classification(
+                {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1"}, {}, "lab", {ORGANIZER.recovery_identity_key(identity)}
+            )
+        with patch.object(ORGANIZER, "recovery_process_info", side_effect=ORGANIZER.OrganizerError("unknown")):
+            unknown, unknown_failure = ORGANIZER.recovery_pane_classification(
+                {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1"}, {}, "lab", set()
+            )
+        self.assertEqual((busy["classification"], failure["kind"]), ("busy_agent", "busy_agent"))
+        self.assertEqual((unresolved["classification"], unresolved_failure["kind"]), ("unresolved_supported_agent", "unresolved_supported_agent"))
+        self.assertEqual((blocker["classification"], blocker_failure["kind"]), ("blocker", "blocker"))
+        self.assertEqual((volatile["classification"], volatile_failure), ("intentionally_volatile", None))
+        self.assertEqual((unknown["classification"], unknown_failure["kind"]), ("unknown_process_state", "unknown_process_state"))
+
+    def test_preflight_reports_missing_cwd_and_registered_worktree(self):
+        snapshot = self.snapshot(cwd="/definitely/missing/recovery-cwd")
+        with patch.object(ORGANIZER, "session_snapshot", return_value=snapshot), patch.object(
+            ORGANIZER, "recovery_layouts", return_value={"w1:t1": self.layout()}
+        ), patch.object(ORGANIZER, "manifest_records", return_value=[{"herdr_session": "lab", "pane_id": "w1:p1", "worktree": "/missing/worktree"}]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+        ):
+            preflight = ORGANIZER.recovery_preflight_session("lab", set())
+        self.assertEqual({item["kind"] for item in preflight["failures"]}, {"missing_workspace_cwd", "missing_pane_cwd", "missing_registered_worktree"})
+
+    def test_native_partial_restore_adopts_rebuilds_and_refuses_ambiguous(self):
+        adopted = self.source_workspace("lab", "w1")
+        missing = self.source_workspace("lab", "w2", label="Two")
+        ambiguous = self.source_workspace("lab", "w3", label="Three")
+        capture = {"session": "lab", "workspaces": [adopted, missing, ambiguous]}
+        native_adopted = copy.deepcopy(adopted)
+        native_adopted["identity"] = ORGANIZER.recovery_identity("lab", "w1")
+        related = copy.deepcopy(ambiguous)
+        related["identity"] = ORGANIZER.recovery_identity("lab", "new-w3")
+        related["fingerprint"] = "different"
+        with patch.object(ORGANIZER, "session_snapshot", return_value={}), patch.object(
+            ORGANIZER, "native_recovery_workspaces", return_value=[native_adopted, related]
+        ):
+            plan = ORGANIZER.plan_recovery_session(capture)
+        self.assertEqual([item["action"] for item in plan["workspaces"]], ["adopt", "rebuild", "ambiguous"])
+
+    def test_native_agent_recovery_is_never_resumed_twice(self):
+        restore = {"source_pane_id": "w1:p1", "client": "codex", "session_id": "safe-id", "resume_command": "codex resume safe-id", "restore_status": "resumable", "restore_source": "manifest"}
+        source = self.source_workspace(agent_restore=restore)
+        state = {"planned_action": "rebuild", "tabs": {ORGANIZER.source_tab_key(source["tabs"][0]): {"pane_map": {"w1:p1": "new:p1"}}}, "agent_outcomes": []}
+        journal = {"sessions": {"lab": {"workspaces": {}}}}
+        with patch.object(ORGANIZER, "session_snapshot", return_value={"panes": [{"pane_id": "new:p1", "agent": "codex", "agent_status": "working", "agent_session": {"value": "safe-id"}}]}), patch.object(
+            ORGANIZER, "run_command"
+        ) as run_command:
+            ORGANIZER.dispatch_recovery_agents(Path(tempfile.gettempdir()) / "journal.json", journal, "lab", source, state, True)
+        run_command.assert_not_called()
+        self.assertEqual(state["agent_outcomes"][0]["status"], "native_recovered")
+
+    def test_recovery_reruns_after_each_mutation_journal_stage_without_duplicates(self):
+        source = self.source_workspace()
+        capture = {"session": "lab", "workspaces": [source]}
+        plans = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+        stages = ["workspace_create_intent", "workspace_created", "layout_apply_intent", "layout_created", "layouts_rebuilt", "session_verified", "reconciliation_completed"]
+        bundle_id = "recovery-20261001T000000Z-aaaaaaaaaa"
+        for stage in stages:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary, patch.object(
+                ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+            ):
+                model = {"workspaces": [], "tabs": [], "panes": []}
+                creates = []
+                def snapshot(_session):
+                    return copy.deepcopy(model)
+                def run_json(command, session):
+                    self.assertEqual(session, "lab")
+                    if command[:2] == ["workspace", "create"]:
+                        creates.append(command)
+                        model["workspaces"] = [{"workspace_id": "new-w", "label": "One", "cwd": tempfile.gettempdir()}]
+                        model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": "One tab"}]
+                        return {"result": {"workspace_id": "new-w", "tab_id": "new-w:t1"}}
+                    raise AssertionError(command)
+                def socket_call(session, method, params):
+                    self.assertEqual((session, method), ("lab", "layout.apply"))
+                    model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+                    return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+                tripped = {"value": False}
+                def inject(current):
+                    if current == stage and not tripped["value"]:
+                        tripped["value"] = True
+                        raise ORGANIZER.OrganizerError("injected")
+                with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+                    ORGANIZER, "run_json", side_effect=run_json
+                ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call), patch.object(
+                    ORGANIZER, "recovery_failure_injection", side_effect=inject
+                ):
+                    with self.assertRaisesRegex(ORGANIZER.OrganizerError, "injected"):
+                        ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plans, False)
+                with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+                    ORGANIZER, "run_json", side_effect=run_json
+                ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call):
+                    journal = ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plans, False)
+                self.assertEqual(len(creates), 1)
+                self.assertEqual(journal["status"], "completed")
 
 
 if __name__ == "__main__":

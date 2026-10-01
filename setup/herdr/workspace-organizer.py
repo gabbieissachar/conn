@@ -9,6 +9,7 @@ workspace; restoring creates a fresh workspace and rebuilds its tab layouts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,9 @@ ROOT = Path(__file__).resolve().parent
 STATE_DIR = ROOT / "state" / "workspace-organizer"
 ARCHIVE_DIR = STATE_DIR / "archives"
 MOVE_DIR = STATE_DIR / "moves"
+RECOVERY_DIR = STATE_DIR / "restart-recovery"
+RECOVERY_BUNDLE_DIR = RECOVERY_DIR / "bundles"
+RECOVERY_JOURNAL_DIR = RECOVERY_DIR / "journals"
 LIVE_SNAPSHOT_PATH = STATE_DIR / "live-snapshot.json"
 AGENT_MANIFEST_PATH = ROOT / "state" / "herdr-agent-sessions.json"
 CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
@@ -36,6 +40,8 @@ ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 SHELL_PROCESS_NAMES = {"bash", "fish", "sh", "starship", "zsh"}
 CODEX_INTERACTIVE_PROMPT_COUNT = 2
 CODEX_INTERACTIVE_PROMPT_MINIMUM_LENGTH = 24
+RECOVERY_SCHEMA_VERSION = 1
+RECOVERY_MAX_CAPTURE_ATTEMPTS = 3
 
 
 class OrganizerError(RuntimeError):
@@ -53,6 +59,67 @@ def write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def ensure_private_directory(path: Path) -> None:
+    """Create a recovery directory that only its owner can read."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError as error:
+        raise OrganizerError(f"Could not restrict permissions on {path}: {error}") from error
+
+
+def write_private_json(path: Path, value: Any) -> None:
+    """Atomically write sensitive recovery state with mode 0600."""
+    ensure_private_directory(path.parent)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        path.chmod(0o600)
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OrganizerError(f"Could not write private recovery state {path}: {error}") from error
+
+
+def private_json_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def recovery_identity(session: str, workspace_id: str | None = None, tab_id: str | None = None,
+                      pane_id: str | None = None) -> dict[str, str | None]:
+    """Use one explicit namespace shape for every captured recovery object."""
+    return {
+        "herdr_session": session,
+        "workspace_id": workspace_id,
+        "tab_id": tab_id,
+        "pane_id": pane_id,
+    }
+
+
+def recovery_identity_key(identity: dict[str, Any]) -> str:
+    values = [identity.get(name) for name in ("herdr_session", "workspace_id", "tab_id", "pane_id")]
+    if not isinstance(values[0], str) or not values[0]:
+        raise OrganizerError("Recovery object does not have a named Herdr session.")
+    return "|".join("" if value is None else str(value) for value in values)
+
+
+def layout_fingerprint(layout: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(layout, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def read_json(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
@@ -63,6 +130,11 @@ def read_json(path: Path, fallback: Any) -> Any:
 
 
 def herdr_prefix(session: str | None) -> list[str]:
+    lab_helper = os.environ.get("HERDR_LAB_HELPER")
+    if lab_helper:
+        if not session:
+            raise OrganizerError("HERDR_LAB_HELPER requires an explicit named Herdr session.")
+        return [lab_helper, "run", session]
     return ["herdr", "--session", session] if session else ["herdr"]
 
 
@@ -1525,12 +1597,1014 @@ def list_archives_command(_: argparse.Namespace) -> None:
     print(json.dumps([archive_summary(archive) for archive in load_archives()], indent=2))
 
 
+# Restart recovery bundles deliberately do not use archive/restore.  Archives
+# close their source workspace; restart preparation must never do that.
+def require_recovery_session(session: str | None) -> str:
+    if not isinstance(session, str) or not session.strip():
+        raise OrganizerError("Restart recovery requires an explicit named --session.")
+    return session.strip()
+
+
+def running_recovery_sessions() -> list[str]:
+    """Discover only currently running named sessions for the implicit scope."""
+    try:
+        completed = subprocess.run(
+            ["herdr", "session", "list", "--json"], check=False, text=True, capture_output=True
+        )
+    except FileNotFoundError as error:
+        raise OrganizerError("Herdr is not installed or is not on PATH.") from error
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "unknown Herdr error"
+        raise OrganizerError(f"Could not list running Herdr sessions: {message}")
+    try:
+        raw = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise OrganizerError("Herdr returned invalid JSON while listing named sessions.") from error
+    sessions = raw.get("sessions", []) if isinstance(raw, dict) else []
+    return [str(row["name"]) for row in sessions if isinstance(row, dict) and row.get("running") and row.get("name")]
+
+
+def recovery_sessions(args: argparse.Namespace) -> list[str]:
+    requested = list(getattr(args, "recovery_sessions", []) or [])
+    selected = requested or running_recovery_sessions()
+    if not selected:
+        raise OrganizerError("No named Herdr sessions are running. Pass one or more --session values after attaching them.")
+    normalized = [require_recovery_session(session) for session in selected]
+    if len(set(normalized)) != len(normalized):
+        raise OrganizerError("Each restart-recovery --session must be unique.")
+    return normalized
+
+
+def recovery_process_info(session: str, pane_id: str) -> dict[str, Any]:
+    selected = require_recovery_session(session)
+    response = result_of(run_json(["pane", "process-info", "--pane", pane_id], selected))
+    process_info = response.get("process_info")
+    if not isinstance(process_info, dict):
+        raise OrganizerError(f"Herdr did not return foreground process metadata for pane {pane_id}.")
+    return process_info
+
+
+def recovery_layouts(snapshot: dict[str, Any], session: str) -> dict[str, dict[str, Any]]:
+    selected = require_recovery_session(session)
+    layouts: dict[str, dict[str, Any]] = {}
+    for tab in snapshot.get("tabs", []):
+        if not isinstance(tab, dict) or not isinstance(tab.get("tab_id"), str):
+            raise OrganizerError("Herdr snapshot contains a tab without an ID.")
+        tab_id = str(tab["tab_id"])
+        exported = socket_call(selected, "layout.export", {"tab_id": tab_id}).get("layout")
+        if not isinstance(exported, dict):
+            raise OrganizerError(f"Herdr did not return a layout for tab {tab_id}.")
+        if len(leaf_panes(exported.get("root"))) > MAX_LAYOUT_PANES:
+            raise OrganizerError(f"Tab {tab_id} exceeds the {MAX_LAYOUT_PANES}-pane recovery limit.")
+        layouts[tab_id] = exported
+    return layouts
+
+
+def recovery_structure(snapshot: dict[str, Any]) -> dict[str, list[tuple[str, ...]]]:
+    """IDs and memberships that must not change while capture is being sealed."""
+    workspaces = sorted(
+        str(item.get("workspace_id")) for item in snapshot.get("workspaces", [])
+        if isinstance(item, dict) and item.get("workspace_id")
+    )
+    tabs = sorted(
+        (str(item.get("workspace_id")), str(item.get("tab_id"))) for item in snapshot.get("tabs", [])
+        if isinstance(item, dict) and item.get("workspace_id") and item.get("tab_id")
+    )
+    panes = sorted(
+        (str(item.get("tab_id")), str(item.get("pane_id"))) for item in snapshot.get("panes", [])
+        if isinstance(item, dict) and item.get("tab_id") and item.get("pane_id")
+    )
+    return {"workspaces": [(item,) for item in workspaces], "tabs": tabs, "panes": panes}
+
+
+def recovery_layout_fingerprints(layouts: dict[str, dict[str, Any]]) -> dict[str, str]:
+    return {tab_id: layout_fingerprint(layout) for tab_id, layout in sorted(layouts.items())}
+
+
+def layout_shape(value: Any) -> Any:
+    """Layout shape is stable even when Herdr gives a rebuilt pane a new ID."""
+    if isinstance(value, list):
+        return [layout_shape(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {key: layout_shape(item) for key, item in sorted(value.items()) if key not in {"pane_id", "tab_id"}}
+
+
+def layout_shape_fingerprint(layout: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(layout_shape(layout), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def recovery_acknowledgements(values: Iterable[str] | None) -> set[str]:
+    acknowledgements: set[str] = set()
+    for value in values or []:
+        fields = value.split("|")
+        if len(fields) != 4 or any(not field for field in fields):
+            raise OrganizerError(
+                "--allow-volatile-pane must be the exact named identity session|workspace|tab|pane."
+            )
+        acknowledgements.add("|".join(fields))
+    return acknowledgements
+
+
+def recovery_path_issue(value: Any, kind: str, identity: dict[str, str | None]) -> dict[str, Any] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value).expanduser()
+    if path.is_dir():
+        return None
+    return {"kind": kind, "identity": identity, "path": str(path)}
+
+
+def recovery_pane_classification(
+    pane: dict[str, Any], restore: dict[str, Any], session: str, acknowledgements: set[str]
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    pane_id = pane.get("pane_id")
+    workspace_id = pane.get("workspace_id")
+    tab_id = pane.get("tab_id")
+    if not all(isinstance(value, str) and value for value in (pane_id, workspace_id, tab_id)):
+        raise OrganizerError("Herdr snapshot contains a pane without a fully namespaced identity.")
+    identity = recovery_identity(session, workspace_id, tab_id, pane_id)
+    agent = pane.get("agent") if pane.get("agent") in {"codex", "claude"} else None
+    status = str(pane.get("agent_status") or "unknown")
+    if agent and status in ACTIVE_AGENT_STATUSES:
+        return {"identity": identity, "classification": "busy_agent", "agent": agent, "agent_status": status}, {
+            "kind": "busy_agent", "identity": identity
+        }
+    if agent and not is_trusted_restore(restore):
+        return {"identity": identity, "classification": "unresolved_supported_agent", "agent": agent, "agent_status": status}, {
+            "kind": "unresolved_supported_agent", "identity": identity
+        }
+    try:
+        process_info = recovery_process_info(session, pane_id)
+    except OrganizerError:
+        return {"identity": identity, "classification": "unknown_process_state", "agent": agent, "agent_status": status}, {
+            "kind": "unknown_process_state", "identity": identity
+        }
+    processes = process_info.get("foreground_processes")
+    shell_pid = process_info.get("shell_pid")
+    if not isinstance(processes, list) or not processes:
+        return {"identity": identity, "classification": "unknown_process_state", "agent": agent, "agent_status": status}, {
+            "kind": "unknown_process_state", "identity": identity
+        }
+    names: set[str] = set()
+    includes_shell = False
+    for process in processes:
+        if not isinstance(process, dict):
+            return {"identity": identity, "classification": "unknown_process_state", "agent": agent, "agent_status": status}, {
+                "kind": "unknown_process_state", "identity": identity
+            }
+        names.add(str(process.get("name") or process.get("argv0") or "").lstrip("-").lower())
+        includes_shell = includes_shell or process.get("pid") == shell_pid
+    if agent and is_trusted_restore(restore):
+        return {
+            "identity": identity,
+            "classification": "verified_resumable_supported_agent",
+            "agent": agent,
+            "agent_status": status,
+        }, None
+    if includes_shell and names and names <= SHELL_PROCESS_NAMES:
+        return {"identity": identity, "classification": "disposable_shell", "agent_status": status}, None
+    key = recovery_identity_key(identity)
+    if key in acknowledgements:
+        return {"identity": identity, "classification": "intentionally_volatile", "agent_status": status}, None
+    return {"identity": identity, "classification": "blocker", "agent_status": status}, {
+        "kind": "blocker", "identity": identity
+    }
+
+
+def recovery_preflight_session(session: str, acknowledgements: set[str]) -> dict[str, Any]:
+    """Read-only checks. This function never sends a pane command or closes anything."""
+    selected = require_recovery_session(session)
+    try:
+        snapshot = session_snapshot(selected)
+    except OrganizerError as error:
+        raise OrganizerError(f"Recovery session {selected!r} is not attached: {error}") from error
+    layouts = recovery_layouts(snapshot, selected)
+    records = manifest_records()
+    records_by_pane = {
+        str(record.get("pane_id")): record
+        for record in records
+        if record.get("herdr_session") == selected and record.get("pane_id")
+    }
+    restores = {
+        str(item.get("source_pane_id")): item
+        for item in agent_restore_records(snapshot.get("panes", []), selected, records)
+        if item.get("source_pane_id")
+    }
+    classifications: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for workspace in snapshot.get("workspaces", []):
+        if not isinstance(workspace, dict) or not workspace.get("workspace_id"):
+            raise OrganizerError("Herdr snapshot contains a workspace without an ID.")
+        identity = recovery_identity(selected, str(workspace["workspace_id"]))
+        issue = recovery_path_issue(workspace.get("cwd"), "missing_workspace_cwd", identity)
+        if issue:
+            failures.append(issue)
+    for pane in snapshot.get("panes", []):
+        if not isinstance(pane, dict):
+            raise OrganizerError("Herdr snapshot contains an invalid pane.")
+        pane_id = str(pane.get("pane_id") or "")
+        workspace_id = str(pane.get("workspace_id") or "")
+        tab_id = str(pane.get("tab_id") or "")
+        identity = recovery_identity(selected, workspace_id or None, tab_id or None, pane_id or None)
+        issue = recovery_path_issue(pane.get("foreground_cwd") or pane.get("cwd"), "missing_pane_cwd", identity)
+        if issue:
+            failures.append(issue)
+        registered = records_by_pane.get(pane_id, {})
+        issue = recovery_path_issue(registered.get("worktree"), "missing_registered_worktree", identity)
+        if issue:
+            failures.append(issue)
+        classification, failure = recovery_pane_classification(
+            pane, restores.get(pane_id, {}), selected, acknowledgements
+        )
+        classifications.append(classification)
+        if failure:
+            failures.append(failure)
+    return {
+        "session": selected,
+        "snapshot": snapshot,
+        "layouts": layouts,
+        "layout_fingerprints": recovery_layout_fingerprints(layouts),
+        "classifications": classifications,
+        "failures": failures,
+    }
+
+
+def recovery_workspace_fingerprint(workspace: dict[str, Any]) -> str:
+    material = {
+        "label": workspace.get("label"),
+        "cwd": workspace.get("cwd"),
+        "tabs": [
+            {
+                "label": tab.get("label"),
+                "index": tab.get("index"),
+                "layout_shape": tab.get("layout_shape_fingerprint"),
+            }
+            for tab in workspace.get("tabs", [])
+        ],
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def recovery_capture_from_snapshot(
+    session: str, snapshot: dict[str, Any], layouts: dict[str, dict[str, Any]], preflight: dict[str, Any]
+) -> dict[str, Any]:
+    selected = require_recovery_session(session)
+    classifications = {
+        recovery_identity_key(item["identity"]): item
+        for item in preflight["classifications"]
+        if isinstance(item, dict) and isinstance(item.get("identity"), dict)
+    }
+    records = manifest_records()
+    restores = {
+        str(item.get("source_pane_id")): item
+        for item in agent_restore_records(snapshot.get("panes", []), selected, records)
+        if item.get("source_pane_id")
+    }
+    workspaces: list[dict[str, Any]] = []
+    for workspace in snapshot.get("workspaces", []):
+        if not isinstance(workspace, dict) or not isinstance(workspace.get("workspace_id"), str):
+            raise OrganizerError("Herdr snapshot contains a workspace without an ID.")
+        workspace_id = str(workspace["workspace_id"])
+        captured_tabs: list[dict[str, Any]] = []
+        for index, tab in enumerate(tabs_for_workspace(snapshot, workspace_id)):
+            tab_id = str(tab.get("tab_id") or "")
+            layout = layouts.get(tab_id)
+            if not layout:
+                raise OrganizerError(f"No captured layout exists for tab {tab_id}.")
+            captured_panes: list[dict[str, Any]] = []
+            for pane in panes_for_tab(snapshot, tab_id):
+                pane_id = str(pane.get("pane_id") or "")
+                identity = recovery_identity(selected, workspace_id, tab_id, pane_id)
+                captured_panes.append(
+                    {
+                        "identity": identity,
+                        "cwd": pane.get("foreground_cwd") or pane.get("cwd"),
+                        "classification": classifications.get(recovery_identity_key(identity), {}).get("classification"),
+                        "agent_restore": restores.get(pane_id, {"source_pane_id": pane_id, "restore_status": "shell_only"}),
+                    }
+                )
+            captured_tabs.append(
+                {
+                    "identity": recovery_identity(selected, workspace_id, tab_id),
+                    "label": tab.get("label") or tab_id,
+                    "index": index,
+                    "focused": bool(tab.get("focused")),
+                    "layout": layout,
+                    "layout_fingerprint": layout_fingerprint(layout),
+                    "layout_shape_fingerprint": layout_shape_fingerprint(layout),
+                    "panes": captured_panes,
+                }
+            )
+        captured_workspace = {
+            "identity": recovery_identity(selected, workspace_id),
+            "label": workspace.get("label") or workspace_id,
+            "cwd": workspace.get("cwd"),
+            "focused": bool(workspace.get("focused")),
+            "tabs": captured_tabs,
+        }
+        captured_workspace["fingerprint"] = recovery_workspace_fingerprint(captured_workspace)
+        workspaces.append(captured_workspace)
+    return {
+        "version": RECOVERY_SCHEMA_VERSION,
+        "session": selected,
+        "captured_at": now(),
+        "structure": recovery_structure(snapshot),
+        "layout_fingerprints": recovery_layout_fingerprints(layouts),
+        "workspaces": workspaces,
+        "preflight": {
+            "classifications": preflight["classifications"],
+            "failures": preflight["failures"],
+        },
+    }
+
+
+def stable_recovery_capture(session: str, preflight: dict[str, Any], attempts: int) -> dict[str, Any]:
+    selected = require_recovery_session(session)
+    if attempts < 1:
+        raise OrganizerError("--capture-attempts must be at least 1.")
+    for attempt in range(1, attempts + 1):
+        first = session_snapshot(selected)
+        first_layouts = recovery_layouts(first, selected)
+        second = session_snapshot(selected)
+        second_layouts = recovery_layouts(second, selected)
+        if (
+            recovery_structure(first) == recovery_structure(second)
+            and recovery_layout_fingerprints(first_layouts) == recovery_layout_fingerprints(second_layouts)
+        ):
+            capture = recovery_capture_from_snapshot(selected, second, second_layouts, preflight)
+            capture["capture_attempt"] = attempt
+            return capture
+    raise OrganizerError(
+        f"Recovery capture for session {selected!r} changed during {attempts} quiesce check attempt(s). "
+        "Quiesce tab changes and retry."
+    )
+
+
+def recovery_bundle_id() -> str:
+    return f"recovery-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:10]}"
+
+
+def recovery_bundle_path(bundle_id: str) -> Path:
+    if not re.fullmatch(r"recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}", bundle_id):
+        raise OrganizerError("Recovery bundle ID is invalid.")
+    return RECOVERY_BUNDLE_DIR / bundle_id
+
+
+def validate_recovery_bundle(path: Path, *, require_ready: bool = True) -> dict[str, Any]:
+    manifest_path = path / "manifest.json"
+    if not manifest_path.is_file():
+        raise OrganizerError(f"Recovery bundle is missing its manifest: {path}")
+    manifest = read_json(manifest_path, {})
+    if manifest.get("schema_version") != RECOVERY_SCHEMA_VERSION or not manifest.get("bundle_id"):
+        raise OrganizerError("Recovery bundle has an unsupported manifest schema.")
+    if (path.stat().st_mode & 0o777) != 0o700:
+        raise OrganizerError(f"Recovery bundle directory does not have mode 0700: {path}")
+    checksums = manifest.get("checksums")
+    if not isinstance(checksums, dict) or not checksums:
+        raise OrganizerError("Recovery bundle has no per-session checksums.")
+    for relative, expected in checksums.items():
+        candidate = path / str(relative)
+        if candidate.parent != path / "sessions" or not candidate.is_file():
+            raise OrganizerError("Recovery bundle references an invalid session file.")
+        if (candidate.stat().st_mode & 0o777) != 0o600:
+            raise OrganizerError(f"Recovery bundle file does not have mode 0600: {candidate}")
+        if private_json_digest(candidate) != expected:
+            raise OrganizerError(f"Recovery bundle checksum failed for {relative}.")
+    if (manifest_path.stat().st_mode & 0o777) != 0o600:
+        raise OrganizerError("Recovery manifest does not have mode 0600.")
+    ready_path = path / "ready"
+    if require_ready:
+        if not ready_path.is_file() or (ready_path.stat().st_mode & 0o777) != 0o600:
+            raise OrganizerError("Recovery bundle is not ready. Do not restart yet.")
+        ready = read_json(ready_path, {})
+        if ready.get("bundle_id") != manifest.get("bundle_id") or ready.get("manifest_sha256") != private_json_digest(manifest_path):
+            raise OrganizerError("Recovery ready marker does not validate the manifest.")
+    return manifest
+
+
+def write_recovery_bundle(captures: list[dict[str, Any]]) -> str:
+    ensure_private_directory(RECOVERY_BUNDLE_DIR)
+    bundle_id = recovery_bundle_id()
+    target = recovery_bundle_path(bundle_id)
+    stage = RECOVERY_BUNDLE_DIR / f".{bundle_id}.{uuid.uuid4().hex}.staging"
+    stage.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    session_dir = stage / "sessions"
+    ensure_private_directory(session_dir)
+    checksums: dict[str, str] = {}
+    session_files: list[dict[str, Any]] = []
+    try:
+        for capture in captures:
+            session = require_recovery_session(capture.get("session"))
+            filename = f"{hashlib.sha256(session.encode()).hexdigest()[:20]}.json"
+            relative = f"sessions/{filename}"
+            path = stage / relative
+            write_private_json(path, capture)
+            checksums[relative] = private_json_digest(path)
+            session_files.append({"identity": recovery_identity(session), "file": relative})
+        manifest = {
+            "schema_version": RECOVERY_SCHEMA_VERSION,
+            "bundle_id": bundle_id,
+            "created_at": now(),
+            "sessions": session_files,
+            "checksums": checksums,
+            "state": "sealed",
+        }
+        write_private_json(stage / "manifest.json", manifest)
+        validate_recovery_bundle(stage, require_ready=False)
+        stage.replace(target)
+        ready = {"bundle_id": bundle_id, "manifest_sha256": private_json_digest(target / "manifest.json"), "published_at": now()}
+        write_private_json(target / "ready", ready)
+        validate_recovery_bundle(target)
+        return bundle_id
+    except Exception:
+        if stage.exists():
+            for child in sorted(stage.rglob("*"), reverse=True):
+                if child.is_file():
+                    child.unlink(missing_ok=True)
+                elif child.is_dir():
+                    child.rmdir()
+            stage.rmdir()
+        raise
+
+
+def load_recovery_bundle(bundle_id: str) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    path = recovery_bundle_path(bundle_id)
+    if not path.is_dir():
+        raise OrganizerError(f"Recovery bundle {bundle_id!r} was not found.")
+    manifest = validate_recovery_bundle(path)
+    captures: list[dict[str, Any]] = []
+    for descriptor in manifest.get("sessions", []):
+        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("file"), str):
+            raise OrganizerError("Recovery bundle session descriptor is invalid.")
+        capture = read_json(path / descriptor["file"], {})
+        session = descriptor.get("identity", {}).get("herdr_session") if isinstance(descriptor.get("identity"), dict) else None
+        if capture.get("session") != session:
+            raise OrganizerError("Recovery bundle session file does not match its manifest identity.")
+        captures.append(capture)
+    return path, manifest, captures
+
+
+def redacted_preflight_summary(preflights: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    sessions = []
+    for preflight in preflights:
+        classes: dict[str, int] = {}
+        for item in preflight["classifications"]:
+            name = str(item.get("classification"))
+            classes[name] = classes.get(name, 0) + 1
+        sessions.append({"session": preflight["session"], "process_classes": classes, "failure_count": len(preflight["failures"])})
+    return {"sessions": sessions, "ready_to_seal": not any(item["failures"] for item in preflights)}
+
+
+def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
+    selected = recovery_sessions(args)
+    acknowledgements = recovery_acknowledgements(args.allow_volatile_pane)
+    preflights = [recovery_preflight_session(session, acknowledgements) for session in selected]
+    summary = redacted_preflight_summary(preflights)
+    if any(item["failures"] for item in preflights):
+        print(json.dumps(summary, indent=2))
+        raise OrganizerError("Restart recovery preflight failed. Resolve each named failure or acknowledge only the intended volatile pane.")
+    if args.preflight_only:
+        print(json.dumps(summary, indent=2))
+        print("Preflight passed. No recovery bundle was written.")
+        return
+    captures = [stable_recovery_capture(session, preflight, args.capture_attempts) for session, preflight in zip(selected, preflights, strict=True)]
+    bundle_id = write_recovery_bundle(captures)
+    print(json.dumps({"bundle_id": bundle_id, "session_count": len(captures), "ready": True}, indent=2))
+    print("Recovery bundle sealed. Restart only after retaining this ready bundle locally.")
+
+
+def native_recovery_workspace(snapshot: dict[str, Any], workspace: dict[str, Any], session: str) -> dict[str, Any]:
+    workspace_id = str(workspace.get("workspace_id") or "")
+    tabs: list[dict[str, Any]] = []
+    for index, tab in enumerate(tabs_for_workspace(snapshot, workspace_id)):
+        tab_id = str(tab.get("tab_id") or "")
+        layout = recovery_layouts({"tabs": [tab]}, session).get(tab_id)
+        if not layout:
+            raise OrganizerError(f"Could not inspect native tab {tab_id}.")
+        tabs.append(
+            {
+                "identity": recovery_identity(session, workspace_id, tab_id),
+                "label": tab.get("label") or tab_id,
+                "index": index,
+                "layout": layout,
+                "layout_shape_fingerprint": layout_shape_fingerprint(layout),
+                "panes": panes_for_tab(snapshot, tab_id),
+            }
+        )
+    native = {
+        "identity": recovery_identity(session, workspace_id),
+        "label": workspace.get("label") or workspace_id,
+        "cwd": workspace.get("cwd"),
+        "tabs": tabs,
+    }
+    native["fingerprint"] = recovery_workspace_fingerprint(native)
+    return native
+
+
+def native_recovery_workspaces(snapshot: dict[str, Any], session: str) -> list[dict[str, Any]]:
+    return [native_recovery_workspace(snapshot, workspace, session) for workspace in snapshot.get("workspaces", []) if isinstance(workspace, dict)]
+
+
+def plan_recovery_session(capture: dict[str, Any]) -> dict[str, Any]:
+    session = require_recovery_session(capture.get("session"))
+    try:
+        snapshot = session_snapshot(session)
+    except OrganizerError as error:
+        raise OrganizerError(f"Recovery session {session!r} is not attached. Attach it interactively before reconciling: {error}") from error
+    native = native_recovery_workspaces(snapshot, session)
+    plans: list[dict[str, Any]] = []
+    claimed_native_ids: set[str] = set()
+    for source in capture.get("workspaces", []):
+        if not isinstance(source, dict) or not isinstance(source.get("identity"), dict):
+            raise OrganizerError("Recovery bundle contains an invalid workspace capture.")
+        source_id = source["identity"].get("workspace_id")
+        same_id = [item for item in native if item["identity"].get("workspace_id") == source_id]
+        exact = [
+            item for item in native
+            if item.get("fingerprint") == source.get("fingerprint")
+            and item["identity"].get("workspace_id") not in claimed_native_ids
+        ]
+        if len(same_id) == 1 and same_id[0].get("fingerprint") == source.get("fingerprint"):
+            native_id = str(same_id[0]["identity"]["workspace_id"])
+            claimed_native_ids.add(native_id)
+            plans.append({"source": source, "action": "adopt", "native_workspace_id": native_id})
+            continue
+        if not same_id and len(exact) == 1:
+            native_id = str(exact[0]["identity"]["workspace_id"])
+            claimed_native_ids.add(native_id)
+            plans.append({"source": source, "action": "adopt", "native_workspace_id": native_id})
+            continue
+        related = [
+            item for item in native
+            if item["identity"].get("workspace_id") == source_id or item.get("label") == source.get("label")
+        ]
+        if same_id or len(exact) > 1 or related:
+            plans.append({"source": source, "action": "ambiguous", "candidate_workspace_ids": [item["identity"]["workspace_id"] for item in exact or related]})
+            continue
+        plans.append({"source": source, "action": "rebuild"})
+    return {"session": session, "native_snapshot": snapshot, "workspaces": plans}
+
+
+def recovery_plan_summary(plans: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    sessions: list[dict[str, Any]] = []
+    for session_plan in plans:
+        counts: dict[str, int] = {}
+        for workspace in session_plan["workspaces"]:
+            action = str(workspace["action"])
+            counts[action] = counts.get(action, 0) + 1
+        sessions.append({"session": session_plan["session"], "workspaces": counts})
+    return {"sessions": sessions}
+
+
+def recovery_journal_path(bundle_id: str) -> Path:
+    recovery_bundle_path(bundle_id)
+    return RECOVERY_JOURNAL_DIR / f"{bundle_id}.json"
+
+
+def write_recovery_journal(path: Path, journal: dict[str, Any]) -> None:
+    write_private_json(path, journal)
+
+
+def recovery_failure_injection(stage: str) -> None:
+    """A test seam for proving every persisted journal stage can resume."""
+    del stage
+
+
+def record_recovery_stage(path: Path, journal: dict[str, Any], stage: str) -> None:
+    journal["last_stage"] = stage
+    journal["updated_at"] = now()
+    write_recovery_journal(path, journal)
+    recovery_failure_injection(stage)
+
+
+def recovery_workspace_plan_key(source: dict[str, Any]) -> str:
+    identity = source.get("identity")
+    if not isinstance(identity, dict):
+        raise OrganizerError("Recovery workspace is missing its identity.")
+    return recovery_identity_key(identity)
+
+
+def new_recovery_journal(bundle_id: str, plans: list[dict[str, Any]]) -> dict[str, Any]:
+    sessions: dict[str, Any] = {}
+    for session_plan in plans:
+        workspace_states: dict[str, Any] = {}
+        for plan in session_plan["workspaces"]:
+            source = plan["source"]
+            key = recovery_workspace_plan_key(source)
+            workspace_states[key] = {
+                "source_identity": source["identity"],
+                "planned_action": plan["action"],
+                "native_workspace_id": plan.get("native_workspace_id"),
+                "candidate_workspace_ids": plan.get("candidate_workspace_ids", []),
+                "status": "planned",
+                "tabs": {},
+                "agent_outcomes": [],
+            }
+        sessions[session_plan["session"]] = {"workspaces": workspace_states, "verification": None}
+    return {
+        "schema_version": RECOVERY_SCHEMA_VERSION,
+        "bundle_id": bundle_id,
+        "created_at": now(),
+        "updated_at": now(),
+        "status": "prepared",
+        "sessions": sessions,
+    }
+
+
+def load_or_create_recovery_journal(bundle_id: str, plans: list[dict[str, Any]]) -> tuple[Path, dict[str, Any]]:
+    ensure_private_directory(RECOVERY_JOURNAL_DIR)
+    path = recovery_journal_path(bundle_id)
+    if path.exists():
+        journal = read_json(path, {})
+        if journal.get("bundle_id") != bundle_id or journal.get("schema_version") != RECOVERY_SCHEMA_VERSION:
+            raise OrganizerError("Existing recovery journal does not match this bundle.")
+        return path, journal
+    journal = new_recovery_journal(bundle_id, plans)
+    write_recovery_journal(path, journal)
+    return path, journal
+
+
+def source_tab_key(tab: dict[str, Any]) -> str:
+    identity = tab.get("identity")
+    if not isinstance(identity, dict):
+        raise OrganizerError("Recovery tab is missing its identity.")
+    return recovery_identity_key(identity)
+
+
+def snapshot_workspace_ids(snapshot: dict[str, Any]) -> set[str]:
+    return {str(item["workspace_id"]) for item in snapshot.get("workspaces", []) if isinstance(item, dict) and item.get("workspace_id")}
+
+
+def snapshot_tab_ids(snapshot: dict[str, Any], workspace_id: str) -> set[str]:
+    return {str(item["tab_id"]) for item in tabs_for_workspace(snapshot, workspace_id) if item.get("tab_id")}
+
+
+def journal_recover_created_workspace(session: str, state: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    intent = state.get("workspace_create_intent")
+    if not isinstance(intent, dict):
+        return False
+    before = set(intent.get("preexisting_workspace_ids", []))
+    candidates = snapshot_workspace_ids(snapshot) - before
+    if len(candidates) == 1:
+        workspace_id = next(iter(candidates))
+        state["created_workspace_id"] = workspace_id
+        tabs = snapshot_tab_ids(snapshot, workspace_id)
+        if len(tabs) == 1:
+            state["initial_tab_id"] = next(iter(tabs))
+        state["status"] = "workspace_created_recovered"
+        return True
+    if len(candidates) > 1:
+        raise OrganizerError(
+            "Recovery found more than one workspace created after an interrupted mutation. "
+            "Do not retry automatically; inspect the recovery journal."
+        )
+    return False
+
+
+def journal_recover_created_tab(
+    session: str, source_tab: dict[str, Any], tab_state: dict[str, Any], workspace_id: str
+) -> bool:
+    del session
+    intent = tab_state.get("layout_apply_intent")
+    if not isinstance(intent, dict):
+        return False
+    if intent.get("reuse_initial_tab"):
+        # Reapplying a layout into the known initial tab cannot create a duplicate tab.
+        return False
+    snapshot = session_snapshot(str(source_tab["identity"]["herdr_session"]))
+    candidates = snapshot_tab_ids(snapshot, workspace_id) - set(intent.get("preexisting_tab_ids", []))
+    if len(candidates) == 1:
+        tab_id = next(iter(candidates))
+        layout = socket_call(str(source_tab["identity"]["herdr_session"]), "layout.export", {"tab_id": tab_id}).get("layout")
+        if not isinstance(layout, dict):
+            raise OrganizerError("Could not inspect an interrupted layout mutation.")
+        tab_state.update(
+            {
+                "destination_tab_id": tab_id,
+                "pane_map": matching_pane_map(source_tab["layout"].get("root"), layout.get("root")),
+                "status": "layout_created_recovered",
+            }
+        )
+        return True
+    if len(candidates) > 1:
+        raise OrganizerError(
+            "Recovery found more than one tab created after an interrupted mutation. "
+            "Do not retry automatically; inspect the recovery journal."
+        )
+    return False
+
+
+def rebuild_recovery_workspace(
+    journal_path: Path, journal: dict[str, Any], session: str, source: dict[str, Any], state: dict[str, Any]
+) -> None:
+    session_state = journal["sessions"][session]
+    snapshot = session_snapshot(session)
+    created_workspace_id = state.get("created_workspace_id")
+    if not isinstance(created_workspace_id, str) or created_workspace_id not in snapshot_workspace_ids(snapshot):
+        state.pop("created_workspace_id", None)
+        if journal_recover_created_workspace(session, state, snapshot):
+            record_recovery_stage(journal_path, journal, "workspace_created_recovered")
+        if not state.get("created_workspace_id"):
+            state["workspace_create_intent"] = {
+                "preexisting_workspace_ids": sorted(snapshot_workspace_ids(snapshot)),
+                "label": source.get("label"),
+                "cwd": source.get("cwd"),
+            }
+            state["status"] = "workspace_create_intent"
+            record_recovery_stage(journal_path, journal, "workspace_create_intent")
+            command = ["workspace", "create", "--label", str(source.get("label") or "Recovered workspace")]
+            if isinstance(source.get("cwd"), str) and source["cwd"]:
+                command.extend(["--cwd", source["cwd"]])
+            created = result_of(run_json(command, session))
+            state["created_workspace_id"] = extract_workspace_id(created)
+            state["initial_tab_id"] = extract_tab_id(created)
+            state["status"] = "workspace_created"
+            record_recovery_stage(journal_path, journal, "workspace_created")
+    workspace_id = str(state["created_workspace_id"])
+    captured_tabs = source.get("tabs", [])
+    for position, source_tab in enumerate(captured_tabs):
+        if not isinstance(source_tab, dict):
+            raise OrganizerError("Recovery bundle contains an invalid tab.")
+        tab_key = source_tab_key(source_tab)
+        tab_state = state["tabs"].setdefault(tab_key, {"source_identity": source_tab["identity"], "status": "planned"})
+        if tab_state.get("destination_tab_id"):
+            continue
+        if journal_recover_created_tab(session, source_tab, tab_state, workspace_id):
+            record_recovery_stage(journal_path, journal, "layout_created_recovered")
+            continue
+        current = session_snapshot(session)
+        reuse_initial = position == 0
+        if reuse_initial:
+            initial_tab_id = state.get("initial_tab_id")
+            if not isinstance(initial_tab_id, str):
+                choices = snapshot_tab_ids(current, workspace_id)
+                if len(choices) != 1:
+                    raise OrganizerError("Could not identify the initial tab for a recovery-created workspace.")
+                initial_tab_id = next(iter(choices))
+                state["initial_tab_id"] = initial_tab_id
+            params = {"tab_id": initial_tab_id, "tab_label": source_tab.get("label"), "focus": False, "root": source_tab["layout"].get("root")}
+        else:
+            params = {"workspace_id": workspace_id, "tab_label": source_tab.get("label"), "focus": False, "root": source_tab["layout"].get("root")}
+        tab_state["layout_apply_intent"] = {
+            "preexisting_tab_ids": sorted(snapshot_tab_ids(current, workspace_id)),
+            "reuse_initial_tab": reuse_initial,
+        }
+        tab_state["status"] = "layout_apply_intent"
+        record_recovery_stage(journal_path, journal, "layout_apply_intent")
+        applied = socket_call(session, "layout.apply", params)
+        layout = applied.get("layout")
+        if not isinstance(layout, dict) or not layout.get("tab_id"):
+            raise OrganizerError("Herdr did not return a rebuilt layout after recovery mutation.")
+        tab_state.update(
+            {
+                "destination_tab_id": str(layout["tab_id"]),
+                "pane_map": matching_pane_map(source_tab["layout"].get("root"), layout.get("root")),
+                "status": "layout_created",
+            }
+        )
+        record_recovery_stage(journal_path, journal, "layout_created")
+    state["status"] = "layouts_rebuilt"
+    session_state["last_workspace"] = state["source_identity"]
+    record_recovery_stage(journal_path, journal, "layouts_rebuilt")
+
+
+def recovery_pane_map(state: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for tab in state.get("tabs", {}).values():
+        if not isinstance(tab, dict):
+            continue
+        mapping = tab.get("pane_map")
+        if not isinstance(mapping, dict):
+            continue
+        for source_pane, target_pane in mapping.items():
+            if source_pane in result or not isinstance(target_pane, str):
+                raise OrganizerError("Recovery journal has a duplicate or invalid pane map.")
+            result[str(source_pane)] = target_pane
+    return result
+
+
+def native_agent_already_recovered(pane: dict[str, Any], restore: dict[str, Any]) -> bool:
+    expected = restore.get("session_id")
+    native = pane.get("agent_session")
+    if isinstance(native, dict) and native.get("value") == expected:
+        return True
+    return pane.get("agent") == restore.get("client") and pane.get("agent_status") in {"working", "blocked"}
+
+
+def dispatch_recovery_agents(
+    journal_path: Path, journal: dict[str, Any], session: str, source: dict[str, Any], state: dict[str, Any], enabled: bool
+) -> None:
+    if state.get("planned_action") == "adopt":
+        state["agent_outcomes"] = [{"status": "adopted_native", "dispatch": "not_needed"}]
+        return
+    pane_map = recovery_pane_map(state)
+    live = {str(pane.get("pane_id")): pane for pane in session_snapshot(session).get("panes", []) if isinstance(pane, dict)}
+    outcomes = state.setdefault("agent_outcomes", [])
+    known = {str(item.get("source_pane_id")): item for item in outcomes if isinstance(item, dict) and item.get("source_pane_id")}
+    for tab in source.get("tabs", []):
+        for pane in tab.get("panes", []):
+            restore = pane.get("agent_restore", {}) if isinstance(pane, dict) else {}
+            if not is_trusted_restore(restore):
+                continue
+            source_pane = str(restore.get("source_pane_id") or pane.get("identity", {}).get("pane_id") or "")
+            if not source_pane or source_pane in known:
+                continue
+            target_pane = pane_map.get(source_pane)
+            if not target_pane:
+                outcomes.append({"source_pane_id": source_pane, "status": "unmapped", "dispatch": "not_sent"})
+                continue
+            target = live.get(target_pane, {})
+            if native_agent_already_recovered(target, restore):
+                outcomes.append({"source_pane_id": source_pane, "pane_id": target_pane, "status": "native_recovered", "dispatch": "not_sent"})
+                continue
+            if not enabled:
+                outcomes.append({"source_pane_id": source_pane, "pane_id": target_pane, "status": "resume_not_requested", "dispatch": "not_sent"})
+                continue
+            command = restore.get("resume_command")
+            if not isinstance(command, str) or not command:
+                outcomes.append({"source_pane_id": source_pane, "pane_id": target_pane, "status": "unavailable", "dispatch": "not_sent"})
+                continue
+            outcomes.append({"source_pane_id": source_pane, "pane_id": target_pane, "status": "resume_intent", "dispatch": "pending"})
+            record_recovery_stage(journal_path, journal, "resume_intent")
+            run_command(["pane", "run", target_pane, command], session)
+            outcomes[-1].update({"status": "resume_dispatched", "dispatch": "sent", "dispatched_at": now()})
+            record_recovery_stage(journal_path, journal, "resume_dispatched")
+
+
+def verify_recovery_session(
+    session: str, capture: dict[str, Any], journal: dict[str, Any]
+) -> dict[str, Any]:
+    snapshot = session_snapshot(session)
+    workspace_states = journal["sessions"][session]["workspaces"]
+    expected_counts = {"workspaces": len(capture.get("workspaces", [])), "tabs": 0, "panes": 0}
+    actual_counts = {"workspaces": 0, "tabs": 0, "panes": 0}
+    failures: list[str] = []
+    seen_fingerprints: set[str] = set()
+    for source in capture.get("workspaces", []):
+        expected_counts["tabs"] += len(source.get("tabs", []))
+        expected_counts["panes"] += sum(len(tab.get("panes", [])) for tab in source.get("tabs", []))
+        state = workspace_states.get(recovery_workspace_plan_key(source), {})
+        target_id = state.get("native_workspace_id") if state.get("planned_action") == "adopt" else state.get("created_workspace_id")
+        target = next((item for item in snapshot.get("workspaces", []) if isinstance(item, dict) and item.get("workspace_id") == target_id), None)
+        if not target:
+            failures.append("expected_workspace_missing")
+            continue
+        actual_counts["workspaces"] += 1
+        target_tabs = tabs_for_workspace(snapshot, str(target_id))
+        actual_counts["tabs"] += len(target_tabs)
+        actual_counts["panes"] += sum(len(panes_for_tab(snapshot, str(tab.get("tab_id")))) for tab in target_tabs)
+        if recovery_path_issue(target.get("cwd"), "missing_workspace_cwd", recovery_identity(session, str(target_id))):
+            failures.append("cwd_missing")
+        fingerprint = source.get("fingerprint")
+        if fingerprint in seen_fingerprints:
+            failures.append("duplicate_bundle_fingerprint")
+        seen_fingerprints.add(str(fingerprint))
+        maps = recovery_pane_map(state) if state.get("planned_action") != "adopt" else {}
+        if len(set(maps.values())) != len(maps):
+            failures.append("duplicate_pane_map")
+        live = {str(item.get("pane_id")): item for item in snapshot.get("panes", []) if isinstance(item, dict)}
+        for outcome in state.get("agent_outcomes", []):
+            if outcome.get("dispatch") == "sent":
+                target_pane = live.get(str(outcome.get("pane_id")), {})
+                outcome["observed"] = bool(target_pane.get("agent"))
+                outcome["recovery_observation"] = "observed_agent" if outcome["observed"] else "not_observed_yet"
+    if expected_counts != actual_counts:
+        failures.append("count_mismatch")
+    return {"verified_at": now(), "expected_counts": expected_counts, "actual_counts": actual_counts, "failures": sorted(set(failures)), "post_boot_snapshot": snapshot}
+
+
+def execute_recovery_reconciliation(
+    bundle_id: str, captures: list[dict[str, Any]], plans: list[dict[str, Any]], resume_agents: bool
+) -> dict[str, Any]:
+    journal_path, journal = load_or_create_recovery_journal(bundle_id, plans)
+    for capture in captures:
+        session = require_recovery_session(capture.get("session"))
+        states = journal["sessions"].get(session, {}).get("workspaces", {})
+        for plan in next(item for item in plans if item["session"] == session)["workspaces"]:
+            source = plan["source"]
+            state = states.get(recovery_workspace_plan_key(source))
+            if not state:
+                raise OrganizerError("Recovery journal is missing a planned workspace.")
+            if state.get("planned_action") == "ambiguous":
+                raise OrganizerError("Recovery journal contains an ambiguous workspace. It cannot rebuild automatically.")
+            if state.get("planned_action") == "adopt":
+                state["status"] = "adopted"
+                record_recovery_stage(journal_path, journal, "workspace_adopted")
+            else:
+                rebuild_recovery_workspace(journal_path, journal, session, source, state)
+            dispatch_recovery_agents(journal_path, journal, session, source, state, resume_agents)
+        verification = verify_recovery_session(session, capture, journal)
+        journal["sessions"][session]["verification"] = verification
+        record_recovery_stage(journal_path, journal, "session_verified")
+    journal["status"] = "completed" if not any(
+        session.get("verification", {}).get("failures") for session in journal["sessions"].values()
+    ) else "verification_failed"
+    record_recovery_stage(journal_path, journal, "reconciliation_completed")
+    return journal
+
+
+def reconcile_all_command(args: argparse.Namespace) -> None:
+    _path, _manifest, captures = load_recovery_bundle(args.bundle)
+    plans = [plan_recovery_session(capture) for capture in captures]
+    summary = recovery_plan_summary(plans)
+    ambiguous = [plan for session in plans for plan in session["workspaces"] if plan["action"] == "ambiguous"]
+    if not args.confirm:
+        print(json.dumps(summary, indent=2))
+        print(f"Preview only. Re-run with --confirm {args.bundle!r} after attaching every bundled named session.")
+        return
+    if args.confirm != args.bundle:
+        raise OrganizerError(f"Reconcile requires --confirm {args.bundle!r}.")
+    if ambiguous:
+        if not args.copy_ambiguous:
+            print(json.dumps(summary, indent=2))
+            raise OrganizerError("Ambiguous native workspaces were not rebuilt. Review them or choose a deliberate extra copy.")
+        if args.confirm_extra != f"copy:{args.bundle}":
+            raise OrganizerError(f"A deliberate extra copy requires --confirm-extra {'copy:' + args.bundle!r}.")
+        for plan in ambiguous:
+            plan["action"] = "rebuild"
+    journal = execute_recovery_reconciliation(args.bundle, captures, plans, args.resume_agents)
+    output = {"bundle_id": args.bundle, "status": journal["status"], "sessions": []}
+    for session, state in journal["sessions"].items():
+        verification = state.get("verification") or {}
+        output["sessions"].append({"session": session, "verification_failures": verification.get("failures", []), "agent_dispatches": sum(1 for workspace in state["workspaces"].values() for outcome in workspace.get("agent_outcomes", []) if outcome.get("dispatch") == "sent")})
+    print(json.dumps(output, indent=2))
+    print("Agent dispatch and observed recovery are recorded separately in the private reconciliation journal.")
+
+
+def rollback_reconcile_command(args: argparse.Namespace) -> None:
+    _path, _manifest, captures = load_recovery_bundle(args.bundle)
+    journal_path = recovery_journal_path(args.bundle)
+    if not journal_path.exists():
+        raise OrganizerError("No reconciliation journal exists for this bundle.")
+    journal = read_json(journal_path, {})
+    created = [
+        (session, state.get("created_workspace_id"))
+        for session, session_state in journal.get("sessions", {}).items()
+        for state in session_state.get("workspaces", {}).values()
+        if isinstance(state, dict) and isinstance(state.get("created_workspace_id"), str)
+    ]
+    if not args.confirm:
+        print(json.dumps({"bundle_id": args.bundle, "created_workspace_count": len(created)}, indent=2))
+        print(f"Preview only. Re-run with --confirm {args.bundle!r} to close only workspaces created by this journal.")
+        return
+    if args.confirm != args.bundle:
+        raise OrganizerError(f"Rollback requires --confirm {args.bundle!r}.")
+    allowed = {capture.get("session") for capture in captures}
+    for session, workspace_id in created:
+        if session not in allowed:
+            raise OrganizerError("Journal session is not part of the bundle; rollback refused.")
+        session_snapshot(str(session))  # Explicit attached-session refusal before any mutation.
+        run_json(["workspace", "close", str(workspace_id)], str(session))
+    journal["status"] = "rolled_back"
+    journal["rolled_back_at"] = now()
+    write_recovery_journal(journal_path, journal)
+    print(f"Closed {len(created)} workspace(s) created by this recovery journal. Adopted native workspaces were not touched.")
+
+
 def parser() -> argparse.ArgumentParser:
     program = argparse.ArgumentParser(description=__doc__)
     program.add_argument("--session", help="Herdr named session. Defaults to HERDR_SESSION.")
     commands = program.add_subparsers(dest="command", required=True)
 
     commands.add_parser("snapshot", help="Write the live viewer snapshot.").set_defaults(func=snapshot_command)
+
+    for name, help_text in (
+        ("prepare-restart-recovery", "Seal a non-destructive, private restart-recovery bundle."),
+        ("backup-all", "Alias for prepare-restart-recovery."),
+    ):
+        prepare = commands.add_parser(name, help=help_text)
+        prepare.add_argument(
+            "--session", dest="recovery_sessions", action="append",
+            help="Named running Herdr session. Repeat to select the exact recovery scope.",
+        )
+        prepare.add_argument(
+            "--allow-volatile-pane", action="append", default=[],
+            help="Acknowledge one non-agent process as session|workspace|tab|pane. Repeat as needed.",
+        )
+        prepare.add_argument("--capture-attempts", type=int, default=RECOVERY_MAX_CAPTURE_ATTEMPTS)
+        prepare.add_argument("--preflight-only", action="store_true")
+        prepare.set_defaults(func=prepare_restart_recovery_command)
+
+    reconcile = commands.add_parser(
+        "reconcile-all", help="Preview or reconcile one sealed restart-recovery bundle after interactive attach."
+    )
+    reconcile.add_argument("--bundle", required=True)
+    reconcile.add_argument("--confirm", help="Must exactly equal the bundle ID to mutate.")
+    reconcile.add_argument("--resume-agents", action="store_true", help="Dispatch verified agent resume commands after layout reconciliation.")
+    reconcile.add_argument("--copy-ambiguous", action="store_true", help="Deliberately rebuild an ambiguous workspace as an extra copy.")
+    reconcile.add_argument("--confirm-extra", help="Required second confirmation: copy:<bundle-id>.")
+    reconcile.set_defaults(func=reconcile_all_command)
+
+    rollback = commands.add_parser(
+        "rollback-reconcile", help="Preview or close only workspaces created by a reconciliation journal."
+    )
+    rollback.add_argument("--bundle", required=True)
+    rollback.add_argument("--confirm", help="Must exactly equal the bundle ID to close journal-created workspaces.")
+    rollback.set_defaults(func=rollback_reconcile_command)
 
     archive = commands.add_parser("archive", help="Capture and close one workspace.")
     archive.add_argument("--workspace", required=True)
@@ -1645,7 +2719,10 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = parser().parse_args()
     try:
-        if arguments.command not in {"list-archives", "delete-archive", "delete-archived-tab"}:
+        if arguments.command not in {
+            "list-archives", "delete-archive", "delete-archived-tab", "prepare-restart-recovery", "backup-all",
+            "reconcile-all", "rollback-reconcile",
+        }:
             arguments.session = resolve_session(arguments.session)
         arguments.func(arguments)
         return 0

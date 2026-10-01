@@ -899,10 +899,18 @@ def scan(args: argparse.Namespace) -> int:
     if args.execute and records:
         with manifest_lock(path):
             data = read_manifest(path)
-            pane_ids = {record["pane_id"] for record in records}
-            panes_out = [item for item in data["panes"] if item.get("pane_id") not in pane_ids]
+            # Pane IDs are scoped to a named Herdr session. Replacing by pane
+            # ID alone can erase another session's w1:p1 registration.
+            identities = {(record.get("herdr_session"), record["pane_id"]) for record in records}
+            panes_out = [
+                item
+                for item in data["panes"]
+                if (item.get("herdr_session") or herdr_session, item.get("pane_id")) not in identities
+            ]
             panes_out.extend(records)
-            data["panes"] = sorted(panes_out, key=lambda item: str(item.get("pane_id", "")))
+            data["panes"] = sorted(
+                panes_out, key=lambda item: (str(item.get("herdr_session", "")), str(item.get("pane_id", "")))
+            )
             write_manifest(path, data)
         print(f"registered {len(records)} pane(s)")
     elif not args.execute:
