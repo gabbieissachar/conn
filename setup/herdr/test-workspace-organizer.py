@@ -535,12 +535,13 @@ class RestartRecoveryTests(unittest.TestCase):
 
     def source_workspace(self, session="lab", workspace_id="w1", *, agent_restore=None, label="One"):
         agent_restore = agent_restore or {"source_pane_id": "w1:p1", "restore_status": "shell_only"}
+        layout = self.layout(f"{workspace_id}:t1", f"{workspace_id}:p1")
         tab = {
             "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1"),
             "label": "One tab",
             "index": 0,
-            "layout": self.layout(f"{workspace_id}:t1", f"{workspace_id}:p1"),
-            "layout_shape_fingerprint": "shape-one",
+            "layout": layout,
+            "layout_shape_fingerprint": ORGANIZER.layout_shape_fingerprint(layout),
             "panes": [
                 {
                     "identity": ORGANIZER.recovery_identity(session, workspace_id, f"{workspace_id}:t1", f"{workspace_id}:p1"),
@@ -696,11 +697,14 @@ class RestartRecoveryTests(unittest.TestCase):
         capture = {"session": "lab", "workspaces": [source]}
         plans = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
         stages = ["workspace_create_intent", "workspace_created", "layout_apply_intent", "layout_created", "layouts_rebuilt", "session_verified", "reconciliation_completed"]
-        bundle_id = "recovery-20261001T000000Z-aaaaaaaaaa"
         for stage in stages:
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary, patch.object(
+                ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"
+            ), patch.object(
                 ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
             ):
+                bundle_id = ORGANIZER.write_recovery_bundle([capture])
+                args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id, copy_ambiguous=False, confirm_extra=None, resume_agents=False)
                 model = {"workspaces": [], "tabs": [], "panes": []}
                 creates = []
                 def snapshot(_session):
@@ -709,12 +713,16 @@ class RestartRecoveryTests(unittest.TestCase):
                     self.assertEqual(session, "lab")
                     if command[:2] == ["workspace", "create"]:
                         creates.append(command)
-                        model["workspaces"] = [{"workspace_id": "new-w", "label": "One", "cwd": tempfile.gettempdir()}]
+                        model["workspaces"] = [{"workspace_id": "new-w", "label": command[3], "cwd": tempfile.gettempdir()}]
                         model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": "One tab"}]
                         return {"result": {"workspace_id": "new-w", "tab_id": "new-w:t1"}}
                     raise AssertionError(command)
                 def socket_call(session, method, params):
-                    self.assertEqual((session, method), ("lab", "layout.apply"))
+                    self.assertEqual(session, "lab")
+                    if method == "layout.export":
+                        return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+                    self.assertEqual(method, "layout.apply")
+                    model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
                     model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
                     return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
                 tripped = {"value": False}
@@ -726,15 +734,189 @@ class RestartRecoveryTests(unittest.TestCase):
                     ORGANIZER, "run_json", side_effect=run_json
                 ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call), patch.object(
                     ORGANIZER, "recovery_failure_injection", side_effect=inject
+                ), patch.object(
+                    ORGANIZER, "plan_recovery_session", return_value=plans[0]
                 ):
                     with self.assertRaisesRegex(ORGANIZER.OrganizerError, "injected"):
-                        ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plans, False)
+                        ORGANIZER.reconcile_all_command(args)
                 with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
                     ORGANIZER, "run_json", side_effect=run_json
-                ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call):
-                    journal = ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plans, False)
+                ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call), patch.object(
+                    ORGANIZER, "plan_recovery_session", side_effect=AssertionError("public rerun must resume journal")
+                ):
+                    ORGANIZER.reconcile_all_command(args)
+                journal = ORGANIZER.validate_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), bundle_id, [capture])
                 self.assertEqual(len(creates), 1)
                 self.assertEqual(journal["status"], "completed")
+
+    def test_implicit_recovery_scope_rejects_running_default(self):
+        response = argparse.Namespace(
+            returncode=0,
+            stdout=json.dumps({"sessions": [
+                {"name": "default", "default": True, "running": True},
+                {"name": "lab", "default": False, "running": True},
+            ]}),
+            stderr="",
+        )
+        with patch.object(ORGANIZER.subprocess, "run", return_value=response):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "default Herdr session"):
+                ORGANIZER.running_recovery_sessions()
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "default Herdr session"):
+            ORGANIZER.recovery_sessions(argparse.Namespace(recovery_sessions=["default"]))
+
+    def test_stable_capture_rechecks_process_classification_on_final_snapshot(self):
+        snapshot = self.snapshot()
+        preflight_shell = {"classifications": [{"identity": ORGANIZER.recovery_identity("lab", "w1", "w1:t1", "w1:p1"), "classification": "disposable_shell"}], "failures": []}
+        preflight_blocker = {"classifications": [{"identity": ORGANIZER.recovery_identity("lab", "w1", "w1:t1", "w1:p1"), "classification": "blocker"}], "failures": [{"kind": "blocker"}]}
+        with patch.object(ORGANIZER, "session_snapshot", side_effect=[snapshot, snapshot]), patch.object(
+            ORGANIZER, "recovery_layouts", return_value={"w1:t1": self.layout()}
+        ), patch.object(ORGANIZER, "recovery_preflight_snapshot", side_effect=[preflight_shell, preflight_blocker]):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "final quiesce preflight"):
+                ORGANIZER.stable_recovery_capture("lab", set(), 1)
+
+    def test_marked_workspace_response_loss_resumes_through_public_command(self):
+        source = self.source_workspace()
+        capture = {"session": "lab", "workspaces": [source]}
+        plan = {"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}
+        model = {"workspaces": [], "tabs": [], "panes": []}
+        def snapshot(_session):
+            return copy.deepcopy(model)
+        def first_run_json(command, _session):
+            self.assertEqual(command[:2], ["workspace", "create"])
+            model["workspaces"] = [{"workspace_id": "new-w", "label": command[3], "cwd": tempfile.gettempdir()}]
+            model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": "initial"}]
+            raise ORGANIZER.OrganizerError("lost response")
+        def socket_call(session, method, params):
+            self.assertEqual(session, "lab")
+            if method == "layout.export":
+                return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+            self.assertEqual(method, "layout.apply")
+            model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
+            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+            return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"), patch.object(
+            ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+        ):
+            bundle_id = ORGANIZER.write_recovery_bundle([capture])
+            args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id, copy_ambiguous=False, confirm_extra=None, resume_agents=False)
+            with patch.object(ORGANIZER, "plan_recovery_session", return_value=plan), patch.object(
+                ORGANIZER, "session_snapshot", side_effect=snapshot
+            ), patch.object(ORGANIZER, "run_json", side_effect=first_run_json):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "lost response"):
+                    ORGANIZER.reconcile_all_command(args)
+            journal_path = ORGANIZER.recovery_journal_path(bundle_id)
+            journal = ORGANIZER.validate_recovery_journal(journal_path, bundle_id, [capture])
+            state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+            self.assertIn("rrb:", state["expected_label"])
+            with patch.object(ORGANIZER, "plan_recovery_session", side_effect=AssertionError("must resume journal, not replan")), patch.object(
+                ORGANIZER, "session_snapshot", side_effect=snapshot
+            ), patch.object(ORGANIZER, "run_json", side_effect=AssertionError("workspace must not be created twice")), patch.object(
+                ORGANIZER, "socket_call", side_effect=socket_call):
+                ORGANIZER.reconcile_all_command(args)
+            self.assertEqual(model["workspaces"][0]["label"], state["expected_label"])
+
+    def test_marked_tab_response_loss_is_recovered_without_id_set_inference(self):
+        source = self.source_workspace()
+        capture = {"session": "lab", "workspaces": [source]}
+        plan = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+        bundle_id = "recovery-20261002T000000Z-bbbbbbbbbb"
+        journal = ORGANIZER.new_recovery_journal(bundle_id, plan)
+        state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+        state.update({"workspace_create_intent": {}, "created_workspace_id": "new-w", "initial_tab_id": "new-w:t1"})
+        model = {
+            "workspaces": [{"workspace_id": "new-w", "label": state["expected_label"], "cwd": tempfile.gettempdir()}],
+            "tabs": [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": "initial"}],
+            "panes": [],
+        }
+        def snapshot(_session):
+            return copy.deepcopy(model)
+        lost = {"value": False}
+        def socket_call(session, method, params):
+            self.assertEqual(session, "lab")
+            if method == "layout.export":
+                return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+            model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": params["tab_label"]}]
+            model["panes"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "pane_id": "new-w:p1"}]
+            if not lost["value"]:
+                lost["value"] = True
+                raise ORGANIZER.OrganizerError("lost tab response")
+            return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"):
+            ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+            journal_path = ORGANIZER.recovery_journal_path(bundle_id)
+            ORGANIZER.write_recovery_journal(journal_path, journal)
+            with patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(ORGANIZER, "socket_call", side_effect=socket_call):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "lost tab response"):
+                    ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plan, False)
+                completed = ORGANIZER.execute_recovery_reconciliation(bundle_id, [capture], plan, False)
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(len(model["tabs"]), 1)
+
+    def test_marker_mismatch_is_never_claimed_or_rolled_back(self):
+        source = self.source_workspace()
+        bundle_id = "recovery-20261002T000000Z-cccccccccc"
+        plan = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+        journal = ORGANIZER.new_recovery_journal(bundle_id, plan)
+        state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+        state.update({"workspace_create_intent": {}, "created_workspace_id": "unrelated"})
+        unrelated = {"workspaces": [{"workspace_id": "unrelated", "label": "One", "cwd": tempfile.gettempdir()}], "tabs": [], "panes": []}
+        self.assertFalse(ORGANIZER.journal_recover_created_workspace("lab", state, unrelated))
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "operation marker"):
+            ORGANIZER.verify_created_workspace(unrelated, state)
+
+    def test_rollback_command_refuses_unverified_marker_before_close(self):
+        source = self.source_workspace()
+        capture = {"session": "lab", "workspaces": [source]}
+        plan = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+        unrelated = {"workspaces": [{"workspace_id": "unrelated", "label": "One", "cwd": tempfile.gettempdir()}], "tabs": [], "panes": []}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"), patch.object(
+            ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+        ):
+            bundle_id = ORGANIZER.write_recovery_bundle([capture])
+            journal = ORGANIZER.new_recovery_journal(bundle_id, plan)
+            state = next(iter(journal["sessions"]["lab"]["workspaces"].values()))
+            state.update({"workspace_create_intent": {}, "created_workspace_id": "unrelated"})
+            ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+            ORGANIZER.write_recovery_journal(ORGANIZER.recovery_journal_path(bundle_id), journal)
+            args = argparse.Namespace(bundle=bundle_id, confirm=bundle_id)
+            with patch.object(ORGANIZER, "session_snapshot", return_value=unrelated), patch.object(ORGANIZER, "run_json") as run_json:
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "operation marker"):
+                    ORGANIZER.rollback_reconcile_command(args)
+            run_json.assert_not_called()
+
+    def test_verification_reexports_layout_and_checks_focus_and_duplicates(self):
+        source = self.source_workspace()
+        capture = {"session": "lab", "workspaces": [source]}
+        plan = [{"session": "lab", "workspaces": [{"source": source, "action": "adopt", "native_workspace_id": "native-w"}]}]
+        journal = ORGANIZER.new_recovery_journal("recovery-20261002T000000Z-dddddddddd", plan)
+        target = {
+            "identity": ORGANIZER.recovery_identity("lab", "native-w"), "label": "One", "cwd": tempfile.gettempdir(), "focused": True,
+            "tabs": [{"identity": ORGANIZER.recovery_identity("lab", "native-w", "native-w:t1"), "label": "One tab", "index": 0, "focused": True, "layout_shape_fingerprint": "wrong", "panes": []}],
+        }
+        with patch.object(ORGANIZER, "session_snapshot", return_value={"workspaces": [], "tabs": [], "panes": []}), patch.object(
+            ORGANIZER, "native_recovery_workspaces", return_value=[target]
+        ):
+            verification = ORGANIZER.verify_recovery_session("lab", capture, journal)
+        self.assertTrue({"layout_shape_mismatch", "workspace_focus_mismatch", "tab_focus_mismatch"}.issubset(verification["failures"]))
+
+    def test_private_journal_and_lock_are_required_before_mutation(self):
+        bundle_id = "recovery-20261002T000000Z-eeeeeeeeee"
+        capture = {"session": "lab", "workspaces": []}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"):
+            ORGANIZER.ensure_private_directory(ORGANIZER.RECOVERY_JOURNAL_DIR)
+            path = ORGANIZER.recovery_journal_path(bundle_id)
+            ORGANIZER.write_recovery_journal(path, ORGANIZER.new_recovery_journal(bundle_id, [{"session": "lab", "workspaces": []}]))
+            path.chmod(0o644)
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "permissions"):
+                ORGANIZER.load_existing_recovery_journal(bundle_id, [capture])
+            path.chmod(0o600)
+            def lock_error(_descriptor, operation):
+                if operation & ORGANIZER.fcntl.LOCK_NB:
+                    raise BlockingIOError
+            with patch.object(ORGANIZER.fcntl, "flock", side_effect=lock_error):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "already running"):
+                    with ORGANIZER.recovery_bundle_lock(bundle_id):
+                        pass
 
 
 if __name__ == "__main__":

@@ -188,7 +188,8 @@ Use this safe order when a computer restart could interrupt Herdr:
 1. Attach the exact named sessions that need recovery, then run a strict
    preflight and seal the bundle. Repeat `--session`; without it, the command
    selects only sessions running at preflight time. It never selects every
-   saved session directory.
+   saved session directory. The default Herdr session is not supported here.
+   When it is running, name every non-default recovery session explicitly.
 2. Restart only after the command reports that the bundle is `ready`.
 3. After boot, attach each bundled session through Herdr's normal interactive
    path. Recovery does not start sessions for you.
@@ -232,6 +233,15 @@ additional copy requires both `--copy-ambiguous` and the second confirmation
 `--confirm-extra copy:<bundle_id>`. `rollback-reconcile` also starts as a
 preview and can close only workspace IDs created by that bundle's journal. It
 never closes adopted native workspaces.
+
+During a confirmed rebuild, the organizer gives each newly created workspace
+and tab a durable private-operation suffix such as `[rrb:…]`. The journal
+records that marker before the mutation. A retry or rollback acts only when
+the marker, expected CWD, label, and layout shape all match. It never claims a
+workspace or tab only because it appeared after an interrupted request. If
+Herdr does not retain a marker, recovery stops for manual repair. The marker
+remains in the label until the recovery is accepted so that ownership stays
+auditable.
 
 ## Workspace Organizer MVP
 
