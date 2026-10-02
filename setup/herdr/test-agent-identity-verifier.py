@@ -49,6 +49,7 @@ class Adapter:
 def pane(client="codex", session_id=None, *, cwd="/workspace/project", status="idle", pid=41, start="start-1", argv=None):
     process = {"pid": pid, "argv": argv or [client], "process_start": start}
     value = {
+        "herdr_session": "esim",
         "pane_id": "w1:p1",
         "workspace_id": "w1",
         "workspace_label": "Workspace",
@@ -272,13 +273,75 @@ class VerifierTests(unittest.TestCase):
         with patch.dict(os.environ, {"HERDR_SESSION": ""}), patch.object(REGISTRY, "running_named_session_sockets", return_value=[("esim", private_socket)]), redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
             self.assertEqual(REGISTRY.verify_identity(args), 2)
         self.assertNotIn(private_socket, stdout.getvalue() + stderr.getvalue())
-
         args.herdr_session = "esim"
         with patch.object(REGISTRY, "verifier_panes", return_value=[]), patch.object(
             REGISTRY, "running_named_session_sockets", return_value=[("esim", private_socket)]
         ), redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
             self.assertEqual(REGISTRY.verify_identity(args), 1)
         self.assertNotIn(private_socket, stdout.getvalue() + stderr.getvalue())
+
+    def test_named_session_binds_every_snapshot_and_process_read(self):
+        requested = "requested"
+        ambient = {"HERDR_SESSION": "ambient", "HERDR_SOCKET_PATH": "/private/ambient.sock"}
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, ambient), patch.object(REGISTRY.subprocess, "run") as run:
+            home = Path(temporary) / "codex"
+            rollout = home / "sessions" / "2026" / "10" / "02"
+            rollout.mkdir(parents=True)
+            (rollout / f"rollout-{SESSION_A}.jsonl").write_text(
+                json.dumps({"type": "session_meta", "payload": {"session_id": SESSION_A, "cwd": "/workspace/project"}}) + "\n"
+            )
+            state = Path(temporary) / "state"
+            state.mkdir(mode=0o700)
+            state.chmod(0o700)
+            manifest = state / "manifest.json"
+            snapshot = {
+                "result": {
+                    "snapshot": {
+                        "panes": [{
+                            "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1",
+                            "agent": "codex", "agent_status": "idle", "cwd": "/workspace/project",
+                            "foreground_cwd": "/workspace/project", "label": "Agent",
+                            "agent_session": {"agent": "codex", "source": "hook", "value": SESSION_A},
+                        }], "tabs": [], "workspaces": [],
+                    }
+                }
+            }
+            process = {"result": {"process_info": {"foreground_processes": [{"pid": 41, "argv": ["codex"], "process_start": "start-1"}]}}}
+            calls = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                if command[:3] == ["herdr", "--session", requested] and command[3:] == ["api", "snapshot"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(snapshot), stderr="")
+                if command[:3] == ["herdr", "--session", requested] and command[3:] == ["pane", "process-info", "--pane", "w1:p1"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(process), stderr="")
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+            run.side_effect = fake_run
+
+            args = SimpleNamespace(herdr_session=requested, client=None, apply=False, show_session_ids=False, manifest=str(manifest), diagnostic_session_paths=False)
+            with patch.dict(os.environ, {"CODEX_HOME": str(home)}), redirect_stdout(io.StringIO()):
+                self.assertEqual(REGISTRY.verify_identity(args), 0)
+            report_herdr = [command for command in calls if command and command[0] == "herdr"]
+            self.assertTrue(report_herdr)
+            self.assertTrue(all(command[1:3] == ["--session", requested] for command in report_herdr))
+            calls.clear()
+            args.apply = True
+            with patch.dict(os.environ, {"CODEX_HOME": str(home)}), redirect_stdout(io.StringIO()):
+                self.assertEqual(REGISTRY.verify_identity(args), 0)
+            apply_herdr = [command for command in calls if command and command[0] == "herdr"]
+            self.assertGreaterEqual(len(apply_herdr), 3)
+            self.assertTrue(all(command[1:3] == ["--session", requested] for command in apply_herdr))
+            saved = json.loads(manifest.read_text())
+        self.assertEqual(saved["panes"][0]["herdr_session"], requested)
+
+    def test_default_and_unknown_named_sessions_are_refused(self):
+        args = SimpleNamespace(herdr_session="default", client=None, apply=False, show_session_ids=False, manifest="", diagnostic_session_paths=False)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(REGISTRY.verify_identity(args), 2)
+        args.herdr_session = "unknown"
+        with patch.object(REGISTRY, "verifier_panes", return_value=[]), patch.object(REGISTRY, "running_named_session_sockets", return_value=[]), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(REGISTRY.verify_identity(args), 1)
 
     def test_shortcuts_expose_verifier_and_preserve_capture_history_scan(self):
         shortcuts = ROOT / "agent-session-shortcuts.zsh"
@@ -288,6 +351,11 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("verify-identity", result.stdout)
         self.assertIn("scan", result.stdout)
         self.assertIn("--execute", result.stdout)
+        fallback_script = f'''\ntypeset -g calls=0\npython3() {{ calls=$((calls + 1)); print -r -- "CALL:$*"; (( calls == 1 )) && return 2; return 0 }}\nunset HERDR_SESSION\nsource {shortcuts}\nherdr-agent-capture-history --client codex\n'''
+        fallback = subprocess.run(["zsh", "-fc", fallback_script], text=True, capture_output=True, check=False)
+        self.assertEqual(fallback.returncode, 0)
+        self.assertEqual(fallback.stdout.count("CALL:"), 2)
+        self.assertIn("scan", fallback.stdout)
 
     def test_apply_snapshot_rejects_changed_cwd_and_pid(self):
         original = pane(argv=["codex", "resume", SESSION_A])

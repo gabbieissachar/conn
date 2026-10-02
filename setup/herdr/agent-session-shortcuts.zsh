@@ -90,7 +90,14 @@ herdr-agent-capture-history() {
   done
   herdr-agent-verify-identity "${verify_args[@]}"
   local verifier_status=$?
-  (( verifier_status > 1 )) && return "$verifier_status"
+  if (( verifier_status > 1 )); then
+    if [[ -n "$selected_session" ]]; then
+      HERDR_SESSION="$selected_session" python3 "$_pmos_herdr_agent_registry" scan "${legacy_args[@]}"
+    else
+      python3 "$_pmos_herdr_agent_registry" scan "${legacy_args[@]}"
+    fi
+    return $?
+  fi
   if [[ -n "$selected_session" ]]; then
     HERDR_SESSION="$selected_session" python3 "$_pmos_herdr_agent_registry" scan "${legacy_args[@]}"
   else

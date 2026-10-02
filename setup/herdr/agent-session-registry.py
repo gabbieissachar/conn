@@ -86,6 +86,17 @@ def run_json(cmd: list[str]) -> dict[str, Any] | None:
     return data
 
 
+def herdr_read_command(arguments: list[str], session: str) -> list[str]:
+    """Build an explicit named-session command for verifier reads."""
+    if not isinstance(session, str) or not session or session == "default":
+        raise ValueError("a named non-default Herdr session is required")
+    return ["herdr", "--session", session, *arguments]
+
+
+def run_json_for_session(arguments: list[str], session: str) -> dict[str, Any] | None:
+    return run_json(herdr_read_command(arguments, session))
+
+
 def manifest_path(args: argparse.Namespace) -> Path:
     return Path(
         args.manifest
@@ -275,8 +286,9 @@ def current_pane_info() -> PaneInfo | None:
     return current
 
 
-def snapshot_panes() -> list[PaneInfo]:
-    data = run_json(["herdr", "api", "snapshot"])
+def snapshot_panes(session: str | None = None) -> list[PaneInfo]:
+    command = herdr_read_command(["api", "snapshot"], session) if session else ["herdr", "api", "snapshot"]
+    data = run_json(command)
     if not data:
         return []
     result = data.get("result")
@@ -322,7 +334,7 @@ def snapshot_panes() -> list[PaneInfo]:
             continue
         found.append(
             PaneInfo(
-                herdr_session=current_herdr_session(),
+                herdr_session=session or current_herdr_session(),
                 pane_id=pane_id,
                 workspace_id=workspace_id,
                 tab_id=tab_id,
@@ -919,12 +931,13 @@ def print_verifier_guidance(*, diagnostic: bool = False) -> None:
 
 def verifier_panes(herdr_session: str | None) -> list[dict[str, Any]]:
     """Return one structural pane snapshot enriched with process metadata."""
-    panes = snapshot_panes()
+    if not isinstance(herdr_session, str) or not herdr_session or herdr_session == "default":
+        return []
+    panes = snapshot_panes(herdr_session)
     enriched: list[dict[str, Any]] = []
     for pane in panes:
-        if herdr_session and pane.herdr_session and pane.herdr_session != herdr_session:
-            continue
         value = {
+            "herdr_session": herdr_session,
             "pane_id": pane.pane_id,
             "workspace_id": pane.workspace_id,
             "workspace_label": pane.workspace_label,
@@ -937,7 +950,7 @@ def verifier_panes(herdr_session: str | None) -> list[dict[str, Any]]:
             "foreground_cwd": pane.foreground_cwd,
             "agent_session": pane.agent_session,
         }
-        process_data = run_json(["herdr", "pane", "process-info", "--pane", pane.pane_id])
+        process_data = run_json_for_session(["pane", "process-info", "--pane", pane.pane_id], herdr_session)
         if process_data:
             result = process_data.get("result")
             process_info = result.get("process_info") if isinstance(result, dict) else None
@@ -964,8 +977,11 @@ def _verified_record(pane: dict[str, Any], result: dict[str, Any]) -> dict[str, 
     if not cwd:
         return None
     worktree, branch = git_context(cwd)
+    herdr_session = pane.get("herdr_session")
+    if not isinstance(herdr_session, str) or not herdr_session:
+        return None
     pane_info = PaneInfo(
-        herdr_session=pane.get("herdr_session") if isinstance(pane.get("herdr_session"), str) else current_herdr_session(),
+        herdr_session=herdr_session,
         pane_id=str(pane.get("pane_id", "")),
         workspace_id=str(pane.get("workspace_id", "")),
         tab_id=str(pane.get("tab_id", "")),
@@ -1051,9 +1067,6 @@ def verify_identity(args: argparse.Namespace) -> int:
         print("HERDR_SESSION or --herdr-session is required; attach a named non-default Herdr session first", file=sys.stderr)
         print_verifier_guidance(diagnostic=getattr(args, "diagnostic_session_paths", False))
         return 2
-    # Herdr's CLI resolves the named socket from this environment variable.
-    # The command is short-lived, so setting it here does not alter the caller.
-    os.environ["HERDR_SESSION"] = herdr_session
     panes = verifier_panes(herdr_session)
     if not panes:
         print(f"No panes found in named Herdr session {herdr_session!r}.", file=sys.stderr)
