@@ -55,8 +55,47 @@ herdr-agent-scan() {
   python3 "$_pmos_herdr_agent_registry" scan "$@"
 }
 
-herdr-agent-capture-history() {
+herdr-agent-verify-identity() {
   python3 "$_pmos_herdr_agent_registry" verify-identity "$@"
+}
+
+herdr-agent-capture-history() {
+  local verify_args=()
+  local legacy_args=()
+  local selected_session="${HERDR_SESSION:-}"
+  while (( $# )); do
+    case "$1" in
+      --execute)
+        verify_args+=(--apply)
+        legacy_args+=("$1")
+        ;;
+      --herdr-session)
+        verify_args+=("$1" "$2")
+        selected_session="$2"
+        shift
+        ;;
+      --client)
+        verify_args+=("$1" "$2")
+        legacy_args+=("$1" "$2")
+        shift
+        ;;
+      --show-session-ids|--diagnostic-session-paths)
+        verify_args+=("$1")
+        ;;
+      *)
+        legacy_args+=("$1")
+        ;;
+    esac
+    shift
+  done
+  herdr-agent-verify-identity "${verify_args[@]}"
+  local verifier_status=$?
+  (( verifier_status > 1 )) && return "$verifier_status"
+  if [[ -n "$selected_session" ]]; then
+    HERDR_SESSION="$selected_session" python3 "$_pmos_herdr_agent_registry" scan "${legacy_args[@]}"
+  else
+    python3 "$_pmos_herdr_agent_registry" scan "${legacy_args[@]}"
+  fi
 }
 
 herdr-agent-capture-status() {

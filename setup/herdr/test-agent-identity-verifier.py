@@ -5,10 +5,12 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -85,6 +87,53 @@ def stores_for(temporary, *, client="codex", ids=(SESSION_A,), cwd="/workspace/p
 
 
 class VerifierTests(unittest.TestCase):
+    def test_argv_only_from_selected_foreground_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            value = pane(argv=["codex"])
+            value["foreground_pid"] = 41
+            value["foreground_processes"] = [
+                {"pid": 41, "argv": ["codex"], "process_start": "start-1"},
+                {"pid": 42, "argv": ["codex", "resume", SESSION_A], "process_start": "start-2"},
+            ]
+            result = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())
+        self.assertNotEqual(result["status"], "argv_verified")
+
+    def test_native_report_requires_matching_agent_and_current_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            value = pane("codex", SESSION_A, start="old")
+            value["agent_session"]["agent"] = "claude"
+            mismatched = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter(start="old"))
+            value["agent_session"]["agent"] = "codex"
+            stale = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter(start="new"))
+        self.assertNotEqual(mismatched["status"], "native_verified")
+        self.assertNotEqual(stale["status"], "native_verified")
+
+    def test_stale_native_object_on_codex_pane_cannot_verify_claude(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            value = pane("codex", SESSION_A)
+            value["agent_session"] = {"agent": "claude", "source": "hook", "value": SESSION_A}
+            result = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())
+        self.assertNotEqual(result["status"], "native_verified")
+
+    def test_command_snapshot_carries_native_metadata_to_verifier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            source = REGISTRY.PaneInfo(
+                "esim", "w1:p1", "w1", "w1:t1", "/workspace/project", "/workspace/project",
+                "codex", "idle", "Agent", "Workspace", "Tab", {"agent": "codex", "source": "hook", "value": SESSION_A},
+            )
+            process_info = {"result": {"process_info": {"foreground_processes": [{"pid": 41, "argv": ["codex"], "process_start": "start-1"}]}}}
+            args = SimpleNamespace(herdr_session="esim", client="codex", apply=False, show_session_ids=False, manifest="", diagnostic_session_paths=False)
+            output = io.StringIO()
+            with redirect_stdout(output), patch.object(REGISTRY, "snapshot_panes", return_value=[source]), patch.object(
+                REGISTRY, "run_json", return_value=process_info
+            ), patch.object(REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())):
+                self.assertEqual(REGISTRY.verify_identity(args), 0)
+        self.assertIn("native_verified", output.getvalue())
+
     def test_claude_native_id_is_valid_only_when_store_exists_and_cwd_matches(self):
         with tempfile.TemporaryDirectory() as temporary:
             stores = stores_for(temporary, client="claude", ids=(SESSION_A,))
@@ -92,6 +141,15 @@ class VerifierTests(unittest.TestCase):
             self.assertEqual(VERIFIER.verify_pane(valid, stores=stores, adapter=Adapter())["status"], "native_verified")
             invalid = pane("claude", SESSION_B)
             self.assertEqual(VERIFIER.verify_pane(invalid, stores=stores, adapter=Adapter())["status"], "unresolved")
+
+    def test_claude_native_hook_source_is_usable_but_display_value_is_not(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, client="claude", ids=(SESSION_A,))
+            valid = pane("claude", SESSION_A)
+            valid["agent_session"]["source"] = "herdr:claude"
+            display_only = pane("claude", "herdr:claude")
+            self.assertEqual(VERIFIER.verify_pane(valid, stores=stores, adapter=Adapter())["status"], "native_verified")
+            self.assertNotEqual(VERIFIER.verify_pane(display_only, stores=stores, adapter=Adapter())["status"], "native_verified")
 
     def test_codex_native_missing_from_store_is_unresolved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -183,6 +241,53 @@ class VerifierTests(unittest.TestCase):
             self.assertFalse((Path(temporary) / "manifest.json").exists())
         self.assertIn("report-only", output.getvalue())
         self.assertNotIn(SESSION_A, output.getvalue())
+
+    def test_apply_final_snapshot_discards_first_pane_changed_while_later_pane_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            state.mkdir(mode=0o700)
+            state.chmod(0o700)
+            manifest = state / "manifest.json"
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B), cwd="/workspace/project-1")
+            second_rollout = next(path for path in stores["codex"].sessions_dir.rglob(f"*{SESSION_B}.jsonl"))
+            second_rollout.write_text(json.dumps({"type": "session_meta", "payload": {"session_id": SESSION_B, "cwd": "/workspace/project-2"}}) + "\n")
+            first = pane(argv=["codex", "resume", SESSION_A], cwd="/workspace/project-1")
+            first["pane_id"] = "w1:p1"
+            second = pane(argv=["codex", "resume", SESSION_B], cwd="/workspace/project-2", pid=42)
+            second["pane_id"] = "w1:p2"
+            changed_first = pane(argv=["codex", "resume", SESSION_A], cwd="/workspace/project-1", pid=99)
+            changed_first["pane_id"] = "w1:p1"
+            snapshots = [[first, second], [first, second], [first, second], [changed_first, second]]
+            args = SimpleNamespace(herdr_session="esim", client=None, apply=True, show_session_ids=False, manifest=str(manifest), diagnostic_session_paths=False)
+            with patch.object(REGISTRY, "verifier_panes", side_effect=snapshots), patch.object(
+                REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(value, stores=stores, adapter=Adapter(start="start-1"))
+            ):
+                self.assertEqual(REGISTRY.verify_identity(args), 0)
+            saved = json.loads(manifest.read_text())
+        self.assertEqual([item["pane_id"] for item in saved["panes"]], ["w1:p2"])
+
+    def test_verifier_error_guidance_redacts_socket_paths(self):
+        private_socket = "/private/herdr/esim/herdr.sock"
+        args = SimpleNamespace(herdr_session=None, client=None, apply=False, show_session_ids=False, manifest="", diagnostic_session_paths=False)
+        with patch.dict(os.environ, {"HERDR_SESSION": ""}), patch.object(REGISTRY, "running_named_session_sockets", return_value=[("esim", private_socket)]), redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(REGISTRY.verify_identity(args), 2)
+        self.assertNotIn(private_socket, stdout.getvalue() + stderr.getvalue())
+
+        args.herdr_session = "esim"
+        with patch.object(REGISTRY, "verifier_panes", return_value=[]), patch.object(
+            REGISTRY, "running_named_session_sockets", return_value=[("esim", private_socket)]
+        ), redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(REGISTRY.verify_identity(args), 1)
+        self.assertNotIn(private_socket, stdout.getvalue() + stderr.getvalue())
+
+    def test_shortcuts_expose_verifier_and_preserve_capture_history_scan(self):
+        shortcuts = ROOT / "agent-session-shortcuts.zsh"
+        script = f'''\npython3() {{ print -r -- "PY:$*" }}\nsource {shortcuts}\nherdr-agent-verify-identity --herdr-session esim\nherdr-agent-capture-history --execute --client codex --lines 10\n'''
+        result = subprocess.run(["zsh", "-fc", script], text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("verify-identity", result.stdout)
+        self.assertIn("scan", result.stdout)
+        self.assertIn("--execute", result.stdout)
 
     def test_apply_snapshot_rejects_changed_cwd_and_pid(self):
         original = pane(argv=["codex", "resume", SESSION_A])

@@ -350,34 +350,6 @@ def native_codex_session(pane: dict[str, Any]) -> tuple[str, str] | None:
     return ("codex", session_id) if codex_session_exists(session_id) else None
 
 
-def native_claude_session(pane: dict[str, Any]) -> tuple[str, str] | None:
-    """Accept only a real Claude store id, never Herdr's display id."""
-    agent_session = pane.get("agent_session")
-    if not isinstance(agent_session, dict) or agent_session.get("agent") != "claude":
-        return None
-    source = agent_session.get("source")
-    session_id = agent_session.get("value")
-    if isinstance(source, str) and source.startswith("herdr:"):
-        return None
-    if not isinstance(session_id, str) or not claude_session_exists(session_id):
-        return None
-    pane_cwd = pane.get("foreground_cwd") or pane.get("cwd")
-    if not isinstance(pane_cwd, str) or not pane_cwd:
-        return None
-    project_root = Path.home() / ".claude" / "projects"
-    for path in project_root.rglob(f"{session_id}.jsonl") if project_root.exists() else ():
-        try:
-            with path.open(errors="replace") as handle:
-                for line in handle:
-                    row = json.loads(line)
-                    if isinstance(row, dict) and isinstance(row.get("cwd"), str):
-                        if os.path.realpath(row["cwd"]) == os.path.realpath(pane_cwd):
-                            return "claude", session_id
-        except (OSError, json.JSONDecodeError):
-            continue
-    return None
-
-
 def normalized_text(value: object) -> str:
     """Make terminal and rollout text comparable without weakening word matching."""
     return re.sub(r"\s+", " ", str(value)).strip().casefold()
@@ -575,8 +547,7 @@ def agent_restore_records(
         registered = by_pane.get(pane_id, {})
         detected = agent_session_from_process(pane, session)
         native_codex = native_codex_session(pane)
-        native_claude = native_claude_session(pane)
-        native = native_codex or native_claude
+        native = native_codex
         interactive = codex_interactive_resume_session(pane, session) if not detected and not native else None
         registered_client = registered.get("client")
         registered_session_id = registered.get("session_id")
@@ -616,8 +587,6 @@ def agent_restore_records(
             restore_source = "process"
         elif native_codex:
             restore_source = "native_codex"
-        elif native_claude:
-            restore_source = "native_claude"
         elif interactive:
             restore_source = "local_rollout"
         elif registered_valid and registered.get("restore_source") in VERIFIER_RESTORE_SOURCES:
@@ -643,7 +612,7 @@ def is_trusted_restore(restore: dict[str, Any]) -> bool:
     return (
         restore.get("restore_status") == "resumable"
         and restore.get("restore_source") in {
-            "manifest", "process", "native_codex", "native_claude", "local_rollout", *VERIFIER_RESTORE_SOURCES
+            "manifest", "process", "native_codex", "local_rollout", *VERIFIER_RESTORE_SOURCES
         }
     )
 

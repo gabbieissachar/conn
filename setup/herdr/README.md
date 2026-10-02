@@ -17,8 +17,8 @@ needs a replay contract for resumable Codex and Claude sessions.
   foreground process command, and park the rest in missing-session JSON.
 - `herdr-agent-verify-identity` is the read-only verifier for live supported
   panes. It accepts only independently agreeing, store-backed evidence.
-- `herdr-agent-capture-history` invokes the same verifier without pane input;
-  it never reads conversation text or sends input to a pane.
+- `herdr-agent-capture-history` runs the verifier without pane input, then
+  preserves the legacy scrollback and process scan with its compatible flags.
 - The scan checks Herdr's pane-level native `agent_session` metadata first when
   an official integration has reported it.
 - `herdr-agent-capture-status` opt-in queries `/status` in unresolved idle or
@@ -96,10 +96,11 @@ herdr-agent-verify-identity --herdr-session esim
 ```
 
 The default is report-only. It prints one redacted row per supported pane with
-its workspace and tab labels, a classification, candidate count, and evidence
-categories. It prints no client session IDs, private store paths, resume
-commands, or transcript text. Use `--show-session-ids` only for an explicit
-manual repair review.
+its workspace and tab labels, stable pane ID, a classification, candidate
+count, and evidence categories. It prints no client session IDs, private store
+paths, resume commands, or transcript text. Use `--show-session-ids` only for
+an explicit manual repair review. Use `--diagnostic-session-paths` only when
+socket-path diagnostics are explicitly required.
 
 Apply only rows that pass the verifier's acceptance rule:
 

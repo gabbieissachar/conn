@@ -64,7 +64,7 @@ class IdentityCandidate:
         return {
             "client": self.client,
             "evidence": list(self.evidence),
-            "pid": self.pid,
+            "pid": "[redacted]" if self.pid is not None else None,
             "process_start": bool(self.process_start),
             "cwd": bool(self.cwd),
             "store_shape": self.store_shape,
@@ -270,6 +270,33 @@ def _processes(pane: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def _is_foreground_process(process: dict[str, Any]) -> bool:
+    for key in ("foreground", "is_foreground", "current", "is_current"):
+        if process.get(key) is True:
+            return True
+    return False
+
+
+def _selected_client_process(pane: dict[str, Any]) -> dict[str, Any] | None:
+    """Select exactly one current process for the pane's detected client."""
+    client = pane.get("agent")
+    if client not in SUPPORTED_CLIENTS:
+        return None
+    matches = [
+        process
+        for process in _processes(pane)
+        if _argv(process) and Path(_argv(process)[0]).name == client and isinstance(process.get("pid"), int)
+    ]
+    explicit_pid = pane.get("foreground_pid")
+    if isinstance(explicit_pid, int):
+        matches = [process for process in matches if process.get("pid") == explicit_pid]
+    else:
+        flagged = [process for process in matches if _is_foreground_process(process)]
+        if flagged:
+            matches = flagged
+    return matches[0] if len(matches) == 1 else None
+
+
 def _argv(process: dict[str, Any]) -> list[str]:
     value = process.get("argv")
     if isinstance(value, list):
@@ -305,9 +332,11 @@ def _native_candidate(pane: dict[str, Any], stores: dict[str, Any] | None, stamp
     client = pane.get("agent")
     if client not in SUPPORTED_CLIENTS or not isinstance(native, dict):
         return None
+    if native.get("agent") != client or _selected_client_process(pane) is None:
+        return None
     session_id = native.get("value")
     source = native.get("source")
-    if not valid_session_id(session_id) or (client == "claude" and isinstance(source, str) and source.startswith("herdr:")):
+    if not valid_session_id(session_id):
         return None
     record = _store(client, stores).find(session_id)
     cwd = _pane_cwd(pane)
@@ -318,25 +347,14 @@ def _native_candidate(pane: dict[str, Any], stores: dict[str, Any] | None, stamp
 
 
 def _foreground_pid(pane: dict[str, Any]) -> int | None:
-    client = pane.get("agent")
-    for process in _processes(pane):
-        argv = _argv(process)
-        pid = process.get("pid")
-        if isinstance(pid, int) and pid > 0 and client in SUPPORTED_CLIENTS and argv and Path(argv[0]).name == client:
-            return pid
-    for process in _processes(pane):
-        pid = process.get("pid")
-        if isinstance(pid, int) and pid > 0:
-            return pid
-    value = pane.get("foreground_pid")
-    return value if isinstance(value, int) and value > 0 else None
+    process = _selected_client_process(pane)
+    pid = process.get("pid") if process else None
+    return pid if isinstance(pid, int) and pid > 0 else None
 
 
 def _foreground_marker(pane: dict[str, Any]) -> str | None:
-    for process in _processes(pane):
-        argv = _argv(process)
-        if pane.get("agent") in SUPPORTED_CLIENTS and argv and Path(argv[0]).name != pane.get("agent"):
-            continue
+    process = _selected_client_process(pane)
+    if process:
         marker = _process_start(process)
         if marker:
             return marker
@@ -345,6 +363,9 @@ def _foreground_marker(pane: dict[str, Any]) -> str | None:
 
 def _candidate_from_argv(pane: dict[str, Any], process: dict[str, Any], stores: dict[str, Any] | None, stamp: str) -> IdentityCandidate | None:
     client = pane.get("agent")
+    selected = _selected_client_process(pane)
+    if selected is None or process is not selected:
+        return None
     session_id = _argv_session(client, _argv(process)) if client in SUPPORTED_CLIENTS else None
     if not session_id:
         return None
@@ -405,17 +426,31 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
     if client not in SUPPORTED_CLIENTS or pane.get("agent_status") not in SAFE_STATUSES:
         base["hint"] = "supported agent must be idle or done"
         return base
-    if not _pane_cwd(pane) or _foreground_pid(pane) is None:
+    selected_process = _selected_client_process(pane)
+    if selected_process is None:
+        client_processes = [
+            process for process in _processes(pane)
+            if _argv(process) and Path(_argv(process)[0]).name == client
+        ]
+        base["status"] = "candidate_ambiguous" if client_processes else "unresolved"
+        base["candidate_count"] = len(client_processes)
+        base["hint"] = "foreground client process is not uniquely identified"
+        return base
+    if not _pane_cwd(pane):
         base["hint"] = "pane cwd and current foreground process are required"
         return base
     adapter = adapter or NativeHandleAdapter()
     candidates: dict[str, IdentityCandidate] = {}
     native = pane.get("agent_session")
+    if isinstance(native, dict) and native.get("agent") != client:
+        base["evidence"] = ["native_conflict"]
+        base["hint"] = "native agent report conflicts with the pane client"
+        return base
     native_id = native.get("value") if isinstance(native, dict) else None
     native_record = _store(client, stores).find(native_id) if client in SUPPORTED_CLIENTS and valid_session_id(native_id) else None
     for candidate in (
         _native_candidate(pane, stores, stamp),
-        *[_candidate_from_argv(pane, process, stores, stamp) for process in _processes(pane)],
+        _candidate_from_argv(pane, selected_process, stores, stamp),
         _candidate_from_handle(pane, stores, adapter, stamp),
         _candidate_from_pid_record(pane, stores, adapter, stamp),
     ):
