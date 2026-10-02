@@ -1391,7 +1391,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.add_argument("--herdr-session", help="explicit named non-default Herdr session")
     verify_parser.add_argument("--client", choices=["codex", "claude"])
-    verify_parser.add_argument("--apply", action="store_true", help="write only verified rows after a live re-check")
+    verify_parser.add_argument("--apply", "--execute", dest="apply", action="store_true", help="write only verified rows after a live re-check")
     verify_parser.add_argument("--show-session-ids", action="store_true", help="explicitly show verified private session ids")
 
     return parser

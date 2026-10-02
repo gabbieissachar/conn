@@ -99,6 +99,14 @@ class VerifierTests(unittest.TestCase):
             result = VERIFIER.verify_pane(pane("codex", SESSION_B), stores=stores, adapter=Adapter())
         self.assertEqual(result["status"], "unresolved")
 
+    def test_codex_native_hook_value_is_store_verified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            native = pane("codex", SESSION_A)
+            native["agent_session"]["source"] = "herdr:codex"
+            result = VERIFIER.verify_pane(native, stores=stores, adapter=Adapter())
+        self.assertEqual(result["status"], "native_verified")
+
     def test_exact_argv_is_verified(self):
         with tempfile.TemporaryDirectory() as temporary:
             stores = stores_for(temporary)

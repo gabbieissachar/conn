@@ -643,7 +643,7 @@ def is_trusted_restore(restore: dict[str, Any]) -> bool:
     return (
         restore.get("restore_status") == "resumable"
         and restore.get("restore_source") in {
-            "manifest", "process", "native_codex", "local_rollout", *VERIFIER_RESTORE_SOURCES
+            "manifest", "process", "native_codex", "native_claude", "local_rollout", *VERIFIER_RESTORE_SOURCES
         }
     )
 

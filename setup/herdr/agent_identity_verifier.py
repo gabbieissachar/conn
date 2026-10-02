@@ -307,7 +307,7 @@ def _native_candidate(pane: dict[str, Any], stores: dict[str, Any] | None, stamp
         return None
     session_id = native.get("value")
     source = native.get("source")
-    if not valid_session_id(session_id) or (isinstance(source, str) and source.startswith("herdr:")):
+    if not valid_session_id(session_id) or (client == "claude" and isinstance(source, str) and source.startswith("herdr:")):
         return None
     record = _store(client, stores).find(session_id)
     cwd = _pane_cwd(pane)
