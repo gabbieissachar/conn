@@ -678,6 +678,22 @@ class RestartRecoveryTests(unittest.TestCase):
             preflight = ORGANIZER.recovery_preflight_session("lab", set())
         self.assertEqual({item["kind"] for item in preflight["failures"]}, {"missing_workspace_cwd", "missing_pane_cwd", "missing_registered_worktree"})
 
+    def test_recovery_derives_omitted_workspace_cwd_from_consistent_panes(self):
+        snapshot = self.snapshot()
+        snapshot["workspaces"][0]["cwd"] = None
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
+        self.assertNotIn("missing_workspace_cwd", {item["kind"] for item in preflight["failures"]})
+        capture = ORGANIZER.recovery_capture_from_snapshot("lab", snapshot, {"w1:t1": self.layout()}, preflight)
+        self.assertEqual(capture["workspaces"][0]["cwd"], tempfile.gettempdir())
+        with patch.object(ORGANIZER, "recovery_layouts", return_value={"w1:t1": self.layout()}):
+            native = ORGANIZER.native_recovery_workspace(snapshot, snapshot["workspaces"][0], "lab")
+        self.assertEqual(native["cwd"], tempfile.gettempdir())
+
     def test_preflight_rejects_unknown_trusted_agent_status(self):
         restore = {
             "source_pane_id": "w1:p1",
@@ -713,6 +729,8 @@ class RestartRecoveryTests(unittest.TestCase):
                 snapshot = self.snapshot()
                 if location == "workspace":
                     snapshot["workspaces"][0]["cwd"] = value
+                    snapshot["panes"][0]["cwd"] = value
+                    snapshot["panes"][0]["foreground_cwd"] = value
                 else:
                     snapshot["panes"][0]["cwd"] = value
                     snapshot["panes"][0]["foreground_cwd"] = value

@@ -1738,6 +1738,31 @@ def recovery_path_issue(value: Any, kind: str, identity: dict[str, str | None]) 
     return {"kind": kind, "identity": identity, "path": str(path)}
 
 
+def recovery_workspace_cwd(snapshot: dict[str, Any], workspace: dict[str, Any]) -> Any:
+    """Use Herdr's workspace cwd, or a consistent pane cwd when it omits one.
+
+    Herdr 0.7.3 can omit ``workspace.cwd`` for a newly created workspace while
+    still supplying the cwd for every pane. Treating that omission as a failed
+    recovery preflight would reject an otherwise safe shell-only session. A
+    mixed pane-cwd workspace remains unresolved because it has no unambiguous
+    workspace-level cwd to recreate.
+    """
+    workspace_cwd = workspace.get("cwd")
+    if isinstance(workspace_cwd, str) and workspace_cwd.strip():
+        return workspace_cwd
+    workspace_id = workspace.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return workspace_cwd
+    pane_cwds = [
+        value.strip()
+        for pane in snapshot.get("panes", [])
+        if isinstance(pane, dict) and pane.get("workspace_id") == workspace_id
+        for value in [pane.get("foreground_cwd") or pane.get("cwd")]
+        if isinstance(value, str) and value.strip()
+    ]
+    return pane_cwds[0] if len(set(pane_cwds)) == 1 else workspace_cwd
+
+
 def recovery_pane_classification(
     pane: dict[str, Any], restore: dict[str, Any], session: str, acknowledgements: set[str]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1842,7 +1867,7 @@ def recovery_preflight_snapshot(
         if not isinstance(workspace, dict) or not workspace.get("workspace_id"):
             raise OrganizerError("Herdr snapshot contains a workspace without an ID.")
         identity = recovery_identity(selected, str(workspace["workspace_id"]))
-        issue = recovery_path_issue(workspace.get("cwd"), "missing_workspace_cwd", identity)
+        issue = recovery_path_issue(recovery_workspace_cwd(snapshot, workspace), "missing_workspace_cwd", identity)
         if issue:
             failures.append(issue)
     for pane in snapshot.get("panes", []):
@@ -1977,7 +2002,7 @@ def recovery_capture_from_snapshot(
         captured_workspace = {
             "identity": recovery_identity(selected, workspace_id),
             "label": workspace.get("label") or workspace_id,
-            "cwd": workspace.get("cwd"),
+            "cwd": recovery_workspace_cwd(snapshot, workspace),
             "focused": bool(workspace.get("focused")),
             "tabs": captured_tabs,
         }
@@ -2191,7 +2216,7 @@ def native_recovery_workspace(snapshot: dict[str, Any], workspace: dict[str, Any
     native = {
         "identity": recovery_identity(session, workspace_id),
         "label": workspace.get("label") or workspace_id,
-        "cwd": workspace.get("cwd"),
+        "cwd": recovery_workspace_cwd(snapshot, workspace),
         "focused": bool(workspace.get("focused")),
         "tabs": tabs,
     }
