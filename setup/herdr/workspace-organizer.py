@@ -41,9 +41,9 @@ CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 # A resume record is not enough to establish that an agent is quiescent.  Herdr
-# currently reports an explicitly idle agent with this value; all other values
-# must be treated as unresolved until they have a reviewed recovery policy.
-SAFE_RESUMABLE_AGENT_STATUSES = {"idle"}
+# Herdr reports idle and done agents as ready for input. Working and blocked
+# remain busy; every other status is unresolved until reviewed.
+SAFE_RESUMABLE_AGENT_STATUSES = {"idle", "done"}
 SHELL_PROCESS_NAMES = {"bash", "fish", "sh", "starship", "zsh"}
 CODEX_INTERACTIVE_PROMPT_COUNT = 2
 CODEX_INTERACTIVE_PROMPT_MINIMUM_LENGTH = 24
@@ -1752,6 +1752,70 @@ def recovery_acknowledgements(values: Iterable[str] | None) -> set[str]:
     return acknowledgements
 
 
+def recovery_workspace_acknowledgement_key(session: str, workspace_id: str) -> str:
+    identity = recovery_identity(session, workspace_id)
+    return f"{identity['herdr_session']}|{identity['workspace_id']}"
+
+
+def recovery_workspace_acknowledgements(values: Iterable[str] | None) -> set[str]:
+    acknowledgements: set[str] = set()
+    for value in values or []:
+        fields = value.split("|")
+        if len(fields) != 2 or any(not field for field in fields):
+            raise OrganizerError(
+                "--allow-mixed-cwd-workspace must be the exact named identity session|workspace."
+            )
+        acknowledgements.add(recovery_workspace_acknowledgement_key(fields[0], fields[1]))
+    return acknowledgements
+
+
+def recovery_workspace_panes(
+    snapshot: dict[str, Any], workspace_id: str, layouts: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    panes = [
+        pane for pane in snapshot.get("panes", [])
+        if isinstance(pane, dict) and pane.get("workspace_id") == workspace_id
+    ]
+    panes_by_id = {str(pane.get("pane_id")): pane for pane in panes if pane.get("pane_id")}
+    ordered_ids: list[str] = []
+    for tab in tabs_for_workspace(snapshot, workspace_id):
+        tab_id = str(tab.get("tab_id") or "")
+        layout = layouts.get(tab_id) if layouts else None
+        if isinstance(layout, dict):
+            for pane in leaf_panes(layout.get("root")):
+                pane_id = pane.get("pane_id")
+                if isinstance(pane_id, str) and pane_id in panes_by_id and pane_id not in ordered_ids:
+                    ordered_ids.append(pane_id)
+    ordered_ids.extend(
+        str(pane.get("pane_id")) for pane in panes
+        if pane.get("pane_id") and str(pane.get("pane_id")) not in ordered_ids
+    )
+    return [panes_by_id[pane_id] for pane_id in ordered_ids]
+
+
+def recovery_workspace_pane_cwds(
+    snapshot: dict[str, Any], workspace: dict[str, Any], layouts: dict[str, dict[str, Any]] | None = None
+) -> list[str | None]:
+    workspace_id = workspace.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return []
+    return [
+        value.strip() if isinstance(value, str) and value.strip() else None
+        for pane in recovery_workspace_panes(snapshot, workspace_id, layouts)
+        for value in [pane.get("foreground_cwd") or pane.get("cwd")]
+    ]
+
+
+def recovery_workspace_is_mixed_cwd(
+    snapshot: dict[str, Any], workspace: dict[str, Any], layouts: dict[str, dict[str, Any]] | None = None
+) -> bool:
+    workspace_cwd = workspace.get("cwd")
+    if isinstance(workspace_cwd, str) and workspace_cwd.strip():
+        return False
+    pane_cwds = [cwd for cwd in recovery_workspace_pane_cwds(snapshot, workspace, layouts) if cwd]
+    return len(set(pane_cwds)) > 1
+
+
 def recovery_path_issue(value: Any, kind: str, identity: dict[str, str | None]) -> dict[str, Any] | None:
     if not isinstance(value, str) or not value.strip():
         return {"kind": kind, "identity": identity, "path": None}
@@ -1761,7 +1825,14 @@ def recovery_path_issue(value: Any, kind: str, identity: dict[str, str | None]) 
     return {"kind": kind, "identity": identity, "path": str(path)}
 
 
-def recovery_workspace_cwd(snapshot: dict[str, Any], workspace: dict[str, Any]) -> Any:
+def recovery_workspace_cwd(
+    snapshot: dict[str, Any],
+    workspace: dict[str, Any],
+    *,
+    session: str | None = None,
+    acknowledgements: set[str] | None = None,
+    layouts: dict[str, dict[str, Any]] | None = None,
+) -> Any:
     """Use Herdr's workspace cwd, or a consistent pane cwd when it omits one.
 
     Herdr 0.7.3 can omit ``workspace.cwd`` for a newly created workspace while
@@ -1776,14 +1847,17 @@ def recovery_workspace_cwd(snapshot: dict[str, Any], workspace: dict[str, Any]) 
     workspace_id = workspace.get("workspace_id")
     if not isinstance(workspace_id, str) or not workspace_id:
         return workspace_cwd
-    pane_cwds = [
-        value.strip()
-        for pane in snapshot.get("panes", [])
-        if isinstance(pane, dict) and pane.get("workspace_id") == workspace_id
-        for value in [pane.get("foreground_cwd") or pane.get("cwd")]
-        if isinstance(value, str) and value.strip()
-    ]
-    return pane_cwds[0] if len(set(pane_cwds)) == 1 else workspace_cwd
+    pane_cwds = recovery_workspace_pane_cwds(snapshot, workspace, layouts)
+    valid_cwds = [cwd for cwd in pane_cwds if cwd]
+    if len(set(valid_cwds)) == 1:
+        return valid_cwds[0]
+    if (
+        session
+        and acknowledgements
+        and recovery_workspace_acknowledgement_key(session, workspace_id) in acknowledgements
+    ):
+        return pane_cwds[0] if pane_cwds else workspace_cwd
+    return workspace_cwd
 
 
 def recovery_identity_labels(snapshot: dict[str, Any], identity: dict[str, Any]) -> str:
@@ -1881,7 +1955,11 @@ def recovery_pane_classification(
 
 
 def recovery_preflight_snapshot(
-    session: str, snapshot: dict[str, Any], layouts: dict[str, dict[str, Any]], acknowledgements: set[str]
+    session: str,
+    snapshot: dict[str, Any],
+    layouts: dict[str, dict[str, Any]],
+    acknowledgements: set[str],
+    mixed_cwd_acknowledgements: set[str] | None = None,
 ) -> dict[str, Any]:
     """Read-only strict checks against one already-captured live snapshot."""
     selected = require_recovery_session(session)
@@ -1898,6 +1976,7 @@ def recovery_preflight_snapshot(
     }
     classifications: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    mixed_cwd_acknowledgements = mixed_cwd_acknowledgements or set()
     workspaces = snapshot.get("workspaces", [])
     focused_workspaces = [
         workspace
@@ -1919,8 +1998,25 @@ def recovery_preflight_snapshot(
     for workspace in workspaces:
         if not isinstance(workspace, dict) or not workspace.get("workspace_id"):
             raise OrganizerError("Herdr snapshot contains a workspace without an ID.")
-        identity = recovery_identity(selected, str(workspace["workspace_id"]))
-        issue = recovery_path_issue(recovery_workspace_cwd(snapshot, workspace), "missing_workspace_cwd", identity)
+        workspace_id = str(workspace["workspace_id"])
+        identity = recovery_identity(selected, workspace_id)
+        workspace_acknowledgement = recovery_workspace_acknowledgement_key(selected, workspace_id)
+        is_mixed = recovery_workspace_is_mixed_cwd(snapshot, workspace, layouts)
+        if is_mixed and workspace_acknowledgement not in mixed_cwd_acknowledgements:
+            failures.append({"kind": "mixed_workspace_cwd", "identity": identity})
+            issue = None
+        else:
+            issue = recovery_path_issue(
+                recovery_workspace_cwd(
+                    snapshot,
+                    workspace,
+                    session=selected,
+                    acknowledgements=mixed_cwd_acknowledgements,
+                    layouts=layouts,
+                ),
+                "missing_workspace_cwd",
+                identity,
+            )
         if issue:
             failures.append(issue)
     for pane in snapshot.get("panes", []):
@@ -1951,10 +2047,13 @@ def recovery_preflight_snapshot(
         "layout_fingerprints": recovery_layout_fingerprints(layouts),
         "classifications": classifications,
         "failures": failures,
+        "mixed_cwd_acknowledgements": sorted(mixed_cwd_acknowledgements),
     }
 
 
-def recovery_preflight_session(session: str, acknowledgements: set[str]) -> dict[str, Any]:
+def recovery_preflight_session(
+    session: str, acknowledgements: set[str], mixed_cwd_acknowledgements: set[str] | None = None
+) -> dict[str, Any]:
     """Read-only checks. This function never sends a pane command or closes anything."""
     selected = require_recovery_session(session)
     try:
@@ -1962,7 +2061,9 @@ def recovery_preflight_session(session: str, acknowledgements: set[str]) -> dict
     except OrganizerError as error:
         raise OrganizerError(f"Recovery session {selected!r} is not attached: {error}") from error
     layouts = recovery_layouts(snapshot, selected)
-    return recovery_preflight_snapshot(selected, snapshot, layouts, acknowledgements)
+    return recovery_preflight_snapshot(
+        selected, snapshot, layouts, acknowledgements, mixed_cwd_acknowledgements
+    )
 
 
 RECOVERY_MARKER_PATTERN = re.compile(r" \[rrb:([a-z0-9]{24})\]$")
@@ -2012,6 +2113,7 @@ def recovery_capture_from_snapshot(
         if isinstance(item, dict) and isinstance(item.get("identity"), dict)
     }
     records = manifest_records()
+    mixed_cwd_acknowledgements = set(preflight.get("mixed_cwd_acknowledgements", []))
     restores = {
         str(item.get("source_pane_id")): item
         for item in agent_restore_records(snapshot.get("panes", []), selected, records)
@@ -2055,10 +2157,20 @@ def recovery_capture_from_snapshot(
         captured_workspace = {
             "identity": recovery_identity(selected, workspace_id),
             "label": workspace.get("label") or workspace_id,
-            "cwd": recovery_workspace_cwd(snapshot, workspace),
+            "cwd": recovery_workspace_cwd(
+                snapshot,
+                workspace,
+                session=selected,
+                acknowledgements=mixed_cwd_acknowledgements,
+                layouts=layouts,
+            ),
             "focused": bool(workspace.get("focused")),
             "tabs": captured_tabs,
         }
+        captured_workspace["mixed_cwd_acknowledged"] = (
+            recovery_workspace_is_mixed_cwd(snapshot, workspace, layouts)
+            and recovery_workspace_acknowledgement_key(selected, workspace_id) in mixed_cwd_acknowledgements
+        )
         captured_workspace["fingerprint"] = recovery_workspace_fingerprint(captured_workspace)
         workspaces.append(captured_workspace)
     return {
@@ -2071,6 +2183,7 @@ def recovery_capture_from_snapshot(
         "preflight": {
             "classifications": preflight["classifications"],
             "failures": preflight["failures"],
+            "mixed_cwd_acknowledgements": sorted(mixed_cwd_acknowledgements),
         },
     }
 
@@ -2083,7 +2196,12 @@ def preflight_classification_map(preflight: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def stable_recovery_capture(session: str, acknowledgements: set[str], attempts: int) -> dict[str, Any]:
+def stable_recovery_capture(
+    session: str,
+    acknowledgements: set[str],
+    attempts: int,
+    mixed_cwd_acknowledgements: set[str] | None = None,
+) -> dict[str, Any]:
     selected = require_recovery_session(session)
     if attempts < 1:
         raise OrganizerError("--capture-attempts must be at least 1.")
@@ -2096,8 +2214,12 @@ def stable_recovery_capture(session: str, acknowledgements: set[str], attempts: 
             recovery_structure(first) == recovery_structure(second)
             and recovery_layout_fingerprints(first_layouts) == recovery_layout_fingerprints(second_layouts)
         ):
-            first_preflight = recovery_preflight_snapshot(selected, first, first_layouts, acknowledgements)
-            second_preflight = recovery_preflight_snapshot(selected, second, second_layouts, acknowledgements)
+            first_preflight = recovery_preflight_snapshot(
+                selected, first, first_layouts, acknowledgements, mixed_cwd_acknowledgements
+            )
+            second_preflight = recovery_preflight_snapshot(
+                selected, second, second_layouts, acknowledgements, mixed_cwd_acknowledgements
+            )
             if first_preflight["failures"] or second_preflight["failures"]:
                 raise OrganizerError(
                     f"Recovery capture for session {selected!r} failed final quiesce preflight. Resolve the named failures and retry."
@@ -2135,6 +2257,18 @@ def validate_recovery_bundle(path: Path, *, require_ready: bool = True) -> dict[
     checksums = manifest.get("checksums")
     if not isinstance(checksums, dict) or not checksums:
         raise OrganizerError("Recovery bundle has no per-session checksums.")
+    mixed_cwd_acknowledgements = manifest.get("mixed_cwd_acknowledgements", [])
+    if not isinstance(mixed_cwd_acknowledgements, list):
+        raise OrganizerError("Recovery bundle has invalid mixed-CWD acknowledgements.")
+    for item in mixed_cwd_acknowledgements:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("identity"), dict)
+            or not isinstance(item["identity"].get("herdr_session"), str)
+            or not isinstance(item["identity"].get("workspace_id"), str)
+            or not isinstance(item.get("rebuild_cwd"), str)
+        ):
+            raise OrganizerError("Recovery bundle has an invalid mixed-CWD acknowledgement.")
     for relative, expected in checksums.items():
         candidate = path / str(relative)
         if candidate.parent != path / "sessions" or not candidate.is_file():
@@ -2166,6 +2300,7 @@ def write_recovery_bundle(captures: list[dict[str, Any]]) -> str:
     ensure_private_directory(session_dir)
     checksums: dict[str, str] = {}
     session_files: list[dict[str, Any]] = []
+    mixed_cwd_manifest: list[dict[str, Any]] = []
     try:
         for capture in captures:
             session = require_recovery_session(capture.get("session"))
@@ -2175,12 +2310,22 @@ def write_recovery_bundle(captures: list[dict[str, Any]]) -> str:
             write_private_json(path, capture)
             checksums[relative] = private_json_digest(path)
             session_files.append({"identity": recovery_identity(session), "file": relative})
+            for workspace in capture.get("workspaces", []):
+                if not isinstance(workspace, dict) or not workspace.get("mixed_cwd_acknowledged"):
+                    continue
+                mixed_cwd_manifest.append(
+                    {
+                        "identity": workspace.get("identity"),
+                        "rebuild_cwd": workspace.get("cwd"),
+                    }
+                )
         manifest = {
             "schema_version": RECOVERY_SCHEMA_VERSION,
             "bundle_id": bundle_id,
             "created_at": now(),
             "sessions": session_files,
             "checksums": checksums,
+            "mixed_cwd_acknowledgements": mixed_cwd_manifest,
             "state": "sealed",
         }
         write_private_json(stage / "manifest.json", manifest)
@@ -2230,16 +2375,17 @@ def redacted_preflight_summary(preflights: Iterable[dict[str, Any]]) -> dict[str
 
 
 PREFLIGHT_FAILURE_HINTS = {
-    "agent_status_not_idle": "The supported-agent status is not idle. Let it finish, then retry preflight.",
+    "agent_status_not_idle": "The supported-agent status is not idle or done. Let it finish, then retry preflight.",
     "blocker": "Review the foreground process. A deliberately volatile process may use the exact acknowledgement below.",
     "busy_agent": "Let the agent finish before retrying preflight.",
     "missing_pane_cwd": "Restore or create the pane working directory, then retry.",
     "missing_registered_worktree": "Restore or create the registered worktree, then retry.",
     "missing_workspace_cwd": "Restore or create the workspace working directory, then retry.",
+    "mixed_workspace_cwd": "This workspace has mixed pane CWDs without a workspace CWD. A rebuild uses the first pane's CWD; acknowledge only if that is acceptable.",
     "multiple_focused_workspaces": "Focus exactly one workspace in this named session, then retry.",
     "no_focused_workspace": "Focus one workspace in this named session, then retry.",
     "unknown_process_state": "Wait for Herdr process metadata to become available, then retry. Do not acknowledge it.",
-    "unverified_recovery_identity": "Recovery identity is not verified. Run herdr-agent-capture-history in this named session, or herdr-agent-capture-status for an idle pane, then retry.",
+    "unverified_recovery_identity": "Recovery identity is not verified. Run herdr-agent-capture-history in this named session, or herdr-agent-capture-status for an idle or done pane, then retry.",
 }
 
 
@@ -2287,13 +2433,24 @@ def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
             lines.append(f"  {rendered_identity}{label_detail}{detail}")
             if kind == "blocker" and classification and classification.get("classification") == "blocker":
                 lines.append(f"    --allow-volatile-pane {shlex.quote(rendered_identity)}")
+            if kind == "mixed_workspace_cwd":
+                workspace_identity = recovery_workspace_acknowledgement_key(
+                    str(identity.get("herdr_session") or ""), str(identity.get("workspace_id") or "")
+                )
+                lines.append(f"    --allow-mixed-cwd-workspace {shlex.quote(workspace_identity)}")
     return "\n".join(lines)
 
 
 def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
     selected = recovery_sessions(args)
     acknowledgements = recovery_acknowledgements(args.allow_volatile_pane)
-    preflights = [recovery_preflight_session(session, acknowledgements) for session in selected]
+    mixed_cwd_acknowledgements = recovery_workspace_acknowledgements(
+        getattr(args, "allow_mixed_cwd_workspace", [])
+    )
+    preflights = [
+        recovery_preflight_session(session, acknowledgements, mixed_cwd_acknowledgements)
+        for session in selected
+    ]
     summary = redacted_preflight_summary(preflights)
     if any(item["failures"] for item in preflights):
         print(json.dumps(summary, indent=2))
@@ -2303,20 +2460,32 @@ def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
         print(json.dumps(summary, indent=2))
         print("Preflight passed. No recovery bundle was written.")
         return
-    captures = [stable_recovery_capture(session, acknowledgements, args.capture_attempts) for session in selected]
+    captures = [
+        stable_recovery_capture(
+            session, acknowledgements, args.capture_attempts, mixed_cwd_acknowledgements
+        )
+        for session in selected
+    ]
     bundle_id = write_recovery_bundle(captures)
     print(json.dumps({"bundle_id": bundle_id, "session_count": len(captures), "ready": True}, indent=2))
     print("Recovery bundle sealed. Restart only after retaining this ready bundle locally.")
 
 
-def native_recovery_workspace(snapshot: dict[str, Any], workspace: dict[str, Any], session: str) -> dict[str, Any]:
+def native_recovery_workspace(
+    snapshot: dict[str, Any],
+    workspace: dict[str, Any],
+    session: str,
+    mixed_cwd_acknowledgements: set[str] | None = None,
+) -> dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "")
     tabs: list[dict[str, Any]] = []
+    layouts: dict[str, dict[str, Any]] = {}
     for index, tab in enumerate(tabs_for_workspace(snapshot, workspace_id)):
         tab_id = str(tab.get("tab_id") or "")
         layout = recovery_layouts({"tabs": [tab]}, session).get(tab_id)
         if not layout:
             raise OrganizerError(f"Could not inspect native tab {tab_id}.")
+        layouts[tab_id] = layout
         tabs.append(
             {
                 "identity": recovery_identity(session, workspace_id, tab_id),
@@ -2331,7 +2500,13 @@ def native_recovery_workspace(snapshot: dict[str, Any], workspace: dict[str, Any
     native = {
         "identity": recovery_identity(session, workspace_id),
         "label": workspace.get("label") or workspace_id,
-        "cwd": recovery_workspace_cwd(snapshot, workspace),
+        "cwd": recovery_workspace_cwd(
+            snapshot,
+            workspace,
+            session=session,
+            acknowledgements=mixed_cwd_acknowledgements,
+            layouts=layouts,
+        ),
         "focused": bool(workspace.get("focused")),
         "tabs": tabs,
     }
@@ -2339,8 +2514,14 @@ def native_recovery_workspace(snapshot: dict[str, Any], workspace: dict[str, Any
     return native
 
 
-def native_recovery_workspaces(snapshot: dict[str, Any], session: str) -> list[dict[str, Any]]:
-    return [native_recovery_workspace(snapshot, workspace, session) for workspace in snapshot.get("workspaces", []) if isinstance(workspace, dict)]
+def native_recovery_workspaces(
+    snapshot: dict[str, Any], session: str, mixed_cwd_acknowledgements: set[str] | None = None
+) -> list[dict[str, Any]]:
+    return [
+        native_recovery_workspace(snapshot, workspace, session, mixed_cwd_acknowledgements)
+        for workspace in snapshot.get("workspaces", [])
+        if isinstance(workspace, dict)
+    ]
 
 
 def plan_recovery_session(capture: dict[str, Any]) -> dict[str, Any]:
@@ -2349,7 +2530,12 @@ def plan_recovery_session(capture: dict[str, Any]) -> dict[str, Any]:
         snapshot = session_snapshot(session)
     except OrganizerError as error:
         raise OrganizerError(f"Recovery session {session!r} is not attached. Attach it interactively before reconciling: {error}") from error
-    native = native_recovery_workspaces(snapshot, session)
+    mixed_cwd_acknowledgements = {
+        str(item)
+        for item in capture.get("preflight", {}).get("mixed_cwd_acknowledgements", [])
+        if isinstance(item, str)
+    }
+    native = native_recovery_workspaces(snapshot, session, mixed_cwd_acknowledgements)
     plans: list[dict[str, Any]] = []
     claimed_native_ids: set[str] = set()
     for source in capture.get("workspaces", []):
@@ -2958,7 +3144,13 @@ def verify_recovery_session(
     expected_counts = {"workspaces": len(capture.get("workspaces", [])), "tabs": 0, "panes": 0}
     actual_counts = {"workspaces": 0, "tabs": 0, "panes": 0}
     failures: list[str] = []
-    native_workspaces = native_recovery_workspaces(snapshot, session)
+    notes: list[dict[str, Any]] = []
+    mixed_cwd_acknowledgements = {
+        str(item)
+        for item in capture.get("preflight", {}).get("mixed_cwd_acknowledgements", [])
+        if isinstance(item, str)
+    }
+    native_workspaces = native_recovery_workspaces(snapshot, session, mixed_cwd_acknowledgements)
     native_by_id = {str(item["identity"].get("workspace_id")): item for item in native_workspaces}
     target_ids: set[str] = set()
     for source in capture.get("workspaces", []):
@@ -2966,6 +3158,14 @@ def verify_recovery_session(
         expected_counts["panes"] += sum(len(tab.get("panes", [])) for tab in source.get("tabs", []))
         state = workspace_states.get(recovery_workspace_plan_key(source), {})
         target_id = state.get("native_workspace_id") if state.get("planned_action") == "adopt" else state.get("created_workspace_id")
+        if source.get("mixed_cwd_acknowledged") and state.get("planned_action") == "rebuild":
+            notes.append(
+                {
+                    "kind": "mixed_cwd_panes_not_restored",
+                    "identity": source.get("identity"),
+                    "message": "Per-pane CWDs were not restored because layout.apply has no per-pane CWD support.",
+                }
+            )
         target = native_by_id.get(str(target_id))
         if not target:
             failures.append("expected_workspace_missing")
@@ -3027,7 +3227,14 @@ def verify_recovery_session(
             actual_duplicates[fingerprint] = actual_duplicates.get(fingerprint, 0) + 1
     if actual_duplicates != expected_duplicates:
         failures.append("duplicate_bundle_fingerprint")
-    return {"verified_at": now(), "expected_counts": expected_counts, "actual_counts": actual_counts, "failures": sorted(set(failures)), "post_boot_snapshot": snapshot}
+    return {
+        "verified_at": now(),
+        "expected_counts": expected_counts,
+        "actual_counts": actual_counts,
+        "failures": sorted(set(failures)),
+        "notes": notes,
+        "post_boot_snapshot": snapshot,
+    }
 
 
 def execute_recovery_reconciliation(
@@ -3115,7 +3322,19 @@ def reconcile_all_command(args: argparse.Namespace) -> None:
     output = {"bundle_id": args.bundle, "status": journal["status"], "sessions": []}
     for session, state in journal["sessions"].items():
         verification = state.get("verification") or {}
-        output["sessions"].append({"session": session, "verification_failures": verification.get("failures", []), "agent_dispatches": sum(1 for workspace in state["workspaces"].values() for outcome in workspace.get("agent_outcomes", []) if outcome.get("dispatch") == "sent")})
+        output["sessions"].append(
+            {
+                "session": session,
+                "verification_failures": verification.get("failures", []),
+                "verification_notes": verification.get("notes", []),
+                "agent_dispatches": sum(
+                    1
+                    for workspace in state["workspaces"].values()
+                    for outcome in workspace.get("agent_outcomes", [])
+                    if outcome.get("dispatch") == "sent"
+                ),
+            }
+        )
     print(json.dumps(output, indent=2))
     print("Agent dispatch and observed recovery are recorded separately in the private reconciliation journal.")
 
@@ -3243,6 +3462,10 @@ def parser() -> argparse.ArgumentParser:
         prepare.add_argument(
             "--allow-volatile-pane", action="append", default=[],
             help="Acknowledge one non-agent process as session|workspace|tab|pane. Repeat as needed.",
+        )
+        prepare.add_argument(
+            "--allow-mixed-cwd-workspace", action="append", default=[],
+            help="Acknowledge one mixed-CWD workspace as session|workspace. Repeat as needed.",
         )
         prepare.add_argument("--capture-attempts", type=int, default=RECOVERY_MAX_CAPTURE_ATTEMPTS)
         prepare.add_argument("--preflight-only", action="store_true")

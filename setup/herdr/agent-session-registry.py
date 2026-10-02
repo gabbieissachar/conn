@@ -759,8 +759,8 @@ def detect_from_process(pane: PaneInfo) -> tuple[str, str] | None:
 
 
 def detect_from_status(pane: PaneInfo, *, lines: int) -> tuple[str, str] | None:
-    if pane.agent not in {"codex", "claude"} or pane.agent_status != "idle":
-        log_status_event(pane, "skipped", reason="pane_not_idle_or_not_supported")
+    if pane.agent not in {"codex", "claude"} or pane.agent_status not in {"idle", "done"}:
+        log_status_event(pane, "skipped", reason="pane_not_ready_or_not_supported")
         return None
     if not pane_send_status(pane.pane_id):
         log_status_event(pane, "send_failed", command="/status")

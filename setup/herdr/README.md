@@ -19,9 +19,9 @@ needs a replay contract for resumable Codex and Claude sessions.
   scan; process metadata is preferred after scrollback and is safe to rerun.
 - The scan checks Herdr's pane-level native `agent_session` metadata first when
   an official integration has reported it.
-- `herdr-agent-capture-status` opt-in queries `/status` in unresolved idle
-  agent panes and parses the returned session ID; it does not query working or
-  blocked panes.
+- `herdr-agent-capture-status` opt-in queries `/status` in unresolved idle or
+  done agent panes and parses the returned session ID; it does not query
+  working or blocked panes.
 - `herdr-agent-restore` safely replays `codex-r` or `claude-r` into registered
   panes.
 - `herdr-agent-recover` runs the post-restart sidecar recovery sequence in one
@@ -74,8 +74,8 @@ herdr-agent-capture-history
 herdr-agent-capture-status
 ```
 
-The status capture is opt-in because it sends a diagnostic command into idle
-agent panes. It registers only panes whose response contains a session ID.
+The status capture is opt-in because it sends a diagnostic command into idle or
+done agent panes. It registers only panes whose response contains a session ID.
 
 `herdr-agent-capture-history` sees only the Herdr session attached to its
 shell. Running it in a plain terminal can therefore find no panes even while a
@@ -141,7 +141,7 @@ only the session exposed by the current `HERDR_SESSION`/Herdr socket, so a
 `w1:p1` in `esim` cannot collide with a `w1:p1` in `Misc`.
 
 The fallback first captures IDs from live process metadata and scrollback,
-then queries unresolved idle panes with `/status`, and finally replays only
+then queries unresolved idle or done panes with `/status`, and finally replays only
 registered IDs. Its status diagnostics are appended to:
 
 ```sh
@@ -221,8 +221,9 @@ herdr-organizer reconcile-all --bundle <bundle_id> --confirm <bundle_id>
 The preparation preflight refuses a session without exactly one focused
 workspace, busy or unresolved Codex and Claude panes, missing CWDs or
 registered worktrees, unknown foreground process state, and unclassified
-non-shell processes. To acknowledge one intentionally volatile process, name
-its complete identity. There is no global bypass:
+non-shell processes. A supported agent with `idle` or `done` status and a
+verified recovery identity is safe to resume. To acknowledge one intentionally
+volatile process, name its complete identity. There is no global bypass:
 
 ```sh
 herdr-organizer prepare-restart-recovery --session project-a \
@@ -235,11 +236,24 @@ tab labels when available. It prints no cwd, process command line, agent-session
 ID, resume command, or scrollback. A `blocker` entry includes the exact
 copy-pasteable `--allow-volatile-pane` value, but only use it for a process you
 intentionally accept as volatile. A supported Codex or Claude pane must have
-both `idle` status and verified recovery identity. A non-idle pane reports the
-status remedy. An idle pane without a verified identity reports the capture
-remedy: run `herdr-agent-capture-history` for the named session, or
-`herdr-agent-capture-status` for that idle pane, then retry. Do not acknowledge
-a busy, unresolved, or unknown agent state.
+`idle` or `done` status and verified recovery identity. A working or blocked
+pane reports the status remedy. An idle or done pane without a verified
+identity reports the capture remedy: run `herdr-agent-capture-history` for the
+named session, or `herdr-agent-capture-status` for that pane, then retry. Do
+not acknowledge a busy, unresolved, or unknown agent state.
+
+If a workspace has no workspace CWD and its panes use different existing CWDs,
+preflight fails by default. You may acknowledge only that named workspace:
+
+```sh
+herdr-organizer prepare-restart-recovery --session project-a \
+  --allow-mixed-cwd-workspace 'project-a|w3'
+```
+
+If that workspace must be rebuilt, Herdr uses the first pane's CWD in layout
+order. Every pane CWD must still exist. Native adoption is unaffected. A
+rebuilt acknowledged workspace reports that `layout.apply` could not restore
+per-pane CWDs.
 
 Acknowledgements are pipe-delimited. Restart recovery rejects a pipe in a
 session, workspace, tab, or pane identity before printing an unusable command.

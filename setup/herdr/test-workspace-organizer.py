@@ -599,6 +599,30 @@ class RestartRecoveryTests(unittest.TestCase):
         source["fingerprint"] = ORGANIZER.recovery_workspace_fingerprint(source)
         return source
 
+    def mixed_snapshot(self, *, missing_second_cwd=False):
+        first_cwd = tempfile.gettempdir()
+        second_cwd = None if missing_second_cwd else os.getcwd()
+        snapshot = self.snapshot(cwd=first_cwd)
+        snapshot["workspaces"][0]["cwd"] = None
+        snapshot["panes"].append(
+            {
+                "workspace_id": "w1",
+                "tab_id": "w1:t1",
+                "pane_id": "w1:p2",
+                "cwd": second_cwd,
+                "foreground_cwd": second_cwd,
+            }
+        )
+        layout = {
+            "tab_id": "w1:t1",
+            "root": {
+                "type": "split",
+                "first": {"type": "pane", "pane_id": "w1:p1"},
+                "second": {"type": "pane", "pane_id": "w1:p2"},
+            },
+        }
+        return snapshot, {"w1:t1": layout}, first_cwd
+
     def test_compound_identity_preserves_all_namespace_fields(self):
         first = ORGANIZER.recovery_identity("esim", "w1", "w1:t1", "w1:p1")
         second = ORGANIZER.recovery_identity("Misc", "w1", "w1:t1", "w1:p1")
@@ -627,6 +651,15 @@ class RestartRecoveryTests(unittest.TestCase):
             run_json.assert_not_called()
             records = REGISTRY.read_manifest(manifest)["panes"]
         self.assertEqual({(row["herdr_session"], row["pane_id"]) for row in records}, {("Misc", "w1:p1"), ("esim", "w1:p1")})
+
+    def test_registry_status_capture_accepts_done_agent(self):
+        pane = REGISTRY.PaneInfo(
+            "esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir(), "codex", "done"
+        )
+        with patch.object(REGISTRY, "pane_send_status", return_value=True), patch.object(
+            REGISTRY, "pane_read_text", return_value="Session ID: verified-done-session"
+        ), patch.object(REGISTRY, "log_status_event"), patch.object(REGISTRY.time, "sleep"):
+            self.assertEqual(REGISTRY.detect_from_status(pane, lines=20), ("codex", "verified-done-session"))
 
     def test_empty_registry_scan_prints_named_session_socket_guidance(self):
         args = argparse.Namespace(
@@ -713,11 +746,36 @@ class RestartRecoveryTests(unittest.TestCase):
 
     def test_preflight_classifies_every_blocking_and_acknowledged_case(self):
         identity = ORGANIZER.recovery_identity("lab", "w1", "w1:t1", "w1:p1")
+        trusted_restore = {
+            "source_pane_id": "w1:p1",
+            "client": "codex",
+            "session_id": "verified-id",
+            "resume_command": "codex resume verified-id",
+            "restore_status": "resumable",
+            "restore_source": "manifest",
+        }
         busy, failure = ORGANIZER.recovery_pane_classification(
             {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "working"}, {}, "lab", set()
         )
         unresolved, unresolved_failure = ORGANIZER.recovery_pane_classification(
             {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "idle"}, {}, "lab", set()
+        )
+        with patch.object(
+            ORGANIZER,
+            "recovery_process_info",
+            return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]},
+        ):
+            done_trusted, done_trusted_failure = ORGANIZER.recovery_pane_classification(
+                {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "done"},
+                trusted_restore,
+                "lab",
+                set(),
+            )
+        done_unverified, done_unverified_failure = ORGANIZER.recovery_pane_classification(
+            {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "codex", "agent_status": "done"},
+            {},
+            "lab",
+            set(),
         )
         with patch.object(ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 2, "name": "node"}]}):
             blocker, blocker_failure = ORGANIZER.recovery_pane_classification(
@@ -736,6 +794,11 @@ class RestartRecoveryTests(unittest.TestCase):
             ("unverified_recovery_identity", "unverified_recovery_identity"),
         )
         self.assertFalse(unresolved["trusted_restore"])
+        self.assertEqual((done_trusted["classification"], done_trusted_failure), ("verified_resumable_supported_agent", None))
+        self.assertEqual(
+            (done_unverified["classification"], done_unverified_failure["kind"]),
+            ("unverified_recovery_identity", "unverified_recovery_identity"),
+        )
         self.assertEqual((blocker["classification"], blocker_failure["kind"]), ("blocker", "blocker"))
         self.assertEqual((volatile["classification"], volatile_failure), ("intentionally_volatile", None))
         self.assertEqual((unknown["classification"], unknown_failure["kind"]), ("unknown_process_state", "unknown_process_state"))
@@ -789,7 +852,143 @@ class RestartRecoveryTests(unittest.TestCase):
             ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
         ):
             preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
-        self.assertIn("missing_workspace_cwd", {item["kind"] for item in preflight["failures"]})
+        self.assertIn("mixed_workspace_cwd", {item["kind"] for item in preflight["failures"]})
+
+    def test_mixed_cwd_acknowledgement_round_trips_and_preflight_passes(self):
+        snapshot, layouts, first_cwd = self.mixed_snapshot()
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER,
+            "recovery_process_info",
+            return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]},
+        ):
+            default = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, layouts, set())
+            acknowledgement = ORGANIZER.recovery_workspace_acknowledgements(["lab|w1"])
+            acknowledged = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, layouts, set(), acknowledgement)
+        self.assertIn("mixed_workspace_cwd", {item["kind"] for item in default["failures"]})
+        self.assertEqual(acknowledged["failures"], [])
+        self.assertEqual(
+            ORGANIZER.recovery_workspace_cwd(
+                snapshot,
+                snapshot["workspaces"][0],
+                session="lab",
+                acknowledgements=acknowledgement,
+                layouts=layouts,
+            ),
+            first_cwd,
+        )
+        with patch.object(ORGANIZER, "recovery_layouts", return_value=layouts):
+            native = ORGANIZER.native_recovery_workspace(
+                snapshot, snapshot["workspaces"][0], "lab", acknowledgement
+            )
+        self.assertEqual(native["cwd"], first_cwd)
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ):
+            capture = ORGANIZER.recovery_capture_from_snapshot("lab", snapshot, layouts, acknowledged)
+        with patch.object(ORGANIZER, "session_snapshot", return_value=snapshot), patch.object(
+            ORGANIZER, "recovery_layouts", return_value=layouts
+        ):
+            plan = ORGANIZER.plan_recovery_session(capture)
+        self.assertEqual(plan["workspaces"][0]["action"], "adopt")
+        details = ORGANIZER.preflight_failure_details([default])
+        line = next(line.strip() for line in details.splitlines() if line.strip().startswith("--allow-mixed-cwd-workspace"))
+        self.assertEqual(shlex.split(line), ["--allow-mixed-cwd-workspace", "lab|w1"])
+        self.assertEqual(ORGANIZER.recovery_workspace_acknowledgements([shlex.split(line)[1]]), {"lab|w1"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "allow-mixed-cwd-workspace"):
+            ORGANIZER.recovery_workspace_acknowledgements(["lab|w1|unsafe"])
+
+    def test_mixed_cwd_acknowledgement_does_not_bypass_missing_pane_cwd(self):
+        snapshot, layouts, _first_cwd = self.mixed_snapshot(missing_second_cwd=True)
+        acknowledgement = ORGANIZER.recovery_workspace_acknowledgements(["lab|w1"])
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER,
+            "recovery_process_info",
+            return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]},
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, layouts, set(), acknowledgement)
+        self.assertIn("missing_pane_cwd", {item["kind"] for item in preflight["failures"]})
+
+    def test_mixed_cwd_acknowledgement_and_rebuild_cwd_are_in_bundle_manifest(self):
+        snapshot, layouts, first_cwd = self.mixed_snapshot()
+        acknowledgement = ORGANIZER.recovery_workspace_acknowledgements(["lab|w1"])
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER,
+            "recovery_process_info",
+            return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]},
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, layouts, set(), acknowledgement)
+            capture = ORGANIZER.recovery_capture_from_snapshot("lab", snapshot, layouts, preflight)
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "RECOVERY_BUNDLE_DIR", Path(temporary) / "bundles"
+        ):
+            bundle_id = ORGANIZER.write_recovery_bundle([capture])
+            _path, manifest, _captures = ORGANIZER.load_recovery_bundle(bundle_id)
+        self.assertEqual(
+            manifest["mixed_cwd_acknowledgements"],
+            [{"identity": ORGANIZER.recovery_identity("lab", "w1"), "rebuild_cwd": first_cwd}],
+        )
+
+    def test_acknowledged_mixed_cwd_rebuild_uses_first_layout_pane_and_reports_note(self):
+        first_cwd = tempfile.gettempdir()
+        source = self.source_workspace()
+        source["cwd"] = first_cwd
+        source["mixed_cwd_acknowledged"] = True
+        source["fingerprint"] = ORGANIZER.recovery_workspace_fingerprint(source)
+        capture = {
+            "session": "lab",
+            "workspaces": [source],
+            "preflight": {"mixed_cwd_acknowledgements": ["lab|w1"]},
+        }
+        plans = [{"session": "lab", "workspaces": [{"source": source, "action": "rebuild"}]}]
+        model = {"workspaces": [], "tabs": [], "panes": []}
+        creates = []
+
+        def snapshot(_session):
+            return copy.deepcopy(model)
+
+        def run_json(command, session):
+            self.assertEqual(session, "lab")
+            self.assertEqual(command[:2], ["workspace", "create"])
+            creates.append(command)
+            model["workspaces"] = [{"workspace_id": "new-w", "label": command[3], "cwd": command[-1], "focused": False}]
+            model["tabs"] = [{"workspace_id": "new-w", "tab_id": "new-w:t1", "label": "initial", "focused": False}]
+            return {"result": {"workspace_id": "new-w", "tab_id": "new-w:t1"}}
+
+        def socket_call(session, method, params):
+            self.assertEqual(session, "lab")
+            self.assertEqual(method, "layout.apply" if params.get("root") else "layout.export")
+            if method == "layout.apply":
+                model["tabs"][0].update({"label": params["tab_label"], "focused": bool(params["focus"])})
+                model["panes"] = [{
+                    "workspace_id": "new-w",
+                    "tab_id": "new-w:t1",
+                    "pane_id": "new-w:p1",
+                    "cwd": first_cwd,
+                    "foreground_cwd": first_cwd,
+                }]
+                return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+            return {"layout": {"tab_id": "new-w:t1", "root": {"type": "pane", "pane_id": "new-w:p1"}}}
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "RECOVERY_JOURNAL_DIR", Path(temporary) / "journals"
+        ), patch.object(ORGANIZER, "session_snapshot", side_effect=snapshot), patch.object(
+            ORGANIZER, "run_json", side_effect=run_json
+        ), patch.object(ORGANIZER, "socket_call", side_effect=socket_call):
+            journal = ORGANIZER.execute_recovery_reconciliation(
+                "recovery-20261002T000000Z-fffffffff0", [capture], plans, False
+            )
+        self.assertEqual(creates[0][-2:], ["--cwd", first_cwd])
+        self.assertEqual(journal["status"], "completed")
+        self.assertEqual(
+            journal["sessions"]["lab"]["verification"]["notes"][0]["kind"],
+            "mixed_cwd_panes_not_restored",
+        )
 
     def test_preflight_rejects_unknown_trusted_agent_status(self):
         restore = {
@@ -874,15 +1073,15 @@ class RestartRecoveryTests(unittest.TestCase):
                     "identity": identity,
                     "classification": "agent_status_not_idle",
                     "agent": "codex",
-                    "agent_status": "done",
+                    "agent_status": "working",
                     "trusted_restore": True,
                 }
             ],
             "failures": [{"kind": "agent_status_not_idle", "identity": identity}],
         }
         details = ORGANIZER.preflight_failure_details([preflight])
-        self.assertIn("The supported-agent status is not idle", details)
-        self.assertIn("reason=agent_status_not_idle agent=codex status=done trusted_restore=true", details)
+        self.assertIn("The supported-agent status is not idle or done", details)
+        self.assertIn("reason=agent_status_not_idle agent=codex status=working trusted_restore=true", details)
 
     def test_failed_preflight_prints_usable_blocker_acknowledgement(self):
         identity = ORGANIZER.recovery_identity("project's-a", "w1", "w1:t1", "w1:p1")
