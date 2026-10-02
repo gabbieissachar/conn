@@ -221,13 +221,16 @@ herdr-organizer prepare-restart-recovery --session project-a \
 ```
 
 When preflight fails, its default output groups every failure by kind and prints
-the named `session|workspace|tab|pane` identity. It prints no cwd, process
-command line, agent-session ID, resume command, or scrollback. A `blocker`
-entry includes the exact copy-pasteable `--allow-volatile-pane` value, but only
-use it for a process you intentionally accept as volatile. A supported Codex or
-Claude pane is unresolved unless its agent state is explicitly `idle` and its
-resume identity is verified. Let it become idle first; do not acknowledge a
-busy, unresolved, or unknown agent state.
+the named `session|workspace|tab|pane` identity with the current workspace and
+tab labels when available. It prints no cwd, process command line, agent-session
+ID, resume command, or scrollback. A `blocker` entry includes the exact
+copy-pasteable `--allow-volatile-pane` value, but only use it for a process you
+intentionally accept as volatile. A supported Codex or Claude pane must have
+both `idle` status and verified recovery identity. A non-idle pane reports the
+status remedy. An idle pane without a verified identity reports the capture
+remedy: run `herdr-agent-capture-history` for the named session, or
+`herdr-agent-capture-status` for that idle pane, then retry. Do not acknowledge
+a busy, unresolved, or unknown agent state.
 
 Acknowledgements are pipe-delimited. Restart recovery rejects a pipe in a
 session, workspace, tab, or pane identity before printing an unusable command.

@@ -1786,6 +1786,34 @@ def recovery_workspace_cwd(snapshot: dict[str, Any], workspace: dict[str, Any]) 
     return pane_cwds[0] if len(set(pane_cwds)) == 1 else workspace_cwd
 
 
+def recovery_identity_labels(snapshot: dict[str, Any], identity: dict[str, Any]) -> str:
+    """Render local, human-readable workspace and tab labels for one failure."""
+    workspace_id = identity.get("workspace_id")
+    tab_id = identity.get("tab_id")
+    labels: list[str] = []
+    if isinstance(workspace_id, str) and workspace_id:
+        for workspace in snapshot.get("workspaces", []):
+            if not isinstance(workspace, dict) or workspace.get("workspace_id") != workspace_id:
+                continue
+            label = workspace.get("label")
+            if isinstance(label, str) and label:
+                labels.append(f"workspace {label!r}")
+            break
+    if isinstance(tab_id, str) and tab_id:
+        for tab in snapshot.get("tabs", []):
+            if (
+                not isinstance(tab, dict)
+                or tab.get("tab_id") != tab_id
+                or (isinstance(workspace_id, str) and tab.get("workspace_id") != workspace_id)
+            ):
+                continue
+            label = tab.get("label")
+            if isinstance(label, str) and label:
+                labels.append(f"tab {label!r}")
+            break
+    return ", ".join(labels)
+
+
 def recovery_pane_classification(
     pane: dict[str, Any], restore: dict[str, Any], session: str, acknowledgements: set[str]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1797,21 +1825,24 @@ def recovery_pane_classification(
     identity = recovery_identity(session, workspace_id, tab_id, pane_id)
     agent = pane.get("agent") if pane.get("agent") in {"codex", "claude"} else None
     status = str(pane.get("agent_status") or "unknown")
+    trusted_restore = is_trusted_restore(restore)
+    agent_details = {"agent": agent, "agent_status": status, "trusted_restore": trusted_restore}
     if agent and status in ACTIVE_AGENT_STATUSES:
-        return {"identity": identity, "classification": "busy_agent", "agent": agent, "agent_status": status}, {
+        return {"identity": identity, "classification": "busy_agent", **agent_details}, {
             "kind": "busy_agent", "identity": identity
-        }
-    if agent and not is_trusted_restore(restore):
-        return {"identity": identity, "classification": "unresolved_supported_agent", "agent": agent, "agent_status": status}, {
-            "kind": "unresolved_supported_agent", "identity": identity
         }
     if agent and status not in SAFE_RESUMABLE_AGENT_STATUSES:
         return {
             "identity": identity,
-            "classification": "unresolved_supported_agent",
-            "agent": agent,
-            "agent_status": status,
-        }, {"kind": "unresolved_supported_agent", "identity": identity}
+            "classification": "agent_status_not_idle",
+            **agent_details,
+        }, {"kind": "agent_status_not_idle", "identity": identity}
+    if agent and not trusted_restore:
+        return {
+            "identity": identity,
+            "classification": "unverified_recovery_identity",
+            **agent_details,
+        }, {"kind": "unverified_recovery_identity", "identity": identity}
     try:
         process_info = recovery_process_info(session, pane_id)
     except OrganizerError:
@@ -1833,12 +1864,11 @@ def recovery_pane_classification(
             }
         names.add(str(process.get("name") or process.get("argv0") or "").lstrip("-").lower())
         includes_shell = includes_shell or process.get("pid") == shell_pid
-    if agent and is_trusted_restore(restore):
+    if agent and trusted_restore:
         return {
             "identity": identity,
             "classification": "verified_resumable_supported_agent",
-            "agent": agent,
-            "agent_status": status,
+            **agent_details,
         }, None
     if includes_shell and names and names <= SHELL_PROCESS_NAMES:
         return {"identity": identity, "classification": "disposable_shell", "agent_status": status}, None
@@ -2200,6 +2230,7 @@ def redacted_preflight_summary(preflights: Iterable[dict[str, Any]]) -> dict[str
 
 
 PREFLIGHT_FAILURE_HINTS = {
+    "agent_status_not_idle": "The supported-agent status is not idle. Let it finish, then retry preflight.",
     "blocker": "Review the foreground process. A deliberately volatile process may use the exact acknowledgement below.",
     "busy_agent": "Let the agent finish before retrying preflight.",
     "missing_pane_cwd": "Restore or create the pane working directory, then retry.",
@@ -2208,13 +2239,13 @@ PREFLIGHT_FAILURE_HINTS = {
     "multiple_focused_workspaces": "Focus exactly one workspace in this named session, then retry.",
     "no_focused_workspace": "Focus one workspace in this named session, then retry.",
     "unknown_process_state": "Wait for Herdr process metadata to become available, then retry. Do not acknowledge it.",
-    "unresolved_supported_agent": "Let the supported agent reach explicit idle state and verify its recovery identity, then retry.",
+    "unverified_recovery_identity": "Recovery identity is not verified. Run herdr-agent-capture-history in this named session, or herdr-agent-capture-status for an idle pane, then retry.",
 }
 
 
 def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
     """Render actionable failures without exposing terminal or agent-session data."""
-    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = {}
+    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]]] = {}
     for preflight in preflights:
         classifications = {
             recovery_identity_key(item["identity"]): item
@@ -2226,18 +2257,23 @@ def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
                 continue
             identity = failure["identity"]
             kind = str(failure.get("kind") or "unknown_failure")
-            grouped.setdefault(kind, []).append((identity, classifications.get(recovery_identity_key(identity))))
+            snapshot = preflight.get("snapshot")
+            grouped.setdefault(kind, []).append(
+                (identity, classifications.get(recovery_identity_key(identity)), snapshot if isinstance(snapshot, dict) else {})
+            )
 
     lines = ["Preflight failures:"]
     for kind in sorted(grouped):
         entries = sorted(grouped[kind], key=lambda item: recovery_identity_key(item[0]))
         hint = PREFLIGHT_FAILURE_HINTS.get(kind, "Resolve the named condition, then retry preflight.")
         lines.append(f"- {kind} ({len(entries)}): {hint}")
-        for identity, classification in entries:
+        for identity, classification, snapshot in entries:
             rendered_identity = recovery_identity_key(identity)
+            labels = recovery_identity_labels(snapshot, identity)
+            label_detail = f" {labels}" if labels else ""
             detail = ""
             if classification and classification.get("classification") in {
-                "blocker", "busy_agent", "unknown_process_state", "unresolved_supported_agent"
+                "agent_status_not_idle", "blocker", "busy_agent", "unknown_process_state", "unverified_recovery_identity"
             }:
                 detail = f" reason={classification['classification']}"
                 agent = classification.get("agent")
@@ -2246,7 +2282,9 @@ def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
                     detail += f" agent={agent}"
                 if isinstance(status, str) and status:
                     detail += f" status={status}"
-            lines.append(f"  {rendered_identity}{detail}")
+                if isinstance(classification.get("trusted_restore"), bool):
+                    detail += f" trusted_restore={str(classification['trusted_restore']).lower()}"
+            lines.append(f"  {rendered_identity}{label_detail}{detail}")
             if kind == "blocker" and classification and classification.get("classification") == "blocker":
                 lines.append(f"    --allow-volatile-pane {shlex.quote(rendered_identity)}")
     return "\n".join(lines)

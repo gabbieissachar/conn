@@ -689,7 +689,11 @@ class RestartRecoveryTests(unittest.TestCase):
                 {"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1"}, {}, "lab", set()
             )
         self.assertEqual((busy["classification"], failure["kind"]), ("busy_agent", "busy_agent"))
-        self.assertEqual((unresolved["classification"], unresolved_failure["kind"]), ("unresolved_supported_agent", "unresolved_supported_agent"))
+        self.assertEqual(
+            (unresolved["classification"], unresolved_failure["kind"]),
+            ("unverified_recovery_identity", "unverified_recovery_identity"),
+        )
+        self.assertFalse(unresolved["trusted_restore"])
         self.assertEqual((blocker["classification"], blocker_failure["kind"]), ("blocker", "blocker"))
         self.assertEqual((volatile["classification"], volatile_failure), ("intentionally_volatile", None))
         self.assertEqual((unknown["classification"], unknown_failure["kind"]), ("unknown_process_state", "unknown_process_state"))
@@ -724,6 +728,27 @@ class RestartRecoveryTests(unittest.TestCase):
         snapshot["workspaces"][0]["label"] = state["expected_label"]
         self.assertEqual(ORGANIZER.marked_recovery_workspaces(snapshot, state), [snapshot["workspaces"][0]])
 
+    def test_mixed_pane_cwds_without_workspace_cwd_remain_unsupported(self):
+        snapshot = self.snapshot()
+        snapshot["workspaces"][0]["cwd"] = None
+        snapshot["panes"].append(
+            {
+                "workspace_id": "w1",
+                "tab_id": "w1:t1",
+                "pane_id": "w1:p2",
+                "cwd": os.getcwd(),
+                "foreground_cwd": os.getcwd(),
+            }
+        )
+        self.assertIsNone(ORGANIZER.recovery_workspace_cwd(snapshot, snapshot["workspaces"][0]))
+        with patch.object(ORGANIZER, "manifest_records", return_value=[]), patch.object(
+            ORGANIZER, "agent_restore_records", return_value=[]
+        ), patch.object(
+            ORGANIZER, "recovery_process_info", return_value={"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "zsh"}]}
+        ):
+            preflight = ORGANIZER.recovery_preflight_snapshot("lab", snapshot, {"w1:t1": self.layout()}, set())
+        self.assertIn("missing_workspace_cwd", {item["kind"] for item in preflight["failures"]})
+
     def test_preflight_rejects_unknown_trusted_agent_status(self):
         restore = {
             "source_pane_id": "w1:p1",
@@ -745,8 +770,9 @@ class RestartRecoveryTests(unittest.TestCase):
             "lab",
             set(),
         )
-        self.assertEqual(classified["classification"], "unresolved_supported_agent")
-        self.assertEqual(failure["kind"], "unresolved_supported_agent")
+        self.assertEqual(classified["classification"], "agent_status_not_idle")
+        self.assertEqual(failure["kind"], "agent_status_not_idle")
+        self.assertTrue(classified["trusted_restore"])
 
     def test_preflight_failure_details_name_failures_without_private_data(self):
         blocker_identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
@@ -757,30 +783,64 @@ class RestartRecoveryTests(unittest.TestCase):
                 {"identity": blocker_identity, "classification": "blocker", "agent_status": "unknown"},
                 {
                     "identity": unresolved_identity,
-                    "classification": "unresolved_supported_agent",
+                    "classification": "unverified_recovery_identity",
                     "agent": "codex",
                     "agent_status": "idle",
+                    "trusted_restore": False,
                 },
             ],
             "failures": [
                 {"kind": "blocker", "identity": blocker_identity, "process": "/private/secret-command"},
                 {
-                    "kind": "unresolved_supported_agent",
+                    "kind": "unverified_recovery_identity",
                     "identity": unresolved_identity,
                     "resume_command": "codex resume secret-agent-session",
                 },
                 {"kind": "missing_pane_cwd", "identity": cwd_identity, "path": "/private/secret-cwd"},
             ],
+            "snapshot": {
+                "workspaces": [
+                    {"workspace_id": "w1", "label": "Checkout", "cwd": tempfile.gettempdir()},
+                    {"workspace_id": "w2", "label": "Release", "cwd": tempfile.gettempdir()},
+                    {"workspace_id": "w3", "label": "Operations", "cwd": tempfile.gettempdir()},
+                ],
+                "tabs": [
+                    {"workspace_id": "w1", "tab_id": "w1:t1", "label": "Deploy"},
+                    {"workspace_id": "w2", "tab_id": "w2:t1", "label": "Monitor"},
+                    {"workspace_id": "w3", "tab_id": "w3:t1", "label": "Shell"},
+                ],
+            },
         }
         details = ORGANIZER.preflight_failure_details([preflight])
         blocker = ORGANIZER.recovery_identity_key(blocker_identity)
         self.assertIn("blocker (1)", details)
         self.assertIn(blocker, details)
         self.assertIn(f"--allow-volatile-pane '{blocker}'", details)
-        self.assertIn("reason=unresolved_supported_agent agent=codex status=idle", details)
+        self.assertIn("workspace 'Checkout', tab 'Deploy'", details)
+        self.assertIn("workspace 'Release', tab 'Monitor'", details)
+        self.assertIn("reason=unverified_recovery_identity agent=codex status=idle trusted_restore=false", details)
+        self.assertIn("Run herdr-agent-capture-history", details)
         self.assertNotIn("secret-command", details)
         self.assertNotIn("secret-agent-session", details)
         self.assertNotIn("secret-cwd", details)
+
+    def test_preflight_details_distinguish_non_idle_agent_status(self):
+        identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        preflight = {
+            "classifications": [
+                {
+                    "identity": identity,
+                    "classification": "agent_status_not_idle",
+                    "agent": "codex",
+                    "agent_status": "done",
+                    "trusted_restore": True,
+                }
+            ],
+            "failures": [{"kind": "agent_status_not_idle", "identity": identity}],
+        }
+        details = ORGANIZER.preflight_failure_details([preflight])
+        self.assertIn("The supported-agent status is not idle", details)
+        self.assertIn("reason=agent_status_not_idle agent=codex status=done trusted_restore=true", details)
 
     def test_failed_preflight_prints_usable_blocker_acknowledgement(self):
         identity = ORGANIZER.recovery_identity("project's-a", "w1", "w1:t1", "w1:p1")
