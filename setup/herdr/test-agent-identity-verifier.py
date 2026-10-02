@@ -140,6 +140,14 @@ class VerifierTests(unittest.TestCase):
             result = VERIFIER.verify_pane(pane(), stores=stores, adapter=adapter)
         self.assertEqual(result["status"], "unresolved")
 
+    def test_helper_owned_handle_is_unresolved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            path = stores["codex"].records()[0].path
+            adapter = Adapter([VERIFIER.OpenHandle(path, 99, helper_owned=True)])
+            result = VERIFIER.verify_pane(pane(), stores=stores, adapter=adapter)
+        self.assertEqual(result["status"], "unresolved")
+
     def test_many_sessions_sharing_cwd_are_ambiguous(self):
         with tempfile.TemporaryDirectory() as temporary:
             stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))

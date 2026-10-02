@@ -361,7 +361,10 @@ def _candidate_from_handle(pane: dict[str, Any], stores: dict[str, Any] | None, 
     cwd = _pane_cwd(pane)
     if client not in SUPPORTED_CLIENTS or pid is None or cwd is None:
         return None
-    handles = [handle for handle in adapter.handles(pid) if not handle.helper_owned and handle.owner_pid in {None, pid}]
+    all_handles = adapter.handles(pid)
+    if any(handle.helper_owned or handle.owner_pid not in {None, pid} for handle in all_handles):
+        return None
+    handles = all_handles
     matches: list[StoreRecord] = []
     for record in _store(client, stores).records():
         matching_handles = [handle for handle in handles if handle.path == record.path]
