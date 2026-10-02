@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agent_session_state import ensure_private_file
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_STATE_DIR = SCRIPT_DIR / "state"
@@ -27,6 +29,7 @@ def manifest_path(args: argparse.Namespace) -> Path:
 
 
 def read_manifest(path: Path) -> dict[str, Any]:
+    ensure_private_file(path, default_state_dir=DEFAULT_STATE_DIR)
     if not path.exists():
         raise SystemExit(f"manifest not found: {path}")
     try:

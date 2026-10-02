@@ -729,16 +729,17 @@ class RestartRecoveryTests(unittest.TestCase):
         )
         output = io.StringIO()
         errors = io.StringIO()
-        with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
-            REGISTRY, "current_herdr_session", return_value="esim"
-        ), patch.object(
-            REGISTRY,
-            "existing_records_by_pane",
-            return_value={("esim", "w1:p1"): {"session_id": private_id}},
-        ), patch.object(REGISTRY, "existing_registration_matches", return_value=True), redirect_stdout(
-            output
-        ), redirect_stderr(errors):
-            self.assertEqual(REGISTRY.scan(self.registry_scan_args(Path(tempfile.gettempdir()) / "manifest.json")), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
+                REGISTRY, "current_herdr_session", return_value="esim"
+            ), patch.object(
+                REGISTRY,
+                "existing_records_by_pane",
+                return_value={("esim", "w1:p1"): {"session_id": private_id}},
+            ), patch.object(REGISTRY, "existing_registration_matches", return_value=True), redirect_stdout(
+                output
+            ), redirect_stderr(errors):
+                self.assertEqual(REGISTRY.scan(self.registry_scan_args(Path(temporary) / "manifest.json")), 0)
         self.assertNotIn(private_id, output.getvalue())
         self.assertNotIn(private_id, errors.getvalue())
         self.assertIn("existing registration kept", output.getvalue())
@@ -769,6 +770,7 @@ class RestartRecoveryTests(unittest.TestCase):
     def test_registry_state_files_and_locks_are_private_when_created(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "state"
+            state.mkdir(mode=0o700)
             manifest = state / "manifest.json"
             missing = state / "missing.json"
             status = state / "status.jsonl"
@@ -786,7 +788,7 @@ class RestartRecoveryTests(unittest.TestCase):
     def test_registry_state_files_and_locks_tighten_permissive_existing_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "state"
-            state.mkdir(mode=0o755)
+            state.mkdir(mode=0o700)
             manifest = state / "manifest.json"
             missing = state / "missing.json"
             status = state / "status.jsonl"
@@ -799,8 +801,6 @@ class RestartRecoveryTests(unittest.TestCase):
             status_lock.write_text("")
             for path in [manifest, missing, status, manifest_lock, status_lock]:
                 path.chmod(0o644)
-            state.chmod(0o755)
-
             REGISTRY.read_manifest(manifest)
             REGISTRY.write_missing_json(missing, [])
             pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir())
@@ -810,6 +810,77 @@ class RestartRecoveryTests(unittest.TestCase):
                 pass
             self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
             for path in [manifest, missing, status, manifest_lock, status_lock]:
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+
+    def test_registry_override_sources_reject_untrusted_parents_without_chmod(self):
+        pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir())
+
+        def assert_rejected(path, action):
+            before = stat.S_IMODE(path.parent.stat().st_mode)
+            with self.assertRaisesRegex(SystemExit, "private Herdr agent state parent is not secure"):
+                action()
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), before, path.parent)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_flag = root / "manifest-flag" / "manifest.json"
+            manifest_env = root / "manifest-env" / "manifest.json"
+            missing_flag = root / "missing-flag" / "missing.json"
+            missing_env = root / "missing-env" / "missing.json"
+            status_env = root / "status-env" / "status.jsonl"
+            paths = [manifest_flag, manifest_env, missing_flag, missing_env, status_env]
+            for path in paths:
+                path.parent.mkdir(mode=0o755)
+
+            manifest_args = argparse.Namespace(manifest=str(manifest_flag))
+            assert_rejected(manifest_flag, lambda: REGISTRY.read_manifest(REGISTRY.manifest_path(manifest_args)))
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_MANIFEST": str(manifest_env)}):
+                assert_rejected(
+                    manifest_env,
+                    lambda: REGISTRY.read_manifest(REGISTRY.manifest_path(argparse.Namespace(manifest=None))),
+                )
+
+            missing_args = argparse.Namespace(missing_json=str(missing_flag))
+            assert_rejected(
+                missing_flag,
+                lambda: REGISTRY.write_missing_json(REGISTRY.missing_json_path(missing_args), []),
+            )
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_MISSING_JSON": str(missing_env)}):
+                assert_rejected(
+                    missing_env,
+                    lambda: REGISTRY.write_missing_json(
+                        REGISTRY.missing_json_path(argparse.Namespace(missing_json=None)), []
+                    ),
+                )
+
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_STATUS_LOG": str(status_env)}):
+                assert_rejected(status_env, lambda: REGISTRY.log_status_event(pane, "sent", command="/status"))
+
+    def test_registry_override_sources_work_with_private_parents(self):
+        pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_flag = root / "manifest-flag" / "manifest.json"
+            manifest_env = root / "manifest-env" / "manifest.json"
+            missing_flag = root / "missing-flag" / "missing.json"
+            missing_env = root / "missing-env" / "missing.json"
+            status_env = root / "status-env" / "status.jsonl"
+            for path in [manifest_flag, manifest_env, missing_flag, missing_env, status_env]:
+                path.parent.mkdir(mode=0o700)
+
+            REGISTRY.write_manifest(manifest_flag, {"panes": []})
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_MANIFEST": str(manifest_env)}):
+                REGISTRY.write_manifest(REGISTRY.manifest_path(argparse.Namespace(manifest=None)), {"panes": []})
+            REGISTRY.write_missing_json(missing_flag, [])
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_MISSING_JSON": str(missing_env)}):
+                REGISTRY.write_missing_json(
+                    REGISTRY.missing_json_path(argparse.Namespace(missing_json=None)), []
+                )
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_STATUS_LOG": str(status_env)}):
+                REGISTRY.log_status_event(pane, "sent", command="/status")
+
+            for path in [manifest_flag, manifest_env, missing_flag, missing_env, status_env]:
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700, path.parent)
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
 
     def test_restore_redacts_resume_command_unless_explicitly_requested(self):
@@ -905,18 +976,56 @@ class RestartRecoveryTests(unittest.TestCase):
         self.assertIn("w1:p1", str(raised.exception))
         self.assertIn("exit code 17", str(raised.exception))
 
-    def test_empty_registry_scan_prints_named_session_socket_guidance(self):
-        args = argparse.Namespace(
-            manifest=str(Path(tempfile.gettempdir()) / "unused-manifest.json"),
-            missing_json=str(Path(tempfile.gettempdir()) / "unused-missing.json"),
-            client=None,
+    @staticmethod
+    def restore_args(manifest=None):
+        return argparse.Namespace(
+            manifest=manifest,
             execute=False,
-            status=False,
-            lines=20,
-            source="recent",
-            no_missing_json=True,
-            verbose=False,
+            force=False,
+            all=False,
+            pane_id=None,
+            client=None,
+            session_id=None,
+            workspace_id=None,
+            tab_id=None,
+            herdr_session="esim",
+            show_resume_commands=False,
         )
+
+    def test_restore_tightens_permissive_manifest_with_private_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "state"
+            parent.mkdir(mode=0o700)
+            manifest = parent / "manifest.json"
+            manifest.write_text(json.dumps({"panes": []}))
+            manifest.chmod(0o644)
+            self.assertEqual(RESTORE.restore(self.restore_args(str(manifest))), 0)
+            self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o600)
+
+    def test_restore_rejects_unsafe_override_parent_without_chmod(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "state"
+            parent.mkdir(mode=0o755)
+            manifest = parent / "manifest.json"
+            manifest.write_text(json.dumps({"panes": []}))
+            before = stat.S_IMODE(parent.stat().st_mode)
+            with self.assertRaisesRegex(SystemExit, "private Herdr agent state parent is not secure"):
+                RESTORE.restore(self.restore_args(str(manifest)))
+            self.assertEqual(stat.S_IMODE(parent.stat().st_mode), before)
+
+    def test_restore_rejects_unsafe_manifest_environment_parent_without_chmod(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "state"
+            parent.mkdir(mode=0o755)
+            manifest = parent / "manifest.json"
+            manifest.write_text(json.dumps({"panes": []}))
+            before = stat.S_IMODE(parent.stat().st_mode)
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_MANIFEST": str(manifest)}):
+                with self.assertRaisesRegex(SystemExit, "private Herdr agent state parent is not secure"):
+                    RESTORE.restore(self.restore_args())
+            self.assertEqual(stat.S_IMODE(parent.stat().st_mode), before)
+
+    def test_empty_registry_scan_prints_named_session_socket_guidance(self):
         session_list = {
             "sessions": [
                 {"name": "default", "default": True, "status": "running", "session_dir": "/private/herdr/default"},
@@ -925,10 +1034,22 @@ class RestartRecoveryTests(unittest.TestCase):
             ]
         }
         output = io.StringIO()
-        with patch.object(REGISTRY, "snapshot_panes", return_value=[]), patch.object(
-            REGISTRY, "run_json", return_value=session_list
-        ) as run_json, redirect_stderr(output):
-            self.assertEqual(REGISTRY.scan(args), 1)
+        with tempfile.TemporaryDirectory() as temporary:
+            args = argparse.Namespace(
+                manifest=str(Path(temporary) / "unused-manifest.json"),
+                missing_json=str(Path(temporary) / "unused-missing.json"),
+                client=None,
+                execute=False,
+                status=False,
+                lines=20,
+                source="recent",
+                no_missing_json=True,
+                verbose=False,
+            )
+            with patch.object(REGISTRY, "snapshot_panes", return_value=[]), patch.object(
+                REGISTRY, "run_json", return_value=session_list
+            ) as run_json, redirect_stderr(output):
+                self.assertEqual(REGISTRY.scan(args), 1)
         self.assertEqual(run_json.call_args.args[0], ["herdr", "session", "list", "--json"])
         details = output.getvalue()
         self.assertIn("This scan only sees the Herdr session this shell is attached to.", details)

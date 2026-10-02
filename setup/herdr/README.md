@@ -37,7 +37,9 @@ State files default to:
 
 The registry creates this sidecar directory with mode `0700`, and keeps its
 manifests, missing-session JSON, status log, and lock files at mode `0600`.
-Existing permissive state files are tightened before use.
+Existing permissive state files are tightened before use. Explicit file
+overrides require an existing non-symlink parent already set to `0700`; the
+override parent is never created or chmodded by the tools.
 
 ## Shell Setup
 

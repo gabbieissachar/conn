@@ -9,7 +9,6 @@ import json
 import os
 import re
 import shlex
-import stat
 import subprocess
 import sys
 import time
@@ -19,6 +18,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from agent_session_state import PRIVATE_FILE_MODE, ensure_private_file
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,8 +32,6 @@ CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
-PRIVATE_DIR_MODE = 0o700
-PRIVATE_FILE_MODE = 0o600
 MANIFEST_FIELD_ORDER = (
     "herdr_session",
     "workspace_label",
@@ -107,35 +106,8 @@ def status_log_path() -> Path:
     ).expanduser()
 
 
-def ensure_private_directory(path: Path) -> None:
-    try:
-        if path.is_symlink():
-            raise OSError("symbolic links are not allowed")
-        path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
-        path.chmod(PRIVATE_DIR_MODE)
-        if not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != PRIVATE_DIR_MODE:
-            raise OSError(f"mode is not {PRIVATE_DIR_MODE:o}")
-    except OSError as exc:
-        raise SystemExit(f"private Herdr agent state directory is not secure: {path}: {exc}") from exc
-
-
-def ensure_private_file(path: Path) -> None:
-    ensure_private_directory(path.parent)
-    try:
-        if path.is_symlink():
-            raise OSError("symbolic links are not allowed")
-        if path.exists():
-            if not path.is_file():
-                raise OSError("path is not a regular file")
-            path.chmod(PRIVATE_FILE_MODE)
-            if stat.S_IMODE(path.stat().st_mode) != PRIVATE_FILE_MODE:
-                raise OSError(f"mode is not {PRIVATE_FILE_MODE:o}")
-    except OSError as exc:
-        raise SystemExit(f"private Herdr agent state file is not secure: {path}: {exc}") from exc
-
-
 def atomic_write_private(path: Path, contents: str) -> None:
-    ensure_private_file(path)
+    ensure_private_file(path, default_state_dir=DEFAULT_STATE_DIR)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     descriptor = None
     try:
@@ -161,7 +133,7 @@ def atomic_write_private(path: Path, contents: str) -> None:
 @contextmanager
 def private_file_lock(path: Path):
     lock_path = path.with_suffix(path.suffix + ".lock")
-    ensure_private_file(lock_path)
+    ensure_private_file(lock_path, default_state_dir=DEFAULT_STATE_DIR)
     descriptor = None
     try:
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, PRIVATE_FILE_MODE)
@@ -190,14 +162,14 @@ def log_status_event(pane: PaneInfo, event: str, **fields: Any) -> None:
         **fields,
     }
     path = status_log_path()
-    ensure_private_file(path)
+    ensure_private_file(path, default_state_dir=DEFAULT_STATE_DIR)
     with private_file_lock(path):
         existing = path.read_text() if path.exists() else ""
         atomic_write_private(path, existing + json.dumps(payload) + "\n")
 
 
 def read_manifest(path: Path) -> dict[str, Any]:
-    ensure_private_file(path)
+    ensure_private_file(path, default_state_dir=DEFAULT_STATE_DIR)
     if not path.exists():
         return {"version": 1, "updated_at": now_iso(), "panes": []}
     try:
@@ -229,7 +201,7 @@ def existing_records_by_pane(
 
 
 def write_manifest(path: Path, data: dict[str, Any]) -> None:
-    ensure_private_file(path)
+    ensure_private_file(path, default_state_dir=DEFAULT_STATE_DIR)
     ordered_panes: list[dict[str, Any]] = []
     for item in data.get("panes", []):
         if not isinstance(item, dict):
@@ -1047,7 +1019,7 @@ def scan(args: argparse.Namespace) -> int:
 
 def apply_missing(args: argparse.Namespace) -> int:
     source_path = missing_json_path(args)
-    ensure_private_file(source_path)
+    ensure_private_file(source_path, default_state_dir=DEFAULT_STATE_DIR)
     if not source_path.exists():
         print(f"missing-session JSON not found: {source_path}", file=sys.stderr)
         return 1
