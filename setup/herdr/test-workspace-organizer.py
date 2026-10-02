@@ -3,12 +3,14 @@
 
 import argparse
 import copy
+import io
 import importlib.util
 import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -744,6 +746,58 @@ class RestartRecoveryTests(unittest.TestCase):
         )
         self.assertEqual(classified["classification"], "unresolved_supported_agent")
         self.assertEqual(failure["kind"], "unresolved_supported_agent")
+
+    def test_preflight_failure_details_name_failures_without_private_data(self):
+        blocker_identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        unresolved_identity = ORGANIZER.recovery_identity("project-a", "w2", "w2:t1", "w2:p1")
+        cwd_identity = ORGANIZER.recovery_identity("project-a", "w3", "w3:t1", "w3:p1")
+        preflight = {
+            "classifications": [
+                {"identity": blocker_identity, "classification": "blocker", "agent_status": "unknown"},
+                {
+                    "identity": unresolved_identity,
+                    "classification": "unresolved_supported_agent",
+                    "agent": "codex",
+                    "agent_status": "idle",
+                },
+            ],
+            "failures": [
+                {"kind": "blocker", "identity": blocker_identity, "process": "/private/secret-command"},
+                {
+                    "kind": "unresolved_supported_agent",
+                    "identity": unresolved_identity,
+                    "resume_command": "codex resume secret-agent-session",
+                },
+                {"kind": "missing_pane_cwd", "identity": cwd_identity, "path": "/private/secret-cwd"},
+            ],
+        }
+        details = ORGANIZER.preflight_failure_details([preflight])
+        blocker = ORGANIZER.recovery_identity_key(blocker_identity)
+        self.assertIn("blocker (1)", details)
+        self.assertIn(blocker, details)
+        self.assertIn(f"--allow-volatile-pane '{blocker}'", details)
+        self.assertIn("reason=unresolved_supported_agent agent=codex status=idle", details)
+        self.assertNotIn("secret-command", details)
+        self.assertNotIn("secret-agent-session", details)
+        self.assertNotIn("secret-cwd", details)
+
+    def test_failed_preflight_prints_usable_blocker_acknowledgement(self):
+        identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        preflight = {
+            "session": "project-a",
+            "classifications": [{"identity": identity, "classification": "blocker", "agent_status": "unknown"}],
+            "failures": [{"kind": "blocker", "identity": identity}],
+        }
+        args = argparse.Namespace(recovery_sessions=["project-a"], allow_volatile_pane=[], preflight_only=True)
+        output = io.StringIO()
+        with patch.object(ORGANIZER, "recovery_sessions", return_value=["project-a"]), patch.object(
+            ORGANIZER, "recovery_preflight_session", return_value=preflight
+        ), redirect_stdout(output):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "preflight failed"):
+                ORGANIZER.prepare_restart_recovery_command(args)
+        acknowledgement = ORGANIZER.recovery_identity_key(identity)
+        self.assertIn(f"--allow-volatile-pane '{acknowledgement}'", output.getvalue())
+        self.assertEqual(ORGANIZER.recovery_acknowledgements([acknowledgement]), {acknowledgement})
 
     def test_preflight_rejects_null_and_empty_workspace_and_pane_cwds(self):
         for location, value in (

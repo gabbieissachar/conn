@@ -2183,6 +2183,59 @@ def redacted_preflight_summary(preflights: Iterable[dict[str, Any]]) -> dict[str
     return {"sessions": sessions, "ready_to_seal": not any(item["failures"] for item in preflights)}
 
 
+PREFLIGHT_FAILURE_HINTS = {
+    "blocker": "Review the foreground process. A deliberately volatile process may use the exact acknowledgement below.",
+    "busy_agent": "Let the agent finish before retrying preflight.",
+    "missing_pane_cwd": "Restore or create the pane working directory, then retry.",
+    "missing_registered_worktree": "Restore or create the registered worktree, then retry.",
+    "missing_workspace_cwd": "Restore or create the workspace working directory, then retry.",
+    "multiple_focused_workspaces": "Focus exactly one workspace in this named session, then retry.",
+    "no_focused_workspace": "Focus one workspace in this named session, then retry.",
+    "unknown_process_state": "Wait for Herdr process metadata to become available, then retry. Do not acknowledge it.",
+    "unresolved_supported_agent": "Let the supported agent reach explicit idle state and verify its recovery identity, then retry.",
+}
+
+
+def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
+    """Render actionable failures without exposing terminal or agent-session data."""
+    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = {}
+    for preflight in preflights:
+        classifications = {
+            recovery_identity_key(item["identity"]): item
+            for item in preflight.get("classifications", [])
+            if isinstance(item, dict) and isinstance(item.get("identity"), dict)
+        }
+        for failure in preflight.get("failures", []):
+            if not isinstance(failure, dict) or not isinstance(failure.get("identity"), dict):
+                continue
+            identity = failure["identity"]
+            kind = str(failure.get("kind") or "unknown_failure")
+            grouped.setdefault(kind, []).append((identity, classifications.get(recovery_identity_key(identity))))
+
+    lines = ["Preflight failures:"]
+    for kind in sorted(grouped):
+        entries = sorted(grouped[kind], key=lambda item: recovery_identity_key(item[0]))
+        hint = PREFLIGHT_FAILURE_HINTS.get(kind, "Resolve the named condition, then retry preflight.")
+        lines.append(f"- {kind} ({len(entries)}): {hint}")
+        for identity, classification in entries:
+            rendered_identity = recovery_identity_key(identity)
+            detail = ""
+            if classification and classification.get("classification") in {
+                "blocker", "busy_agent", "unknown_process_state", "unresolved_supported_agent"
+            }:
+                detail = f" reason={classification['classification']}"
+                agent = classification.get("agent")
+                status = classification.get("agent_status")
+                if isinstance(agent, str) and agent:
+                    detail += f" agent={agent}"
+                if isinstance(status, str) and status:
+                    detail += f" status={status}"
+            lines.append(f"  {rendered_identity}{detail}")
+            if kind == "blocker" and classification and classification.get("classification") == "blocker":
+                lines.append(f"    --allow-volatile-pane '{rendered_identity}'")
+    return "\n".join(lines)
+
+
 def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
     selected = recovery_sessions(args)
     acknowledgements = recovery_acknowledgements(args.allow_volatile_pane)
@@ -2190,6 +2243,7 @@ def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
     summary = redacted_preflight_summary(preflights)
     if any(item["failures"] for item in preflights):
         print(json.dumps(summary, indent=2))
+        print(preflight_failure_details(preflights))
         raise OrganizerError("Restart recovery preflight failed. Resolve each named failure or acknowledge only the intended volatile pane.")
     if args.preflight_only:
         print(json.dumps(summary, indent=2))

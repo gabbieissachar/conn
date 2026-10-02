@@ -220,6 +220,15 @@ herdr-organizer prepare-restart-recovery --session project-a \
   --allow-volatile-pane 'project-a|w3|w3:t2|w3:p1'
 ```
 
+When preflight fails, its default output groups every failure by kind and prints
+the named `session|workspace|tab|pane` identity. It prints no cwd, process
+command line, agent-session ID, resume command, or scrollback. A `blocker`
+entry includes the exact copy-pasteable `--allow-volatile-pane` value, but only
+use it for a process you intentionally accept as volatile. A supported Codex or
+Claude pane is unresolved unless its agent state is explicitly `idle` and its
+resume identity is verified. Let it become idle first; do not acknowledge a
+busy, unresolved, or unknown agent state.
+
 Bundles, per-session captures, checksums, and reconciliation journals live in
 `state/workspace-organizer/restart-recovery/`. They are local-only, gitignored,
 and created with private permissions. They contain paths and supported-agent
