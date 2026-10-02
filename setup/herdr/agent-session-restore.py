@@ -151,12 +151,16 @@ def restore(args: argparse.Namespace) -> int:
             continue
         command = restore_line(item)
         label = str(item.get("label") or "")
-        target = f"{item.get('herdr_session') or os.environ.get('HERDR_SESSION') or '?'}:{pane_id} {item.get('client')} {item.get('session_id')}"
+        target = f"{item.get('herdr_session') or os.environ.get('HERDR_SESSION') or '?'}:{pane_id} {item.get('client')}"
         if label:
             target = f"{target} [{label}]"
         print(target)
         print(f"  target cwd: {pane.get('foreground_cwd') or pane.get('cwd') or ''}")
-        print(f"  replay: {command}")
+        if getattr(args, "show_resume_commands", False):
+            print("  replay command shown because --show-resume-commands was explicitly requested:")
+            print(f"    {command}")
+        else:
+            print("  replay: [redacted; pass --show-resume-commands to display]")
         if args.execute:
             send_command(pane_id, command)
             executed += 1
@@ -179,6 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace-id")
     parser.add_argument("--tab-id")
     parser.add_argument("--herdr-session", help="named Herdr session to restore")
+    parser.add_argument(
+        "--show-resume-commands", action="store_true", help="Explicitly show private agent resume commands."
+    )
     return parser
 
 

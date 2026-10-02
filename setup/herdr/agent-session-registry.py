@@ -572,7 +572,7 @@ def register(args: argparse.Namespace) -> int:
         panes.append(record)
         data["panes"] = sorted(panes, key=lambda item: str(item.get("pane_id", "")))
         write_manifest(path, data)
-    print(f"registered {args.client} {args.session_id} -> {pane.pane_id}")
+    print(f"registered {args.client} -> {pane.pane_id}")
     print(f"manifest: {path}")
     return 0
 
@@ -581,6 +581,10 @@ def list_records(args: argparse.Namespace) -> int:
     path = manifest_path(args)
     data = read_manifest(path)
     print(f"manifest: {path}")
+    if getattr(args, "show_session_ids", False):
+        print("session IDs shown because --show-session-ids was explicitly requested")
+    else:
+        print("session IDs redacted; pass --show-session-ids for manual repair")
     if not data["panes"]:
         print("no registered herdr agent panes")
         return 0
@@ -600,7 +604,7 @@ def list_records(args: argparse.Namespace) -> int:
                     str(item.get("tab_id", "")),
                     str(item.get("client", "")),
                     str(item.get("status", "")),
-                    str(item.get("session_id", "")),
+                    str(item.get("session_id", "") if getattr(args, "show_session_ids", False) else "[redacted]"),
                     str(item.get("cwd", "")),
                 ]
             )
@@ -876,24 +880,24 @@ def scan(args: argparse.Namespace) -> int:
         existing_record = manifest_by_pane.get((herdr_session, pane.pane_id))
         if existing_registration_matches(pane, existing_record):
             already_registered += 1
-            print(f"KEEP {pane.pane_id} {client} {existing_record.get('session_id')} already registered")
+            print(f"KEEP {pane.pane_id} {client} existing registration kept")
             continue
 
         detection = detect_from_native(pane)
-        detection_source = "native_agent_session"
+        detection_source = "native"
         if not detection:
             detection = detect_from_process(pane)
-            detection_source = "process_info"
+            detection_source = "process"
         if not detection and args.status:
             detection = detect_from_status(pane, lines=max(args.lines, 120))
-            detection_source = "status_command"
+            detection_source = "status"
         if not detection:
             detection = detect_from_capture(
                 pane,
                 lines=args.lines,
                 source=args.source,
             )
-            detection_source = "pane_capture"
+            detection_source = "capture"
         pane_cwd = pane.foreground_cwd or pane.cwd or normalize_path(os.getcwd())
         if detection and pane_cwd:
             _client, session_id = detection
@@ -910,7 +914,7 @@ def scan(args: argparse.Namespace) -> int:
                 restore_policy="manual_confirm",
             )
             records.append(record)
-            print(f"FOUND {pane.pane_id} {client} {session_id} source={detection_source}")
+            print(f"FOUND {pane.pane_id} {client} source={detection_source}")
             continue
 
         missing_items.append(
@@ -1130,6 +1134,9 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--client", choices=["codex", "claude"])
     list_parser.add_argument("--status")
     list_parser.add_argument("--workspace-id")
+    list_parser.add_argument(
+        "--show-session-ids", action="store_true", help="Explicitly show private session IDs for manual repair."
+    )
 
     remove_parser = sub.add_parser("remove", help="remove one pane registration")
     remove_parser.add_argument("pane_id")
@@ -1164,7 +1171,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--client", choices=["codex", "claude"])
     scan_parser.add_argument("--lines", type=int, default=400)
     scan_parser.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped"])
-    scan_parser.add_argument("--status", action="store_true", help="query unresolved idle panes with /status")
+    scan_parser.add_argument("--status", action="store_true", help="query unresolved idle or done panes with /status")
     scan_parser.add_argument("--no-missing-json", action="store_true")
     scan_parser.add_argument("--verbose", action="store_true")
 

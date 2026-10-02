@@ -29,6 +29,12 @@ REGISTRY = importlib.util.module_from_spec(REGISTRY_SPEC)
 sys.modules[REGISTRY_SPEC.name] = REGISTRY
 REGISTRY_SPEC.loader.exec_module(REGISTRY)
 
+RESTORE_PATH = Path(__file__).with_name("agent-session-restore.py")
+RESTORE_SPEC = importlib.util.spec_from_file_location("agent_session_restore", RESTORE_PATH)
+assert RESTORE_SPEC and RESTORE_SPEC.loader
+RESTORE = importlib.util.module_from_spec(RESTORE_SPEC)
+RESTORE_SPEC.loader.exec_module(RESTORE)
+
 
 class WorkspaceOrganizerTests(unittest.TestCase):
     def test_codex_home_controls_session_lookup_paths(self):
@@ -660,6 +666,149 @@ class RestartRecoveryTests(unittest.TestCase):
             REGISTRY, "pane_read_text", return_value="Session ID: verified-done-session"
         ), patch.object(REGISTRY, "log_status_event"), patch.object(REGISTRY.time, "sleep"):
             self.assertEqual(REGISTRY.detect_from_status(pane, lines=20), ("codex", "verified-done-session"))
+
+    @staticmethod
+    def registry_scan_args(manifest: Path, *, status=False):
+        return argparse.Namespace(
+            manifest=str(manifest),
+            missing_json=str(manifest.with_name("missing.json")),
+            client=None,
+            execute=False,
+            status=status,
+            lines=20,
+            source="recent",
+            no_missing_json=True,
+            verbose=False,
+        )
+
+    def test_registry_scan_redacts_done_status_recovery_id(self):
+        private_id = "done-status-private-id"
+        pane = REGISTRY.PaneInfo(
+            "esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir(), "codex", "done"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
+                REGISTRY, "current_herdr_session", return_value="esim"
+            ), patch.object(REGISTRY, "detect_from_native", return_value=None), patch.object(
+                REGISTRY, "detect_from_process", return_value=None
+            ), patch.object(REGISTRY, "detect_from_status", return_value=("codex", private_id)), patch.object(
+                REGISTRY, "git_context", return_value=(tempfile.gettempdir(), "main")
+            ), redirect_stdout(output), redirect_stderr(errors):
+                self.assertEqual(REGISTRY.scan(self.registry_scan_args(Path(temporary) / "manifest.json", status=True)), 0)
+        self.assertNotIn(private_id, output.getvalue())
+        self.assertNotIn(private_id, errors.getvalue())
+        self.assertIn("source=status", output.getvalue())
+
+    def test_registry_scan_redacts_process_recovery_id(self):
+        private_id = "process-private-id"
+        pane = REGISTRY.PaneInfo(
+            "esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir(), "codex", "idle"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
+                REGISTRY, "current_herdr_session", return_value="esim"
+            ), patch.object(REGISTRY, "detect_from_native", return_value=None), patch.object(
+                REGISTRY, "detect_from_process", return_value=("codex", private_id)
+            ), patch.object(REGISTRY, "git_context", return_value=(tempfile.gettempdir(), "main")), redirect_stdout(
+                output
+            ), redirect_stderr(errors):
+                self.assertEqual(REGISTRY.scan(self.registry_scan_args(Path(temporary) / "manifest.json")), 0)
+        self.assertNotIn(private_id, output.getvalue())
+        self.assertNotIn(private_id, errors.getvalue())
+        self.assertIn("source=process", output.getvalue())
+
+    def test_registry_scan_redacts_keep_registration_id(self):
+        private_id = "keep-private-id"
+        pane = REGISTRY.PaneInfo(
+            "esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir(), "codex", "idle"
+        )
+        output = io.StringIO()
+        errors = io.StringIO()
+        with patch.object(REGISTRY, "snapshot_panes", return_value=[pane]), patch.object(
+            REGISTRY, "current_herdr_session", return_value="esim"
+        ), patch.object(
+            REGISTRY,
+            "existing_records_by_pane",
+            return_value={("esim", "w1:p1"): {"session_id": private_id}},
+        ), patch.object(REGISTRY, "existing_registration_matches", return_value=True), redirect_stdout(
+            output
+        ), redirect_stderr(errors):
+            self.assertEqual(REGISTRY.scan(self.registry_scan_args(Path(tempfile.gettempdir()) / "manifest.json")), 0)
+        self.assertNotIn(private_id, output.getvalue())
+        self.assertNotIn(private_id, errors.getvalue())
+        self.assertIn("existing registration kept", output.getvalue())
+
+    def test_registry_list_redacts_ids_unless_explicitly_requested(self):
+        private_id = "list-private-id"
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "manifest.json"
+            REGISTRY.write_manifest(
+                manifest,
+                {"panes": [{"herdr_session": "esim", "pane_id": "w1:p1", "client": "codex", "status": "active", "session_id": private_id, "cwd": tempfile.gettempdir()}]},
+            )
+            args = argparse.Namespace(
+                manifest=str(manifest), client=None, status=None, workspace_id=None, show_session_ids=False
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                REGISTRY.list_records(args)
+            self.assertNotIn(private_id, output.getvalue())
+            self.assertIn("session IDs redacted", output.getvalue())
+            args.show_session_ids = True
+            output = io.StringIO()
+            with redirect_stdout(output):
+                REGISTRY.list_records(args)
+            self.assertIn(private_id, output.getvalue())
+            self.assertIn("explicitly requested", output.getvalue())
+
+    def test_restore_redacts_resume_command_unless_explicitly_requested(self):
+        private_id = "restore-private-id"
+        item = {
+            "herdr_session": "esim",
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "client": "codex",
+            "session_id": private_id,
+            "resume_command": f"codex resume {private_id}",
+            "cwd": tempfile.gettempdir(),
+            "status": "active",
+        }
+        args = argparse.Namespace(
+            manifest="unused",
+            execute=False,
+            force=False,
+            all=False,
+            pane_id=None,
+            client=None,
+            session_id=None,
+            workspace_id=None,
+            tab_id=None,
+            herdr_session="esim",
+            show_resume_commands=False,
+        )
+        live = {"w1:p1": {"workspace_id": "w1", "tab_id": "w1:t1", "cwd": tempfile.gettempdir()}}
+        with patch.object(RESTORE, "read_manifest", return_value={"panes": [item]}), patch.object(
+            RESTORE, "pane_list", return_value=live
+        ), patch.object(RESTORE, "target_ready", return_value=(True, None)):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                RESTORE.restore(args)
+        self.assertNotIn(private_id, output.getvalue())
+        self.assertIn("redacted", output.getvalue())
+        args.show_resume_commands = True
+        with patch.object(RESTORE, "read_manifest", return_value={"panes": [item]}), patch.object(
+            RESTORE, "pane_list", return_value=live
+        ), patch.object(RESTORE, "target_ready", return_value=(True, None)):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                RESTORE.restore(args)
+        self.assertIn(private_id, output.getvalue())
+        self.assertIn("explicitly requested", output.getvalue())
 
     def test_empty_registry_scan_prints_named_session_socket_guidance(self):
         args = argparse.Namespace(

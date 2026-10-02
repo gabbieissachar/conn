@@ -59,6 +59,9 @@ List registered replay targets. The first column is the Herdr session:
 herdr-agent-list
 ```
 
+Session IDs are redacted from the normal listing. Use
+`herdr-agent-list --show-session-ids` only when manual repair requires them.
+
 Normalize the manifest field order after manual edits or migrations:
 
 ```sh
@@ -103,6 +106,9 @@ herdr-agent-restore --execute
 herdr-agent-restore --execute --all
 herdr-agent-restore --pane-id w3:p1 --execute
 ```
+
+Normal restore previews redact resume commands. Use
+`--show-resume-commands` only when you explicitly need to inspect one.
 
 ## Restart Recovery
 
