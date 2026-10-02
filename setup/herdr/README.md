@@ -35,6 +35,10 @@ State files default to:
 /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/state/
 ```
 
+The registry creates this sidecar directory with mode `0700`, and keeps its
+manifests, missing-session JSON, status log, and lock files at mode `0600`.
+Existing permissive state files are tightened before use.
+
 ## Shell Setup
 
 Source these in shells that launch or resume Codex or Claude inside herdr:

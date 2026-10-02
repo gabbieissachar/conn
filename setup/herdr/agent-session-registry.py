@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -30,6 +31,8 @@ CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 SHELL_SOURCE = "source"
 SESSION_TOKEN = r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})"
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 MANIFEST_FIELD_ORDER = (
     "herdr_session",
     "workspace_label",
@@ -104,6 +107,78 @@ def status_log_path() -> Path:
     ).expanduser()
 
 
+def ensure_private_directory(path: Path) -> None:
+    try:
+        if path.is_symlink():
+            raise OSError("symbolic links are not allowed")
+        path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIR_MODE)
+        path.chmod(PRIVATE_DIR_MODE)
+        if not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != PRIVATE_DIR_MODE:
+            raise OSError(f"mode is not {PRIVATE_DIR_MODE:o}")
+    except OSError as exc:
+        raise SystemExit(f"private Herdr agent state directory is not secure: {path}: {exc}") from exc
+
+
+def ensure_private_file(path: Path) -> None:
+    ensure_private_directory(path.parent)
+    try:
+        if path.is_symlink():
+            raise OSError("symbolic links are not allowed")
+        if path.exists():
+            if not path.is_file():
+                raise OSError("path is not a regular file")
+            path.chmod(PRIVATE_FILE_MODE)
+            if stat.S_IMODE(path.stat().st_mode) != PRIVATE_FILE_MODE:
+                raise OSError(f"mode is not {PRIVATE_FILE_MODE:o}")
+    except OSError as exc:
+        raise SystemExit(f"private Herdr agent state file is not secure: {path}: {exc}") from exc
+
+
+def atomic_write_private(path: Path, contents: str) -> None:
+    ensure_private_file(path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE)
+        with os.fdopen(descriptor, "w") as handle:
+            descriptor = None
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(PRIVATE_FILE_MODE)
+        temporary.replace(path)
+        path.chmod(PRIVATE_FILE_MODE)
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise SystemExit(f"could not atomically write private Herdr agent state file {path}: {exc}") from exc
+
+
+@contextmanager
+def private_file_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    ensure_private_file(lock_path)
+    descriptor = None
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, PRIVATE_FILE_MODE)
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        with os.fdopen(descriptor, "r+") as lock_file:
+            descriptor = None
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise SystemExit(f"private Herdr agent state lock is not secure: {lock_path}: {exc}") from exc
+
+
 def log_status_event(pane: PaneInfo, event: str, **fields: Any) -> None:
     payload = {
         "timestamp": now_iso(),
@@ -114,17 +189,15 @@ def log_status_event(pane: PaneInfo, event: str, **fields: Any) -> None:
         "client": pane.agent,
         **fields,
     }
-    try:
-        path = status_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as handle:
-            handle.write(json.dumps(payload) + "\n")
-    except OSError:
-        # Capture diagnostics must never prevent the registry scan from running.
-        pass
+    path = status_log_path()
+    ensure_private_file(path)
+    with private_file_lock(path):
+        existing = path.read_text() if path.exists() else ""
+        atomic_write_private(path, existing + json.dumps(payload) + "\n")
 
 
 def read_manifest(path: Path) -> dict[str, Any]:
+    ensure_private_file(path)
     if not path.exists():
         return {"version": 1, "updated_at": now_iso(), "panes": []}
     try:
@@ -156,7 +229,7 @@ def existing_records_by_pane(
 
 
 def write_manifest(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_file(path)
     ordered_panes: list[dict[str, Any]] = []
     for item in data.get("panes", []):
         if not isinstance(item, dict):
@@ -171,21 +244,13 @@ def write_manifest(path: Path, data: dict[str, Any]) -> None:
         ordered_panes.append(ordered)
     data["panes"] = ordered_panes
     data["updated_at"] = now_iso()
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(path)
+    atomic_write_private(path, json.dumps(data, indent=2) + "\n")
 
 
 @contextmanager
 def manifest_lock(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with lock_path.open("w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with private_file_lock(path):
+        yield
 
 
 def normalize_path(value: str | None) -> str | None:
@@ -683,17 +748,7 @@ def capture_missing(args: argparse.Namespace) -> int:
         "worktree": args.worktree or worktree,
     }
     path = missing_json_path(args)
-    payload = {
-        "version": 1,
-        "updated_at": now_iso(),
-        "instructions": [
-            "Fill session_id for rows you want to register, keep register=true,",
-            "then run: herdr-agent-apply-missing",
-        ],
-        "items": [item],
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    write_missing_json(path, [item])
     print(f"missing-session JSON: {path}")
     return 0
 
@@ -785,7 +840,6 @@ def detect_from_status(pane: PaneInfo, *, lines: int) -> tuple[str, str] | None:
 
 
 def write_missing_json(path: Path, items: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 1,
         "updated_at": now_iso(),
@@ -795,7 +849,7 @@ def write_missing_json(path: Path, items: list[dict[str, Any]]) -> None:
         ],
         "items": items,
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    atomic_write_private(path, json.dumps(payload, indent=2) + "\n")
 
 
 def running_named_session_sockets() -> list[tuple[str, str]]:
@@ -993,6 +1047,7 @@ def scan(args: argparse.Namespace) -> int:
 
 def apply_missing(args: argparse.Namespace) -> int:
     source_path = missing_json_path(args)
+    ensure_private_file(source_path)
     if not source_path.exists():
         print(f"missing-session JSON not found: {source_path}", file=sys.stderr)
         return 1

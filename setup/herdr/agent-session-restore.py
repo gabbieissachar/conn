@@ -122,12 +122,10 @@ def target_ready(item: dict[str, Any], live: dict[str, Any], force: bool) -> tup
 def send_command(pane_id: str, command: str) -> None:
     run = subprocess.run(["herdr", "pane", "send-text", pane_id, command], text=True, capture_output=True, check=False)
     if run.returncode != 0:
-        detail = (run.stderr or run.stdout or "").strip()
-        raise SystemExit(f"failed to send text to {pane_id}: {detail}")
+        raise SystemExit(f"failed to send text to pane {pane_id} (exit code {run.returncode})")
     enter = subprocess.run(["herdr", "pane", "send-keys", pane_id, "Enter"], text=True, capture_output=True, check=False)
     if enter.returncode != 0:
-        detail = (enter.stderr or enter.stdout or "").strip()
-        raise SystemExit(f"failed to send Enter to {pane_id}: {detail}")
+        raise SystemExit(f"failed to send Enter to pane {pane_id} (exit code {enter.returncode})")
 
 
 def restore(args: argparse.Namespace) -> int:

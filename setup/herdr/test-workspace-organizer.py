@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import shlex
+import stat
 import sys
 import tempfile
 import unittest
@@ -765,6 +766,52 @@ class RestartRecoveryTests(unittest.TestCase):
             self.assertIn(private_id, output.getvalue())
             self.assertIn("explicitly requested", output.getvalue())
 
+    def test_registry_state_files_and_locks_are_private_when_created(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            manifest = state / "manifest.json"
+            missing = state / "missing.json"
+            status = state / "status.jsonl"
+            REGISTRY.write_manifest(manifest, {"panes": []})
+            REGISTRY.write_missing_json(missing, [])
+            pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir())
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_STATUS_LOG": str(status)}):
+                REGISTRY.log_status_event(pane, "sent", command="/status")
+            with REGISTRY.manifest_lock(manifest):
+                pass
+            self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
+            for path in [manifest, missing, status, manifest.with_suffix(manifest.suffix + ".lock"), status.with_suffix(status.suffix + ".lock")]:
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+
+    def test_registry_state_files_and_locks_tighten_permissive_existing_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            state.mkdir(mode=0o755)
+            manifest = state / "manifest.json"
+            missing = state / "missing.json"
+            status = state / "status.jsonl"
+            manifest.write_text(json.dumps({"panes": []}))
+            missing.write_text(json.dumps({"items": []}))
+            status.write_text("")
+            manifest_lock = manifest.with_suffix(manifest.suffix + ".lock")
+            status_lock = status.with_suffix(status.suffix + ".lock")
+            manifest_lock.write_text("")
+            status_lock.write_text("")
+            for path in [manifest, missing, status, manifest_lock, status_lock]:
+                path.chmod(0o644)
+            state.chmod(0o755)
+
+            REGISTRY.read_manifest(manifest)
+            REGISTRY.write_missing_json(missing, [])
+            pane = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", tempfile.gettempdir(), tempfile.gettempdir())
+            with patch.dict(os.environ, {"PMOS_HERDR_AGENT_STATUS_LOG": str(status)}):
+                REGISTRY.log_status_event(pane, "sent", command="/status")
+            with REGISTRY.manifest_lock(manifest):
+                pass
+            self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
+            for path in [manifest, missing, status, manifest_lock, status_lock]:
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+
     def test_restore_redacts_resume_command_unless_explicitly_requested(self):
         private_id = "restore-private-id"
         item = {
@@ -809,6 +856,54 @@ class RestartRecoveryTests(unittest.TestCase):
                 RESTORE.restore(args)
         self.assertIn(private_id, output.getvalue())
         self.assertIn("explicitly requested", output.getvalue())
+
+    def test_restore_execute_send_error_does_not_echo_resume_command(self):
+        private_id = "execute-private-id"
+        item = {
+            "herdr_session": "esim",
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "client": "codex",
+            "session_id": private_id,
+            "resume_command": f"codex resume {private_id}",
+            "cwd": tempfile.gettempdir(),
+            "status": "active",
+        }
+        args = argparse.Namespace(
+            manifest="unused",
+            execute=True,
+            force=False,
+            all=False,
+            pane_id=None,
+            client=None,
+            session_id=None,
+            workspace_id=None,
+            tab_id=None,
+            herdr_session="esim",
+            show_resume_commands=False,
+        )
+        live = {"w1:p1": {"workspace_id": "w1", "tab_id": "w1:t1", "cwd": tempfile.gettempdir()}}
+        failed = RESTORE.subprocess.CompletedProcess(
+            ["herdr", "pane", "send-text"],
+            17,
+            stdout=f"submitted codex resume {private_id}",
+            stderr=f"send failed after codex resume {private_id}",
+        )
+        output = io.StringIO()
+        errors = io.StringIO()
+        with patch.object(RESTORE, "read_manifest", return_value={"panes": [item]}), patch.object(
+            RESTORE, "pane_list", return_value=live
+        ), patch.object(RESTORE, "target_ready", return_value=(True, None)), patch.object(
+            RESTORE.subprocess, "run", return_value=failed
+        ), redirect_stdout(output), redirect_stderr(errors):
+            with self.assertRaises(SystemExit) as raised:
+                RESTORE.restore(args)
+        self.assertNotIn(private_id, output.getvalue())
+        self.assertNotIn(private_id, errors.getvalue())
+        self.assertNotIn(private_id, str(raised.exception))
+        self.assertIn("w1:p1", str(raised.exception))
+        self.assertIn("exit code 17", str(raised.exception))
 
     def test_empty_registry_scan_prints_named_session_socket_guidance(self):
         args = argparse.Namespace(
