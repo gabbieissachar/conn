@@ -642,7 +642,7 @@ class RestartRecoveryTests(unittest.TestCase):
         )
         session_list = {
             "sessions": [
-                {"name": "default", "status": "stopped", "session_dir": "/private/herdr/default"},
+                {"name": "default", "default": True, "status": "running", "session_dir": "/private/herdr/default"},
                 {"name": "esim", "status": "running", "session_dir": "/private/herdr/esim"},
                 {"name": "Misc", "running": True, "socket_path": "/private/herdr/Misc/custom.sock"},
             ]
@@ -658,9 +658,13 @@ class RestartRecoveryTests(unittest.TestCase):
         self.assertIn("herdr session list --json", details)
         self.assertIn("esim /private/herdr/esim/herdr.sock", details)
         self.assertIn("Misc /private/herdr/Misc/custom.sock", details)
-        self.assertNotIn("default", details)
+        self.assertNotIn("  default /private/herdr/default", details)
         self.assertIn(
-            "HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history",
+            "HERDR_SESSION=Misc HERDR_SOCKET_PATH=/private/herdr/Misc/custom.sock herdr-agent-capture-history",
+            details,
+        )
+        self.assertIn(
+            "HERDR_SESSION=esim HERDR_SOCKET_PATH=/private/herdr/esim/herdr.sock herdr-agent-capture-history",
             details,
         )
         self.assertIn("inside an existing pane of that session", details)

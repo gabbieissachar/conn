@@ -810,6 +810,8 @@ def running_named_session_sockets() -> list[tuple[str, str]]:
         if not isinstance(session, dict):
             continue
         name = session.get("name")
+        if name == "default" or session.get("default") is True or session.get("is_default") is True:
+            continue
         running = (
             session.get("running") is True
             or session.get("status") == "running"
@@ -834,11 +836,14 @@ def print_no_panes_guidance() -> None:
         print("Running named sessions:", file=sys.stderr)
         for name, socket_path in sessions:
             print(f"  {name} {socket_path}", file=sys.stderr)
-    print("For a listed session, run:", file=sys.stderr)
-    print(
-        "  HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history",
-        file=sys.stderr,
-    )
+            print(
+                "  "
+                f"HERDR_SESSION={shlex.quote(name)} "
+                f"HERDR_SOCKET_PATH={shlex.quote(socket_path)} "
+                "herdr-agent-capture-history",
+                file=sys.stderr,
+            )
+    print("The default Herdr session is not supported for recovery.", file=sys.stderr)
     print("Or run herdr-agent-capture-history inside an existing pane of that session.", file=sys.stderr)
 
 

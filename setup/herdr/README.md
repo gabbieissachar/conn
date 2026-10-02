@@ -80,11 +80,9 @@ agent panes. It registers only panes whose response contains a session ID.
 `herdr-agent-capture-history` sees only the Herdr session attached to its
 shell. Running it in a plain terminal can therefore find no panes even while a
 named session is running. Use `herdr session list --json` to find a running
-session's name and socket path, then run:
-
-```sh
-HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history
-```
+session's name and socket path, then use the concrete shell-quoted command the
+scan prints for that session. The default Herdr session is not supported for
+recovery.
 
 Or run the command inside an existing pane of that named session.
 
