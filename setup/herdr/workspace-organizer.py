@@ -2534,7 +2534,7 @@ def marked_recovery_workspaces(snapshot: dict[str, Any], state: dict[str, Any]) 
         for item in snapshot.get("workspaces", [])
         if isinstance(item, dict)
         and item.get("label") == state.get("expected_label")
-        and item.get("cwd") == state.get("expected_cwd")
+        and recovery_workspace_cwd(snapshot, item) == state.get("expected_cwd")
     ]
     if len(candidates) > 1:
         raise OrganizerError("Multiple workspaces carry this recovery operation marker. Manual repair is required.")

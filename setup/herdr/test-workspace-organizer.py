@@ -717,6 +717,9 @@ class RestartRecoveryTests(unittest.TestCase):
         with patch.object(ORGANIZER, "recovery_layouts", return_value={"w1:t1": self.layout()}):
             native = ORGANIZER.native_recovery_workspace(snapshot, snapshot["workspaces"][0], "lab")
         self.assertEqual(native["cwd"], tempfile.gettempdir())
+        state = {"expected_label": "One [rrb:0123456789abcdef01234567]", "expected_cwd": tempfile.gettempdir()}
+        snapshot["workspaces"][0]["label"] = state["expected_label"]
+        self.assertEqual(ORGANIZER.marked_recovery_workspaces(snapshot, state), [snapshot["workspaces"][0]])
 
     def test_preflight_rejects_unknown_trusted_agent_status(self):
         restore = {
