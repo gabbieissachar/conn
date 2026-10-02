@@ -7,6 +7,7 @@ import io
 import importlib.util
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -782,7 +783,7 @@ class RestartRecoveryTests(unittest.TestCase):
         self.assertNotIn("secret-cwd", details)
 
     def test_failed_preflight_prints_usable_blocker_acknowledgement(self):
-        identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        identity = ORGANIZER.recovery_identity("project's-a", "w1", "w1:t1", "w1:p1")
         preflight = {
             "session": "project-a",
             "classifications": [{"identity": identity, "classification": "blocker", "agent_status": "unknown"}],
@@ -796,8 +797,24 @@ class RestartRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ORGANIZER.OrganizerError, "preflight failed"):
                 ORGANIZER.prepare_restart_recovery_command(args)
         acknowledgement = ORGANIZER.recovery_identity_key(identity)
-        self.assertIn(f"--allow-volatile-pane '{acknowledgement}'", output.getvalue())
-        self.assertEqual(ORGANIZER.recovery_acknowledgements([acknowledgement]), {acknowledgement})
+        acknowledgement_line = next(
+            line.strip() for line in output.getvalue().splitlines() if line.strip().startswith("--allow-volatile-pane")
+        )
+        self.assertEqual(shlex.split(acknowledgement_line), ["--allow-volatile-pane", acknowledgement])
+        self.assertEqual(
+            ORGANIZER.recovery_acknowledgements([shlex.split(acknowledgement_line)[1]]), {acknowledgement}
+        )
+
+    def test_recovery_identity_rejects_pipe_delimited_components(self):
+        for field in ("session", "workspace", "tab", "pane"):
+            with self.subTest(field=field):
+                values = {"session": "project-a", "workspace": "w1", "tab": "w1:t1", "pane": "w1:p1"}
+                values[field] += "|unsafe"
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "cannot contain '\\|'"):
+                    ORGANIZER.recovery_identity(values["session"], values["workspace"], values["tab"], values["pane"])
+                if field == "session":
+                    with self.assertRaisesRegex(ORGANIZER.OrganizerError, "cannot contain '\\|'"):
+                        ORGANIZER.require_recovery_session(values["session"])
 
     def test_preflight_rejects_null_and_empty_workspace_and_pane_cwds(self):
         for location, value in (

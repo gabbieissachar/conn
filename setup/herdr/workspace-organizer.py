@@ -108,15 +108,29 @@ def private_json_digest(path: Path) -> str:
 def recovery_identity(session: str, workspace_id: str | None = None, tab_id: str | None = None,
                       pane_id: str | None = None) -> dict[str, str | None]:
     """Use one explicit namespace shape for every captured recovery object."""
-    return {
+    identity = {
         "herdr_session": session,
         "workspace_id": workspace_id,
         "tab_id": tab_id,
         "pane_id": pane_id,
     }
+    reject_recovery_identity_delimiters(identity)
+    return identity
+
+
+def reject_recovery_identity_delimiters(identity: dict[str, Any]) -> None:
+    """Keep pipe-delimited acknowledgement identities reversible."""
+    for name in ("herdr_session", "workspace_id", "tab_id", "pane_id"):
+        value = identity.get(name)
+        if isinstance(value, str) and "|" in value:
+            raise OrganizerError(
+                f"Restart recovery identity component {name!r} cannot contain '|'; "
+                "--allow-volatile-pane uses pipe-delimited identities."
+            )
 
 
 def recovery_identity_key(identity: dict[str, Any]) -> str:
+    reject_recovery_identity_delimiters(identity)
     values = [identity.get(name) for name in ("herdr_session", "workspace_id", "tab_id", "pane_id")]
     if not isinstance(values[0], str) or not values[0]:
         raise OrganizerError("Recovery object does not have a named Herdr session.")
@@ -1609,7 +1623,9 @@ def list_archives_command(_: argparse.Namespace) -> None:
 def require_recovery_session(session: str | None) -> str:
     if not isinstance(session, str) or not session.strip():
         raise OrganizerError("Restart recovery requires an explicit named --session.")
-    return session.strip()
+    selected = session.strip()
+    reject_recovery_identity_delimiters({"herdr_session": selected})
+    return selected
 
 
 def running_recovery_sessions() -> list[str]:
@@ -2232,7 +2248,7 @@ def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
                     detail += f" status={status}"
             lines.append(f"  {rendered_identity}{detail}")
             if kind == "blocker" and classification and classification.get("classification") == "blocker":
-                lines.append(f"    --allow-volatile-pane '{rendered_identity}'")
+                lines.append(f"    --allow-volatile-pane {shlex.quote(rendered_identity)}")
     return "\n".join(lines)
 
 

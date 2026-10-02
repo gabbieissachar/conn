@@ -229,6 +229,9 @@ Claude pane is unresolved unless its agent state is explicitly `idle` and its
 resume identity is verified. Let it become idle first; do not acknowledge a
 busy, unresolved, or unknown agent state.
 
+Acknowledgements are pipe-delimited. Restart recovery rejects a pipe in a
+session, workspace, tab, or pane identity before printing an unusable command.
+
 Bundles, per-session captures, checksums, and reconciliation journals live in
 `state/workspace-organizer/restart-recovery/`. They are local-only, gitignored,
 and created with private permissions. They contain paths and supported-agent
