@@ -35,8 +35,9 @@ RECOVERY_BUNDLE_DIR = RECOVERY_DIR / "bundles"
 RECOVERY_JOURNAL_DIR = RECOVERY_DIR / "journals"
 LIVE_SNAPSHOT_PATH = STATE_DIR / "live-snapshot.json"
 AGENT_MANIFEST_PATH = ROOT / "state" / "herdr-agent-sessions.json"
-CODEX_SESSION_INDEX_PATH = Path.home() / ".codex" / "session_index.jsonl"
-CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+CODEX_SESSION_INDEX_PATH = CODEX_HOME / "session_index.jsonl"
+CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 # A resume record is not enough to establish that an agent is quiescent.  Herdr

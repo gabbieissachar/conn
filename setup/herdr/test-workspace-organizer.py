@@ -28,6 +28,15 @@ REGISTRY_SPEC.loader.exec_module(REGISTRY)
 
 
 class WorkspaceOrganizerTests(unittest.TestCase):
+    def test_codex_home_controls_session_lookup_paths(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"CODEX_HOME": temporary}):
+            spec = importlib.util.spec_from_file_location("workspace_organizer_isolated_codex", MODULE_PATH)
+            assert spec and spec.loader
+            isolated = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(isolated)
+        self.assertEqual(isolated.CODEX_SESSION_INDEX_PATH, Path(temporary) / "session_index.jsonl")
+        self.assertEqual(isolated.CODEX_SESSIONS_DIR, Path(temporary) / "sessions")
+
     def test_leaf_panes_keep_layout_order(self):
         root = {
             "type": "split",
