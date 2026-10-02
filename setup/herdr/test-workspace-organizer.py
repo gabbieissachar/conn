@@ -11,7 +11,7 @@ import shlex
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -622,10 +622,48 @@ class RestartRecoveryTests(unittest.TestCase):
                 REGISTRY, "current_herdr_session", return_value="esim"
             ), patch.object(REGISTRY, "detect_from_native", return_value=("codex", session_id)), patch.object(
                 REGISTRY, "git_context", return_value=(tempfile.gettempdir(), "main")
-            ):
+            ), patch.object(REGISTRY, "run_json") as run_json:
                 self.assertEqual(REGISTRY.scan(args), 0)
+            run_json.assert_not_called()
             records = REGISTRY.read_manifest(manifest)["panes"]
         self.assertEqual({(row["herdr_session"], row["pane_id"]) for row in records}, {("Misc", "w1:p1"), ("esim", "w1:p1")})
+
+    def test_empty_registry_scan_prints_named_session_socket_guidance(self):
+        args = argparse.Namespace(
+            manifest=str(Path(tempfile.gettempdir()) / "unused-manifest.json"),
+            missing_json=str(Path(tempfile.gettempdir()) / "unused-missing.json"),
+            client=None,
+            execute=False,
+            status=False,
+            lines=20,
+            source="recent",
+            no_missing_json=True,
+            verbose=False,
+        )
+        session_list = {
+            "sessions": [
+                {"name": "default", "status": "stopped", "session_dir": "/private/herdr/default"},
+                {"name": "esim", "status": "running", "session_dir": "/private/herdr/esim"},
+                {"name": "Misc", "running": True, "socket_path": "/private/herdr/Misc/custom.sock"},
+            ]
+        }
+        output = io.StringIO()
+        with patch.object(REGISTRY, "snapshot_panes", return_value=[]), patch.object(
+            REGISTRY, "run_json", return_value=session_list
+        ) as run_json, redirect_stderr(output):
+            self.assertEqual(REGISTRY.scan(args), 1)
+        self.assertEqual(run_json.call_args.args[0], ["herdr", "session", "list", "--json"])
+        details = output.getvalue()
+        self.assertIn("This scan only sees the Herdr session this shell is attached to.", details)
+        self.assertIn("herdr session list --json", details)
+        self.assertIn("esim /private/herdr/esim/herdr.sock", details)
+        self.assertIn("Misc /private/herdr/Misc/custom.sock", details)
+        self.assertNotIn("default", details)
+        self.assertIn(
+            "HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history",
+            details,
+        )
+        self.assertIn("inside an existing pane of that session", details)
 
     def test_recovery_commands_use_named_session_and_reject_unattached(self):
         snapshot = self.snapshot()

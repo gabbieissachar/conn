@@ -794,10 +794,58 @@ def write_missing_json(path: Path, items: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def running_named_session_sockets() -> list[tuple[str, str]]:
+    """Return running session names and socket paths from the global session list."""
+    data = run_json(["herdr", "session", "list", "--json"])
+    if not data:
+        return []
+    result = data.get("result")
+    sessions = data.get("sessions")
+    if isinstance(result, dict):
+        sessions = result.get("sessions", sessions)
+    if not isinstance(sessions, list):
+        return []
+    found: list[tuple[str, str]] = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        name = session.get("name")
+        running = (
+            session.get("running") is True
+            or session.get("status") == "running"
+            or session.get("state") == "running"
+        )
+        socket_path = session.get("socket_path")
+        if not isinstance(socket_path, str) or not socket_path:
+            session_dir = session.get("session_dir")
+            socket_path = str(Path(session_dir) / "herdr.sock") if isinstance(session_dir, str) and session_dir else None
+        if isinstance(name, str) and name and running and isinstance(socket_path, str) and socket_path:
+            found.append((name, socket_path))
+    return sorted(set(found))
+
+
+def print_no_panes_guidance() -> None:
+    """Explain how a plain shell can target one attached named Herdr session."""
+    print("no herdr panes found; is a herdr session running?", file=sys.stderr)
+    print("This scan only sees the Herdr session this shell is attached to.", file=sys.stderr)
+    print("Find running named sessions and socket paths with: herdr session list --json", file=sys.stderr)
+    sessions = running_named_session_sockets()
+    if sessions:
+        print("Running named sessions:", file=sys.stderr)
+        for name, socket_path in sessions:
+            print(f"  {name} {socket_path}", file=sys.stderr)
+    print("For a listed session, run:", file=sys.stderr)
+    print(
+        "  HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history",
+        file=sys.stderr,
+    )
+    print("Or run herdr-agent-capture-history inside an existing pane of that session.", file=sys.stderr)
+
+
 def scan(args: argparse.Namespace) -> int:
     panes = snapshot_panes()
     if not panes:
-        print("no herdr panes found; is a herdr session running?", file=sys.stderr)
+        print_no_panes_guidance()
         return 1
 
     herdr_session = current_herdr_session()

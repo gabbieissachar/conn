@@ -77,6 +77,17 @@ herdr-agent-capture-status
 The status capture is opt-in because it sends a diagnostic command into idle
 agent panes. It registers only panes whose response contains a session ID.
 
+`herdr-agent-capture-history` sees only the Herdr session attached to its
+shell. Running it in a plain terminal can therefore find no panes even while a
+named session is running. Use `herdr session list --json` to find a running
+session's name and socket path, then run:
+
+```sh
+HERDR_SESSION=<name> HERDR_SOCKET_PATH=<session_dir>/herdr.sock herdr-agent-capture-history
+```
+
+Or run the command inside an existing pane of that named session.
+
 This tries to detect `session_id` values from pane scrollback, keeps already
 registered panes, and writes unresolved panes into the missing-session JSON for
 manual fill.
