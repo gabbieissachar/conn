@@ -64,6 +64,30 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             ORGANIZER.matching_pane_map(source, target), {"old-1": "new-1", "old-2": "new-2"}
         )
 
+    def test_layout_shape_ignores_live_rebuild_identifiers(self):
+        source = {
+            "workspace_id": "w1",
+            "tab_id": "w1:t2",
+            "focused_pane_id": "w1:p3",
+            "root": {
+                "type": "split",
+                "direction": "horizontal",
+                "first": {"type": "pane", "pane_id": "w1:p1", "cwd": tempfile.gettempdir()},
+                "second": {
+                    "type": "split",
+                    "direction": "vertical",
+                    "first": {"type": "pane", "pane_id": "w1:p2", "cwd": tempfile.gettempdir()},
+                    "second": {"type": "pane", "pane_id": "w1:p3", "cwd": tempfile.gettempdir()},
+                },
+            },
+        }
+        rebuilt = copy.deepcopy(source)
+        rebuilt.update({"workspace_id": "w9", "tab_id": "w9:t1", "focused_pane_id": "w9:p3"})
+        rebuilt["root"]["first"]["pane_id"] = "w9:p1"
+        rebuilt["root"]["second"]["first"]["pane_id"] = "w9:p2"
+        rebuilt["root"]["second"]["second"]["pane_id"] = "w9:p3"
+        self.assertEqual(ORGANIZER.layout_shape_fingerprint(source), ORGANIZER.layout_shape_fingerprint(rebuilt))
+
     def test_archive_summary_counts_resumable_agents(self):
         archive = {
             "archive_id": "example",

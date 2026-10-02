@@ -1702,13 +1702,20 @@ def recovery_layout_fingerprints(layouts: dict[str, dict[str, Any]]) -> dict[str
     return {tab_id: layout_fingerprint(layout) for tab_id, layout in sorted(layouts.items())}
 
 
+LAYOUT_REBUILD_IDENTIFIER_FIELDS = {"focused_pane_id", "pane_id", "tab_id", "workspace_id"}
+
+
 def layout_shape(value: Any) -> Any:
-    """Layout shape is stable even when Herdr gives a rebuilt pane a new ID."""
+    """Keep only layout topology, excluding identifiers assigned on rebuild."""
     if isinstance(value, list):
         return [layout_shape(item) for item in value]
     if not isinstance(value, dict):
         return value
-    return {key: layout_shape(item) for key, item in sorted(value.items()) if key not in {"pane_id", "tab_id"}}
+    return {
+        key: layout_shape(item)
+        for key, item in sorted(value.items())
+        if key not in LAYOUT_REBUILD_IDENTIFIER_FIELDS
+    }
 
 
 def layout_shape_fingerprint(layout: dict[str, Any]) -> str:
