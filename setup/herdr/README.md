@@ -15,8 +15,10 @@ needs a replay contract for resumable Codex and Claude sessions.
 - `herdr-agent-scan` and `herdr-agent-autoregister` enumerate live herdr panes,
   auto-register panes whose resume ids are visible in scrollback or in the
   foreground process command, and park the rest in missing-session JSON.
-- `herdr-agent-capture-history` is an explicit alias for that evidence-based
-  scan; process metadata is preferred after scrollback and is safe to rerun.
+- `herdr-agent-verify-identity` is the read-only verifier for live supported
+  panes. It accepts only independently agreeing, store-backed evidence.
+- `herdr-agent-capture-history` invokes the same verifier without pane input;
+  it never reads conversation text or sends input to a pane.
 - The scan checks Herdr's pane-level native `agent_session` metadata first when
   an official integration has reported it.
 - `herdr-agent-capture-status` opt-in queries `/status` in unresolved idle or
@@ -74,17 +76,51 @@ Normalize the manifest field order after manual edits or migrations:
 python3 /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-registry.py normalize
 ```
 
-Best-effort bulk scan:
+Legacy evidence scan and explicit status capture:
 
 ```sh
 herdr-agent-scan
 herdr-agent-autoregister
-herdr-agent-capture-history
 herdr-agent-capture-status
 ```
 
 The status capture is opt-in because it sends a diagnostic command into idle or
 done agent panes. It registers only panes whose response contains a session ID.
+
+## Verified Identity Workflow
+
+Run the verifier against one explicitly named, running, non-default session:
+
+```sh
+herdr-agent-verify-identity --herdr-session esim
+```
+
+The default is report-only. It prints one redacted row per supported pane with
+its workspace and tab labels, a classification, candidate count, and evidence
+categories. It prints no client session IDs, private store paths, resume
+commands, or transcript text. Use `--show-session-ids` only for an explicit
+manual repair review.
+
+Apply only rows that pass the verifier's acceptance rule:
+
+```sh
+herdr-agent-verify-identity --herdr-session esim --apply
+```
+
+The verifier accepts a live idle or done supported pane only when the current
+foreground process, one exact client session ID, client store header, pane CWD,
+and current process identity agree. A current process-start marker is required
+when the platform exposes one. A native hook value must be a real client store
+ID, not a `herdr:*` display value. Conflicts, zero or multiple open handles,
+and multiple sessions sharing a CWD remain `unresolved` or `candidate_ambiguous`.
+The apply path re-reads the live pane immediately before each private manifest
+write and discards changed PID, CWD, client, or process-start observations.
+
+The verifier never chooses the newest file, nearest mtime, first rollout, or a
+CWD-only candidate. It does not broaden the existing narrow Codex interactive
+picker matcher. Rows that remain ambiguous require manual confirmation. The
+existing `/status` capture remains a separate, explicit, idle-or-done-only last
+resort and sends input into the pane.
 
 `herdr-agent-capture-history` sees only the Herdr session attached to its
 shell. Running it in a plain terminal can therefore find no panes even while a
@@ -132,11 +168,10 @@ herdr integration status
 ```
 
 Herdr's native integrations report the agent session references and let Herdr
-restore them with the layout. Keep native agent restore enabled in Herdr
-configuration. As verified on 2026-09-06, the local Claude v7, Codex v7, and
-Copilot v2 integrations are installed and current, and live Herdr panes expose
-native agent-session metadata. Keep this sidecar as a fallback for panes that
-lack native metadata.
+restore them with the layout. Repair and verify those integrations before
+relying on new native reports. Keep native agent restore enabled in Herdr
+configuration. The verifier remains the safe fallback for panes that lack
+current native metadata.
 
 Current sidecar fallback after Herdr is running again. Attach each selected
 non-default named session in its own terminal, because each attach exposes a
@@ -152,9 +187,10 @@ Run `herdr-agent-recover` once per attached named session. It scans and restores
 only the session exposed by the current `HERDR_SESSION`/Herdr socket, so a
 `w1:p1` in `esim` cannot collide with a `w1:p1` in `Misc`.
 
-The fallback first captures IDs from live process metadata and scrollback,
-then queries unresolved idle or done panes with `/status`, and finally replays only
-registered IDs. Its status diagnostics are appended to:
+The recommended order is: repair integrations, run the verifier report, apply
+only verified rows, then run restart-recovery preflight. Use `/status` only as
+the final explicit step for unresolved idle or done panes. Its diagnostics are
+appended to:
 
 ```sh
 personal/01-System/setup/herdr/state/herdr-agent-status-capture.jsonl

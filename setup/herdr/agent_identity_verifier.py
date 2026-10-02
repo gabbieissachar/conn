@@ -318,6 +318,12 @@ def _native_candidate(pane: dict[str, Any], stores: dict[str, Any] | None, stamp
 
 
 def _foreground_pid(pane: dict[str, Any]) -> int | None:
+    client = pane.get("agent")
+    for process in _processes(pane):
+        argv = _argv(process)
+        pid = process.get("pid")
+        if isinstance(pid, int) and pid > 0 and client in SUPPORTED_CLIENTS and argv and Path(argv[0]).name == client:
+            return pid
     for process in _processes(pane):
         pid = process.get("pid")
         if isinstance(pid, int) and pid > 0:
@@ -328,6 +334,9 @@ def _foreground_pid(pane: dict[str, Any]) -> int | None:
 
 def _foreground_marker(pane: dict[str, Any]) -> str | None:
     for process in _processes(pane):
+        argv = _argv(process)
+        if pane.get("agent") in SUPPORTED_CLIENTS and argv and Path(argv[0]).name != pane.get("agent"):
+            continue
         marker = _process_start(process)
         if marker:
             return marker
@@ -398,6 +407,9 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
         return base
     adapter = adapter or NativeHandleAdapter()
     candidates: dict[str, IdentityCandidate] = {}
+    native = pane.get("agent_session")
+    native_id = native.get("value") if isinstance(native, dict) else None
+    native_record = _store(client, stores).find(native_id) if client in SUPPORTED_CLIENTS and valid_session_id(native_id) else None
     for candidate in (
         _native_candidate(pane, stores, stamp),
         *[_candidate_from_argv(pane, process, stores, stamp) for process in _processes(pane)],
@@ -405,6 +417,21 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
         _candidate_from_pid_record(pane, stores, adapter, stamp),
     ):
         if candidate:
+            current_marker = adapter.process_start(candidate.pid) if candidate.pid is not None else None
+            if current_marker and candidate.process_start and str(current_marker) != str(candidate.process_start):
+                continue
+            if current_marker and not candidate.process_start:
+                candidate = IdentityCandidate(
+                    candidate.client,
+                    candidate.session_id,
+                    candidate.evidence,
+                    candidate.pid,
+                    str(current_marker),
+                    candidate.cwd,
+                    candidate.store_shape,
+                    candidate.candidate_count,
+                    candidate.observed_at,
+                )
             previous = candidates.get(candidate.session_id)
             if previous:
                 candidates[candidate.session_id] = IdentityCandidate(candidate.client, candidate.session_id, tuple(sorted(set(previous.evidence + candidate.evidence))), candidate.pid, candidate.process_start, candidate.cwd, candidate.store_shape, 1, stamp)
@@ -414,9 +441,11 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
     store = _store(client, stores)
     cwd_candidates = {record.session_id for record in store.records() if record.cwd and record.cwd == cwd}
     ids = set(candidates) | cwd_candidates
+    if native_record:
+        ids.add(native_record.session_id)
     base["candidate_count"] = len(ids)
     base["evidence"] = sorted({evidence for candidate in candidates.values() for evidence in candidate.evidence} | ({"cwd_candidate"} if cwd_candidates else set()))
-    if len(candidates) == 1 and len(ids) == 1:
+    if len(candidates) == 1 and len(ids) == 1 and (not native_record or native_record.session_id in candidates):
         candidate = next(iter(candidates.values()))
         source = next((evidence for evidence in ("native_claude", "native_codex", "argv_exact", "open_handle", "pid_record") if evidence in candidate.evidence), None)
         if source:

@@ -166,6 +166,20 @@ class VerifierTests(unittest.TestCase):
             self.assertEqual(REGISTRY.verify_identity(args), 0)
             self.assertFalse((Path(temporary) / "manifest.json").exists())
         self.assertIn("report-only", output.getvalue())
+        self.assertNotIn(SESSION_A, output.getvalue())
+
+    def test_apply_snapshot_rejects_changed_cwd_and_pid(self):
+        original = pane(argv=["codex", "resume", SESSION_A])
+        changed_cwd = pane(cwd="/workspace/other", argv=["codex", "resume", SESSION_A])
+        changed_pid = pane(pid=99, argv=["codex", "resume", SESSION_A])
+        self.assertFalse(REGISTRY._pane_matches_snapshot(original, changed_cwd))
+        self.assertFalse(REGISTRY._pane_matches_snapshot(original, changed_pid))
+
+    def test_status_capture_stays_idle_or_done_only(self):
+        busy = REGISTRY.PaneInfo("esim", "w1:p1", "w1", "w1:t1", "/workspace/project", "/workspace/project", "codex", "working")
+        with patch.object(REGISTRY, "pane_send_status") as send, patch.object(REGISTRY, "log_status_event"):
+            self.assertIsNone(REGISTRY.detect_from_status(busy, lines=20))
+        send.assert_not_called()
 
 
 if __name__ == "__main__":

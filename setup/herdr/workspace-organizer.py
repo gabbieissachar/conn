@@ -38,6 +38,12 @@ AGENT_MANIFEST_PATH = ROOT / "state" / "herdr-agent-sessions.json"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 CODEX_SESSION_INDEX_PATH = CODEX_HOME / "session_index.jsonl"
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+VERIFIER_RESTORE_SOURCES = {
+    "verifier_native",
+    "verifier_argv",
+    "verifier_handle",
+    "verifier_pid_record",
+}
 MAX_LAYOUT_PANES = 24
 ACTIVE_AGENT_STATUSES = {"working", "blocked"}
 # A resume record is not enough to establish that an agent is quiescent.  Herdr
@@ -344,6 +350,34 @@ def native_codex_session(pane: dict[str, Any]) -> tuple[str, str] | None:
     return ("codex", session_id) if codex_session_exists(session_id) else None
 
 
+def native_claude_session(pane: dict[str, Any]) -> tuple[str, str] | None:
+    """Accept only a real Claude store id, never Herdr's display id."""
+    agent_session = pane.get("agent_session")
+    if not isinstance(agent_session, dict) or agent_session.get("agent") != "claude":
+        return None
+    source = agent_session.get("source")
+    session_id = agent_session.get("value")
+    if isinstance(source, str) and source.startswith("herdr:"):
+        return None
+    if not isinstance(session_id, str) or not claude_session_exists(session_id):
+        return None
+    pane_cwd = pane.get("foreground_cwd") or pane.get("cwd")
+    if not isinstance(pane_cwd, str) or not pane_cwd:
+        return None
+    project_root = Path.home() / ".claude" / "projects"
+    for path in project_root.rglob(f"{session_id}.jsonl") if project_root.exists() else ():
+        try:
+            with path.open(errors="replace") as handle:
+                for line in handle:
+                    row = json.loads(line)
+                    if isinstance(row, dict) and isinstance(row.get("cwd"), str):
+                        if os.path.realpath(row["cwd"]) == os.path.realpath(pane_cwd):
+                            return "claude", session_id
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def normalized_text(value: object) -> str:
     """Make terminal and rollout text comparable without weakening word matching."""
     return re.sub(r"\s+", " ", str(value)).strip().casefold()
@@ -540,7 +574,9 @@ def agent_restore_records(
         pane_id = pane.get("pane_id")
         registered = by_pane.get(pane_id, {})
         detected = agent_session_from_process(pane, session)
-        native = native_codex_session(pane)
+        native_codex = native_codex_session(pane)
+        native_claude = native_claude_session(pane)
+        native = native_codex or native_claude
         interactive = codex_interactive_resume_session(pane, session) if not detected and not native else None
         registered_client = registered.get("client")
         registered_session_id = registered.get("session_id")
@@ -576,6 +612,20 @@ def agent_restore_records(
         )
         command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
+        if detected:
+            restore_source = "process"
+        elif native_codex:
+            restore_source = "native_codex"
+        elif native_claude:
+            restore_source = "native_claude"
+        elif interactive:
+            restore_source = "local_rollout"
+        elif registered_valid and registered.get("restore_source") in VERIFIER_RESTORE_SOURCES:
+            restore_source = registered.get("restore_source")
+        elif registered_valid:
+            restore_source = "manifest"
+        else:
+            restore_source = "unavailable"
         restores.append(
             {
                 "source_pane_id": pane_id,
@@ -583,17 +633,7 @@ def agent_restore_records(
                 "session_id": agent_session_id,
                 "resume_command": command if resumable else None,
                 "restore_status": "resumable" if resumable else "shell_only",
-                "restore_source": (
-                    "process"
-                    if detected
-                    else "native_codex"
-                    if native
-                    else "local_rollout"
-                    if interactive
-                    else "manifest"
-                    if registered_valid
-                    else "unavailable"
-                ),
+                "restore_source": restore_source,
             }
         )
     return restores
@@ -602,7 +642,9 @@ def agent_restore_records(
 def is_trusted_restore(restore: dict[str, Any]) -> bool:
     return (
         restore.get("restore_status") == "resumable"
-        and restore.get("restore_source") in {"manifest", "process", "native_codex", "local_rollout"}
+        and restore.get("restore_source") in {
+            "manifest", "process", "native_codex", "local_rollout", *VERIFIER_RESTORE_SOURCES
+        }
     )
 
 

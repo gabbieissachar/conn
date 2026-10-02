@@ -11,6 +11,18 @@ _pmos_herdr_agent_restore="$_pmos_herdr_agent_root/agent-session-restore.py"
 _pmos_herdr_workspace_organizer="$_pmos_herdr_agent_root/workspace-organizer.py"
 _pmos_claude_real_bin="${PMOS_CLAUDE_REAL_BIN:-$(whence -p claude 2>/dev/null)}"
 
+_pmos_herdr_agent_health() {
+  [[ -z "${HERDR_SESSION:-}" || "${HERDR_SKIP_AGENT_HEALTH:-0}" == "1" ]] && return 0
+  local status=""
+  status="$(herdr --session "$HERDR_SESSION" integration status 2>/dev/null)" || status=""
+  if [[ "${HERDR_AGENT_HOOKS_DISABLED:-0}" == "1" || "$status" == *outdated* || "$status" == *disabled* ]]; then
+    echo "warning: Herdr agent hooks are disabled or outdated for this pane" >&2
+    echo "hint: herdr integration install claude" >&2
+    echo "hint: herdr integration install codex" >&2
+    echo "escape hatch: HERDR_SKIP_AGENT_HEALTH=1" >&2
+  fi
+}
+
 herdr-agent-register() {
   if (( $# < 2 )); then
     echo "usage: herdr-agent-register <codex|claude> <session_id> [registry args...]" >&2
@@ -44,7 +56,7 @@ herdr-agent-scan() {
 }
 
 herdr-agent-capture-history() {
-  python3 "$_pmos_herdr_agent_registry" scan "$@"
+  python3 "$_pmos_herdr_agent_registry" verify-identity "$@"
 }
 
 herdr-agent-capture-status() {
@@ -85,6 +97,7 @@ claude-real-bin() {
 }
 
 claudew() {
+  _pmos_herdr_agent_health
   local claude_bin="${PMOS_CLAUDE_REAL_BIN:-$_pmos_claude_real_bin}"
   if [[ -z "$claude_bin" ]]; then
     echo "claude not found on PATH" >&2
@@ -132,7 +145,7 @@ claude-r() {
   claudew --resume "$session_id" "$@"
 }
 
-if typeset -f codexw >/dev/null 2>&1; then
+  if typeset -f codexw >/dev/null 2>&1; then
   codex-r() {
     local session_id="${1:-}"
     if [[ -z "$session_id" ]]; then
@@ -141,6 +154,16 @@ if typeset -f codexw >/dev/null 2>&1; then
     fi
 
     shift
+    if (( ${#@} )); then
+      local codex_arg
+      for codex_arg in "$@"; do
+        if [[ "$codex_arg" == "--disable" || "$codex_arg" == "hooks" || "$codex_arg" == "--disable=hooks" ]]; then
+          HERDR_AGENT_HOOKS_DISABLED=1 _pmos_herdr_agent_health
+          break
+        fi
+      done
+    fi
+    _pmos_herdr_agent_health
     if [[ -n "${HERDR_SESSION:-}" ]]; then
       python3 "$_pmos_herdr_agent_registry" register --client codex --session-id "$session_id" >/dev/null 2>&1 || true
     fi

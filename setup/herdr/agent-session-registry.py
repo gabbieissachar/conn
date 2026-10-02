@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_session_state import PRIVATE_FILE_MODE, ensure_private_file
+from agent_identity_verifier import IdentityCandidate, result_report, verify_pane
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -538,8 +539,13 @@ def build_record(
     resume_command: str,
     status: str,
     restore_policy: str,
+    restore_source: str = "manifest",
+    process_pid: int | None = None,
+    process_start: str | None = None,
+    evidence: list[str] | None = None,
+    observed_at: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    record = {
         "herdr_session": pane.herdr_session,
         "workspace_label": pane.workspace_label or pane.workspace_id,
         "workspace_id": pane.workspace_id,
@@ -560,6 +566,17 @@ def build_record(
         "updated_at": now_iso(),
         "worktree": worktree,
     }
+    if restore_source != "manifest":
+        record.update(
+            {
+                "restore_source": restore_source,
+                "process_pid": process_pid,
+                "process_start": process_start,
+                "evidence": list(evidence or []),
+                "observed_at": observed_at or now_iso(),
+            }
+        )
+    return record
 
 
 def register(args: argparse.Namespace) -> int:
@@ -875,6 +892,172 @@ def print_no_panes_guidance() -> None:
             )
     print("The default Herdr session is not supported for recovery.", file=sys.stderr)
     print("Or run herdr-agent-capture-history inside an existing pane of that session.", file=sys.stderr)
+
+
+def verifier_panes(herdr_session: str | None) -> list[dict[str, Any]]:
+    """Return one structural pane snapshot enriched with process metadata."""
+    panes = snapshot_panes()
+    enriched: list[dict[str, Any]] = []
+    for pane in panes:
+        if herdr_session and pane.herdr_session and pane.herdr_session != herdr_session:
+            continue
+        value = {
+            "pane_id": pane.pane_id,
+            "workspace_id": pane.workspace_id,
+            "workspace_label": pane.workspace_label,
+            "tab_id": pane.tab_id,
+            "tab_label": pane.tab_label,
+            "label": pane.label,
+            "agent": pane.agent,
+            "agent_status": pane.agent_status,
+            "cwd": pane.cwd,
+            "foreground_cwd": pane.foreground_cwd,
+        }
+        process_data = run_json(["herdr", "pane", "process-info", "--pane", pane.pane_id])
+        if process_data:
+            result = process_data.get("result")
+            process_info = result.get("process_info") if isinstance(result, dict) else None
+            if isinstance(process_info, dict) and isinstance(process_info.get("foreground_processes"), list):
+                value["foreground_processes"] = process_info["foreground_processes"]
+        enriched.append(value)
+    return enriched
+
+
+def _verifier_source(status: str) -> str:
+    return {
+        "native_verified": "verifier_native",
+        "argv_verified": "verifier_argv",
+        "handle_verified": "verifier_handle",
+        "pid_record_verified": "verifier_pid_record",
+    }.get(status, "unavailable")
+
+
+def _verified_record(pane: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = result.get("candidate")
+    if not isinstance(candidate, IdentityCandidate):
+        return None
+    cwd = candidate.cwd or normalize_path(pane.get("foreground_cwd") or pane.get("cwd"))
+    if not cwd:
+        return None
+    worktree, branch = git_context(cwd)
+    pane_info = PaneInfo(
+        herdr_session=pane.get("herdr_session") if isinstance(pane.get("herdr_session"), str) else current_herdr_session(),
+        pane_id=str(pane.get("pane_id", "")),
+        workspace_id=str(pane.get("workspace_id", "")),
+        tab_id=str(pane.get("tab_id", "")),
+        cwd=normalize_path(pane.get("cwd")),
+        foreground_cwd=cwd,
+        agent=pane.get("agent") if isinstance(pane.get("agent"), str) else None,
+        agent_status=pane.get("agent_status") if isinstance(pane.get("agent_status"), str) else None,
+        label=pane.get("label") if isinstance(pane.get("label"), str) else None,
+        workspace_label=pane.get("workspace_label") if isinstance(pane.get("workspace_label"), str) else None,
+        tab_label=pane.get("tab_label") if isinstance(pane.get("tab_label"), str) else None,
+    )
+    return build_record(
+        pane_info,
+        candidate.client,
+        candidate.session_id,
+        cwd=cwd,
+        branch=branch,
+        worktree=worktree,
+        resume_command=default_resume_command(candidate.client, candidate.session_id),
+        status="active",
+        restore_policy="verified",
+        restore_source=_verifier_source(str(result.get("status"))),
+        process_pid=candidate.pid,
+        process_start=candidate.process_start,
+        evidence=list(candidate.evidence),
+        observed_at=candidate.observed_at,
+    )
+
+
+def _pane_matches_snapshot(original: dict[str, Any], current: dict[str, Any]) -> bool:
+    for key in ("pane_id", "agent", "agent_status", "foreground_cwd", "cwd"):
+        if key in original and key in current:
+            old = normalize_path(original.get(key)) if key in {"cwd", "foreground_cwd"} else original.get(key)
+            new = normalize_path(current.get(key)) if key in {"cwd", "foreground_cwd"} else current.get(key)
+            if old != new:
+                return False
+    old_processes = original.get("foreground_processes") or []
+    new_processes = current.get("foreground_processes") or []
+    old_pid = next((item.get("pid") for item in old_processes if isinstance(item, dict) and isinstance(item.get("pid"), int)), None)
+    new_pid = next((item.get("pid") for item in new_processes if isinstance(item, dict) and isinstance(item.get("pid"), int)), None)
+    if old_pid != new_pid:
+        return False
+    def marker(processes: object) -> object:
+        if not isinstance(processes, list):
+            return None
+        for item in processes:
+            if isinstance(item, dict):
+                for key in ("process_start", "processStart", "start_marker", "startMarker", "procStart", "proc_start", "start_time", "startTime"):
+                    if item.get(key) is not None:
+                        return str(item[key])
+        return None
+    return marker(old_processes) == marker(new_processes)
+
+
+def verify_identity(args: argparse.Namespace) -> int:
+    herdr_session = args.herdr_session or current_herdr_session()
+    if not herdr_session or herdr_session == "default":
+        print("HERDR_SESSION or --herdr-session is required; attach a named non-default Herdr session first", file=sys.stderr)
+        print_no_panes_guidance()
+        return 2
+    # Herdr's CLI resolves the named socket from this environment variable.
+    # The command is short-lived, so setting it here does not alter the caller.
+    os.environ["HERDR_SESSION"] = herdr_session
+    panes = verifier_panes(herdr_session)
+    if not panes:
+        print_no_panes_guidance()
+        return 1
+    results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for pane in panes:
+        if pane.get("agent") not in {"codex", "claude"}:
+            continue
+        if args.client and pane.get("agent") != args.client:
+            continue
+        result = verify_pane(pane)
+        results.append((pane, result))
+        workspace = pane.get("workspace_label") or "[workspace]"
+        tab = pane.get("tab_label") or "[tab]"
+        label = pane.get("label") or "[pane]"
+        evidence = ",".join(result.get("evidence") or []) or "none"
+        line = f"{result.get('status', 'unresolved')} workspace={workspace!r} tab={tab!r} pane={label!r} candidates={result.get('candidate_count', 0)} evidence={evidence}"
+        if args.show_session_ids and isinstance(result.get("candidate"), IdentityCandidate):
+            line += f" session_id={result['candidate'].session_id}"
+        print(line)
+        if result.get("status") not in {"native_verified", "argv_verified", "handle_verified", "pid_record_verified"}:
+            print(f"  hint: {result.get('hint', 'manual confirmation required')}")
+
+    verified = [(pane, result) for pane, result in results if result.get("status", "").endswith("_verified")]
+    if args.apply and verified:
+        manifest = manifest_path(args)
+        records: list[dict[str, Any]] = []
+        for original, result in verified:
+            current = next((pane for pane in verifier_panes(herdr_session) if pane.get("pane_id") == original.get("pane_id")), None)
+            if not current or not _pane_matches_snapshot(original, current):
+                print("  hint: skipped one candidate because the live pane changed before apply")
+                continue
+            current_result = verify_pane(current)
+            if current_result.get("status") != result.get("status") or not _pane_matches_snapshot(original, current):
+                print("  hint: skipped one candidate because the live identity changed before apply")
+                continue
+            record = _verified_record(current, current_result)
+            if record:
+                records.append(record)
+        if records:
+            with manifest_lock(manifest):
+                data = read_manifest(manifest)
+                identities = {(record.get("herdr_session"), record.get("pane_id")) for record in records}
+                data["panes"] = [item for item in data["panes"] if (item.get("herdr_session") or herdr_session, item.get("pane_id")) not in identities]
+                data["panes"].extend(records)
+                data["panes"].sort(key=lambda item: (str(item.get("herdr_session", "")), str(item.get("pane_id", ""))))
+                write_manifest(manifest, data)
+            print(f"applied verified registrations: {len(records)}")
+        else:
+            print("applied verified registrations: 0")
+    elif not args.apply:
+        print(f"report-only: {len(verified)} verified pane(s); no registry writes")
+    return 0
 
 
 def scan(args: argparse.Namespace) -> int:
@@ -1202,6 +1385,15 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--no-missing-json", action="store_true")
     scan_parser.add_argument("--verbose", action="store_true")
 
+    verify_parser = sub.add_parser(
+        "verify-identity",
+        help="report or apply independently verified identities for supported panes",
+    )
+    verify_parser.add_argument("--herdr-session", help="explicit named non-default Herdr session")
+    verify_parser.add_argument("--client", choices=["codex", "claude"])
+    verify_parser.add_argument("--apply", action="store_true", help="write only verified rows after a live re-check")
+    verify_parser.add_argument("--show-session-ids", action="store_true", help="explicitly show verified private session ids")
+
     return parser
 
 
@@ -1220,6 +1412,8 @@ def main() -> int:
         return apply_missing(args)
     if args.command == "scan":
         return scan(args)
+    if args.command == "verify-identity":
+        return verify_identity(args)
     if args.command == "path":
         return print_path(args)
     if args.command == "normalize":
