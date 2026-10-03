@@ -1123,12 +1123,13 @@ def verify_identity(args: argparse.Namespace) -> int:
         label = pane.get("label") or "[pane]"
         evidence = ",".join(result.get("evidence") or []) or "none"
         pane_id = pane.get("pane_id") or "[pane-id]"
-        line = f"{result.get('status', 'unresolved')} workspace={workspace!r} tab={tab!r} pane={label!r} pane_id={pane_id} candidates={result.get('candidate_count', 0)} evidence={evidence}"
-        if args.show_session_ids and isinstance(result.get("candidate"), IdentityCandidate):
-            line += f" session_id={result['candidate'].session_id}"
-        print(line)
-        if result.get("status") not in {"native_verified", "argv_verified", "handle_verified", "pid_record_verified"}:
-            print(f"  hint: {result.get('hint', 'manual confirmation required')}")
+        if not getattr(args, "summary_only", False):
+            line = f"{result.get('status', 'unresolved')} workspace={workspace!r} tab={tab!r} pane={label!r} pane_id={pane_id} candidates={result.get('candidate_count', 0)} exact={result.get('exact_count', 0)} evidence={evidence}"
+            if args.show_session_ids and isinstance(result.get("candidate"), IdentityCandidate):
+                line += f" session_id={result['candidate'].session_id}"
+            print(line)
+            if result.get("status") not in {"native_verified", "argv_verified", "handle_verified", "pid_record_verified"}:
+                print(f"  hint: {result.get('hint', 'manual confirmation required')}")
 
     verified = [(pane, result) for pane, result in results if result.get("status", "").endswith("_verified")]
     if args.apply and verified:

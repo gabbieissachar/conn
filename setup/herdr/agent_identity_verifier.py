@@ -422,7 +422,7 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
     """Verify one pane and return a private result suitable for apply/report."""
     stamp = stamp or observed_at()
     client = pane.get("agent")
-    base: dict[str, Any] = {"status": "unresolved", "client": client, "candidate_count": 0, "evidence": [], "candidate": None, "observed_at": stamp}
+    base: dict[str, Any] = {"status": "unresolved", "client": client, "candidate_count": 0, "exact_count": 0, "evidence": [], "candidate": None, "observed_at": stamp}
     if client not in SUPPORTED_CLIENTS or pane.get("agent_status") not in SAFE_STATUSES:
         base["hint"] = "supported agent must be idle or done"
         return base
@@ -478,12 +478,13 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
     cwd = _pane_cwd(pane)
     store = _store(client, stores)
     cwd_candidates = {record.session_id for record in store.records() if record.cwd and record.cwd == cwd}
-    ids = set(candidates) | cwd_candidates
-    if native_record:
-        ids.add(native_record.session_id)
+    exact_ids = set(candidates)
+    ids = exact_ids | cwd_candidates
+    native_conflict = bool(native_record and native_record.session_id not in exact_ids)
     base["candidate_count"] = len(ids)
+    base["exact_count"] = len(exact_ids)
     base["evidence"] = sorted({evidence for candidate in candidates.values() for evidence in candidate.evidence} | ({"cwd_candidate"} if cwd_candidates else set()))
-    if len(candidates) == 1 and len(ids) == 1 and (not native_record or native_record.session_id in candidates):
+    if len(exact_ids) == 1 and not native_conflict:
         candidate = next(iter(candidates.values()))
         source = next((evidence for evidence in ("native_claude", "native_codex", "argv_exact", "open_handle", "pid_record") if evidence in candidate.evidence), None)
         if source:
@@ -491,8 +492,13 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
             base["candidate"] = candidate
             base["hint"] = "verified"
             return base
-    base["status"] = "candidate_ambiguous" if len(ids) > 1 else "unresolved"
-    base["hint"] = "multiple client sessions share this cwd; confirm manually" if len(ids) > 1 else "no independent store, process, or native identity agreed"
+    base["status"] = "candidate_ambiguous" if len(exact_ids) > 1 or native_conflict or (not exact_ids and len(cwd_candidates) > 1) else "unresolved"
+    if native_conflict or len(exact_ids) > 1:
+        base["hint"] = "independent identity evidence conflicts; confirm manually"
+    elif not exact_ids and len(cwd_candidates) > 1:
+        base["hint"] = "multiple client sessions share this cwd without exact evidence; confirm manually"
+    else:
+        base["hint"] = "no independent store, process, or native identity agreed"
     return base
 
 

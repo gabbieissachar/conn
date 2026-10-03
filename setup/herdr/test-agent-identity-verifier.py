@@ -134,6 +134,7 @@ class VerifierTests(unittest.TestCase):
             ), patch.object(REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())):
                 self.assertEqual(REGISTRY.verify_identity(args), 0)
         self.assertIn("native_verified", output.getvalue())
+        self.assertIn("exact=1", output.getvalue())
 
     def test_claude_native_id_is_valid_only_when_store_exists_and_cwd_matches(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -213,6 +214,61 @@ class VerifierTests(unittest.TestCase):
             result = VERIFIER.verify_pane(pane(), stores=stores, adapter=Adapter())
         self.assertEqual(result["status"], "candidate_ambiguous")
         self.assertEqual(result["candidate_count"], 2)
+
+    def test_exact_argv_and_native_agree_despite_cwd_siblings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            value = pane("codex", SESSION_A, argv=["codex", "resume", SESSION_A])
+            result = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())
+        self.assertEqual(result["status"], "native_verified")
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["exact_count"], 1)
+
+    def test_open_handle_verifies_despite_cwd_siblings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            path = next(record.path for record in stores["codex"].records() if record.session_id == SESSION_A)
+            result = VERIFIER.verify_pane(
+                pane(), stores=stores, adapter=Adapter([VERIFIER.OpenHandle(path, 41)])
+            )
+        self.assertEqual(result["status"], "handle_verified")
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["exact_count"], 1)
+
+    def test_native_verifies_alone_despite_cwd_siblings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            result = VERIFIER.verify_pane(pane("codex", SESSION_A), stores=stores, adapter=Adapter())
+        self.assertEqual(result["status"], "native_verified")
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["exact_count"], 1)
+
+    def test_argv_and_native_disagree_are_ambiguous(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            value = pane("codex", SESSION_A, argv=["codex", "resume", SESSION_B])
+            result = VERIFIER.verify_pane(value, stores=stores, adapter=Adapter())
+        self.assertEqual(result["status"], "candidate_ambiguous")
+        self.assertEqual(result["exact_count"], 2)
+
+    def test_two_distinct_exact_sources_are_ambiguous(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            path = next(record.path for record in stores["codex"].records() if record.session_id == SESSION_A)
+            value = pane("codex", argv=["codex", "resume", SESSION_B])
+            result = VERIFIER.verify_pane(
+                value, stores=stores, adapter=Adapter([VERIFIER.OpenHandle(path, 41)])
+            )
+        self.assertEqual(result["status"], "candidate_ambiguous")
+        self.assertEqual(result["exact_count"], 2)
+
+    def test_one_cwd_candidate_without_exact_evidence_stays_unresolved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary)
+            result = VERIFIER.verify_pane(pane(), stores=stores, adapter=Adapter())
+        self.assertEqual(result["status"], "unresolved")
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["exact_count"], 0)
 
     def test_busy_pane_is_unresolved(self):
         with tempfile.TemporaryDirectory() as temporary:
