@@ -1061,7 +1061,46 @@ def _candidate_observation_matches(expected: object, actual: object) -> bool:
     return True
 
 
-def verifier_summary(results: list[tuple[dict[str, Any], dict[str, Any]]], herdr_session: str) -> str:
+def _candidate_identity(result: dict[str, Any]) -> tuple[str, str] | None:
+    candidate = result.get("candidate")
+    if not isinstance(candidate, IdentityCandidate):
+        return None
+    return candidate.client, candidate.session_id
+
+
+def _mark_duplicate_claimants(
+    results: list[tuple[dict[str, Any], dict[str, Any]]]
+) -> dict[int, int]:
+    claimants: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for _pane, result in results:
+        if not str(result.get("status", "")).endswith("_verified"):
+            continue
+        key = _candidate_identity(result)
+        if key:
+            claimants.setdefault(key, []).append(result)
+    duplicates = {
+        id(result): len(items)
+        for key, items in claimants.items()
+        if len(items) > 1
+        for result in items
+    }
+    for key, items in claimants.items():
+        if len(items) <= 1:
+            continue
+        for result in items:
+            result["status"] = "candidate_ambiguous"
+            result["candidate"] = None
+            result["hint"] = "same session id is claimed by more than one pane; claimants=" + str(len(items))
+    return duplicates
+
+
+def verifier_summary(
+    results: list[tuple[dict[str, Any], dict[str, Any]]],
+    herdr_session: str,
+    *,
+    apply_written: int | None = None,
+    apply_skipped: int | None = None,
+) -> str:
     """Render a short, redacted summary for the identity report."""
     counts = {
         "native_verified": 0,
@@ -1085,18 +1124,19 @@ def verifier_summary(results: list[tuple[dict[str, Any], dict[str, Any]]], herdr
         if verified
         else f"repair integrations, then rerun herdr-agent-verify-identity --herdr-session {session_arg}"
     )
-    return "\n".join(
-        [
-            "Summary:",
-            f"total panes: {total}",
-            "verified: "
-            f"native {counts['native_verified']}; argv {counts['argv_verified']}; "
-            f"handle {counts['handle_verified']}; pid record {counts['pid_record_verified']}",
-            f"ambiguous: {counts['candidate_ambiguous']}; unresolved: {counts['unresolved']}",
-            f"safe to apply with --apply: {verified}; manual: {manual}",
-            f"next: {next_command}",
-        ]
-    )
+    lines = [
+        "Summary:",
+        f"total panes: {total}",
+        "verified: "
+        f"native {counts['native_verified']}; argv {counts['argv_verified']}; "
+        f"handle {counts['handle_verified']}; pid record {counts['pid_record_verified']}",
+        f"ambiguous: {counts['candidate_ambiguous']}; unresolved: {counts['unresolved']}",
+        f"safe to apply with --apply: {verified}; manual: {manual}",
+    ]
+    if apply_written is not None and apply_skipped is not None:
+        lines.append(f"apply result: written {apply_written}; skipped {apply_skipped}; initially verified {verified}")
+    lines.append(f"next: {next_command}")
+    return "\n".join(lines)
 
 
 def verify_identity(args: argparse.Namespace) -> int:
@@ -1118,6 +1158,8 @@ def verify_identity(args: argparse.Namespace) -> int:
             continue
         result = verify_pane(pane)
         results.append((pane, result))
+    _mark_duplicate_claimants(results)
+    for pane, result in results:
         workspace = pane.get("workspace_label") or "[workspace]"
         tab = pane.get("tab_label") or "[tab]"
         label = pane.get("label") or "[pane]"
@@ -1132,14 +1174,19 @@ def verify_identity(args: argparse.Namespace) -> int:
                 print(f"  hint: {result.get('hint', 'manual confirmation required')}")
 
     verified = [(pane, result) for pane, result in results if result.get("status", "").endswith("_verified")]
+    apply_written: int | None = None
+    apply_skipped: int | None = None
     if args.apply and verified:
+        apply_written = 0
+        apply_skipped = 0
         manifest = manifest_path(args)
-        initially_checked: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        initially_checked: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         for original, result in verified:
             current = next((pane for pane in verifier_panes(herdr_session) if pane.get("pane_id") == original.get("pane_id")), None)
             if not current or not _pane_matches_snapshot(original, current):
                 if not getattr(args, "summary_only", False):
                     print("  hint: skipped one candidate because the live pane changed before apply")
+                apply_skipped += 1
                 continue
             current_result = verify_pane(current)
             if (
@@ -1149,19 +1196,36 @@ def verify_identity(args: argparse.Namespace) -> int:
             ):
                 if not getattr(args, "summary_only", False):
                     print("  hint: skipped one candidate because the live identity changed before apply")
+                apply_skipped += 1
                 continue
-            initially_checked.append((original, result))
+            initially_checked.append((original, result, current_result))
+
+        initial_duplicates = _mark_duplicate_claimants(
+            [(pane, current_result) for pane, _result, current_result in initially_checked]
+        )
+        unique_initially_checked: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        for original, result, current_result in initially_checked:
+            if id(current_result) in initial_duplicates:
+                apply_skipped += 1
+                if not getattr(args, "summary_only", False):
+                    print(
+                        "  hint: same session id is claimed by more than one pane; "
+                        f"claimants={initial_duplicates[id(current_result)]}; skipped before apply"
+                    )
+                continue
+            unique_initially_checked.append((original, result, current_result))
 
         # This is the final Herdr read.  Build every record from this one
         # snapshot and perform no further Herdr reads before the manifest write.
-        final_snapshot = verifier_panes(herdr_session) if initially_checked else []
+        final_snapshot = verifier_panes(herdr_session) if unique_initially_checked else []
         final_by_pane = {pane.get("pane_id"): pane for pane in final_snapshot}
-        records: list[dict[str, Any]] = []
-        for original, result in initially_checked:
+        final_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        for original, result, _current_result in unique_initially_checked:
             current = final_by_pane.get(original.get("pane_id"))
             if not current or not _pane_matches_snapshot(original, current):
                 if not getattr(args, "summary_only", False):
                     print("  hint: discarded one candidate because the final live pane changed")
+                apply_skipped += 1
                 continue
             final_result = verify_pane(current)
             if (
@@ -1170,27 +1234,75 @@ def verify_identity(args: argparse.Namespace) -> int:
             ):
                 if not getattr(args, "summary_only", False):
                     print("  hint: discarded one candidate because the final live identity changed")
+                apply_skipped += 1
                 continue
             record = _verified_record(current, final_result)
             if record:
-                records.append(record)
+                final_candidates.append((current, final_result, record))
+            else:
+                apply_skipped += 1
+        final_duplicates = _mark_duplicate_claimants(
+            [(pane, result) for pane, result, _record in final_candidates]
+        )
+        records: list[dict[str, Any]] = []
+        for pane, result, record in final_candidates:
+            if id(result) in final_duplicates:
+                apply_skipped += 1
+                if not getattr(args, "summary_only", False):
+                    print(
+                        "  hint: same session id is claimed by more than one pane; "
+                        f"claimants={final_duplicates[id(result)]}; skipped before write"
+                    )
+                continue
+            records.append(record)
         if records:
             with manifest_lock(manifest):
                 data = read_manifest(manifest)
-                identities = {(record.get("herdr_session"), record.get("pane_id")) for record in records}
-                data["panes"] = [item for item in data["panes"] if (item.get("herdr_session") or herdr_session, item.get("pane_id")) not in identities]
-                data["panes"].extend(records)
-                data["panes"].sort(key=lambda item: (str(item.get("herdr_session", "")), str(item.get("pane_id", ""))))
-                write_manifest(manifest, data)
-            if not getattr(args, "summary_only", False):
-                print(f"applied verified registrations: {len(records)}")
-        else:
-            if not getattr(args, "summary_only", False):
-                print("applied verified registrations: 0")
+                existing_keys: dict[tuple[str, str], set[tuple[str, str, str, str]]] = {}
+                for item in data["panes"]:
+                    if not isinstance(item, dict) or not isinstance(item.get("client"), str) or not isinstance(item.get("session_id"), str):
+                        continue
+                    compound = (
+                        str(item.get("herdr_session") or herdr_session),
+                        str(item.get("workspace_id") or ""),
+                        str(item.get("tab_id") or ""),
+                        str(item.get("pane_id") or ""),
+                    )
+                    existing_keys.setdefault((item["client"], item["session_id"]), set()).add(compound)
+                accepted_records: list[dict[str, Any]] = []
+                for record in records:
+                    key = (str(record.get("client") or ""), str(record.get("session_id") or ""))
+                    compound = (
+                        str(record.get("herdr_session") or herdr_session),
+                        str(record.get("workspace_id") or ""),
+                        str(record.get("tab_id") or ""),
+                        str(record.get("pane_id") or ""),
+                    )
+                    conflicting = existing_keys.get(key, set()) - {compound}
+                    if conflicting:
+                        apply_skipped += 1
+                        if not getattr(args, "summary_only", False):
+                            print("  hint: a stale registration assigns this client session to another pane; manual resolution required")
+                        continue
+                    accepted_records.append(record)
+                if accepted_records:
+                    identities = {(record.get("herdr_session"), record.get("pane_id")) for record in accepted_records}
+                    data["panes"] = [item for item in data["panes"] if (item.get("herdr_session") or herdr_session, item.get("pane_id")) not in identities]
+                    data["panes"].extend(accepted_records)
+                    data["panes"].sort(key=lambda item: (str(item.get("herdr_session", "")), str(item.get("pane_id", ""))))
+                    write_manifest(manifest, data)
+                apply_written = len(accepted_records)
+        if not getattr(args, "summary_only", False):
+            print(f"applied verified registrations: {apply_written}")
     elif not args.apply:
         if not getattr(args, "summary_only", False):
             print(f"report-only: {len(verified)} verified pane(s); no registry writes")
-    print(verifier_summary(results, herdr_session))
+    elif args.apply:
+        apply_written = 0
+        apply_skipped = 0
+        if not getattr(args, "summary_only", False):
+            print("applied verified registrations: 0")
+    print(verifier_summary(results, herdr_session, apply_written=apply_written, apply_skipped=apply_skipped))
     return 0
 
 

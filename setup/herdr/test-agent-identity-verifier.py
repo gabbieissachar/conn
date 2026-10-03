@@ -358,12 +358,109 @@ class VerifierTests(unittest.TestCase):
             changed_first["pane_id"] = "w1:p1"
             snapshots = [[first, second], [first, second], [first, second], [changed_first, second]]
             args = SimpleNamespace(herdr_session="esim", client=None, apply=True, show_session_ids=False, manifest=str(manifest), diagnostic_session_paths=False)
+            output = io.StringIO()
             with patch.object(REGISTRY, "verifier_panes", side_effect=snapshots), patch.object(
                 REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(value, stores=stores, adapter=Adapter(start="start-1"))
-            ):
+            ), redirect_stdout(output):
                 self.assertEqual(REGISTRY.verify_identity(args), 0)
             saved = json.loads(manifest.read_text())
         self.assertEqual([item["pane_id"] for item in saved["panes"]], ["w1:p2"])
+        self.assertIn("apply result: written 1; skipped 1; initially verified 2", output.getvalue())
+
+    def test_duplicate_current_claims_are_ambiguous_and_never_written(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A,))
+            first = pane("codex", SESSION_A, pid=41)
+            second = pane("codex", SESSION_A, pid=42)
+            second["pane_id"] = "w1:p2"
+            second["tab_id"] = "w1:t2"
+            second["agent_session"]["value"] = SESSION_A
+            panes = [first, second]
+            for apply in (False, True):
+                manifest = Path(temporary) / ("manifest-apply.json" if apply else "manifest-report.json")
+                args = SimpleNamespace(
+                    herdr_session="esim", client=None, apply=apply, show_session_ids=False,
+                    manifest=str(manifest), diagnostic_session_paths=False,
+                )
+                output = io.StringIO()
+                with patch.object(REGISTRY, "verifier_panes", return_value=panes), patch.object(
+                    REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(
+                        value, stores=stores, adapter=Adapter()
+                    )
+                ), redirect_stdout(output):
+                    self.assertEqual(REGISTRY.verify_identity(args), 0)
+                rendered = output.getvalue()
+                self.assertIn("candidate_ambiguous", rendered)
+                self.assertIn("exact=1", rendered)
+                self.assertIn("same session id is claimed by more than one pane; claimants=2", rendered)
+                self.assertNotIn(SESSION_A, rendered)
+                self.assertFalse(manifest.exists())
+
+    def test_final_snapshot_duplicate_claims_are_skipped_without_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stores = stores_for(temporary, ids=(SESSION_A, SESSION_B))
+            first = pane("codex", SESSION_A, pid=41)
+            second = pane("codex", SESSION_B, pid=42)
+            second["pane_id"] = "w1:p2"
+            second["tab_id"] = "w1:t2"
+            converged = pane("codex", SESSION_A, pid=42)
+            converged["pane_id"] = "w1:p2"
+            converged["tab_id"] = "w1:t2"
+            manifest = Path(temporary) / "manifest.json"
+            args = SimpleNamespace(
+                herdr_session="esim", client=None, apply=True, show_session_ids=False,
+                manifest=str(manifest), diagnostic_session_paths=False,
+            )
+            output = io.StringIO()
+            snapshots = [[first, second], [first, second], [first, second], [first, converged]]
+            with patch.object(REGISTRY, "verifier_panes", side_effect=snapshots), patch.object(
+                REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(
+                    value, stores=stores, adapter=Adapter()
+                )
+            ), patch.object(REGISTRY, "_candidate_observation_matches", return_value=True), redirect_stdout(output):
+                self.assertEqual(REGISTRY.verify_identity(args), 0)
+        rendered = output.getvalue()
+        self.assertIn("same session id is claimed by more than one pane; claimants=2; skipped before write", rendered)
+        self.assertIn("apply result: written 0; skipped 2; initially verified 2", rendered)
+        self.assertFalse(manifest.exists())
+        self.assertNotIn(SESSION_A, rendered)
+
+    def test_existing_registration_blocks_apply_but_report_only_stays_write_free(self):
+        for apply in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                stores = stores_for(temporary, ids=(SESSION_A,))
+                pane_value = pane("codex", SESSION_A)
+                state = Path(temporary) / "state"
+                state.mkdir(mode=0o700)
+                manifest = state / "manifest.json"
+                existing = {
+                    "version": 1,
+                    "panes": [{
+                        "herdr_session": "esim", "workspace_id": "old-workspace",
+                        "tab_id": "old-tab", "pane_id": "old-pane", "client": "codex",
+                        "session_id": SESSION_A,
+                    }],
+                }
+                original_text = json.dumps(existing, indent=2) + "\n"
+                manifest.write_text(original_text)
+                args = SimpleNamespace(
+                    herdr_session="esim", client=None, apply=apply, show_session_ids=False,
+                    manifest=str(manifest), diagnostic_session_paths=False,
+                )
+                output = io.StringIO()
+                snapshots = [[pane_value], [pane_value], [pane_value]]
+                with patch.object(REGISTRY, "verifier_panes", side_effect=snapshots if apply else [[pane_value]]), patch.object(
+                    REGISTRY, "verify_pane", side_effect=lambda value: VERIFIER.verify_pane(
+                        value, stores=stores, adapter=Adapter()
+                    )
+                ), redirect_stdout(output):
+                    self.assertEqual(REGISTRY.verify_identity(args), 0)
+                self.assertEqual(manifest.read_text(), original_text)
+                if apply:
+                    self.assertIn("stale registration assigns this client session to another pane", output.getvalue())
+                    self.assertIn("apply result: written 0; skipped 1; initially verified 1", output.getvalue())
+                else:
+                    self.assertIn("report-only", output.getvalue())
 
     def test_verifier_error_guidance_redacts_socket_paths(self):
         private_socket = "/private/herdr/esim/herdr.sock"
