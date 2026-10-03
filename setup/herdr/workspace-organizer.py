@@ -60,6 +60,10 @@ RECOVERY_MAX_CAPTURE_ATTEMPTS = 3
 class OrganizerError(RuntimeError):
     """An expected error that should be shown without a stack trace."""
 
+    def __init__(self, message: str, *, suppress_message: bool = False):
+        super().__init__(message)
+        self.suppress_message = suppress_message
+
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -2452,6 +2456,55 @@ def preflight_failure_details(preflights: Iterable[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def preflight_console_summary(preflights: Iterable[dict[str, Any]]) -> str:
+    """Render a bounded, redacted summary for the restart preflight report."""
+    items = list(preflights)
+    counts = {
+        "busy agents": 0,
+        "blockers": 0,
+        "mixed-cwd workspaces": 0,
+        "unverified recovery identity": 0,
+        "other": 0,
+    }
+    for preflight in items:
+        for failure in preflight.get("failures", []):
+            kind = str(failure.get("kind") or "other") if isinstance(failure, dict) else "other"
+            if kind in {"busy_agent", "agent_status_not_idle"}:
+                counts["busy agents"] += 1
+            elif kind == "blocker":
+                counts["blockers"] += 1
+            elif kind == "mixed_workspace_cwd":
+                counts["mixed-cwd workspaces"] += 1
+            elif kind == "unverified_recovery_identity":
+                counts["unverified recovery identity"] += 1
+            else:
+                counts["other"] += 1
+    ready = not any(preflight.get("failures") for preflight in items)
+    lines = [
+        "Summary:",
+        f"ready_to_seal {'yes' if ready else 'no'}",
+        "failure counts: "
+        f"busy agents {counts['busy agents']}; blockers {counts['blockers']}; "
+        f"mixed-cwd workspaces {counts['mixed-cwd workspaces']}; "
+        f"unverified recovery identity {counts['unverified recovery identity']}; other {counts['other']}",
+    ]
+    actions = []
+    if counts["busy agents"]:
+        actions.append("Next: let working or blocked agents finish, then retry preflight.")
+    if counts["blockers"]:
+        actions.append("Next: review the foreground process and acknowledge only an intended volatile pane.")
+    if counts["mixed-cwd workspaces"]:
+        actions.append("Next: resolve the mixed-CWD workspace or use its explicit acknowledgement.")
+    if counts["unverified recovery identity"]:
+        actions.append("Next: run herdr-agent-verify-identity or herdr-agent-capture-status for idle or done panes, then retry.")
+    if counts["other"]:
+        actions.append("Next: follow the listed failure hints, then retry preflight.")
+    if not actions:
+        actions.append("Next: retain the ready bundle locally, then restart when ready.")
+    lines.extend(actions[:3])
+    return "\n".join(lines)
+
+
 def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
     selected = recovery_sessions(args)
     acknowledgements = recovery_acknowledgements(args.allow_volatile_pane)
@@ -2463,13 +2516,22 @@ def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
         for session in selected
     ]
     summary = redacted_preflight_summary(preflights)
+    summary_only = getattr(args, "summary_only", False)
     if any(item["failures"] for item in preflights):
+        if summary_only:
+            print(preflight_console_summary(preflights))
+            raise OrganizerError(
+                "Restart recovery preflight failed.", suppress_message=True
+            )
         print(json.dumps(summary, indent=2))
         print(preflight_failure_details(preflights))
+        print(preflight_console_summary(preflights))
         raise OrganizerError("Restart recovery preflight failed. Resolve each named failure or acknowledge only the intended volatile pane.")
     if args.preflight_only:
-        print(json.dumps(summary, indent=2))
-        print("Preflight passed. No recovery bundle was written.")
+        if not summary_only:
+            print(json.dumps(summary, indent=2))
+            print("Preflight passed. No recovery bundle was written.")
+        print(preflight_console_summary(preflights))
         return
     captures = [
         stable_recovery_capture(
@@ -2478,8 +2540,10 @@ def prepare_restart_recovery_command(args: argparse.Namespace) -> None:
         for session in selected
     ]
     bundle_id = write_recovery_bundle(captures)
-    print(json.dumps({"bundle_id": bundle_id, "session_count": len(captures), "ready": True}, indent=2))
-    print("Recovery bundle sealed. Restart only after retaining this ready bundle locally.")
+    if not summary_only:
+        print(json.dumps({"bundle_id": bundle_id, "session_count": len(captures), "ready": True}, indent=2))
+        print("Recovery bundle sealed. Restart only after retaining this ready bundle locally.")
+    print(preflight_console_summary(preflights))
 
 
 def native_recovery_workspace(
@@ -3480,6 +3544,7 @@ def parser() -> argparse.ArgumentParser:
         )
         prepare.add_argument("--capture-attempts", type=int, default=RECOVERY_MAX_CAPTURE_ATTEMPTS)
         prepare.add_argument("--preflight-only", action="store_true")
+        prepare.add_argument("--summary-only", action="store_true", help="print only the redacted summary block")
         prepare.set_defaults(func=prepare_restart_recovery_command)
 
     reconcile = commands.add_parser(
@@ -3620,7 +3685,8 @@ def main() -> int:
         arguments.func(arguments)
         return 0
     except OrganizerError as error:
-        print(f"Error: {error}", file=sys.stderr)
+        if not error.suppress_message:
+            print(f"Error: {error}", file=sys.stderr)
         return 1
 
 

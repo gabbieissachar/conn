@@ -1471,6 +1471,57 @@ class RestartRecoveryTests(unittest.TestCase):
             ORGANIZER.recovery_acknowledgements([shlex.split(acknowledgement_line)[1]]), {acknowledgement}
         )
 
+    def test_preflight_console_summary_counts_priority_failure_kinds_and_redacts(self):
+        identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        preflight = {
+            "failures": [
+                {"kind": "busy_agent", "identity": identity},
+                {"kind": "agent_status_not_idle", "identity": identity},
+                {"kind": "blocker", "identity": identity, "resume_command": "codex resume secret"},
+                {"kind": "mixed_workspace_cwd", "identity": identity, "path": "/private/secret"},
+                {"kind": "unverified_recovery_identity", "identity": identity},
+                {"kind": "missing_pane_cwd", "identity": identity},
+            ]
+        }
+        summary = ORGANIZER.preflight_console_summary([preflight])
+        self.assertLessEqual(len(summary.splitlines()), 8)
+        self.assertIn("ready_to_seal no", summary)
+        self.assertIn(
+            "busy agents 2; blockers 1; mixed-cwd workspaces 1; unverified recovery identity 1; other 1",
+            summary,
+        )
+        self.assertIn("let working or blocked agents finish", summary)
+        self.assertIn("review the foreground process", summary)
+        self.assertIn("resolve the mixed-CWD workspace", summary)
+        self.assertNotIn("secret", summary)
+        self.assertNotIn("/private", summary)
+
+    def test_preflight_summary_only_prints_only_redacted_summary(self):
+        identity = ORGANIZER.recovery_identity("project-a", "w1", "w1:t1", "w1:p1")
+        preflight = {
+            "session": "project-a",
+            "classifications": [],
+            "failures": [{"kind": "unverified_recovery_identity", "identity": identity, "resume_command": "codex resume secret"}],
+            "snapshot": {},
+        }
+        args = argparse.Namespace(
+            recovery_sessions=["project-a"], allow_volatile_pane=[],
+            allow_mixed_cwd_workspace=[], preflight_only=True, summary_only=True,
+        )
+        output = io.StringIO()
+        with patch.object(ORGANIZER, "recovery_sessions", return_value=["project-a"]), patch.object(
+            ORGANIZER, "recovery_preflight_session", return_value=preflight
+        ), redirect_stdout(output):
+            with self.assertRaises(ORGANIZER.OrganizerError) as raised:
+                ORGANIZER.prepare_restart_recovery_command(args)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("Summary:\n"))
+        self.assertTrue(raised.exception.suppress_message)
+        self.assertNotIn("Preflight failures", rendered)
+        self.assertNotIn("project-a|w1|w1:t1|w1:p1", rendered)
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn("resume", rendered)
+
     def test_recovery_identity_rejects_pipe_delimited_components(self):
         for field in ("session", "workspace", "tab", "pane"):
             with self.subTest(field=field):

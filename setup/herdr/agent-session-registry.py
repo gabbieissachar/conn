@@ -1061,6 +1061,44 @@ def _candidate_observation_matches(expected: object, actual: object) -> bool:
     return True
 
 
+def verifier_summary(results: list[tuple[dict[str, Any], dict[str, Any]]], herdr_session: str) -> str:
+    """Render a short, redacted summary for the identity report."""
+    counts = {
+        "native_verified": 0,
+        "argv_verified": 0,
+        "handle_verified": 0,
+        "pid_record_verified": 0,
+        "candidate_ambiguous": 0,
+        "unresolved": 0,
+    }
+    for _pane, result in results:
+        status = str(result.get("status") or "unresolved")
+        if status not in counts:
+            status = "unresolved"
+        counts[status] += 1
+    total = len(results)
+    verified = sum(counts[name] for name in ("native_verified", "argv_verified", "handle_verified", "pid_record_verified"))
+    manual = total - verified
+    session_arg = shlex.quote(herdr_session)
+    next_command = (
+        f"herdr-agent-verify-identity --herdr-session {session_arg} --apply"
+        if verified
+        else f"repair integrations, then rerun herdr-agent-verify-identity --herdr-session {session_arg}"
+    )
+    return "\n".join(
+        [
+            "Summary:",
+            f"total panes: {total}",
+            "verified: "
+            f"native {counts['native_verified']}; argv {counts['argv_verified']}; "
+            f"handle {counts['handle_verified']}; pid record {counts['pid_record_verified']}",
+            f"ambiguous: {counts['candidate_ambiguous']}; unresolved: {counts['unresolved']}",
+            f"safe to apply with --apply: {verified}; manual: {manual}",
+            f"next: {next_command}",
+        ]
+    )
+
+
 def verify_identity(args: argparse.Namespace) -> int:
     herdr_session = args.herdr_session or current_herdr_session()
     if not herdr_session or herdr_session == "default":
@@ -1099,7 +1137,8 @@ def verify_identity(args: argparse.Namespace) -> int:
         for original, result in verified:
             current = next((pane for pane in verifier_panes(herdr_session) if pane.get("pane_id") == original.get("pane_id")), None)
             if not current or not _pane_matches_snapshot(original, current):
-                print("  hint: skipped one candidate because the live pane changed before apply")
+                if not getattr(args, "summary_only", False):
+                    print("  hint: skipped one candidate because the live pane changed before apply")
                 continue
             current_result = verify_pane(current)
             if (
@@ -1107,7 +1146,8 @@ def verify_identity(args: argparse.Namespace) -> int:
                 or not _pane_matches_snapshot(original, current)
                 or not _candidate_observation_matches(result.get("candidate"), current_result.get("candidate"))
             ):
-                print("  hint: skipped one candidate because the live identity changed before apply")
+                if not getattr(args, "summary_only", False):
+                    print("  hint: skipped one candidate because the live identity changed before apply")
                 continue
             initially_checked.append((original, result))
 
@@ -1119,14 +1159,16 @@ def verify_identity(args: argparse.Namespace) -> int:
         for original, result in initially_checked:
             current = final_by_pane.get(original.get("pane_id"))
             if not current or not _pane_matches_snapshot(original, current):
-                print("  hint: discarded one candidate because the final live pane changed")
+                if not getattr(args, "summary_only", False):
+                    print("  hint: discarded one candidate because the final live pane changed")
                 continue
             final_result = verify_pane(current)
             if (
                 final_result.get("status") != result.get("status")
                 or not _candidate_observation_matches(result.get("candidate"), final_result.get("candidate"))
             ):
-                print("  hint: discarded one candidate because the final live identity changed")
+                if not getattr(args, "summary_only", False):
+                    print("  hint: discarded one candidate because the final live identity changed")
                 continue
             record = _verified_record(current, final_result)
             if record:
@@ -1139,11 +1181,15 @@ def verify_identity(args: argparse.Namespace) -> int:
                 data["panes"].extend(records)
                 data["panes"].sort(key=lambda item: (str(item.get("herdr_session", "")), str(item.get("pane_id", ""))))
                 write_manifest(manifest, data)
-            print(f"applied verified registrations: {len(records)}")
+            if not getattr(args, "summary_only", False):
+                print(f"applied verified registrations: {len(records)}")
         else:
-            print("applied verified registrations: 0")
+            if not getattr(args, "summary_only", False):
+                print("applied verified registrations: 0")
     elif not args.apply:
-        print(f"report-only: {len(verified)} verified pane(s); no registry writes")
+        if not getattr(args, "summary_only", False):
+            print(f"report-only: {len(verified)} verified pane(s); no registry writes")
+    print(verifier_summary(results, herdr_session))
     return 0
 
 
@@ -1481,6 +1527,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--apply", "--execute", dest="apply", action="store_true", help="write only verified rows after a live re-check")
     verify_parser.add_argument("--show-session-ids", action="store_true", help="explicitly show verified private session ids")
     verify_parser.add_argument("--diagnostic-session-paths", action="store_true", help="explicitly show local Herdr socket paths in guidance")
+    verify_parser.add_argument("--summary-only", action="store_true", help="print only the redacted summary block")
 
     return parser
 

@@ -243,6 +243,48 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("report-only", output.getvalue())
         self.assertNotIn(SESSION_A, output.getvalue())
 
+    def test_verifier_summary_counts_classifications_and_redacts_private_data(self):
+        results = [
+            (pane(), {"status": "native_verified"}),
+            (pane(), {"status": "argv_verified"}),
+            (pane(), {"status": "handle_verified"}),
+            (pane(), {"status": "pid_record_verified"}),
+            (pane(), {"status": "candidate_ambiguous"}),
+            (pane(), {"status": "unresolved", "candidate": VERIFIER.IdentityCandidate("codex", SESSION_A, ("argv_exact",), 41, "start-1", "/workspace/project", "fixture", 1, "now")}),
+        ]
+        output = REGISTRY.verifier_summary(results, "esim")
+        self.assertLessEqual(len(output.splitlines()), 8)
+        self.assertIn("total panes: 6", output)
+        self.assertIn("native 1; argv 1; handle 1; pid record 1", output)
+        self.assertIn("ambiguous: 1; unresolved: 1", output)
+        self.assertIn("safe to apply with --apply: 4; manual: 2", output)
+        self.assertIn("herdr-agent-verify-identity --herdr-session esim --apply", output)
+        self.assertNotIn(SESSION_A, output)
+        self.assertNotIn("/workspace/project", output)
+        self.assertNotIn("resume", output)
+
+    def test_verifier_summary_only_prints_only_summary(self):
+        pane_value = pane(argv=["codex", "resume", SESSION_A])
+        args = SimpleNamespace(
+            herdr_session="esim", client=None, apply=False, show_session_ids=False,
+            manifest="", diagnostic_session_paths=False, summary_only=True,
+        )
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(output), patch.object(
+            REGISTRY, "verifier_panes", return_value=[pane_value]
+        ), patch.object(
+            REGISTRY, "verify_pane", return_value=VERIFIER.verify_pane(
+                pane_value, stores=stores_for(temporary), adapter=Adapter()
+            )
+        ):
+            self.assertEqual(REGISTRY.verify_identity(args), 0)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("Summary:\n"))
+        self.assertNotIn("report-only", rendered)
+        self.assertNotIn(SESSION_A, rendered)
+        self.assertNotIn("/workspace/project", rendered)
+        self.assertNotIn("resume", rendered)
+
     def test_apply_final_snapshot_discards_first_pane_changed_while_later_pane_runs(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "state"
