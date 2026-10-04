@@ -160,6 +160,21 @@ created: 2026-09-10
     .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }
     .toggle input { margin: 0; accent-color: var(--purple); }
     .report { margin: 12px 0 0; padding: 12px 14px; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; font: 12px/1.55 "DM Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .card-body > .confirm-box:first-child, .card-body > .result-box:first-child { margin-top: 0; }
+    .confirm-box { margin: 12px 0 14px; padding: 12px 14px; border: 1px solid #c9bff2; border-radius: 8px; background: #f4f1fd; font-size: 13px; line-height: 1.5; }
+    .confirm-box strong { display: block; margin-bottom: 4px; }
+    .confirm-box.warn { border-color: #f3dcae; background: #fff6e6; }
+    .result-box { margin: 12px 0 14px; padding: 11px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5; color: #1f6b59; background: #e3f7f1; border: 1px solid #bfe9dd; }
+    .result-box code, .confirm-box code { font: 12px "DM Mono", monospace; }
+    .manual-form { grid-column: 1 / -1; display: grid; gap: 10px; padding: 12px; border: 1px dashed #cbbff5; border-radius: 8px; background: #faf9ff; }
+    .manual-form .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+    .field { display: grid; gap: 4px; font-size: 11px; color: var(--muted); font-family: "DM Mono", monospace; }
+    .field.grow { flex: 1; min-width: 240px; }
+    .field input[type="text"], .field select { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: 13px "DM Mono", monospace; }
+    .field input[type="text"]:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 1px; }
+    .small-btn { padding: 6px 9px; font-size: 11px; }
+    .ack { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--navy); cursor: pointer; }
+    .ack input { margin: 0; accent-color: var(--purple); }
     .btn-row button.danger { color: #a9273b; background: #ffe6ea; }
     .btn-row button.danger:hover { background: #ffd7dd; }
     .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
@@ -409,7 +424,7 @@ created: 2026-09-10
         return body.data;
       }
     };
-    const restart = { checkStarted: 0, timer: null, sessions: null, selected: new Set(), checking: false, checkedAt: null, verify: {}, preflight: null, includeLabels: false, share: null, sharing: false, error: '', open: {} };
+    const restart = { acks: { volatile: new Set(), mixed: new Set() }, ackKey: '', confirm: null, applyResult: {}, manual: {}, seal: null, sealing: false, applying: false, checkStarted: 0, timer: null, sessions: null, selected: new Set(), checking: false, checkedAt: null, verify: {}, preflight: null, includeLabels: false, share: null, sharing: false, error: '', open: {} };
     const CLASS_LABELS = { native_verified: ['Verified · native', 'good'], argv_verified: ['Verified · command line', 'good'], handle_verified: ['Verified · open handle', 'good'], pid_record_verified: ['Verified · process record', 'good'], candidate_ambiguous: ['Ambiguous', 'warn'], unresolved: ['Unresolved', 'bad'] };
     const EVIDENCE_LABELS = { argv_exact: 'command line match', cwd_candidate: 'same folder', native_claude: 'Claude native report', native_codex: 'Codex native report', store_header: 'store header agrees', open_handle: 'open file handle', pid_record: 'process record' };
     const FAILURE_COPY = {
@@ -436,6 +451,8 @@ created: 2026-09-10
     const plural = (count, one, many) => `${count} ${count === 1 ? one : (many || `${one}s`)}`;
     const elapsedText = () => (restart.checkStarted ? `${Math.round((Date.now() - restart.checkStarted) / 1000)}s` : '');
     const selectedSessionNames = () => (restart.sessions || []).filter(session => session.selectable && restart.selected.has(session.name)).map(session => session.name);
+    const ackKeyOf = acks => JSON.stringify([[...acks.volatile].sort(), [...acks.mixed].sort()]);
+    const acksPayload = () => ({ volatile: [...restart.acks.volatile], mixed: [...restart.acks.mixed] });
     const failureTotal = data => (data.failures || []).reduce((total, group) => total + group.count, 0);
 
     const scopeView = () => {
@@ -453,15 +470,35 @@ created: 2026-09-10
       return `<div class="scope-bar">${chips}<button type="button" class="primary-btn" data-action="check" ${restart.checking || !selectedSessionNames().length ? 'disabled' : ''}>${restart.checking ? `Checking… ${elapsedText()}` : (restart.checkedAt ? 'Check again' : 'Check selected sessions')}</button></div>${notes.join('')}${stoppedView}`;
     };
 
-    const paneRowView = row => {
+    const manualKey = (session, pane) => `${session}|${pane}`;
+    const manualFormView = (session, row) => {
+      const key = manualKey(session, row.pane_id);
+      const entry = restart.manual[key] || {};
+      const client = entry.client || row.client || 'claude';
+      const override = entry.needsOverride ? `<label class="toggle"><input type="checkbox" data-action="manual-override" data-key="${escapeHtml(key)}" data-focus="override-${escapeHtml(key)}" ${entry.override ? 'checked' : ''}> ${entry.needsOverride === 'folder_unknown' ? 'The store has no folder for it, I confirm this is the right session' : 'Folder differs, I confirm this is the right session'}</label>` : '';
+      return `<form class="manual-form" data-manual-form="${escapeHtml(key)}" autocomplete="off">
+        <div class="row"><label class="field">Client<select data-manual-client="${escapeHtml(key)}">${['claude', 'codex'].map(name => `<option value="${name}" ${name === client ? 'selected' : ''}>${name}</option>`).join('')}</select></label>
+          <label class="field grow">Session id<input type="text" data-manual-id="${escapeHtml(key)}" data-focus="manual-id-${escapeHtml(key)}" value="${escapeHtml(entry.draft || '')}" placeholder="36-character session id" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64"></label></div>
+        <div class="tab-meta" style="margin:0">In that pane, <code>/status</code> shows the session id. The id is checked against this machine's ${escapeHtml(client)} store before anything is saved, and only a masked form is shown afterwards.</div>
+        ${entry.error ? `<div class="scope-note error" style="margin:0">${escapeHtml(entry.error)}</div>` : ''}
+        ${override}
+        <div class="btn-row" style="margin:0"><button type="submit" class="primary-btn" ${entry.saving ? 'disabled' : ''}>${entry.saving ? 'Saving…' : 'Save identity'}</button><button type="button" data-action="manual-cancel" data-key="${escapeHtml(key)}">Cancel</button></div>
+      </form>`;
+    };
+    const paneRowView = (row, session) => {
       const [label, tone] = CLASS_LABELS[row.classification] || [row.classification, ''];
       const evidence = (row.evidence || []).map(item => `<span class="status" title="${escapeHtml(item)}">${escapeHtml(EVIDENCE_LABELS[item] || item)}</span>`).join('');
       const workspace = row.workspace_label || 'Unnamed workspace';
-      return `<div class="pane-row ${row.verified ? '' : 'attention'} ${row.classification === 'unresolved' ? 'unresolved' : ''}">
+      const manualEntry = restart.manual[manualKey(session, row.pane_id)] || {};
+      const manualControl = row.verified ? '' : (manualEntry.saved
+        ? `<span class="pill good" title="Saved to the registry. Check again to confirm it in the preflight.">Saved · ${escapeHtml(manualEntry.saved)}</span>`
+        : `<button type="button" class="small-btn" data-action="manual-open" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(row.pane_id)}" data-client="${escapeHtml(row.client || '')}">${manualEntry.open ? 'Close form' : 'Set identity'}</button>`);
+      return `<div class="pane-row ${row.verified ? '' : 'attention'} ${row.classification === 'unresolved' ? 'unresolved' : ''}" data-pane-key="${escapeHtml(manualKey(session, row.pane_id))}">
         <div><div class="pane-id">${escapeHtml(row.pane_id)}</div><div class="pane-sub">${escapeHtml(row.client || 'agent')}${row.agent_status ? ` · ${escapeHtml(row.agent_status)}` : ''}</div></div>
         <div class="pane-names"><strong title="${escapeHtml(workspace)}">${escapeHtml(workspace)}</strong><span title="${escapeHtml(row.tab_label)}">${escapeHtml(row.tab_label || '')}</span></div>
-        <div class="verdict"><span class="pill ${tone}">${escapeHtml(label)}</span><span class="pane-sub">${row.candidates} candidate${row.candidates === 1 ? '' : 's'} · ${row.exact} exact</span>${evidence ? `<div class="evidence">${evidence}</div>` : ''}</div>
+        <div class="verdict"><span class="pill ${tone}">${escapeHtml(label)}</span><span class="pane-sub">${row.candidates} candidate${row.candidates === 1 ? '' : 's'} · ${row.exact} exact</span>${evidence ? `<div class="evidence">${evidence}</div>` : ''}${manualControl}</div>
         ${row.hint ? `<div class="hint">${escapeHtml(plainHint(row.hint))}</div>` : ''}
+        ${manualEntry.open && !manualEntry.saved ? manualFormView(session, row) : ''}
       </div>`;
     };
 
@@ -478,9 +515,15 @@ created: 2026-09-10
       const metrics = [['Agent panes', data.rows.length, ''], ['Verified', verifiedCount, 'good'], ['Ambiguous', summary.ambiguous || 0, summary.ambiguous ? 'warn' : ''], ['Unresolved', summary.unresolved || 0, summary.unresolved ? 'bad' : ''], ['Safe to apply', summary.safe_to_apply ?? verifiedCount, 'good']]
         .map(([label, value, tone]) => `<div class="mini ${tone}"><span>${label}</span><strong>${value}</strong></div>`).join('');
       const tag = manual.length ? `<span class="pill warn">${plural(manual.length, 'pane')} need you</span>` : '<span class="pill good">all verified</span>';
-      return `<article class="card">${head(tag)}<div class="card-body"><div class="metrics">${metrics}</div>
-        ${manual.length ? `<div class="group-title">Needs you <span class="count-pill">${manual.length}</span></div><div class="pane-list">${manual.map(paneRowView).join('')}</div>` : ''}
-        ${verified.length ? `<details class="fold" data-fold="verified-${escapeHtml(name)}" ${restart.open[`verified-${name}`] ? 'open' : ''} style="margin-top:14px"><summary><span class="group-title">Verified <span class="count-pill">${verified.length}</span></span></summary><div class="pane-list" style="margin-top:8px">${verified.map(paneRowView).join('')}</div></details>` : ''}
+      const safe = summary.safe_to_apply ?? verifiedCount;
+      const applied = restart.applyResult[name];
+      const confirming = restart.confirm && restart.confirm.kind === 'apply' && restart.confirm.session === name;
+      const applyBar = `<div class="btn-row" style="margin:0 0 14px"><button type="button" class="primary-btn" data-action="apply-ask" data-session="${escapeHtml(name)}" ${safe && !restart.applying && !restart.checking ? '' : 'disabled'}>Apply verified identities${safe ? ` (${safe})` : ''}</button><span class="tab-meta" style="margin:0">Registers only the rows the verifier proves. Writes this machine's private registry.</span></div>`;
+      const confirmBox = confirming ? `<div class="confirm-box"><strong>Register ${plural(safe, 'verified identity', 'verified identities')} for ${escapeHtml(name)}?</strong>The verifier re-reads each live pane right before writing and skips any that changed. This writes the private registry file only; Herdr is not changed. Remove one later with <code>herdr-agent-remove &lt;pane&gt;</code>.<div class="btn-row"><button type="button" class="primary-btn" data-action="apply-confirm" data-session="${escapeHtml(name)}" ${restart.applying ? 'disabled' : ''}>${restart.applying ? 'Applying…' : 'Apply'}</button><button type="button" data-action="confirm-cancel">Cancel</button></div></div>` : '';
+      const resultBox = applied ? (applied.error ? `<div class="scope-note error" style="margin:0 0 14px">${escapeHtml(applied.error)}</div>` : `<div class="result-box">Applied for ${escapeHtml(name)}: ${applied.written} registered, ${applied.skipped} skipped. Check again to refresh the preflight.</div>`) : '';
+      return `<article class="card">${head(tag)}<div class="card-body">${resultBox}${confirmBox}${confirming ? '' : applyBar}<div class="metrics">${metrics}</div>
+        ${manual.length ? `<div class="group-title">Needs you <span class="count-pill">${manual.length}</span></div><div class="pane-list">${manual.map(row => paneRowView(row, name)).join('')}</div>` : ''}
+        ${verified.length ? `<details class="fold" data-fold="verified-${escapeHtml(name)}" ${restart.open[`verified-${name}`] ? 'open' : ''} style="margin-top:14px"><summary><span class="group-title">Verified <span class="count-pill">${verified.length}</span></span></summary><div class="pane-list" style="margin-top:8px">${verified.map(row => paneRowView(row, name)).join('')}</div></details>` : ''}
         ${!data.rows.length ? '<div class="empty">No Codex or Claude panes in this session.</div>' : ''}
       </div></article>`;
     };
@@ -490,7 +533,14 @@ created: 2026-09-10
       const entries = group.entries.map(entry => {
         const names = [entry.workspace_label, entry.tab_label].filter(Boolean).join(' / ');
         const detail = [entry.agent, entry.status].filter(Boolean).join(' · ');
-        return `<div class="failure-entry"><span class="pane-id">${escapeHtml(entry.pane_id || entry.workspace_id)}</span><span class="names" title="${escapeHtml(names)}">${escapeHtml(entry.session)}${names ? ` · ${escapeHtml(names)}` : ''}</span>${detail ? `<span class="status">${escapeHtml(detail)}</span>` : ''}</div>`;
+        let extra = '';
+        if (entry.ack) {
+          const set = entry.ack.flag === 'volatile-pane' ? restart.acks.volatile : restart.acks.mixed;
+          extra = `<label class="ack" title="Acknowledges exactly ${escapeHtml(entry.ack.value)}"><input type="checkbox" data-action="ack-toggle" data-flag="${escapeHtml(entry.ack.flag)}" data-value="${escapeHtml(entry.ack.value)}" data-focus="ack-${escapeHtml(entry.ack.value)}" ${set.has(entry.ack.value) ? 'checked' : ''}> ${entry.ack.flag === 'volatile-pane' ? 'I accept this process ends at restart' : 'Rebuild from the first pane\'s folder'}</label>`;
+        } else if (group.kind === 'unverified_recovery_identity' && entry.pane_id) {
+          extra = `<button type="button" class="small-btn" style="margin-left:auto" data-action="manual-goto" data-session="${escapeHtml(entry.session)}" data-pane="${escapeHtml(entry.pane_id)}" data-client="${escapeHtml(entry.agent || '')}">Set identity</button>`;
+        }
+        return `<div class="failure-entry"><span class="pane-id">${escapeHtml(entry.pane_id || entry.workspace_id)}</span><span class="names" title="${escapeHtml(names)}">${escapeHtml(entry.session)}${names ? ` · ${escapeHtml(names)}` : ''}</span>${detail ? `<span class="status">${escapeHtml(detail)}</span>` : ''}${extra}</div>`;
       }).join('');
       return `<div class="failure"><h4>${escapeHtml(title)} <span class="count-pill">${group.count}</span></h4><p>${escapeHtml(advice)}</p>${entries}</div>`;
     };
@@ -506,9 +556,20 @@ created: 2026-09-10
       const banner = data.ready_to_seal
         ? '<div class="ready-banner yes"><strong>Ready to seal</strong><span>Every selected session passes the preflight. Sealing writes a private bundle you keep locally.</span></div>'
         : `<div class="ready-banner no"><strong>Not ready to seal</strong><span>${plural(total, 'thing')} to resolve across ${plural(data.sessions.length, 'session')} before a bundle can be sealed.</span></div>`;
+      const acksCount = restart.acks.volatile.size + restart.acks.mixed.size;
+      const dirty = ackKeyOf(restart.acks) !== restart.ackKey;
+      const names = data.sessions.map(item => item.session);
+      const sealing = restart.confirm && restart.confirm.kind === 'seal';
+      const sealResult = restart.seal && restart.seal.data
+        ? `<div class="result-box"><strong>Bundle sealed for ${plural(restart.seal.data.session_count, 'session')}.</strong> Bundle ID <code>${escapeHtml(restart.seal.data.bundle_id)}</code> <button type="button" class="small-btn" data-action="copy-bundle">Copy ID</button><br>It is stored privately on this machine. Keep it local: do not commit, upload or share it. You can restart now. After boot, attach each session in a terminal, then use the reconcile preview.</div>`
+        : (restart.seal && restart.seal.error ? `<div class="scope-note error">${escapeHtml(restart.seal.error)}</div>` : '');
+      const sealConfirm = sealing ? `<div class="confirm-box warn"><strong>Seal a restart bundle for ${escapeHtml(names.join(', '))}?</strong>The bundle holds workspace layouts, folders and the resume details of verified agents. It is written to a private folder on this machine and does not close or change anything in Herdr. Restart only after this reports ready.${acksCount ? ` It includes ${plural(acksCount, 'acknowledgement')} you ticked above.` : ''}<div class="btn-row"><button type="button" class="primary-btn" data-action="seal-confirm" ${restart.sealing ? 'disabled' : ''}>${restart.sealing ? 'Sealing…' : 'Seal bundle'}</button><button type="button" data-action="confirm-cancel">Cancel</button></div></div>` : '';
+      const actions = `<div class="btn-row">${acksCount || restart.ackKey !== ackKeyOf({ volatile: new Set(), mixed: new Set() }) ? `<button type="button" data-action="preflight-recheck" ${dirty && !restart.checking ? '' : 'disabled'}>Re-check with ${plural(acksCount, 'acknowledgement')}</button>` : ''}<button type="button" class="primary-btn" data-action="seal-ask" ${data.ready_to_seal && !dirty && !restart.sealing && !restart.checking && !sealing && !(restart.seal && restart.seal.data) ? '' : 'disabled'} title="${restart.seal && restart.seal.data ? 'Sealed. Check again to seal a new bundle' : (data.ready_to_seal ? (dirty ? 'Re-check after changing acknowledgements' : 'Writes a private bundle on this machine') : 'The preflight must pass first')}">${restart.seal && restart.seal.data ? 'Bundle sealed' : 'Seal restart bundle'}</button></div>`;
       return `<article class="card">${head(data.ready_to_seal ? '<span class="pill good">ready</span>' : `<span class="pill warn">${plural(total, 'failure')}</span>`)}<div class="card-body">${banner}
         ${data.failures.map(failureGroupView).join('')}
         <div class="tab-meta" style="margin-top:6px">${classes.map(escapeHtml).join(' &nbsp;|&nbsp; ')}</div>
+        ${dirty && acksCount ? '<div class="scope-note" style="margin-top:10px">Acknowledgements changed. Re-check so the preflight reflects them before sealing.</div>' : ''}
+        ${sealConfirm}${sealResult}${actions}
       </div></article>`;
     };
 
@@ -536,8 +597,8 @@ created: 2026-09-10
       root.innerHTML = `<div class="restart">
         <div><div class="section-heading" style="margin-top:0"><h2>Sessions in this restart</h2><span class="updated">${escapeHtml(stamp)}</span></div>${scopeView()}</div>
         ${names.length && !restart.checking && !restart.checkedAt ? '<article class="card"><div class="card-head"><h3>Before you restart</h3><span class="pill">nothing is changed</span></div><div class="card-body"><p class="lede">Check the selected sessions. The page runs two read-only checks: which agents have an identity it can prove, so they can be resumed after the restart, and whether a restart bundle could be sealed right now. The identity check can take a few minutes on a busy machine.</p></div></article>' : ''}
-        ${names.length && (restart.checking || restart.checkedAt) ? `<div><div class="section-heading" style="margin-top:0"><h2>1 · Identities</h2><span class="updated">Report only. Nothing is written.</span></div><div class="restart">${names.map(identityCardView).join('')}</div></div>
-        <div><div class="section-heading" style="margin-top:0"><h2>2 · Preflight</h2><span class="updated">Read only. No bundle is written.</span></div>${preflightCardView()}</div>
+        ${names.length && (restart.checking || restart.checkedAt) ? `<div><div class="section-heading" style="margin-top:0"><h2>1 · Identities</h2><span class="updated">The check is read only. Applying is a separate step.</span></div><div class="restart">${names.map(identityCardView).join('')}</div></div>
+        <div><div class="section-heading" style="margin-top:0"><h2>2 · Preflight</h2><span class="updated">The check is read only. Sealing is a separate step.</span></div>${preflightCardView()}</div>
         <div><div class="section-heading" style="margin-top:0"><h2>Share</h2></div>${shareCardView()}</div>` : ''}
       </div>`;
       if (focus) root.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus();
@@ -570,6 +631,10 @@ created: 2026-09-10
       restart.checkStarted = Date.now();
       restart.timer = setInterval(renderRestart, 1000);
       restart.share = null;
+      restart.acks = { volatile: new Set(), mixed: new Set() };
+      restart.ackKey = ackKeyOf(restart.acks);
+      restart.seal = null;
+      restart.confirm = null;
       restart.verify = Object.fromEntries(names.map(name => [name, { loading: true }]));
       restart.preflight = { loading: true };
       renderRestart();
@@ -591,13 +656,79 @@ created: 2026-09-10
       renderRestart();
     };
 
+    const recheckPreflight = async () => {
+      const names = selectedSessionNames();
+      if (!names.length || restart.checking) return;
+      restart.checking = true;
+      restart.checkStarted = Date.now();
+      restart.timer = setInterval(renderRestart, 1000);
+      restart.preflight = { loading: true };
+      restart.seal = null;
+      renderRestart();
+      try {
+        const sent = ackKeyOf(restart.acks);
+        restart.preflight = { data: await api.run('preflight', { sessions: names, acknowledgements: acksPayload() }) };
+        restart.ackKey = sent;
+      } catch (error) { restart.preflight = { error: error.message }; }
+      clearInterval(restart.timer);
+      restart.checking = false;
+      renderRestart();
+    };
+    const applyIdentities = async session => {
+      restart.applying = true;
+      renderRestart();
+      try {
+        restart.applyResult[session] = await api.run('verify-apply', { session, confirm: `apply:${session}` });
+        showToast(`Applied verified identities for ${session}`);
+      } catch (error) { restart.applyResult[session] = { error: error.message }; }
+      restart.applying = false;
+      restart.confirm = null;
+      renderRestart();
+    };
+    const sealBundle = async () => {
+      const names = selectedSessionNames();
+      if (!names.length || restart.sealing) return;
+      restart.sealing = true;
+      renderRestart();
+      try { restart.seal = { data: await api.run('seal-bundle', { sessions: names, acknowledgements: acksPayload(), confirm: `seal:${names.join(',')}` }) }; }
+      catch (error) { restart.seal = { error: error.message }; }
+      restart.sealing = false;
+      restart.confirm = null;
+      renderRestart();
+    };
+    const saveManualIdentity = async key => {
+      const entry = restart.manual[key];
+      if (!entry || entry.saving) return;
+      const [session, pane] = key.split('|');
+      entry.saving = true;
+      entry.error = '';
+      renderRestart();
+      try {
+        const data = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, confirm: `save:${pane}` });
+        restart.manual[key] = { saved: data.masked_id };
+        showToast(`Identity saved for ${pane}`);
+      } catch (error) {
+        entry.saving = false;
+        entry.error = error.message;
+        if (error.code === 'folder_differs' || error.code === 'folder_unknown') entry.needsOverride = error.code;
+      }
+      renderRestart();
+    };
+    const openManual = (session, pane, client, scroll) => {
+      const key = manualKey(session, pane);
+      const entry = restart.manual[key];
+      if (entry && entry.open && !scroll) restart.manual[key] = { ...entry, open: false };
+      else restart.manual[key] = { ...(entry || {}), open: true, client: (entry && entry.client) || (client === 'codex' ? 'codex' : 'claude'), draft: (entry && entry.draft) || '' };
+      renderRestart();
+      if (scroll) document.querySelector(`#restart-section [data-pane-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
     const buildShare = async () => {
       const names = selectedSessionNames();
       if (!names.length || restart.sharing) return;
       restart.sharing = true;
       restart.share = null;
       renderRestart();
-      try { restart.share = { data: await api.run('share-report', { sessions: names, include_labels: restart.includeLabels }) }; }
+      try { restart.share = { data: await api.run('share-report', { sessions: names, include_labels: restart.includeLabels, ...(ackKeyOf(restart.acks) === restart.ackKey && (restart.acks.volatile.size || restart.acks.mixed.size) ? { acknowledgements: acksPayload() } : {}) }) }; }
       catch (error) { restart.share = { error: error.message }; }
       restart.sharing = false;
       renderRestart();
@@ -620,15 +751,46 @@ created: 2026-09-10
       if (!target || target.tagName === 'INPUT') return;
       const action = target.dataset.action;
       if (action === 'check') runCheck();
+      else if (action === 'apply-ask') { restart.confirm = { kind: 'apply', session: target.dataset.session }; renderRestart(); }
+      else if (action === 'apply-confirm') applyIdentities(target.dataset.session);
+      else if (action === 'seal-ask') { restart.confirm = { kind: 'seal' }; renderRestart(); }
+      else if (action === 'seal-confirm') sealBundle();
+      else if (action === 'confirm-cancel') { restart.confirm = null; renderRestart(); }
+      else if (action === 'preflight-recheck') recheckPreflight();
+      else if (action === 'copy-bundle' && restart.seal?.data) copy(restart.seal.data.bundle_id, 'Bundle ID copied');
+      else if (action === 'manual-open') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, false);
+      else if (action === 'manual-goto') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, true);
+      else if (action === 'manual-cancel') { delete restart.manual[target.dataset.key]; renderRestart(); }
       else if (action === 'build-share') buildShare();
       else if (action === 'copy-share' && restart.share?.data) copy(restart.share.data.markdown, 'Report copied');
       else if (action === 'download-share' && restart.share?.data) downloadText(restart.share.data.filename, restart.share.data.markdown);
     });
+    restartRoot.addEventListener('submit', event => {
+      const form = event.target.closest('[data-manual-form]');
+      if (!form) return;
+      event.preventDefault();
+      saveManualIdentity(form.dataset.manualForm);
+    });
+    // The typed id lives only in this in-memory draft until it is saved or cancelled; it is never stored or logged.
+    restartRoot.addEventListener('input', event => {
+      const key = event.target.dataset?.manualId;
+      if (key && restart.manual[key]) restart.manual[key].draft = event.target.value;
+    });
     restartRoot.addEventListener('change', event => {
+      const clientKey = event.target.dataset?.manualClient;
+      if (clientKey && restart.manual[clientKey]) { restart.manual[clientKey].client = event.target.value; renderRestart(); return; }
       const target = event.target.closest('[data-action]');
       if (!target) return;
       if (target.dataset.action === 'toggle-session') {
         if (target.checked) restart.selected.add(target.dataset.session); else restart.selected.delete(target.dataset.session);
+        renderRestart();
+      } else if (target.dataset.action === 'ack-toggle') {
+        const set = target.dataset.flag === 'volatile-pane' ? restart.acks.volatile : restart.acks.mixed;
+        if (target.checked) set.add(target.dataset.value); else set.delete(target.dataset.value);
+        restart.seal = null;
+        renderRestart();
+      } else if (target.dataset.action === 'manual-override') {
+        if (restart.manual[target.dataset.key]) restart.manual[target.dataset.key].override = target.checked;
         renderRestart();
       } else if (target.dataset.action === 'toggle-labels') {
         restart.includeLabels = target.checked;

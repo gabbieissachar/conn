@@ -190,8 +190,8 @@ test('snapshot: refreshes only a validated session', async () => {
 });
 
 test('child processes never inherit the Herdr context of the shell that started the server', () => {
-  const env = childEnv({ PATH: '/bin', HERDR_SESSION: 'x', HERDR_PANE_ID: 'w1:p1', HERDR_SOCKET_PATH: '/s', HERDR_WORKSPACE_ID: 'w1', HERDR_TAB_ID: 't', HERDR_ENV: '1', HERDR_LAB_HELPER: '/lab', HERDR_AGENT_MANIFEST: '/m' });
-  assert.deepEqual(Object.keys(env).sort(), ['HERDR_AGENT_MANIFEST', 'HERDR_LAB_HELPER', 'PATH']);
+  const env = childEnv({ PATH: '/bin', HERDR_SESSION: 'x', HERDR_PANE_ID: 'w1:p1', HERDR_SOCKET_PATH: '/s', HERDR_WORKSPACE_ID: 'w1', HERDR_TAB_ID: 't', HERDR_ENV: '1', HERDR_LAB_HELPER: '/lab', PMOS_HERDR_AGENT_MANIFEST: '/m' });
+  assert.deepEqual(Object.keys(env).sort(), ['HERDR_LAB_HELPER', 'PATH', 'PMOS_HERDR_AGENT_MANIFEST']);
 });
 
 test('oversized and malformed bodies are refused', async () => {

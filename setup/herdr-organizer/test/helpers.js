@@ -14,8 +14,8 @@ const fixture = (name) => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
 // result for a call, or undefined to fall through to the fixtures.
 function fakeRunner(overrides = {}) {
   const calls = [];
-  const runner = async (file, args) => {
-    calls.push({ file, args: args.slice() });
+  const runner = async (file, args, options = {}) => {
+    calls.push({ file, args: args.slice(), input: options.input, env: options.env });
     if (overrides.handle) {
       const custom = await overrides.handle(file, args);
       if (custom !== undefined) return custom;
@@ -23,7 +23,11 @@ function fakeRunner(overrides = {}) {
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
     if (file === 'herdr' && args[0] === 'session' && args[1] === 'list') return ok(fixture('session-list.json'));
     if (file === 'herdr' && args[0] === '--session' && args[2] === 'pane' && args[3] === 'list') return ok(fixture('pane-list.json'));
-    if (args.includes('verify-identity')) return ok(fixture('verify-report.txt'));
+    if (args.includes('verify-identity')) return ok(fixture(args.includes('--apply') ? 'verify-apply.txt' : 'verify-report.txt'));
+    if (typeof args[0] === 'string' && args[0].endsWith('store_check.py')) {
+      return ok(JSON.stringify(overrides.storeCheck || { valid_format: true, exists: true, store_folder: 'match', registered_elsewhere: false, already_registered_here: false }));
+    }
+    if (args.includes('register')) return ok('registered ok\nmanifest: /fixture/manifest.json\n');
     if (args.includes('cleanup-empty-tabs')) {
       const workspace = args[args.indexOf('--workspace') + 1];
       const name = 'cleanup-' + workspace + '.txt';
@@ -31,7 +35,9 @@ function fakeRunner(overrides = {}) {
     }
     if (args.includes('prepare-restart-recovery')) {
       const acknowledged = args.includes('--allow-volatile-pane') && args.includes('--allow-mixed-cwd-workspace');
-      return { code: acknowledged ? 0 : 1, stdout: fixture(acknowledged ? 'preflight-pass.txt' : 'preflight-fail.txt'), stderr: '', timedOut: false, truncated: false };
+      const sealing = !args.includes('--preflight-only');
+      const name = sealing && acknowledged ? 'seal-ok.txt' : acknowledged ? 'preflight-pass.txt' : 'preflight-fail.txt';
+      return { code: acknowledged ? 0 : 1, stdout: fixture(name), stderr: '', timedOut: false, truncated: false };
     }
     return { code: 1, stdout: '', stderr: 'unexpected command', timedOut: false, truncated: false };
   };

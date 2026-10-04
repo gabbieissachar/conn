@@ -82,8 +82,10 @@ Checks, cheapest first:
 
 1. Format: UUID shape for the chosen client.
 2. Exists in the real client store (Claude project files; Codex session index and rollouts), via the verifier's own `ClaudeStore` and `CodexStore` classes in a read-only helper.
-3. The store's recorded folder equals the pane's current folder, otherwise refused unless the override is sent.
+3. The store's recorded folder equals the pane's current folder, otherwise refused unless the override is sent. A store that records no folder for that session cannot be matched either, so it needs the same override (with its own message).
 4. Not already registered to another pane (hard refusal; the page shows a copy-only remove command).
+
+Each save also requires a confirm token naming the pane, a pane whose client matches the pane's detected agent, and an identity check from the last hour that found that pane unverified (a verified identity is never overwritten). The override cannot bypass layer 4.
 
 Layer 3 is the independent cross-check: a check that only proves an id exists cannot prove it is the right one.
 The id travels browser to server in a JSON body, then to `agent-session-registry.py register --allow-no-herdr` as one short-lived process, and is never logged or echoed.
@@ -161,8 +163,10 @@ The page is built against the interface as it exists today, through the adapter.
 
 - Local runs use an untracked symlink `personal/01-System` to the user's checkout (never committed) for read-only access, with `HERDR_ORGANIZER_TOOL_ROOT` pointing at a scratch copy of the tool scripts for anything that writes. The link sits inside the empty `personal/` directory because git refuses a symlink at the submodule path itself.
 - Read-only Herdr commands against a real session are fine; anything that changes state goes through the isolated lab helper or fixtures.
-- Lab availability is recorded in the build log below.
+- Lab availability: the lab helper refuses to provision because it requires exactly one running default Herdr session and the default session is stopped on this machine (`fleet-state tripwire requires exactly one running default session`). No session was started to work around it. Lab-dependent checks were done with fixtures instead: the server tests fake the `herdr` binary, and `test/integration.test.js` runs the real registry and store check (Python) against a temporary copy of the tool scripts, a synthetic Codex store and a faked `herdr`, so nothing touches a real Herdr session, the real registry or the real client stores. `--apply`, a manual save and a seal were never run against the real session.
+- `python3 -m unittest setup/herdr-organizer/test/test_store_check.py` covers the store check with synthetic stores; `node --test setup/herdr-organizer/test/*.test.js` covers the server.
 
 ## Build log
 
 - Phase 1 (read-only views, share report, clean up empty tabs in every workspace): done. 48 server tests pass. Driven in a browser at desktop and 390 px width against the real `esim` session and captured real verifier and preflight output.
+- Phase 2 (guarded actions: apply verified identities, manual identity form, per-item acknowledgements and seal): done. Each action needs a confirm token and runs one at a time. 64 server tests and 9 store-check tests pass; the real registry write is covered by the integration test (private 0600 file in a 0700 directory, duplicate and folder guards). Driven in a browser against a fixture-backed server: apply confirm, folder-differs override, masked result, acknowledgement ticks, re-check, seal.

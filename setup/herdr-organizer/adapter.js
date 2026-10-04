@@ -28,11 +28,17 @@ const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_SESSIONS = 8;
 const WORKSPACE_ID_RE = /^w[A-Za-z0-9]{1,10}$/;
 const CLEANUP_CONCURRENCY = 4;
+const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
+const SESSION_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const CLIENTS = new Set(['claude', 'codex']);
+// A manual identity may only be saved for a pane the most recent identity check
+// found unverified, so a check older than this must be repeated first.
+const VERIFY_FRESH_MS = 60 * 60 * 1000;
 
 // Herdr context variables from the shell that started the server must never
 // reach a child process: `register` prefers the current pane over explicit pane
 // arguments, so an inherited HERDR_PANE_ID would register the wrong pane.
-const ENV_KEEP = new Set(['HERDR_LAB_HELPER', 'HERDR_BIN_PATH', 'HERDR_AGENT_MANIFEST', 'HERDR_AGENT_MISSING_JSON', 'HERDR_AGENT_STATUS_LOG']);
+const ENV_KEEP = new Set(['HERDR_LAB_HELPER', 'HERDR_BIN_PATH']);
 
 function childEnv(base) {
   const env = {};
@@ -43,7 +49,7 @@ function childEnv(base) {
   return env;
 }
 
-function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024 * 1024, cwd } = {}) {
+function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024 * 1024, cwd, input } = {}) {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -53,11 +59,12 @@ function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     let child;
     try {
-      child = spawn(file, args, { env, cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(file, args, { env, cwd, shell: false, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     } catch (error) {
       finish({ code: -1, stdout: '', stderr: error.message, timedOut: false, truncated: false });
       return;
     }
+    if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
     child.stdout.on('data', (chunk) => {
       if (stdout.length < maxBytes) stdout += chunk.toString('utf8'); else truncated = true;
@@ -73,6 +80,8 @@ function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024
 function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr' } = {}) {
   if (!toolRoot) throw new Error('adapter needs the Herdr tool root');
   const registryScript = path.join(toolRoot, 'agent-session-registry.py');
+  const storeCheckScript = path.join(__dirname, 'store_check.py');
+  const lastVerify = new Map();
   const organizerScript = path.join(toolRoot, 'workspace-organizer.py');
   const runEnv = () => childEnv(env);
 
@@ -171,6 +180,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         hint: scrub(row.hint),
       };
     });
+    lastVerify.set(session, { at: Date.now(), verified: new Map(rows.map((row) => [row.pane_id, row.verified])) });
     return { session, generated_at: new Date().toISOString(), rows, summary: report.summary };
   }
 
@@ -279,6 +289,88 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { session, refreshed_at: new Date().toISOString() };
   }
 
+  // ---- Tier 1: private local writes (each needs the confirm token the page sends) ----
+
+  function requireConfirm(actual, expected) {
+    if (actual !== expected) throw new AdapterError('This change needs an explicit confirmation.', 400, 'confirm_required');
+  }
+
+  // Registers every row the verifier proves, using the tool's own guarded apply
+  // path (it re-reads each live pane right before writing).
+  async function applyVerified(sessionName, confirm) {
+    const session = await requireSession(sessionName);
+    requireConfirm(confirm, 'apply:' + session);
+    const result = await runner(pythonBin, [registryScript, 'verify-identity', '--herdr-session', session, '--apply'], { env: runEnv(), timeoutMs: 900000 });
+    const applied = parse.parseApplyResult(result.stdout);
+    if (applied.written === null) throw new AdapterError(result.stderr || result.stdout || 'The apply step returned nothing.', 502, 'apply_failed');
+    return { session, written: applied.written, skipped: applied.skipped, initially_verified: applied.initially_verified, applied_at: new Date().toISOString() };
+  }
+
+  const maskId = (id) => id.slice(0, 4) + '...' + id.slice(-4);
+
+  // The id is validated in layers, cheapest first: format, present in the real
+  // client store, the store's recorded folder matches the pane's folder (or the
+  // override is sent), and not already claimed by another pane. It is never
+  // logged, echoed or returned; the caller only gets a masked form.
+  async function saveManualIdentity({ session: sessionName, pane_id: paneId, client, session_id: sessionId, folder_override: folderOverride, confirm }) {
+    const session = await requireSession(sessionName);
+    if (typeof paneId !== 'string' || !PANE_ID_RE.test(paneId)) throw new AdapterError('Invalid pane.');
+    requireConfirm(confirm, 'save:' + paneId);
+    if (!CLIENTS.has(client)) throw new AdapterError('Pick Claude or Codex.');
+    if (typeof sessionId !== 'string' || !SESSION_UUID_RE.test(sessionId)) throw new AdapterError('That does not look like a session id. Expected the 36-character form.', 400, 'invalid_session_id');
+    const id = sessionId.toLowerCase();
+
+    const panes = await readPanes(session);
+    const pane = panes.find((item) => item.pane_id === paneId);
+    if (!pane) throw new AdapterError('That pane is no longer in the session.', 404, 'pane_missing');
+    if (pane.agent !== client) throw new AdapterError('That pane is running ' + (pane.agent || 'no supported agent') + ', not ' + client + '.', 409, 'client_mismatch');
+
+    const seen = lastVerify.get(session);
+    if (!seen || Date.now() - seen.at > VERIFY_FRESH_MS || !seen.verified.has(paneId)) throw new AdapterError('Run the identity check for this session first, so the page knows this pane is unverified.', 409, 'verify_required');
+    if (seen.verified.get(paneId) === true) throw new AdapterError('This pane already has a verified identity. Use Apply verified identities instead.', 409, 'already_verified');
+
+    const checked = await runner(pythonBin, [storeCheckScript, toolRoot], {
+      env: runEnv(),
+      timeoutMs: 60000,
+      input: JSON.stringify({ client, session_id: id, pane_cwd: pane.cwd, herdr_session: session, pane_id: paneId }),
+    });
+    let check = null;
+    try { check = JSON.parse(checked.stdout); } catch { check = null; }
+    if (!check || check.error || checked.code !== 0) throw new AdapterError('Could not check the client store.', 502, 'store_check_failed');
+    if (!check.valid_format) throw new AdapterError('That does not look like a session id.', 400, 'invalid_session_id');
+    if (!check.exists) throw new AdapterError('That session id is not in the ' + client + ' store on this machine.', 404, 'not_in_store');
+    if (check.registered_elsewhere) throw new AdapterError('That session is already registered to another pane. Remove that registration first (herdr-agent-remove), then save again.', 409, 'already_registered');
+    if (check.store_folder !== 'match' && folderOverride !== true) {
+      const unknown = check.store_folder === 'unknown';
+      throw new AdapterError(unknown
+        ? 'The store does not record a folder for that session, so it cannot be matched to this pane. Confirm the override only if you are sure.'
+        : 'That session was recorded in a different folder than this pane. Confirm the override only if you are sure it is the right session.',
+      409, unknown ? 'folder_unknown' : 'folder_differs');
+    }
+
+    const registered = await runner(pythonBin, [
+      registryScript, 'register', '--client', client, '--session-id', id, '--allow-no-herdr',
+      '--pane-id', paneId, '--workspace-id', pane.workspace_id, '--tab-id', pane.tab_id,
+      '--herdr-session', session, ...(pane.cwd ? ['--cwd', pane.cwd] : []),
+    ], { env: runEnv(), timeoutMs: 60000 });
+    if (registered.code !== 0) throw new AdapterError('The registry refused the identity. ' + scrub(registered.stderr || registered.stdout, 160), 502, 'register_failed');
+    return { session, pane_id: paneId, client, masked_id: maskId(id), folder_confirmed: check.store_folder === 'match' ? 'match' : 'override', saved_at: new Date().toISOString() };
+  }
+
+  // Seals a private restart-recovery bundle through the tool's own command, which
+  // re-runs the strict preflight itself and refuses on any failure.
+  async function sealBundle(sessionNames, requestedAcks, confirm) {
+    const sessions = await requireSessions(sessionNames);
+    requireConfirm(confirm, 'seal:' + sessions.join(','));
+    const acks = await validatedAcks(sessions, requestedAcks);
+    const result = await runner(pythonBin, preflightArgs(sessions, acks, { preflightOnly: false }), { env: runEnv(), timeoutMs: 900000 });
+    const sealed = parse.parseSealResult(result.stdout);
+    if (sealed) return { sealed: true, bundle_id: sealed.bundle_id, session_count: sealed.session_count, sealed_at: new Date().toISOString() };
+    const preflightResult = parse.parsePreflight(result.stdout);
+    if (preflightResult.ready_to_seal === false) throw new AdapterError('The preflight failed, so no bundle was sealed. Check again for the current failures.', 409, 'preflight_failed');
+    throw new AdapterError(result.stderr || result.stdout || 'Sealing returned nothing.', 502, 'seal_failed');
+  }
+
   // Read-only preview of `cleanup-empty-tabs` for every workspace of one session.
   // The workspace ids come from the live pane list and must match a fixed pattern;
   // nothing from the browser except the validated session name is used. The
@@ -345,6 +437,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     refreshSnapshot,
     readSnapshot,
     cleanupPreview,
+    applyVerified,
+    saveManualIdentity,
+    sealBundle,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

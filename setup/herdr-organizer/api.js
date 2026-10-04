@@ -99,6 +99,18 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     sessions: { tier: 0, params: {}, run: () => tools.listSessionsView() },
     snapshot: { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.refreshSnapshot(p.session) },
     'snapshot-data': { tier: 0, params: {}, run: () => tools.readSnapshot() },
+    // tier 1: private local writes. Each needs a confirm token naming exactly what it changes.
+    'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },
+    'save-manual-identity': {
+      tier: 1,
+      params: { session: { type: 'string' }, pane_id: { type: 'string' }, client: { type: 'string' }, session_id: { type: 'string' }, folder_override: { type: 'boolean', optional: true }, confirm: { type: 'string' } },
+      run: (p) => tools.saveManualIdentity(p),
+    },
+    'seal-bundle': {
+      tier: 1,
+      params: { sessions: { type: 'array' }, acknowledgements: { type: 'object', optional: true }, confirm: { type: 'string' } },
+      run: (p) => tools.sealBundle(p.sessions, p.acknowledgements, p.confirm),
+    },
     'cleanup-preview': { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.cleanupPreview(p.session) },
     verify: { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.verifyReport(p.session) },
     preflight: {
