@@ -1,0 +1,31 @@
+{
+  "workspace_id": "w1",
+  "tabs_to_close": [
+    {
+      "tab_id": "w1:t3",
+      "label": "scratch shell",
+      "pane_ids": [
+        "w1:p5"
+      ]
+    },
+    {
+      "tab_id": "w1:t4",
+      "label": "old shell",
+      "pane_ids": [
+        "w1:p6",
+        "w1:p7"
+      ]
+    }
+  ],
+  "protected_tabs": [
+    {
+      "tab_id": "w1:t1",
+      "reason": "agent_detected",
+      "pane_ids": [
+        "w1:p1"
+      ]
+    }
+  ],
+  "kept_tab_id": null
+}
+Preview only. Re-run with --execute --confirm 'w1' to close 2 empty shell tab(s).

@@ -26,6 +26,7 @@ The page also produces a redacted report of the verify and preflight results for
 | 3 | Share report labels | Workspace, tab and session names masked by default (`Workspace 1`, `Tab 3`, `Session A`); a per-report toggle adds real names. Pane ids always stay. |
 | 4 | Default session scope | All running non-default sessions selected. Unticked running sessions get a visible warning. The server always receives an explicit list. |
 | 5 | v1 scope | Core plus per-item preflight acknowledgements. Manual identity is paste-an-id only. |
+| 6 | Clean up empty tabs in every workspace (asked for mid-build) | A card in the Workspaces view. The page runs the read-only preview for every workspace and copies the exact commands. Closing tabs is copy-only. |
 
 ## Authority tiers
 
@@ -33,9 +34,9 @@ The server enforces the tiers. The buttons only reflect them.
 
 | Tier | Actions | Page behaviour |
 |---|---|---|
-| 0 read-only | session list, snapshot, verifier report, preflight-only, reconcile preview, bundle list, share report | Runs it |
+| 0 read-only | session list, snapshot, verifier report, preflight-only, cleanup-empty-tabs preview, reconcile preview, bundle list, share report | Runs it |
 | 1 private local writes, reversible | verifier `--apply`, save manual identity, seal bundle | Runs it behind an explicit confirm; the server re-validates every parameter |
-| 2 changes live Herdr or sends input into panes | `reconcile --confirm`, `rollback-reconcile`, archive, restore, move or archive tabs, `/status` capture, resume replay | Shows the exact command and its effect; the user runs it |
+| 2 changes live Herdr or sends input into panes | `reconcile --confirm`, `rollback-reconcile`, archive, restore, move or archive tabs, `cleanup-empty-tabs --execute`, `/status` capture, resume replay | Shows the exact command and its effect; the user runs it |
 | 3 restart | restarting the computer or Herdr | Checklist item only |
 
 The page never runs `herdr-organizer archive`, restore, or anything that stops, closes or recreates real sessions.
@@ -54,6 +55,7 @@ Every `/api/herdr-organizer/*` request therefore passes these checks, all covere
 - POST bodies must be `application/json`.
 - These routes are dispatched before the shared CORS and OPTIONS handler and never send `Access-Control-Allow-*` headers. A preflight to them is answered 403.
 - Only one tier 1 action runs at a time (409 otherwise); child processes have timeouts and bounded output.
+- Child processes never inherit `HERDR_SESSION`, `HERDR_PANE_ID` and the other Herdr context variables from the shell that started the server. `register` prefers the current pane over explicit pane arguments, so an inherited pane id would register the wrong pane.
 
 The older `POST /api/herdr-workspace-organizer/snapshot` stays untouched (fixed command, no input).
 
@@ -111,6 +113,13 @@ The browser's memory does not survive a restart, so the page derives the current
 Source of truth is the system; the checklist is a projection of it. Only unprovable steps ("I restarted") stay informational.
 The preflight is always called with an explicit `--session` list, because without it Herdr selects every running session.
 
+## Clean up empty tabs in every workspace
+
+`herdr-organizer cleanup-empty-tabs` only takes one `--workspace`, so the page does the fan-out.
+`cleanup-preview {session}` lists the live workspace ids (pattern `^w[A-Za-z0-9]{1,10}$`, taken from the live pane list), runs the preview for each with at most four at a time, and aggregates the result: tabs to close per workspace, tabs the tool protects (agent, resumable session, non-shell process), and workspaces where the tool keeps the last tab.
+The response also carries two copy-only commands built from those validated ids: a loop that previews every workspace, and a `&&`-joined `--execute --confirm` chain for exactly the workspaces that have something to close.
+The page never runs the execute form. The tool recomputes what is eligible when it runs, so a stale preview cannot close a protected tab.
+
 ## Architecture
 
 All new code is isolated under `setup/herdr-organizer/` so `serve.sh` stays a thin shell (its Node program lives in a bash string, which is hard to test).
@@ -139,14 +148,21 @@ The page is built against the interface as it exists today, through the adapter.
 2. `register` accepting the session id on stdin so it never appears in `ps`.
 3. A check-id option on the verifier (exists in store, folder matches, already registered) so the page does not import store classes.
 4. A `state-root` override environment variable for the organizer and registry, so isolated runs do not need a scratch copy of the scripts.
-5. Optional: a list-candidates command that returns masked ids and last-activity times, for a later candidate picker.
+5. `cleanup-empty-tabs --all-workspaces` (one snapshot instead of one process per workspace) and progress output for the verifier.
+6. Optional: a list-candidates command that returns masked ids and last-activity times, for a later candidate picker.
+
+## Findings from real runs
+
+- The identity verifier is slow on a busy machine: about 40 s of CPU, and several minutes of wall time with a load average near 30. The server allows 15 minutes, shares one run between identical in-flight requests (a page reload or second tab does not start another), and the page does not auto-run it on load. It shows the elapsed time while it waits.
+- The preflight reads the registry manifest next to the tool scripts. A scratch copy of the scripts without that manifest reports every agent as unverified, so isolated copies are for writes only; read-only checks against a real session use the real tool root.
+- A stopped Herdr session on this machine is literally named `-h`; session names are therefore never allowed to start with a dash.
 
 ## Test isolation notes
 
-- Local runs use an untracked symlink `personal` to the user's checkout (never committed) for read-only access, with `HERDR_ORGANIZER_TOOL_ROOT` pointing at a scratch copy of the tool scripts for anything that writes.
+- Local runs use an untracked symlink `personal/01-System` to the user's checkout (never committed) for read-only access, with `HERDR_ORGANIZER_TOOL_ROOT` pointing at a scratch copy of the tool scripts for anything that writes. The link sits inside the empty `personal/` directory because git refuses a symlink at the submodule path itself.
 - Read-only Herdr commands against a real session are fine; anything that changes state goes through the isolated lab helper or fixtures.
 - Lab availability is recorded in the build log below.
 
 ## Build log
 
-(Filled in as phases complete.)
+- Phase 1 (read-only views, share report, clean up empty tabs in every workspace): done. 48 server tests pass. Driven in a browser at desktop and 390 px width against the real `esim` session and captured real verifier and preflight output.

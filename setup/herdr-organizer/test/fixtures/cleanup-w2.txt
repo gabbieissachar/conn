@@ -1,0 +1,22 @@
+{
+  "workspace_id": "w2",
+  "tabs_to_close": [],
+  "protected_tabs": [
+    {
+      "tab_id": "w2:t1",
+      "reason": "agent_detected",
+      "pane_ids": [
+        "w2:p1"
+      ]
+    },
+    {
+      "tab_id": "w2:t2",
+      "reason": "non_shell_process",
+      "pane_ids": [
+        "w2:p3"
+      ]
+    }
+  ],
+  "kept_tab_id": null
+}
+Preview only. Re-run with --execute --confirm 'w2' to close 0 empty shell tab(s).

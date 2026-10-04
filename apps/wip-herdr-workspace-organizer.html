@@ -37,7 +37,7 @@ created: 2026-09-10
     h1, h2, p { margin: 0; }
     h1 { font-size: 22px; letter-spacing: -.04em; color: var(--navy); }
     .subtitle { margin-top: 3px; color: var(--muted); font-size: 13px; }
-    .badge { padding: 5px 9px; border-radius: 999px; background: #e7e2fb; color: #514194; font: 500 11px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
+    .badge { white-space: nowrap; align-self: flex-start; padding: 5px 9px; border-radius: 999px; background: #e7e2fb; color: #514194; font: 500 11px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
     .controls { margin-top: 16px; gap: 10px; }
     .view-tabs { gap: 5px; margin-top: 12px; }
     .view-tab { padding: 7px 10px; color: var(--muted); background: transparent; font-size: 12px; }
@@ -65,7 +65,9 @@ created: 2026-09-10
     .updated { color: var(--muted); font: 11px "DM Mono", monospace; }
     .workspaces { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; }
     .workspace, .archive { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
-    .workspace-head { justify-content: space-between; padding: 15px 16px; background: linear-gradient(110deg, #fbfcff, #f1effc); border-bottom: 1px solid var(--line); }
+    .workspace { display: flex; flex-direction: column; }
+    .workspace .tabs { flex: 1; }
+    .workspace-head { justify-content: space-between; gap: 12px; padding: 15px 16px; background: linear-gradient(110deg, #fbfcff, #f1effc); border-bottom: 1px solid var(--line); }
     .workspace-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .workspace-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
     .id { color: var(--muted); font: 11px "DM Mono", monospace; }
@@ -99,28 +101,102 @@ created: 2026-09-10
     .empty { min-height: 140px; justify-content: center; padding: 20px; color: var(--muted); text-align: center; background: var(--paper); border: 1px dashed #cbd3e0; border-radius: 10px; }
     .toast { position: fixed; right: 24px; bottom: 22px; z-index: 5; padding: 10px 13px; color: white; background: var(--navy); border-radius: 7px; box-shadow: var(--shadow); font-size: 12px; transform: translateY(80px); opacity: 0; transition: .2s ease; }
     .toast.show { transform: translateY(0); opacity: 1; }
-    @media (max-width: 640px) { .summary, .move-panel { grid-template-columns: 1fr; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; } }
+    .controls[hidden], .view-panel[hidden] { display: none; }
+    .select { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--paper); font-size: 12px; max-width: 200px; }
+    /* Restart tools */
+    .restart { display: grid; gap: 22px; }
+    .card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: linear-gradient(110deg, #fbfcff, #f1effc); border-bottom: 1px solid var(--line); }
+    .card-head h3 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
+    .card-body { padding: 14px 16px 16px; }
+    .lede { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 74ch; }
+    .scope-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .session-chip { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); font-size: 13px; font-weight: 600; cursor: pointer; }
+    .session-chip input { margin: 0; accent-color: var(--purple); }
+    .session-chip.on { border-color: #c9bff2; background: #f4f1fd; }
+    .session-chip.off { color: var(--muted); background: #f7f8fb; cursor: not-allowed; font-weight: 500; }
+    .scope-note { margin-top: 10px; padding: 9px 12px; border-radius: 8px; font-size: 12px; line-height: 1.45; color: #925a08; background: #fff6e6; border: 1px solid #f3dcae; }
+    .scope-note.error { color: #a9273b; background: #fff0f2; border-color: #f4cdd3; }
+    .primary-btn { color: white; background: var(--purple); }
+    .primary-btn:hover { background: #5a43ba; }
+    .primary-btn:disabled, button:disabled { cursor: not-allowed; opacity: .5; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .mini { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; }
+    .mini span { display: block; color: var(--muted); font-size: 11px; }
+    .mini strong { display: block; margin-top: 4px; font-size: 20px; letter-spacing: -.03em; color: var(--navy); }
+    .mini.good strong { color: #27806b; } .mini.warn strong { color: #925a08; } .mini.bad strong { color: #a9273b; }
+    .group-title { margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--navy); }
+    .group-title:first-of-type { margin-top: 0; }
+    .count-pill { padding: 1px 7px; border-radius: 999px; background: #edf0f5; color: #506079; font: 500 10px "DM Mono", monospace; }
+    .pane-list { display: grid; gap: 8px; }
+    .pane-row { display: grid; grid-template-columns: minmax(120px, 150px) minmax(0, 1fr) auto; align-items: start; gap: 6px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .pane-row.attention { border-left: 3px solid var(--amber); }
+    .pane-row.unresolved { border-left-color: var(--red); }
+    .pane-id { font: 500 12px "DM Mono", monospace; color: var(--navy); overflow-wrap: anywhere; }
+    .pane-sub { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .pane-names { min-width: 0; }
+    .pane-names strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .pane-names span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .verdict { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; text-align: right; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
+    .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
+    .evidence { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+    .evidence .status { margin: 0; }
+    .hint { grid-column: 1 / -1; color: #69758a; font-size: 12px; line-height: 1.45; }
+    details.fold > summary { cursor: pointer; list-style: none; }
+    details.fold > summary::-webkit-details-marker { display: none; }
+    details.fold > summary .group-title::before { content: "▸"; color: var(--muted); }
+    details.fold[open] > summary .group-title::before { content: "▾"; }
+    .ready-banner { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+    .ready-banner strong { font-size: 15px; letter-spacing: -.02em; }
+    .ready-banner.yes { color: #1f6b59; background: #e3f7f1; border: 1px solid #bfe9dd; }
+    .ready-banner.no { color: #8a5207; background: #fff6e6; border: 1px solid #f3dcae; }
+    .failure { padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; background: var(--paper); }
+    .failure h4 { margin: 0 0 4px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+    .failure p { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .failure-entry { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 0; border-top: 1px solid #eef1f6; font-size: 12px; }
+    .failure-entry .names { color: var(--muted); }
+    .share-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+    .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }
+    .toggle input { margin: 0; accent-color: var(--purple); }
+    .report { margin: 12px 0 0; padding: 12px 14px; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; font: 12px/1.55 "DM Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .btn-row button.danger { color: #a9273b; background: #ffe6ea; }
+    .btn-row button.danger:hover { background: #ffd7dd; }
+    .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
+    .cleanup-all { margin-bottom: 26px; }
+    .cleanup-totals { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 14px 0 6px; color: var(--navy); font-size: 13px; }
+    .cleanup-totals strong { font-size: 15px; letter-spacing: -.02em; }
+    .command-box { margin: 10px 0 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; font: 11px/1.55 "DM Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--navy); }
+    .skeleton { height: 54px; border-radius: 8px; background: linear-gradient(90deg, #eef1f6, #f7f8fb, #eef1f6); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+    @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+    @media (max-width: 640px) { .summary, .move-panel { grid-template-columns: 1fr; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; }
+      .pane-row { grid-template-columns: 1fr; } .verdict, .evidence { align-items: flex-start; justify-content: flex-start; text-align: left; } .view-tabs { flex-wrap: wrap; } .controls { flex-wrap: wrap; } .select { max-width: none; flex: 1; } }
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="topline">
-      <div><h1>Workspace organizer</h1><p class="subtitle">Review Herdr tabs, then copy a command to run in your terminal</p></div>
-      <span class="badge">live snapshot</span>
-    </div>
-    <div class="controls">
-      <input id="search" class="search" type="search" placeholder="Filter workspaces, tabs, or archives" aria-label="Filter organizer data">
-      <button id="reload" type="button">Refresh snapshot</button>
+      <div><h1>Workspace organizer</h1><p class="subtitle">Check Herdr sessions before a restart, review tabs, and copy commands to run in your terminal</p></div>
+      <span class="badge" id="view-badge">restart tools</span>
     </div>
     <nav class="view-tabs" aria-label="Organizer views">
-      <button class="view-tab" type="button" data-view="workspaces" aria-selected="true">Workspaces</button>
+      <button class="view-tab" type="button" data-view="restart" aria-selected="true">Restart</button>
+      <button class="view-tab" type="button" data-view="workspaces" aria-selected="false">Workspaces</button>
       <button class="view-tab" type="button" data-view="archives" aria-selected="false">Archives</button>
     </nav>
+    <div class="controls" id="snapshot-controls" hidden>
+      <input id="search" class="search" type="search" placeholder="Filter workspaces, tabs, or archives" aria-label="Filter organizer data">
+      <select id="snapshot-session" class="select" aria-label="Herdr session for the snapshot"></select>
+      <button id="reload" type="button">Refresh snapshot</button>
+    </div>
   </header>
   <main>
     <section class="move-panel" id="move-panel" aria-live="polite"></section>
-    <section id="workspaces-section">
+    <section id="restart-section" class="view-panel"></section>
+    <section id="workspaces-section" hidden>
       <section class="summary" id="summary"></section>
+      <div id="cleanup-all"></div>
       <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
       <div class="workspaces" id="workspaces"></div>
     </section>
@@ -132,13 +208,13 @@ created: 2026-09-10
   <div class="toast" id="toast" role="status"></div>
   <script>
     const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
-    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'workspaces' };
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
-    const copy = async text => {
-      try { await navigator.clipboard.writeText(text); showToast('Command copied'); }
-      catch { showToast(`Copy this command: ${text}`); }
+    const copy = async (text, message = 'Command copied') => {
+      try { await navigator.clipboard.writeText(text); showToast(message); }
+      catch { showToast(message.startsWith('Report') ? 'Could not copy. Select the report text and copy it.' : `Copy this command: ${text}`); }
     };
     let toastTimer;
     const showToast = message => { const toast = document.querySelector('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2600); };
@@ -165,7 +241,7 @@ created: 2026-09-10
       </article>`;
     };
     const workspaceView = workspace => `<article class="workspace">
-      <div class="workspace-head"><div class="workspace-title"><strong>${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${workspace.tab_count} tabs · ${workspace.pane_count} panes</span></div>
+      <div class="workspace-head"><div class="workspace-title"><strong>${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${plural(workspace.tab_count, 'tab')} · ${plural(workspace.pane_count, 'pane')}</span></div>
       <div class="tabs">${workspace.tabs.map(tab => tabView(tab, workspace.tab_count)).join('') || '<div class="tab-meta">No tabs</div>'}</div>
       <div class="tab-actions" style="padding: 0 16px 14px"><button type="button" title="Copies a preview command. It only identifies shell-only tabs and protects tabs with running agents or verified resumable sessions." data-command="herdr-organizer cleanup-empty-tabs --workspace ${escapeHtml(workspace.id)}">Copy cleanup preview</button><button type="button" data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)}">Copy archive preview</button><button type="button" title="Copies a command that captures this layout and closes this workspace. Its processes will stop." data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)} --execute --confirm ${escapeHtml(workspace.id)}">Copy archive and close</button></div>
     </article>`;
@@ -236,13 +312,25 @@ created: 2026-09-10
       const remove = `herdr-organizer delete-archive --archive ${archive.archive_id} --execute --confirm ${archive.archive_id}`;
       return `<article class="archive">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
-        <div class="archive-meta">${archive.tab_count} tabs · ${archive.pane_count} panes · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
+        <div class="archive-meta">${plural(archive.tab_count, 'tab')} · ${plural(archive.pane_count, 'pane')} · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button><button class="danger" type="button" title="Permanently removes this saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(remove)}">Copy delete archive</button></div>
         <div class="archive-meta" style="margin-top: 12px">Select one or more archived tabs to restore into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
     };
+    const VIEW_BADGES = { restart: 'restart tools', workspaces: 'live snapshot', archives: 'live snapshot' };
     const render = () => {
       const data = state.data;
+      document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.view === state.view)));
+      document.querySelector('#restart-section').hidden = state.view !== 'restart';
+      document.querySelector('#snapshot-controls').hidden = state.view === 'restart';
+      document.querySelector('#view-badge').textContent = VIEW_BADGES[state.view] || '';
+      if (state.view === 'restart') {
+        document.querySelector('#workspaces-section').hidden = true;
+        document.querySelector('#archives-section').hidden = true;
+        document.querySelector('#move-panel').innerHTML = '';
+        renderRestart();
+        return;
+      }
       if (!data) return;
       const workspaces = (data.workspaces || []).filter(workspace => matches(`${workspace.label} ${workspace.id} ${workspace.tabs.map(tab => `${tab.label} ${tab.id}`).join(' ')}`));
       const archives = (data.archives || []).filter(archive => matches(`${archive.workspace_label} ${archive.archive_id} ${archive.status}`));
@@ -257,7 +345,8 @@ created: 2026-09-10
       document.querySelector('#move-panel').innerHTML = state.view === 'archives' ? restorePanelView(data) : movePanelView(data);
       document.querySelector('#workspaces-section').hidden = state.view !== 'workspaces';
       document.querySelector('#archives-section').hidden = state.view !== 'archives';
-      document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.view === state.view)));
+      if (state.cleanup.result && state.cleanup.result.session !== cleanupSession()) state.cleanup = { loading: false, result: null, error: '' };
+      document.querySelector('#cleanup-all').innerHTML = cleanupAllView(data);
       document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
       document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
       document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command)));
@@ -274,10 +363,6 @@ created: 2026-09-10
           if (hasAnotherArchive) state.selectedArchivedTabs.clear();
           state.selectedArchivedTabs.add(key);
         } else state.selectedArchivedTabs.delete(key);
-        render();
-      }));
-      document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
-        state.view = button.dataset.view;
         render();
       }));
       document.querySelector('#move-destination')?.addEventListener('change', event => {
@@ -297,14 +382,348 @@ created: 2026-09-10
       });
       document.querySelector('#updated').textContent = data.generated_at ? `Snapshot ${new Date(data.generated_at).toLocaleString()}${data.herdr_session ? ` · ${data.herdr_session}` : ''}` : 'No timestamp';
     };
+    // ---- Restart tools: talks to /api/herdr-organizer; every call carries the per-start token ----
+    const api = {
+      token: null,
+      header: 'X-Herdr-Organizer-Token',
+      async ensureToken(force) {
+        if (this.token && !force) return this.token;
+        const response = await fetch('/api/herdr-organizer/token', { cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.token) throw new Error(body.message || 'The organizer server is not available. Restart it with setup/serve.sh --restart.');
+        this.token = body.token;
+        this.header = body.header || this.header;
+        return this.token;
+      },
+      async run(action, params, retried) {
+        const token = await this.ensureToken();
+        const response = await fetch('/api/herdr-organizer/run', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json', [this.header]: token },
+          body: JSON.stringify(params === undefined ? { action } : { action, params })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 403 && !retried) { await this.ensureToken(true); return this.run(action, params, true); }
+        if (!response.ok || body.status !== 'ok') { const error = new Error(body.message || `HTTP ${response.status}`); error.code = body.code; throw error; }
+        return body.data;
+      }
+    };
+    const restart = { checkStarted: 0, timer: null, sessions: null, selected: new Set(), checking: false, checkedAt: null, verify: {}, preflight: null, includeLabels: false, share: null, sharing: false, error: '', open: {} };
+    const CLASS_LABELS = { native_verified: ['Verified · native', 'good'], argv_verified: ['Verified · command line', 'good'], handle_verified: ['Verified · open handle', 'good'], pid_record_verified: ['Verified · process record', 'good'], candidate_ambiguous: ['Ambiguous', 'warn'], unresolved: ['Unresolved', 'bad'] };
+    const EVIDENCE_LABELS = { argv_exact: 'command line match', cwd_candidate: 'same folder', native_claude: 'Claude native report', native_codex: 'Codex native report', store_header: 'store header agrees', open_handle: 'open file handle', pid_record: 'process record' };
+    const FAILURE_COPY = {
+      busy_agent: ['Agent still working', 'This agent is working or blocked. Let it finish, then check again.'],
+      agent_status_not_idle: ['Agent not idle', 'This agent is not idle or done. Let it finish, then check again.'],
+      blocker: ['Unclassified process running', 'A foreground process other than a shell or a known agent is running, and a restart will end it. If that is acceptable, acknowledge that exact pane when sealing.'],
+      mixed_workspace_cwd: ['Panes in different folders', 'This workspace has no folder of its own and its panes sit in different folders. A rebuild would use the first pane\'s folder. Acknowledge it only if that is fine.'],
+      unverified_recovery_identity: ['Agent identity not verified', 'This agent has no verified session identity, so it cannot be resumed after the restart. Apply verified identities, then resolve it with a manual identity.'],
+      missing_pane_cwd: ['Pane folder is missing', 'Restore or create the pane\'s folder, then check again.'],
+      missing_registered_worktree: ['Worktree is missing', 'Restore or create the registered worktree, then check again.'],
+      missing_workspace_cwd: ['Workspace folder is missing', 'Restore or create the workspace folder, then check again.'],
+      multiple_focused_workspaces: ['More than one focused workspace', 'Focus exactly one workspace in that session, then check again.'],
+      no_focused_workspace: ['No focused workspace', 'Focus one workspace in that session, then check again.'],
+      unknown_process_state: ['Process state unknown', 'Herdr has not reported this pane\'s process yet. Wait a moment and check again. Do not acknowledge it.']
+    };
+    const CLASS_COUNT_LABELS = { verified_resumable_supported_agent: 'agents with a verified identity', disposable_shell: 'disposable shells', busy_agent: 'busy agents', unverified_recovery_identity: 'agents without a verified identity', blocker: 'unclassified processes', agent_status_not_idle: 'agents not idle' };
+    const HINT_COPY = [
+      ['must be idle or done', 'The agent is working or blocked, so its identity cannot be checked yet.'],
+      ['evidence conflicts', 'The evidence points at more than one session, so a person has to decide.'],
+      ['share this cwd', 'Several conversations share this pane\'s folder and nothing singles one out.'],
+      ['no independent', 'Nothing independent confirmed a session for this pane.']
+    ];
+    const plainHint = hint => { const lower = String(hint || '').toLowerCase(); const hit = HINT_COPY.find(([needle]) => lower.includes(needle)); return hit ? hit[1] : String(hint || ''); };
+    const plural = (count, one, many) => `${count} ${count === 1 ? one : (many || `${one}s`)}`;
+    const elapsedText = () => (restart.checkStarted ? `${Math.round((Date.now() - restart.checkStarted) / 1000)}s` : '');
+    const selectedSessionNames = () => (restart.sessions || []).filter(session => session.selectable && restart.selected.has(session.name)).map(session => session.name);
+    const failureTotal = data => (data.failures || []).reduce((total, group) => total + group.count, 0);
+
+    const scopeView = () => {
+      const list = restart.sessions;
+      if (!list) return '<div class="skeleton"></div>';
+      const selectable = list.filter(session => session.selectable);
+      const stopped = list.filter(session => !session.selectable && !session.is_default);
+      const left = selectable.filter(session => !restart.selected.has(session.name));
+      const chips = selectable.map(session => `<label class="session-chip ${restart.selected.has(session.name) ? 'on' : ''}"><input type="checkbox" data-action="toggle-session" data-focus="session-${escapeHtml(session.name)}" data-session="${escapeHtml(session.name)}" ${restart.selected.has(session.name) ? 'checked' : ''}>${escapeHtml(session.name)}<span class="status idle">running</span></label>`).join('');
+      const notes = [];
+      if (restart.error) notes.push(`<div class="scope-note error">${escapeHtml(restart.error)}</div>`);
+      if (!selectable.length && !restart.error) notes.push('<div class="scope-note error">No named Herdr session is running. Start or attach the sessions you want to protect, then check again. The default session is never included.</div>');
+      if (left.length) notes.push(`<div class="scope-note">Running but not in this restart: ${escapeHtml(left.map(session => session.name).join(', '))}. A session left out of the bundle cannot be recovered afterwards.</div>`);
+      const stoppedView = stopped.length ? `<details class="fold" data-fold="stopped" ${restart.open.stopped ? 'open' : ''} style="margin-top:10px"><summary><span class="group-title">${plural(stopped.length, 'stopped session')} <span class="count-pill">not selectable</span></span></summary><div class="tab-meta">${escapeHtml(stopped.map(session => session.name).join(' · '))}. Attach one in a terminal if it needs protecting, then check again.</div></details>` : '';
+      return `<div class="scope-bar">${chips}<button type="button" class="primary-btn" data-action="check" ${restart.checking || !selectedSessionNames().length ? 'disabled' : ''}>${restart.checking ? `Checking… ${elapsedText()}` : (restart.checkedAt ? 'Check again' : 'Check selected sessions')}</button></div>${notes.join('')}${stoppedView}`;
+    };
+
+    const paneRowView = row => {
+      const [label, tone] = CLASS_LABELS[row.classification] || [row.classification, ''];
+      const evidence = (row.evidence || []).map(item => `<span class="status" title="${escapeHtml(item)}">${escapeHtml(EVIDENCE_LABELS[item] || item)}</span>`).join('');
+      const workspace = row.workspace_label || 'Unnamed workspace';
+      return `<div class="pane-row ${row.verified ? '' : 'attention'} ${row.classification === 'unresolved' ? 'unresolved' : ''}">
+        <div><div class="pane-id">${escapeHtml(row.pane_id)}</div><div class="pane-sub">${escapeHtml(row.client || 'agent')}${row.agent_status ? ` · ${escapeHtml(row.agent_status)}` : ''}</div></div>
+        <div class="pane-names"><strong title="${escapeHtml(workspace)}">${escapeHtml(workspace)}</strong><span title="${escapeHtml(row.tab_label)}">${escapeHtml(row.tab_label || '')}</span></div>
+        <div class="verdict"><span class="pill ${tone}">${escapeHtml(label)}</span><span class="pane-sub">${row.candidates} candidate${row.candidates === 1 ? '' : 's'} · ${row.exact} exact</span>${evidence ? `<div class="evidence">${evidence}</div>` : ''}</div>
+        ${row.hint ? `<div class="hint">${escapeHtml(plainHint(row.hint))}</div>` : ''}
+      </div>`;
+    };
+
+    const identityCardView = name => {
+      const entry = restart.verify[name];
+      const head = tag => `<div class="card-head"><h3>Identities · ${escapeHtml(name)}</h3>${tag || ''}</div>`;
+      if (!entry || entry.loading) return `<article class="card">${head(`<span class="pill">checking ${elapsedText()}</span>`)}<div class="card-body"><div class="tab-meta" style="margin:0 0 10px">The identity check inspects every agent pane and open file handle, so it can take a few minutes when the machine is busy.</div><div class="pane-list"><div class="skeleton"></div><div class="skeleton"></div></div></div></article>`;
+      if (entry.error) return `<article class="card">${head('<span class="pill bad">could not check</span>')}<div class="card-body"><div class="scope-note error">${escapeHtml(entry.error)}</div></div></article>`;
+      const data = entry.data;
+      const summary = data.summary || {};
+      const verifiedCount = data.rows.filter(row => row.verified).length;
+      const manual = data.rows.filter(row => !row.verified);
+      const verified = data.rows.filter(row => row.verified);
+      const metrics = [['Agent panes', data.rows.length, ''], ['Verified', verifiedCount, 'good'], ['Ambiguous', summary.ambiguous || 0, summary.ambiguous ? 'warn' : ''], ['Unresolved', summary.unresolved || 0, summary.unresolved ? 'bad' : ''], ['Safe to apply', summary.safe_to_apply ?? verifiedCount, 'good']]
+        .map(([label, value, tone]) => `<div class="mini ${tone}"><span>${label}</span><strong>${value}</strong></div>`).join('');
+      const tag = manual.length ? `<span class="pill warn">${plural(manual.length, 'pane')} need you</span>` : '<span class="pill good">all verified</span>';
+      return `<article class="card">${head(tag)}<div class="card-body"><div class="metrics">${metrics}</div>
+        ${manual.length ? `<div class="group-title">Needs you <span class="count-pill">${manual.length}</span></div><div class="pane-list">${manual.map(paneRowView).join('')}</div>` : ''}
+        ${verified.length ? `<details class="fold" data-fold="verified-${escapeHtml(name)}" ${restart.open[`verified-${name}`] ? 'open' : ''} style="margin-top:14px"><summary><span class="group-title">Verified <span class="count-pill">${verified.length}</span></span></summary><div class="pane-list" style="margin-top:8px">${verified.map(paneRowView).join('')}</div></details>` : ''}
+        ${!data.rows.length ? '<div class="empty">No Codex or Claude panes in this session.</div>' : ''}
+      </div></article>`;
+    };
+
+    const failureGroupView = group => {
+      const [title, advice] = FAILURE_COPY[group.kind] || [group.kind.replace(/_/g, ' '), group.tool_hint || 'Resolve the named condition, then check again.'];
+      const entries = group.entries.map(entry => {
+        const names = [entry.workspace_label, entry.tab_label].filter(Boolean).join(' / ');
+        const detail = [entry.agent, entry.status].filter(Boolean).join(' · ');
+        return `<div class="failure-entry"><span class="pane-id">${escapeHtml(entry.pane_id || entry.workspace_id)}</span><span class="names" title="${escapeHtml(names)}">${escapeHtml(entry.session)}${names ? ` · ${escapeHtml(names)}` : ''}</span>${detail ? `<span class="status">${escapeHtml(detail)}</span>` : ''}</div>`;
+      }).join('');
+      return `<div class="failure"><h4>${escapeHtml(title)} <span class="count-pill">${group.count}</span></h4><p>${escapeHtml(advice)}</p>${entries}</div>`;
+    };
+
+    const preflightCardView = () => {
+      const entry = restart.preflight;
+      const head = tag => `<div class="card-head"><h3>Restart preflight</h3>${tag || ''}</div>`;
+      if (!entry || entry.loading) return `<article class="card">${head(`<span class="pill">checking ${elapsedText()}</span>`)}<div class="card-body"><div class="skeleton"></div></div></article>`;
+      if (entry.error) return `<article class="card">${head('<span class="pill bad">could not check</span>')}<div class="card-body"><div class="scope-note error">${escapeHtml(entry.error)}</div></div></article>`;
+      const data = entry.data;
+      const total = failureTotal(data);
+      const classes = data.sessions.map(item => `${item.session}: ${Object.entries(item.process_classes || {}).map(([name, count]) => `${count} ${CLASS_COUNT_LABELS[name] || name.replace(/_/g, ' ')}`).join(', ') || 'no panes'}`);
+      const banner = data.ready_to_seal
+        ? '<div class="ready-banner yes"><strong>Ready to seal</strong><span>Every selected session passes the preflight. Sealing writes a private bundle you keep locally.</span></div>'
+        : `<div class="ready-banner no"><strong>Not ready to seal</strong><span>${plural(total, 'thing')} to resolve across ${plural(data.sessions.length, 'session')} before a bundle can be sealed.</span></div>`;
+      return `<article class="card">${head(data.ready_to_seal ? '<span class="pill good">ready</span>' : `<span class="pill warn">${plural(total, 'failure')}</span>`)}<div class="card-body">${banner}
+        ${data.failures.map(failureGroupView).join('')}
+        <div class="tab-meta" style="margin-top:6px">${classes.map(escapeHtml).join(' &nbsp;|&nbsp; ')}</div>
+      </div></article>`;
+    };
+
+    const shareCardView = () => {
+      const share = restart.share;
+      const names = selectedSessionNames();
+      let result = '';
+      if (restart.sharing) result = '<div class="skeleton" style="margin-top:12px"></div>';
+      else if (share && share.error) result = `<div class="scope-note error" style="margin-top:12px">${escapeHtml(share.error)}</div>`;
+      else if (share && share.data) result = `<div class="share-options" style="margin-bottom:0"><button type="button" class="primary-btn" data-action="copy-share">Copy report</button><button type="button" data-action="download-share">Download .md</button><span class="tab-meta" style="margin:0">${escapeHtml(share.data.filename)} · leak scan ${escapeHtml(share.data.leak_scan)}</span></div><pre class="report" tabindex="0" aria-label="Redacted report">${escapeHtml(share.data.markdown)}</pre>`;
+      return `<article class="card"><div class="card-head"><h3>Share a redacted report</h3><span class="pill">nothing is uploaded</span></div><div class="card-body">
+        <p class="lede">A copyable summary of the identity and preflight results for the selected sessions. It never contains client session ids, resume commands, private paths, transcript text or bundle ids. Read it once before you paste it into Slack or a ticket.</p>
+        <div class="share-options"><label class="toggle"><input type="checkbox" data-action="toggle-labels" data-focus="labels" ${restart.includeLabels ? 'checked' : ''}> Include workspace, tab and session names</label><button type="button" class="primary-btn" data-action="build-share" ${restart.sharing || !names.length ? 'disabled' : ''}>${restart.sharing ? 'Building…' : 'Build report'}</button></div>
+        ${restart.includeLabels ? '<div class="scope-note">Names can reveal project and task names. They appear in the report only for this build.</div>' : '<div class="tab-meta" style="margin:0">Names are masked as Workspace 1, Tab 3 and Session A. Pane ids stay so a helper can match rows.</div>'}
+        ${result}
+      </div></article>`;
+    };
+
+    const renderRestart = () => {
+      const root = document.querySelector('#restart-section');
+      if (!root) return;
+      const focus = document.activeElement && root.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
+      const names = selectedSessionNames();
+      const stamp = restart.checkedAt ? `Checked ${restart.checkedAt.toLocaleTimeString()}` : 'Not checked yet';
+      root.innerHTML = `<div class="restart">
+        <div><div class="section-heading" style="margin-top:0"><h2>Sessions in this restart</h2><span class="updated">${escapeHtml(stamp)}</span></div>${scopeView()}</div>
+        ${names.length && !restart.checking && !restart.checkedAt ? '<article class="card"><div class="card-head"><h3>Before you restart</h3><span class="pill">nothing is changed</span></div><div class="card-body"><p class="lede">Check the selected sessions. The page runs two read-only checks: which agents have an identity it can prove, so they can be resumed after the restart, and whether a restart bundle could be sealed right now. The identity check can take a few minutes on a busy machine.</p></div></article>' : ''}
+        ${names.length && (restart.checking || restart.checkedAt) ? `<div><div class="section-heading" style="margin-top:0"><h2>1 · Identities</h2><span class="updated">Report only. Nothing is written.</span></div><div class="restart">${names.map(identityCardView).join('')}</div></div>
+        <div><div class="section-heading" style="margin-top:0"><h2>2 · Preflight</h2><span class="updated">Read only. No bundle is written.</span></div>${preflightCardView()}</div>
+        <div><div class="section-heading" style="margin-top:0"><h2>Share</h2></div>${shareCardView()}</div>` : ''}
+      </div>`;
+      if (focus) root.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus();
+    };
+
+    const loadSessions = async ({ keepSelection } = {}) => {
+      try {
+        const known = new Set((restart.sessions || []).map(session => session.name));
+        restart.sessions = await api.run('sessions');
+        const running = restart.sessions.filter(session => session.selectable).map(session => session.name);
+        // Fail-safe default: every running non-default session is selected. A session that started since the
+        // last look is added rather than silently left out.
+        restart.selected = keepSelection
+          ? new Set(running.filter(name => restart.selected.has(name) || !known.has(name)))
+          : new Set(running);
+        restart.error = '';
+      } catch (error) {
+        restart.sessions = restart.sessions || [];
+        restart.error = error.message;
+      }
+      renderRestart();
+    };
+
+    const runCheck = async () => {
+      if (restart.checking) return;
+      await loadSessions({ keepSelection: true });
+      const names = selectedSessionNames();
+      if (!names.length) return;
+      restart.checking = true;
+      restart.checkStarted = Date.now();
+      restart.timer = setInterval(renderRestart, 1000);
+      restart.share = null;
+      restart.verify = Object.fromEntries(names.map(name => [name, { loading: true }]));
+      restart.preflight = { loading: true };
+      renderRestart();
+      await Promise.all([
+        ...names.map(async name => {
+          try { restart.verify[name] = { data: await api.run('verify', { session: name }) }; }
+          catch (error) { restart.verify[name] = { error: error.message }; }
+          renderRestart();
+        }),
+        (async () => {
+          try { restart.preflight = { data: await api.run('preflight', { sessions: names }) }; }
+          catch (error) { restart.preflight = { error: error.message }; }
+          renderRestart();
+        })()
+      ]);
+      clearInterval(restart.timer);
+      restart.checking = false;
+      restart.checkedAt = new Date();
+      renderRestart();
+    };
+
+    const buildShare = async () => {
+      const names = selectedSessionNames();
+      if (!names.length || restart.sharing) return;
+      restart.sharing = true;
+      restart.share = null;
+      renderRestart();
+      try { restart.share = { data: await api.run('share-report', { sessions: names, include_labels: restart.includeLabels }) }; }
+      catch (error) { restart.share = { error: error.message }; }
+      restart.sharing = false;
+      renderRestart();
+    };
+
+    const downloadText = (filename, text) => {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    const restartRoot = document.querySelector('#restart-section');
+    restartRoot.addEventListener('click', event => {
+      const target = event.target.closest('[data-action]');
+      if (!target || target.tagName === 'INPUT') return;
+      const action = target.dataset.action;
+      if (action === 'check') runCheck();
+      else if (action === 'build-share') buildShare();
+      else if (action === 'copy-share' && restart.share?.data) copy(restart.share.data.markdown, 'Report copied');
+      else if (action === 'download-share' && restart.share?.data) downloadText(restart.share.data.filename, restart.share.data.markdown);
+    });
+    restartRoot.addEventListener('change', event => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      if (target.dataset.action === 'toggle-session') {
+        if (target.checked) restart.selected.add(target.dataset.session); else restart.selected.delete(target.dataset.session);
+        renderRestart();
+      } else if (target.dataset.action === 'toggle-labels') {
+        restart.includeLabels = target.checked;
+        restart.share = null;
+        renderRestart();
+      }
+    });
+    restartRoot.addEventListener('toggle', event => {
+      const key = event.target.dataset?.fold;
+      if (key) restart.open[key] = event.target.open;
+    }, true);
+
+    // ---- Clean up empty shell tabs in every workspace ----
+    // The preview is read-only and runs on the server. Closing tabs is not run by the page: the exact command is copied for the terminal.
+    const WORKSPACE_ID_PATTERN = /^w[A-Za-z0-9]{1,10}$/;
+    const SESSION_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+    const PROTECTED_REASONS = { agent_detected: 'with an agent', resumable_session: 'with a resumable session', non_shell_process: 'running something other than a shell' };
+    state.cleanup = { loading: false, result: null, error: '' };
+    const cleanupSession = () => state.snapshotSession || state.data?.herdr_session || '';
+    // Used before any preview has run, from the snapshot the page already shows.
+    const cleanupPreviewAllCommand = data => {
+      const ids = (data.workspaces || []).map(workspace => workspace.id).filter(id => WORKSPACE_ID_PATTERN.test(id));
+      if (!ids.length) return '';
+      const session = SESSION_NAME_PATTERN.test(data.herdr_session || '') ? ` --session ${data.herdr_session}` : '';
+      return `for ws in ${ids.join(' ')}; do herdr-organizer${session} cleanup-empty-tabs --workspace "$ws"; done`;
+    };
+    const cleanupAllView = data => {
+      const cleanup = state.cleanup;
+      const result = cleanup.result;
+      const labels = new Map((data.workspaces || []).map(workspace => [workspace.id, workspace.label]));
+      const previewAll = result?.commands?.preview_all || cleanupPreviewAllCommand(data);
+      let body = '';
+      if (cleanup.loading) body = '<div class="skeleton" style="margin-top:14px"></div>';
+      else if (cleanup.error) body = `<div class="scope-note error" style="margin-top:14px">${escapeHtml(cleanup.error)}</div>`;
+      else if (result) {
+        const totals = result.totals;
+        const closable = result.workspaces.filter(workspace => workspace.tabs_to_close.length);
+        const clean = result.workspaces.filter(workspace => !workspace.tabs_to_close.length && !workspace.error);
+        const failed = result.workspaces.filter(workspace => workspace.error);
+        const rows = closable.map(workspace => `<div class="failure"><h4>${escapeHtml(labels.get(workspace.workspace_id) || workspace.workspace_id)} <span class="count-pill">${workspace.tabs_to_close.length} to close</span></h4>
+          ${workspace.tabs_to_close.map(tab => `<div class="failure-entry"><span class="pane-id">${escapeHtml(tab.tab_id)}</span><span class="names">${escapeHtml(tab.label)}</span><span class="status">${plural(tab.pane_count, 'pane')}</span></div>`).join('')}
+          ${workspace.kept_tab_id ? `<div class="tab-meta" style="margin-top:6px">Every tab here is empty, so ${escapeHtml(workspace.kept_tab_id)} stays open to keep the workspace.</div>` : ''}</div>`).join('');
+        const protectedCounts = {};
+        result.workspaces.forEach(workspace => workspace.protected_tabs.forEach(tab => { protectedCounts[tab.reason] = (protectedCounts[tab.reason] || 0) + 1; }));
+        const keptLast = result.workspaces.filter(workspace => workspace.kept_tab_id).length;
+        const protectedText = [...Object.entries(protectedCounts).map(([reason, count]) => `${count} ${PROTECTED_REASONS[reason] || reason.replace(/_/g, ' ')}`), keptLast ? `${keptLast} as the last tab in ${keptLast === 1 ? 'its workspace' : 'their workspace'}` : ''].filter(Boolean).join(', ');
+        body = `<div class="cleanup-totals"><span><strong>${totals.tabs_to_close}</strong> empty shell ${totals.tabs_to_close === 1 ? 'tab' : 'tabs'} to close in <strong>${totals.workspaces_with_empty_tabs}</strong> of ${plural(totals.workspaces, 'workspace')}</span>${protectedText ? `<span class="updated">Kept: ${escapeHtml(protectedText)}</span>` : ''}</div>
+          ${rows || '<div class="tab-meta">Nothing to close. Every tab has an agent, a resumable session or a running process, or is the last tab in its workspace.</div>'}
+          ${clean.length && rows ? `<div class="tab-meta">${plural(clean.length, 'workspace')} have nothing to close.</div>` : ''}
+          ${failed.length ? `<div class="scope-note error">Preview failed for ${escapeHtml(failed.map(workspace => workspace.workspace_id).join(', '))}. Run the preview command for those workspaces in a terminal.</div>` : ''}
+          ${result.commands.execute_all ? `<div class="group-title" style="margin-top:14px">Closes ${plural(totals.tabs_to_close, 'tab')}. Run it in your terminal when you are ready</div><pre class="command-box">${escapeHtml(result.commands.execute_all)}</pre>` : ''}`;
+      }
+      const canPreview = Boolean(cleanupSession()) && !cleanup.loading;
+      return `<article class="card cleanup-all"><div class="card-head"><h3>Clean up empty tabs in every workspace</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
+        <p class="lede">Finds shell-only tabs in all ${plural((data.workspaces || []).length, 'workspace')} at once: no agent, no resumable session, nothing running. A tab with an agent or a resumable session is never touched, and a workspace whose tabs are all empty keeps one. Previewing closes nothing.</p>
+        <div class="btn-row"><button type="button" class="primary-btn" data-cleanup="preview" ${canPreview ? '' : 'disabled'} title="${cleanupSession() ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${cleanup.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview all workspaces')}</button>
+          <button type="button" data-command="${escapeHtml(previewAll)}" ${previewAll ? '' : 'disabled'} title="Copies one command that runs the preview for every workspace in your terminal">Copy cleanup preview for all workspaces</button>
+          ${result?.commands?.execute_all ? `<button type="button" class="danger" data-command="${escapeHtml(result.commands.execute_all)}" title="Copies the commands that close the empty shell tabs listed above. Their processes are shells only.">Copy cleanup and close for all</button>` : ''}</div>
+        ${body}
+      </div></article>`;
+    };
+    const runCleanupPreview = async () => {
+      const session = cleanupSession();
+      if (!session || state.cleanup.loading) return;
+      state.cleanup = { loading: true, result: null, error: '' };
+      render();
+      try { state.cleanup = { loading: false, result: await api.run('cleanup-preview', { session }), error: '' }; }
+      catch (error) { state.cleanup = { loading: false, result: null, error: error.message }; }
+      render();
+    };
+    document.querySelector('#cleanup-all').addEventListener('click', event => {
+      if (event.target.closest('[data-cleanup="preview"]')) runCleanupPreview();
+    });
+
+    // ---- Snapshot-backed views (Workspaces and Archives) ----
+    const syncSnapshotSelect = () => {
+      const select = document.querySelector('#snapshot-session');
+      const names = (restart.sessions || []).filter(session => session.selectable).map(session => session.name);
+      if (!names.includes(state.snapshotSession)) state.snapshotSession = names.includes(state.data?.herdr_session) ? state.data.herdr_session : (names[0] || '');
+      select.innerHTML = names.length ? names.map(name => `<option value="${escapeHtml(name)}" ${name === state.snapshotSession ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('') : '<option value="">No running session</option>';
+      select.disabled = !names.length;
+    };
     const load = async () => {
       try {
-        const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        state.data = await response.json(); render();
+        let data;
+        try { data = await api.run('snapshot-data'); }
+        catch (apiError) {
+          const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          data = await response.json();
+        }
+        state.data = data; render();
       } catch (error) {
         state.data = { workspaces: [], archives: [] }; render();
-        document.querySelector('#workspaces').innerHTML = '<div class="empty">Run <code>herdr-organizer snapshot</code>, then reload this page. The viewer never changes Herdr itself.</div>';
+        document.querySelector('#workspaces').innerHTML = '<div class="empty">Refresh the snapshot, then reload this page. The viewer never changes Herdr itself.</div>';
         document.querySelector('#updated').textContent = 'Snapshot unavailable';
       }
     };
@@ -313,9 +732,14 @@ created: 2026-09-10
       button.disabled = true;
       button.textContent = 'Refreshing…';
       try {
-        const response = await fetch('/api/herdr-workspace-organizer/snapshot', { method: 'POST' });
-        const result = await response.json();
-        if (!response.ok || result.status !== 'ok') throw new Error(result.message || `HTTP ${response.status}`);
+        if (!restart.sessions) await loadSessions();
+        syncSnapshotSelect();
+        if (state.snapshotSession) await api.run('snapshot', { session: state.snapshotSession });
+        else {
+          const response = await fetch('/api/herdr-workspace-organizer/snapshot', { method: 'POST' });
+          const result = await response.json();
+          if (!response.ok || result.status !== 'ok') throw new Error(result.message || `HTTP ${response.status}`);
+        }
         await load();
         showToast('Live snapshot refreshed');
       } catch (error) {
@@ -328,7 +752,17 @@ created: 2026-09-10
     };
     document.querySelector('#search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); render(); });
     document.querySelector('#reload').addEventListener('click', refreshSnapshot);
-    refreshSnapshot();
+    document.querySelector('#snapshot-session').addEventListener('change', event => { state.snapshotSession = event.target.value; refreshSnapshot(); });
+    let snapshotRequested = false;
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+      state.view = button.dataset.view;
+      render();
+      if (state.view !== 'restart') {
+        syncSnapshotSelect();
+        if (!snapshotRequested) { snapshotRequested = true; refreshSnapshot(); }
+      }
+    }));
+    (async () => { await loadSessions(); load(); })();
   </script>
 </body>
 </html>
