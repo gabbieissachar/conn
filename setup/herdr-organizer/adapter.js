@@ -23,6 +23,17 @@ class AdapterError extends Error {
   }
 }
 
+const minutes = (ms) => Math.round(ms / 60000);
+const VERIFY_TIMEOUT_MS = 900000;
+const PREFLIGHT_TIMEOUT_MS = 600000;
+const SEAL_TIMEOUT_MS = 900000;
+
+// A tool run that was killed for taking too long gets its own message, so a busy
+// machine is not mistaken for a broken tool.
+function timeoutError(what, ms) {
+  return new AdapterError(what + ' did not finish within ' + minutes(ms) + ' minutes, so it was stopped. The machine is probably busy. Try again when it is quieter.', 504, 'timeout');
+}
+
 // A stopped session on this machine is literally named "-h", so a name must
 // never be able to start with a dash and be read as an option.
 const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -156,10 +167,11 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   }
 
   async function verifyReportRun(session) {
-    const result = await runner(pythonBin, [registryScript, 'verify-identity', '--herdr-session', session], { env: runEnv(), timeoutMs: 900000 });
+    const result = await runner(pythonBin, [registryScript, 'verify-identity', '--herdr-session', session], { env: runEnv(), timeoutMs: VERIFY_TIMEOUT_MS });
     const report = parse.parseVerifierReport(result.stdout);
     if (report.rows.length === 0 && report.summary.total === null) {
-      throw new AdapterError(result.stderr || result.stdout || 'The identity verifier returned nothing.', 502, 'verifier_failed');
+      if (result.timedOut) throw timeoutError('The identity check', VERIFY_TIMEOUT_MS);
+      throw new AdapterError(result.stderr || result.stdout || 'The identity verifier returned nothing (exit code ' + result.code + ').', 502, 'verifier_failed');
     }
     let panes = [];
     try { panes = await readPanes(session); } catch { panes = []; }
@@ -216,10 +228,11 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   }
 
   async function runPreflightOnce(sessions, acks) {
-    const result = await runner(pythonBin, preflightArgs(sessions, acks, { preflightOnly: true }), { env: runEnv(), timeoutMs: 600000 });
+    const result = await runner(pythonBin, preflightArgs(sessions, acks, { preflightOnly: true }), { env: runEnv(), timeoutMs: PREFLIGHT_TIMEOUT_MS });
     const parsed = parse.parsePreflight(result.stdout);
     if (parsed.ready_to_seal === null) {
-      throw new AdapterError(result.stderr || result.stdout || 'The preflight returned nothing.', 502, 'preflight_failed');
+      if (result.timedOut) throw timeoutError('The preflight', PREFLIGHT_TIMEOUT_MS);
+      throw new AdapterError(result.stderr || result.stdout || 'The preflight returned nothing (exit code ' + result.code + ').', 502, 'preflight_failed');
     }
     return parsed;
   }
@@ -302,8 +315,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   async function applyVerified(sessionName, confirm) {
     const session = await requireSession(sessionName);
     requireConfirm(confirm, 'apply:' + session);
-    const result = await runner(pythonBin, [registryScript, 'verify-identity', '--herdr-session', session, '--apply'], { env: runEnv(), timeoutMs: 900000 });
+    const result = await runner(pythonBin, [registryScript, 'verify-identity', '--herdr-session', session, '--apply'], { env: runEnv(), timeoutMs: VERIFY_TIMEOUT_MS });
     const applied = parse.parseApplyResult(result.stdout);
+    if (applied.written === null && result.timedOut) throw timeoutError('Applying the verified identities', VERIFY_TIMEOUT_MS);
     if (applied.written === null) throw new AdapterError(result.stderr || result.stdout || 'The apply step returned nothing.', 502, 'apply_failed');
     return { session, written: applied.written, skipped: applied.skipped, initially_verified: applied.initially_verified, applied_at: new Date().toISOString() };
   }
@@ -365,8 +379,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     const sessions = await requireSessions(sessionNames);
     requireConfirm(confirm, 'seal:' + sessions.join(','));
     const acks = await validatedAcks(sessions, requestedAcks);
-    const result = await runner(pythonBin, preflightArgs(sessions, acks, { preflightOnly: false }), { env: runEnv(), timeoutMs: 900000 });
+    const result = await runner(pythonBin, preflightArgs(sessions, acks, { preflightOnly: false }), { env: runEnv(), timeoutMs: SEAL_TIMEOUT_MS });
     const sealed = parse.parseSealResult(result.stdout);
+    if (!sealed && result.timedOut) throw new AdapterError('Sealing did not finish within ' + minutes(SEAL_TIMEOUT_MS) + ' minutes and was stopped. Refresh the bundle list before trying again: a bundle is only usable once it shows as sealed.', 504, 'timeout');
     if (sealed) return { sealed: true, bundle_id: sealed.bundle_id, session_count: sealed.session_count, sealed_at: new Date().toISOString() };
     const preflightResult = parse.parsePreflight(result.stdout);
     if (preflightResult.ready_to_seal === false) throw new AdapterError('The preflight failed, so no bundle was sealed. Check again for the current failures.', 409, 'preflight_failed');

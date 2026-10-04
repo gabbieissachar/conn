@@ -345,3 +345,23 @@ test('snapshot-data: serves the snapshot from the tool root and refuses one that
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a tool run that is stopped for taking too long is reported as a timeout, not as a broken tool', async () => {
+  const slow = { code: -1, stdout: '', stderr: '', timedOut: true, truncated: false };
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('verify-identity') || args.includes('prepare-restart-recovery') ? slow : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const verify = await post('verify', { session: 'project-a' });
+    assert.equal(verify.status, 504);
+    assert.equal(verify.json.code, 'timeout');
+    assert.match(verify.json.message, /did not finish within 15 minutes/);
+    const preflight = await post('preflight', { sessions: ['project-a'] });
+    assert.equal(preflight.status, 504);
+    assert.match(preflight.json.message, /10 minutes/);
+    const apply = await post('verify-apply', { session: 'project-a', confirm: 'apply:project-a' });
+    assert.equal(apply.status, 504);
+    const seal = await post('seal-bundle', { sessions: ['project-a'], confirm: 'seal:project-a' });
+    assert.equal(seal.json.code, 'timeout', 'an unacknowledged seal that timed out is also reported as a timeout');
+  } finally { await server.close(); }
+});

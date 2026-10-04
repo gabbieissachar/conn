@@ -158,7 +158,7 @@ The page is built against the interface as it exists today, through the adapter.
 
 ## Findings from real runs
 
-- The identity verifier is slow on a busy machine: about 40 s of CPU, and several minutes of wall time with a load average near 30. The server allows 15 minutes, shares one run between identical in-flight requests (a page reload or second tab does not start another), and the page does not auto-run it on load. It shows the elapsed time while it waits.
+- The identity verifier is slow on a busy machine: about 40 s of CPU, and several minutes of wall time with a load average near 30. The server allows 15 minutes for the verifier (10 for the preflight), shares one run between identical in-flight requests (a page reload or second tab does not start another), and the page does not auto-run it on load. It shows the elapsed time while it waits. A run that is stopped for taking too long is reported as a timeout (HTTP 504) rather than as a broken tool; on a machine with a load average above 100 the first real check on this machine hit that limit.
 - The preflight reads the registry manifest next to the tool scripts. A scratch copy of the scripts without that manifest reports every agent as unverified, so isolated copies are for writes only; read-only checks against a real session use the real tool root.
 - A stopped Herdr session on this machine is literally named `-h`; session names are therefore never allowed to start with a dash.
 
