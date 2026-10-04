@@ -10,6 +10,7 @@
 
 const { spawn } = require('child_process');
 const fsp = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const parse = require('./parse');
 const { scrub, findLeaks } = require('./text');
@@ -28,6 +29,7 @@ const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_SESSIONS = 8;
 const WORKSPACE_ID_RE = /^w[A-Za-z0-9]{1,10}$/;
 const CLEANUP_CONCURRENCY = 4;
+const BUNDLE_ID_RE = /^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}$/;
 const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 const SESSION_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const CLIENTS = new Set(['claude', 'codex']);
@@ -371,6 +373,78 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     throw new AdapterError(result.stderr || result.stdout || 'Sealing returned nothing.', 502, 'seal_failed');
   }
 
+  // ---- After the restart: sealed bundles and the reconcile preview ----
+
+  const bundleDir = () => path.join(toolRoot, 'state', 'workspace-organizer', 'restart-recovery', 'bundles');
+  const journalDir = () => path.join(toolRoot, 'state', 'workspace-organizer', 'restart-recovery', 'journals');
+  const exists = (file) => fsp.stat(file).then(() => true, () => false);
+
+  // Bundles on disk, newest first. Only the id, time, bundled session names and
+  // readiness are returned: a manifest also carries folders, which stay private.
+  async function listBundles() {
+    let names = [];
+    try { names = await fsp.readdir(bundleDir()); } catch { names = []; }
+    let running = new Set();
+    try { running = new Set((await listSessions()).filter((item) => item.running).map((item) => item.name)); } catch { running = new Set(); }
+    const boot = Date.now() - os.uptime() * 1000;
+    const bundles = [];
+    for (const name of names.filter((item) => BUNDLE_ID_RE.test(item)).sort().reverse()) {
+      let manifest = null;
+      try { manifest = JSON.parse(await fsp.readFile(path.join(bundleDir(), name, 'manifest.json'), 'utf8')); } catch { manifest = null; }
+      const sessions = manifest && Array.isArray(manifest.sessions)
+        ? manifest.sessions.map((item) => item && item.identity && item.identity.herdr_session).filter((item) => typeof item === 'string' && SESSION_NAME_RE.test(item))
+        : [];
+      const createdAt = manifest && typeof manifest.created_at === 'string' ? manifest.created_at : '';
+      let journalStatus = '';
+      try {
+        const journal = JSON.parse(await fsp.readFile(path.join(journalDir(), name + '.json'), 'utf8'));
+        if (journal && typeof journal.status === 'string' && /^[a-z_]{1,40}$/.test(journal.status)) journalStatus = journal.status;
+        else journalStatus = 'unknown';
+      } catch { journalStatus = ''; }
+      const created = Date.parse(createdAt);
+      bundles.push({
+        bundle_id: name,
+        created_at: createdAt,
+        ready: Boolean(manifest) && manifest.state === 'sealed' && await exists(path.join(bundleDir(), name, 'ready')),
+        sessions: sessions.map((session) => ({ name: session, running: running.has(session) })),
+        // True once the computer has booted since the bundle was sealed.
+        before_boot: Number.isFinite(created) ? created < boot : null,
+        journal_status: journalStatus,
+      });
+    }
+    return { generated_at: new Date().toISOString(), boot_time: new Date(boot).toISOString(), bundles };
+  }
+
+  // Read-only: `reconcile-all` without --confirm adopts nothing and creates no journal.
+  // The confirm and rollback commands are built here from the validated id and copied by the user.
+  async function reconcilePreview(bundleId) {
+    if (typeof bundleId !== 'string' || !BUNDLE_ID_RE.test(bundleId)) throw new AdapterError('Invalid bundle.');
+    const { bundles } = await listBundles();
+    const bundle = bundles.find((item) => item.bundle_id === bundleId);
+    if (!bundle || !bundle.ready) throw new AdapterError('That bundle was not found or is not sealed.', 404, 'bundle_missing');
+    const notRunning = bundle.sessions.filter((item) => !item.running).map((item) => item.name);
+    if (notRunning.length) throw new AdapterError('Attach ' + notRunning.join(', ') + ' in a terminal first. Recovery never starts a session for you.', 409, 'not_attached');
+    const result = await runner(pythonBin, [organizerScript, 'reconcile-all', '--bundle', bundleId], { env: runEnv(), timeoutMs: 300000 });
+    const sessions = result.code === 0 ? parse.parseReconcilePreview(result.stdout) : null;
+    if (!sessions) throw new AdapterError(result.stderr || result.stdout || 'The reconcile preview returned nothing.', /not attached/i.test(result.stderr) ? 409 : 502, /not attached/i.test(result.stderr) ? 'not_attached' : 'preview_failed');
+    const totals = sessions.reduce((sum, item) => ({ adopt: sum.adopt + item.adopt, rebuild: sum.rebuild + item.rebuild, ambiguous: sum.ambiguous + item.ambiguous, other: sum.other + item.other }), { adopt: 0, rebuild: 0, ambiguous: 0, other: 0 });
+    const base = 'herdr-organizer reconcile-all --bundle ' + bundleId;
+    return {
+      bundle_id: bundleId,
+      generated_at: new Date().toISOString(),
+      sessions,
+      totals,
+      // Copy-only: these change live Herdr, so the page never runs them.
+      commands: {
+        confirm: base + ' --confirm ' + bundleId,
+        confirm_resume: base + ' --confirm ' + bundleId + ' --resume-agents',
+        confirm_extra_copy: totals.ambiguous ? base + ' --confirm ' + bundleId + ' --copy-ambiguous --confirm-extra copy:' + bundleId : '',
+        rollback_preview: 'herdr-organizer rollback-reconcile --bundle ' + bundleId,
+        rollback: 'herdr-organizer rollback-reconcile --bundle ' + bundleId + ' --confirm ' + bundleId,
+      },
+    };
+  }
+
   // Read-only preview of `cleanup-empty-tabs` for every workspace of one session.
   // The workspace ids come from the live pane list and must match a fixed pattern;
   // nothing from the browser except the validated session name is used. The
@@ -440,6 +514,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     applyVerified,
     saveManualIdentity,
     sealBundle,
+    listBundles,
+    reconcilePreview,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

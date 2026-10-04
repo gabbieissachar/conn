@@ -103,6 +103,9 @@ The leak scan and the masking are covered by tests that plant fake leaks.
 
 ## Sessions and the restart gap
 
+Bundles are listed from the tool's own private folder (`bundles` action): only the id, time, bundled session names and readiness are returned, never the folders in a manifest. Whether the computer has restarted since a bundle was sealed comes from the bundle's seal time against the machine's boot time, so it survives the browser and the server restarting. A bundle whose reconcile journal already exists is a finished cycle: a fresh check on the page starts a new one.
+`reconcile-preview` runs the tool's own read-only `reconcile-all --bundle ID` (never `--confirm`) once every bundled session is running, and returns adopt, rebuild and ambiguous counts per session plus the copy-only confirm, resume, rollback and extra-copy commands, built from the validated id.
+
 Pane ids are unique only inside one session, so every action uses `session + pane`.
 The browser's memory does not survive a restart, so the page derives the current step from real state:
 
@@ -170,3 +173,4 @@ The page is built against the interface as it exists today, through the adapter.
 
 - Phase 1 (read-only views, share report, clean up empty tabs in every workspace): done. 48 server tests pass. Driven in a browser at desktop and 390 px width against the real `esim` session and captured real verifier and preflight output.
 - Phase 2 (guarded actions: apply verified identities, manual identity form, per-item acknowledgements and seal): done. Each action needs a confirm token and runs one at a time. 64 server tests and 9 store-check tests pass; the real registry write is covered by the integration test (private 0600 file in a 0700 directory, duplicate and folder guards). Driven in a browser against a fixture-backed server: apply confirm, folder-differs override, masked result, acknowledgement ticks, re-check, seal.
+- Phase 3 (sealed bundle list, restart checklist derived from machine state, reconcile preview and copy-only confirm and rollback commands): done. 69 server tests pass. The checklist, the not-attached state, the preview counts and the copy buttons were driven in a browser against a fixture-backed server with temporary bundles, at desktop and 390 px width. HTML in labels was confirmed to render as text.

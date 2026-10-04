@@ -175,6 +175,20 @@ created: 2026-09-10
     .small-btn { padding: 6px 9px; font-size: 11px; }
     .ack { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--navy); cursor: pointer; }
     .ack input { margin: 0; accent-color: var(--purple); }
+    .checklist { display: grid; }
+    .step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: start; gap: 2px 12px; padding: 11px 0; border-top: 1px solid #eef1f6; }
+    .step:first-child { border-top: 0; padding-top: 0; }
+    .step:last-child { padding-bottom: 0; }
+    .dot { display: grid; place-items: center; width: 22px; height: 22px; margin-top: 1px; border: 1.5px solid #cbd3e0; border-radius: 50%; background: var(--paper); color: var(--muted); font: 600 11px "DM Mono", monospace; }
+    .step.done .dot { color: #fff; background: var(--mint); border-color: var(--mint); }
+    .step.current .dot { color: #fff; background: var(--purple); border-color: var(--purple); }
+    .step strong { font-size: 13px; letter-spacing: -.01em; }
+    .step.pending strong { color: var(--muted); font-weight: 600; }
+    .step .detail { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .step .tail { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+    .attach-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
+    .attach-row code { font: 11px "DM Mono", monospace; color: var(--navy); }
+    .outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 12px 0; }
     .btn-row button.danger { color: #a9273b; background: #ffe6ea; }
     .btn-row button.danger:hover { background: #ffd7dd; }
     .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
@@ -424,7 +438,7 @@ created: 2026-09-10
         return body.data;
       }
     };
-    const restart = { acks: { volatile: new Set(), mixed: new Set() }, ackKey: '', confirm: null, applyResult: {}, manual: {}, seal: null, sealing: false, applying: false, checkStarted: 0, timer: null, sessions: null, selected: new Set(), checking: false, checkedAt: null, verify: {}, preflight: null, includeLabels: false, share: null, sharing: false, error: '', open: {} };
+    const restart = { bundles: null, bundlesError: '', selectedBundle: '', reconcile: null, acks: { volatile: new Set(), mixed: new Set() }, ackKey: '', confirm: null, applyResult: {}, manual: {}, seal: null, sealing: false, applying: false, checkStarted: 0, timer: null, sessions: null, selected: new Set(), checking: false, checkedAt: null, verify: {}, preflight: null, includeLabels: false, share: null, sharing: false, error: '', open: {} };
     const CLASS_LABELS = { native_verified: ['Verified · native', 'good'], argv_verified: ['Verified · command line', 'good'], handle_verified: ['Verified · open handle', 'good'], pid_record_verified: ['Verified · process record', 'good'], candidate_ambiguous: ['Ambiguous', 'warn'], unresolved: ['Unresolved', 'bad'] };
     const EVIDENCE_LABELS = { argv_exact: 'command line match', cwd_candidate: 'same folder', native_claude: 'Claude native report', native_codex: 'Codex native report', store_header: 'store header agrees', open_handle: 'open file handle', pid_record: 'process record' };
     const FAILURE_COPY = {
@@ -588,18 +602,118 @@ created: 2026-09-10
       </div></article>`;
     };
 
+    const fmtTime = iso => (iso ? new Date(iso).toLocaleString() : 'an unknown time');
+    const readyBundles = () => (restart.bundles?.bundles || []).filter(bundle => bundle.ready);
+    const activeBundle = () => readyBundles().find(bundle => bundle.bundle_id === restart.selectedBundle) || readyBundles()[0] || null;
+    // The bundle the checklist follows. A bundle whose reconcile has already been recorded is a finished cycle,
+    // so a fresh check on this page starts a new one instead of showing the old bundle as this restart's.
+    const cycleBundle = () => {
+      const bundle = activeBundle();
+      return bundle && bundle.journal_status && restart.checkedAt ? null : bundle;
+    };
+    const attachCommand = name => `herdr session attach ${name}`;
+
+    // Every step is derived from what the machine reports (checks, bundles on disk, running sessions, journals),
+    // never from boxes the page remembers, so it still reads correctly after a restart.
+    const checklistSteps = () => {
+      const names = selectedSessionNames();
+      const verifyEntries = names.map(name => restart.verify[name]?.data).filter(Boolean);
+      const checked = names.length > 0 && verifyEntries.length === names.length && Boolean(restart.preflight?.data);
+      const manualLeft = verifyEntries.reduce((total, data) => total + data.rows.filter(row => !row.verified && !restart.manual[manualKey(data.session, row.pane_id)]?.saved).length, 0);
+      const preflight = restart.preflight?.data;
+      const bundle = cycleBundle();
+      const covered = Boolean(bundle && !bundle.journal_status);
+      const restarted = Boolean(bundle && bundle.before_boot === true);
+      const notRunning = bundle ? bundle.sessions.filter(session => !session.running).map(session => session.name) : [];
+      const previewed = Boolean(bundle && restart.reconcile?.data && restart.reconcile.data.bundle_id === bundle.bundle_id);
+      const steps = [
+        { title: 'Check identities and preflight', done: checked || covered, detail: checked ? `${plural(names.length, 'session')} checked.` : (covered ? 'Covered by the sealed bundle.' : 'Select the sessions above and check them.') },
+        { title: 'Resolve agents that stay manual', done: checked ? manualLeft === 0 : covered, wait: !checked && !covered, detail: checked ? (manualLeft ? `${plural(manualLeft, 'agent pane')} still without a verified identity. Apply verified identities, then set the rest by hand.` : 'Every agent pane has an identity.') : (covered ? 'Covered by the sealed bundle.' : 'Needs the check first.') },
+        { title: 'Preflight passes', done: checked ? Boolean(preflight?.ready_to_seal) : covered, wait: !checked && !covered, detail: checked ? (preflight?.ready_to_seal ? 'Nothing blocks sealing a bundle.' : `${plural(failureTotal(preflight), 'thing')} to resolve or acknowledge.`) : (covered ? 'Covered by the sealed bundle.' : 'Needs the check first.') },
+        { title: 'Seal a restart bundle', done: Boolean(bundle), wait: !preflight?.ready_to_seal && !bundle, detail: bundle ? `Sealed ${fmtTime(bundle.created_at)} for ${bundle.sessions.map(session => session.name).join(', ') || 'no sessions'}.` : (preflight?.ready_to_seal ? 'Ready. Seal it from the preflight card.' : 'Needs a passing preflight.') },
+        { title: 'Restart the computer', done: restarted, wait: !bundle, detail: restarted ? 'The computer has booted since the bundle was sealed.' : (bundle ? 'Your move. Restart only after the bundle shows as sealed.' : 'Only after a bundle is sealed.') },
+        { title: 'Attach each bundled session', done: restarted && !notRunning.length, wait: !restarted, detail: !restarted ? 'After the restart, attach each bundled session in a terminal.' : (notRunning.length ? `Not running yet: ${notRunning.join(', ')}. Attach each in a terminal.` : 'Every bundled session is running.') },
+        { title: 'Preview the reconcile', done: previewed, wait: !restarted || Boolean(notRunning.length), detail: previewed ? 'Preview ran. Read the counts below.' : 'Read-only. Shows what would be adopted, rebuilt or left alone.' },
+        { title: 'Confirm in a terminal', done: Boolean(bundle && bundle.journal_status), wait: !previewed && !(bundle && bundle.journal_status), detail: bundle && bundle.journal_status ? `A reconcile journal exists (${bundle.journal_status.replace(/_/g, ' ')}). Check its recorded verification result.` : 'The page shows the exact command. You run it.' }
+      ];
+      const next = steps.findIndex(step => !step.done);
+      return steps.map((step, index) => ({ ...step, state: step.done ? 'done' : (index === next ? 'current' : 'pending') }));
+    };
+    const checklistView = () => {
+      const steps = checklistSteps();
+      return `<article class="card"><div class="card-head"><h3>Restart checklist</h3><span class="pill">from what the machine reports</span></div><div class="card-body"><div class="checklist">${steps.map((step, index) => `<div class="step ${step.state}"><span class="dot">${step.state === 'done' ? '✓' : index + 1}</span><div><strong>${escapeHtml(step.title)}</strong><div class="detail">${escapeHtml(step.detail)}</div></div><div class="tail">${step.state === 'current' ? '<span class="pill">next</span>' : ''}</div></div>`).join('')}</div></div></article>`;
+    };
+
+    const restoreCardView = () => {
+      const all = readyBundles();
+      if (!all.length) return '';
+      const bundle = activeBundle();
+      const notRunning = bundle.sessions.filter(session => !session.running).map(session => session.name);
+      const reconcile = restart.reconcile && restart.reconcile.bundle_id === bundle.bundle_id ? restart.reconcile : null;
+      const options = all.map(item => `<option value="${escapeHtml(item.bundle_id)}" ${item.bundle_id === bundle.bundle_id ? 'selected' : ''}>${escapeHtml(fmtTime(item.created_at))} · ${escapeHtml(item.sessions.map(session => session.name).join(', '))}</option>`).join('');
+      const chips = bundle.sessions.map(session => `<span class="status ${session.running ? 'idle' : 'needs-registration'}">${escapeHtml(session.name)} ${session.running ? 'running' : 'not running'}</span>`).join(' ');
+      let body = '';
+      if (reconcile && reconcile.loading) body = '<div class="skeleton" style="margin-top:12px"></div>';
+      else if (reconcile && reconcile.error) body = `<div class="scope-note error" style="margin-top:12px">${escapeHtml(reconcile.error)}</div>`;
+      else if (reconcile && reconcile.data) {
+        const data = reconcile.data;
+        const outcome = (value, label, text, tone) => `<div class="mini ${tone}"><span>${label}</span><strong>${value}</strong><span style="margin-top:4px">${text}</span></div>`;
+        const commandRow = (label, command, kind) => `<div class="btn-row"><button type="button" ${kind === 'danger' ? 'class="danger"' : (kind === 'primary' ? 'class="primary-btn"' : '')} data-command="${escapeHtml(command)}">${escapeHtml(label)}</button></div><pre class="command-box">${escapeHtml(command)}</pre>`;
+        body = `<div class="outcome-grid">${outcome(data.totals.adopt, 'Adopt', 'Herdr already restored these workspaces. Nothing is rebuilt.', 'good')}${outcome(data.totals.rebuild, 'Rebuild', 'Proven missing. Confirming recreates them.', data.totals.rebuild ? 'warn' : '')}${outcome(data.totals.ambiguous, 'Ambiguous', 'More than one possible match. Left alone unless you choose an extra copy.', data.totals.ambiguous ? 'bad' : '')}</div>
+          <div class="tab-meta" style="margin:0 0 10px">${data.sessions.map(item => `${escapeHtml(item.session)}: ${item.adopt} adopt, ${item.rebuild} rebuild, ${item.ambiguous} ambiguous`).join(' &nbsp;|&nbsp; ')}</div>
+          <div class="scope-note">Confirming changes live Herdr: it rebuilds the workspaces listed above. The page never runs it. Run it in a terminal, then check the recorded verification result.</div>
+          ${commandRow('Copy confirm command (layouts only)', data.commands.confirm, 'primary')}
+          ${commandRow('Copy confirm and resume agents', data.commands.confirm_resume, 'plain')}
+          <details class="fold" data-fold="restore-more" ${restart.open['restore-more'] ? 'open' : ''} style="margin-top:14px"><summary><span class="group-title">Other commands <span class="count-pill">rollback and extra copy</span></span></summary>
+            <div class="tab-meta" style="margin:6px 0">Rollback closes only workspaces this bundle's journal created. It never closes adopted workspaces. Preview it first.</div>
+            ${commandRow('Copy rollback preview', data.commands.rollback_preview, 'plain')}
+            ${commandRow('Copy rollback (closes created workspaces)', data.commands.rollback, 'danger')}
+            ${data.commands.confirm_extra_copy ? `<div class="tab-meta" style="margin:10px 0 6px">Ambiguous workspaces are skipped. A deliberate extra copy rebuilds them next to the existing ones.</div>${commandRow('Copy confirm with extra copies', data.commands.confirm_extra_copy, 'danger')}` : ''}
+          </details>`;
+      }
+      const attach = notRunning.length ? `<div class="scope-note">Attach ${escapeHtml(notRunning.join(', '))} before the preview. Recovery never starts a session for you.</div>${notRunning.map(name => `<div class="attach-row"><code>${escapeHtml(attachCommand(name))}</code><button type="button" class="small-btn" data-command="${escapeHtml(attachCommand(name))}">Copy</button></div>`).join('')}` : '';
+      return `<article class="card"><div class="card-head"><h3>After the restart</h3><span class="pill ${bundle.before_boot ? 'good' : ''}">${bundle.before_boot ? 'computer restarted' : 'sealed this boot'}</span></div><div class="card-body">
+        <p class="lede">The sealed bundle is how the page knows where you are. After the restart, attach each bundled session in a terminal, preview the reconcile here, then confirm it in a terminal.</p>
+        <div class="share-options">${all.length > 1 ? `<label class="field" style="min-width:260px">Bundle<select data-action="bundle-select">${options}</select></label>` : `<span class="tab-meta" style="margin:0">Sealed ${escapeHtml(fmtTime(bundle.created_at))}</span>`}<span class="tab-meta" style="margin:0">${chips}</span></div>
+        ${attach}
+        <div class="btn-row"><button type="button" class="primary-btn" data-action="reconcile-preview" ${notRunning.length || (reconcile && reconcile.loading) ? 'disabled' : ''}>${reconcile && reconcile.loading ? 'Previewing…' : (reconcile && reconcile.data ? 'Preview again' : 'Run reconcile preview')}</button><button type="button" data-action="bundles-refresh">Refresh</button><button type="button" data-action="copy-bundle-id" data-id="${escapeHtml(bundle.bundle_id)}">Copy bundle ID</button></div>
+        ${body}
+        <div class="tab-meta" style="margin-top:14px">Keep the bundle and the reconcile journal until you accept the result, then delete them under your own retention policy. They hold folders and resume details, so never commit, upload or share them.</div>
+      </div></article>`;
+    };
+    const loadBundles = async () => {
+      try {
+        restart.bundles = await api.run('bundles');
+        restart.bundlesError = '';
+        if (!readyBundles().some(bundle => bundle.bundle_id === restart.selectedBundle)) restart.selectedBundle = readyBundles()[0]?.bundle_id || '';
+      } catch (error) { restart.bundlesError = error.message; }
+      renderRestart();
+    };
+    const previewReconcile = async () => {
+      const bundle = activeBundle();
+      if (!bundle) return;
+      restart.reconcile = { bundle_id: bundle.bundle_id, loading: true };
+      renderRestart();
+      try { restart.reconcile = { bundle_id: bundle.bundle_id, data: await api.run('reconcile-preview', { bundle: bundle.bundle_id }) }; }
+      catch (error) { restart.reconcile = { bundle_id: bundle.bundle_id, error: error.message }; }
+      await loadBundles();
+    };
     const renderRestart = () => {
       const root = document.querySelector('#restart-section');
       if (!root) return;
       const focus = document.activeElement && root.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
       const names = selectedSessionNames();
+      const restore = restoreCardView();
       const stamp = restart.checkedAt ? `Checked ${restart.checkedAt.toLocaleTimeString()}` : 'Not checked yet';
       root.innerHTML = `<div class="restart">
         <div><div class="section-heading" style="margin-top:0"><h2>Sessions in this restart</h2><span class="updated">${escapeHtml(stamp)}</span></div>${scopeView()}</div>
-        ${names.length && !restart.checking && !restart.checkedAt ? '<article class="card"><div class="card-head"><h3>Before you restart</h3><span class="pill">nothing is changed</span></div><div class="card-body"><p class="lede">Check the selected sessions. The page runs two read-only checks: which agents have an identity it can prove, so they can be resumed after the restart, and whether a restart bundle could be sealed right now. The identity check can take a few minutes on a busy machine.</p></div></article>' : ''}
-        ${names.length && (restart.checking || restart.checkedAt) ? `<div><div class="section-heading" style="margin-top:0"><h2>1 · Identities</h2><span class="updated">The check is read only. Applying is a separate step.</span></div><div class="restart">${names.map(identityCardView).join('')}</div></div>
-        <div><div class="section-heading" style="margin-top:0"><h2>2 · Preflight</h2><span class="updated">The check is read only. Sealing is a separate step.</span></div>${preflightCardView()}</div>
+        ${checklistView()}
+        ${names.length && !restart.checking && !restart.checkedAt && !cycleBundle() ? '<article class="card"><div class="card-head"><h3>Before you restart</h3><span class="pill">nothing is changed</span></div><div class="card-body"><p class="lede">Check the selected sessions. The page runs two read-only checks: which agents have an identity it can prove, so they can be resumed after the restart, and whether a restart bundle could be sealed right now. The identity check can take a few minutes on a busy machine.</p></div></article>' : ''}
+        ${names.length && (restart.checking || restart.checkedAt) ? `<div><div class="section-heading" style="margin-top:0"><h2>Identities</h2><span class="updated">The check is read only. Applying is a separate step.</span></div><div class="restart">${names.map(identityCardView).join('')}</div></div>
+        <div><div class="section-heading" style="margin-top:0"><h2>Preflight</h2><span class="updated">The check is read only. Sealing is a separate step.</span></div>${preflightCardView()}</div>
         <div><div class="section-heading" style="margin-top:0"><h2>Share</h2></div>${shareCardView()}</div>` : ''}
+        ${restore ? `<div><div class="section-heading" style="margin-top:0"><h2>After the restart</h2><span class="updated">Preview is read only. Confirming is yours to run.</span></div>${restore}</div>` : ''}
+        ${restart.bundlesError ? `<div class="scope-note error">${escapeHtml(restart.bundlesError)}</div>` : ''}
       </div>`;
       if (focus) root.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus();
     };
@@ -695,6 +809,7 @@ created: 2026-09-10
       restart.sealing = false;
       restart.confirm = null;
       renderRestart();
+      loadBundles();
     };
     const saveManualIdentity = async key => {
       const entry = restart.manual[key];
@@ -747,6 +862,8 @@ created: 2026-09-10
 
     const restartRoot = document.querySelector('#restart-section');
     restartRoot.addEventListener('click', event => {
+      const command = event.target.closest('[data-command]');
+      if (command) { copy(command.dataset.command); return; }
       const target = event.target.closest('[data-action]');
       if (!target || target.tagName === 'INPUT') return;
       const action = target.dataset.action;
@@ -757,6 +874,9 @@ created: 2026-09-10
       else if (action === 'seal-confirm') sealBundle();
       else if (action === 'confirm-cancel') { restart.confirm = null; renderRestart(); }
       else if (action === 'preflight-recheck') recheckPreflight();
+      else if (action === 'reconcile-preview') previewReconcile();
+      else if (action === 'bundles-refresh') loadBundles();
+      else if (action === 'copy-bundle-id') copy(target.dataset.id, 'Bundle ID copied');
       else if (action === 'copy-bundle' && restart.seal?.data) copy(restart.seal.data.bundle_id, 'Bundle ID copied');
       else if (action === 'manual-open') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, false);
       else if (action === 'manual-goto') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, true);
@@ -783,6 +903,9 @@ created: 2026-09-10
       if (!target) return;
       if (target.dataset.action === 'toggle-session') {
         if (target.checked) restart.selected.add(target.dataset.session); else restart.selected.delete(target.dataset.session);
+        renderRestart();
+      } else if (target.dataset.action === 'bundle-select') {
+        restart.selectedBundle = target.value;
         renderRestart();
       } else if (target.dataset.action === 'ack-toggle') {
         const set = target.dataset.flag === 'volatile-pane' ? restart.acks.volatile : restart.acks.mixed;
@@ -924,7 +1047,7 @@ created: 2026-09-10
         if (!snapshotRequested) { snapshotRequested = true; refreshSnapshot(); }
       }
     }));
-    (async () => { await loadSessions(); load(); })();
+    (async () => { await loadSessions(); loadBundles(); load(); })();
   </script>
 </body>
 </html>

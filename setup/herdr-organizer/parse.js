@@ -194,6 +194,28 @@ function parseCleanupPreview(stdout) {
   };
 }
 
+// `reconcile-all --bundle ID` without --confirm prints {"sessions": [{"session", "workspaces": {action: count}}]}
+// and a "Preview only" line. It is read-only.
+function parseReconcilePreview(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/);
+  const start = lines.indexOf('{');
+  if (start === -1) return null;
+  let end = -1;
+  for (let i = start + 1; i < lines.length; i += 1) if (lines[i] === '}') { end = i; break; }
+  if (end === -1) return null;
+  let value;
+  try { value = JSON.parse(lines.slice(start, end + 1).join('\n')); } catch { return null; }
+  if (!value || !Array.isArray(value.sessions)) return null;
+  return value.sessions
+    .filter((item) => item && typeof item.session === 'string' && item.workspaces && typeof item.workspaces === 'object')
+    .map((item) => {
+      const count = (name) => (Number.isInteger(item.workspaces[name]) ? item.workspaces[name] : 0);
+      const known = ['adopt', 'rebuild', 'ambiguous'];
+      const other = Object.entries(item.workspaces).filter(([name]) => !known.includes(name)).reduce((total, [, value]) => total + (Number.isInteger(value) ? value : 0), 0);
+      return { session: item.session, adopt: count('adopt'), rebuild: count('rebuild'), ambiguous: count('ambiguous'), other };
+    });
+}
+
 function parseSealResult(stdout) {
   const lines = String(stdout || '').split(/\r?\n/);
   const start = lines.indexOf('{');
@@ -217,5 +239,6 @@ module.exports = {
   parsePreflight,
   parseSealResult,
   parseCleanupPreview,
+  parseReconcilePreview,
   splitIdentity,
 };

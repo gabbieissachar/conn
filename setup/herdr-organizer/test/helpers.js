@@ -23,6 +23,7 @@ function fakeRunner(overrides = {}) {
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
     if (file === 'herdr' && args[0] === 'session' && args[1] === 'list') return ok(fixture('session-list.json'));
     if (file === 'herdr' && args[0] === '--session' && args[2] === 'pane' && args[3] === 'list') return ok(fixture('pane-list.json'));
+    if (args.includes('reconcile-all')) return ok(fixture('reconcile-preview.txt'));
     if (args.includes('verify-identity')) return ok(fixture(args.includes('--apply') ? 'verify-apply.txt' : 'verify-report.txt'));
     if (typeof args[0] === 'string' && args[0].endsWith('store_check.py')) {
       return ok(JSON.stringify(overrides.storeCheck || { valid_format: true, exists: true, store_folder: 'match', registered_elsewhere: false, already_registered_here: false }));
