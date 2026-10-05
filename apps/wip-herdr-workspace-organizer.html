@@ -236,7 +236,6 @@ created: 2026-09-10
   </main>
   <div class="toast" id="toast" role="status"></div>
   <script>
-    const DATA_URL = '../personal/01-System/setup/herdr/state/workspace-organizer/live-snapshot.json';
     const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
@@ -976,7 +975,7 @@ created: 2026-09-10
       }
       const canPreview = Boolean(cleanupSession()) && !cleanup.loading;
       return `<article class="card cleanup-all"><div class="card-head"><h3>Clean up empty tabs in every workspace</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
-        <p class="lede">Finds shell-only tabs in all ${plural((data.workspaces || []).length, 'workspace')} at once: no agent, no resumable session, nothing running. A tab with an agent or a resumable session is never touched, and a workspace whose tabs are all empty keeps one. Previewing closes nothing.</p>
+        <p class="lede">Finds shell-only tabs in ${(data.workspaces || []).length ? `all ${plural(data.workspaces.length, 'workspace')}` : 'every workspace'} at once: no agent, no resumable session, nothing running. A tab with an agent or a resumable session is never touched, and a workspace whose tabs are all empty keeps one. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-cleanup="preview" ${canPreview ? '' : 'disabled'} title="${cleanupSession() ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${cleanup.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview all workspaces')}</button>
           <button type="button" data-command="${escapeHtml(previewAll)}" ${previewAll ? '' : 'disabled'} title="Copies one command that runs the preview for every workspace in your terminal">Copy cleanup preview for all workspaces</button>
           ${result?.commands?.execute_all ? `<button type="button" class="danger" data-command="${escapeHtml(result.commands.execute_all)}" title="Copies the commands that close the empty shell tabs listed above. Their processes are shells only.">Copy cleanup and close for all</button>` : ''}</div>
@@ -1005,18 +1004,13 @@ created: 2026-09-10
       select.disabled = !names.length;
     };
     const load = async () => {
+      // The snapshot only comes through the server, which refuses one that carries a private value.
+      // There is deliberately no fallback to the raw file.
       try {
-        let data;
-        try { data = await api.run('snapshot-data'); }
-        catch (apiError) {
-          const response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: 'no-store' });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          data = await response.json();
-        }
-        state.data = data; render();
+        state.data = await api.run('snapshot-data'); render();
       } catch (error) {
         state.data = { workspaces: [], archives: [] }; render();
-        document.querySelector('#workspaces').innerHTML = '<div class="empty">Refresh the snapshot, then reload this page. The viewer never changes Herdr itself.</div>';
+        document.querySelector('#workspaces').innerHTML = `<div class="empty">${escapeHtml(error.message)} The viewer never changes Herdr itself.</div>`;
         document.querySelector('#updated').textContent = 'Snapshot unavailable';
       }
     };
