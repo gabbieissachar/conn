@@ -69,7 +69,8 @@ Validation:
 
 - Session name: must appear in `herdr session list --json` output, be running, not be `default`, and not start with `-` (a stopped session on this machine is literally named `-h`).
 - Pane, workspace and tab ids: match `^w[A-Za-z0-9]+(:[pt][A-Za-z0-9]+)?$` and exist in the live pane list of the named session.
-- Bundle id: pattern plus presence in the bundle list.
+- Bundle id: pattern plus presence in the bundle list. A bundle is only eligible after every member of its manifest is validated against the live `herdr session list`: it must name at least one session, every member must be a well-formed, distinct session name, none may be the default session, and Herdr must know every member. A member that is merely stopped stays eligible but must be attached before the preview runs. The preview repeats this validation immediately before it starts the tool, so a bundle made outside the page cannot reintroduce the default session. Every component of a bundle (the state folders, the bundle folder, `manifest.json`, the `ready` marker and the journal file) must be a real directory or a regular file; a link is refused and never read through.
+- Pane write path: one strict validator for a manual identity save. The pane must be listed exactly once; its workspace, tab and pane ids must be well formed and belong to the same workspace; its folder must be present, absolute, canonical (no `.`, `..`, doubled or trailing slashes), free of control characters, and an existing directory. The folder is resolved to its real path, and the store check and the registry write both use the normalized values, never the raw pane list. A pane that fails stops the save before the store check or the registry starts.
 - Acknowledgements: accepted only when the exact `session|workspace|tab|pane` (or `session|workspace`) identity appears in the latest preflight failure list. No free text, no global bypass.
 - Unknown params and unknown actions are rejected.
 
@@ -91,6 +92,17 @@ Layer 3 is the independent cross-check: a check that only proves an id exists ca
 The id travels browser to server in a JSON body, then to `agent-session-registry.py register --allow-no-herdr` as one short-lived process, and is never logged or echoed.
 Afterwards the page shows only the first 4 and last 4 characters.
 Because `register` only takes `--session-id` on its command line, the id is visible to same-user `ps` for the life of that process (see companion tasks).
+
+## Independent review follow-ups
+
+An independent review of this branch confirmed the HTTP guard (token, exact Host and Origin, preflight and form content-type rejection, no shell, fixed allowlist) and asked for two fixes before landing: bundle member validation against the live session list, and the strict live-pane validator for the write path. Both are done above, with a fixture test for each failure shape that asserts the tool never starts. It also asked for the page to stop falling back to the raw static snapshot (done: the page only reads the snapshot through the server, which refuses one that carries a private value) and for symlink checks on bundle components (done).
+
+Kept as documented follow-ups:
+
+- The manual session id is on the command line of the registry's `register` call for the life of that one process. It is never echoed or logged. Accepting it on stdin is companion task 2 below and is the next privacy hardening step.
+- The listener change in `setup/serve.sh` makes every app that script serves loopback-only, which removes LAN access to the unrelated local apps. That is the intended protection for this cockpit, but confirm it is intended for the shared server before release.
+- The reviewer could not complete a live visual check, so a second person should open the page and look at it before release. The author checked it in a browser at desktop and 390 px width.
+- The raw snapshot file is still reachable through the shared static file handler, which sends a wildcard CORS header. The page no longer uses it. Closing that is outside this change.
 
 ## Share report
 
@@ -174,3 +186,4 @@ The page is built against the interface as it exists today, through the adapter.
 - Phase 1 (read-only views, share report, clean up empty tabs in every workspace): done. 48 server tests pass. Driven in a browser at desktop and 390 px width against the real `esim` session and captured real verifier and preflight output.
 - Phase 2 (guarded actions: apply verified identities, manual identity form, per-item acknowledgements and seal): done. Each action needs a confirm token and runs one at a time. 64 server tests and 9 store-check tests pass; the real registry write is covered by the integration test (private 0600 file in a 0700 directory, duplicate and folder guards). Driven in a browser against a fixture-backed server: apply confirm, folder-differs override, masked result, acknowledgement ticks, re-check, seal.
 - Phase 3 (sealed bundle list, restart checklist derived from machine state, reconcile preview and copy-only confirm and rollback commands): done. 69 server tests pass. The checklist, the not-attached state, the preview counts and the copy buttons were driven in a browser against a fixture-backed server with temporary bundles, at desktop and 390 px width. HTML in labels was confirmed to render as text.
+- Review fixes: bundle members are validated against the live session list (default, unknown, missing, malformed and repeated members are incompatible, and no preview process starts), the preview re-validates immediately before spawning, bundle components that are links or not regular files are refused, the manual identity write path uses one strict live-pane validator with normalized values, and the page no longer falls back to the raw static snapshot. 82 server tests (including the integration tests against the real tool scripts) and 9 store-check tests pass. Test cleanup removes only the entries each test created, one at a time.
