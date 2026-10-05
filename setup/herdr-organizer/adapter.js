@@ -421,55 +421,149 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
 
   // ---- After the restart: sealed bundles and the reconcile preview ----
 
-  const bundleDir = () => path.join(toolRoot, 'state', 'workspace-organizer', 'restart-recovery', 'bundles');
-  const journalDir = () => path.join(toolRoot, 'state', 'workspace-organizer', 'restart-recovery', 'journals');
-  const exists = (file) => fsp.stat(file).then(() => true, () => false);
+  const toolState = (...parts) => path.join(toolRoot, 'state', 'workspace-organizer', ...parts);
+  const bundleDir = () => toolState('restart-recovery', 'bundles');
+  const journalDir = () => toolState('restart-recovery', 'journals');
 
-  // Bundles on disk, newest first. Only the id, time, bundled session names and
-  // readiness are returned: a manifest also carries folders, which stay private.
-  async function listBundles() {
-    let names = [];
-    try { names = await fsp.readdir(bundleDir()); } catch { names = []; }
-    let running = new Set();
-    try { running = new Set((await listSessions()).filter((item) => item.running).map((item) => item.name)); } catch { running = new Set(); }
-    const boot = Date.now() - os.uptime() * 1000;
-    const bundles = [];
-    for (const name of names.filter((item) => BUNDLE_ID_RE.test(item)).sort().reverse()) {
-      let manifest = null;
-      try { manifest = JSON.parse(await fsp.readFile(path.join(bundleDir(), name, 'manifest.json'), 'utf8')); } catch { manifest = null; }
-      const sessions = manifest && Array.isArray(manifest.sessions)
-        ? manifest.sessions.map((item) => item && item.identity && item.identity.herdr_session).filter((item) => typeof item === 'string' && SESSION_NAME_RE.test(item))
-        : [];
-      const createdAt = manifest && typeof manifest.created_at === 'string' ? manifest.created_at : '';
-      let journalStatus = '';
+  // Nothing under the bundle state is trusted unless every expected component is a
+  // real directory or a regular file. lstat does not follow links, so a symlinked
+  // bundle, manifest, marker or journal is refused instead of being read through.
+  async function kindOf(file) {
+    try {
+      const stat = await fsp.lstat(file);
+      if (stat.isSymbolicLink()) return 'unsafe';
+      if (stat.isDirectory()) return 'dir';
+      if (stat.isFile()) return 'file';
+      return 'unsafe';
+    } catch { return 'missing'; }
+  }
+
+  // 'ok' when every folder from the tool's state folder down to the bundle folder is a real
+  // directory; 'missing' when the bundle state does not exist; 'unsafe' when any folder is a link.
+  async function bundleChain() {
+    let current = path.join(toolRoot, 'state');
+    for (const part of ['', 'workspace-organizer', 'restart-recovery', 'bundles']) {
+      current = part ? path.join(current, part) : current;
+      const kind = await kindOf(current);
+      if (kind === 'missing') return 'missing';
+      if (kind !== 'dir') return 'unsafe';
+    }
+    return 'ok';
+  }
+
+  // One bundle checked against the live session list. It is compatible only when it
+  // names at least one session, every member is well formed and distinct, none is the
+  // default session, and Herdr knows every member. A member that is merely stopped
+  // stays compatible: it is shown as not running, and the preview waits for it to be
+  // attached. `live` is null when Herdr's session list could not be read.
+  async function inspectBundle(id, { live, boot }) {
+    const base = { bundle_id: id, created_at: '', ready: false, compatible: false, problem: '', sessions: [], before_boot: null, journal_status: '' };
+    const chain = await bundleChain();
+    if (chain === 'missing') return { ...base, problem: 'missing' };
+    if (chain === 'unsafe') return { ...base, problem: 'unsafe_path' };
+    const dir = path.join(bundleDir(), id);
+    const dirKind = await kindOf(dir);
+    if (dirKind === 'missing') return { ...base, problem: 'missing' };
+    if (dirKind !== 'dir') return { ...base, problem: 'unsafe_path' };
+    const manifestFile = path.join(dir, 'manifest.json');
+    const manifestKind = await kindOf(manifestFile);
+    if (manifestKind === 'missing') return { ...base, problem: 'missing' };
+    if (manifestKind !== 'file') return { ...base, problem: 'unsafe_path' };
+    const readyKind = await kindOf(path.join(dir, 'ready'));
+    const journalsKind = await kindOf(journalDir());
+    const journalFile = path.join(journalDir(), id + '.json');
+    const journalKind = journalsKind === 'dir' ? await kindOf(journalFile) : journalsKind;
+    if (readyKind === 'unsafe' || journalKind === 'unsafe') return { ...base, problem: 'unsafe_path' };
+
+    let manifest = null;
+    try { manifest = JSON.parse(await fsp.readFile(manifestFile, 'utf8')); } catch { manifest = null; }
+    if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.sessions)) return { ...base, problem: 'malformed_manifest' };
+
+    const names = [];
+    let problem = '';
+    for (const item of manifest.sessions) {
+      const name = item && typeof item === 'object' && item.identity && typeof item.identity === 'object' ? item.identity.herdr_session : undefined;
+      if (typeof name !== 'string' || !SESSION_NAME_RE.test(name) || names.includes(name)) problem = problem || 'malformed_member';
+      else names.push(name);
+    }
+    if (!problem && names.length === 0) problem = 'no_members';
+    if (!problem) {
+      const known = new Map((live || []).map((item) => [item.name, item]));
+      if (names.some((name) => name === 'default' || (known.get(name) && known.get(name).isDefault))) problem = 'default_session';
+      else if (!live) problem = 'sessions_unavailable';
+      else if (names.some((name) => !known.has(name))) problem = 'unknown_session';
+    }
+
+    const createdAt = typeof manifest.created_at === 'string' ? manifest.created_at : '';
+    const created = Date.parse(createdAt);
+    let journalStatus = '';
+    if (journalKind === 'file') {
       try {
-        const journal = JSON.parse(await fsp.readFile(path.join(journalDir(), name + '.json'), 'utf8'));
-        if (journal && typeof journal.status === 'string' && /^[a-z_]{1,40}$/.test(journal.status)) journalStatus = journal.status;
-        else journalStatus = 'unknown';
-      } catch { journalStatus = ''; }
-      const created = Date.parse(createdAt);
-      bundles.push({
-        bundle_id: name,
-        created_at: createdAt,
-        ready: Boolean(manifest) && manifest.state === 'sealed' && await exists(path.join(bundleDir(), name, 'ready')),
-        sessions: sessions.map((session) => ({ name: session, running: running.has(session) })),
-        // True once the computer has booted since the bundle was sealed.
-        before_boot: Number.isFinite(created) ? created < boot : null,
-        journal_status: journalStatus,
-      });
+        const journal = JSON.parse(await fsp.readFile(journalFile, 'utf8'));
+        journalStatus = journal && typeof journal.status === 'string' && /^[a-z_]{1,40}$/.test(journal.status) ? journal.status : 'unknown';
+      } catch { journalStatus = 'unknown'; }
+    }
+    const running = new Set((live || []).filter((item) => item.running).map((item) => item.name));
+    return {
+      bundle_id: id,
+      created_at: createdAt,
+      ready: manifest.state === 'sealed' && readyKind === 'file',
+      compatible: !problem,
+      problem,
+      // Members are only reported for a bundle that can be used.
+      sessions: problem ? [] : names.map((name) => ({ name, running: running.has(name) })),
+      // True once the computer has booted since the bundle was sealed.
+      before_boot: Number.isFinite(created) ? created < boot : null,
+      journal_status: journalStatus,
+    };
+  }
+
+  async function liveSessionsOrNull() {
+    try { return await listSessions(); } catch { return null; }
+  }
+
+  // Bundles on disk, newest first. Only the id, time, bundled session names, readiness
+  // and compatibility are returned: a manifest also carries folders, which stay private.
+  async function listBundles() {
+    const boot = Date.now() - os.uptime() * 1000;
+    const live = await liveSessionsOrNull();
+    const bundles = [];
+    if ((await bundleChain()) === 'ok') {
+      let names = [];
+      try { names = await fsp.readdir(bundleDir()); } catch { names = []; }
+      for (const name of names.filter((item) => BUNDLE_ID_RE.test(item)).sort().reverse()) bundles.push(await inspectBundle(name, { live, boot }));
     }
     return { generated_at: new Date().toISOString(), boot_time: new Date(boot).toISOString(), bundles };
+  }
+
+  const BUNDLE_PROBLEM_TEXT = {
+    unsafe_path: 'one of its files is a link or not a regular file',
+    malformed_manifest: 'its manifest is malformed',
+    malformed_member: 'it lists a malformed or repeated session',
+    no_members: 'it lists no sessions',
+    default_session: 'it includes the default session, which recovery does not support',
+    unknown_session: 'it names a session Herdr does not know',
+    sessions_unavailable: "Herdr's session list could not be read",
+  };
+
+  // Validates a bundle against the live session list right now and returns it, or throws.
+  // Called by the preview immediately before it starts the tool.
+  async function requirePreviewableBundle(bundleId) {
+    const live = await listSessions();
+    const bundle = await inspectBundle(bundleId, { live, boot: Date.now() - os.uptime() * 1000 });
+    if (bundle.problem === 'missing' || (!bundle.problem && !bundle.ready)) throw new AdapterError('That bundle was not found or is not sealed.', 404, 'bundle_missing');
+    if (bundle.problem) throw new AdapterError('That bundle cannot be used here: ' + (BUNDLE_PROBLEM_TEXT[bundle.problem] || 'it is not compatible') + '.', 409, 'bundle_incompatible');
+    const notRunning = bundle.sessions.filter((item) => !item.running).map((item) => item.name);
+    if (notRunning.length) throw new AdapterError('Attach ' + notRunning.join(', ') + ' in a terminal first. Recovery never starts a session for you.', 409, 'not_attached');
+    return bundle;
   }
 
   // Read-only: `reconcile-all` without --confirm adopts nothing and creates no journal.
   // The confirm and rollback commands are built here from the validated id and copied by the user.
   async function reconcilePreview(bundleId) {
     if (typeof bundleId !== 'string' || !BUNDLE_ID_RE.test(bundleId)) throw new AdapterError('Invalid bundle.');
-    const { bundles } = await listBundles();
-    const bundle = bundles.find((item) => item.bundle_id === bundleId);
-    if (!bundle || !bundle.ready) throw new AdapterError('That bundle was not found or is not sealed.', 404, 'bundle_missing');
-    const notRunning = bundle.sessions.filter((item) => !item.running).map((item) => item.name);
-    if (notRunning.length) throw new AdapterError('Attach ' + notRunning.join(', ') + ' in a terminal first. Recovery never starts a session for you.', 409, 'not_attached');
+    // Validated against the live session list immediately before the tool starts.
+    await requirePreviewableBundle(bundleId);
     const result = await runner(pythonBin, [organizerScript, 'reconcile-all', '--bundle', bundleId], { env: runEnv(), timeoutMs: 300000 });
     const sessions = result.code === 0 ? parse.parseReconcilePreview(result.stdout) : null;
     if (!sessions) throw new AdapterError(result.stderr || result.stdout || 'The reconcile preview returned nothing.', /not attached/i.test(result.stderr) ? 409 : 502, /not attached/i.test(result.stderr) ? 'not_attached' : 'preview_failed');
@@ -539,6 +633,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // carries anything that looks private.
   async function readSnapshot() {
     const file = path.join(toolRoot, 'state', 'workspace-organizer', 'live-snapshot.json');
+    const kind = await kindOf(file);
+    if (kind === 'unsafe') throw new AdapterError('The snapshot is a link or not a regular file, so it was not shown.', 502, 'snapshot_invalid');
     let raw;
     try { raw = await fsp.readFile(file, 'utf8'); } catch { throw new AdapterError('No snapshot yet. Refresh the snapshot first.', 404, 'no_snapshot'); }
     if (raw.length > 4 * 1024 * 1024) throw new AdapterError('The snapshot is too large to show.', 502, 'snapshot_invalid');

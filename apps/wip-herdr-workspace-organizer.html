@@ -603,7 +603,14 @@ created: 2026-09-10
     };
 
     const fmtTime = iso => (iso ? new Date(iso).toLocaleString() : 'an unknown time');
-    const readyBundles = () => (restart.bundles?.bundles || []).filter(bundle => bundle.ready);
+    const readyBundles = () => (restart.bundles?.bundles || []).filter(bundle => bundle.ready && bundle.compatible);
+    const BUNDLE_PROBLEMS = { unsafe_path: 'one of its files is a link or not a regular file', malformed_manifest: 'its manifest is malformed', malformed_member: 'it lists a malformed or repeated session', no_members: 'it lists no sessions', default_session: 'it includes the default session, which recovery does not support', unknown_session: 'it names a session Herdr does not know', sessions_unavailable: 'the session list from Herdr could not be read' };
+    const problemBundles = () => (restart.bundles?.bundles || []).filter(bundle => !bundle.compatible && bundle.problem && bundle.problem !== 'missing');
+    const problemNote = () => {
+      const list = problemBundles();
+      if (!list.length) return '';
+      return `<div class="scope-note">${list.length === 1 ? 'One bundle cannot' : `${list.length} bundles cannot`} be used here, so ${list.length === 1 ? 'it is' : 'they are'} left out: ${list.map(bundle => `…${escapeHtml(bundle.bundle_id.slice(-10))} (${escapeHtml(BUNDLE_PROBLEMS[bundle.problem] || 'not compatible')})`).join('; ')}.</div>`;
+    };
     const activeBundle = () => readyBundles().find(bundle => bundle.bundle_id === restart.selectedBundle) || readyBundles()[0] || null;
     // The bundle the checklist follows. A bundle whose reconcile has already been recorded is a finished cycle,
     // so a fresh check on this page starts a new one instead of showing the old bundle as this restart's.
@@ -646,7 +653,7 @@ created: 2026-09-10
 
     const restoreCardView = () => {
       const all = readyBundles();
-      if (!all.length) return '';
+      if (!all.length) return problemBundles().length ? `<article class="card"><div class="card-head"><h3>Sealed bundle</h3><span class="pill warn">bundle problem</span></div><div class="card-body">${problemNote()}</div></article>` : '';
       const bundle = activeBundle();
       const notRunning = bundle.sessions.filter(session => !session.running).map(session => session.name);
       const reconcile = restart.reconcile && restart.reconcile.bundle_id === bundle.bundle_id ? restart.reconcile : null;
@@ -672,8 +679,9 @@ created: 2026-09-10
           </details>`;
       }
       const attach = notRunning.length ? `<div class="scope-note">Attach ${escapeHtml(notRunning.join(', '))} before the preview. Recovery never starts a session for you.</div>${notRunning.map(name => `<div class="attach-row"><code>${escapeHtml(attachCommand(name))}</code><button type="button" class="small-btn" data-command="${escapeHtml(attachCommand(name))}">Copy</button></div>`).join('')}` : '';
-      return `<article class="card"><div class="card-head"><h3>After the restart</h3><span class="pill ${bundle.before_boot ? 'good' : ''}">${bundle.before_boot ? 'computer restarted' : 'sealed this boot'}</span></div><div class="card-body">
+      return `<article class="card"><div class="card-head"><h3>Sealed bundle</h3><span class="pill ${bundle.before_boot ? 'good' : ''}">${bundle.before_boot ? 'computer restarted' : 'sealed this boot'}</span></div><div class="card-body">
         <p class="lede">The sealed bundle is how the page knows where you are. After the restart, attach each bundled session in a terminal, preview the reconcile here, then confirm it in a terminal.</p>
+        ${problemNote()}
         <div class="share-options">${all.length > 1 ? `<label class="field" style="min-width:260px">Bundle<select data-action="bundle-select">${options}</select></label>` : `<span class="tab-meta" style="margin:0">Sealed ${escapeHtml(fmtTime(bundle.created_at))}</span>`}<span class="tab-meta" style="margin:0">${chips}</span></div>
         ${attach}
         <div class="btn-row"><button type="button" class="primary-btn" data-action="reconcile-preview" ${notRunning.length || (reconcile && reconcile.loading) ? 'disabled' : ''}>${reconcile && reconcile.loading ? 'Previewing…' : (reconcile && reconcile.data ? 'Preview again' : 'Run reconcile preview')}</button><button type="button" data-action="bundles-refresh">Refresh</button><button type="button" data-action="copy-bundle-id" data-id="${escapeHtml(bundle.bundle_id)}">Copy bundle ID</button></div>
