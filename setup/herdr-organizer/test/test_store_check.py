@@ -31,29 +31,58 @@ OTHER_ID = "cccccccc-1111-4222-8333-444444444444"
 @unittest.skipUnless((TOOL_ROOT / "agent_identity_verifier.py").exists(), "Herdr tool root not available")
 class StoreCheckTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        base = Path(self.tmp.name)
-        self.work = (base / "work" / "alpha").resolve()
-        self.work.mkdir(parents=True)
-        self.elsewhere = (base / "work" / "beta").resolve()
-        self.elsewhere.mkdir(parents=True)
-        self.claude_home = base / "claude"
-        project = self.claude_home / "projects" / "-work-alpha"
-        project.mkdir(parents=True)
-        (project / f"{CLAUDE_ID}.jsonl").write_text(json.dumps({"sessionId": CLAUDE_ID, "cwd": str(self.work)}) + "\n")
-        self.codex_home = base / "codex"
-        self.codex_home.mkdir()
-        (self.codex_home / "session_index.jsonl").write_text(json.dumps({"id": CODEX_ID, "cwd": str(self.work)}) + "\n")
-        self.manifest = base / "manifest.json"
+        # Everything is created under one temporary directory and removed one entry at a
+        # time in tearDown: files first, then directories deepest first. Nothing is deleted
+        # recursively.
+        self.base = Path(tempfile.mkdtemp(prefix="herdr-store-check-")).resolve()
+        self.files: list[Path] = []
+        self.dirs: list[Path] = [self.base]
+        self.work = self.make_dir("work", "alpha")
+        self.elsewhere = self.make_dir("work", "beta")
+        self.claude_home = self.base / "claude"
+        project = self.make_dir("claude", "projects", "-work-alpha")
+        self.write(project / f"{CLAUDE_ID}.jsonl", json.dumps({"sessionId": CLAUDE_ID, "cwd": str(self.work)}) + "\n")
+        self.codex_home = self.make_dir("codex")
+        self.write(self.codex_home / "session_index.jsonl", json.dumps({"id": CODEX_ID, "cwd": str(self.work)}) + "\n")
+        self.manifest = self.base / "manifest.json"
         self.env = {
             **os.environ,
             "PMOS_ORGANIZER_CLAUDE_HOME": str(self.claude_home),
             "CODEX_HOME": str(self.codex_home),
             "PMOS_HERDR_AGENT_MANIFEST": str(self.manifest),
+            # The test imports the real verifier; it must not write bytecode next to it.
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
 
+    def make_dir(self, *parts: str) -> Path:
+        path = self.base.joinpath(*parts)
+        missing = []
+        current = path
+        while not current.exists() and current != self.base:
+            missing.append(current)
+            current = current.parent
+        path.mkdir(parents=True, exist_ok=True)
+        self.dirs.extend(reversed(missing))
+        return path.resolve()
+
+    def write(self, path: Path, text: str) -> None:
+        path.write_text(text)
+        if path not in self.files:
+            self.files.append(path)
+
     def tearDown(self) -> None:
-        self.tmp.cleanup()
+        if self.manifest.exists() and self.manifest not in self.files:
+            self.files.append(self.manifest)
+        for path in reversed(self.files):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        for path in sorted(set(self.dirs), key=lambda item: len(str(item)), reverse=True):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     def run_check(self, **request) -> dict:
         base = {"client": "claude", "session_id": CLAUDE_ID, "pane_cwd": str(self.work), "herdr_session": "project-a", "pane_id": "w1:p1"}
@@ -91,20 +120,20 @@ class StoreCheckTest(unittest.TestCase):
         self.assertEqual(self.run_check(pane_cwd="")["store_folder"], "unknown")
 
     def test_registered_elsewhere_and_here(self) -> None:
-        self.manifest.write_text(json.dumps({"panes": [
+        self.write(self.manifest, json.dumps({"panes": [
             {"client": "claude", "session_id": CLAUDE_ID, "herdr_session": "project-a", "pane_id": "w9:p9"},
         ]}))
         result = self.run_check()
         self.assertTrue(result["registered_elsewhere"])
         self.assertFalse(result["already_registered_here"])
-        self.manifest.write_text(json.dumps({"panes": [
+        self.write(self.manifest, json.dumps({"panes": [
             {"client": "claude", "session_id": CLAUDE_ID, "herdr_session": "project-a", "pane_id": "w1:p1"},
         ]}))
         result = self.run_check()
         self.assertFalse(result["registered_elsewhere"])
         self.assertTrue(result["already_registered_here"])
         # The same pane id in a different Herdr session is a different pane.
-        self.manifest.write_text(json.dumps({"panes": [
+        self.write(self.manifest, json.dumps({"panes": [
             {"client": "claude", "session_id": CLAUDE_ID, "herdr_session": "project-b", "pane_id": "w1:p1"},
         ]}))
         self.assertTrue(self.run_check()["registered_elsewhere"])

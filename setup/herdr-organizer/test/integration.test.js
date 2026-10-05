@@ -8,11 +8,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { create } = require('../api');
 const { createAdapter, defaultRunner } = require('../adapter');
-const { client } = require('./helpers');
+const { client, tempTree } = require('./helpers');
 const http = require('http');
 
 const REAL_TOOL_ROOT = process.env.HERDR_ORGANIZER_TOOL_ROOT || path.join(__dirname, '..', '..', '..', 'personal', '01-System', 'setup', 'herdr');
@@ -20,16 +19,17 @@ const available = fs.existsSync(path.join(REAL_TOOL_ROOT, 'agent-session-registr
 const ID = '0f1e2d3c-4b5a-4968-8777-665544332211';
 
 async function setup() {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-organizer-int-'));
-  const realBase = fs.realpathSync(base);
-  const toolRoot = path.join(base, 'tools');
-  fs.mkdirSync(toolRoot);
-  for (const name of fs.readdirSync(REAL_TOOL_ROOT)) if (name.endsWith('.py') && !name.startsWith('test-')) fs.copyFileSync(path.join(REAL_TOOL_ROOT, name), path.join(toolRoot, name));
-  fs.mkdirSync(path.join(base, 'work', 'alpha'), { recursive: true });
-  const work = fs.realpathSync(path.join(base, 'work', 'alpha'));
-  const codexHome = path.join(base, 'codex');
-  fs.mkdirSync(codexHome);
-  fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'), JSON.stringify({ id: ID, cwd: work }) + '\n');
+  const tree = tempTree('herdr-organizer-int-');
+  const realBase = tree.real;
+  const toolRoot = tree.mkdir('tools');
+  for (const name of fs.readdirSync(REAL_TOOL_ROOT)) {
+    if (name.endsWith('.py') && !name.startsWith('test-')) tree.write('tools/' + name, fs.readFileSync(path.join(REAL_TOOL_ROOT, name)));
+  }
+  tree.trackDir('tools/state');
+  tree.mkdir('work/alpha');
+  const work = fs.realpathSync(tree.abs('work/alpha'));
+  tree.write('codex/session_index.jsonl', JSON.stringify({ id: ID, cwd: work }) + '\n');
+  const codexHome = tree.abs('codex');
   const panes = { result: { panes: [
     { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t2', agent: 'codex', agent_status: 'idle', cwd: work, foreground_cwd: work },
     { pane_id: 'w1:p3', workspace_id: 'w1', tab_id: 'w1:t3', agent: 'codex', agent_status: 'idle', cwd: work, foreground_cwd: work },
@@ -42,7 +42,8 @@ async function setup() {
     "candidate_ambiguous workspace='B' tab='t1' pane='[pane]' pane_id=w2:p1 candidates=1 exact=0 evidence=cwd_candidate",
     'Summary:', 'total panes: 3', 'verified: native 0; argv 0; handle 0; pid record 0', 'ambiguous: 3; unresolved: 0', 'safe to apply with --apply: 0; manual: 3',
   ].join('\n');
-  const env = { PATH: process.env.PATH, CODEX_HOME: codexHome, HOME: base };
+  // No bytecode: the tests import the real verifier and must not write next to it.
+  const env = { PATH: process.env.PATH, CODEX_HOME: codexHome, HOME: realBase, PYTHONDONTWRITEBYTECODE: '1' };
   const runner = async (file, args, options = {}) => {
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
     if (file === 'herdr') {
@@ -56,8 +57,17 @@ async function setup() {
   const server = http.createServer((req, res) => { if (!api.handle(req, res)) { res.writeHead(404); res.end(); } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  api = create({ root: base, port, adapter: createAdapter({ toolRoot, runner, env }), env });
-  return { base, toolRoot, port, origin: 'http://localhost:' + port, work, close: async () => { await new Promise((resolve) => server.close(resolve)); fs.rmSync(base, { recursive: true, force: true }); } };
+  api = create({ root: tree.root, port, adapter: createAdapter({ toolRoot, runner, env }), env });
+  return {
+    base: tree.root, toolRoot, port, origin: 'http://localhost:' + port, work,
+    close: async () => {
+      await new Promise((resolve) => server.close(resolve));
+      // Files the registry created inside the temporary tool copy.
+      tree.sweep('tools/state');
+      tree.sweep('tools');
+      tree.cleanup();
+    },
+  };
 }
 
 test('manual identity: real store check and real registry write, private files, duplicate and folder guards', { skip: !available }, async () => {

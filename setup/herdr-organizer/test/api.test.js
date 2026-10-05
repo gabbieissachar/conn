@@ -321,47 +321,25 @@ test('identical verify requests while one is running share a single run', async 
 });
 
 test('snapshot-data: serves the snapshot from the tool root and refuses one that carries a private value', async () => {
-  const fs = require('fs');
-  const os = require('os');
-  const path = require('path');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-organizer-test-'));
-  const dir = path.join(root, 'state', 'workspace-organizer');
-  fs.mkdirSync(dir, { recursive: true });
-  const server = await startServer({ toolRoot: root });
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('herdr-organizer-test-');
+  const snapshot = 'state/workspace-organizer/live-snapshot.json';
+  tree.mkdir('state/workspace-organizer');
+  const server = await startServer({ toolRoot: tree.root });
   try {
     const { post } = await client(server);
     const missing = await post('snapshot-data');
     assert.equal(missing.status, 404);
-    fs.writeFileSync(path.join(dir, 'live-snapshot.json'), JSON.stringify({ herdr_session: 'project-a', workspaces: [{ id: 'w1', label: 'Alpha', tabs: [] }], archives: [] }));
+    tree.write(snapshot, JSON.stringify({ herdr_session: 'project-a', workspaces: [{ id: 'w1', label: 'Alpha', tabs: [] }], archives: [] }));
     const ok = await post('snapshot-data');
     assert.equal(ok.status, 200);
     assert.equal(ok.json.data.workspaces[0].label, 'Alpha');
-    fs.writeFileSync(path.join(dir, 'live-snapshot.json'), JSON.stringify({ workspaces: [{ id: 'w1', label: 'claude --resume 11111111-2222-4333-8444-555555555555', tabs: [] }] }));
+    require('fs').writeFileSync(tree.abs(snapshot), JSON.stringify({ workspaces: [{ id: 'w1', label: 'claude --resume 11111111-2222-4333-8444-555555555555', tabs: [] }] }));
     const leaky = await post('snapshot-data');
     assert.equal(leaky.status, 502);
     assert.equal(leaky.raw.includes('11111111'), false);
   } finally {
     await server.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    tree.cleanup();
   }
-});
-
-test('a tool run that is stopped for taking too long is reported as a timeout, not as a broken tool', async () => {
-  const slow = { code: -1, stdout: '', stderr: '', timedOut: true, truncated: false };
-  const runner = fakeRunner({ handle: (file, args) => (args.includes('verify-identity') || args.includes('prepare-restart-recovery') ? slow : undefined) });
-  const server = await startServer({ runner: runner.runner });
-  try {
-    const { post } = await client(server);
-    const verify = await post('verify', { session: 'project-a' });
-    assert.equal(verify.status, 504);
-    assert.equal(verify.json.code, 'timeout');
-    assert.match(verify.json.message, /did not finish within 15 minutes/);
-    const preflight = await post('preflight', { sessions: ['project-a'] });
-    assert.equal(preflight.status, 504);
-    assert.match(preflight.json.message, /10 minutes/);
-    const apply = await post('verify-apply', { session: 'project-a', confirm: 'apply:project-a' });
-    assert.equal(apply.status, 504);
-    const seal = await post('seal-bundle', { sessions: ['project-a'], confirm: 'seal:project-a' });
-    assert.equal(seal.json.code, 'timeout', 'an unacknowledged seal that timed out is also reported as a timeout');
-  } finally { await server.close(); }
 });

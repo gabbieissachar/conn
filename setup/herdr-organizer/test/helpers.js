@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const { create } = require('../api');
 const { createAdapter } = require('../adapter');
@@ -12,6 +13,56 @@ const fixture = (name) => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
 // A fake process runner. `calls` records every command so tests can assert what
 // was (and was not) spawned. `overrides` may supply a function that returns a
 // result for a call, or undefined to fall through to the fixtures.
+// A temporary directory tree for a test. Cleanup removes only what the test created and
+// registered, one entry at a time (unlink, then rmdir deepest first). It never deletes
+// recursively and never follows a link, so a symlink to somewhere else is only unlinked.
+function tempTree(prefix = 'herdr-organizer-') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const files = [];
+  const dirs = [root];
+  const abs = (rel) => path.join(root, rel);
+  const tree = {
+    root,
+    real: fs.realpathSync(root),
+    abs,
+    mkdir(rel) {
+      const target = abs(rel);
+      const missing = [];
+      for (let current = target; current !== root && !fs.existsSync(current); current = path.dirname(current)) missing.push(current);
+      fs.mkdirSync(target, { recursive: true });
+      dirs.push(...missing.reverse());
+      return target;
+    },
+    write(rel, content) {
+      tree.mkdir(path.dirname(rel));
+      fs.writeFileSync(abs(rel), content);
+      files.push(abs(rel));
+      return abs(rel);
+    },
+    link(rel, target) {
+      tree.mkdir(path.dirname(rel));
+      fs.symlinkSync(target, abs(rel));
+      files.push(abs(rel));
+      return abs(rel);
+    },
+    // Unlinks every non-directory entry directly inside one directory (no recursion), for
+    // files a tool created that the test did not register itself.
+    sweep(rel) {
+      const dir = abs(rel);
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) if (!entry.isDirectory()) files.push(path.join(dir, entry.name));
+    },
+    // Registers a directory a tool created, so cleanup removes it once it is empty.
+    trackDir(rel) { dirs.push(abs(rel)); },
+    cleanup() {
+      for (const file of files.reverse()) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
+      for (const dir of [...dirs].sort((a, b) => b.length - a.length)) { try { fs.rmdirSync(dir); } catch { /* not empty or gone */ } }
+    },
+  };
+  return tree;
+}
+
 function fakeRunner(overrides = {}) {
   const calls = [];
   const runner = async (file, args, options = {}) => {
@@ -21,8 +72,13 @@ function fakeRunner(overrides = {}) {
       if (custom !== undefined) return custom;
     }
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
-    if (file === 'herdr' && args[0] === 'session' && args[1] === 'list') return ok(fixture('session-list.json'));
-    if (file === 'herdr' && args[0] === '--session' && args[2] === 'pane' && args[3] === 'list') return ok(fixture('pane-list.json'));
+    if (file === 'herdr' && args[0] === 'session' && args[1] === 'list') return ok(overrides.sessions ? JSON.stringify({ sessions: overrides.sessions }) : fixture('session-list.json'));
+    if (file === 'herdr' && args[0] === '--session' && args[2] === 'pane' && args[3] === 'list') {
+      if (overrides.panes) return ok(JSON.stringify({ result: { panes: overrides.panes } }));
+      let text = fixture('pane-list.json');
+      if (overrides.paneCwd) text = text.replace(/\/fixture\/work\/(alpha\/sub|alpha|beta)/g, overrides.paneCwd);
+      return ok(text);
+    }
     if (args.includes('reconcile-all')) return ok(fixture('reconcile-preview.txt'));
     if (args.includes('verify-identity')) return ok(fixture(args.includes('--apply') ? 'verify-apply.txt' : 'verify-report.txt'));
     if (typeof args[0] === 'string' && args[0].endsWith('store_check.py')) {
@@ -102,4 +158,4 @@ async function client(server) {
   return { token, post, base };
 }
 
-module.exports = { fixture, fakeRunner, startServer, request, client };
+module.exports = { fixture, tempTree, fakeRunner, startServer, request, client };
