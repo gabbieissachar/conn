@@ -2,11 +2,23 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startServer, client, fakeRunner, fixture } = require('./helpers');
+const fs = require('fs');
+const { startServer, client, fakeRunner, fixture, tempTree } = require('./helpers');
 const { findLeaks } = require('../text');
 
 const ID = '0f1e2d3c-4b5a-4968-8777-665544332211';
 const MASKED = '0f1e...2211';
+
+// A server whose pane list points at a real temporary folder, since the write path only
+// accepts a pane whose working directory exists. `done()` removes only what the test made.
+async function manualServer({ storeCheck, panes, serverEnv, handle } = {}) {
+  const tree = tempTree('herdr-organizer-cwd-');
+  tree.mkdir('work/alpha/sub');
+  const real = fs.realpathSync(tree.abs('work/alpha/sub'));
+  const runner = fakeRunner({ paneCwd: real, storeCheck, panes: typeof panes === 'function' ? panes(real, tree) : panes, handle });
+  const server = await startServer({ runner: runner.runner, env: serverEnv });
+  return { server, calls: runner.calls, real, tree, done: async () => { await server.close(); tree.cleanup(); } };
+}
 
 async function verified(post) {
   const response = await post('verify', { session: 'project-a' });
@@ -45,30 +57,30 @@ test('verify-apply: default and stopped sessions are refused', async () => {
 });
 
 test('save-manual-identity: saves through register with explicit pane ids, a stdin store check and a masked result', async () => {
-  const server = await startServer({ env: { HERDR_PANE_ID: 'w9:p9', HERDR_SESSION: 'other', HERDR_SOCKET_PATH: '/x', PATH: process.env.PATH } });
+  const env = await manualServer({ serverEnv: { HERDR_PANE_ID: 'w9:p9', HERDR_SESSION: 'other', HERDR_SOCKET_PATH: '/x', PATH: process.env.PATH } });
   try {
-    const { post } = await client(server);
+    const { post } = await client(env.server);
     await verified(post);
     const response = await post('save-manual-identity', manual());
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, response.raw);
     assert.equal(response.json.data.masked_id, MASKED);
     assert.equal(response.json.data.folder_confirmed, 'match');
     assert.equal(response.raw.includes(ID), false, 'the full id is never returned');
 
-    const check = server.calls.find((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py'));
+    const check = env.calls.find((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py'));
     assert.equal(check.args.join(' ').includes(ID), false, 'the store check receives the id on stdin, not argv');
-    assert.deepEqual(JSON.parse(check.input), { client: 'codex', session_id: ID, pane_cwd: '/fixture/work/alpha/sub', herdr_session: 'project-a', pane_id: 'w1:p2' });
+    assert.deepEqual(JSON.parse(check.input), { client: 'codex', session_id: ID, pane_cwd: env.real, herdr_session: 'project-a', pane_id: 'w1:p2' });
 
-    const [register] = registerCalls(server.calls);
-    assert.deepEqual(register.args.slice(1), ['register', '--client', 'codex', '--session-id', ID, '--allow-no-herdr', '--pane-id', 'w1:p2', '--workspace-id', 'w1', '--tab-id', 'w1:t2', '--herdr-session', 'project-a', '--cwd', '/fixture/work/alpha/sub']);
+    const [register] = registerCalls(env.calls);
+    assert.deepEqual(register.args.slice(1), ['register', '--client', 'codex', '--session-id', ID, '--allow-no-herdr', '--pane-id', 'w1:p2', '--workspace-id', 'w1', '--tab-id', 'w1:t2', '--herdr-session', 'project-a', '--cwd', env.real]);
     assert.equal(Object.keys(register.env).some((key) => key.startsWith('HERDR_')), false, 'no Herdr context reaches register');
-  } finally { await server.close(); }
+  } finally { await env.done(); }
 });
 
 test('save-manual-identity: refuses without a fresh identity check, for verified panes, and for the wrong client', async () => {
-  const server = await startServer();
+  const env = await manualServer();
   try {
-    const { post } = await client(server);
+    const { post } = await client(env.server);
     const early = await post('save-manual-identity', manual());
     assert.equal(early.status, 409);
     assert.equal(early.json.code, 'verify_required');
@@ -81,12 +93,13 @@ test('save-manual-identity: refuses without a fresh identity check, for verified
     assert.equal(wrongClient.json.code, 'client_mismatch');
     const notInCheck = await post('save-manual-identity', manual({ pane_id: 'w2:p2', client: 'claude', confirm: 'save:w2:p2' }));
     assert.equal(notInCheck.status, 409, 'a pane without an agent was never in the identity check');
-    assert.equal(registerCalls(server.calls).length, 0);
-  } finally { await server.close(); }
+    assert.equal(registerCalls(env.calls).length, 0);
+  } finally { await env.done(); }
 });
 
 test('save-manual-identity: input validation, confirmation and pane checks happen before anything is written', async () => {
-  const server = await startServer();
+  const env = await manualServer();
+  const server = env.server;
   try {
     const { post } = await client(server);
     await verified(post);
@@ -109,9 +122,9 @@ test('save-manual-identity: input validation, confirmation and pane checks happe
       assert.equal(response.raw.includes('pwned'), false, name);
       assert.equal(response.raw.includes('not-a-session-id'), false, 'a bad id is not echoed: ' + name);
     }
-    assert.equal(registerCalls(server.calls).length, 0);
-    assert.equal(server.calls.some((call) => JSON.stringify(call.args).includes('pwned')), false);
-  } finally { await server.close(); }
+    assert.equal(registerCalls(env.calls).length, 0);
+    assert.equal(env.calls.some((call) => JSON.stringify(call.args).includes('pwned')), false);
+  } finally { await env.done(); }
 });
 
 test('save-manual-identity: each store check outcome is enforced and nothing leaks the id', async () => {
@@ -122,64 +135,132 @@ test('save-manual-identity: each store check outcome is enforced and nothing lea
     ['folder unknown', { valid_format: true, exists: true, store_folder: 'unknown', registered_elsewhere: false, already_registered_here: false }, 409, 'folder_unknown'],
   ];
   for (const [name, storeCheck, status, code] of outcomes) {
-    const runner = fakeRunner({ storeCheck });
-    const server = await startServer({ runner: runner.runner });
+    const env = await manualServer({ storeCheck });
     try {
-      const { post } = await client(server);
+      const { post } = await client(env.server);
       await verified(post);
       const response = await post('save-manual-identity', manual());
       assert.equal(response.status, status, name);
       assert.equal(response.json.code, code, name);
       assert.equal(response.raw.includes(ID), false, name);
-      assert.equal(registerCalls(runner.calls).length, 0, name + ': nothing was written');
-    } finally { await server.close(); }
+      assert.equal(registerCalls(env.calls).length, 0, name + ': nothing was written');
+    } finally { await env.done(); }
   }
 });
 
 test('save-manual-identity: the folder override is honoured only when sent, and only for folder problems', async () => {
-  const differs = fakeRunner({ storeCheck: { valid_format: true, exists: true, store_folder: 'differs', registered_elsewhere: false, already_registered_here: false } });
-  const server = await startServer({ runner: differs.runner });
+  const differs = await manualServer({ storeCheck: { valid_format: true, exists: true, store_folder: 'differs', registered_elsewhere: false, already_registered_here: false } });
   try {
-    const { post } = await client(server);
+    const { post } = await client(differs.server);
     await verified(post);
     assert.equal((await post('save-manual-identity', manual({ folder_override: false }))).status, 409);
     const ok = await post('save-manual-identity', manual({ folder_override: true }));
     assert.equal(ok.status, 200);
     assert.equal(ok.json.data.folder_confirmed, 'override');
     assert.equal(registerCalls(differs.calls).length, 1);
-  } finally { await server.close(); }
-  const claimed = fakeRunner({ storeCheck: { valid_format: true, exists: true, store_folder: 'match', registered_elsewhere: true, already_registered_here: false } });
-  const second = await startServer({ runner: claimed.runner });
+  } finally { await differs.done(); }
+  const claimed = await manualServer({ storeCheck: { valid_format: true, exists: true, store_folder: 'match', registered_elsewhere: true, already_registered_here: false } });
   try {
-    const { post } = await client(second);
+    const { post } = await client(claimed.server);
     await verified(post);
     const refused = await post('save-manual-identity', manual({ folder_override: true }));
     assert.equal(refused.status, 409, 'the override cannot bypass the already-registered check');
     assert.equal(registerCalls(claimed.calls).length, 0);
-  } finally { await second.close(); }
+  } finally { await claimed.done(); }
 });
 
 test('save-manual-identity: a failing registry and a failing store check report without leaking', async () => {
-  const failingRegister = fakeRunner({ handle: (file, args) => (args.includes('register') ? { code: 2, stdout: '', stderr: 'boom ' + ID + ' at /Users/someone/state/x.json', timedOut: false, truncated: false } : undefined) });
-  const first = await startServer({ runner: failingRegister.runner });
+  const first = await manualServer({ handle: (file, args) => (args.includes('register') ? { code: 2, stdout: '', stderr: 'boom ' + ID + ' at /Users/someone/state/x.json', timedOut: false, truncated: false } : undefined) });
   try {
-    const { post } = await client(first);
+    const { post } = await client(first.server);
     await verified(post);
     const response = await post('save-manual-identity', manual());
     assert.equal(response.status, 502);
     assert.equal(response.raw.includes(ID), false);
     assert.deepEqual(findLeaks(response.raw), []);
-  } finally { await first.close(); }
-  const failingCheck = fakeRunner({ handle: (file, args) => (typeof args[0] === 'string' && args[0].endsWith('store_check.py') ? { code: 1, stdout: '{"error":"check_failed"}', stderr: ID, timedOut: false, truncated: false } : undefined) });
-  const second = await startServer({ runner: failingCheck.runner });
+  } finally { await first.done(); }
+  const second = await manualServer({ handle: (file, args) => (typeof args[0] === 'string' && args[0].endsWith('store_check.py') ? { code: 1, stdout: '{"error":"check_failed"}', stderr: ID, timedOut: false, truncated: false } : undefined) });
   try {
-    const { post } = await client(second);
+    const { post } = await client(second.server);
     await verified(post);
     const response = await post('save-manual-identity', manual());
     assert.equal(response.status, 502);
     assert.equal(response.raw.includes(ID), false);
-    assert.equal(registerCalls(failingCheck.calls).length, 0);
-  } finally { await second.close(); }
+    assert.equal(registerCalls(second.calls).length, 0);
+  } finally { await second.done(); }
+});
+
+// The write path trusts nothing from Herdr's pane list. Each case below is a pane list that
+// is malformed or inconsistent in one way; neither the store check nor register may start.
+const pane = (overrides, cwd) => ({ pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t2', agent: 'codex', agent_status: 'idle', cwd, foreground_cwd: cwd, ...overrides });
+const PANE_CASES = [
+  ['workspace id with shell metacharacters', (cwd) => [pane({ workspace_id: 'w1; touch /tmp/pwned' }, cwd)]],
+  ['workspace id that is not a workspace id', (cwd) => [pane({ workspace_id: 'x1' }, cwd)]],
+  ['empty workspace id', (cwd) => [pane({ workspace_id: '' }, cwd)]],
+  ['tab id that is not a tab id', (cwd) => [pane({ tab_id: 'tab-2' }, cwd)]],
+  ['tab id with an option-like value', (cwd) => [pane({ tab_id: '--help' }, cwd)]],
+  ['tab id from another workspace', (cwd) => [pane({ tab_id: 'w2:t2' }, cwd)]],
+  ['pane id from another workspace', (cwd) => [pane({ workspace_id: 'w2', tab_id: 'w2:t2' }, cwd)]],
+  ['pane listed twice', (cwd) => [pane({}, cwd), pane({}, cwd)]],
+  ['missing folder', () => [pane({ cwd: undefined, foreground_cwd: undefined }, undefined)]],
+  ['empty folder', () => [pane({}, '')]],
+  ['relative folder', () => [pane({}, 'work/alpha')]],
+  ['folder with a parent segment', (cwd) => [pane({}, cwd + '/../sub')]],
+  ['folder with a trailing slash', (cwd) => [pane({}, cwd + '/')]],
+  ['folder with a double slash', (cwd) => [pane({}, cwd.replace(/\/([^/]+)$/, '//$1'))]],
+  ['folder with a newline', (cwd) => [pane({}, cwd + '\n')]],
+  ['folder with a control character', (cwd) => [pane({}, cwd + '\u0001')]],
+  ['folder that does not exist', (cwd) => [pane({}, cwd + '/missing-child')]],
+  ['folder that is a file', (cwd, tree) => { tree.write('work/not-a-folder.txt', 'x'); return [pane({}, tree.abs('work/not-a-folder.txt'))]; }],
+  ['folder that is absurdly long', (cwd) => [pane({}, '/' + 'a'.repeat(5000))]],
+];
+
+test('save-manual-identity: a malformed or inconsistent live pane stops the write before the store check and register', async () => {
+  for (const [name, build] of PANE_CASES) {
+    const env = await manualServer({ panes: (real, tree) => build(real, tree) });
+    try {
+      const { post } = await client(env.server);
+      await verified(post);
+      const response = await post('save-manual-identity', manual());
+      assert.ok([404, 409].includes(response.status), name + ' (' + response.status + ')');
+      assert.equal(response.json.code, 'pane_invalid', name);
+      assert.equal(env.calls.some((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py')), false, name + ': the store check did not start');
+      assert.equal(registerCalls(env.calls).length, 0, name + ': register did not start');
+      assert.equal(response.raw.includes(ID), false, name);
+      assert.equal(response.raw.includes(env.real), false, name + ': the folder is not echoed');
+      assert.equal(JSON.stringify(env.calls).includes('pwned'), false, name);
+    } finally { await env.done(); }
+  }
+});
+
+test('save-manual-identity: the store check and register receive the normalized folder, not the raw one', async () => {
+  // A pane reported through a symlink: the normalized (real) folder is what is checked and written.
+  const env = await manualServer({ panes: (real, tree) => {
+    const linked = tree.link('work/linked-alpha', real);
+    return [pane({}, linked)];
+  } });
+  try {
+    const { post } = await client(env.server);
+    await verified(post);
+    const response = await post('save-manual-identity', manual());
+    assert.equal(response.status, 200, response.raw);
+    const check = env.calls.find((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py'));
+    assert.equal(JSON.parse(check.input).pane_cwd, env.real);
+    const [register] = registerCalls(env.calls);
+    assert.equal(register.args[register.args.indexOf('--cwd') + 1], env.real);
+  } finally { await env.done(); }
+});
+
+test('save-manual-identity: a missing pane is reported as missing and nothing starts', async () => {
+  const env = await manualServer({ panes: (real) => [pane({ pane_id: 'w1:p9' }, real)] });
+  try {
+    const { post } = await client(env.server);
+    await verified(post);
+    const response = await post('save-manual-identity', manual());
+    assert.equal(response.status, 404);
+    assert.equal(response.json.code, 'pane_missing');
+    assert.equal(registerCalls(env.calls).length, 0);
+  } finally { await env.done(); }
 });
 
 test('seal-bundle: needs the confirm token and validated acknowledgements, and runs the tool\'s sealing command', async () => {

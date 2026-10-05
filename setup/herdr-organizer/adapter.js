@@ -41,7 +41,8 @@ const MAX_SESSIONS = 8;
 const WORKSPACE_ID_RE = /^w[A-Za-z0-9]{1,10}$/;
 const CLEANUP_CONCURRENCY = 4;
 const BUNDLE_ID_RE = /^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}$/;
-const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
+const PANE_ID_RE = /^(w[A-Za-z0-9]{1,10}):p[A-Za-z0-9]{1,10}$/;
+const TAB_ID_RE = /^(w[A-Za-z0-9]{1,10}):t[A-Za-z0-9]{1,10}$/;
 const SESSION_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const CLIENTS = new Set(['claude', 'codex']);
 // A manual identity may only be saved for a pane the most recent identity check
@@ -180,8 +181,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const pane = byId.get(row.pane_id);
       return {
         pane_id: row.pane_id,
-        workspace_id: pane ? pane.workspace_id : '',
-        tab_id: pane ? pane.tab_id : '',
+        workspace_id: pane && WORKSPACE_ID_RE.test(pane.workspace_id) ? pane.workspace_id : '',
+        tab_id: pane && TAB_ID_RE.test(pane.tab_id) ? pane.tab_id : '',
         client: pane ? pane.agent : '',
         agent_status: pane ? pane.agent_status : '',
         workspace_label: row.workspace_label,
@@ -324,6 +325,37 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
 
   const maskId = (id) => id.slice(0, 4) + '...' + id.slice(-4);
 
+  // The one validator for the write path. Herdr's pane list is data from outside this
+  // module, so before anything is written the pane must be listed exactly once, its
+  // workspace, tab and pane ids must be well formed and belong together, and its folder
+  // must be present, absolute, canonical, free of control characters and an existing
+  // directory. The returned values are the normalized ones; the store check and the
+  // registry write use these and never the raw pane list.
+  async function validateLivePane(panes, paneId) {
+    const matches = panes.filter((item) => item.pane_id === paneId);
+    if (matches.length === 0) throw new AdapterError('That pane is no longer in the session.', 404, 'pane_missing');
+    const invalid = () => new AdapterError('Herdr reported inconsistent details for that pane, so nothing was saved. Check the session again.', 409, 'pane_invalid');
+    if (matches.length > 1) throw invalid();
+    const pane = matches[0];
+    const paneMatch = PANE_ID_RE.exec(pane.pane_id);
+    const tabMatch = TAB_ID_RE.exec(pane.tab_id);
+    if (!paneMatch || !tabMatch || !WORKSPACE_ID_RE.test(pane.workspace_id)) throw invalid();
+    if (paneMatch[1] !== pane.workspace_id || tabMatch[1] !== pane.workspace_id) throw invalid();
+    const cwd = pane.cwd;
+    if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > 4096 || !path.isAbsolute(cwd)) throw invalid();
+    if (/[\u0000-\u001f\u007f]/.test(cwd)) throw invalid();
+    if (path.normalize(cwd) !== cwd || (cwd.length > 1 && cwd.endsWith('/'))) throw invalid();
+    let real;
+    try {
+      real = await fsp.realpath(cwd);
+      if (!(await fsp.stat(real)).isDirectory()) throw invalid();
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw invalid();
+    }
+    return { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, agent: pane.agent, cwd: real };
+  }
+
   // The id is validated in layers, cheapest first: format, present in the real
   // client store, the store's recorded folder matches the pane's folder (or the
   // override is sent), and not already claimed by another pane. It is never
@@ -337,8 +369,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     const id = sessionId.toLowerCase();
 
     const panes = await readPanes(session);
-    const pane = panes.find((item) => item.pane_id === paneId);
-    if (!pane) throw new AdapterError('That pane is no longer in the session.', 404, 'pane_missing');
+    const pane = await validateLivePane(panes, paneId);
     if (pane.agent !== client) throw new AdapterError('That pane is running ' + (pane.agent || 'no supported agent') + ', not ' + client + '.', 409, 'client_mismatch');
 
     const seen = lastVerify.get(session);
