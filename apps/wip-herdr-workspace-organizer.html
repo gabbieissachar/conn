@@ -195,6 +195,14 @@ created: 2026-09-10
     .cleanup-all { margin-bottom: 26px; }
     .cleanup-totals { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 14px 0 6px; color: var(--navy); font-size: 13px; }
     .cleanup-totals strong { font-size: 15px; letter-spacing: -.02em; }
+    .batch .archive-name { font-size: 14px; }
+    .batch-counts { margin-top: 8px; color: var(--navy); font-size: 13px; }
+    .member-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 0; border-top: 1px solid #eef1f6; font-size: 12px; }
+    .member-line .names { min-width: 0; overflow-wrap: anywhere; }
+    .member-line .pill { margin-left: auto; }
+    .member-flag { flex-basis: 100%; color: #925a08; font-size: 11px; line-height: 1.4; }
+    .archive-chip { color: #514194; font: 10px "DM Mono", monospace; }
+    .failure-entry .inline-form { flex-basis: 100%; }
     .command-box { margin: 10px 0 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcff; font: 11px/1.55 "DM Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--navy); }
     .skeleton { height: 54px; border-radius: 8px; background: linear-gradient(90deg, #eef1f6, #f7f8fb, #eef1f6); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
     @keyframes shimmer { to { background-position: -200% 0; } }
@@ -225,11 +233,13 @@ created: 2026-09-10
     <section id="restart-section" class="view-panel"></section>
     <section id="workspaces-section" hidden>
       <section class="summary" id="summary"></section>
+      <div id="archive-all"></div>
       <div id="cleanup-all"></div>
       <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
       <div class="workspaces" id="workspaces"></div>
     </section>
     <section id="archives-section" hidden>
+      <div id="batches"></div>
       <div class="section-heading"><h2>Archives</h2><span class="updated">Layouts and resumable identities only</span></div>
       <div class="archives" id="archives"></div>
     </section>
@@ -340,7 +350,7 @@ created: 2026-09-10
       const remove = `herdr-organizer delete-archive --archive ${archive.archive_id} --execute --confirm ${archive.archive_id}`;
       return `<article class="archive">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
-        <div class="archive-meta">${plural(archive.tab_count, 'tab')} · ${plural(archive.pane_count, 'pane')} · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable</div>
+        <div class="archive-meta">${plural(archive.tab_count, 'tab')} · ${plural(archive.pane_count, 'pane')} · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable${archive.batch_id ? ` · <span class="archive-chip" title="Captured by Archive all">${escapeHtml(archive.batch_id)}</span>` : ''}</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button><button class="danger" type="button" title="Permanently removes this saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(remove)}">Copy delete archive</button></div>
         <div class="archive-meta" style="margin-top: 12px">Select one or more archived tabs to restore into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
@@ -361,7 +371,7 @@ created: 2026-09-10
       }
       if (!data) return;
       const workspaces = (data.workspaces || []).filter(workspace => matches(`${workspace.label} ${workspace.id} ${workspace.tabs.map(tab => `${tab.label} ${tab.id}`).join(' ')}`));
-      const archives = (data.archives || []).filter(archive => matches(`${archive.workspace_label} ${archive.archive_id} ${archive.status}`));
+      const archives = (data.archives || []).filter(archive => matches(`${archive.workspace_label} ${archive.archive_id} ${archive.status} ${archive.batch_id || ''}`));
       const allTabIds = new Set((data.workspaces || []).flatMap(workspace => workspace.tabs.map(tab => tab.id)));
       state.selectedTabs = new Set([...state.selectedTabs].filter(tabId => allTabIds.has(tabId)));
       const archivedTabKeys = new Set((data.archives || []).flatMap(archive => (archive.tabs || []).map(tab => archiveTabKey(archive.archive_id, tab.id))));
@@ -375,6 +385,9 @@ created: 2026-09-10
       document.querySelector('#archives-section').hidden = state.view !== 'archives';
       if (state.cleanup.result && state.cleanup.result.session !== cleanupSession()) state.cleanup = { loading: false, result: null, error: '' };
       document.querySelector('#cleanup-all').innerHTML = cleanupAllView(data);
+      if (state.archiveAll.result && state.archiveAll.result.session !== cleanupSession()) state.archiveAll = freshArchiveAll();
+      renderArchiveAll();
+      document.querySelector('#batches').innerHTML = batchesView(data);
       document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
       document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
       document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command)));
@@ -818,13 +831,15 @@ created: 2026-09-10
       renderRestart();
       loadBundles();
     };
+    // The manual identity form also appears in the Archive all card, so a change re-renders both places.
+    const rerenderManual = () => { renderRestart(); renderArchiveAll(); };
     const saveManualIdentity = async key => {
       const entry = restart.manual[key];
       if (!entry || entry.saving) return;
       const [session, pane] = key.split('|');
       entry.saving = true;
       entry.error = '';
-      renderRestart();
+      rerenderManual();
       try {
         const data = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, confirm: `save:${pane}` });
         restart.manual[key] = { saved: data.masked_id };
@@ -834,7 +849,7 @@ created: 2026-09-10
         entry.error = error.message;
         if (error.code === 'folder_differs' || error.code === 'folder_unknown') entry.needsOverride = error.code;
       }
-      renderRestart();
+      rerenderManual();
     };
     const openManual = (session, pane, client, scroll) => {
       const key = manualKey(session, pane);
@@ -994,6 +1009,188 @@ created: 2026-09-10
     document.querySelector('#cleanup-all').addEventListener('click', event => {
       if (event.target.closest('[data-cleanup="preview"]')) runCleanupPreview();
     });
+
+    // ---- Archive all workspaces ----
+    // The preview is read-only and runs on the server. Archiving closes workspaces, so the page never runs it:
+    // the exact command is copied for a terminal outside Herdr. The tool re-checks every workspace when it runs.
+    const SKIP_TEXT = {
+      active_agent: 'Has a working or blocked agent. Let it finish, then preview again.',
+      unverified_agent_session: 'Has an agent without a verified session id, so it could not be resumed. Add the id below, then preview again.',
+      capture_failed: 'Could not be captured. Run the single archive preview for it in a terminal to see why.',
+      workspace_gone: 'No longer exists.',
+      workspace_changed: 'Changed since the preview.'
+    };
+    const freshArchiveAll = () => ({ loading: false, result: null, error: '', checking: {}, checkError: '', snapshotAt: '' });
+    state.archiveAll = freshArchiveAll();
+    const archiveAllPaneView = (session, pane) => {
+      const key = manualKey(session, pane.pane_id);
+      const entry = restart.manual[key] || {};
+      const checking = state.archiveAll.checking[session];
+      let control;
+      if (entry.saved) control = `<span class="pill good" title="Saved to the registry. Preview again to include this workspace.">Saved · ${escapeHtml(entry.saved)}</span>`;
+      else if (checking) control = '<span class="pill">checking identities…</span>';
+      else control = `<button type="button" class="small-btn" style="margin-left:auto" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}">${entry.open ? 'Close form' : 'Set session id'}</button>`;
+      const form = entry.open && !entry.saved ? `<div class="inline-form">${manualFormView(session, { pane_id: pane.pane_id, client: pane.client })}</div>` : '';
+      return `<div class="failure-entry"><span class="pane-id">${escapeHtml(pane.pane_id)}</span><span class="names">${escapeHtml(pane.client || 'agent')}</span>${control}${form}</div>`;
+    };
+    const archiveAllSkippedView = (item, session) => {
+      const why = item.reasons.map(reason => SKIP_TEXT[reason] || reason.replace(/_/g, ' ')).join(' ');
+      const panes = item.unverified_panes.map(pane => archiveAllPaneView(session, pane)).join('');
+      return `<div class="failure"><h4>${escapeHtml(item.label || item.workspace_id)} <span class="count-pill">${escapeHtml(item.workspace_id)}</span></h4><p>${escapeHtml(why)}</p>${panes}</div>`;
+    };
+    const archiveAllView = data => {
+      const aa = state.archiveAll;
+      const result = aa.result;
+      const session = cleanupSession();
+      const stale = Boolean(result) && Boolean(aa.snapshotAt) && aa.snapshotAt !== (data.generated_at || '');
+      const previewCommand = result?.commands?.preview || (SESSION_NAME_PATTERN.test(session) ? `herdr-organizer --session ${session} archive-all` : '');
+      let body = '';
+      if (aa.loading) body = '<div class="skeleton" style="margin-top:14px"></div>';
+      else if (aa.error) body = `<div class="scope-note error" style="margin-top:14px">${escapeHtml(aa.error)}</div>`;
+      else if (result) {
+        const totals = result.totals;
+        const ready = result.to_archive.length
+          ? `<details class="fold" data-fold="aa-ready"${aa.readyOpen ? ' open' : ''} style="margin-top:6px"><summary><span class="group-title">Will be archived <span class="count-pill">${totals.to_archive}</span></span></summary>${result.to_archive.map(item => `<div class="member-line"><span class="pane-id">${escapeHtml(item.workspace_id)}</span><span class="names">${escapeHtml(item.label)}</span><span class="tab-meta" style="margin:0 0 0 auto">${plural(item.tab_count, 'tab')} · ${plural(item.pane_count, 'pane')}</span></div>`).join('')}</details>`
+          : '<div class="tab-meta">Nothing passes the safety checks, so there is nothing to archive.</div>';
+        const skipped = result.skipped.length ? `<div class="group-title" style="margin-top:14px">Skipped <span class="count-pill">${totals.skipped}</span></div>${result.skipped.map(item => archiveAllSkippedView(item, result.session)).join('')}` : '';
+        const command = result.commands.execute
+          ? `<div class="confirm-box warn" style="margin-top:14px"><strong>Closes ${plural(totals.to_archive, 'workspace')} and stops their processes.</strong>Run this in a terminal outside Herdr. It stops before closing anything if it is run inside a workspace it would archive, and it checks each workspace again just before closing it. Skipped workspaces stay open. A second run makes a second group for them.</div><pre class="command-box">${escapeHtml(stale ? 'The snapshot changed since this preview. Preview again for a fresh command.' : result.commands.execute)}</pre>`
+          : '';
+        body = `<div class="cleanup-totals"><span><strong>${totals.to_archive}</strong> of ${plural(totals.workspaces, 'workspace')} would be archived and closed</span><span class="updated">${totals.skipped} skipped</span></div>${stale ? '<div class="scope-note">The snapshot changed since this preview. Preview again before you copy the command.</div>' : ''}${ready}${skipped}${aa.checkError ? `<div class="scope-note error">${escapeHtml(aa.checkError)}</div>` : ''}${command}`;
+      }
+      const canPreview = Boolean(session) && !aa.loading;
+      const canCopy = Boolean(result?.commands?.execute) && !stale;
+      return `<article class="card cleanup-all"><div class="card-head"><h3>Archive all workspaces</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
+        <p class="lede">Archives every live workspace that passes the safety checks and closes it, as one group you can restore together from the Archives tab. A workspace with a working agent, or an agent without a verified session id, is skipped and listed with the reason. Previewing closes nothing.</p>
+        <div class="btn-row"><button type="button" class="primary-btn" data-aa="preview" ${canPreview ? '' : 'disabled'} title="${session ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${aa.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview archive all')}</button>
+          <button type="button" data-aa-copy="${escapeHtml(previewCommand)}" ${previewCommand ? '' : 'disabled'} title="Copies the preview command to run in your terminal">Copy archive all preview</button>
+          <button type="button" class="danger" data-aa-copy="${escapeHtml(canCopy ? result.commands.execute : '')}" ${canCopy ? '' : 'disabled'} title="${canCopy ? 'Copies the command that archives and closes the workspaces listed above' : 'Preview first. The command is built from the preview'}">Copy archive all</button></div>
+        ${body}
+      </div></article>`;
+    };
+    const renderArchiveAll = () => {
+      const root = document.querySelector('#archive-all');
+      if (!root || !state.data) return;
+      const focus = document.activeElement && root.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
+      root.innerHTML = archiveAllView(state.data);
+      if (focus) root.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus();
+    };
+    const runArchiveAllPreview = async () => {
+      const session = cleanupSession();
+      if (!session || state.archiveAll.loading) return;
+      state.archiveAll = { ...freshArchiveAll(), loading: true };
+      renderArchiveAll();
+      try {
+        const result = await api.run('archive-all-preview', { session });
+        state.archiveAll = { ...freshArchiveAll(), result, snapshotAt: state.data?.generated_at || '' };
+      } catch (error) { state.archiveAll = { ...freshArchiveAll(), error: error.message }; }
+      renderArchiveAll();
+    };
+    // The session id field reuses the Restart tab's manual identity flow. That flow only accepts a pane the latest
+    // identity check found unverified, so the check for this session runs first when the page has no result yet.
+    const openArchiveManual = async (session, pane, client) => {
+      const key = manualKey(session, pane);
+      const existing = restart.manual[key];
+      if (existing?.open) { restart.manual[key] = { ...existing, open: false }; renderArchiveAll(); return; }
+      const known = () => (restart.verify[session]?.data?.rows || []).some(row => row.pane_id === pane && !row.verified);
+      const aa = state.archiveAll;
+      aa.checkError = '';
+      if (!known()) {
+        if (aa.checking[session]) return;
+        aa.checking[session] = true;
+        renderArchiveAll();
+        try { restart.verify[session] = { data: await api.run('verify', { session }) }; }
+        catch (error) { aa.checkError = error.message; }
+        aa.checking[session] = false;
+      }
+      if (known()) restart.manual[key] = { ...(restart.manual[key] || {}), open: true, client: client === 'codex' ? 'codex' : 'claude', draft: restart.manual[key]?.draft || '' };
+      else if (!aa.checkError) aa.checkError = 'The identity check did not find this pane unverified. Preview again to refresh the list.';
+      renderArchiveAll();
+    };
+    const archiveAllRoot = document.querySelector('#archive-all');
+    archiveAllRoot.addEventListener('click', event => {
+      const copyButton = event.target.closest('[data-aa-copy]');
+      if (copyButton) { if (copyButton.dataset.aaCopy) copy(copyButton.dataset.aaCopy); return; }
+      const target = event.target.closest('[data-aa]');
+      if (target?.dataset.aa === 'preview') runArchiveAllPreview();
+      else if (target?.dataset.aa === 'manual') openArchiveManual(target.dataset.session, target.dataset.pane, target.dataset.client);
+      else if (event.target.closest('[data-action="manual-cancel"]')) { delete restart.manual[event.target.closest('[data-action="manual-cancel"]').dataset.key]; rerenderManual(); }
+    });
+    archiveAllRoot.addEventListener('submit', event => {
+      const form = event.target.closest('[data-manual-form]');
+      if (!form) return;
+      event.preventDefault();
+      saveManualIdentity(form.dataset.manualForm);
+    });
+    archiveAllRoot.addEventListener('input', event => {
+      const key = event.target.dataset?.manualId;
+      if (key && restart.manual[key]) restart.manual[key].draft = event.target.value;
+    });
+    archiveAllRoot.addEventListener('change', event => {
+      const clientKey = event.target.dataset?.manualClient;
+      if (clientKey && restart.manual[clientKey]) { restart.manual[clientKey].client = event.target.value; rerenderManual(); return; }
+      if (event.target.dataset?.action === 'manual-override' && restart.manual[event.target.dataset.key]) { restart.manual[event.target.dataset.key].override = event.target.checked; rerenderManual(); }
+    });
+    archiveAllRoot.addEventListener('toggle', event => {
+      if (event.target.dataset?.fold === 'aa-ready') state.archiveAll.readyOpen = event.target.open;
+    }, true);
+
+    // ---- Capture groups (Archives tab) ----
+    // A group is one Archive all run. Restore all acts only on members still archived and is copy-only.
+    const BATCH_ID_PATTERN = /^batch-[0-9]{8}-[0-9]{6}(-[0-9]+)?$/;
+    const MEMBER_STATUS = { archived: ['archived', ''], restored: ['restored', 'good'], resumed: ['restored', 'good'], restore_partial: ['restore partial', 'warn'], deleted: ['deleted', ''], close_failed: ['close failed', 'bad'], prepared: ['not closed', 'bad'] };
+    const SKIP_SHORT = { active_agent: 'working agent', unverified_agent_session: 'no verified session id', capture_failed: 'could not be captured', workspace_gone: 'gone before it was archived', workspace_changed: 'changed during the run' };
+    state.batchOpen = {};
+    const batchTitle = batch => {
+      const when = batch.created_at ? new Date(batch.created_at) : null;
+      return when && !Number.isNaN(when.getTime()) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : batch.batch_id;
+    };
+    const batchMemberView = member => {
+      const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
+      const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
+        : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">The workspace was not closed. Restore all leaves it alone.</span>' : '';
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="pill ${tone}">${escapeHtml(label)}</span>${flag}</div>`;
+    };
+    const batchView = batch => {
+      const counts = batch.counts || {};
+      const id = batch.batch_id;
+      const valid = BATCH_ID_PATTERN.test(id);
+      const session = SESSION_NAME_PATTERN.test(batch.herdr_session || '') ? ` --session ${batch.herdr_session}` : '';
+      const base = `herdr-organizer${session} restore-batch --batch ${id}`;
+      const resume = `${base} --resume-agents --execute --confirm ${id}`;
+      const layout = `${base} --execute --confirm ${id}`;
+      const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
+      const canRestore = valid && counts.archived > 0;
+      const why = !valid ? 'This group has an unexpected id, so no command is built' : 'No member is still archived';
+      const parts = [[counts.archived, 'archived'], [counts.restored, 'restored'], [counts.restore_partial, 'restore partial'], [counts.other, 'not closed'], [counts.deleted, 'deleted'], [counts.skipped, 'skipped at capture']]
+        .filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
+      const summaryLabel = batch.empty ? 'empty' : (counts.archived ? `${counts.archived} to restore` : 'nothing to restore');
+      const skipped = (batch.skipped || []).map(item => `<div class="member-line"><span class="pane-id">${escapeHtml(item.workspace_id || '')}</span><span class="names">${escapeHtml(item.label || '')}</span><span class="tab-meta" style="margin:0 0 0 auto">${escapeHtml((item.reasons || []).map(reason => SKIP_SHORT[reason] || reason.replace(/_/g, ' ')).join(', '))}</span></div>`).join('');
+      const open = key => (state.batchOpen[`${id}:${key}`] ? ' open' : '');
+      return `<article class="archive batch">
+        <div class="archive-line"><div><div class="archive-name">${escapeHtml(batchTitle(batch))}</div><div class="archive-meta">${escapeHtml(id)}${batch.herdr_session ? ` · ${escapeHtml(batch.herdr_session)}` : ''}${batch.status && batch.status !== 'completed' ? ` · ${escapeHtml(String(batch.status).replace(/_/g, ' '))}` : ''}</div></div><span class="archive-state">${escapeHtml(summaryLabel)}</span></div>
+        <div class="batch-counts">${escapeHtml(parts.join(' · ') || 'No members')}</div>
+        ${batch.empty ? '<div class="archive-meta" style="margin-top:8px">Every archive in this group is deleted. Delete the group record to remove it from this list.</div>' : ''}
+        <div class="archive-actions">
+          <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
+          <button type="button" ${canRestore ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived as fresh shells' : why}">Copy restore all (layout only)</button>
+          ${batch.empty && valid ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. No archive or workspace is changed.">Copy delete group record</button>` : ''}
+        </div>
+        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(batchMemberView).join('') || '<div class="tab-meta">No members</div>'}</details>
+        ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
+      </article>`;
+    };
+    const batchesView = data => {
+      const all = data.batches || [];
+      const list = all.filter(batch => matches(`${batch.batch_id} ${batch.herdr_session || ''} ${(batch.members || []).map(member => `${member.workspace_label} ${member.archive_id} ${member.status}`).join(' ')}`));
+      const body = list.length ? `<div class="archives">${list.map(batchView).join('')}</div>`
+        : `<div class="empty" style="min-height:90px">${all.length ? 'No groups match this filter.' : 'No groups yet. Preview Archive all on the Workspaces tab to capture one.'}</div>`;
+      return `<div class="section-heading" style="margin-top:0"><h2>Capture groups</h2><span class="updated">Restore everything one Archive all run captured</span></div>${body}<div style="height:26px"></div>`;
+    };
+    document.querySelector('#batches').addEventListener('toggle', event => {
+      const key = event.target.dataset?.batchFold;
+      if (key) state.batchOpen[key] = event.target.open;
+    }, true);
 
     // ---- Snapshot-backed views (Workspaces and Archives) ----
     const syncSnapshotSelect = () => {

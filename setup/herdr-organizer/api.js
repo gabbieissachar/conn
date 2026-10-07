@@ -114,6 +114,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
       run: (p) => tools.sealBundle(p.sessions, p.acknowledgements, p.confirm),
     },
     'cleanup-preview': { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.cleanupPreview(p.session) },
+    'archive-all-preview': { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.archiveAllPreview(p.session) },
     verify: { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.verifyReport(p.session) },
     preflight: {
       tier: 0,

@@ -343,3 +343,101 @@ test('snapshot-data: serves the snapshot from the tool root and refuses one that
     tree.cleanup();
   }
 });
+
+test('archive-all-preview: runs the read-only preview, drops free text, and builds copy-only commands from the validated session', async () => {
+  const server = await startServer();
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.to_archive.map((item) => [item.workspace_id, item.label, item.pane_count]), [['w1', 'Alpha', 3], ['w2', 'Beta', 1]]);
+    assert.deepEqual(data.totals, { workspaces: 5, to_archive: 2, skipped: 3 });
+    const bySkip = Object.fromEntries(data.skipped.map((item) => [item.workspace_id, item]));
+    assert.deepEqual(bySkip.w3.reasons, ['active_agent']);
+    assert.deepEqual(bySkip.w3.active_pane_ids, ['w3:p1']);
+    assert.deepEqual(bySkip.w4.unverified_panes, [{ pane_id: 'w4:p2', client: 'codex' }]);
+    assert.deepEqual(bySkip.w5.reasons, ['capture_failed']);
+    assert.equal('error' in bySkip.w5, false, 'the tool free-text error is dropped');
+    assert.deepEqual(findLeaks(response.raw), []);
+    const runs = server.calls.filter((call) => call.args.includes('archive-all'));
+    assert.equal(runs.length, 1);
+    assert.deepEqual(runs[0].args.slice(1), ['--session', 'project-a', 'archive-all']);
+    for (const flag of ['--execute', '--confirm', '--allow-active', '--allow-unresumable-agents']) assert.equal(runs[0].args.includes(flag), false, flag);
+    assert.equal(data.commands.preview, 'herdr-organizer --session project-a archive-all');
+    assert.equal(data.commands.execute, 'herdr-organizer --session project-a archive-all --execute --confirm project-a');
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: with nothing to archive there is no execute command', async () => {
+  const none = fixture('archive-all-preview.txt').replace(/"to_archive": \[[\s\S]*?\n  \],\n  "skipped"/, '"to_archive": [],\n  "skipped"');
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: none, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.status, 200);
+    assert.equal(response.json.data.totals.to_archive, 0);
+    assert.equal(response.json.data.commands.execute, '');
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: ids that do not match their patterns and unknown reasons never reach the browser', async () => {
+  const hostile = JSON.stringify({
+    session: 'project-a',
+    to_archive: [{ workspace_id: 'w1', label: 'Fine', tab_count: 1, pane_count: 1, resumable_agent_panes: 0 }, { workspace_id: 'w1; touch /tmp/pwned', label: 'x' }, { workspace_id: '$(id)', label: 'y' }],
+    skipped: [{ workspace_id: 'w2', label: '/Users/someone/secret', reasons: ['active_agent', 'rm -rf'], active_pane_ids: ['w2:p1', 'bad'], unverified_panes: [{ pane_id: 'w2:p2', client: '--help' }, { pane_id: 'nope', client: 'codex' }] }],
+  }, null, 2);
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: hostile + '\nPreview only.\n', stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json.data.to_archive.map((item) => item.workspace_id), ['w1']);
+    const skipped = response.json.data.skipped[0];
+    assert.deepEqual(skipped.reasons, ['active_agent']);
+    assert.deepEqual(skipped.active_pane_ids, ['w2:p1']);
+    assert.deepEqual(skipped.unverified_panes, [{ pane_id: 'w2:p2', client: '' }]);
+    assert.equal(skipped.label.includes('/Users/'), false);
+    assert.equal(response.raw.includes('pwned') || response.raw.includes('$(id)') || response.raw.includes('rm -rf'), false);
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: a failed or mismatched preview is reported as an error, never as an empty plan', async () => {
+  const failing = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 1, stdout: '', stderr: 'Error: Could not reach Herdr socket /Users/someone/.config/herdr/herdr.sock', timedOut: false, truncated: false } : undefined) });
+  let server = await startServer({ runner: failing.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.status, 502);
+    assert.equal(response.json.code, 'archive_preview_failed');
+    assert.equal(response.raw.includes('/Users/'), false);
+  } finally { await server.close(); }
+  const other = fixture('archive-all-preview.txt').replace('"session": "project-a"', '"session": "someone-else"');
+  const mismatch = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: other, stderr: '', timedOut: false, truncated: false } : undefined) });
+  server = await startServer({ runner: mismatch.runner });
+  try {
+    const { post } = await client(server);
+    assert.equal((await post('archive-all-preview', { session: 'project-a' })).status, 502);
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: the default, stopped and unknown sessions are refused before the tool starts', async () => {
+  const server = await startServer();
+  try {
+    const { post } = await client(server);
+    for (const name of ['default', 'stopped-one', 'nope', '-h', '--execute']) assert.equal((await post('archive-all-preview', { session: name })).status, 400, name);
+    assert.equal((await post('archive-all-preview', { session: 'project-a', extra: 'x' })).status, 400);
+    assert.equal((await post('archive-all-preview', {})).status, 400);
+    assert.equal(server.calls.filter((call) => call.args.includes('archive-all')).length, 0);
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: it is read-only (tier 0) and no action in the allowlist can archive or restore', async () => {
+  const server = await startServer();
+  try {
+    assert.equal(server.api.ACTIONS['archive-all-preview'].tier, 0);
+    for (const name of Object.keys(server.api.ACTIONS)) assert.equal(/archive-all$|restore|execute/.test(name), false, name);
+  } finally { await server.close(); }
+});

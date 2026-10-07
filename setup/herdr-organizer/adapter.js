@@ -628,6 +628,29 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     };
   }
 
+  // Read-only preview of `archive-all` for one session: which live workspaces would be
+  // archived and which are skipped, with reasons. The tool recomputes this itself when the
+  // copied execute command runs, so a stale preview cannot archive anything it would refuse.
+  // The page never runs the execute form. The commands are built here from the validated
+  // session name only.
+  async function archiveAllPreview(sessionName) {
+    const session = await requireSession(sessionName);
+    const result = await runner(pythonBin, [organizerScript, '--session', session, 'archive-all'], { env: runEnv(), timeoutMs: 180000 });
+    if (result.timedOut) throw timeoutError('The archive preview', 180000);
+    const preview = result.code === 0 ? parse.parseArchiveAllPreview(result.stdout) : null;
+    if (!preview || preview.session !== session) throw new AdapterError(scrub(result.stderr || result.stdout || 'The archive preview failed.'), 502, 'archive_preview_failed');
+    const base = 'herdr-organizer --session ' + session + ' archive-all';
+    return {
+      session,
+      generated_at: new Date().toISOString(),
+      to_archive: preview.to_archive,
+      skipped: preview.skipped,
+      totals: { workspaces: preview.to_archive.length + preview.skipped.length, to_archive: preview.to_archive.length, skipped: preview.skipped.length },
+      // Copy-only. Archiving closes workspaces, so the page never runs the execute form.
+      commands: { preview: base, execute: preview.to_archive.length ? base + ' --execute --confirm ' + session : '' },
+    };
+  }
+
   // The snapshot file the Workspaces and Archives views read. It is read from the
   // tool root (so an isolated copy of the tools is honoured) and refused if it
   // carries anything that looks private.
@@ -653,6 +676,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     refreshSnapshot,
     readSnapshot,
     cleanupPreview,
+    archiveAllPreview,
     applyVerified,
     saveManualIdentity,
     sealBundle,

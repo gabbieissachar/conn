@@ -6,7 +6,7 @@
 // this file. Parsers are tolerant: a line they do not recognise is skipped, and
 // they never keep session ids, resume commands or paths.
 
-const { readQuoted } = require('./text');
+const { readQuoted, scrub } = require('./text');
 
 const VERIFIED_CLASSES = new Set(['native_verified', 'argv_verified', 'handle_verified', 'pid_record_verified']);
 const ALL_CLASSES = new Set([...VERIFIED_CLASSES, 'candidate_ambiguous', 'unresolved']);
@@ -194,6 +194,37 @@ function parseCleanupPreview(stdout) {
   };
 }
 
+const SKIP_REASONS = new Set(['active_agent', 'unverified_agent_session', 'capture_failed', 'workspace_gone', 'workspace_changed']);
+const WORKSPACE_ID_RE = /^w[A-Za-z0-9]{1,10}$/;
+const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
+
+// `archive-all` without --execute prints a JSON object and a "Preview only" line.
+// Only fixed fields survive: ids must match their patterns, reasons are an allowlist,
+// the free-text error the tool may attach to a skipped row is dropped, and labels are scrubbed.
+function parseArchiveAllPreview(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/);
+  const start = lines.indexOf('{');
+  const end = start === -1 ? -1 : lines.indexOf('}', start);
+  if (start === -1 || end === -1) return null;
+  let value;
+  try { value = JSON.parse(lines.slice(start, end + 1).join('\n')); } catch { return null; }
+  if (!value || typeof value.session !== 'string' || !Array.isArray(value.to_archive) || !Array.isArray(value.skipped)) return null;
+  const label = (item) => scrub(typeof item.label === 'string' ? item.label : '', 120);
+  const count = (number) => (Number.isInteger(number) && number >= 0 ? number : 0);
+  const ready = (item) => ({ workspace_id: item.workspace_id, label: label(item), tab_count: count(item.tab_count), pane_count: count(item.pane_count), resumable_agent_panes: count(item.resumable_agent_panes) });
+  const skipped = (item) => ({
+    workspace_id: item.workspace_id,
+    label: label(item),
+    reasons: (Array.isArray(item.reasons) ? item.reasons : []).filter((reason) => SKIP_REASONS.has(reason)),
+    active_pane_ids: (Array.isArray(item.active_pane_ids) ? item.active_pane_ids : []).filter((id) => typeof id === 'string' && PANE_ID_RE.test(id)),
+    unverified_panes: (Array.isArray(item.unverified_panes) ? item.unverified_panes : [])
+      .filter((pane) => pane && typeof pane.pane_id === 'string' && PANE_ID_RE.test(pane.pane_id))
+      .map((pane) => ({ pane_id: pane.pane_id, client: pane.client === 'claude' || pane.client === 'codex' ? pane.client : '' })),
+  });
+  const valid = (item) => item && typeof item.workspace_id === 'string' && WORKSPACE_ID_RE.test(item.workspace_id);
+  return { session: value.session, to_archive: value.to_archive.filter(valid).map(ready), skipped: value.skipped.filter(valid).map(skipped) };
+}
+
 // `reconcile-all --bundle ID` without --confirm prints {"sessions": [{"session", "workspaces": {action: count}}]}
 // and a "Preview only" line. It is read-only.
 function parseReconcilePreview(stdout) {
@@ -239,6 +270,7 @@ module.exports = {
   parsePreflight,
   parseSealResult,
   parseCleanupPreview,
+  parseArchiveAllPreview,
   parseReconcilePreview,
   splitIdentity,
 };

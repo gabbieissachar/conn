@@ -36,3 +36,36 @@ test('write actions send a confirm token and the page never builds a command for
 test('bundles that are not compatible are never offered for a preview', () => {
   assert.match(html, /bundle\.ready && bundle\.compatible/);
 });
+
+test('archive all: the page only previews through the server and copies the execute command', () => {
+  const calls = [...html.matchAll(/api\.run\('([^']+)'/g)].map((match) => match[1]);
+  assert.ok(calls.includes('archive-all-preview'));
+  for (const name of calls) assert.equal(/archive-all$|restore|execute/.test(name), false, name);
+  // the execute form is only ever copied: it comes from the server preview and sits behind data-aa-copy
+  assert.match(html, /data-aa-copy="\$\{escapeHtml\(canCopy \? result\.commands\.execute : ''\)\}"/);
+  assert.equal(/api\.run\([^)]*archive-all[^)]*--execute/.test(html), false);
+});
+
+test('archive all and restore all never offer an override flag or force', () => {
+  assert.equal(html.includes('--force'), false);
+  const batchSection = html.slice(html.indexOf('// ---- Archive all workspaces ----'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.equal(/--allow-active|--allow-unresumable-agents|--force/.test(batchSection), false);
+});
+
+test('restore all is copy-only, built from a validated batch id, and disabled when nothing is archived', () => {
+  const view = html.slice(html.indexOf('const batchView = batch'), html.indexOf('const batchesView'));
+  assert.match(view, /BATCH_ID_PATTERN\.test\(id\)/);
+  assert.match(view, /canRestore = valid && counts\.archived > 0/);
+  assert.match(view, /restore-batch --batch \$\{id\}/);
+  assert.match(view, /--resume-agents --execute --confirm \$\{id\}/);
+  assert.equal(/api\.run/.test(view), false, 'the group card never calls the server');
+  assert.match(view, /Copy restore all \+ resume agents/);
+  assert.match(view, /Copy restore all \(layout only\)/);
+});
+
+test('the session id field in a skipped row reuses the manual identity flow and saves with a confirm token', () => {
+  assert.match(html, /manualFormView\(session, \{ pane_id: pane\.pane_id/);
+  assert.match(html, /const rerenderManual = \(\) => \{ renderRestart\(\); renderArchiveAll\(\); \}/);
+  const call = html.slice(html.indexOf("'save-manual-identity'"));
+  assert.match(call.slice(0, 400), /confirm: `save:\$\{pane\}`/);
+});

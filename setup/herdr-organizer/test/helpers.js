@@ -90,6 +90,7 @@ function fakeRunner(overrides = {}) {
       const name = 'cleanup-' + workspace + '.txt';
       return fs.existsSync(path.join(FIXTURES, name)) ? ok(fixture(name)) : { code: 1, stdout: '', stderr: 'unknown workspace', timedOut: false, truncated: false };
     }
+    if (args.includes('archive-all')) return ok(fixture('archive-all-preview.txt'));
     if (args.includes('prepare-restart-recovery')) {
       const acknowledged = args.includes('--allow-volatile-pane') && args.includes('--allow-mixed-cwd-workspace');
       const sealing = !args.includes('--preflight-only');
