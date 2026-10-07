@@ -2368,6 +2368,77 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(seen, ["20261007-101500-01-ws1"])
         self.assertIn("no longer archived", output)
 
+    def test_interrupt_after_the_workspace_closed_is_labelled_archived(self):
+        herdr = self.world(workspaces=[("w1", "One"), ("w2", "Two")], restores={}, working=())
+        real_run = herdr.run_json
+
+        def closes_then_interrupted(arguments, session):
+            result = real_run(arguments, session)
+            if arguments[:2] == ["workspace", "close"] and arguments[2] == "w2":
+                raise KeyboardInterrupt()
+            return result
+
+        with patch.object(ORGANIZER, "run_json", closes_then_interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (manifest,) = self.manifests()
+        self.assertEqual(manifest["status"], "interrupted")
+        statuses = {m["workspace_id"]: ORGANIZER.batch_member_view(m)["status"] for m in manifest["members"]}
+        self.assertEqual(statuses, {"w1": "archived", "w2": "archived"}, "w2 was closed before the interrupt")
+        archive = json.loads((self.archives / f"{manifest['members'][1]['archive_id']}.json").read_text())
+        self.assertIn("Confirmed against the live workspace list", archive["note"])
+
+    def test_interrupt_with_an_unreadable_live_list_never_claims_the_workspace_closed(self):
+        herdr = self.world(workspaces=[("w1", "One")], restores={}, working=())
+        calls = {"snapshots": 0}
+        real_snapshot = herdr.snapshot
+
+        def snapshot(session=None):
+            calls["snapshots"] += 1
+            if calls["snapshots"] > 2:  # planning and the pre-close re-check work; the post-interrupt read fails
+                raise ORGANIZER.OrganizerError("herdr unreachable")
+            return real_snapshot(session)
+
+        def interrupted(arguments, session):
+            if arguments[:2] == ["workspace", "close"]:
+                raise KeyboardInterrupt()
+            return {}
+
+        with patch.object(ORGANIZER, "session_snapshot", snapshot), patch.object(ORGANIZER, "run_json", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (manifest,) = self.manifests()
+        self.assertEqual(ORGANIZER.batch_member_view(manifest["members"][0])["status"], "close_failed")
+
+    def test_single_archive_restore_and_delete_take_the_batch_lock_when_they_execute(self):
+        self.world()
+        self.make_batch(["archived"])
+        parsed = [
+            ORGANIZER.parser().parse_args(["--session", "esim", "restore", "--archive", "20261007-101500-01-ws1", "--execute", "--confirm", "20261007-101500-01-ws1"]),
+            ORGANIZER.parser().parse_args(["--session", "esim", "archive", "--workspace", "w1", "--execute", "--confirm", "w1"]),
+            ORGANIZER.parser().parse_args(["delete-archive", "--archive", "20261007-101500-01-ws1", "--execute", "--confirm", "20261007-101500-01-ws1"]),
+        ]
+        with ORGANIZER.batch_run_lock("test"):
+            for args in parsed:
+                child = os.fork()
+                if child == 0:
+                    code = 1
+                    try:
+                        with redirect_stdout(io.StringIO()):
+                            args.func(args)
+                    except ORGANIZER.OrganizerError as error:
+                        code = 0 if "already in progress" in str(error) else 2
+                    os._exit(code)
+                _, status = os.waitpid(child, 0)
+                self.assertEqual(os.WEXITSTATUS(status), 0, args.command)
+        self.assertEqual(len(list(self.archives.glob("*.json"))), 1, "nothing was deleted or created")
+
+    def test_previews_of_single_commands_do_not_take_the_lock(self):
+        self.make_batch(["archived"])
+        with ORGANIZER.batch_run_lock("test"):
+            args = ORGANIZER.parser().parse_args(["--session", "esim", "restore", "--archive", "20261007-101500-01-ws1"])
+            self.assertEqual(self.run_quietly(args.func, args).count("Preview only"), 1)
+
     def test_no_eligible_workspace_writes_no_batch(self):
         herdr = self.world(workspaces=[("w3", "Busy")], restores={}, working={"w3"})
         output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
@@ -2503,12 +2574,14 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(preview["archives_to_delete"]), 2)
         self.assertEqual(preview["archives_left_alone"], ["other-batch"])
         self.assertIn("still archived", output)
+        self.assertIn("delete-archives:batch-20261007-101500", output)
         self.assertEqual(len(list(self.archives.glob("*.json"))), 4, "preview deletes nothing")
-        for confirm in (None, "other"):
-            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
+        # the record-only confirmation (the batch id) must not authorize a permanent delete of archives
+        for confirm in (None, "other", manifest["batch_id"]):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm 'delete-archives:"):
                 self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=confirm, archives=True))
         self.assertEqual(len(list(self.archives.glob("*.json"))), 4)
-        output = self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"], archives=True))
+        output = self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm="delete-archives:" + manifest["batch_id"], archives=True))
         self.assertIn("Left other-batch alone", output)
         self.assertEqual(sorted(path.stem for path in self.archives.glob("*.json")), ["other-batch", "unrelated"])
         self.assertEqual(list(self.batches.glob("*.json")), [])
@@ -2524,7 +2597,7 @@ class BatchTests(unittest.TestCase):
 
         with patch.object(Path, "unlink", flaky):
             with self.assertRaisesRegex(ORGANIZER.OrganizerError, "group record was kept"):
-                self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"], archives=True))
+                self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm="delete-archives:" + manifest["batch_id"], archives=True))
         self.assertEqual(len(list(self.batches.glob("*.json"))), 1)
         self.assertEqual([path.stem for path in self.archives.glob("*.json")], ["20261007-101500-02-ws2"])
 

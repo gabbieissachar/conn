@@ -415,11 +415,12 @@ Add `--archives` to also permanently delete every archive that belongs to the ba
 (an archive is only deleted when its own `batch_id` matches). The preview lists what
 would go and warns when members are still archived, because their saved layouts and
 agent identities would be lost. The record is kept if any archive cannot be deleted.
-Live and restored workspaces are never touched.
+Live and restored workspaces are never touched. It needs its own confirmation value,
+`delete-archives:<batch_id>`, so the record-only confirmation cannot authorize it.
 
 ```sh
 herdr-organizer delete-batch --batch <batch_id> --archives
-herdr-organizer delete-batch --batch <batch_id> --archives --execute --confirm <batch_id>
+herdr-organizer delete-batch --batch <batch_id> --archives --execute --confirm delete-archives:<batch_id>
 ```
 
 Reorder a tab with a zero-based destination index:

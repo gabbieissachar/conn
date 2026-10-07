@@ -1025,7 +1025,7 @@ def batch_run_lock(action: str) -> Iterable[None]:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise OrganizerError(
-                f"Another archive-all or restore-batch run is already in progress. Wait for it to finish, then run {action} again."
+                f"Another archive, restore or delete run is already in progress. Wait for it to finish, then run {action} again."
             ) from error
         yield
     finally:
@@ -1033,6 +1033,23 @@ def batch_run_lock(action: str) -> Iterable[None]:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+
+
+def with_batch_lock(action: str, function):
+    """Make a command that creates, restores or deletes archives take the same lock as archive-all and restore-batch.
+
+    Only the executing form locks; a preview changes nothing. Without this, a single restore could run beside a
+    group restore and create a duplicate workspace.
+    """
+
+    def locked(args: argparse.Namespace) -> None:
+        if getattr(args, "execute", False):
+            with batch_run_lock(action):
+                function(args)
+        else:
+            function(args)
+
+    return locked
 
 
 def batch_id_for() -> str:
@@ -1169,6 +1186,36 @@ def archive_all_command(args: argparse.Namespace) -> None:
         run_archive_batch(args, session, planned, skipped)
 
 
+def settle_interrupted_archive(
+    current: tuple[Path, dict[str, Any]], workspace: dict[str, str] | None, session: str | None
+) -> None:
+    """Label the archive whose close was interrupted from what Herdr says now, not from a guess.
+
+    An interrupt can land after the workspace closed but before the status was written. If the live list no longer has
+    the workspace, the archive is complete. If it still has it, or the list cannot be read, the archive says the close
+    was not confirmed.
+    """
+    archive_path, archive = current
+    gone = False
+    try:
+        live = session_snapshot(session).get("workspaces", [])
+        gone = bool(workspace) and not any(
+            item.get("workspace_id") == workspace["workspace_id"]
+            and str(item.get("label") or item.get("workspace_id")) == workspace["label"]
+            for item in live
+        )
+    except BaseException:  # the live list is unreadable, so nothing is assumed
+        gone = False
+    if gone:
+        archive["status"] = "archived"
+        archive["archived_at"] = now()
+        archive["note"] = "The run was interrupted after the workspace closed. Confirmed against the live workspace list."
+    else:
+        archive["status"] = "close_failed"
+        archive["error"] = "Interrupted before the close was confirmed. Check whether the workspace is still open."
+    write_json(archive_path, archive)
+
+
 def run_archive_batch(
     args: argparse.Namespace, session: str, planned: list[dict[str, Any]], skipped: list[dict[str, Any]]
 ) -> None:
@@ -1186,6 +1233,7 @@ def run_archive_batch(
     write_json(batch_path, manifest)
     failures: list[str] = []
     current: tuple[Path, dict[str, Any]] | None = None
+    current_workspace: dict[str, str] | None = None
     finished = False
     try:
         for item in planned:
@@ -1206,6 +1254,7 @@ def run_archive_batch(
                 continue
             archive_id = archive_id_for(item["label"])
             current = prepare_archive(archive_id, capture, args.session, batch_id)
+            current_workspace = {"workspace_id": workspace_id, "label": item["label"]}
             manifest["members"].append(
                 {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
             )
@@ -1224,9 +1273,7 @@ def run_archive_batch(
         # Any other error or Ctrl-C must not leave the record stuck. The workspace being closed at that moment may
         # or may not be gone, so its archive says so and nothing is assumed.
         if current is not None and current[1].get("status") == "prepared":
-            current[1]["status"] = "close_failed"
-            current[1]["error"] = "Interrupted before the close was confirmed. Check whether the workspace is still open."
-            write_json(current[0], current[1])
+            settle_interrupted_archive(current, current_workspace, args.session)
         manifest["status"] = ("completed_with_failures" if failures else "completed") if finished else "interrupted"
         manifest["completed_at"] = now()
         write_json(batch_path, manifest)
@@ -1413,8 +1460,8 @@ def delete_batch_command(args: argparse.Namespace) -> None:
         if with_archives:
             still_archived = summary["counts"]["archived"]
             print(
-                f"Preview only. Re-run with --execute --confirm {args.batch!r} to permanently delete this group record "
-                f"and {len(owned)} archive(s)."
+                f"Preview only. Re-run with --execute --confirm {'delete-archives:' + args.batch!r} to permanently delete "
+                f"this group record and {len(owned)} archive(s)."
                 + (f" {still_archived} of them are still archived, so their saved layouts and agent identities would be lost." if still_archived else "")
                 + " No live or restored workspace is changed."
             )
@@ -1424,7 +1471,10 @@ def delete_batch_command(args: argparse.Namespace) -> None:
                 "The archives stay as single archives."
             )
         return
-    require_execute_confirmation(args.execute, args.confirm, args.batch, "Delete batch")
+    require_execute_confirmation(
+        args.execute, args.confirm, f"delete-archives:{args.batch}" if with_archives else args.batch,
+        "Delete batch and its archives" if with_archives else "Delete batch",
+    )
     if not with_archives:
         batch_path.unlink()
         print(f"Deleted batch {args.batch}. No archive, restored workspace or live workspace was changed.")
@@ -4037,7 +4087,7 @@ def parser() -> argparse.ArgumentParser:
     archive.add_argument("--allow-unresumable-agents", action="store_true", help="Allow agent panes without a verified resumable session.")
     archive.add_argument("--execute", action="store_true")
     archive.add_argument("--confirm")
-    archive.set_defaults(func=archive_command)
+    archive.set_defaults(func=with_batch_lock("archive", archive_command))
 
     archive_all = commands.add_parser(
         "archive-all",
@@ -4099,7 +4149,7 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("--force", action="store_true", help="Allow an additional restore of an already restored archive.")
     restore.add_argument("--execute", action="store_true")
     restore.add_argument("--confirm")
-    restore.set_defaults(func=restore_command)
+    restore.set_defaults(func=with_batch_lock("restore", restore_command))
 
     restore_tab = commands.add_parser("restore-tab", help="Restore one archived tab into an active workspace.")
     restore_tab.add_argument("--archive", required=True)
@@ -4131,7 +4181,7 @@ def parser() -> argparse.ArgumentParser:
     delete_archive.add_argument("--archive", required=True)
     delete_archive.add_argument("--execute", action="store_true")
     delete_archive.add_argument("--confirm")
-    delete_archive.set_defaults(func=delete_archive_command)
+    delete_archive.set_defaults(func=with_batch_lock("delete-archive", delete_archive_command))
 
     delete_archived_tab = commands.add_parser("delete-archived-tab", help="Permanently delete one tab from a saved archive.")
     delete_archived_tab.add_argument("--archive", required=True)
