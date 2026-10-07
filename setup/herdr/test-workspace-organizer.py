@@ -2491,6 +2491,43 @@ class BatchTests(unittest.TestCase):
         restore.assert_not_called()
         self.assertIn("Nothing to restore", output)
 
+    def test_delete_batch_with_archives_removes_members_and_the_record_only(self):
+        manifest = self.make_batch(["archived", "restored", "deleted"])
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / "unrelated.json", {"archive_id": "unrelated", "status": "archived"})
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / "other-batch.json", {"archive_id": "other-batch", "status": "archived", "batch_id": "batch-20990101-000000"})
+        manifest["members"].append({"archive_id": "other-batch", "workspace_id": "w8", "workspace_label": "Foreign"})
+        ORGANIZER.write_json(ORGANIZER.BATCH_DIR / f"{manifest['batch_id']}.json", manifest)
+        args = argparse.Namespace(batch=manifest["batch_id"], execute=False, confirm=None, archives=True)
+        output = self.run_quietly(ORGANIZER.delete_batch_command, args)
+        preview = json.loads(output[: output.rindex("}") + 1])
+        self.assertEqual(len(preview["archives_to_delete"]), 2)
+        self.assertEqual(preview["archives_left_alone"], ["other-batch"])
+        self.assertIn("still archived", output)
+        self.assertEqual(len(list(self.archives.glob("*.json"))), 4, "preview deletes nothing")
+        for confirm in (None, "other"):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
+                self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=confirm, archives=True))
+        self.assertEqual(len(list(self.archives.glob("*.json"))), 4)
+        output = self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"], archives=True))
+        self.assertIn("Left other-batch alone", output)
+        self.assertEqual(sorted(path.stem for path in self.archives.glob("*.json")), ["other-batch", "unrelated"])
+        self.assertEqual(list(self.batches.glob("*.json")), [])
+
+    def test_delete_batch_with_archives_keeps_the_record_when_an_archive_cannot_be_deleted(self):
+        manifest = self.make_batch(["archived", "archived"])
+        real_unlink = Path.unlink
+
+        def flaky(path, *a, **k):
+            if path.name.endswith("ws2.json"):
+                raise PermissionError("denied")
+            return real_unlink(path, *a, **k)
+
+        with patch.object(Path, "unlink", flaky):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "group record was kept"):
+                self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"], archives=True))
+        self.assertEqual(len(list(self.batches.glob("*.json"))), 1)
+        self.assertEqual([path.stem for path in self.archives.glob("*.json")], ["20261007-101500-02-ws2"])
+
     def test_delete_batch_removes_only_the_group_record(self):
         manifest = self.make_batch(["archived"])
         args = argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"])

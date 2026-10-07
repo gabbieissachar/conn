@@ -102,6 +102,10 @@ r = run("restore-batch", "--batch", bid, "--execute", "--confirm", bid, check=0)
 assert len(state()["created"]) == 2; ok("restore created 2 workspaces")
 b = json.loads(run("list-batches", check=0).stdout)[0]; assert b["counts"]["restored"] == 2 and b["counts"]["archived"] == 0; ok("members now restored")
 r = run("restore-batch", "--batch", bid, "--execute", "--confirm", bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["created"]) == 2; ok("second restore-batch restores nothing (no duplicates)")
+archives_dir = tool / "state" / "workspace-organizer" / "archives"
+r = run("delete-batch", "--batch", bid, "--archives", check=0); assert "2 archive(s)" in r.stdout and len(list(archives_dir.glob("*.json"))) == 2; ok("delete-batch --archives preview deletes nothing")
+r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", "wrong", check=1); assert len(list(archives_dir.glob("*.json"))) == 2; ok("delete-batch --archives wrong confirm refused")
+r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", bid, check=0); assert list(archives_dir.glob("*.json")) == [] and json.loads(run("list-batches", check=0).stdout) == []; ok("delete-batch --archives removed the group record and both archives")
 # interruption
 fresh()
 p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", "archive-all", "--execute", "--confirm", "e2e"], env={**env, "FAKE_SLOW_CLOSE": "w2"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

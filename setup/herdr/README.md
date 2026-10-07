@@ -411,6 +411,16 @@ herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
 ```
 
 `delete-batch` removes only the group record. Its archives stay as single archives.
+Add `--archives` to also permanently delete every archive that belongs to the batch
+(an archive is only deleted when its own `batch_id` matches). The preview lists what
+would go and warns when members are still archived, because their saved layouts and
+agent identities would be lost. The record is kept if any archive cannot be deleted.
+Live and restored workspaces are never touched.
+
+```sh
+herdr-organizer delete-batch --batch <batch_id> --archives
+herdr-organizer delete-batch --batch <batch_id> --archives --execute --confirm <batch_id>
+```
 
 Reorder a tab with a zero-based destination index:
 

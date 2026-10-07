@@ -1374,18 +1374,77 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         raise OrganizerError("Some archives were not restored: " + "; ".join(failures))
 
 
+def batch_archive_paths(manifest: dict[str, Any], batch_id: str) -> tuple[list[tuple[str, Path]], list[str]]:
+    """The member archive files that exist and really belong to this batch, and the ids left alone.
+
+    An archive is only listed when its own `batch_id` matches, so a hand-edited manifest cannot point a delete at
+    some other archive.
+    """
+    owned: list[tuple[str, Path]] = []
+    left_alone: list[str] = []
+    for member in manifest.get("members", []):
+        archive_id = str(member.get("archive_id") or "") if isinstance(member, dict) else ""
+        if not archive_id or Path(archive_id).name != archive_id:
+            continue
+        path = ARCHIVE_DIR / f"{archive_id}.json"
+        if not path.exists():
+            continue
+        try:
+            archive = read_json(path, {})
+        except OrganizerError:
+            archive = {}
+        if isinstance(archive, dict) and archive.get("batch_id") == batch_id:
+            owned.append((archive_id, path))
+        else:
+            left_alone.append(archive_id)
+    return owned, left_alone
+
+
 def delete_batch_command(args: argparse.Namespace) -> None:
     batch_path, manifest = batch_by_id(args.batch)
+    with_archives = bool(getattr(args, "archives", False))
+    owned, left_alone = batch_archive_paths(manifest, args.batch) if with_archives else ([], [])
     if not args.execute:
-        print(json.dumps(batch_summary(manifest), indent=2))
-        print(
-            f"Preview only. Re-run with --execute --confirm {args.batch!r} to delete this group record. "
-            "The archives stay as single archives."
-        )
+        summary = batch_summary(manifest)
+        if with_archives:
+            summary["archives_to_delete"] = [archive_id for archive_id, _ in owned]
+            summary["archives_left_alone"] = left_alone
+        print(json.dumps(summary, indent=2))
+        if with_archives:
+            still_archived = summary["counts"]["archived"]
+            print(
+                f"Preview only. Re-run with --execute --confirm {args.batch!r} to permanently delete this group record "
+                f"and {len(owned)} archive(s)."
+                + (f" {still_archived} of them are still archived, so their saved layouts and agent identities would be lost." if still_archived else "")
+                + " No live or restored workspace is changed."
+            )
+        else:
+            print(
+                f"Preview only. Re-run with --execute --confirm {args.batch!r} to delete this group record. "
+                "The archives stay as single archives."
+            )
         return
     require_execute_confirmation(args.execute, args.confirm, args.batch, "Delete batch")
-    batch_path.unlink()
-    print(f"Deleted batch {args.batch}. No archive, restored workspace or live workspace was changed.")
+    if not with_archives:
+        batch_path.unlink()
+        print(f"Deleted batch {args.batch}. No archive, restored workspace or live workspace was changed.")
+        return
+    failures: list[str] = []
+    with batch_run_lock("delete-batch"):
+        for archive_id, path in owned:
+            try:
+                path.unlink()
+            except OSError as error:
+                failures.append(f"{archive_id}: {error}")
+                continue
+            print(f"Deleted archive {archive_id}.")
+        for archive_id in left_alone:
+            print(f"Left {archive_id} alone: it does not belong to this batch.")
+        # The group record goes last, and only when every archive is gone, so a failure leaves a record to retry from.
+        if failures:
+            raise OrganizerError("Some archives could not be deleted, so the group record was kept: " + "; ".join(failures))
+        batch_path.unlink()
+    print(f"Deleted batch {args.batch} and {len(owned)} archive(s). No active or restored workspace was changed.")
 
 
 def archive_tabs_command(args: argparse.Namespace) -> None:
@@ -3997,8 +4056,13 @@ def parser() -> argparse.ArgumentParser:
     restore_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
     restore_batch.set_defaults(func=restore_batch_command)
 
-    delete_batch = commands.add_parser("delete-batch", help="Delete one batch record. Its archives are kept.")
+    delete_batch = commands.add_parser(
+        "delete-batch", help="Delete one batch record. Its archives are kept unless --archives is given."
+    )
     delete_batch.add_argument("--batch", required=True)
+    delete_batch.add_argument(
+        "--archives", action="store_true", help="Also permanently delete every archive that belongs to the batch."
+    )
     delete_batch.add_argument("--execute", action="store_true")
     delete_batch.add_argument("--confirm")
     delete_batch.set_defaults(func=delete_batch_command)
