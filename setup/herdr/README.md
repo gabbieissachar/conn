@@ -410,6 +410,12 @@ herdr-organizer --session esim restore-batch --batch <batch_id> --resume-agents 
 herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
 ```
 
+Commands that create, restore, move or delete archives, or close tabs, share one lock while they execute
+(`archive`, `archive-all`, `archive-tabs`, `restore`, `restore-batch`, `restore-tab`, `restore-tabs`,
+`delete-archive`, `delete-archived-tab`, `delete-batch --archives`, `move-tabs`, `resume-move`,
+`cleanup-empty-tabs`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
+`list-archives`, `list-batches`, `reorder-tab` and plain `delete-batch` do not lock.
+
 `delete-batch` removes only the group record. Its archives stay as single archives.
 Add `--archives` to also permanently delete every archive that belongs to the batch
 (an archive is only deleted when its own `batch_id` matches). The preview lists what

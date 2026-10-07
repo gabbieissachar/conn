@@ -2418,6 +2418,18 @@ class BatchTests(unittest.TestCase):
             ORGANIZER.parser().parse_args(["--session", "esim", "archive", "--workspace", "w1", "--execute", "--confirm", "w1"]),
             ORGANIZER.parser().parse_args(["delete-archive", "--archive", "20261007-101500-01-ws1", "--execute", "--confirm", "20261007-101500-01-ws1"]),
         ]
+        parsed += [
+            ORGANIZER.parser().parse_args(argv)
+            for argv in (
+                ["--session", "esim", "archive-tabs", "--tab", "w1:t1", "--into-archive", "x", "--execute", "--confirm", "x"],
+                ["--session", "esim", "restore-tab", "--archive", "x", "--tab", "w1:t1", "--to-workspace", "w2", "--execute", "--confirm", "x"],
+                ["--session", "esim", "restore-tabs", "--archive", "x", "--tab", "w1:t1", "--to-workspace", "w2", "--execute", "--confirm", "x"],
+                ["delete-archived-tab", "--archive", "x", "--tab", "w1:t1", "--execute", "--confirm", "x:w1:t1"],
+                ["--session", "esim", "move-tabs", "--tab", "w1:t1", "--to-workspace", "w2", "--execute", "--confirm", "w2"],
+                ["--session", "esim", "resume-move", "--move", "m", "--execute", "--confirm", "m"],
+                ["--session", "esim", "cleanup-empty-tabs", "--workspace", "w1", "--execute", "--confirm", "w1"],
+            )
+        ]
         with ORGANIZER.batch_run_lock("test"):
             for args in parsed:
                 child = os.fork()
@@ -2438,6 +2450,22 @@ class BatchTests(unittest.TestCase):
         with ORGANIZER.batch_run_lock("test"):
             args = ORGANIZER.parser().parse_args(["--session", "esim", "restore", "--archive", "20261007-101500-01-ws1"])
             self.assertEqual(self.run_quietly(args.func, args).count("Preview only"), 1)
+
+    def test_renamed_workspace_still_open_after_an_interrupt_is_not_called_gone(self):
+        herdr = self.world(workspaces=[("w1", "One")], restores={}, working=())
+
+        def renamed_then_interrupted(arguments, session):
+            if arguments[:2] == ["workspace", "close"]:
+                for workspace in herdr.workspaces:
+                    workspace["label"] = "Renamed meanwhile"
+                raise KeyboardInterrupt()
+            return {}
+
+        with patch.object(ORGANIZER, "run_json", renamed_then_interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (manifest,) = self.manifests()
+        self.assertEqual(ORGANIZER.batch_member_view(manifest["members"][0])["status"], "close_failed")
 
     def test_no_eligible_workspace_writes_no_batch(self):
         herdr = self.world(workspaces=[("w3", "Busy")], restores={}, working={"w3"})

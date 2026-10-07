@@ -1192,18 +1192,16 @@ def settle_interrupted_archive(
     """Label the archive whose close was interrupted from what Herdr says now, not from a guess.
 
     An interrupt can land after the workspace closed but before the status was written. If the live list no longer has
-    the workspace, the archive is complete. If it still has it, or the list cannot be read, the archive says the close
-    was not confirmed.
+    the workspace id, the archive is complete. If it still has it (whatever its label now is), or the list cannot be
+    read, the archive says the close was not confirmed.
     """
     archive_path, archive = current
     gone = False
     try:
         live = session_snapshot(session).get("workspaces", [])
-        gone = bool(workspace) and not any(
-            item.get("workspace_id") == workspace["workspace_id"]
-            and str(item.get("label") or item.get("workspace_id")) == workspace["label"]
-            for item in live
-        )
+        # The id alone decides. A workspace renamed during the interrupted close is still open, so a label comparison
+        # would wrongly call it gone and a later group restore would duplicate it.
+        gone = bool(workspace) and not any(item.get("workspace_id") == workspace["workspace_id"] for item in live)
     except BaseException:  # the live list is unreadable, so nothing is assumed
         gone = False
     if gone:
@@ -4132,7 +4130,7 @@ def parser() -> argparse.ArgumentParser:
     )
     archive_tabs.add_argument("--execute", action="store_true")
     archive_tabs.add_argument("--confirm")
-    archive_tabs.set_defaults(func=archive_tabs_command)
+    archive_tabs.set_defaults(func=with_batch_lock("archive-tabs", archive_tabs_command))
 
     cleanup_empty = commands.add_parser(
         "cleanup-empty-tabs", help="Close shell-only tabs without agents or preserved sessions."
@@ -4140,7 +4138,7 @@ def parser() -> argparse.ArgumentParser:
     cleanup_empty.add_argument("--workspace", required=True)
     cleanup_empty.add_argument("--execute", action="store_true")
     cleanup_empty.add_argument("--confirm")
-    cleanup_empty.set_defaults(func=cleanup_empty_tabs_command)
+    cleanup_empty.set_defaults(func=with_batch_lock("cleanup-empty-tabs", cleanup_empty_tabs_command))
 
     restore = commands.add_parser("restore", help="Create a workspace from an archive.")
     restore.add_argument("--archive", required=True)
@@ -4159,7 +4157,7 @@ def parser() -> argparse.ArgumentParser:
     restore_tab.add_argument("--no-resume-agents", dest="resume_agents", action="store_false")
     restore_tab.add_argument("--execute", action="store_true")
     restore_tab.add_argument("--confirm")
-    restore_tab.set_defaults(func=restore_tab_command, resume_agents=True)
+    restore_tab.set_defaults(func=with_batch_lock("restore-tab", restore_tab_command), resume_agents=True)
 
     restore_tabs = commands.add_parser(
         "restore-tabs", help="Restore selected archived tabs into an active workspace."
@@ -4175,7 +4173,7 @@ def parser() -> argparse.ArgumentParser:
     restore_tabs.add_argument("--no-resume-agents", dest="resume_agents", action="store_false")
     restore_tabs.add_argument("--execute", action="store_true")
     restore_tabs.add_argument("--confirm")
-    restore_tabs.set_defaults(func=restore_tabs_command, resume_agents=True)
+    restore_tabs.set_defaults(func=with_batch_lock("restore-tabs", restore_tabs_command), resume_agents=True)
 
     delete_archive = commands.add_parser("delete-archive", help="Permanently delete one saved archive.")
     delete_archive.add_argument("--archive", required=True)
@@ -4188,7 +4186,7 @@ def parser() -> argparse.ArgumentParser:
     delete_archived_tab.add_argument("--tab", required=True, help="Archived source tab ID, e.g. w1:t2.")
     delete_archived_tab.add_argument("--execute", action="store_true")
     delete_archived_tab.add_argument("--confirm")
-    delete_archived_tab.set_defaults(func=delete_archived_tab_command)
+    delete_archived_tab.set_defaults(func=with_batch_lock("delete-archived-tab", delete_archived_tab_command))
 
     move = commands.add_parser("move-tabs", help="Recreate selected tabs in another workspace, then close originals.")
     move.add_argument("--tab", action="append", required=True, help="Selected tab ID. Repeat for each tab.")
@@ -4203,13 +4201,13 @@ def parser() -> argparse.ArgumentParser:
     )
     move.add_argument("--execute", action="store_true")
     move.add_argument("--confirm")
-    move.set_defaults(func=move_tabs_command, resume_agents=True)
+    move.set_defaults(func=with_batch_lock("move-tabs", move_tabs_command), resume_agents=True)
 
     resume_move = commands.add_parser("resume-move", help="Retry supported agent resumes for a completed tab move.")
     resume_move.add_argument("--move", required=True, help="Move recovery record ID.")
     resume_move.add_argument("--execute", action="store_true")
     resume_move.add_argument("--confirm")
-    resume_move.set_defaults(func=resume_move_command)
+    resume_move.set_defaults(func=with_batch_lock("resume-move", resume_move_command))
 
     reorder = commands.add_parser("reorder-tab", help="Reorder a tab within its current workspace.")
     reorder.add_argument("--tab", required=True)
