@@ -1206,11 +1206,16 @@ created: 2026-09-10
       const when = batch.created_at ? new Date(batch.created_at) : null;
       return when && !Number.isNaN(when.getTime()) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : batch.batch_id;
     };
-    const batchMemberView = member => {
+    const ARCHIVE_ID_PATTERN = /^[0-9]{8}-[0-9]{6}-[a-z0-9][a-z0-9-]*$/;
+    // The command for one member: the single-archive restore, with the session the group was captured from.
+    const memberRestoreCommand = (member, session) => (ARCHIVE_ID_PATTERN.test(member.archive_id || '')
+      ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
+    const batchMemberView = (member, session) => {
       const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
+      const restoreCommand = member.status === 'archived' ? memberRestoreCommand(member, session) : '';
       const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
         : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">The workspace was not closed. Restore all leaves it alone.</span>' : '';
-      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="pill ${tone}">${escapeHtml(label)}</span>${flag}</div>`;
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="pill ${tone}">${escapeHtml(label)}</span>${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.">Copy restore + resume agents</button>` : ''}${flag}</div>`;
     };
     const batchView = batch => {
       const counts = batch.counts || {};
@@ -1221,6 +1226,8 @@ created: 2026-09-10
       const resume = `${base} --resume-agents --execute --confirm ${id}`;
       const layout = `${base} --execute --confirm ${id}`;
       const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
+      const removeAll = `herdr-organizer delete-batch --batch ${id} --archives --execute --confirm ${id}`;
+      const removable = (batch.members || []).filter(member => member.status !== 'deleted').length;
       const canRestore = valid && counts.archived > 0;
       const why = !valid ? 'This group has an unexpected id, so no command is built' : 'No member is still archived';
       const parts = [[counts.archived, 'archived'], [counts.restored, 'restored'], [counts.restore_partial, 'restore partial'], [counts.other, 'not closed'], [counts.deleted, 'deleted'], [counts.skipped, 'skipped at capture']]
@@ -1235,9 +1242,10 @@ created: 2026-09-10
         <div class="archive-actions">
           <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
           <button type="button" ${canRestore ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived as fresh shells' : why}">Copy restore all (layout only)</button>
-          ${batch.empty && valid ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. No archive or workspace is changed.">Copy delete group record</button>` : ''}
+          ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this group record. Every archive in it is already deleted.">Copy delete group</button>` : ''}
+          ${valid && removable ? `<button class="danger" type="button" data-command="${escapeHtml(removeAll)}" title="Permanently deletes this group and its ${plural(removable, 'archive')}.${counts.archived ? ` ${counts.archived} still ${counts.archived === 1 ? 'is' : 'are'} archived, so their saved layouts and agent identities would be lost.` : ''} No live or restored workspace is changed.">Copy delete group + ${plural(removable, 'archive')}</button><button type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. Its archives stay as single archives.">Copy delete group record only</button>` : ''}
         </div>
-        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(batchMemberView).join('') || '<div class="tab-meta">No members</div>'}</details>
+        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(member => batchMemberView(member, session)).join('') || '<div class="tab-meta">No members</div>'}</details>
         ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
       </article>`;
     };

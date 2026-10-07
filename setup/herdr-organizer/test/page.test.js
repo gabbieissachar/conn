@@ -145,3 +145,16 @@ test('skipped pane: a pane the check did not list asks for a fresh check instead
   assert.match(out, /Check again/);
   assert.equal(/<form/.test(out), false);
 });
+
+test('group card: each archived member has its own copy-only restore, and delete is offered for every group', () => {
+  const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchesView'));
+  assert.match(view, /member\.status === 'archived' \? memberRestoreCommand/);
+  assert.match(view, /restore --archive \$\{member\.archive_id\} --resume-agents --execute --confirm \$\{member\.archive_id\}/);
+  assert.match(view, /ARCHIVE_ID_PATTERN\.test\(member\.archive_id/);
+  assert.match(view, /delete-batch --batch \$\{id\} --archives --execute --confirm \$\{id\}/);
+  assert.match(view, /delete-batch --batch \$\{id\} --execute --confirm \$\{id\}/);
+  assert.match(view, /valid && removable/);
+  assert.match(view, /Copy delete group record only/);
+  assert.equal(/api\.run/.test(view), false, 'the group card never calls the server');
+  assert.equal(/--force/.test(view), false);
+});
