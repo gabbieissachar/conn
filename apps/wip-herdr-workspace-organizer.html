@@ -1031,6 +1031,10 @@ created: 2026-09-10
       if (!row) return { kind: 'not_found' };
       return { kind: row.verified ? 'verified' : 'manual', row };
     };
+    const archiveVerifiedCount = session => {
+      const data = restart.verify[session]?.data;
+      return data?.summary?.safe_to_apply ?? (data?.rows || []).filter(row => row.verified).length;
+    };
     const archiveCheckSeconds = session => (state.archiveAll.checkStarted[session] ? Math.round((Date.now() - state.archiveAll.checkStarted[session]) / 1000) : 0);
     const archiveAllPaneView = (session, pane) => {
       const key = manualKey(session, pane.pane_id);
@@ -1053,8 +1057,8 @@ created: 2026-09-10
         control = done
           ? '<span class="pill good">registered</span>'
           : `<button type="button" class="small-btn" style="margin-left:auto" data-aa="apply-ask" data-session="${escapeHtml(session)}" ${aa.applying ? 'disabled' : ''}>Apply verified identities</button>`;
-        note = done ? `Registered ${applied.written} verified ${applied.written === 1 ? 'identity' : 'identities'}. Preview again to include this workspace.`
-          : 'The identity check proved this agent\'s session, but it is not registered yet, and archive only trusts registered sessions. Applying registers every verified agent in this session. A session id cannot be typed for a verified pane.';
+        note = done ? `Registered ${applied.written} verified ${applied.written === 1 ? 'identity' : 'identities'} across the whole ${session} session, not only this workspace. Preview again to include this workspace.`
+          : 'The identity check proved this agent\'s session, but it is not registered yet, and archive only trusts registered sessions. The tool can only apply for the whole ${session} session, so this registers every verified agent in it, not just this pane. A session id cannot be typed for a verified pane.';
         if (applied?.error) note = applied.error;
       } else {
         const [label, tone] = CLASS_LABELS[found.row.classification] || [found.row.classification, ''];
@@ -1086,7 +1090,7 @@ created: 2026-09-10
         const skipped = result.skipped.length ? `<div class="group-title" style="margin-top:14px">Skipped <span class="count-pill">${totals.skipped}</span></div>${result.skipped.map(item => archiveAllSkippedView(item, result.session)).join('')}` : '';
         const waiting = Object.keys(aa.checking).some(name => aa.checking[name]);
         const confirm = aa.applyConfirm
-          ? `<div class="confirm-box"><strong>Register the verified identities for ${escapeHtml(aa.applyConfirm)}?</strong>The verifier re-reads each live pane right before writing and skips any that changed. This writes the private registry file only; Herdr is not changed. Then preview again.<div class="btn-row"><button type="button" class="primary-btn" data-aa="apply-confirm" ${aa.applying ? 'disabled' : ''}>${aa.applying ? 'Applying…' : 'Apply'}</button><button type="button" data-aa="apply-cancel">Cancel</button></div></div>` : '';
+          ? `<div class="confirm-box"><strong>Register ${plural(archiveVerifiedCount(aa.applyConfirm), 'verified agent')} across the whole ${escapeHtml(aa.applyConfirm)} session?</strong>This is every verified agent in the session, not only the skipped workspaces above. The verifier re-reads each live pane right before writing and skips any that changed. This writes the private registry file only; Herdr is not changed. Then preview again.<div class="btn-row"><button type="button" class="primary-btn" data-aa="apply-confirm" ${aa.applying ? 'disabled' : ''}>${aa.applying ? 'Applying…' : 'Apply'}</button><button type="button" data-aa="apply-cancel">Cancel</button></div></div>` : '';
         const command = result.commands.execute
           ? `<div class="confirm-box warn" style="margin-top:14px"><strong>Closes ${plural(totals.to_archive, 'workspace')} and stops their processes.</strong>Run this in a terminal outside Herdr. It stops before closing anything if it is run inside a workspace it would archive, and it checks each workspace again just before closing it. Skipped workspaces stay open. A second run makes a second group for them.</div><pre class="command-box">${escapeHtml(stale ? 'The snapshot changed since this preview. Preview again for a fresh command.' : result.commands.execute)}</pre>`
           : '';
