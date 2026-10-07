@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent
 STATE_DIR = ROOT / "state" / "workspace-organizer"
 ARCHIVE_DIR = STATE_DIR / "archives"
 MOVE_DIR = STATE_DIR / "moves"
+BATCH_DIR = STATE_DIR / "batches"
 RECOVERY_DIR = STATE_DIR / "restart-recovery"
 RECOVERY_BUNDLE_DIR = RECOVERY_DIR / "bundles"
 RECOVERY_JOURNAL_DIR = RECOVERY_DIR / "journals"
@@ -808,6 +809,7 @@ def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
     workspace = archive.get("capture", {}).get("workspace", {})
     return {
         "archive_id": archive.get("archive_id"),
+        "batch_id": archive.get("batch_id"),
         "status": archive.get("status"),
         "created_at": archive.get("created_at"),
         "archived_at": archive.get("archived_at"),
@@ -892,10 +894,14 @@ def snapshot_command(args: argparse.Namespace) -> None:
             public_workspace(snapshot, workspace, args.session, records) for workspace in snapshot.get("workspaces", [])
         ],
         "archives": [archive_summary(archive) for archive in load_archives()],
+        "batches": [batch_summary(batch) for batch in load_batches()],
     }
     write_json(LIVE_SNAPSHOT_PATH, document)
     print(f"Wrote {LIVE_SNAPSHOT_PATH}")
-    print(f"{len(document['workspaces'])} workspaces and {len(document['archives'])} archives available to the organizer.")
+    print(
+        f"{len(document['workspaces'])} workspaces, {len(document['archives'])} archives and "
+        f"{len(document['batches'])} batches available to the organizer."
+    )
 
 
 def archive_id_for(label: str) -> str:
@@ -918,6 +924,41 @@ def require_execute_confirmation(execute: bool, confirmation: str | None, expect
         raise OrganizerError(f"{action} is a preview. Add --execute --confirm {expected!r} to make the change.")
     if confirmation != expected:
         raise OrganizerError(f"{action} requires --confirm {expected!r}.")
+
+
+def prepare_archive(
+    archive_id: str, capture: dict[str, Any], session: str | None, batch_id: str | None = None
+) -> tuple[Path, dict[str, Any]]:
+    """Write the archive file in the prepared state, before anything is closed."""
+    archive = {
+        "version": 1,
+        "archive_id": archive_id,
+        "status": "prepared",
+        "created_at": now(),
+        "herdr_session": session or os.environ.get("HERDR_SESSION"),
+        "capture": capture,
+        "restore": {},
+    }
+    if batch_id:
+        archive["batch_id"] = batch_id
+    archive_path = ARCHIVE_DIR / f"{archive_id}.json"
+    write_json(archive_path, archive)
+    return archive_path, archive
+
+
+def close_archived_workspace(
+    archive_path: Path, archive: dict[str, Any], workspace_id: str, session: str | None
+) -> None:
+    try:
+        run_json(["workspace", "close", workspace_id], session)
+    except OrganizerError as error:
+        archive["status"] = "close_failed"
+        archive["error"] = str(error)
+        write_json(archive_path, archive)
+        raise
+    archive["status"] = "archived"
+    archive["archived_at"] = now()
+    write_json(archive_path, archive)
 
 
 def archive_command(args: argparse.Namespace) -> None:
@@ -955,29 +996,350 @@ def archive_command(args: argparse.Namespace) -> None:
         return
 
     require_execute_confirmation(args.execute, args.confirm, args.workspace, "Archive")
-    archive = {
-        "version": 1,
-        "archive_id": archive_id,
-        "status": "prepared",
-        "created_at": now(),
-        "herdr_session": args.session or os.environ.get("HERDR_SESSION"),
-        "capture": capture,
-        "restore": {},
-    }
-    archive_path = ARCHIVE_DIR / f"{archive_id}.json"
-    write_json(archive_path, archive)
-    try:
-        run_json(["workspace", "close", args.workspace], args.session)
-    except OrganizerError as error:
-        archive["status"] = "close_failed"
-        archive["error"] = str(error)
-        write_json(archive_path, archive)
-        raise
-    archive["status"] = "archived"
-    archive["archived_at"] = now()
-    write_json(archive_path, archive)
+    archive_path, archive = prepare_archive(archive_id, capture, args.session)
+    close_archived_workspace(archive_path, archive, args.workspace, args.session)
     print(f"Archived workspace {args.workspace} as {archive_id}.")
     print("The original processes were stopped. Restore will create fresh shells and can resume supported agents.")
+
+
+# ---- Batches: archive every safe workspace at once, restore a whole group ----
+#
+# A batch is one `archive-all` run. Its manifest names the archives that run
+# created and the workspaces it skipped. The manifest never holds session ids or
+# resume commands; those stay in the archive files. A member's status is always
+# read from its archive file, so a deleted archive shows as deleted.
+
+BATCH_ID_PATTERN = re.compile(r"^batch-[0-9]{8}-[0-9]{6}(-[0-9]+)?$")
+RESTORABLE_MEMBER_STATUS = "archived"
+RESTORED_STATUSES = {"restored", "resumed"}
+
+
+def batch_id_for() -> str:
+    base = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    candidate = base
+    sequence = 2
+    while (BATCH_DIR / f"{candidate}.json").exists():
+        candidate = f"{base}-{sequence}"
+        sequence += 1
+    return candidate
+
+
+def batch_by_id(batch_id: str) -> tuple[Path, dict[str, Any]]:
+    if not isinstance(batch_id, str) or not BATCH_ID_PATTERN.match(batch_id):
+        raise OrganizerError("Batch ID must look like batch-YYYYMMDD-HHMMSS.")
+    path = BATCH_DIR / f"{batch_id}.json"
+    if not path.exists():
+        raise OrganizerError(f"Batch {batch_id!r} was not found.")
+    return path, read_json(path, {})
+
+
+def assess_workspace_for_archive(
+    snapshot: dict[str, Any], workspace: dict[str, Any], session: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Return (capture, entry). The capture is None when the workspace must be skipped.
+
+    The same guards as the single `archive` command apply, and neither allow flag
+    is ever passed on the caller's behalf.
+    """
+    workspace_id = str(workspace["workspace_id"])
+    entry: dict[str, Any] = {"workspace_id": workspace_id, "label": str(workspace.get("label") or workspace_id)}
+    reasons: list[str] = []
+    active = active_agents(snapshot, workspace_id)
+    if active:
+        reasons.append("active_agent")
+        entry["active_pane_ids"] = [str(pane.get("pane_id")) for pane in active]
+    try:
+        capture = capture_workspace(snapshot, workspace_id, session)
+    except OrganizerError as error:
+        reasons.append("capture_failed")
+        entry["error"] = str(error)
+        entry["reasons"] = reasons
+        return None, entry
+    unavailable = unavailable_agent_restores(capture["tabs"])
+    if unavailable:
+        reasons.append("unverified_agent_session")
+        entry["unverified_panes"] = [
+            {"pane_id": str(item.get("source_pane_id")), "client": str(item.get("client"))} for item in unavailable
+        ]
+    if reasons:
+        entry["reasons"] = reasons
+        return None, entry
+    entry["tab_count"] = len(capture["tabs"])
+    entry["pane_count"] = sum(len(leaf_panes(tab["layout"].get("root"))) for tab in capture["tabs"])
+    entry["resumable_agent_panes"] = sum(
+        is_trusted_restore(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
+    )
+    return capture, entry
+
+
+def current_workspace_id(snapshot: dict[str, Any], session: str | None) -> str | None:
+    """The workspace this process runs in, when it runs inside the target session."""
+    env_session = os.environ.get("HERDR_SESSION")
+    if env_session and session and env_session != session:
+        return None
+    pane_id = os.environ.get("HERDR_PANE_ID")
+    if pane_id:
+        pane = next((item for item in snapshot.get("panes", []) if item.get("pane_id") == pane_id), None)
+        if pane:
+            tab = next((item for item in snapshot.get("tabs", []) if item.get("tab_id") == pane.get("tab_id")), None)
+            if tab and tab.get("workspace_id"):
+                return str(tab["workspace_id"])
+    workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
+    if workspace_id and any(item.get("workspace_id") == workspace_id for item in snapshot.get("workspaces", [])):
+        return workspace_id
+    return None
+
+
+SKIP_REASON_TEXT = {
+    "active_agent": "has a working or blocked agent",
+    "unverified_agent_session": "has an agent without a verified resumable session",
+    "capture_failed": "could not be captured",
+    "workspace_gone": "no longer exists",
+    "workspace_changed": "changed since the preview",
+}
+
+
+def describe_skip(entry: dict[str, Any]) -> str:
+    reasons = ", ".join(SKIP_REASON_TEXT.get(reason, reason) for reason in entry.get("reasons", []))
+    detail = f": {entry['error']}" if entry.get("error") else ""
+    return f"{entry['workspace_id']} ({entry['label']}) {reasons}{detail}"
+
+
+def archive_all_command(args: argparse.Namespace) -> None:
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if not session:
+        raise OrganizerError("archive-all needs a named Herdr session. Pass --session <name>.")
+    snapshot = session_snapshot(args.session)
+    planned: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for workspace in snapshot.get("workspaces", []):
+        capture, entry = assess_workspace_for_archive(snapshot, workspace, args.session)
+        (planned if capture is not None else skipped).append(entry)
+    inside_id = current_workspace_id(snapshot, session)
+    inside = next((entry for entry in planned if entry["workspace_id"] == inside_id), None)
+    preview = {
+        "session": session,
+        "workspace_total": len(snapshot.get("workspaces", [])),
+        "to_archive": planned,
+        "skipped": skipped,
+        "running_inside": {"workspace_id": inside["workspace_id"], "label": inside["label"]} if inside else None,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {session!r} to archive {len(planned)} workspace(s) "
+            f"and skip {len(skipped)}."
+        )
+        return
+
+    require_execute_confirmation(args.execute, args.confirm, session, "Archive all")
+    if inside:
+        raise OrganizerError(
+            f"This command is running inside workspace {inside['workspace_id']} ({inside['label']}), which is on the "
+            "list to archive. Nothing was closed. Run it from a terminal outside Herdr."
+        )
+    if not planned:
+        print("Nothing to archive: no workspace passed the safety checks.")
+        for entry in skipped:
+            print(f"Skipped {describe_skip(entry)}")
+        return
+
+    batch_id = batch_id_for()
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "batch_id": batch_id,
+        "status": "in_progress",
+        "created_at": now(),
+        "herdr_session": session,
+        "members": [],
+        "skipped": list(skipped),
+    }
+    batch_path = BATCH_DIR / f"{batch_id}.json"
+    write_json(batch_path, manifest)
+    failures: list[str] = []
+    for item in planned:
+        workspace_id = item["workspace_id"]
+        # Re-check each workspace against a fresh snapshot right before it is closed.
+        fresh = session_snapshot(args.session)
+        workspace = next((w for w in fresh.get("workspaces", []) if w.get("workspace_id") == workspace_id), None)
+        if workspace is None:
+            capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_gone"]}
+        elif str(workspace.get("label") or workspace_id) != item["label"]:
+            capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_changed"]}
+        else:
+            capture, entry = assess_workspace_for_archive(fresh, workspace, args.session)
+        if capture is None:
+            manifest["skipped"].append(entry)
+            write_json(batch_path, manifest)
+            print(f"Skipped {describe_skip(entry)}")
+            continue
+        archive_id = archive_id_for(item["label"])
+        archive_path, archive = prepare_archive(archive_id, capture, args.session, batch_id)
+        manifest["members"].append(
+            {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
+        )
+        write_json(batch_path, manifest)
+        try:
+            close_archived_workspace(archive_path, archive, workspace_id, args.session)
+        except OrganizerError as error:
+            failures.append(f"{workspace_id} ({item['label']}): {error}")
+            print(f"Could not close {workspace_id}; archive {archive_id} is marked close_failed.")
+            continue
+        print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
+    manifest["status"] = "completed_with_failures" if failures else "completed"
+    manifest["completed_at"] = now()
+    write_json(batch_path, manifest)
+    print(f"Batch {batch_id}: archived {len(manifest['members']) - len(failures)}, skipped {len(manifest['skipped'])}.")
+    print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
+    if failures:
+        raise OrganizerError("Some workspaces could not be closed: " + "; ".join(failures))
+
+
+def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
+    archive_id = str(member.get("archive_id") or "")
+    view = {
+        "archive_id": archive_id,
+        "workspace_id": member.get("workspace_id"),
+        "workspace_label": member.get("workspace_label"),
+        "status": "deleted",
+        "restored_workspace_id": None,
+    }
+    if not archive_id or Path(archive_id).name != archive_id:
+        return view
+    path = ARCHIVE_DIR / f"{archive_id}.json"
+    try:
+        archive = read_json(path, None)
+    except OrganizerError:
+        archive = None
+    if isinstance(archive, dict):
+        view["status"] = str(archive.get("status") or "unknown")
+        restore = archive.get("restore")
+        if isinstance(restore, dict):
+            view["restored_workspace_id"] = restore.get("workspace_id")
+    return view
+
+
+def batch_summary(manifest: dict[str, Any]) -> dict[str, Any]:
+    members = [batch_member_view(member) for member in manifest.get("members", []) if isinstance(member, dict)]
+    # Only fixed fields reach the snapshot. A free-text error stays in the private manifest and the terminal output.
+    skipped = [
+        {key: item[key] for key in ("workspace_id", "label", "reasons", "active_pane_ids", "unverified_panes") if key in item}
+        for item in manifest.get("skipped", [])
+        if isinstance(item, dict)
+    ]
+    counts = {"archived": 0, "restored": 0, "restore_partial": 0, "deleted": 0, "other": 0}
+    for member in members:
+        status = member["status"]
+        if status == RESTORABLE_MEMBER_STATUS:
+            counts["archived"] += 1
+        elif status in RESTORED_STATUSES:
+            counts["restored"] += 1
+        elif status in {"restore_partial", "deleted"}:
+            counts[status] += 1
+        else:
+            counts["other"] += 1
+    counts["skipped"] = len(skipped)
+    return {
+        "batch_id": manifest.get("batch_id"),
+        "status": manifest.get("status"),
+        "created_at": manifest.get("created_at"),
+        "herdr_session": manifest.get("herdr_session"),
+        "members": members,
+        "skipped": skipped,
+        "counts": counts,
+        "member_count": len(members),
+        "empty": not any(member["status"] != "deleted" for member in members),
+    }
+
+
+def load_batches() -> list[dict[str, Any]]:
+    if not BATCH_DIR.exists():
+        return []
+    batches = []
+    for path in BATCH_DIR.glob("*.json"):
+        try:
+            manifest = read_json(path, {})
+        except OrganizerError:
+            continue
+        if isinstance(manifest, dict) and isinstance(manifest.get("batch_id"), str) and BATCH_ID_PATTERN.match(manifest["batch_id"]):
+            batches.append(manifest)
+    return sorted(batches, key=lambda batch: str(batch.get("created_at", "")), reverse=True)
+
+
+def list_batches_command(_: argparse.Namespace) -> None:
+    print(json.dumps([batch_summary(batch) for batch in load_batches()], indent=2))
+
+
+def restore_batch_command(args: argparse.Namespace) -> None:
+    _, manifest = batch_by_id(args.batch)
+    summary = batch_summary(manifest)
+    captured_session = manifest.get("herdr_session")
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if captured_session and session and captured_session != session:
+        raise OrganizerError(
+            f"Batch {args.batch!r} was captured from session {captured_session!r}, not {session!r}. "
+            f"Re-run with --session {captured_session}."
+        )
+    targets = [member for member in summary["members"] if member["status"] == RESTORABLE_MEMBER_STATUS]
+    left_alone = [member for member in summary["members"] if member["status"] != RESTORABLE_MEMBER_STATUS]
+    preview = {
+        "batch_id": args.batch,
+        "to_restore": [{"archive_id": m["archive_id"], "workspace_label": m["workspace_label"]} for m in targets],
+        "not_restored": [
+            {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "status": m["status"]}
+            for m in left_alone
+        ],
+        "resume_agents": bool(args.resume_agents),
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(f"Preview only. Re-run with --execute --confirm {args.batch!r} to restore {len(targets)} workspace(s).")
+        return
+
+    require_execute_confirmation(args.execute, args.confirm, args.batch, "Restore batch")
+    for member in left_alone:
+        print(f"Left {member['archive_id']} alone: {member['status']}.")
+    if not targets:
+        print("Nothing to restore: no member of this batch is still archived.")
+        return
+    failures: list[str] = []
+    restored = 0
+    for member in targets:
+        archive_id = member["archive_id"]
+        print(f"== {archive_id}")
+        member_args = argparse.Namespace(
+            archive=archive_id,
+            resume_agents=bool(args.resume_agents),
+            allow_unresumable_agents=False,
+            force=False,
+            execute=True,
+            confirm=archive_id,
+            session=args.session,
+        )
+        try:
+            restore_command(member_args)
+        except OrganizerError as error:
+            failures.append(f"{archive_id}: {error}")
+            print(f"Could not restore {archive_id}: {error}")
+            continue
+        restored += 1
+    print(f"Batch {args.batch}: restored {restored} of {len(targets)}.")
+    if failures:
+        raise OrganizerError("Some archives were not restored: " + "; ".join(failures))
+
+
+def delete_batch_command(args: argparse.Namespace) -> None:
+    batch_path, manifest = batch_by_id(args.batch)
+    if not args.execute:
+        print(json.dumps(batch_summary(manifest), indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {args.batch!r} to delete this group record. "
+            "The archives stay as single archives."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.batch, "Delete batch")
+    batch_path.unlink()
+    print(f"Deleted batch {args.batch}. No archive, restored workspace or live workspace was changed.")
 
 
 def archive_tabs_command(args: argparse.Namespace) -> None:
@@ -3572,6 +3934,31 @@ def parser() -> argparse.ArgumentParser:
     archive.add_argument("--confirm")
     archive.set_defaults(func=archive_command)
 
+    archive_all = commands.add_parser(
+        "archive-all",
+        help="Archive every live workspace that passes the safety checks as one batch. Skips the rest and reports why.",
+    )
+    archive_all.add_argument("--execute", action="store_true")
+    archive_all.add_argument("--confirm", help="Must exactly equal the session name.")
+    archive_all.set_defaults(func=archive_all_command)
+
+    restore_batch = commands.add_parser(
+        "restore-batch", help="Restore every member of a batch that is still archived, one workspace each."
+    )
+    restore_batch.add_argument("--batch", required=True)
+    restore_batch.add_argument("--resume-agents", action="store_true")
+    restore_batch.add_argument("--execute", action="store_true")
+    restore_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
+    restore_batch.set_defaults(func=restore_batch_command)
+
+    delete_batch = commands.add_parser("delete-batch", help="Delete one batch record. Its archives are kept.")
+    delete_batch.add_argument("--batch", required=True)
+    delete_batch.add_argument("--execute", action="store_true")
+    delete_batch.add_argument("--confirm")
+    delete_batch.set_defaults(func=delete_batch_command)
+
+    commands.add_parser("list-batches", help="Print batch summaries.").set_defaults(func=list_batches_command)
+
     archive_tabs = commands.add_parser(
         "archive-tabs", help="Append selected live tabs to an existing archive, then close their source tabs."
     )
@@ -3679,7 +4066,7 @@ def main() -> int:
     try:
         if arguments.command not in {
             "list-archives", "delete-archive", "delete-archived-tab", "prepare-restart-recovery", "backup-all",
-            "reconcile-all", "rollback-reconcile",
+            "reconcile-all", "rollback-reconcile", "list-batches", "delete-batch",
         }:
             arguments.session = resolve_session(arguments.session)
         arguments.func(arguments)

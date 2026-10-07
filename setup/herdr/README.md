@@ -380,6 +380,38 @@ herdr-organizer restore --archive <archive_id> --execute --confirm <archive_id>
 herdr-organizer restore --archive <archive_id> --resume-agents --execute --confirm <archive_id>
 ```
 
+Archive every live workspace at once with `archive-all`. It applies the same
+guards as `archive` to each workspace: a workspace with a working or blocked
+agent, or an agent without a verified resumable session, is skipped and
+reported with the reason. The allow flags are deliberately not offered, so run
+`archive` on a skipped workspace if you want to override. Every archive the run
+creates carries one `batch_id`, and a manifest in `state/workspace-organizer/batches/`
+lists its members and its skipped workspaces (never session ids). Confirm with
+the session name. It refuses to run, before closing anything, from inside a
+workspace it would archive, so run it from a terminal outside Herdr. A second
+run creates a second batch for the leftovers.
+
+```sh
+herdr-organizer --session esim archive-all
+herdr-organizer --session esim archive-all --execute --confirm esim
+```
+
+Restore a whole batch with `restore-batch`. It restores only members that are
+still `archived`, one new workspace each. Members already restored, left
+`restore_partial`, or deleted are reported and left alone, and `--force` is
+never used. It refuses a session other than the one the batch was captured
+from, and keeps going after one member fails, then exits non-zero. Confirm
+with the batch ID.
+
+```sh
+herdr-organizer list-batches
+herdr-organizer --session esim restore-batch --batch <batch_id>
+herdr-organizer --session esim restore-batch --batch <batch_id> --resume-agents --execute --confirm <batch_id>
+herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
+```
+
+`delete-batch` removes only the group record. Its archives stay as single archives.
+
 Reorder a tab with a zero-based destination index:
 
 ```sh

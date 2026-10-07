@@ -2088,5 +2088,354 @@ class RestartRecoveryTests(unittest.TestCase):
                         pass
 
 
+RESUMABLE = {"restore_status": "resumable", "restore_source": "manifest", "client": "codex"}
+UNVERIFIED = {"restore_status": "shell_only", "restore_source": "unavailable", "client": "codex"}
+
+
+class FakeHerdr:
+    """A live session that archive-all can close workspaces in, with nothing real behind it."""
+
+    def __init__(self, workspaces, restores=None, working=(), close_fails=()):
+        self.workspaces = [{"workspace_id": wid, "label": label} for wid, label in workspaces]
+        self.restores = restores or {}
+        self.working = set(working)
+        self.close_fails = set(close_fails)
+        self.closed = []
+
+    def snapshot(self, _session=None):
+        tabs = [{"workspace_id": w["workspace_id"], "tab_id": f"{w['workspace_id']}:t1"} for w in self.workspaces]
+        panes = [
+            {
+                "tab_id": f"{w['workspace_id']}:t1",
+                "pane_id": f"{w['workspace_id']}:p1",
+                "agent_status": "working" if w["workspace_id"] in self.working else "idle",
+            }
+            for w in self.workspaces
+        ]
+        return {"workspaces": [dict(w) for w in self.workspaces], "tabs": tabs, "panes": panes}
+
+    def capture(self, snapshot, workspace_id, _session):
+        workspace = ORGANIZER.workspace_by_id(snapshot, workspace_id)
+        return {
+            "workspace": {"source_workspace_id": workspace_id, "label": workspace["label"], "focused": False},
+            "tabs": [
+                {
+                    "source_tab_id": f"{workspace_id}:t1",
+                    "label": "main",
+                    "layout": {"root": {"type": "pane", "pane_id": f"{workspace_id}:p1"}},
+                    "agent_restores": [dict(item, source_pane_id=f"{workspace_id}:p1") for item in self.restores.get(workspace_id, [])],
+                }
+            ],
+        }
+
+    def run_json(self, arguments, _session):
+        if arguments[:2] == ["workspace", "close"]:
+            if arguments[2] in self.close_fails:
+                raise ORGANIZER.OrganizerError("close refused")
+            self.closed.append(arguments[2])
+            self.workspaces = [w for w in self.workspaces if w["workspace_id"] != arguments[2]]
+        return {}
+
+
+class BatchTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.archives = root / "archives"
+        self.batches = root / "batches"
+        for target, value in (("ARCHIVE_DIR", self.archives), ("BATCH_DIR", self.batches)):
+            patcher = patch.object(ORGANIZER, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        environment = patch.dict(os.environ, {}, clear=False)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("HERDR_SESSION", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID"):
+            os.environ.pop(name, None)
+
+    def attach(self, herdr):
+        for name, value in (
+            ("session_snapshot", herdr.snapshot),
+            ("capture_workspace", herdr.capture),
+            ("run_json", herdr.run_json),
+        ):
+            patcher = patch.object(ORGANIZER, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def archive_args(self, **overrides):
+        values = dict(session="esim", execute=True, confirm="esim")
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def run_quietly(self, function, args):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            function(args)
+        return output.getvalue()
+
+    def world(self, **overrides):
+        base = dict(
+            workspaces=[("w1", "Clean"), ("w2", "Agent ok"), ("w3", "Busy"), ("w4", "Unverified")],
+            restores={"w2": [RESUMABLE], "w4": [UNVERIFIED]},
+            working={"w3"},
+        )
+        base.update(overrides)
+        herdr = FakeHerdr(**base)
+        self.attach(herdr)
+        return herdr
+
+    def manifests(self):
+        return [json.loads(path.read_text()) for path in sorted(self.batches.glob("*.json"))]
+
+    def test_preview_sorts_workspaces_and_changes_nothing(self):
+        herdr = self.world()
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args(execute=False, confirm=None))
+        preview = json.loads(output[: output.rindex("}") + 1])
+        self.assertEqual([item["workspace_id"] for item in preview["to_archive"]], ["w1", "w2"])
+        skipped = {item["workspace_id"]: item for item in preview["skipped"]}
+        self.assertEqual(skipped["w3"]["reasons"], ["active_agent"])
+        self.assertEqual(skipped["w3"]["active_pane_ids"], ["w3:p1"])
+        self.assertEqual(skipped["w4"]["reasons"], ["unverified_agent_session"])
+        self.assertEqual(skipped["w4"]["unverified_panes"], [{"pane_id": "w4:p1", "client": "codex"}])
+        self.assertIn("Preview only", output)
+        self.assertEqual(herdr.closed, [])
+        self.assertFalse(self.batches.exists() or self.archives.exists())
+
+    def test_execute_stamps_one_batch_on_every_archive_and_skips_the_rest(self):
+        herdr = self.world()
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w1", "w2"])
+        (manifest,) = self.manifests()
+        self.assertRegex(manifest["batch_id"], ORGANIZER.BATCH_ID_PATTERN)
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual([m["workspace_id"] for m in manifest["members"]], ["w1", "w2"])
+        self.assertEqual({item["workspace_id"] for item in manifest["skipped"]}, {"w3", "w4"})
+        for member in manifest["members"]:
+            archive = json.loads((self.archives / f"{member['archive_id']}.json").read_text())
+            self.assertEqual(archive["batch_id"], manifest["batch_id"])
+            self.assertEqual(archive["status"], "archived")
+        text = json.dumps(manifest)
+        self.assertNotIn("session_id", text)
+        self.assertNotIn("resume_command", text)
+
+    def test_a_second_run_makes_a_second_batch_for_the_leftovers(self):
+        herdr = self.world()
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        herdr.working.clear()
+        herdr.restores["w4"] = [RESUMABLE]
+        with patch.object(ORGANIZER, "batch_id_for", return_value="batch-20990101-000000"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        manifests = {m["batch_id"]: m for m in self.manifests()}
+        self.assertEqual(len(manifests), 2)
+        self.assertEqual([m["workspace_id"] for m in manifests["batch-20990101-000000"]["members"]], ["w3", "w4"])
+
+    def test_wrong_confirmation_closes_and_writes_nothing(self):
+        herdr = self.world()
+        for confirm in (None, "other", "w1"):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
+                self.run_quietly(ORGANIZER.archive_all_command, self.archive_args(confirm=confirm))
+        self.assertEqual(herdr.closed, [])
+        self.assertFalse(self.batches.exists() or self.archives.exists())
+
+    def test_running_inside_a_workspace_on_the_list_stops_before_closing_anything(self):
+        herdr = self.world()
+        os.environ.update({"HERDR_SESSION": "esim", "HERDR_PANE_ID": "w2:p1"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, r"inside workspace w2 \(Agent ok\)"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, [])
+        self.assertFalse(self.batches.exists() or self.archives.exists())
+
+    def test_running_inside_a_skipped_workspace_or_another_session_is_fine(self):
+        herdr = self.world()
+        os.environ.update({"HERDR_SESSION": "esim", "HERDR_PANE_ID": "w3:p1"})
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w1", "w2"])
+        herdr2 = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        os.environ.update({"HERDR_SESSION": "other", "HERDR_PANE_ID": "w1:p1"})
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr2.closed, ["w1"])
+
+    def test_workspace_that_changed_since_the_preview_is_skipped_not_closed(self):
+        herdr = self.world(workspaces=[("w1", "Clean"), ("w2", "Agent ok")], restores={"w2": [RESUMABLE]}, working=())
+        real_run = herdr.run_json
+
+        def close_then_turn_busy(arguments, session):
+            result = real_run(arguments, session)
+            herdr.working.add("w2")
+            return result
+
+        with patch.object(ORGANIZER, "run_json", close_then_turn_busy):
+            output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w1"])
+        (manifest,) = self.manifests()
+        self.assertEqual([m["workspace_id"] for m in manifest["members"]], ["w1"])
+        self.assertIn("w2", [item["workspace_id"] for item in manifest["skipped"]])
+        self.assertIn("working or blocked", output)
+
+    def test_renamed_or_vanished_workspace_is_skipped(self):
+        herdr = self.world(workspaces=[("w1", "Clean"), ("w2", "Two"), ("w3", "Three")], restores={}, working=())
+        real_run = herdr.run_json
+
+        def disturb(arguments, session):
+            result = real_run(arguments, session)
+            herdr.workspaces = [w for w in herdr.workspaces if w["workspace_id"] != "w3"]
+            for w in herdr.workspaces:
+                if w["workspace_id"] == "w2":
+                    w["label"] = "Renamed"
+            return result
+
+        with patch.object(ORGANIZER, "run_json", disturb):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w1"])
+        (manifest,) = self.manifests()
+        reasons = {item["workspace_id"]: item["reasons"] for item in manifest["skipped"]}
+        self.assertEqual(reasons, {"w2": ["workspace_changed"], "w3": ["workspace_gone"]})
+
+    def test_close_failure_keeps_the_member_marks_it_and_continues(self):
+        herdr = self.world(workspaces=[("w1", "One"), ("w2", "Two")], restores={}, working=(), close_fails={"w1"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "could not be closed"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w2"])
+        (manifest,) = self.manifests()
+        self.assertEqual(manifest["status"], "completed_with_failures")
+        summary = ORGANIZER.batch_summary(manifest)
+        self.assertEqual(summary["counts"]["archived"], 1)
+        self.assertEqual(summary["counts"]["other"], 1)
+
+    def test_no_eligible_workspace_writes_no_batch(self):
+        herdr = self.world(workspaces=[("w3", "Busy")], restores={}, working={"w3"})
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertIn("Nothing to archive", output)
+        self.assertEqual(herdr.closed, [])
+        self.assertFalse(self.batches.exists())
+
+    def test_archive_all_has_no_allow_flags(self):
+        parsed = ORGANIZER.parser().parse_args(["--session", "esim", "archive-all"])
+        self.assertFalse(hasattr(parsed, "allow_active"))
+        self.assertFalse(hasattr(parsed, "allow_unresumable_agents"))
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ORGANIZER.parser().parse_args(["archive-all", "--allow-active"])
+
+    def make_batch(self, statuses, batch_id="batch-20261007-101500", session="esim"):
+        members = []
+        for index, status in enumerate(statuses, start=1):
+            archive_id = f"{batch_id[6:]}-{index:02d}-ws{index}"
+            members.append({"archive_id": archive_id, "workspace_id": f"w{index}", "workspace_label": f"Ws {index}"})
+            if status != "deleted":
+                ORGANIZER.write_json(
+                    ORGANIZER.ARCHIVE_DIR / f"{archive_id}.json",
+                    {"archive_id": archive_id, "status": status, "batch_id": batch_id, "restore": {"workspace_id": "w99"} if status in {"restored", "resumed"} else {}},
+                )
+        manifest = {"version": 1, "batch_id": batch_id, "status": "completed", "created_at": "2026-10-07T10:15:00+00:00", "herdr_session": session, "members": members, "skipped": [{"workspace_id": "w50", "label": "Skipped", "reasons": ["active_agent"]}]}
+        ORGANIZER.write_json(ORGANIZER.BATCH_DIR / f"{batch_id}.json", manifest)
+        return manifest
+
+    def test_batch_summary_counts_each_status_and_marks_an_all_gone_group_empty(self):
+        manifest = self.make_batch(["archived", "restored", "resumed", "restore_partial", "deleted", "close_failed"])
+        summary = ORGANIZER.batch_summary(manifest)
+        self.assertEqual(summary["counts"], {"archived": 1, "restored": 2, "restore_partial": 1, "deleted": 1, "other": 1, "skipped": 1})
+        self.assertFalse(summary["empty"])
+        gone = ORGANIZER.batch_summary(self.make_batch(["deleted", "deleted"], batch_id="batch-20261007-111500"))
+        self.assertTrue(gone["empty"])
+        self.assertEqual(gone["counts"]["deleted"], 2)
+
+    def test_member_with_a_path_like_archive_id_is_treated_as_deleted(self):
+        manifest = self.make_batch(["archived"])
+        manifest["members"][0]["archive_id"] = "../../etc/passwd"
+        self.assertEqual(ORGANIZER.batch_summary(manifest)["members"][0]["status"], "deleted")
+
+    def test_snapshot_lists_batches_and_archives_carry_the_batch_id(self):
+        self.make_batch(["archived"])
+        self.assertEqual(ORGANIZER.archive_summary(json.loads(next(self.archives.glob("*.json")).read_text()))["batch_id"], "batch-20261007-101500")
+        self.assertEqual([b["batch_id"] for b in map(ORGANIZER.batch_summary, ORGANIZER.load_batches())], ["batch-20261007-101500"])
+
+    def test_malformed_or_foreign_manifest_files_are_ignored(self):
+        self.make_batch(["archived"])
+        (self.batches / "broken.json").write_text("{not json")
+        ORGANIZER.write_json(self.batches / "other.json", {"batch_id": "../x", "members": []})
+        self.assertEqual(len(ORGANIZER.load_batches()), 1)
+
+    def restore_args(self, **overrides):
+        values = dict(batch="batch-20261007-101500", session="esim", resume_agents=True, execute=True, confirm="batch-20261007-101500")
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_restore_batch_acts_only_on_archived_members_and_never_forces(self):
+        self.make_batch(["archived", "restored", "restore_partial", "deleted", "archived"])
+        calls = []
+        with patch.object(ORGANIZER, "restore_command", side_effect=lambda args: calls.append(args)):
+            output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args())
+        self.assertEqual([c.archive for c in calls], ["20261007-101500-01-ws1", "20261007-101500-05-ws5"])
+        for call in calls:
+            self.assertFalse(call.force)
+            self.assertFalse(call.allow_unresumable_agents)
+            self.assertTrue(call.resume_agents)
+            self.assertEqual((call.confirm, call.execute, call.session), (call.archive, True, "esim"))
+        self.assertIn("Left 20261007-101500-02-ws2 alone: restored", output)
+        self.assertIn("Left 20261007-101500-03-ws3 alone: restore_partial", output)
+        self.assertIn("Left 20261007-101500-04-ws4 alone: deleted", output)
+
+    def test_restore_batch_layout_only_does_not_resume_agents(self):
+        self.make_batch(["archived"])
+        calls = []
+        with patch.object(ORGANIZER, "restore_command", side_effect=lambda args: calls.append(args)):
+            self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(resume_agents=False))
+        self.assertFalse(calls[0].resume_agents)
+
+    def test_restore_batch_continues_after_a_failure_and_reports_it(self):
+        self.make_batch(["archived", "archived"])
+        seen = []
+
+        def restore(args):
+            seen.append(args.archive)
+            if args.archive.endswith("ws1"):
+                raise ORGANIZER.OrganizerError("no verified session")
+
+        with patch.object(ORGANIZER, "restore_command", side_effect=restore):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "ws1: no verified session"):
+                self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args())
+        self.assertEqual(len(seen), 2)
+
+    def test_restore_batch_preview_and_bad_confirmation_restore_nothing(self):
+        self.make_batch(["archived", "restored"])
+        with patch.object(ORGANIZER, "restore_command") as restore:
+            output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(execute=False, confirm=None))
+            preview = json.loads(output[: output.rindex("}") + 1])
+            self.assertEqual(len(preview["to_restore"]), 1)
+            self.assertEqual(preview["not_restored"][0]["status"], "restored")
+            for confirm in (None, "other"):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
+                    self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(confirm=confirm))
+        restore.assert_not_called()
+
+    def test_restore_batch_refuses_a_different_session_and_a_bad_batch_id(self):
+        self.make_batch(["archived"])
+        with patch.object(ORGANIZER, "restore_command") as restore:
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "captured from session 'esim'"):
+                self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(session="other"))
+            for bad in ("../x", "batch-1", "batch-20261007-101500/../x"):
+                with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Batch ID"):
+                    self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(batch=bad, confirm=bad))
+        restore.assert_not_called()
+
+    def test_restore_batch_with_nothing_archived_does_nothing(self):
+        self.make_batch(["restored", "deleted"])
+        with patch.object(ORGANIZER, "restore_command") as restore:
+            output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args())
+        restore.assert_not_called()
+        self.assertIn("Nothing to restore", output)
+
+    def test_delete_batch_removes_only_the_group_record(self):
+        manifest = self.make_batch(["archived"])
+        args = argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"])
+        self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm=manifest["batch_id"]))
+        self.assertEqual(list(self.batches.glob("*.json")), [])
+        self.assertEqual(len(list(self.archives.glob("*.json"))), 1)
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "not found"):
+            self.run_quietly(ORGANIZER.delete_batch_command, args)
+
+
 if __name__ == "__main__":
     unittest.main()
