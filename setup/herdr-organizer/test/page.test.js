@@ -96,7 +96,7 @@ function loadPaneView(restart, archiveAll) {
   return context;
 }
 
-const baseAa = () => ({ checking: {}, checkStarted: {}, applying: false });
+const baseAa = () => ({ checking: {}, checkStarted: {}, applying: false, applied: {} });
 const baseRestart = (rows) => ({ manual: {}, applyResult: {}, verify: rows ? { esim: { data: { rows } } } : {} });
 const pane = { pane_id: 'w6:p2', client: 'codex' };
 
@@ -133,10 +133,13 @@ test('skipped pane: progress shows elapsed seconds while the check runs, and a r
   aa.checkStarted.esim = Date.now() - 12000;
   assert.match(loadPaneView(baseRestart(null), aa).view('esim', pane), /checking identities… 1[12]s/);
   const restart = baseRestart([{ pane_id: 'w6:p2', verified: true, classification: 'handle_verified', candidates: 1 }]);
-  restart.applyResult.esim = { written: 3, skipped: 0 };
-  const done = loadPaneView(restart, baseAa()).view('esim', pane);
-  assert.match(done, /registered/);
-  assert.match(done, /Preview again to include this workspace/);
+  const applied = baseAa();
+  applied.applied.esim = { written: 3, skipped: 0 };
+  const done = loadPaneView(restart, applied).view('esim', pane);
+  assert.match(done, /applied, preview again/);
+  assert.match(done, /the tool wrote 3 identities/);
+  assert.match(done, /does not show this pane was one of them/);
+  assert.equal(/registered<|Registered/.test(done), false, 'it never claims this pane is registered');
   assert.equal(/Apply verified identities/.test(done), false);
 });
 
@@ -151,10 +154,50 @@ test('group card: each archived member has its own copy-only restore, and delete
   assert.match(view, /member\.status === 'archived' \? memberRestoreCommand/);
   assert.match(view, /restore --archive \$\{member\.archive_id\} --resume-agents --execute --confirm \$\{member\.archive_id\}/);
   assert.match(view, /ARCHIVE_ID_PATTERN\.test\(member\.archive_id/);
-  assert.match(view, /delete-batch --batch \$\{id\} --archives --execute --confirm \$\{id\}/);
+  assert.match(view, /delete-batch --batch \$\{id\} --archives --execute --confirm delete-archives:\$\{id\}/);
   assert.match(view, /delete-batch --batch \$\{id\} --execute --confirm \$\{id\}/);
   assert.match(view, /valid && removable/);
   assert.match(view, /Copy delete group record only/);
   assert.equal(/api\.run/.test(view), false, 'the group card never calls the server');
   assert.equal(/--force/.test(view), false);
+});
+
+test('skipped pane: an apply result from the Restart tab or an earlier check never marks this pane as done', () => {
+  const restart = baseRestart([{ pane_id: 'w6:p2', verified: true, classification: 'handle_verified', candidates: 1 }]);
+  restart.applyResult.esim = { written: 14, skipped: 0 };
+  const out = loadPaneView(restart, baseAa()).view('esim', pane);
+  assert.match(out, /Apply verified identities/);
+  assert.equal(/applied, preview again/.test(out), false);
+  const failed = baseAa();
+  failed.applied.esim = { error: 'The apply step returned nothing.' };
+  const retry = loadPaneView(restart, failed).view('esim', pane);
+  assert.match(retry, /The apply step returned nothing\./);
+  assert.match(retry, /Apply verified identities/, 'a failed apply can be retried');
+});
+
+test('skipped pane: no state renders a literal template placeholder', () => {
+  const states = [
+    [baseRestart(null), baseAa()],
+    [baseRestart([{ pane_id: 'w6:p2', verified: true, classification: 'handle_verified', candidates: 1 }]), baseAa()],
+    [baseRestart([{ pane_id: 'w6:p2', verified: false, classification: 'candidate_ambiguous', candidates: 5 }]), baseAa()],
+    [baseRestart([{ pane_id: 'w9:p9', verified: false, classification: 'unresolved', candidates: 0 }]), baseAa()],
+  ];
+  const applied = baseAa();
+  applied.applied.esim = { written: 1 };
+  states.push([baseRestart([{ pane_id: 'w6:p2', verified: true, classification: 'handle_verified', candidates: 1 }]), applied]);
+  const checking = baseAa();
+  checking.checking.esim = true;
+  states.push([baseRestart(null), checking]);
+  for (const [restart, aa] of states) {
+    const out = loadPaneView(restart, aa).view('esim', pane);
+    assert.equal(out.includes('${'), false, out);
+  }
+});
+
+test('group card: permanent delete needs its own confirm value and shows a visible warning, not only a tooltip', () => {
+  const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchesView'));
+  assert.match(view, /--archives --execute --confirm delete-archives:\$\{id\}/);
+  assert.equal(/--archives --execute --confirm \$\{id\}/.test(view), false, 'the record-only confirm value cannot be reused');
+  assert.match(view, /<div class="archive-meta"[^`]*Delete group \+ \$\{plural\(removable, 'archive'\)\} is permanent\./);
+  assert.match(view, /still archived, so/);
 });

@@ -1021,7 +1021,7 @@ created: 2026-09-10
       workspace_gone: 'No longer exists.',
       workspace_changed: 'Changed since the preview.'
     };
-    const freshArchiveAll = () => ({ loading: false, result: null, error: '', checking: {}, checkStarted: {}, checkError: '', snapshotAt: '', applyConfirm: '', applying: false, readyOpen: false });
+    const freshArchiveAll = () => ({ loading: false, result: null, error: '', checking: {}, checkStarted: {}, checkError: '', snapshotAt: '', applyConfirm: '', applying: false, applied: {}, readyOpen: false });
     state.archiveAll = freshArchiveAll();
     // What the identity check says about one skipped pane. The archive tool skips an agent that is not registered,
     // which is a different test from the identity check, so a pane the check proves is verified but not yet registered.
@@ -1042,7 +1042,9 @@ created: 2026-09-10
       const aa = state.archiveAll;
       const verify = restart.verify[session];
       const found = archivePaneState(verify?.data, pane.pane_id);
-      const applied = restart.applyResult[session];
+      // The apply result kept here belongs to this card and to the identity check it followed. A result from the
+      // Restart tab, or from before a new check, says nothing about this pane.
+      const applied = aa.applied[session];
       let note = '';
       let control = '';
       let form = '';
@@ -1055,11 +1057,12 @@ created: 2026-09-10
       } else if (found.kind === 'verified') {
         const done = applied && !applied.error;
         control = done
-          ? '<span class="pill good">registered</span>'
+          ? '<span class="pill">applied, preview again</span>'
           : `<button type="button" class="small-btn" style="margin-left:auto" data-aa="apply-ask" data-session="${escapeHtml(session)}" ${aa.applying ? 'disabled' : ''}>Apply verified identities</button>`;
-        note = done ? `Registered ${applied.written} verified ${applied.written === 1 ? 'identity' : 'identities'} across the whole ${session} session, not only this workspace. Preview again to include this workspace.`
-          : 'The identity check proved this agent\'s session, but it is not registered yet, and archive only trusts registered sessions. The tool can only apply for the whole ${session} session, so this registers every verified agent in it, not just this pane. A session id cannot be typed for a verified pane.';
-        if (applied?.error) note = applied.error;
+        note = done
+          ? `Applied for the whole ${session} session: the tool wrote ${plural(applied.written, 'identity', 'identities')}. That does not show this pane was one of them. Preview again to see whether this workspace is now included.`
+          : `The identity check proved this agent's session, but it is not registered yet, and archive only trusts registered sessions. The tool can only apply for the whole ${session} session, so this registers every verified agent in it, not just this pane. A session id cannot be typed for a verified pane.`;
+        if (applied?.error) note = `${applied.error} ${note}`;
       } else {
         const [label, tone] = CLASS_LABELS[found.row.classification] || [found.row.classification, ''];
         control = `<span class="pill ${tone}">${escapeHtml(label)}</span><button type="button" class="small-btn" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}">${entry.open ? 'Close form' : 'Set session id'}</button>`;
@@ -1132,6 +1135,7 @@ created: 2026-09-10
       const aa = state.archiveAll;
       if (aa.checking[session]) return;
       aa.checkError = '';
+      delete aa.applied[session];
       aa.checking[session] = true;
       aa.checkStarted[session] = Date.now();
       clearInterval(archiveCheckTimer);
@@ -1157,9 +1161,9 @@ created: 2026-09-10
       aa.applying = true;
       renderArchiveAll();
       try {
-        restart.applyResult[session] = await api.run('verify-apply', { session, confirm: `apply:${session}` });
+        aa.applied[session] = await api.run('verify-apply', { session, confirm: `apply:${session}` });
         showToast(`Applied verified identities for ${session}`);
-      } catch (error) { restart.applyResult[session] = { error: error.message }; }
+      } catch (error) { aa.applied[session] = { error: error.message }; }
       aa.applying = false;
       aa.applyConfirm = '';
       renderArchiveAll();
@@ -1226,7 +1230,7 @@ created: 2026-09-10
       const resume = `${base} --resume-agents --execute --confirm ${id}`;
       const layout = `${base} --execute --confirm ${id}`;
       const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
-      const removeAll = `herdr-organizer delete-batch --batch ${id} --archives --execute --confirm ${id}`;
+      const removeAll = `herdr-organizer delete-batch --batch ${id} --archives --execute --confirm delete-archives:${id}`;
       const removable = (batch.members || []).filter(member => member.status !== 'deleted').length;
       const canRestore = valid && counts.archived > 0;
       const why = !valid ? 'This group has an unexpected id, so no command is built' : 'No member is still archived';
@@ -1245,6 +1249,7 @@ created: 2026-09-10
           ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this group record. Every archive in it is already deleted.">Copy delete group</button>` : ''}
           ${valid && removable ? `<button class="danger" type="button" data-command="${escapeHtml(removeAll)}" title="Permanently deletes this group and its ${plural(removable, 'archive')}.${counts.archived ? ` ${counts.archived} still ${counts.archived === 1 ? 'is' : 'are'} archived, so their saved layouts and agent identities would be lost.` : ''} No live or restored workspace is changed.">Copy delete group + ${plural(removable, 'archive')}</button><button type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. Its archives stay as single archives.">Copy delete group record only</button>` : ''}
         </div>
+        ${valid && removable ? `<div class="archive-meta" style="margin-top:8px;color:#a9273b">Delete group + ${plural(removable, 'archive')} is permanent.${counts.archived ? ` ${plural(counts.archived, 'member')} ${counts.archived === 1 ? 'is' : 'are'} still archived, so ${counts.archived === 1 ? 'its' : 'their'} saved layout and agent identity would be lost.` : ''} Delete group record only keeps the archives.</div>` : ''}
         <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(member => batchMemberView(member, session)).join('') || '<div class="tab-meta">No members</div>'}</details>
         ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
       </article>`;
