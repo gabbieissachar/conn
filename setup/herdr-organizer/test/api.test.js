@@ -352,7 +352,7 @@ test('archive-all-preview: runs the read-only preview, drops free text, and buil
     assert.equal(response.status, 200);
     const data = response.json.data;
     assert.deepEqual(data.to_archive.map((item) => [item.workspace_id, item.label, item.pane_count]), [['w1', 'Alpha', 3], ['w2', 'Beta', 1]]);
-    assert.deepEqual(data.totals, { workspaces: 5, to_archive: 2, skipped: 3 });
+    assert.deepEqual(data.totals, { workspaces: 5, to_archive: 2, skipped: 3, omitted: 0 });
     const bySkip = Object.fromEntries(data.skipped.map((item) => [item.workspace_id, item]));
     assert.deepEqual(bySkip.w3.reasons, ['active_agent']);
     assert.deepEqual(bySkip.w3.active_pane_ids, ['w3:p1']);
@@ -439,5 +439,37 @@ test('archive-all-preview: it is read-only (tier 0) and no action in the allowli
   try {
     assert.equal(server.api.ACTIONS['archive-all-preview'].tier, 0);
     for (const name of Object.keys(server.api.ACTIONS)) assert.equal(/archive-all$|restore|execute/.test(name), false, name);
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: workspaces the parser drops are counted as omitted, not silently lost', async () => {
+  const text = fixture('archive-all-preview.txt').replace('"workspace_id": "w2"', '"workspace_id": "bad id"');
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: text, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const data = (await post('archive-all-preview', { session: 'project-a' })).json.data;
+    assert.equal(data.totals.omitted, 1);
+    assert.equal(data.totals.workspaces, 5);
+    assert.equal(data.to_archive.length + data.skipped.length, 4);
+  } finally { await server.close(); }
+  const short = fixture('archive-all-preview.txt').replace('"workspace_total": 5', '"workspace_total": 9');
+  const runner2 = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: short, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server2 = await startServer({ runner: runner2.runner });
+  try {
+    const { post } = await client(server2);
+    assert.equal((await post('archive-all-preview', { session: 'project-a' })).json.data.totals.omitted, 4, 'the tool counted more workspaces than it listed');
+  } finally { await server2.close(); }
+});
+
+test('archive-all-preview: a tool without the archive-all command gets a clear message', async () => {
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 2, stdout: '', stderr: "workspace-organizer.py: error: argument command: invalid choice: 'archive-all' (choose from 'snapshot', 'archive')", timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.status, 501);
+    assert.equal(response.json.code, 'tool_outdated');
+    assert.match(response.json.message, /does not have archive-all yet/);
   } finally { await server.close(); }
 });

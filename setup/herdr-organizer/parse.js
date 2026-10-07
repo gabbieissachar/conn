@@ -222,7 +222,13 @@ function parseArchiveAllPreview(stdout) {
       .map((pane) => ({ pane_id: pane.pane_id, client: pane.client === 'claude' || pane.client === 'codex' ? pane.client : '' })),
   });
   const valid = (item) => item && typeof item.workspace_id === 'string' && WORKSPACE_ID_RE.test(item.workspace_id);
-  return { session: value.session, to_archive: value.to_archive.filter(valid).map(ready), skipped: value.skipped.filter(valid).map(skipped) };
+  const readyRows = value.to_archive.filter(valid).map(ready);
+  const skippedRows = value.skipped.filter(valid).map(skipped);
+  // Workspaces the tool counted that did not make it through (a malformed id, or a tool that listed fewer rows than its total)
+  // are counted, never silently lost, so the page can say the list is incomplete.
+  const listed = value.to_archive.length + value.skipped.length;
+  const expected = Number.isInteger(value.workspace_total) ? Math.max(value.workspace_total, listed) : listed;
+  return { session: value.session, to_archive: readyRows, skipped: skippedRows, omitted: Math.max(0, expected - readyRows.length - skippedRows.length) };
 }
 
 // `reconcile-all --bundle ID` without --confirm prints {"sessions": [{"session", "workspaces": {action: count}}]}

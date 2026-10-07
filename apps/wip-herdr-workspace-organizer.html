@@ -153,6 +153,7 @@ created: 2026-09-10
     .ready-banner.no { color: #8a5207; background: #fff6e6; border: 1px solid #f3dcae; }
     .failure { padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; background: var(--paper); }
     .failure h4 { margin: 0 0 4px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+    .failure p:last-child { margin-bottom: 0; }
     .failure p { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .failure-entry { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 0; border-top: 1px solid #eef1f6; font-size: 12px; }
     .failure-entry .names { color: var(--muted); }
@@ -170,7 +171,7 @@ created: 2026-09-10
     .manual-form .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
     .field { display: grid; gap: 4px; font-size: 11px; color: var(--muted); font-family: "DM Mono", monospace; }
     .field.grow { flex: 1; min-width: 240px; }
-    .field input[type="text"], .field select { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: 13px "DM Mono", monospace; }
+    .field input[type="text"], .field select { height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: 13px "DM Mono", monospace; }
     .field input[type="text"]:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 1px; }
     .small-btn { padding: 6px 9px; font-size: 11px; }
     .ack { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--navy); cursor: pointer; }
@@ -193,7 +194,7 @@ created: 2026-09-10
     .btn-row button.danger:hover { background: #ffd7dd; }
     .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
     .cleanup-all { margin-bottom: 26px; }
-    .cleanup-totals { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 14px 0 6px; color: var(--navy); font-size: 13px; }
+    .cleanup-totals { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 14px 0 6px; color: var(--navy); font-size: 13px; }
     .cleanup-totals strong { font-size: 15px; letter-spacing: -.02em; }
     .batch .archive-name { font-size: 14px; }
     .batch-counts { margin-top: 8px; color: var(--navy); font-size: 13px; }
@@ -1015,23 +1016,53 @@ created: 2026-09-10
     // the exact command is copied for a terminal outside Herdr. The tool re-checks every workspace when it runs.
     const SKIP_TEXT = {
       active_agent: 'Has a working or blocked agent. Let it finish, then preview again.',
-      unverified_agent_session: 'Has an agent without a verified session id, so it could not be resumed. Add the id below, then preview again.',
+      unverified_agent_session: 'Has an agent whose session is not registered, so it could not be resumed. Check its identity below, then preview again.',
       capture_failed: 'Could not be captured. Run the single archive preview for it in a terminal to see why.',
       workspace_gone: 'No longer exists.',
       workspace_changed: 'Changed since the preview.'
     };
-    const freshArchiveAll = () => ({ loading: false, result: null, error: '', checking: {}, checkError: '', snapshotAt: '' });
+    const freshArchiveAll = () => ({ loading: false, result: null, error: '', checking: {}, checkStarted: {}, checkError: '', snapshotAt: '', applyConfirm: '', applying: false, readyOpen: false });
     state.archiveAll = freshArchiveAll();
+    // What the identity check says about one skipped pane. The archive tool skips an agent that is not registered,
+    // which is a different test from the identity check, so a pane the check proves is verified but not yet registered.
+    const archivePaneState = (verifyData, paneId) => {
+      if (!verifyData) return { kind: 'unchecked' };
+      const row = (verifyData.rows || []).find(item => item.pane_id === paneId);
+      if (!row) return { kind: 'not_found' };
+      return { kind: row.verified ? 'verified' : 'manual', row };
+    };
+    const archiveCheckSeconds = session => (state.archiveAll.checkStarted[session] ? Math.round((Date.now() - state.archiveAll.checkStarted[session]) / 1000) : 0);
     const archiveAllPaneView = (session, pane) => {
       const key = manualKey(session, pane.pane_id);
       const entry = restart.manual[key] || {};
-      const checking = state.archiveAll.checking[session];
-      let control;
+      const aa = state.archiveAll;
+      const verify = restart.verify[session];
+      const found = archivePaneState(verify?.data, pane.pane_id);
+      const applied = restart.applyResult[session];
+      let note = '';
+      let control = '';
+      let form = '';
       if (entry.saved) control = `<span class="pill good" title="Saved to the registry. Preview again to include this workspace.">Saved · ${escapeHtml(entry.saved)}</span>`;
-      else if (checking) control = '<span class="pill">checking identities…</span>';
-      else control = `<button type="button" class="small-btn" style="margin-left:auto" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}">${entry.open ? 'Close form' : 'Set session id'}</button>`;
-      const form = entry.open && !entry.saved ? `<div class="inline-form">${manualFormView(session, { pane_id: pane.pane_id, client: pane.client })}</div>` : '';
-      return `<div class="failure-entry"><span class="pane-id">${escapeHtml(pane.pane_id)}</span><span class="names">${escapeHtml(pane.client || 'agent')}</span>${control}${form}</div>`;
+      else if (aa.checking[session]) control = `<span class="pill">checking identities… ${archiveCheckSeconds(session)}s</span>`;
+      else if (found.kind === 'unchecked' || found.kind === 'not_found') {
+        control = `<button type="button" class="small-btn" style="margin-left:auto" data-aa="check" data-session="${escapeHtml(session)}">${found.kind === 'not_found' ? 'Check again' : 'Check identity'}</button>`;
+        if (found.kind === 'not_found') note = 'The identity check did not list this pane. Preview again to refresh the list.';
+        else if (verify?.error) note = verify.error;
+      } else if (found.kind === 'verified') {
+        const done = applied && !applied.error;
+        control = done
+          ? '<span class="pill good">registered</span>'
+          : `<button type="button" class="small-btn" style="margin-left:auto" data-aa="apply-ask" data-session="${escapeHtml(session)}" ${aa.applying ? 'disabled' : ''}>Apply verified identities</button>`;
+        note = done ? `Registered ${applied.written} verified ${applied.written === 1 ? 'identity' : 'identities'}. Preview again to include this workspace.`
+          : 'The identity check proved this agent\'s session, but it is not registered yet, and archive only trusts registered sessions. Applying registers every verified agent in this session. A session id cannot be typed for a verified pane.';
+        if (applied?.error) note = applied.error;
+      } else {
+        const [label, tone] = CLASS_LABELS[found.row.classification] || [found.row.classification, ''];
+        control = `<span class="pill ${tone}">${escapeHtml(label)}</span><button type="button" class="small-btn" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}">${entry.open ? 'Close form' : 'Set session id'}</button>`;
+        note = `${plural(found.row.candidates, 'candidate session')}. Paste the right session id below.`;
+        form = entry.open ? `<div class="inline-form">${manualFormView(session, { pane_id: pane.pane_id, client: pane.client })}</div>` : '';
+      }
+      return `<div class="failure-entry"><span class="pane-id">${escapeHtml(pane.pane_id)}</span><span class="names">${escapeHtml(pane.client || 'agent')}</span><span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center">${control}</span>${note ? `<div class="tab-meta inline-form" style="margin:0">${escapeHtml(note)}</div>` : ''}${form}</div>`;
     };
     const archiveAllSkippedView = (item, session) => {
       const why = item.reasons.map(reason => SKIP_TEXT[reason] || reason.replace(/_/g, ' ')).join(' ');
@@ -1053,15 +1084,18 @@ created: 2026-09-10
           ? `<details class="fold" data-fold="aa-ready"${aa.readyOpen ? ' open' : ''} style="margin-top:6px"><summary><span class="group-title">Will be archived <span class="count-pill">${totals.to_archive}</span></span></summary>${result.to_archive.map(item => `<div class="member-line"><span class="pane-id">${escapeHtml(item.workspace_id)}</span><span class="names">${escapeHtml(item.label)}</span><span class="tab-meta" style="margin:0 0 0 auto">${plural(item.tab_count, 'tab')} · ${plural(item.pane_count, 'pane')}</span></div>`).join('')}</details>`
           : '<div class="tab-meta">Nothing passes the safety checks, so there is nothing to archive.</div>';
         const skipped = result.skipped.length ? `<div class="group-title" style="margin-top:14px">Skipped <span class="count-pill">${totals.skipped}</span></div>${result.skipped.map(item => archiveAllSkippedView(item, result.session)).join('')}` : '';
+        const waiting = Object.keys(aa.checking).some(name => aa.checking[name]);
+        const confirm = aa.applyConfirm
+          ? `<div class="confirm-box"><strong>Register the verified identities for ${escapeHtml(aa.applyConfirm)}?</strong>The verifier re-reads each live pane right before writing and skips any that changed. This writes the private registry file only; Herdr is not changed. Then preview again.<div class="btn-row"><button type="button" class="primary-btn" data-aa="apply-confirm" ${aa.applying ? 'disabled' : ''}>${aa.applying ? 'Applying…' : 'Apply'}</button><button type="button" data-aa="apply-cancel">Cancel</button></div></div>` : '';
         const command = result.commands.execute
           ? `<div class="confirm-box warn" style="margin-top:14px"><strong>Closes ${plural(totals.to_archive, 'workspace')} and stops their processes.</strong>Run this in a terminal outside Herdr. It stops before closing anything if it is run inside a workspace it would archive, and it checks each workspace again just before closing it. Skipped workspaces stay open. A second run makes a second group for them.</div><pre class="command-box">${escapeHtml(stale ? 'The snapshot changed since this preview. Preview again for a fresh command.' : result.commands.execute)}</pre>`
           : '';
-        body = `<div class="cleanup-totals"><span><strong>${totals.to_archive}</strong> of ${plural(totals.workspaces, 'workspace')} would be archived and closed</span><span class="updated">${totals.skipped} skipped</span></div>${stale ? '<div class="scope-note">The snapshot changed since this preview. Preview again before you copy the command.</div>' : ''}${ready}${skipped}${aa.checkError ? `<div class="scope-note error">${escapeHtml(aa.checkError)}</div>` : ''}${command}`;
+        body = `<div class="cleanup-totals"><span><strong>${totals.to_archive}</strong> of ${plural(totals.workspaces, 'workspace')} would be archived and closed</span><span class="updated">${totals.skipped} skipped</span></div>${totals.omitted ? `<div class="scope-note error">${plural(totals.omitted, 'workspace')} could not be read from the tool output and ${totals.omitted === 1 ? 'is' : 'are'} missing from this list. Run the preview command in a terminal to see everything before you archive.</div>` : ''}${stale ? '<div class="scope-note">The snapshot changed since this preview. Preview again before you copy the command.</div>' : ''}${ready}${skipped}${waiting ? '<div class="tab-meta">The identity check inspects every agent pane, so it can take a few minutes when the machine is busy.</div>' : ''}${confirm}${aa.checkError ? `<div class="scope-note error">${escapeHtml(aa.checkError)}</div>` : ''}${command}`;
       }
       const canPreview = Boolean(session) && !aa.loading;
       const canCopy = Boolean(result?.commands?.execute) && !stale;
       return `<article class="card cleanup-all"><div class="card-head"><h3>Archive all workspaces</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
-        <p class="lede">Archives every live workspace that passes the safety checks and closes it, as one group you can restore together from the Archives tab. A workspace with a working agent, or an agent without a verified session id, is skipped and listed with the reason. Previewing closes nothing.</p>
+        <p class="lede">Archives every live workspace that passes the safety checks and closes it, as one group you can restore together from the Archives tab. A workspace with a working agent, or an agent without a registered session id, is skipped and listed with the reason. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-aa="preview" ${canPreview ? '' : 'disabled'} title="${session ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${aa.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview archive all')}</button>
           <button type="button" data-aa-copy="${escapeHtml(previewCommand)}" ${previewCommand ? '' : 'disabled'} title="Copies the preview command to run in your terminal">Copy archive all preview</button>
           <button type="button" class="danger" data-aa-copy="${escapeHtml(canCopy ? result.commands.execute : '')}" ${canCopy ? '' : 'disabled'} title="${canCopy ? 'Copies the command that archives and closes the workspaces listed above' : 'Preview first. The command is built from the preview'}">Copy archive all</button></div>
@@ -1086,25 +1120,44 @@ created: 2026-09-10
       } catch (error) { state.archiveAll = { ...freshArchiveAll(), error: error.message }; }
       renderArchiveAll();
     };
-    // The session id field reuses the Restart tab's manual identity flow. That flow only accepts a pane the latest
-    // identity check found unverified, so the check for this session runs first when the page has no result yet.
-    const openArchiveManual = async (session, pane, client) => {
+    // The identity check is the Restart tab's own `verify` action. The manual identity flow only accepts a pane that
+    // check found unverified, so the check runs first and each skipped pane then gets what it needs: nothing to type
+    // for a verified pane (apply registers it), an id form for an ambiguous or unresolved one.
+    let archiveCheckTimer = null;
+    const checkArchiveIdentities = async session => {
+      const aa = state.archiveAll;
+      if (aa.checking[session]) return;
+      aa.checkError = '';
+      aa.checking[session] = true;
+      aa.checkStarted[session] = Date.now();
+      clearInterval(archiveCheckTimer);
+      archiveCheckTimer = setInterval(renderArchiveAll, 1000);
+      renderArchiveAll();
+      try { restart.verify[session] = { data: await api.run('verify', { session }) }; }
+      catch (error) { restart.verify[session] = { error: error.message }; aa.checkError = error.message; }
+      aa.checking[session] = false;
+      if (!Object.values(aa.checking).some(Boolean)) clearInterval(archiveCheckTimer);
+      renderArchiveAll();
+    };
+    const openArchiveManual = (session, pane, client) => {
       const key = manualKey(session, pane);
       const existing = restart.manual[key];
-      if (existing?.open) { restart.manual[key] = { ...existing, open: false }; renderArchiveAll(); return; }
-      const known = () => (restart.verify[session]?.data?.rows || []).some(row => row.pane_id === pane && !row.verified);
+      restart.manual[key] = existing?.open ? { ...existing, open: false }
+        : { ...(existing || {}), open: true, client: client === 'codex' ? 'codex' : 'claude', draft: existing?.draft || '' };
+      renderArchiveAll();
+    };
+    const applyFromArchiveAll = async () => {
       const aa = state.archiveAll;
-      aa.checkError = '';
-      if (!known()) {
-        if (aa.checking[session]) return;
-        aa.checking[session] = true;
-        renderArchiveAll();
-        try { restart.verify[session] = { data: await api.run('verify', { session }) }; }
-        catch (error) { aa.checkError = error.message; }
-        aa.checking[session] = false;
-      }
-      if (known()) restart.manual[key] = { ...(restart.manual[key] || {}), open: true, client: client === 'codex' ? 'codex' : 'claude', draft: restart.manual[key]?.draft || '' };
-      else if (!aa.checkError) aa.checkError = 'The identity check did not find this pane unverified. Preview again to refresh the list.';
+      const session = aa.applyConfirm;
+      if (!session || aa.applying) return;
+      aa.applying = true;
+      renderArchiveAll();
+      try {
+        restart.applyResult[session] = await api.run('verify-apply', { session, confirm: `apply:${session}` });
+        showToast(`Applied verified identities for ${session}`);
+      } catch (error) { restart.applyResult[session] = { error: error.message }; }
+      aa.applying = false;
+      aa.applyConfirm = '';
       renderArchiveAll();
     };
     const archiveAllRoot = document.querySelector('#archive-all');
@@ -1113,6 +1166,10 @@ created: 2026-09-10
       if (copyButton) { if (copyButton.dataset.aaCopy) copy(copyButton.dataset.aaCopy); return; }
       const target = event.target.closest('[data-aa]');
       if (target?.dataset.aa === 'preview') runArchiveAllPreview();
+      else if (target?.dataset.aa === 'check') checkArchiveIdentities(target.dataset.session);
+      else if (target?.dataset.aa === 'apply-ask') { state.archiveAll.applyConfirm = target.dataset.session; renderArchiveAll(); }
+      else if (target?.dataset.aa === 'apply-confirm') applyFromArchiveAll();
+      else if (target?.dataset.aa === 'apply-cancel') { state.archiveAll.applyConfirm = ''; renderArchiveAll(); }
       else if (target?.dataset.aa === 'manual') openArchiveManual(target.dataset.session, target.dataset.pane, target.dataset.client);
       else if (event.target.closest('[data-action="manual-cancel"]')) { delete restart.manual[event.target.closest('[data-action="manual-cancel"]').dataset.key]; rerenderManual(); }
     });
