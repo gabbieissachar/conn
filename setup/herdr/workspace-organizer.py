@@ -1014,6 +1014,27 @@ RESTORABLE_MEMBER_STATUS = "archived"
 RESTORED_STATUSES = {"restored", "resumed"}
 
 
+@contextmanager
+def batch_run_lock(action: str) -> Iterable[None]:
+    """Only one archive-all or restore-batch run at a time, so two runs cannot duplicate work."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "batch-run.lock"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise OrganizerError(
+                f"Another archive-all or restore-batch run is already in progress. Wait for it to finish, then run {action} again."
+            ) from error
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
 def batch_id_for() -> str:
     base = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     candidate = base
@@ -1144,6 +1165,13 @@ def archive_all_command(args: argparse.Namespace) -> None:
             print(f"Skipped {describe_skip(entry)}")
         return
 
+    with batch_run_lock("archive-all"):
+        run_archive_batch(args, session, planned, skipped)
+
+
+def run_archive_batch(
+    args: argparse.Namespace, session: str, planned: list[dict[str, Any]], skipped: list[dict[str, Any]]
+) -> None:
     batch_id = batch_id_for()
     manifest: dict[str, Any] = {
         "version": 1,
@@ -1157,38 +1185,51 @@ def archive_all_command(args: argparse.Namespace) -> None:
     batch_path = BATCH_DIR / f"{batch_id}.json"
     write_json(batch_path, manifest)
     failures: list[str] = []
-    for item in planned:
-        workspace_id = item["workspace_id"]
-        # Re-check each workspace against a fresh snapshot right before it is closed.
-        fresh = session_snapshot(args.session)
-        workspace = next((w for w in fresh.get("workspaces", []) if w.get("workspace_id") == workspace_id), None)
-        if workspace is None:
-            capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_gone"]}
-        elif str(workspace.get("label") or workspace_id) != item["label"]:
-            capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_changed"]}
-        else:
-            capture, entry = assess_workspace_for_archive(fresh, workspace, args.session)
-        if capture is None:
-            manifest["skipped"].append(entry)
+    current: tuple[Path, dict[str, Any]] | None = None
+    finished = False
+    try:
+        for item in planned:
+            workspace_id = item["workspace_id"]
+            # Re-check each workspace against a fresh snapshot right before it is closed.
+            fresh = session_snapshot(args.session)
+            workspace = next((w for w in fresh.get("workspaces", []) if w.get("workspace_id") == workspace_id), None)
+            if workspace is None:
+                capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_gone"]}
+            elif str(workspace.get("label") or workspace_id) != item["label"]:
+                capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_changed"]}
+            else:
+                capture, entry = assess_workspace_for_archive(fresh, workspace, args.session)
+            if capture is None:
+                manifest["skipped"].append(entry)
+                write_json(batch_path, manifest)
+                print(f"Skipped {describe_skip(entry)}")
+                continue
+            archive_id = archive_id_for(item["label"])
+            current = prepare_archive(archive_id, capture, args.session, batch_id)
+            manifest["members"].append(
+                {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
+            )
             write_json(batch_path, manifest)
-            print(f"Skipped {describe_skip(entry)}")
-            continue
-        archive_id = archive_id_for(item["label"])
-        archive_path, archive = prepare_archive(archive_id, capture, args.session, batch_id)
-        manifest["members"].append(
-            {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
-        )
+            try:
+                close_archived_workspace(current[0], current[1], workspace_id, args.session)
+            except OrganizerError as error:
+                failures.append(f"{workspace_id} ({item['label']}): {error}")
+                print(f"Could not close {workspace_id}; archive {archive_id} is marked close_failed.")
+                current = None
+                continue
+            current = None
+            print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
+        finished = True
+    finally:
+        # Any other error or Ctrl-C must not leave the record stuck. The workspace being closed at that moment may
+        # or may not be gone, so its archive says so and nothing is assumed.
+        if current is not None and current[1].get("status") == "prepared":
+            current[1]["status"] = "close_failed"
+            current[1]["error"] = "Interrupted before the close was confirmed. Check whether the workspace is still open."
+            write_json(current[0], current[1])
+        manifest["status"] = ("completed_with_failures" if failures else "completed") if finished else "interrupted"
+        manifest["completed_at"] = now()
         write_json(batch_path, manifest)
-        try:
-            close_archived_workspace(archive_path, archive, workspace_id, args.session)
-        except OrganizerError as error:
-            failures.append(f"{workspace_id} ({item['label']}): {error}")
-            print(f"Could not close {workspace_id}; archive {archive_id} is marked close_failed.")
-            continue
-        print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
-    manifest["status"] = "completed_with_failures" if failures else "completed"
-    manifest["completed_at"] = now()
-    write_json(batch_path, manifest)
     print(f"Batch {batch_id}: archived {len(manifest['members']) - len(failures)}, skipped {len(manifest['skipped'])}.")
     print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
     if failures:
@@ -1304,25 +1345,30 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         return
     failures: list[str] = []
     restored = 0
-    for member in targets:
-        archive_id = member["archive_id"]
-        print(f"== {archive_id}")
-        member_args = argparse.Namespace(
-            archive=archive_id,
-            resume_agents=bool(args.resume_agents),
-            allow_unresumable_agents=False,
-            force=False,
-            execute=True,
-            confirm=archive_id,
-            session=args.session,
-        )
-        try:
-            restore_command(member_args)
-        except OrganizerError as error:
-            failures.append(f"{archive_id}: {error}")
-            print(f"Could not restore {archive_id}: {error}")
-            continue
-        restored += 1
+    with batch_run_lock("restore-batch"):
+        for member in targets:
+            archive_id = member["archive_id"]
+            # Another run may have restored this member since the preview above.
+            if batch_member_view(member)["status"] != RESTORABLE_MEMBER_STATUS:
+                print(f"Left {archive_id} alone: no longer archived.")
+                continue
+            print(f"== {archive_id}")
+            member_args = argparse.Namespace(
+                archive=archive_id,
+                resume_agents=bool(args.resume_agents),
+                allow_unresumable_agents=False,
+                force=False,
+                execute=True,
+                confirm=archive_id,
+                session=args.session,
+            )
+            try:
+                restore_command(member_args)
+            except OrganizerError as error:
+                failures.append(f"{archive_id}: {error}")
+                print(f"Could not restore {archive_id}: {error}")
+                continue
+            restored += 1
     print(f"Batch {args.batch}: restored {restored} of {len(targets)}.")
     if failures:
         raise OrganizerError("Some archives were not restored: " + "; ".join(failures))

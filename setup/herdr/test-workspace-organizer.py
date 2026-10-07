@@ -2304,6 +2304,70 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(summary["counts"]["archived"], 1)
         self.assertEqual(summary["counts"]["other"], 1)
 
+    def test_ctrl_c_or_an_unexpected_error_closes_out_the_record(self):
+        for failure in (KeyboardInterrupt(), RuntimeError("disk full")):
+            with self.subTest(failure=type(failure).__name__):
+                herdr = self.world(workspaces=[("w1", "One"), ("w2", "Two")], restores={}, working=())
+                real_run = herdr.run_json
+
+                def interrupted(arguments, session, failure=failure):
+                    if arguments[:2] == ["workspace", "close"] and arguments[2] == "w2":
+                        raise failure
+                    return real_run(arguments, session)
+
+                with patch.object(ORGANIZER, "run_json", interrupted), patch.object(
+                    ORGANIZER, "batch_id_for", return_value=f"batch-20990101-0000{len(self.manifests()):02d}"
+                ):
+                    with self.assertRaises(type(failure)):
+                        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+                manifest = self.manifests()[-1]
+                self.assertEqual(manifest["status"], "interrupted")
+                self.assertIn("completed_at", manifest)
+                statuses = {m["workspace_id"]: ORGANIZER.batch_member_view(m)["status"] for m in manifest["members"]}
+                self.assertEqual(statuses, {"w1": "archived", "w2": "close_failed"})
+                archive = json.loads((self.archives / f"{manifest['members'][1]['archive_id']}.json").read_text())
+                self.assertIn("Check whether the workspace is still open", archive["error"])
+                for name in os.listdir(self.archives):
+                    (self.archives / name).unlink()
+
+    def test_a_second_run_is_refused_while_one_holds_the_lock(self):
+        herdr = self.world()
+        self.make_batch(["archived"])
+        with ORGANIZER.batch_run_lock("test"):
+            with patch.object(ORGANIZER, "STATE_DIR", ORGANIZER.STATE_DIR):
+                for function, args in (
+                    (ORGANIZER.archive_all_command, self.archive_args()),
+                    (ORGANIZER.restore_batch_command, self.restore_args()),
+                ):
+                    child = os.fork()
+                    if child == 0:
+                        code = 1
+                        try:
+                            with redirect_stdout(io.StringIO()):
+                                function(args)
+                        except ORGANIZER.OrganizerError as error:
+                            code = 0 if "already in progress" in str(error) else 2
+                        os._exit(code)
+                    _, status = os.waitpid(child, 0)
+                    self.assertEqual(os.WEXITSTATUS(status), 0, function.__name__)
+        self.assertEqual(herdr.closed, [])
+
+    def test_restore_batch_skips_a_member_that_was_restored_after_the_preview(self):
+        self.make_batch(["archived", "archived"])
+        seen = []
+
+        def restore(args):
+            seen.append(args.archive)
+            ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{args.archive}.json", {"archive_id": args.archive, "status": "restored"})
+            # a concurrent run restores the other member while this one works
+            other = "20261007-101500-02-ws2"
+            ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{other}.json", {"archive_id": other, "status": "restored"})
+
+        with patch.object(ORGANIZER, "restore_command", side_effect=restore):
+            output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args())
+        self.assertEqual(seen, ["20261007-101500-01-ws1"])
+        self.assertIn("no longer archived", output)
+
     def test_no_eligible_workspace_writes_no_batch(self):
         herdr = self.world(workspaces=[("w3", "Busy")], restores={}, working={"w3"})
         output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
