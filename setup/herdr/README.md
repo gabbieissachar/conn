@@ -369,9 +369,16 @@ herdr-organizer archive --workspace w3
 herdr-organizer archive --workspace w3 --execute --confirm w3
 ```
 
-Restore an archive as fresh shells. Add `--resume-agents` only when you want
-the organizer to send supported Codex or Claude resume commands into those
-new panes:
+Restore an archive as fresh shells. A restore without `--resume-agents` only
+rebuilds the layout: the archive stays `archived`, keeps its restore commands,
+and records the workspace it opened (`layout_restore`). Only a restore with
+`--resume-agents` sends supported Codex or Claude resume commands and marks the
+archive `restored` (or `resumed`). When that earlier layout copy is still open
+and still matches the capture, `--resume-agents` resumes the agents inside it
+instead of making another workspace. It never types a resume command into a
+pane that already shows an agent. A second layout-only restore of an archive
+that already has an open copy does nothing, and `--force` is the only way to a
+second copy:
 
 ```sh
 herdr-organizer list-archives
@@ -396,8 +403,11 @@ herdr-organizer --session esim archive-all
 herdr-organizer --session esim archive-all --execute --confirm esim
 ```
 
-Restore a whole batch with `restore-batch`. It restores only members that are
-still `archived`, one new workspace each. Members already restored, left
+Restore a whole batch with `restore-batch`. It acts only on members that are
+still `archived`. Without `--resume-agents` it lays out each member that has no
+open layout copy and marks nothing restored, so every restore command stays.
+With `--resume-agents` it resumes each member in its open layout copy, or in a
+new workspace when there is none. Members already restored, left
 `restore_partial`, or deleted are reported and left alone, and `--force` is
 never used. It refuses a session other than the one the batch was captured
 from, and keeps going after one member fails, then exits non-zero. Confirm
@@ -413,8 +423,33 @@ herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
 Commands that create, restore, move or delete archives, or close tabs, share one lock while they execute
 (`archive`, `archive-all`, `archive-tabs`, `restore`, `restore-batch`, `restore-tab`, `restore-tabs`,
 `delete-archive`, `delete-archived-tab`, `delete-batch --archives`, `move-tabs`, `resume-move`,
-`cleanup-empty-tabs`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
+`cleanup-empty-tabs`, `add-tabs-to-batch`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
 `list-archives`, `list-batches`, `reorder-tab` and plain `delete-batch` do not lock.
+
+Add selected live tabs to a finished batch with `add-tabs-to-batch`. It captures
+the tabs, then closes them and stops their processes. Tabs from one live
+workspace become one new batch member labelled `<workspace> (selected tabs)`. A tab
+whose live workspace is already tied to a member of that batch merges into that
+member instead. The match uses exact recorded workspace ids only: the member's
+restored workspace, its open layout workspace or its original workspace, never
+the label. A merged member goes back to `archived`, its old `restore` and
+`layout_restore` records move to `restore_history` so nothing adopts them, and a
+selected tab that an earlier restore rebuilt replaces its captured original in
+place. Captured tabs you did not select stay in the archive, so the next restore
+rebuilds them even if they are still open in the earlier workspace, and agents
+already resumed there resume again. The preview warns when that applies.
+
+Selecting every tab of a workspace archives it whole and closes the workspace. The
+workspace the command runs inside, and the only workspace left in the session,
+keep one tab open. Any other selected tab the command runs inside is refused. The
+batch must be finished (`completed` or `completed_with_failures`) and from the
+session you pass. Working or blocked agents and agents without a verified
+resumable session are refused, with no override. Confirm with the batch ID.
+
+```sh
+herdr-organizer --session esim add-tabs-to-batch --batch <batch_id> --tab w3:t2 --tab w3:t4
+herdr-organizer --session esim add-tabs-to-batch --batch <batch_id> --tab w3:t2 --execute --confirm <batch_id>
+```
 
 `delete-batch` removes only the group record. Its archives stay as single archives.
 Add `--archives` to also permanently delete every archive that belongs to the batch
@@ -427,6 +462,18 @@ Live and restored workspaces are never touched. It needs its own confirmation va
 ```sh
 herdr-organizer delete-batch --batch <batch_id> --archives
 herdr-organizer delete-batch --batch <batch_id> --archives --execute --confirm delete-archives:<batch_id>
+```
+
+Close empty shell tabs in a workspace with `cleanup-empty-tabs`. A tab with an
+agent, a resumable session or a running process is never touched. When every tab
+of a workspace is an empty shell, the workspace closes with its last tab. The
+one exception keeps its last tab: the workspace the command runs inside, and the
+only workspace left in the session. The preview reports `close_workspace` and
+`kept_reason`:
+
+```sh
+herdr-organizer cleanup-empty-tabs --workspace w3
+herdr-organizer cleanup-empty-tabs --workspace w3 --execute --confirm w3
 ```
 
 Reorder a tab with a zero-based destination index:

@@ -780,27 +780,48 @@ def cleanup_empty_tabs_command(args: argparse.Namespace) -> None:
     workspace_by_id(snapshot, args.workspace)
     eligible, protected = empty_tab_cleanup_candidates(snapshot, args.workspace, args.session)
     kept_tab_id = None
-    if len(eligible) == len(tabs_for_workspace(snapshot, args.workspace)) and eligible:
-        kept_tab_id = eligible[-1]["tab_id"]
-        eligible = eligible[:-1]
+    kept_reason = None
+    close_workspace = False
+    if eligible and len(eligible) == len(tabs_for_workspace(snapshot, args.workspace)):
+        # Every tab is an empty shell, so the workspace itself is empty and closes with its last tab. Two cases keep
+        # one tab so the command cannot pull the ground out from under itself or empty the whole session.
+        if current_workspace_id(snapshot, args.session) == args.workspace:
+            kept_reason = "running_inside"
+        elif len(snapshot.get("workspaces", [])) <= 1:
+            kept_reason = "only_workspace"
+        else:
+            close_workspace = True
+        if kept_reason:
+            kept_tab_id = eligible[-1]["tab_id"]
+            eligible = eligible[:-1]
     preview = {
         "workspace_id": args.workspace,
         "tabs_to_close": eligible,
         "protected_tabs": protected,
         "kept_tab_id": kept_tab_id,
+        "kept_reason": kept_reason,
+        "close_workspace": close_workspace,
     }
     if not args.execute:
         print(json.dumps(preview, indent=2))
         print(
-            f"Preview only. Re-run with --execute --confirm {args.workspace!r} to close {len(eligible)} empty shell tab(s)."
+            f"Preview only. Re-run with --execute --confirm {args.workspace!r} to close {len(eligible)} empty shell tab(s)"
+            + (" and the workspace itself, which has nothing else in it." if close_workspace else ".")
         )
         return
     require_execute_confirmation(args.execute, args.confirm, args.workspace, "Clean up empty tabs")
+    if close_workspace:
+        run_json(["workspace", "close", args.workspace], args.session)
+        print(f"Closed workspace {args.workspace}: every tab was an empty shell, so it closed with its last tab.")
+        return
     for tab in eligible:
         run_json(["tab", "close", str(tab["tab_id"])], args.session)
     print(f"Closed {len(eligible)} empty shell tab(s) in workspace {args.workspace}.")
     if kept_tab_id:
-        print(f"Kept {kept_tab_id} so the workspace remains available.")
+        reason = (
+            "this command runs inside the workspace" if kept_reason == "running_inside" else "it is the only workspace in the session"
+        )
+        print(f"Kept {kept_tab_id} because {reason}.")
 
 
 def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
@@ -817,6 +838,7 @@ def archive_summary(archive: dict[str, Any]) -> dict[str, Any]:
         "workspace_label": workspace.get("label"),
         "source_workspace_id": workspace.get("source_workspace_id"),
         "restored_workspace_id": archive.get("restore", {}).get("workspace_id"),
+        "layout_workspace_id": (archive.get("layout_restore") or {}).get("workspace_id"),
         "tab_count": len(tabs),
         "pane_count": sum(len(leaf_panes(tab.get("layout", {}).get("root"))) for tab in tabs),
         "resumable_pane_count": sum(is_trusted_restore(item) for item in restores),
@@ -1289,6 +1311,7 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         "workspace_label": member.get("workspace_label"),
         "status": "deleted",
         "restored_workspace_id": None,
+        "layout_workspace_id": None,
     }
     if not archive_id or Path(archive_id).name != archive_id:
         return view
@@ -1302,6 +1325,9 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         restore = archive.get("restore")
         if isinstance(restore, dict):
             view["restored_workspace_id"] = restore.get("workspace_id")
+        layout = archive.get("layout_restore")
+        if isinstance(layout, dict) and isinstance(layout.get("workspace_id"), str):
+            view["layout_workspace_id"] = layout["workspace_id"]
     return view
 
 
@@ -1370,7 +1396,10 @@ def restore_batch_command(args: argparse.Namespace) -> None:
     left_alone = [member for member in summary["members"] if member["status"] != RESTORABLE_MEMBER_STATUS]
     preview = {
         "batch_id": args.batch,
-        "to_restore": [{"archive_id": m["archive_id"], "workspace_label": m["workspace_label"]} for m in targets],
+        "to_restore": [
+            {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "layout_workspace_id": m["layout_workspace_id"]}
+            for m in targets
+        ],
         "not_restored": [
             {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "status": m["status"]}
             for m in left_alone
@@ -1389,7 +1418,7 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         print("Nothing to restore: no member of this batch is still archived.")
         return
     failures: list[str] = []
-    restored = 0
+    outcomes: dict[str, int] = {}
     with batch_run_lock("restore-batch"):
         for member in targets:
             archive_id = member["archive_id"]
@@ -1408,13 +1437,24 @@ def restore_batch_command(args: argparse.Namespace) -> None:
                 session=args.session,
             )
             try:
-                restore_command(member_args)
+                outcome = restore_command(member_args) or "created"
             except OrganizerError as error:
                 failures.append(f"{archive_id}: {error}")
                 print(f"Could not restore {archive_id}: {error}")
                 continue
-            restored += 1
-    print(f"Batch {args.batch}: restored {restored} of {len(targets)}.")
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    if args.resume_agents:
+        done = outcomes.get("created", 0) + outcomes.get("adopted", 0)
+        print(
+            f"Batch {args.batch}: restored {done} of {len(targets)} "
+            f"({outcomes.get('adopted', 0)} in an open layout copy, {outcomes.get('created', 0)} in a new workspace)."
+        )
+    else:
+        print(
+            f"Batch {args.batch}: laid out {outcomes.get('laid_out', 0)} of {len(targets)}, "
+            f"{outcomes.get('already_laid_out', 0)} already had their layout open. Nothing is marked restored; "
+            "run restore-batch --resume-agents to resume the agents in these workspaces."
+        )
     if failures:
         raise OrganizerError("Some archives were not restored: " + "; ".join(failures))
 
@@ -1598,6 +1638,353 @@ def archive_tabs_command(args: argparse.Namespace) -> None:
     write_json(archive_path, archive)
     print(f"Archived {len(captured_tabs)} tab(s) into {args.into_archive}.")
     print("The source tabs were closed and their processes stopped.")
+
+
+# ---- Add selected live tabs to a finished batch ----
+#
+# Selected tabs join the batch as archives, one per source workspace. A tab whose live workspace is already tied to a
+# member (by its restored workspace, its open layout workspace or its original workspace id, never by label) is merged
+# into that member instead. A member that had been restored goes back to archived, because it now holds more than
+# the restore covered. Its old restore record is kept as history so nothing adopts it later.
+
+BATCH_FINISHED_STATUSES = {"completed", "completed_with_failures"}
+MEMBER_MERGEABLE_STATUSES = {"archived", "restored", "resumed", "restore_partial"}
+
+
+def current_tab_id(snapshot: dict[str, Any], session: str | None) -> str | None:
+    """The tab this process runs in, when it runs inside the target session."""
+    env_session = os.environ.get("HERDR_SESSION")
+    if env_session and session and env_session != session:
+        return None
+    pane_id = os.environ.get("HERDR_PANE_ID")
+    pane = next((item for item in snapshot.get("panes", []) if item.get("pane_id") == pane_id), None) if pane_id else None
+    return str(pane["tab_id"]) if pane and pane.get("tab_id") else None
+
+
+def find_batch_member(manifest: dict[str, Any], batch_id: str, workspace_id: str) -> dict[str, Any] | None:
+    """The batch member tied to this live workspace, matched on exact recorded workspace ids only."""
+    by_restore: list[dict[str, Any]] = []
+    by_origin: list[dict[str, Any]] = []
+    for member in manifest.get("members", []):
+        archive_id = str(member.get("archive_id") or "") if isinstance(member, dict) else ""
+        if not archive_id or Path(archive_id).name != archive_id:
+            continue
+        path = ARCHIVE_DIR / f"{archive_id}.json"
+        try:
+            archive = read_json(path, None)
+        except OrganizerError:
+            continue
+        if not isinstance(archive, dict) or archive.get("batch_id") != batch_id:
+            continue
+        if archive.get("status") not in MEMBER_MERGEABLE_STATUSES:
+            continue
+        linked = {
+            (archive.get(key) or {}).get("workspace_id") for key in ("restore", "layout_restore")
+        }
+        origin = archive.get("capture", {}).get("workspace", {}).get("source_workspace_id") or member.get("workspace_id")
+        found = {"archive_id": archive_id, "path": path, "archive": archive}
+        if workspace_id in linked:
+            by_restore.append(found)
+        elif workspace_id == origin:
+            by_origin.append(found)
+    candidates = by_restore or by_origin
+    if len(candidates) > 1:
+        raise OrganizerError(
+            f"Workspace {workspace_id} matches more than one member of batch {batch_id!r}: "
+            + ", ".join(item["archive_id"] for item in candidates)
+            + ". Nothing was changed."
+        )
+    return candidates[0] if candidates else None
+
+
+def restored_tab_sources(archive: dict[str, Any]) -> dict[str, str]:
+    """Live tab id -> the captured tab it was rebuilt from, from the restore and layout-restore records."""
+    sources: dict[str, str] = {}
+    for key in ("restore", "layout_restore"):
+        record = archive.get(key)
+        for item in record.get("tabs", []) if isinstance(record, dict) else []:
+            if isinstance(item, dict) and item.get("tab_id") and item.get("source_tab_id"):
+                sources[str(item["tab_id"])] = str(item["source_tab_id"])
+    return sources
+
+
+def plan_batch_tab_additions(
+    snapshot: dict[str, Any], captured: list[dict[str, Any]], session: str | None
+) -> list[dict[str, Any]]:
+    """Split the selection by source workspace and decide what each workspace gives up.
+
+    Selecting every tab of a workspace archives the workspace whole and closes it. Two cases keep one tab live so the
+    command cannot close its own terminal or empty the session: it runs inside the workspace, or it is the only one.
+    """
+    inside_workspace = current_workspace_id(snapshot, session)
+    inside_tab = current_tab_id(snapshot, session)
+    plans: list[dict[str, Any]] = []
+    for workspace_id in dict.fromkeys(str(tab.get("source_workspace_id")) for tab in captured):
+        group = [tab for tab in captured if str(tab.get("source_workspace_id")) == workspace_id]
+        group_ids = [str(tab["source_tab_id"]) for tab in group]
+        live_tabs = tabs_for_workspace(snapshot, workspace_id)
+        workspace = workspace_by_id(snapshot, workspace_id)
+        kept_tab_id = None
+        kept_reason = None
+        close_workspace = False
+        if len(group) >= len(live_tabs):
+            if inside_workspace == workspace_id:
+                kept_reason = "running_inside"
+                kept_tab_id = inside_tab if inside_tab in group_ids else group_ids[-1]
+            elif len(snapshot.get("workspaces", [])) <= 1:
+                kept_reason = "only_workspace"
+                kept_tab_id = group_ids[-1]
+            else:
+                close_workspace = True
+        elif inside_tab in group_ids:
+            raise OrganizerError(
+                f"This command is running inside selected tab {inside_tab}. Nothing was closed. "
+                "Run it from a terminal outside Herdr, or leave that tab out of the selection."
+            )
+        tabs = [tab for tab in group if str(tab["source_tab_id"]) != kept_tab_id]
+        plans.append(
+            {
+                "workspace_id": workspace_id,
+                "label": str(workspace.get("label") or workspace_id),
+                "cwd": workspace.get("cwd"),
+                "tabs": tabs,
+                "kept_tab_id": kept_tab_id,
+                "kept_reason": kept_reason,
+                "close_workspace": close_workspace,
+            }
+        )
+    return [plan for plan in plans if plan["tabs"]]
+
+
+def settle_tab_addition(
+    archive_path: Path, archive: dict[str, Any], operation: dict[str, Any], tab_ids: list[str], session: str | None
+) -> None:
+    """Label the archive from what Herdr lists now, after a close failed or was interrupted. Nothing is assumed."""
+    remaining: list[str] | None
+    try:
+        live = {str(tab.get("tab_id")) for tab in session_snapshot(session).get("tabs", [])}
+        remaining = [tab_id for tab_id in tab_ids if tab_id in live]
+    except BaseException:  # the live list is unreadable
+        remaining = None
+    if remaining == []:
+        archive["status"] = "archived"
+        archive["archived_at"] = now()
+        operation["status"] = "completed"
+        operation["completed_at"] = now()
+    else:
+        archive["status"] = "close_failed"
+        archive["error"] = (
+            "Some captured tabs were not confirmed closed"
+            + (f": {', '.join(remaining)}" if remaining else "")
+            + ". Check whether they are still open."
+        )
+        operation["status"] = "close_partial"
+        operation["failed_at"] = now()
+    write_json(archive_path, archive)
+
+
+def apply_tab_addition(
+    batch_path: Path,
+    manifest: dict[str, Any],
+    batch_id: str,
+    plan: dict[str, Any],
+    member: dict[str, Any] | None,
+    session: str,
+) -> str:
+    tabs = plan["tabs"]
+    tab_ids = [str(tab["source_tab_id"]) for tab in tabs]
+    operation: dict[str, Any] = {
+        "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-add-tabs-to-{batch_id}",
+        "source_tabs": tab_ids,
+        "started_at": now(),
+        "status": "prepared",
+        "closes_workspace": bool(plan["close_workspace"]),
+    }
+    if member:
+        archive_path, archive = member["path"], member["archive"]
+        previous = {key: archive.pop(key) for key in ("restore", "layout_restore", "restored_at") if archive.get(key)}
+        if previous:
+            previous["status_before"] = archive.get("status")
+            previous["replaced_at"] = now()
+            archive.setdefault("restore_history", []).append(previous)
+        archive["restore"] = {}
+        captured_tabs = archive.setdefault("capture", {}).setdefault("tabs", [])
+        for tab in tabs:
+            # A tab rebuilt by an earlier restore is a newer copy of a captured tab, so it replaces that tab in place.
+            replaced = plan["replaces"].get(str(tab["source_tab_id"]))
+            position = next(
+                (index for index, old in enumerate(captured_tabs) if str(old.get("source_tab_id")) == replaced), None
+            )
+            if position is None:
+                captured_tabs.append(tab)
+            else:
+                captured_tabs[position] = tab
+        archive_id = member["archive_id"]
+        outcome = "merged"
+    else:
+        label = f"{plan['label']} (selected tabs)"
+        archive_id = archive_id_for(label)
+        capture = {
+            "workspace": {
+                "source_workspace_id": plan["workspace_id"],
+                "label": label,
+                "focused": False,
+                "cwd": plan["cwd"],
+            },
+            "tabs": tabs,
+        }
+        archive_path, archive = prepare_archive(archive_id, capture, session, batch_id)
+        archive["from_tabs"] = True
+        manifest.setdefault("members", []).append(
+            {"archive_id": archive_id, "workspace_id": plan["workspace_id"], "workspace_label": label}
+        )
+        outcome = "new"
+    # While the live tabs are being closed the archive is prepared, so a group restore leaves it alone.
+    archive["status"] = "prepared"
+    archive.setdefault("tab_archives", []).append(operation)
+    archive["updated_at"] = now()
+    write_json(archive_path, archive)
+    manifest["updated_at"] = now()
+    write_json(batch_path, manifest)
+    try:
+        if plan["close_workspace"]:
+            run_json(["workspace", "close", plan["workspace_id"]], session)
+        else:
+            for tab_id in tab_ids:
+                run_json(["tab", "close", tab_id], session)
+    except BaseException:
+        settle_tab_addition(archive_path, archive, operation, tab_ids, session)
+        raise
+    archive["status"] = "archived"
+    archive["archived_at"] = now()
+    operation["status"] = "completed"
+    operation["completed_at"] = now()
+    write_json(archive_path, archive)
+    return outcome
+
+
+def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
+    batch_path, manifest = batch_by_id(args.batch)
+    if manifest.get("status") not in BATCH_FINISHED_STATUSES:
+        raise OrganizerError(
+            f"Batch {args.batch!r} is {manifest.get('status')!r}. Tabs can only be added to a finished batch."
+        )
+    captured_session = manifest.get("herdr_session")
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if captured_session and session != captured_session:
+        raise OrganizerError(
+            f"Batch {args.batch!r} was captured from session {captured_session!r}, not {session!r}. "
+            f"Re-run with --session {captured_session}."
+        )
+    snapshot = session_snapshot(args.session)
+    captured = capture_selected_tabs(snapshot, args.tab, args.session)
+    selected_ids = {str(tab["source_tab_id"]) for tab in captured}
+    active = [
+        pane
+        for pane in snapshot.get("panes", [])
+        if pane.get("tab_id") in selected_ids and pane.get("agent_status") in ACTIVE_AGENT_STATUSES
+    ]
+    if active:
+        raise OrganizerError(
+            f"The selected tabs contain {len(active)} working or blocked agent pane(s). Resolve them first. Nothing was changed."
+        )
+    unavailable = unavailable_agent_restores(captured)
+    if unavailable:
+        pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
+        raise OrganizerError(
+            f"The selected tabs have {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
+            "Resume or register the sessions first. Nothing was changed."
+        )
+    plans = plan_batch_tab_additions(snapshot, captured, args.session)
+    if not plans:
+        raise OrganizerError("Nothing to add: the only selected tab(s) have to stay open. Nothing was changed.")
+    members = {plan["workspace_id"]: find_batch_member(manifest, args.batch, plan["workspace_id"]) for plan in plans}
+    for plan in plans:
+        member = members[plan["workspace_id"]]
+        sources = restored_tab_sources(member["archive"]) if member else {}
+        captured_ids = {str(tab.get("source_tab_id")) for tab in member["archive"].get("capture", {}).get("tabs", [])} if member else set()
+        plan["replaces"] = {
+            str(tab["source_tab_id"]): sources[str(tab["source_tab_id"])]
+            for tab in plan["tabs"]
+            if sources.get(str(tab["source_tab_id"])) in captured_ids
+        }
+    already = sorted(
+        {
+            str(tab.get("source_tab_id"))
+            for member in members.values()
+            if member
+            for tab in member["archive"].get("capture", {}).get("tabs", [])
+        }
+        & selected_ids
+    )
+    if already:
+        raise OrganizerError(f"The matching archive already contains tab(s): {', '.join(already)}. Nothing was changed.")
+    warnings: list[str] = []
+    for plan in plans:
+        member = members[plan["workspace_id"]]
+        archive = member["archive"] if member else {}
+        reopened = archive.get("status") in {"restored", "resumed", "restore_partial"} or archive.get("layout_restore")
+        replaced = set(plan["replaces"].values())
+        leftover = [
+            tab for tab in archive.get("capture", {}).get("tabs", []) if str(tab.get("source_tab_id")) not in replaced
+        ]
+        # Nothing is duplicated when every captured tab is replaced by its rebuilt copy.
+        if reopened and leftover:
+            warnings.append(
+                f"{member['archive_id']} was restored or laid out. Merging resets it to archived. A selected tab that the "
+                "earlier restore rebuilt replaces its captured original, and the other tabs are added. Captured tabs you "
+                "did not select stay in the archive, so the next restore rebuilds them even if they are still open in the "
+                "earlier workspace, and agents already resumed there resume again."
+            )
+    preview = {
+        "batch_id": args.batch,
+        "session": captured_session,
+        "additions": [
+            {
+                "workspace_id": plan["workspace_id"],
+                "workspace_label": plan["label"],
+                "tabs": [
+                    {
+                        "tab_id": tab["source_tab_id"],
+                        "label": tab["label"],
+                        "pane_count": len(leaf_panes(tab["layout"].get("root"))),
+                        "replaces_captured_tab": plan["replaces"].get(str(tab["source_tab_id"])),
+                    }
+                    for tab in plan["tabs"]
+                ],
+                "member_archive_id": members[plan["workspace_id"]]["archive_id"] if members[plan["workspace_id"]] else None,
+                "action": "merge" if members[plan["workspace_id"]] else "new_member",
+                "close_workspace": plan["close_workspace"],
+                "kept_tab_id": plan["kept_tab_id"],
+                "kept_reason": plan["kept_reason"],
+            }
+            for plan in plans
+        ],
+        "warnings": warnings,
+        "processes_preserved": False,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            f"Preview only. Execution captures these tab(s) into batch {args.batch}, then closes them and stops their "
+            f"processes. Re-run with --execute --confirm {args.batch!r}."
+        )
+        for warning in warnings:
+            print(f"Warning: {warning}")
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.batch, "Add tabs to batch")
+    for plan in plans:
+        outcome = apply_tab_addition(batch_path, manifest, args.batch, plan, members[plan["workspace_id"]], session)
+        where = "merged into its earlier member" if outcome == "merged" else "as a new member"
+        print(f"Added {len(plan['tabs'])} tab(s) from {plan['workspace_id']} ({plan['label']}) {where}.")
+        if plan["kept_tab_id"]:
+            reason = (
+                "this command runs inside the workspace" if plan["kept_reason"] == "running_inside" else "it is the only workspace"
+            )
+            print(f"Kept {plan['kept_tab_id']} open because {reason}.")
+    print("The original processes were stopped. Restore the batch with restore-batch, or each archive on its own.")
+    for warning in warnings:
+        print(f"Warning: {warning}")
 
 
 def archive_by_id(archive_id: str) -> tuple[Path, dict[str, Any]]:
@@ -2049,28 +2436,105 @@ def restore_tab_command(args: argparse.Namespace) -> None:
     restore_tabs_command(args)
 
 
-def restore_command(args: argparse.Namespace) -> None:
-    archive_path, archive = archive_by_id(args.archive)
-    status = archive.get("status")
-    if status not in {"archived", "restored", "resumed", "restore_partial"}:
-        raise OrganizerError(f"Archive {args.archive!r} is in {status!r} state and cannot be restored.")
-    if status in {"restored", "resumed"} and not args.force:
-        raise OrganizerError("This archive was already restored. Use --force only if you intentionally want another copy.")
+def live_agent_running(pane: dict[str, Any]) -> bool:
+    """A pane that already shows an agent must never get a resume command typed into it."""
+    return bool(pane.get("agent")) or pane.get("agent_status") not in (None, "", "unknown")
+
+
+def layout_copy_of(archive: dict[str, Any], session: str | None) -> dict[str, Any] | None:
+    """The open workspace from an earlier layout-only restore of this archive, with its pane map.
+
+    A copy counts only when Herdr still lists the recorded workspace and its tabs and panes match what the archive
+    captured. Nothing is trusted from the record alone, so a closed, rebuilt or half-built workspace is never adopted.
+    """
+    layout = archive.get("layout_restore")
+    workspace_id = layout.get("workspace_id") if isinstance(layout, dict) else None
+    if not workspace_id:
+        return None
+    captured_tabs = archive.get("capture", {}).get("tabs", [])
+    try:
+        snapshot = session_snapshot(session)
+        if not any(item.get("workspace_id") == workspace_id for item in snapshot.get("workspaces", [])):
+            return None
+        live_tabs = tabs_for_workspace(snapshot, workspace_id)
+        if not captured_tabs or len(live_tabs) != len(captured_tabs):
+            return None
+        recorded = {
+            str(item.get("source_tab_id")): item.get("tab_id") for item in layout.get("tabs", []) if isinstance(item, dict)
+        }
+        live_ids = [str(tab.get("tab_id")) for tab in live_tabs]
+        pane_map: dict[str, str] = {}
+        tab_ids: list[str] = []
+        for position, captured in enumerate(captured_tabs):
+            tab_id = str(recorded.get(str(captured.get("source_tab_id"))))
+            if tab_id not in live_ids or tab_id in tab_ids:
+                tab_id = live_ids[position]
+            exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
+            if not isinstance(exported, dict):
+                return None
+            pane_map.update(matching_pane_map(captured.get("layout", {}).get("root"), exported.get("root")))
+            tab_ids.append(tab_id)
+        busy = {
+            str(pane.get("pane_id"))
+            for pane in snapshot.get("panes", [])
+            if pane.get("tab_id") in tab_ids and live_agent_running(pane)
+        }
+    except OrganizerError:
+        return None
+    return {"workspace_id": str(workspace_id), "tab_ids": tab_ids, "pane_map": pane_map, "busy": busy}
+
+
+def restore_outcome_counts(outcomes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+    return failures, sum(outcome.get("status") == "sent" for outcome in outcomes)
+
+
+def restore_into_layout_copy(
+    archive_path: Path, archive: dict[str, Any], copy: dict[str, Any], args: argparse.Namespace
+) -> str:
+    """Resume agents inside the workspace an earlier layout-only restore left open, instead of making another one."""
+    record: dict[str, Any] = {
+        "workspace_id": copy["workspace_id"],
+        "started_at": now(),
+        "tabs": [{"tab_id": tab_id} for tab_id in copy["tab_ids"]],
+        "agent_resume": [],
+        "adopted_layout_copy": True,
+    }
+    archive["status"] = "restore_partial"
+    archive["restore"] = record
+    write_json(archive_path, archive)
+    busy_sources = {old for old, new in copy["pane_map"].items() if new in copy["busy"]}
+    pane_map = {old: new for old, new in copy["pane_map"].items() if old not in busy_sources}
+    try:
+        outcomes = resume_agents(archive, pane_map, args.session)
+        for outcome in outcomes:
+            if outcome.get("status") == "skipped" and outcome.get("source_pane_id") in busy_sources:
+                outcome["reason"] = "agent_running"
+        record["agent_resume"] = outcomes
+        failures, sent = restore_outcome_counts(outcomes)
+        archive["status"] = "restore_partial" if failures else "resumed" if sent else "restored"
+        record["completed_at"] = now()
+        write_json(archive_path, archive)
+    except BaseException as error:
+        record["error"] = str(error) if isinstance(error, OrganizerError) else "Interrupted before the resume finished."
+        record["failed_at"] = now()
+        write_json(archive_path, archive)
+        raise
+    print(f"Restored archive {args.archive} by resuming its agents in the open workspace {copy['workspace_id']}. No new workspace was made.")
+    print(f"Resumed {sum(outcome.get('action') == 'resumed' for outcome in outcomes)} verified agent session(s).")
+    skipped_running = sum(outcome.get("reason") == "agent_running" for outcome in outcomes)
+    if skipped_running:
+        print(f"Left {skipped_running} pane(s) alone because an agent is already running there.")
+    if failures:
+        print(f"{len(failures)} resume command(s) failed. The archive stays restore_partial. Run the command again to retry them.")
+    return "adopted"
+
+
+def restore_into_new_workspace(archive_path: Path, archive: dict[str, Any], args: argparse.Namespace) -> str:
+    """Create a workspace from the archive. Only a restore that also resumes agents marks the archive restored."""
     capture = archive.get("capture", {})
     workspace = capture.get("workspace", {})
-    unavailable = unavailable_agent_restores(capture.get("tabs", []))
-    if not args.execute:
-        print(json.dumps(archive_summary(archive), indent=2))
-        print(f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore a new workspace.")
-        return
-
-    require_execute_confirmation(args.execute, args.confirm, args.archive, "Restore")
-    if args.resume_agents and unavailable and not args.allow_unresumable_agents:
-        pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
-        raise OrganizerError(
-            f"Archive {args.archive!r} has {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
-            "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent sessions is acceptable."
-        )
+    resuming = bool(args.resume_agents)
     cwd = first_cwd(capture)
     command = ["workspace", "create", "--label", str(workspace.get("label") or "Restored workspace")]
     if cwd:
@@ -2078,9 +2542,13 @@ def restore_command(args: argparse.Namespace) -> None:
     created = result_of(run_json(command, args.session))
     workspace_id = extract_workspace_id(created)
     initial_tab_id = extract_tab_id(created)
-    restore = {"workspace_id": workspace_id, "started_at": now(), "tabs": [], "agent_resume": []}
-    archive["status"] = "restore_partial"
-    archive["restore"] = restore
+    record: dict[str, Any] = {"workspace_id": workspace_id, "started_at": now(), "tabs": [], "agent_resume": []}
+    if resuming:
+        archive["status"] = "restore_partial"
+        archive["restore"] = record
+    else:
+        # A layout-only restore never counts as a restore: the archive stays archived and keeps its restore commands.
+        archive["layout_restore"] = record
     write_json(archive_path, archive)
 
     pane_map: dict[str, str] = {}
@@ -2101,30 +2569,71 @@ def restore_command(args: argparse.Namespace) -> None:
             if not isinstance(new_layout, dict):
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
             pane_map.update(matching_pane_map(layout.get("root"), new_layout.get("root")))
-            restore["tabs"].append({"source_tab_id": tab.get("source_tab_id"), "tab_id": new_layout.get("tab_id")})
+            record["tabs"].append({"source_tab_id": tab.get("source_tab_id"), "tab_id": new_layout.get("tab_id")})
             write_json(archive_path, archive)
         if workspace.get("focused"):
             run_json(["workspace", "focus", workspace_id], args.session)
-        if args.resume_agents:
-            restore["agent_resume"] = resume_agents(archive, pane_map, args.session)
-            failures = [outcome for outcome in restore["agent_resume"] if outcome.get("status") == "failed"]
-            sent = sum(outcome.get("status") == "sent" for outcome in restore["agent_resume"])
+        if resuming:
+            record["agent_resume"] = resume_agents(archive, pane_map, args.session)
+            failures, sent = restore_outcome_counts(record["agent_resume"])
             archive["status"] = "restore_partial" if failures else "resumed" if sent else "restored"
-        else:
-            archive["status"] = "restored"
-        restore["completed_at"] = now()
+        elif archive.get("status") == "restore_partial":
+            archive["status"] = "archived"
+        record["completed_at"] = now()
         write_json(archive_path, archive)
-    except OrganizerError as error:
-        restore["error"] = str(error)
-        restore["failed_at"] = now()
+    except BaseException as error:
+        record["error"] = str(error) if isinstance(error, OrganizerError) else "Interrupted before the restore finished."
+        record["failed_at"] = now()
         write_json(archive_path, archive)
         raise
-    print(f"Restored archive {args.archive} into workspace {workspace_id}.")
-    if args.resume_agents:
-        resumed = sum(outcome.get("action") == "resumed" for outcome in restore["agent_resume"])
+    if resuming:
+        print(f"Restored archive {args.archive} into workspace {workspace_id}.")
+        resumed = sum(outcome.get("action") == "resumed" for outcome in record["agent_resume"])
         print(f"Resumed {resumed} verified agent session(s).")
-    else:
-        print("Layouts are restored as fresh shells. Re-run with --resume-agents to send supported resume commands.")
+        return "created"
+    print(f"Laid out archive {args.archive} as workspace {workspace_id} with fresh shells.")
+    print(
+        "The archive stays archived, so its restore commands are kept. Run restore --resume-agents to resume the agents "
+        "in this workspace."
+    )
+    return "laid_out"
+
+
+def restore_command(args: argparse.Namespace) -> str:
+    archive_path, archive = archive_by_id(args.archive)
+    status = archive.get("status")
+    if status not in {"archived", "restored", "resumed", "restore_partial"}:
+        raise OrganizerError(f"Archive {args.archive!r} is in {status!r} state and cannot be restored.")
+    if status in {"restored", "resumed"} and not args.force:
+        raise OrganizerError("This archive was already restored. Use --force only if you intentionally want another copy.")
+    capture = archive.get("capture", {})
+    unavailable = unavailable_agent_restores(capture.get("tabs", []))
+    if not args.execute:
+        print(json.dumps(archive_summary(archive), indent=2))
+        print(
+            f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore. "
+            "Without --resume-agents only the layout is rebuilt and the archive stays archived. With --resume-agents "
+            "the agents are resumed in the workspace an earlier layout-only restore left open, or in a new workspace."
+        )
+        return "preview"
+
+    require_execute_confirmation(args.execute, args.confirm, args.archive, "Restore")
+    if args.resume_agents and unavailable and not args.allow_unresumable_agents:
+        pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
+        raise OrganizerError(
+            f"Archive {args.archive!r} has {len(unavailable)} agent pane(s) without a verified resumable session: {pane_ids}. "
+            "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent sessions is acceptable."
+        )
+    copy = None if args.force else layout_copy_of(archive, args.session)
+    if copy and not args.resume_agents:
+        print(
+            f"Archive {args.archive} already has its layout open as workspace {copy['workspace_id']}. Nothing was created. "
+            "Run restore --resume-agents to resume the agents there, or add --force for another copy."
+        )
+        return "already_laid_out"
+    if copy:
+        return restore_into_layout_copy(archive_path, archive, copy, args)
+    return restore_into_new_workspace(archive_path, archive, args)
 
 
 def reorder_command(args: argparse.Namespace) -> None:
@@ -4131,6 +4640,16 @@ def parser() -> argparse.ArgumentParser:
     archive_tabs.add_argument("--execute", action="store_true")
     archive_tabs.add_argument("--confirm")
     archive_tabs.set_defaults(func=with_batch_lock("archive-tabs", archive_tabs_command))
+
+    add_tabs_to_batch = commands.add_parser(
+        "add-tabs-to-batch",
+        help="Capture selected live tabs into a finished batch, then close them. Tabs of a workspace that already has a member merge into it.",
+    )
+    add_tabs_to_batch.add_argument("--batch", required=True)
+    add_tabs_to_batch.add_argument("--tab", action="append", required=True, help="Selected live tab ID. Repeat for each tab.")
+    add_tabs_to_batch.add_argument("--execute", action="store_true")
+    add_tabs_to_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
+    add_tabs_to_batch.set_defaults(func=with_batch_lock("add-tabs-to-batch", add_tabs_to_batch_command))
 
     cleanup_empty = commands.add_parser(
         "cleanup-empty-tabs", help="Close shell-only tabs without agents or preserved sessions."
