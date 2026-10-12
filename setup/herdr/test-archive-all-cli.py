@@ -19,6 +19,14 @@ args = sys.argv[1:]
 if args[:1] == ["--session"]: args = args[2:]
 s = load()
 if args[:2] == ["api", "snapshot"]:
+    grow = os.environ.get("FAKE_GROW_AFTER_EXPORT")
+    if grow:
+        # The second snapshot of the run is the re-read right before a close: a tab appears in the workspace by then.
+        s["snaps"] = s.get("snaps", 0) + 1
+        if s["snaps"] == 2:
+            s["snapshot"]["tabs"].append({"workspace_id": grow, "tab_id": f"{grow}:t9", "label": "new"})
+            s["snapshot"]["panes"].append({"tab_id": f"{grow}:t9", "pane_id": f"{grow}:p9", "agent_status": "unknown"})
+        save(s)
     print(json.dumps({"result": {"snapshot": s["snapshot"]}}))
 elif args[:2] == ["workspace", "close"]:
     if os.environ.get("FAKE_SLOW_CLOSE") == args[2]: time.sleep(8)
@@ -69,24 +77,30 @@ fresh()
 # fake Herdr socket
 sock_path = sock_dir / "herdr.sock"
 server = socket.socket(socket.AF_UNIX); server.bind(str(sock_path)); server.listen(8)
+handler_errors = []
 def handle(conn):
-    with conn, conn.makefile("rwb") as f:
-        req = json.loads(f.readline())
-        p = req["params"]
-        if req["method"] == "layout.export":
-            wid = p["tab_id"].split(":")[0]
-            res = {"layout": {"tab_id": p["tab_id"], "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
-        elif req["method"] == "layout.apply":
-            if (root / "slow-apply").exists(): time.sleep(8)
-            tab = p.get("tab_id") or f"{p['workspace_id']}:t9"
-            wid = tab.split(":")[0]
-            res = {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
-        else:
-            res = {}
-        try:
+    try:
+        with conn, conn.makefile("rwb") as f:
+            line = f.readline()
+            if not line:
+                return  # the client hung up before sending anything
+            req = json.loads(line)
+            p = req["params"]
+            if req["method"] == "layout.export":
+                wid = p["tab_id"].split(":")[0]
+                res = {"layout": {"tab_id": p["tab_id"], "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
+            elif req["method"] == "layout.apply":
+                if (root / "slow-apply").exists(): time.sleep(8)
+                tab = p.get("tab_id") or f"{p['workspace_id']}:t9"
+                wid = tab.split(":")[0]
+                res = {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
+            else:
+                res = {}
             f.write((json.dumps({"id": req["id"], "result": res}) + "\n").encode()); f.flush()
-        except OSError:
-            pass  # the client was interrupted while this call slept
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # expected: the client was interrupted (Ctrl-C checks) while this call slept
+    except Exception as error:  # anything else is a fake-server bug and fails the test at the end
+        handler_errors.append(repr(error))
 def serve():
     while True:
         try: conn, _ = server.accept()
@@ -167,7 +181,8 @@ assert p.returncode != 0
 archive = json.loads((archives_dir / f"{archive_id}.json").read_text())
 assert archive["status"] == "archived" and archive["layout_restore"]["workspace_id"] and "Interrupted" in archive["layout_restore"]["error"], archive["status"]
 ok("Ctrl-C mid layout-only restore: archive stays 'archived', the record says it was interrupted")
-r = run("restore", "--archive", archive_id, "--execute", "--confirm", archive_id, check=0); assert "already has its layout open" in r.stdout, r.stdout; ok("the retained layout-only command finds the open copy instead of making another")
+r = run("restore", "--archive", archive_id, "--execute", "--confirm", archive_id, check=0); assert "was interrupted" in r.stdout and "Laid out archive" in r.stdout, r.stdout; ok("a layout copy from an interrupted restore is not trusted: the retained command lays out a fresh one and says so")
+r = run("restore", "--archive", archive_id, "--execute", "--confirm", archive_id, check=0); assert "already has its layout open" in r.stdout, r.stdout; ok("the fresh layout copy is then found instead of making another")
 r = run("restore", "--archive", archive_id, "--resume-agents", "--execute", "--confirm", archive_id, check=0); assert "No new workspace was made" in r.stdout; ok("restore + resume adopts the open copy")
 r = run("restore", "--archive", archive_id, "--resume-agents", "--execute", "--confirm", archive_id, check=1); assert "already restored" in r.stderr; ok("a restored archive is refused without --force")
 # ---- add selected live tabs to a finished batch ----
@@ -215,5 +230,25 @@ time.sleep(2); p.send_signal(signal.SIGINT); p.communicate(timeout=20); assert p
 settled = json.loads((archives_dir / f"{live_gamma}.json").read_text())
 assert settled["status"] == "close_failed" and "w20:t3" in settled["error"] and settled["tab_archives"][-1]["status"] == "close_partial", settled["status"]
 assert [t["source_tab_id"] for t in settled["capture"]["tabs"]] == ["w20:t1", "w20:t2", "w20:t3"]; ok("Ctrl-C mid add: merged by original workspace id, archive 'close_failed', the still-open tab is named")
+# the Ctrl-C-interrupted add left a close_failed archive. finish-tab-add checks it again and finishes it.
+settled_id = live_gamma
+r = run("finish-tab-add", "--archive", settled_id, check=0); print(r.stdout.strip())
+preview = json.loads(r.stdout[: r.stdout.rindex("}") + 1]); assert preview["problems"] == [], preview
+r = run("finish-tab-add", "--archive", settled_id, "--execute", "--confirm", "wrong", check=1)
+r = run("finish-tab-add", "--archive", settled_id, "--execute", "--confirm", settled_id, check=0); print(r.stdout.strip())
+finished = json.loads((archives_dir / f"{settled_id}.json").read_text())
+assert finished["status"] == "archived" and "error" not in finished and finished["tab_archives"][-1]["status"] == "completed", finished["status"]
+assert "w20" not in {w["workspace_id"] for w in state()["snapshot"]["workspaces"]}; ok("finish-tab-add finished the interrupted add: workspace closed, archive archived again")
+r = run("finish-tab-add", "--archive", settled_id, "--execute", "--confirm", settled_id, check=1); assert "no unfinished tab add" in r.stderr; ok("a second finish-tab-add has nothing left to do")
+r = run("restore", "--archive", settled_id, check=0); assert "Preview only" in r.stdout; ok("the recovered archive is restorable again")
+# A tab added to the workspace after the capture stops the whole-workspace close, and the run is undone.
+live_workspace("w30", "Delta", 2)
+before = {pth.name: pth.read_text() for pth in sorted(archives_dir.glob("*.json"))}
+p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", "add-tabs-to-batch", "--batch", bid, "--tab", "w30:t1", "--tab", "w30:t2", "--execute", "--confirm", bid], env={**env, "FAKE_GROW_AFTER_EXPORT": "w30"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+out, err = p.communicate(timeout=20)
+assert p.returncode != 0 and "changed after it was captured" in err and "Nothing was closed" in err, (out, err)
+assert "w30" in {w["workspace_id"] for w in state()["snapshot"]["workspaces"]}, "the workspace was not closed"
+assert {pth.name: pth.read_text() for pth in sorted(archives_dir.glob("*.json"))} == before; ok("a tab opened after the capture stops the workspace close and the add is undone")
+assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
 server.close(); shutil.rmtree(root)
 print("ALL REAL-CLI CHECKS PASSED")

@@ -2781,6 +2781,83 @@ class LayoutRestoreTests(unittest.TestCase):
         with patch.object(ORGANIZER, "socket_call", two_panes):
             self.assertIsNone(ORGANIZER.layout_copy_of(self.archive(), "esim"))
 
+    def test_the_restore_record_keeps_the_pane_ids_and_layout_shape_it_built(self):
+        self.run_restore()
+        [tab] = self.archive()["layout_restore"]["tabs"]
+        self.assertEqual((tab["tab_id"], tab["pane_ids"], tab["topology"]), ("w20:t1", ["w20:p1"], "pane"))
+
+    def adoption_with(self, record_tabs, live_root, capture_root=None):
+        """layout_copy_of for a copy whose live layout is live_root, after a restore recorded record_tabs."""
+        archive = self.archive()
+        if capture_root is not None:
+            archive["capture"]["tabs"][0]["layout"] = {"root": capture_root}
+        archive["layout_restore"] = {"workspace_id": "w20", "tabs": record_tabs}
+        self.herdr.add_workspace("w20", "Alpha")
+
+        def export(_session, method, params):
+            self.assertEqual(method, "layout.export")
+            return {"layout": {"tab_id": params["tab_id"], "root": live_root}}
+
+        with patch.object(ORGANIZER, "socket_call", export):
+            return ORGANIZER.layout_copy_of(archive, "esim")
+
+    @staticmethod
+    def split(direction, first, second):
+        return {"type": "split", "direction": direction, "ratio": 0.5, "first": {"type": "pane", "pane_id": first}, "second": {"type": "pane", "pane_id": second}}
+
+    def recorded(self, **overrides):
+        record = {"source_tab_id": "w1:t1", "tab_id": "w20:t1", "pane_ids": ["w20:p1", "w20:p2"], "topology": ["split", "right", "pane", "pane"]}
+        record.update(overrides)
+        return [record]
+
+    def test_a_copy_that_is_exactly_what_the_restore_built_is_adopted(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        copy = self.adoption_with(self.recorded(), self.split("right", "w20:p1", "w20:p2"), captured)
+        self.assertEqual(copy["pane_map"], {"w1:p1": "w20:p1", "w1:p2": "w20:p2"})
+
+    def test_a_replaced_pane_with_the_same_counts_is_not_adopted(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        replaced = self.split("right", "w20:p1", "w20:p9")
+        self.assertIsNone(self.adoption_with(self.recorded(), replaced, captured))
+
+    def test_swapped_panes_with_the_same_counts_are_not_adopted(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        self.assertIsNone(self.adoption_with(self.recorded(), self.split("right", "w20:p2", "w20:p1"), captured))
+
+    def test_a_rearranged_split_with_the_same_counts_is_not_adopted(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        self.assertIsNone(self.adoption_with(self.recorded(), self.split("down", "w20:p1", "w20:p2"), captured))
+
+    def test_a_recorded_shape_that_no_longer_matches_is_not_adopted(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        record = self.recorded(topology=["split", "down", "pane", "pane"], pane_ids=["w20:p1", "w20:p2"])
+        self.assertIsNone(self.adoption_with(record, self.split("right", "w20:p1", "w20:p2"), captured))
+
+    def test_a_tab_the_record_does_not_name_is_not_adopted_by_position(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        record = self.recorded(source_tab_id="w1:other")
+        self.assertIsNone(self.adoption_with(record, self.split("right", "w20:p1", "w20:p2"), captured))
+
+    def test_an_older_record_without_pane_ids_adopts_on_the_layout_shape_alone(self):
+        captured = self.split("right", "w1:p1", "w1:p2")
+        record = [{"source_tab_id": "w1:t1", "tab_id": "w20:t1"}]
+        self.assertIsNotNone(self.adoption_with(record, self.split("right", "w20:p7", "w20:p8"), captured))
+        self.assertIsNone(self.adoption_with(record, self.split("down", "w20:p7", "w20:p8"), captured))
+
+    def test_resume_into_a_replaced_pane_creates_a_new_workspace_instead(self):
+        self.run_restore()
+        real_export = self.herdr.socket_call
+
+        def replaced(session, method, params):
+            if method == "layout.export" and params["tab_id"] == "w20:t1":
+                return {"layout": {"tab_id": "w20:t1", "root": {"type": "pane", "pane_id": "w20:p9"}}}
+            return real_export(session, method, params)
+
+        with patch.object(ORGANIZER, "socket_call", replaced):
+            self.assertEqual(self.run_restore(resume_agents=True), "created")
+        self.assertEqual(self.herdr.created, ["w20", "w21"])
+        self.assertEqual(self.herdr.sent, ["w21:p1"], "the resume command went to the fresh workspace, not the replaced shell")
+
     def test_a_pane_that_already_runs_an_agent_gets_no_resume_command(self):
         self.run_restore()
         self.herdr.data["panes"][0].update({"agent": "codex", "agent_status": "idle"})
@@ -2916,6 +2993,52 @@ class CleanupEmptyWorkspaceTests(unittest.TestCase):
         self.run_cleanup(self.snapshot(), eligible, protected, execute=True)
         self.assertEqual(self.calls, [["tab", "close", "w1:t2"]])
 
+    def run_racing_cleanup(self, snapshots, candidates, execute=True):
+        """Run cleanup against a session that changes after the preview: each call gets the next snapshot and answer."""
+        sources = iter(snapshots)
+        answers = iter(candidates)
+
+        def run_json(arguments, _session):
+            self.calls.append(arguments)
+            return {"result": {}}
+
+        args = argparse.Namespace(workspace="w1", execute=execute, confirm="w1" if execute else None, session="esim")
+        output = io.StringIO()
+        with patch.object(ORGANIZER, "session_snapshot", lambda _s=None: next(sources)), patch.object(
+            ORGANIZER, "empty_tab_cleanup_candidates", lambda *_a: next(answers)
+        ), patch.object(ORGANIZER, "run_json", run_json), redirect_stdout(output):
+            ORGANIZER.cleanup_empty_tabs_command(args)
+        return output.getvalue()
+
+    def test_a_tab_opened_after_the_preview_stops_the_workspace_close(self):
+        both = [self.tab("w1", 1), self.tab("w1", 2)]
+        grown = self.snapshot()
+        grown["tabs"].append({"workspace_id": "w1", "tab_id": "w1:t3", "label": "tab 3"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "changed since the preview"):
+            self.run_racing_cleanup([self.snapshot(), grown], [(both, []), (both + [self.tab("w1", 3)], [])])
+        self.assertEqual(self.calls, [], "no workspace close was sent")
+
+    def test_a_process_started_after_the_preview_stops_the_workspace_close(self):
+        both = [self.tab("w1", 1), self.tab("w1", 2)]
+        protected = [{"tab_id": "w1:t2", "reason": "non_shell_process", "pane_ids": ["w1:p2"]}]
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no longer all empty shells"):
+            self.run_racing_cleanup([self.snapshot(), self.snapshot()], [(both, []), ([self.tab("w1", 1)], protected)])
+        self.assertEqual(self.calls, [])
+
+    def test_a_workspace_that_vanished_after_the_preview_closes_nothing(self):
+        both = [self.tab("w1", 1), self.tab("w1", 2)]
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no longer exists"):
+            self.run_racing_cleanup([self.snapshot(), self.snapshot(workspaces=("w2",))], [(both, [])])
+        self.assertEqual(self.calls, [])
+
+    def test_a_tab_that_stopped_being_empty_is_left_open_when_only_tabs_close(self):
+        eligible = [self.tab("w1", 2)]
+        busy = [{"tab_id": "w1:t2", "reason": "agent_detected", "pane_ids": ["w1:p2"]}]
+        protected = [{"tab_id": "w1:t1", "reason": "agent_detected", "pane_ids": ["w1:p1"]}]
+        text = self.run_racing_cleanup([self.snapshot(), self.snapshot()], [(eligible, protected), ([], busy + protected)])
+        self.assertEqual(self.calls, [])
+        self.assertIn("Left 1 tab(s) open because they changed", text)
+
     def test_nothing_empty_closes_nothing(self):
         self.run_cleanup(self.snapshot(), [], [{"tab_id": "w1:t1", "reason": "agent_detected", "pane_ids": []}], execute=True)
         self.assertEqual(self.calls, [])
@@ -2940,8 +3063,15 @@ class AddTabsHerdr:
         self.status = {}
         self.restores = {}
         self.closed = set()
+        self.pane_override = {}
+        self.snapshots = 0
+        self.mutate_at = None
+        self.mutation = None
 
     def snapshot(self, _session=None):
+        self.snapshots += 1
+        if self.mutate_at == self.snapshots and self.mutation:
+            self.mutation()
         workspaces = [{"workspace_id": wid, "label": f"Label {wid}"} for wid in self.layout]
         tabs = [
             {"workspace_id": wid, "tab_id": f"{wid}:t{n}", "label": f"tab {n}"}
@@ -2969,12 +3099,14 @@ class AddTabsHerdr:
             if not any(f"{wid}:t{n}" not in self.closed for n in range(1, self.layout[wid] + 1)):
                 del self.layout[wid]
         elif arguments[:2] == ["workspace", "close"]:
+            if arguments[2] in self.close_fails:
+                raise ORGANIZER.OrganizerError("close refused")
             self.layout.pop(arguments[2], None)
         return {}
 
     def socket_call(self, _session, method, params):
         tab = params["tab_id"]
-        return {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": tab.replace(":t", ":p")}}}
+        return {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": self.pane_override.get(tab, tab.replace(":t", ":p"))}}}
 
     def agent_restores(self, panes, _session, _records):
         return [dict(item, source_pane_id=pane["pane_id"]) for pane in panes for item in self.restores.get(pane["tab_id"], [])]
@@ -3262,6 +3394,153 @@ class AddTabsToBatchTests(unittest.TestCase):
                 with self.assertRaisesRegex(ORGANIZER.OrganizerError, "already in progress"):
                     args.func(args)
         self.assertEqual(self.herdr.calls, [])
+
+    def tree_before(self):
+        """Every file in the archive and batch folders, so a refused run can be shown to have changed none of them."""
+        return {path.name: json.loads(path.read_text()) for folder in (self.archives, self.batches) for path in sorted(folder.iterdir())}
+
+    def test_a_tab_added_to_the_workspace_after_planning_stops_the_workspace_close(self):
+        self.write_batch()
+        before = self.tree_before()
+        self.herdr.mutate_at = 2  # the re-read right before the close
+        self.herdr.mutation = lambda: self.herdr.layout.update({"w2": 3})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, r"changed after it was captured.*w2:t3.*Nothing was closed"):
+            self.run_add(["w2:t1", "w2:t2"])
+        self.assertEqual([call for call in self.herdr.calls if call[1] == "close"], [])
+        self.assertEqual(self.tree_before(), before, "the new archive and the manifest entry are undone")
+        # The live workspace is untouched, so the same command works once the extra tab is dealt with.
+        self.herdr.mutation = None
+        self.herdr.layout["w2"] = 2
+        self.run_add(["w2:t1", "w2:t2"])
+        self.assertEqual(self.herdr.calls, [["workspace", "close", "w2"]])
+
+    def test_a_pane_replaced_after_the_capture_undoes_a_merge_exactly(self):
+        self.write_member("m1", "w1", status="restored", tabs=("w1:old",), restore={"workspace_id": "w1", "tabs": []})
+        self.write_batch(members=[("m1", "w1", "Label w1")])
+        before = self.tree_before()
+        self.herdr.mutate_at = 2
+        self.herdr.mutation = lambda: self.herdr.pane_override.update({"w1:t1": "w1:p77"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "w1:t1 has a different layout"):
+            self.run_add(["w1:t1"])
+        self.assertEqual(self.herdr.calls, [])
+        self.assertEqual(self.tree_before(), before, "the member keeps its old status, restore record and tabs")
+
+    def test_an_agent_that_started_after_the_capture_stops_the_close(self):
+        self.write_batch()
+        self.herdr.mutate_at = 2
+        self.herdr.mutation = lambda: self.herdr.status.update({"w1:t1": "working"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "now has a working or blocked agent"):
+            self.run_add(["w1:t1"])
+        self.assertEqual(self.herdr.calls, [])
+        self.assertEqual(list(self.archives.iterdir()), [])
+
+    def test_a_tab_that_closed_by_itself_is_not_closed_again(self):
+        self.write_batch()
+        self.herdr.mutate_at = 2
+        self.herdr.mutation = lambda: self.herdr.closed.add("w1:t2")
+        self.run_add(["w1:t1", "w1:t2"])
+        self.assertEqual(self.herdr.calls, [["tab", "close", "w1:t1"]])
+        [member] = self.manifest()["members"]
+        self.assertEqual(self.archive(member["archive_id"])["status"], "archived")
+
+    def finish(self, archive_id, execute=True, confirm=None, session="esim"):
+        args = argparse.Namespace(archive=archive_id, session=session, execute=execute, confirm=(confirm or archive_id) if execute else None)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ORGANIZER.finish_tab_add_command(args)
+        return output.getvalue()
+
+    def stranded(self):
+        """A run whose second tab refused to close, leaving a close_failed archive with the first tab already closed."""
+        self.herdr.close_fails = {"w1:t2"}
+        self.write_batch()
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "finish-tab-add --archive"):
+            self.run_add(["w1:t1", "w1:t2"])
+        [member] = self.manifest()["members"]
+        self.assertEqual(self.archive(member["archive_id"])["status"], "close_failed")
+        self.herdr.close_fails = set()
+        return member["archive_id"]
+
+    def restore_args(self, archive_id):
+        return argparse.Namespace(archive=archive_id, execute=False, confirm=None, force=False, resume_agents=False, allow_unresumable_agents=False, session="esim")
+
+    def test_a_partial_close_records_each_outcome_and_names_the_recovery_command(self):
+        archive_id = self.stranded()
+        archive = self.archive(archive_id)
+        operation = archive["tab_archives"][0]
+        self.assertEqual(operation["close_outcomes"], [{"source_tab_id": "w1:t1", "status": "closed"}])
+        self.assertEqual(operation["still_open"], ["w1:t2"])
+        self.assertIn(f"finish-tab-add --archive {archive_id}", archive["error"])
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "cannot be restored"), redirect_stdout(io.StringIO()):
+            ORGANIZER.restore_command(self.restore_args(archive_id))
+
+    def test_finish_tab_add_closes_only_the_still_open_tab_and_makes_the_archive_restorable(self):
+        archive_id = self.stranded()
+        self.herdr.calls.clear()
+        text = self.finish(archive_id, execute=False)
+        preview = json.loads(text[: text.rindex("}") + 1])
+        self.assertEqual((preview["tabs_still_open"], preview["tabs_already_closed"], preview["problems"]), (["w1:t2"], ["w1:t1"], []))
+        self.assertEqual(self.herdr.calls, [], "the preview closes nothing")
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
+            self.finish(archive_id, confirm="other")
+        self.assertEqual(self.herdr.calls, [])
+        self.finish(archive_id)
+        self.assertEqual(self.herdr.calls, [["tab", "close", "w1:t2"]], "the tab that already closed is not closed again")
+        archive = self.archive(archive_id)
+        self.assertEqual(archive["status"], "archived")
+        self.assertNotIn("error", archive)
+        self.assertEqual(archive["tab_archives"][0]["status"], "completed")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(ORGANIZER.restore_command(self.restore_args(archive_id)), "preview")
+        self.assertEqual(ORGANIZER.batch_summary(self.manifest())["counts"]["archived"], 1)
+
+    def test_finish_tab_add_refuses_a_still_open_tab_that_changed_since_the_capture(self):
+        archive_id = self.stranded()
+        self.herdr.pane_override["w1:t2"] = "w1:p55"
+        self.herdr.calls.clear()
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "w1:t2 has a different layout.*Nothing was closed"):
+            self.finish(archive_id)
+        self.assertEqual(self.herdr.calls, [])
+        self.assertEqual(self.archive(archive_id)["status"], "close_failed")
+
+    def test_finish_tab_add_settles_an_archive_whose_tabs_were_all_closed_by_hand(self):
+        archive_id = self.stranded()
+        self.herdr.closed.add("w1:t2")
+        self.herdr.calls.clear()
+        self.finish(archive_id)
+        self.assertEqual(self.herdr.calls, [])
+        self.assertEqual(self.archive(archive_id)["status"], "archived")
+
+    def test_finish_tab_add_retries_a_workspace_close_that_failed(self):
+        self.herdr.close_fails = {"w2"}
+        self.write_batch()
+        with self.assertRaises(ORGANIZER.OrganizerError):
+            self.run_add(["w2:t1", "w2:t2"])
+        [member] = self.manifest()["members"]
+        self.assertEqual(self.archive(member["archive_id"])["status"], "close_failed")
+        self.herdr.close_fails = set()
+        self.herdr.calls.clear()
+        self.finish(member["archive_id"])
+        self.assertEqual(self.herdr.calls, [["workspace", "close", "w2"]])
+        self.assertEqual(self.archive(member["archive_id"])["status"], "archived")
+
+    def test_finish_tab_add_refuses_a_workspace_that_gained_a_tab(self):
+        self.herdr.close_fails = {"w2"}
+        self.write_batch()
+        with self.assertRaises(ORGANIZER.OrganizerError):
+            self.run_add(["w2:t1", "w2:t2"])
+        [member] = self.manifest()["members"]
+        self.herdr.close_fails = set()
+        self.herdr.layout["w2"] = 3
+        self.herdr.calls.clear()
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "now has other tab"):
+            self.finish(member["archive_id"])
+        self.assertEqual(self.herdr.calls, [])
+
+    def test_finish_tab_add_refuses_an_archive_with_nothing_to_finish(self):
+        self.write_member("m1", "w1")
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no unfinished tab add"):
+            self.finish("m1", execute=False)
 
     def test_a_new_member_counts_as_archived_in_the_batch_summary(self):
         self.write_batch()

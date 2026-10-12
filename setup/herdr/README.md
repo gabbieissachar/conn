@@ -374,9 +374,14 @@ rebuilds the layout: the archive stays `archived`, keeps its restore commands,
 and records the workspace it opened (`layout_restore`). Only a restore with
 `--resume-agents` sends supported Codex or Claude resume commands and marks the
 archive `restored` (or `resumed`). When that earlier layout copy is still open
-and still matches the capture, `--resume-agents` resumes the agents inside it
-instead of making another workspace. It never types a resume command into a
-pane that already shows an agent. A second layout-only restore of an archive
+and is exactly what the restore built, `--resume-agents` resumes the agents inside
+it instead of making another workspace. Exactly means the same tabs, the same
+layout shape as the capture and the same pane ids the restore recorded, so a
+replaced, swapped or rearranged pane is never adopted, even when the counts
+still match. A copy from an interrupted restore, and one recorded before pane ids
+were kept, is judged on what exists: an interrupted copy has no record to compare
+and is not reused, and an older record adopts on the layout shape alone. It never
+types a resume command into a pane that already shows an agent. A second layout-only restore of an archive
 that already has an open copy does nothing, and `--force` is the only way to a
 second copy:
 
@@ -423,7 +428,7 @@ herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
 Commands that create, restore, move or delete archives, or close tabs, share one lock while they execute
 (`archive`, `archive-all`, `archive-tabs`, `restore`, `restore-batch`, `restore-tab`, `restore-tabs`,
 `delete-archive`, `delete-archived-tab`, `delete-batch --archives`, `move-tabs`, `resume-move`,
-`cleanup-empty-tabs`, `add-tabs-to-batch`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
+`cleanup-empty-tabs`, `add-tabs-to-batch`, `finish-tab-add`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
 `list-archives`, `list-batches`, `reorder-tab` and plain `delete-batch` do not lock.
 
 Add selected live tabs to a finished batch with `add-tabs-to-batch`. It captures
@@ -438,6 +443,22 @@ selected tab that an earlier restore rebuilt replaces its captured original in
 place. Captured tabs you did not select stay in the archive, so the next restore
 rebuilds them even if they are still open in the earlier workspace, and agents
 already resumed there resume again. The preview warns when that applies.
+
+Right before anything closes, the command reads the live session again. If a
+selected tab gained a pane, a working agent or a different layout, or the
+workspace it would close gained a tab, it closes nothing and undoes the whole
+addition (the new archive is removed, a merged member returns to exactly what it
+was). A tab that already closed by itself is skipped. Each tab's close is
+recorded, and a close that fails or is interrupted leaves the archive
+`close_failed` with the still-open tab ids, outside `restore` and `restore-batch`.
+Finish it with `finish-tab-add`, which checks the still-open tabs again, refuses
+if they changed, closes only the ones still open, and makes the archive
+`archived` and restorable:
+
+```sh
+herdr-organizer --session esim finish-tab-add --archive <archive_id>
+herdr-organizer --session esim finish-tab-add --archive <archive_id> --execute --confirm <archive_id>
+```
 
 Selecting every tab of a workspace archives it whole and closes the workspace. The
 workspace the command runs inside, and the only workspace left in the session,
@@ -466,7 +487,9 @@ herdr-organizer delete-batch --batch <batch_id> --archives --execute --confirm d
 
 Close empty shell tabs in a workspace with `cleanup-empty-tabs`. A tab with an
 agent, a resumable session or a running process is never touched. When every tab
-of a workspace is an empty shell, the workspace closes with its last tab. The
+of a workspace is an empty shell, the workspace closes with its last tab. It looks
+again right before closing, and closes nothing if the workspace gained a tab or a
+tab stopped being an empty shell since the preview. The
 one exception keeps its last tab: the workspace the command runs inside, and the
 only workspace left in the session. The preview reports `close_workspace` and
 `kept_reason`:

@@ -9,6 +9,7 @@ workspace; restoring creates a fresh workspace and rebuilds its tab layouts.
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -278,6 +279,22 @@ def leaf_panes(root: dict[str, Any] | None) -> list[dict[str, Any]]:
     if node_type == "split":
         return leaf_panes(root.get("first")) + leaf_panes(root.get("second"))
     raise OrganizerError(f"Unknown layout node type: {node_type!r}")
+
+
+def layout_topology(root: dict[str, Any] | None) -> Any:
+    """The shape of a layout tree: nesting and split directions only, with no pane ids, sizes or directories."""
+    if not root:
+        return None
+    node_type = root.get("type")
+    if node_type == "pane":
+        return "pane"
+    if node_type == "split":
+        return ["split", str(root.get("direction")), layout_topology(root.get("first")), layout_topology(root.get("second"))]
+    raise OrganizerError(f"Unknown layout node type: {node_type!r}")
+
+
+def leaf_pane_ids(root: dict[str, Any] | None) -> list[str]:
+    return [str(pane.get("pane_id")) for pane in leaf_panes(root)]
 
 
 def workspace_by_id(snapshot: dict[str, Any], workspace_id: str) -> dict[str, Any]:
@@ -810,13 +827,30 @@ def cleanup_empty_tabs_command(args: argparse.Namespace) -> None:
         )
         return
     require_execute_confirmation(args.execute, args.confirm, args.workspace, "Clean up empty tabs")
+    # The preview is older than this call. Look again right before closing, because a user may have opened a tab or
+    # started a process since, and a close cannot be undone.
+    fresh = session_snapshot(args.session)
+    if not any(item.get("workspace_id") == args.workspace for item in fresh.get("workspaces", [])):
+        raise OrganizerError(f"Workspace {args.workspace} no longer exists. Nothing was closed.")
+    still_empty, _ = empty_tab_cleanup_candidates(fresh, args.workspace, args.session)
+    still_empty_ids = {str(tab["tab_id"]) for tab in still_empty}
     if close_workspace:
+        live_ids = {str(tab.get("tab_id")) for tab in tabs_for_workspace(fresh, args.workspace)}
+        planned_ids = {str(tab["tab_id"]) for tab in eligible}
+        if live_ids != planned_ids or not live_ids <= still_empty_ids:
+            raise OrganizerError(
+                f"Workspace {args.workspace} changed since the preview: its tabs are no longer all empty shells. "
+                "Nothing was closed. Run the preview again."
+            )
         run_json(["workspace", "close", args.workspace], args.session)
         print(f"Closed workspace {args.workspace}: every tab was an empty shell, so it closed with its last tab.")
         return
-    for tab in eligible:
+    closing = [tab for tab in eligible if str(tab["tab_id"]) in still_empty_ids]
+    for tab in closing:
         run_json(["tab", "close", str(tab["tab_id"])], args.session)
-    print(f"Closed {len(eligible)} empty shell tab(s) in workspace {args.workspace}.")
+    print(f"Closed {len(closing)} empty shell tab(s) in workspace {args.workspace}.")
+    if len(closing) != len(eligible):
+        print(f"Left {len(eligible) - len(closing)} tab(s) open because they changed since the preview.")
     if kept_tab_id:
         reason = (
             "this command runs inside the workspace" if kept_reason == "running_inside" else "it is the only workspace in the session"
@@ -1756,6 +1790,47 @@ def plan_batch_tab_additions(
     return [plan for plan in plans if plan["tabs"]]
 
 
+def tabs_changed_since_capture(
+    session: str | None, captured_tabs: list[dict[str, Any]], whole_workspace_id: str | None
+) -> list[str]:
+    """Re-read the live session and name every way the tabs differ from what was captured.
+
+    The tabs are checked right before they are closed, because the capture was made earlier and a user or Herdr may have
+    added a pane, started an agent or opened another tab since. An empty result means closing them loses nothing the
+    archive does not hold. A tab that is already gone is fine: its captured copy is the only copy.
+    """
+    fresh = session_snapshot(session)
+    live = {str(tab.get("tab_id")) for tab in fresh.get("tabs", [])}
+    problems: list[str] = []
+    for tab in captured_tabs:
+        tab_id = str(tab["source_tab_id"])
+        if tab_id not in live:
+            continue
+        if any(
+            pane.get("tab_id") == tab_id and pane.get("agent_status") in ACTIVE_AGENT_STATUSES
+            for pane in fresh.get("panes", [])
+        ):
+            problems.append(f"{tab_id} now has a working or blocked agent")
+            continue
+        try:
+            exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
+            live_root = exported.get("root") if isinstance(exported, dict) else None
+            captured_root = tab.get("layout", {}).get("root")
+            if layout_topology(live_root) != layout_topology(captured_root) or leaf_pane_ids(live_root) != leaf_pane_ids(captured_root):
+                problems.append(f"{tab_id} has a different layout")
+        except OrganizerError:
+            problems.append(f"{tab_id} could not be read again")
+    if whole_workspace_id:
+        planned = {str(tab["source_tab_id"]) for tab in captured_tabs}
+        now_in_workspace = {str(tab.get("tab_id")) for tab in tabs_for_workspace(fresh, whole_workspace_id)} if any(
+            item.get("workspace_id") == whole_workspace_id for item in fresh.get("workspaces", [])
+        ) else set()
+        extra = sorted(now_in_workspace - planned)
+        if extra:
+            problems.append(f"workspace {whole_workspace_id} now has other tab(s): {', '.join(extra)}")
+    return problems
+
+
 def settle_tab_addition(
     archive_path: Path, archive: dict[str, Any], operation: dict[str, Any], tab_ids: list[str], session: str | None
 ) -> None:
@@ -1769,17 +1844,51 @@ def settle_tab_addition(
     if remaining == []:
         archive["status"] = "archived"
         archive["archived_at"] = now()
+        archive.pop("error", None)
         operation["status"] = "completed"
         operation["completed_at"] = now()
+        operation.pop("still_open", None)
     else:
         archive["status"] = "close_failed"
         archive["error"] = (
             "Some captured tabs were not confirmed closed"
             + (f": {', '.join(remaining)}" if remaining else "")
-            + ". Check whether they are still open."
+            + f". Run finish-tab-add --archive {archive.get('archive_id')} to check and finish."
         )
         operation["status"] = "close_partial"
         operation["failed_at"] = now()
+        operation["still_open"] = remaining
+    write_json(archive_path, archive)
+
+
+def close_captured_tabs(
+    archive_path: Path,
+    archive: dict[str, Any],
+    operation: dict[str, Any],
+    tab_ids: list[str],
+    workspace_id: str | None,
+    session: str | None,
+) -> None:
+    """Close the live tabs an archive holds, record each outcome, and settle the archive from the live list on failure."""
+    outcomes = operation.setdefault("close_outcomes", [])
+    try:
+        if workspace_id:
+            run_json(["workspace", "close", workspace_id], session)
+            outcomes.extend({"source_tab_id": tab_id, "status": "closed"} for tab_id in tab_ids)
+        else:
+            for tab_id in tab_ids:
+                run_json(["tab", "close", tab_id], session)
+                outcomes.append({"source_tab_id": tab_id, "status": "closed"})
+                write_json(archive_path, archive)
+    except BaseException:
+        settle_tab_addition(archive_path, archive, operation, list(operation.get("source_tabs", tab_ids)), session)
+        raise
+    archive["status"] = "archived"
+    archive["archived_at"] = now()
+    archive.pop("error", None)
+    operation["status"] = "completed"
+    operation["completed_at"] = now()
+    operation.pop("still_open", None)
     write_json(archive_path, archive)
 
 
@@ -1796,10 +1905,14 @@ def apply_tab_addition(
     operation: dict[str, Any] = {
         "operation_id": f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-add-tabs-to-{batch_id}",
         "source_tabs": tab_ids,
+        "workspace_id": plan["workspace_id"],
         "started_at": now(),
         "status": "prepared",
         "closes_workspace": bool(plan["close_workspace"]),
+        "close_outcomes": [],
     }
+    before = copy.deepcopy(member["archive"]) if member else None
+    manifest_before = copy.deepcopy(manifest)
     if member:
         archive_path, archive = member["path"], member["archive"]
         previous = {key: archive.pop(key) for key in ("restore", "layout_restore", "restored_at") if archive.get(key)}
@@ -1846,21 +1959,89 @@ def apply_tab_addition(
     write_json(archive_path, archive)
     manifest["updated_at"] = now()
     write_json(batch_path, manifest)
-    try:
-        if plan["close_workspace"]:
-            run_json(["workspace", "close", plan["workspace_id"]], session)
+    # Look again right before anything closes. If the tabs changed since the capture, undo the whole addition: nothing
+    # has been closed yet, so the live tabs and the earlier archive state are exactly as they were.
+    problems = tabs_changed_since_capture(session, tabs, plan["workspace_id"] if plan["close_workspace"] else None)
+    if problems:
+        if before is not None:
+            write_json(archive_path, before)
         else:
-            for tab_id in tab_ids:
-                run_json(["tab", "close", tab_id], session)
-    except BaseException:
-        settle_tab_addition(archive_path, archive, operation, tab_ids, session)
-        raise
-    archive["status"] = "archived"
-    archive["archived_at"] = now()
-    operation["status"] = "completed"
-    operation["completed_at"] = now()
-    write_json(archive_path, archive)
+            archive_path.unlink(missing_ok=True)
+        manifest.clear()
+        manifest.update(manifest_before)
+        write_json(batch_path, manifest)
+        raise OrganizerError(
+            f"Workspace {plan['workspace_id']} changed after it was captured: {'; '.join(problems)}. "
+            "Nothing was closed and nothing was added. Run the command again."
+        )
+    live = {str(tab.get("tab_id")) for tab in session_snapshot(session).get("tabs", [])}
+    try:
+        close_captured_tabs(
+            archive_path,
+            archive,
+            operation,
+            [tab_id for tab_id in tab_ids if tab_id in live],
+            plan["workspace_id"] if plan["close_workspace"] else None,
+            session,
+        )
+    except OrganizerError as error:
+        raise OrganizerError(
+            f"{error} Archive {archive_id} is close_failed. Run finish-tab-add --archive {archive_id} to check and finish."
+        ) from error
     return outcome
+
+
+def finish_tab_add_command(args: argparse.Namespace) -> None:
+    """Finish closing the tabs of an add-tabs-to-batch run that stopped part-way, after checking them again."""
+    archive_path, archive = archive_by_id(args.archive)
+    operation = next(
+        (
+            item
+            for item in reversed(archive.get("tab_archives", []))
+            if isinstance(item, dict) and item.get("status") in {"close_partial", "prepared"}
+        ),
+        None,
+    )
+    if archive.get("status") != "close_failed" or operation is None:
+        raise OrganizerError(f"Archive {args.archive!r} has no unfinished tab add to finish.")
+    captured_session = archive.get("herdr_session")
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if captured_session and session != captured_session:
+        raise OrganizerError(
+            f"Archive {args.archive!r} was captured from session {captured_session!r}, not {session!r}. "
+            f"Re-run with --session {captured_session}."
+        )
+    source_tabs = [str(tab_id) for tab_id in operation.get("source_tabs", [])]
+    live = {str(tab.get("tab_id")) for tab in session_snapshot(args.session).get("tabs", [])}
+    still_open = [tab_id for tab_id in source_tabs if tab_id in live]
+    held = {str(tab.get("source_tab_id")): tab for tab in archive.get("capture", {}).get("tabs", [])}
+    missing = [tab_id for tab_id in still_open if tab_id not in held]
+    if missing:
+        raise OrganizerError(f"Archive {args.archive!r} does not hold tab(s) still open: {', '.join(missing)}.")
+    workspace_id = str(operation.get("workspace_id")) if operation.get("closes_workspace") else None
+    problems = tabs_changed_since_capture(args.session, [held[tab_id] for tab_id in still_open], workspace_id) if still_open else []
+    preview = {
+        "archive_id": args.archive,
+        "tabs_already_closed": [tab_id for tab_id in source_tabs if tab_id not in live],
+        "tabs_still_open": still_open,
+        "closes_workspace": bool(workspace_id and still_open),
+        "problems": problems,
+    }
+    if not args.execute:
+        print(json.dumps(preview, indent=2))
+        print(
+            "Preview only. Execution closes the tabs listed as still open and marks the archive archived. "
+            f"Re-run with --execute --confirm {args.archive!r}."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.archive, "Finish tab add")
+    if problems:
+        raise OrganizerError(
+            f"The still-open tab(s) changed after they were captured: {'; '.join(problems)}. Nothing was closed. "
+            "Check them, then archive them again with add-tabs-to-batch."
+        )
+    close_captured_tabs(archive_path, archive, operation, still_open, workspace_id if still_open else None, args.session)
+    print(f"Archive {args.archive} is archived. Closed {len(still_open)} tab(s); {len(preview['tabs_already_closed'])} were already closed.")
 
 
 def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
@@ -2444,8 +2625,10 @@ def live_agent_running(pane: dict[str, Any]) -> bool:
 def layout_copy_of(archive: dict[str, Any], session: str | None) -> dict[str, Any] | None:
     """The open workspace from an earlier layout-only restore of this archive, with its pane map.
 
-    A copy counts only when Herdr still lists the recorded workspace and its tabs and panes match what the archive
-    captured. Nothing is trusted from the record alone, so a closed, rebuilt or half-built workspace is never adopted.
+    A copy counts only when Herdr still lists the recorded workspace and it is exactly what the restore built: the same
+    tabs, the same layout shape as the capture and, when the restore recorded them, the same pane ids. Nothing is
+    trusted from the record alone, so a closed, rebuilt, rearranged or partly replaced workspace is never adopted and a
+    resume command is never typed into a shell that is not the captured one.
     """
     layout = archive.get("layout_restore")
     workspace_id = layout.get("workspace_id") if isinstance(layout, dict) else None
@@ -2460,19 +2643,29 @@ def layout_copy_of(archive: dict[str, Any], session: str | None) -> dict[str, An
         if not captured_tabs or len(live_tabs) != len(captured_tabs):
             return None
         recorded = {
-            str(item.get("source_tab_id")): item.get("tab_id") for item in layout.get("tabs", []) if isinstance(item, dict)
+            str(item.get("source_tab_id")): item for item in layout.get("tabs", []) if isinstance(item, dict)
         }
-        live_ids = [str(tab.get("tab_id")) for tab in live_tabs]
+        live_ids = {str(tab.get("tab_id")) for tab in live_tabs}
         pane_map: dict[str, str] = {}
         tab_ids: list[str] = []
-        for position, captured in enumerate(captured_tabs):
-            tab_id = str(recorded.get(str(captured.get("source_tab_id"))))
+        for captured in captured_tabs:
+            record = recorded.get(str(captured.get("source_tab_id")))
+            tab_id = str(record.get("tab_id")) if record else ""
             if tab_id not in live_ids or tab_id in tab_ids:
-                tab_id = live_ids[position]
+                return None
             exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
             if not isinstance(exported, dict):
                 return None
-            pane_map.update(matching_pane_map(captured.get("layout", {}).get("root"), exported.get("root")))
+            captured_root = captured.get("layout", {}).get("root")
+            live_root = exported.get("root")
+            if layout_topology(live_root) != layout_topology(captured_root):
+                return None
+            if record.get("topology") is not None and record["topology"] != layout_topology(live_root):
+                return None
+            # Records made before pane ids were kept have nothing more to compare, so they adopt on the shape alone.
+            if record.get("pane_ids") is not None and record["pane_ids"] != leaf_pane_ids(live_root):
+                return None
+            pane_map.update(matching_pane_map(captured_root, live_root))
             tab_ids.append(tab_id)
         busy = {
             str(pane.get("pane_id"))
@@ -2569,7 +2762,14 @@ def restore_into_new_workspace(archive_path: Path, archive: dict[str, Any], args
             if not isinstance(new_layout, dict):
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
             pane_map.update(matching_pane_map(layout.get("root"), new_layout.get("root")))
-            record["tabs"].append({"source_tab_id": tab.get("source_tab_id"), "tab_id": new_layout.get("tab_id")})
+            record["tabs"].append(
+                {
+                    "source_tab_id": tab.get("source_tab_id"),
+                    "tab_id": new_layout.get("tab_id"),
+                    "pane_ids": leaf_pane_ids(new_layout.get("root")),
+                    "topology": layout_topology(new_layout.get("root")),
+                }
+            )
             write_json(archive_path, archive)
         if workspace.get("focused"):
             run_json(["workspace", "focus", workspace_id], args.session)
@@ -2633,6 +2833,13 @@ def restore_command(args: argparse.Namespace) -> str:
         return "already_laid_out"
     if copy:
         return restore_into_layout_copy(archive_path, archive, copy, args)
+    earlier = archive.get("layout_restore")
+    if isinstance(earlier, dict) and earlier.get("workspace_id") and not args.force:
+        print(
+            f"Note: workspace {earlier['workspace_id']} from an earlier layout-only restore of this archive is not reused"
+            + (" because that restore was interrupted" if earlier.get("error") else " because it is closed or no longer matches")
+            + ". Close it if it is still open and unwanted."
+        )
     return restore_into_new_workspace(archive_path, archive, args)
 
 
@@ -4650,6 +4857,15 @@ def parser() -> argparse.ArgumentParser:
     add_tabs_to_batch.add_argument("--execute", action="store_true")
     add_tabs_to_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
     add_tabs_to_batch.set_defaults(func=with_batch_lock("add-tabs-to-batch", add_tabs_to_batch_command))
+
+    finish_tab_add = commands.add_parser(
+        "finish-tab-add",
+        help="Finish closing the tabs of an add-tabs-to-batch run that stopped part-way, after checking them again.",
+    )
+    finish_tab_add.add_argument("--archive", required=True)
+    finish_tab_add.add_argument("--execute", action="store_true")
+    finish_tab_add.add_argument("--confirm", help="Must exactly equal the archive ID.")
+    finish_tab_add.set_defaults(func=with_batch_lock("finish-tab-add", finish_tab_add_command))
 
     cleanup_empty = commands.add_parser(
         "cleanup-empty-tabs", help="Close shell-only tabs without agents or preserved sessions."
