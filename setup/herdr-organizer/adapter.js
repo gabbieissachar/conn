@@ -606,7 +606,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       }
     }
     await Promise.all(Array.from({ length: Math.min(CLEANUP_CONCURRENCY, ids.length) }, worker));
-    const workspaces = results.map((item) => (item.error ? { workspace_id: item.workspace_id, error: item.error, tabs_to_close: [], protected_tabs: [], kept_tab_id: '' } : item));
+    const workspaces = results.map((item) => (item.error ? { workspace_id: item.workspace_id, error: item.error, tabs_to_close: [], protected_tabs: [], kept_tab_id: '', kept_reason: '', close_workspace: false } : item));
     const closable = workspaces.filter((item) => item.tabs_to_close.length > 0);
     const base = 'herdr-organizer --session ' + session + ' cleanup-empty-tabs --workspace ';
     return {
@@ -617,6 +617,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         workspaces: workspaces.length,
         workspaces_with_empty_tabs: closable.length,
         tabs_to_close: closable.reduce((total, item) => total + item.tabs_to_close.length, 0),
+        workspaces_to_close: closable.filter((item) => item.close_workspace).length,
         protected_tabs: workspaces.reduce((total, item) => total + item.protected_tabs.length, 0),
         errors: workspaces.filter((item) => item.error).length,
       },

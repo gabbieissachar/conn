@@ -53,7 +53,7 @@ test('archive all and restore all never offer an override flag or force', () => 
 });
 
 test('restore all is copy-only, built from a validated batch id, and disabled when nothing is archived', () => {
-  const view = html.slice(html.indexOf('const batchView = batch'), html.indexOf('const batchesView'));
+  const view = html.slice(html.indexOf('const batchView = (batch'), html.indexOf('const batchesView'));
   assert.match(view, /BATCH_ID_PATTERN\.test\(id\)/);
   assert.match(view, /canRestore = valid && counts\.archived > 0/);
   assert.match(view, /restore-batch --batch \$\{id\}/);
@@ -200,4 +200,54 @@ test('group card: permanent delete needs its own confirm value and shows a visib
   assert.equal(/--archives --execute --confirm \$\{id\}/.test(view), false, 'the record-only confirm value cannot be reused');
   assert.match(view, /<div class="archive-meta"[^`]*Delete group \+ \$\{plural\(removable, 'archive'\)\} is permanent\./);
   assert.match(view, /still archived, so/);
+});
+
+test('group card: a layout-only copy keeps every restore command, shows layout open, and never counts as restored', () => {
+  const view = html.slice(html.indexOf('const hasOpenLayout'), html.indexOf('const batchesView'));
+  // the open copy counts only while Herdr still lists the workspace, and only for an archived member
+  assert.match(view, /member\.status === 'archived' && Boolean\(member\.layout_workspace_id\) && liveIds\.has\(member\.layout_workspace_id\)/);
+  assert.match(view, /\[layoutOpen, 'layout open'\]/);
+  // the per-member and group resume commands stay for an archived member, whatever its layout copy
+  assert.match(view, /const restoreCommand = member\.status === 'archived' \? memberRestoreCommand\(member, session\) : ''/);
+  assert.match(view, /canRestore \? `data-command="\$\{escapeHtml\(resume\)\}"`/);
+  // layout only is offered only while some archived member has no open copy, so it cannot make duplicates
+  assert.match(view, /const canLayout = canRestore && layoutOpen < archivedMembers\.length/);
+  assert.match(view, /canLayout \? `data-command="\$\{escapeHtml\(layout\)\}"`/);
+  assert.equal(/--force/.test(view), false);
+  const batches = html.slice(html.indexOf('const batchesView'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(batches, /new Set\(\(data\.workspaces \|\| \[\]\)\.map\(workspace => workspace\.id\)\)/);
+});
+
+test('cleanup card: a workspace of only empty tabs is shown as closing entirely, with the guarded cases explained', () => {
+  const view = html.slice(html.indexOf('const cleanupAllView'), html.indexOf('const runCleanupPreview'));
+  assert.match(view, /workspace\.close_workspace \? 'closes entirely'/);
+  assert.match(view, /the whole workspace closes with its last tab/);
+  assert.match(view, /the command would run inside this workspace/);
+  assert.match(view, /it is the only workspace in the session/);
+  assert.match(view, /totals\.workspaces_to_close/);
+  assert.equal(/api\.run\([^)]*execute/.test(view), false, 'the page still only copies the closing command');
+  assert.equal(/keeps one/.test(view), false, 'the old promise that one tab always stays is gone');
+});
+
+test('add tabs to a restore group: copy-only, validated ids, finished same-session groups only, no override', () => {
+  const panel = html.slice(html.indexOf('const TAB_ID_PATTERN'), html.indexOf('const archiveTabKey'));
+  assert.match(panel, /selected\.every\(tab => TAB_ID_PATTERN\.test\(tab\.id\)\)/);
+  assert.match(panel, /BATCH_ID_PATTERN\.test\(batch\.batch_id/);
+  assert.match(panel, /\['completed', 'completed_with_failures'\]\.includes\(batch\.status\)/);
+  assert.match(panel, /batch\.herdr_session === data\.herdr_session/);
+  assert.match(panel, /--session \$\{chosenBatch\.herdr_session\} add-tabs-to-batch --batch \$\{destination\} \$\{tabArgs\}/);
+  assert.match(panel, /--execute --confirm \$\{destination\}/);
+  // the preview copy has no execute flag, so it can only read
+  assert.match(panel, /id="copy-batch-preview"[^>]*data-command="\$\{escapeHtml\(batchBase\)\}"/);
+  assert.equal(/--force|--allow-active|--allow-unresumable-agents/.test(panel), false);
+  assert.equal(html.includes("api.run('add-tabs"), false, 'the page never runs the command itself');
+});
+
+test('add tabs to a restore group: three modes, a disabled state with a reason, and no literal placeholder', () => {
+  const panel = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
+  assert.match(panel, /\['batch', 'Add to restore group'\]/);
+  assert.match(panel, /Run Archive all first/);
+  assert.match(panel, /id="copy-move-tabs" \$\{command \? '' : 'disabled'\}/);
+  assert.match(html, /data-tabs-mode/);
+  assert.equal(html.includes('toggle-selected-tabs-action'), false, 'the two-way toggle is gone');
 });

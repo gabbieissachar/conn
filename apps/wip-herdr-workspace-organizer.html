@@ -52,7 +52,10 @@ created: 2026-09-10
     .move-panel:empty { display: none; }
     .move-panel strong { display: block; font-size: 14px; }
     .move-panel p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; }
-    .move-panel .mode-switch { margin-top: 8px; padding: 6px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
+    .move-panel .mode-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .move-panel .mode-switch { padding: 6px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
+    .move-panel .mode-switch[aria-pressed="true"] { color: white; background: var(--purple); }
+    .move-panel .panel-actions { display: grid; gap: 6px; }
     .move-panel label { display: block; color: var(--muted); font: 11px "DM Mono", monospace; }
     .move-panel select { width: 100%; margin-top: 6px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--paper); }
     .move-panel .primary { color: white; background: var(--purple); }
@@ -200,7 +203,7 @@ created: 2026-09-10
     .batch-counts { margin-top: 8px; color: var(--navy); font-size: 13px; }
     .member-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 0; border-top: 1px solid #eef1f6; font-size: 12px; }
     .member-line .names { min-width: 0; overflow-wrap: anywhere; }
-    .member-line .pill { margin-left: auto; }
+    .member-state { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; }
     .member-flag { flex-basis: 100%; color: #925a08; font-size: 11px; line-height: 1.4; }
     .archive-chip { color: #514194; font: 10px "DM Mono", monospace; }
     .failure-entry .inline-form { flex-basis: 100%; }
@@ -247,7 +250,7 @@ created: 2026-09-10
   </main>
   <div class="toast" id="toast" role="status"></div>
   <script>
-    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -272,7 +275,7 @@ created: 2026-09-10
       return `<article class="tab">
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</div>
         <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}${resumeStatuses(tab.agent_resume)}</div>
-        <label class="tab-select"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}> Select this tab for a cross-workspace move</label>
+        <label class="tab-select"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}> Select this tab to move, archive or add to a restore group</label>
         <div class="tab-actions">
           <button type="button" title="Copy a command that places this tab one position closer to the first tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Copy move tab left</button>
           <button type="button" title="Copy a command that places this tab one position closer to the last tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${after} --execute">Copy move tab right</button>
@@ -284,33 +287,57 @@ created: 2026-09-10
       <div class="tabs">${workspace.tabs.map(tab => tabView(tab, workspace.tab_count)).join('') || '<div class="tab-meta">No tabs</div>'}</div>
       <div class="tab-actions" style="padding: 0 16px 14px"><button type="button" title="Copies a preview command. It only identifies shell-only tabs and protects tabs with running agents or verified resumable sessions." data-command="herdr-organizer cleanup-empty-tabs --workspace ${escapeHtml(workspace.id)}">Copy cleanup preview</button><button type="button" data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)}">Copy archive preview</button><button type="button" title="Copies a command that captures this layout and closes this workspace. Its processes will stop." data-command="herdr-organizer archive --workspace ${escapeHtml(workspace.id)} --execute --confirm ${escapeHtml(workspace.id)}">Copy archive and close</button></div>
     </article>`;
+    const TAB_ID_PATTERN = /^w[A-Za-z0-9]{1,10}:[A-Za-z0-9]{1,10}$/;
+    const TAB_MODES = [['move', 'Move'], ['archive', 'Archive'], ['batch', 'Add to restore group']];
+    // Only a finished group from the session this snapshot came from can take tabs. The command refuses the rest anyway.
+    const batchChoicesFor = data => (data.batches || []).filter(batch => BATCH_ID_PATTERN.test(batch.batch_id || '')
+      && ['completed', 'completed_with_failures'].includes(batch.status)
+      && SESSION_NAME_PATTERN.test(batch.herdr_session || '')
+      && (!data.herdr_session || batch.herdr_session === data.herdr_session));
+    const batchStamp = batch => (batch.created_at ? new Date(batch.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : batch.batch_id);
     const movePanelView = data => {
       const allTabs = data.workspaces.flatMap(workspace => workspace.tabs.map(tab => ({ ...tab, workspace })));
       const selected = allTabs.filter(tab => state.selectedTabs.has(tab.id));
       if (!selected.length) return '';
-      const archiving = state.selectedTabsAction === 'archive';
+      const mode = TAB_MODES.some(([key]) => key === state.selectedTabsAction) ? state.selectedTabsAction : 'move';
       const sourceWorkspaces = new Set(selected.map(tab => tab.workspace.id));
-      const destinationChoices = archiving
+      const tabArgs = selected.map(tab => `--tab ${tab.id}`).join(' ');
+      const validTabs = selected.every(tab => TAB_ID_PATTERN.test(tab.id));
+      const batchChoices = mode === 'batch' ? batchChoicesFor(data) : [];
+      const destinationChoices = mode === 'archive'
         ? (data.archives || []).filter(archive => ['archived', 'restored', 'resumed', 'restore_partial'].includes(archive.status))
-        : data.workspaces.filter(workspace => !sourceWorkspaces.has(workspace.id));
-      if (archiving && !destinationChoices.some(archive => archive.archive_id === state.selectedTabsArchive)) state.selectedTabsArchive = destinationChoices[0]?.archive_id || '';
-      if (!archiving && !destinationChoices.some(workspace => workspace.id === state.destinationWorkspace)) state.destinationWorkspace = destinationChoices[0]?.id || '';
-      const destination = archiving ? state.selectedTabsArchive : state.destinationWorkspace;
-      const command = destination
-        ? archiving
-          ? `herdr-organizer archive-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --into-archive ${destination} --execute --confirm ${destination}`
-          : `herdr-organizer move-tabs ${selected.map(tab => `--tab ${tab.id}`).join(' ')} --to-workspace ${destination} --execute --confirm ${destination}`
-        : '';
-      const detail = archiving
+        : mode === 'batch' ? batchChoices : data.workspaces.filter(workspace => !sourceWorkspaces.has(workspace.id));
+      if (mode === 'archive' && !destinationChoices.some(archive => archive.archive_id === state.selectedTabsArchive)) state.selectedTabsArchive = destinationChoices[0]?.archive_id || '';
+      if (mode === 'batch' && !batchChoices.some(batch => batch.batch_id === state.selectedTabsBatch)) state.selectedTabsBatch = batchChoices[0]?.batch_id || '';
+      if (mode === 'move' && !destinationChoices.some(workspace => workspace.id === state.destinationWorkspace)) state.destinationWorkspace = destinationChoices[0]?.id || '';
+      const destination = mode === 'archive' ? state.selectedTabsArchive : mode === 'batch' ? state.selectedTabsBatch : state.destinationWorkspace;
+      const chosenBatch = mode === 'batch' ? batchChoices.find(batch => batch.batch_id === destination) : null;
+      const batchBase = chosenBatch && validTabs ? `herdr-organizer --session ${chosenBatch.herdr_session} add-tabs-to-batch --batch ${destination} ${tabArgs}` : '';
+      const command = !destination ? ''
+        : mode === 'archive' ? `herdr-organizer archive-tabs ${tabArgs} --into-archive ${destination} --execute --confirm ${destination}`
+        : mode === 'batch' ? (batchBase ? `${batchBase} --execute --confirm ${destination}` : '')
+        : `herdr-organizer move-tabs ${tabArgs} --to-workspace ${destination} --execute --confirm ${destination}`;
+      const detail = mode === 'archive'
         ? `${selected.length} selected. The command adds them to the archive, then closes only their live tabs. Each live workspace keeps at least one tab.`
-        : `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
-      const label = archiving ? 'Existing archive' : 'Destination workspace';
-      const options = archiving
+        : mode === 'batch'
+          ? (batchChoices.length
+            ? `${selected.length} selected. The command captures them into the group, then closes them and stops their processes. A workspace that already has a member merges into it. Copy the preview first.`
+            : `${selected.length} selected. There is no finished restore group from this session to add them to. Run Archive all first.`)
+          : `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
+      const title = mode === 'archive' ? 'Archive selected tabs' : mode === 'batch' ? 'Add selected tabs to a restore group' : 'Move selected tabs to another workspace';
+      const label = mode === 'archive' ? 'Existing archive' : mode === 'batch' ? 'Restore group' : 'Destination workspace';
+      const options = mode === 'archive'
         ? destinationChoices.map(archive => `<option value="${escapeHtml(archive.archive_id)}" ${archive.archive_id === destination ? 'selected' : ''}>${escapeHtml(archive.workspace_label || archive.archive_id)} (${escapeHtml(archive.archive_id)})</option>`).join('')
-        : destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('');
-      return `<div><strong>${archiving ? 'Archive selected tabs' : 'Move selected tabs to another workspace'}</strong><p>${escapeHtml(detail)}</p><button class="mode-switch" type="button" id="toggle-selected-tabs-action">${archiving ? 'Move selected tabs instead' : 'Archive selected tabs instead'}</button></div>
-        <label>${label}<select id="move-destination" ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${options}</select></label>
-        <button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${archiving ? 'Copy archive selected tabs' : 'Copy move + resume'}</button>`;
+        : mode === 'batch'
+          ? batchChoices.map(batch => `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batch.batch_id)}" ${batch.batch_id === destination ? 'selected' : ''}>${escapeHtml(batchStamp(batch))}</option>`).join('')
+          : destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('');
+      const modes = TAB_MODES.map(([key, text]) => `<button class="mode-switch" type="button" data-tabs-mode="${key}" aria-pressed="${key === mode}">${text}</button>`).join('');
+      const buttons = mode === 'batch'
+        ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which member each workspace joins and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close tabs</button></div>`
+        : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${mode === 'archive' ? 'Copy archive selected tabs' : 'Copy move + resume'}</button>`;
+      return `<div><strong>${title}</strong><p>${escapeHtml(detail)}</p><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div></div>
+        <label>${label}<select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${options}</select></label>
+        ${buttons}`;
     };
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
     const restorePanelView = data => {
@@ -409,13 +436,14 @@ created: 2026-09-10
       }));
       document.querySelector('#move-destination')?.addEventListener('change', event => {
         if (state.selectedTabsAction === 'archive') state.selectedTabsArchive = event.target.value;
+        else if (state.selectedTabsAction === 'batch') state.selectedTabsBatch = event.target.value;
         else state.destinationWorkspace = event.target.value;
         render();
       });
-      document.querySelector('#toggle-selected-tabs-action')?.addEventListener('click', () => {
-        state.selectedTabsAction = state.selectedTabsAction === 'archive' ? 'move' : 'archive';
+      document.querySelectorAll('[data-tabs-mode]').forEach(button => button.addEventListener('click', () => {
+        state.selectedTabsAction = button.dataset.tabsMode;
         render();
-      });
+      }));
       document.querySelector('#restore-destination')?.addEventListener('change', event => {
         const selectedKey = [...state.selectedArchivedTabs][0];
         const archiveId = selectedKey?.split('::')[0];
@@ -976,25 +1004,26 @@ created: 2026-09-10
         const closable = result.workspaces.filter(workspace => workspace.tabs_to_close.length);
         const clean = result.workspaces.filter(workspace => !workspace.tabs_to_close.length && !workspace.error);
         const failed = result.workspaces.filter(workspace => workspace.error);
-        const rows = closable.map(workspace => `<div class="failure"><h4>${escapeHtml(labels.get(workspace.workspace_id) || workspace.workspace_id)} <span class="count-pill">${workspace.tabs_to_close.length} to close</span></h4>
+        const rows = closable.map(workspace => `<div class="failure"><h4>${escapeHtml(labels.get(workspace.workspace_id) || workspace.workspace_id)} <span class="count-pill">${workspace.close_workspace ? 'closes entirely' : `${workspace.tabs_to_close.length} to close`}</span></h4>
           ${workspace.tabs_to_close.map(tab => `<div class="failure-entry"><span class="pane-id">${escapeHtml(tab.tab_id)}</span><span class="names">${escapeHtml(tab.label)}</span><span class="status">${plural(tab.pane_count, 'pane')}</span></div>`).join('')}
-          ${workspace.kept_tab_id ? `<div class="tab-meta" style="margin-top:6px">Every tab here is empty, so ${escapeHtml(workspace.kept_tab_id)} stays open to keep the workspace.</div>` : ''}</div>`).join('');
+          ${workspace.close_workspace ? '<div class="tab-meta" style="margin-top:6px">Every tab here is an empty shell, so the whole workspace closes with its last tab.</div>' : ''}
+          ${workspace.kept_tab_id ? `<div class="tab-meta" style="margin-top:6px">Every tab here is empty, but ${escapeHtml(workspace.kept_tab_id)} stays open because ${workspace.kept_reason === 'running_inside' ? 'the command would run inside this workspace' : 'it is the only workspace in the session'}.</div>` : ''}</div>`).join('');
         const protectedCounts = {};
         result.workspaces.forEach(workspace => workspace.protected_tabs.forEach(tab => { protectedCounts[tab.reason] = (protectedCounts[tab.reason] || 0) + 1; }));
         const keptLast = result.workspaces.filter(workspace => workspace.kept_tab_id).length;
-        const protectedText = [...Object.entries(protectedCounts).map(([reason, count]) => `${count} ${PROTECTED_REASONS[reason] || reason.replace(/_/g, ' ')}`), keptLast ? `${keptLast} as the last tab in ${keptLast === 1 ? 'its workspace' : 'their workspace'}` : ''].filter(Boolean).join(', ');
-        body = `<div class="cleanup-totals"><span><strong>${totals.tabs_to_close}</strong> empty shell ${totals.tabs_to_close === 1 ? 'tab' : 'tabs'} to close in <strong>${totals.workspaces_with_empty_tabs}</strong> of ${plural(totals.workspaces, 'workspace')}</span>${protectedText ? `<span class="updated">Kept: ${escapeHtml(protectedText)}</span>` : ''}</div>
-          ${rows || '<div class="tab-meta">Nothing to close. Every tab has an agent, a resumable session or a running process, or is the last tab in its workspace.</div>'}
+        const protectedText = [...Object.entries(protectedCounts).map(([reason, count]) => `${count} ${PROTECTED_REASONS[reason] || reason.replace(/_/g, ' ')}`), keptLast ? `${keptLast} as the last tab of ${keptLast === 1 ? 'a workspace that must stay' : 'workspaces that must stay'}` : ''].filter(Boolean).join(', ');
+        body = `<div class="cleanup-totals"><span><strong>${totals.tabs_to_close}</strong> empty shell ${totals.tabs_to_close === 1 ? 'tab' : 'tabs'} to close in <strong>${totals.workspaces_with_empty_tabs}</strong> of ${plural(totals.workspaces, 'workspace')}${totals.workspaces_to_close ? `, ${plural(totals.workspaces_to_close, 'workspace')} closing entirely` : ''}</span>${protectedText ? `<span class="updated">Kept: ${escapeHtml(protectedText)}</span>` : ''}</div>
+          ${rows || '<div class="tab-meta">Nothing to close. Every tab has an agent, a resumable session or a running process.</div>'}
           ${clean.length && rows ? `<div class="tab-meta">${plural(clean.length, 'workspace')} have nothing to close.</div>` : ''}
           ${failed.length ? `<div class="scope-note error">Preview failed for ${escapeHtml(failed.map(workspace => workspace.workspace_id).join(', '))}. Run the preview command for those workspaces in a terminal.</div>` : ''}
-          ${result.commands.execute_all ? `<div class="group-title" style="margin-top:14px">Closes ${plural(totals.tabs_to_close, 'tab')}. Run it in your terminal when you are ready</div><pre class="command-box">${escapeHtml(result.commands.execute_all)}</pre>` : ''}`;
+          ${result.commands.execute_all ? `<div class="group-title" style="margin-top:14px">Closes ${plural(totals.tabs_to_close, 'tab')}${totals.workspaces_to_close ? ` and ${plural(totals.workspaces_to_close, 'whole workspace')}` : ''}. Run it in your terminal when you are ready</div><pre class="command-box">${escapeHtml(result.commands.execute_all)}</pre>` : ''}`;
       }
       const canPreview = Boolean(cleanupSession()) && !cleanup.loading;
       return `<article class="card cleanup-all"><div class="card-head"><h3>Clean up empty tabs in every workspace</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
-        <p class="lede">Finds shell-only tabs in ${(data.workspaces || []).length ? `all ${plural(data.workspaces.length, 'workspace')}` : 'every workspace'} at once: no agent, no resumable session, nothing running. A tab with an agent or a resumable session is never touched, and a workspace whose tabs are all empty keeps one. Previewing closes nothing.</p>
+        <p class="lede">Finds shell-only tabs in ${(data.workspaces || []).length ? `all ${plural(data.workspaces.length, 'workspace')}` : 'every workspace'} at once: no agent, no resumable session, nothing running. A tab with an agent or a resumable session is never touched. A workspace whose tabs are all empty closes entirely, unless it is the one the command runs in or the only one left. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-cleanup="preview" ${canPreview ? '' : 'disabled'} title="${cleanupSession() ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${cleanup.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview all workspaces')}</button>
           <button type="button" data-command="${escapeHtml(previewAll)}" ${previewAll ? '' : 'disabled'} title="Copies one command that runs the preview for every workspace in your terminal">Copy cleanup preview for all workspaces</button>
-          ${result?.commands?.execute_all ? `<button type="button" class="danger" data-command="${escapeHtml(result.commands.execute_all)}" title="Copies the commands that close the empty shell tabs listed above. Their processes are shells only.">Copy cleanup and close for all</button>` : ''}</div>
+          ${result?.commands?.execute_all ? `<button type="button" class="danger" data-command="${escapeHtml(result.commands.execute_all)}" title="Copies the commands that close the empty shell tabs listed above, and the workspaces that hold nothing else. Their processes are shells only.">Copy cleanup and close for all</button>` : ''}</div>
         ${body}
       </div></article>`;
     };
@@ -1214,14 +1243,17 @@ created: 2026-09-10
     // The command for one member: the single-archive restore, with the session the group was captured from.
     const memberRestoreCommand = (member, session) => (ARCHIVE_ID_PATTERN.test(member.archive_id || '')
       ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
-    const batchMemberView = (member, session) => {
+    // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
+    const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
+    const batchMemberView = (member, session, liveIds) => {
       const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
       const restoreCommand = member.status === 'archived' ? memberRestoreCommand(member, session) : '';
+      const openLayout = hasOpenLayout(member, liveIds);
       const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
         : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">The workspace was not closed. Restore all leaves it alone.</span>' : '';
-      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="pill ${tone}">${escapeHtml(label)}</span>${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.">Copy restore + resume agents</button>` : ''}${flag}</div>`;
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>`;
     };
-    const batchView = batch => {
+    const batchView = (batch, liveIds) => {
       const counts = batch.counts || {};
       const id = batch.batch_id;
       const valid = BATCH_ID_PATTERN.test(id);
@@ -1233,8 +1265,11 @@ created: 2026-09-10
       const removeAll = `herdr-organizer delete-batch --batch ${id} --archives --execute --confirm delete-archives:${id}`;
       const removable = (batch.members || []).filter(member => member.status !== 'deleted').length;
       const canRestore = valid && counts.archived > 0;
+      const archivedMembers = (batch.members || []).filter(member => member.status === 'archived');
+      const layoutOpen = archivedMembers.filter(member => hasOpenLayout(member, liveIds)).length;
+      const canLayout = canRestore && layoutOpen < archivedMembers.length;
       const why = !valid ? 'This group has an unexpected id, so no command is built' : 'No member is still archived';
-      const parts = [[counts.archived, 'archived'], [counts.restored, 'restored'], [counts.restore_partial, 'restore partial'], [counts.other, 'not closed'], [counts.deleted, 'deleted'], [counts.skipped, 'skipped at capture']]
+      const parts = [[counts.archived, 'archived'], [layoutOpen, 'layout open'], [counts.restored, 'restored'], [counts.restore_partial, 'restore partial'], [counts.other, 'not closed'], [counts.deleted, 'deleted'], [counts.skipped, 'skipped at capture']]
         .filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
       const summaryLabel = batch.empty ? 'empty' : (counts.archived ? `${counts.archived} to restore` : 'nothing to restore');
       const skipped = (batch.skipped || []).map(item => `<div class="member-line"><span class="pane-id">${escapeHtml(item.workspace_id || '')}</span><span class="names">${escapeHtml(item.label || '')}</span><span class="tab-meta" style="margin:0 0 0 auto">${escapeHtml((item.reasons || []).map(reason => SKIP_SHORT[reason] || reason.replace(/_/g, ' ')).join(', '))}</span></div>`).join('');
@@ -1244,20 +1279,21 @@ created: 2026-09-10
         <div class="batch-counts">${escapeHtml(parts.join(' · ') || 'No members')}</div>
         ${batch.empty ? '<div class="archive-meta" style="margin-top:8px">Every archive in this group is deleted. Delete the group record to remove it from this list.</div>' : ''}
         <div class="archive-actions">
-          <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
-          <button type="button" ${canRestore ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived as fresh shells' : why}">Copy restore all (layout only)</button>
+          <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
+          <button type="button" ${canLayout ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canLayout ? 'Copies one command that rebuilds the layout of every archived member that has no open copy, as fresh shells. Nothing is marked restored and every restore command stays.' : (canRestore ? 'Every archived member already has its layout open' : why)}">Copy restore all (layout only)</button>
           ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this group record. Every archive in it is already deleted.">Copy delete group</button>` : ''}
           ${valid && removable ? `<button class="danger" type="button" data-command="${escapeHtml(removeAll)}" title="Permanently deletes this group and its ${plural(removable, 'archive')}.${counts.archived ? ` ${counts.archived} still ${counts.archived === 1 ? 'is' : 'are'} archived, so their saved layouts and agent identities would be lost.` : ''} No live or restored workspace is changed.">Copy delete group + ${plural(removable, 'archive')}</button><button type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. Its archives stay as single archives.">Copy delete group record only</button>` : ''}
         </div>
         ${valid && removable ? `<div class="archive-meta" style="margin-top:8px;color:#a9273b">Delete group + ${plural(removable, 'archive')} is permanent.${counts.archived ? ` ${plural(counts.archived, 'member')} ${counts.archived === 1 ? 'is' : 'are'} still archived, so ${counts.archived === 1 ? 'its' : 'their'} saved layout and agent identity would be lost.` : ''} Delete group record only keeps the archives.</div>` : ''}
-        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(member => batchMemberView(member, session)).join('') || '<div class="tab-meta">No members</div>'}</details>
+        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Members <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(member => batchMemberView(member, session, liveIds)).join('') || '<div class="tab-meta">No members</div>'}</details>
         ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
       </article>`;
     };
     const batchesView = data => {
       const all = data.batches || [];
       const list = all.filter(batch => matches(`${batch.batch_id} ${batch.herdr_session || ''} ${(batch.members || []).map(member => `${member.workspace_label} ${member.archive_id} ${member.status}`).join(' ')}`));
-      const body = list.length ? `<div class="archives">${list.map(batchView).join('')}</div>`
+      const liveIds = new Set((data.workspaces || []).map(workspace => workspace.id));
+      const body = list.length ? `<div class="archives">${list.map(batch => batchView(batch, liveIds)).join('')}</div>`
         : `<div class="empty" style="min-height:90px">${all.length ? 'No groups match this filter.' : 'No groups yet. Preview Archive all on the Workspaces tab to capture one.'}</div>`;
       return `<div class="section-heading" style="margin-top:0"><h2>Capture groups</h2><span class="updated">Restore everything one Archive all run captured</span></div>${body}<div style="height:26px"></div>`;
     };

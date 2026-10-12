@@ -93,7 +93,18 @@ test('cleanup preview: tabs to close, protected tabs and the kept tab are parsed
   assert.deepEqual(parsed.tabs_to_close.map((tab) => [tab.tab_id, tab.pane_count]), [['w1:t3', 1], ['w1:t4', 2]]);
   assert.deepEqual(parsed.protected_tabs, [{ tab_id: 'w1:t1', label: '', pane_count: 1, reason: 'agent_detected' }]);
   assert.equal(parsed.kept_tab_id, '');
+  assert.equal(parsed.close_workspace, false);
+  assert.equal(parsed.kept_reason, '');
   assert.equal(JSON.stringify(parsed).includes('w1:p5'), false, 'pane ids are not kept');
   assert.equal(parse.parseCleanupPreview('nothing'), null);
   assert.equal(parse.parseCleanupPreview('{\n  "other": 1\n}'), null);
+});
+
+test('cleanup preview: a workspace of only empty tabs closes entirely; the kept reason is an allowlist', () => {
+  const text = (extra) => JSON.stringify({ workspace_id: 'w1', tabs_to_close: [{ tab_id: 'w1:t1', label: 'a', pane_ids: ['w1:p1'] }], protected_tabs: [], kept_tab_id: null, ...extra }, null, 2) + '\nPreview only.\n';
+  assert.equal(parse.parseCleanupPreview(text({ close_workspace: true })).close_workspace, true);
+  assert.equal(parse.parseCleanupPreview(text({ close_workspace: 'yes' })).close_workspace, false, 'only a real true counts');
+  const kept = parse.parseCleanupPreview(text({ kept_tab_id: 'w1:t2', kept_reason: 'running_inside' }));
+  assert.equal(kept.kept_reason, 'running_inside');
+  assert.equal(parse.parseCleanupPreview(text({ kept_tab_id: 'w1:t2', kept_reason: 'rm -rf /' })).kept_reason, '', 'an unknown reason is dropped');
 });

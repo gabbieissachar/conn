@@ -191,6 +191,9 @@ function parseCleanupPreview(stdout) {
     tabs_to_close: (Array.isArray(value.tabs_to_close) ? value.tabs_to_close : []).map(tab),
     protected_tabs: (Array.isArray(value.protected_tabs) ? value.protected_tabs : []).map((item) => ({ ...tab(item), reason: String(item.reason || '') })),
     kept_tab_id: typeof value.kept_tab_id === 'string' ? value.kept_tab_id : '',
+    // Set when every tab is an empty shell: the workspace itself closes with its last tab.
+    close_workspace: value.close_workspace === true,
+    kept_reason: value.kept_reason === 'running_inside' || value.kept_reason === 'only_workspace' ? value.kept_reason : '',
   };
 }
 

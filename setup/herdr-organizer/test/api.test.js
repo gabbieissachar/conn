@@ -219,7 +219,7 @@ test('cleanup-preview: previews every workspace read-only and builds copy-only c
     assert.equal(response.status, 200);
     const data = response.json.data;
     assert.deepEqual(data.workspaces.map((item) => item.workspace_id), ['w1', 'w2']);
-    assert.deepEqual(data.totals, { workspaces: 2, workspaces_with_empty_tabs: 1, tabs_to_close: 2, protected_tabs: 3, errors: 0 });
+    assert.deepEqual(data.totals, { workspaces: 2, workspaces_with_empty_tabs: 1, tabs_to_close: 2, workspaces_to_close: 0, protected_tabs: 3, errors: 0 });
     assert.deepEqual(data.workspaces[0].tabs_to_close.map((tab) => [tab.tab_id, tab.label, tab.pane_count]), [['w1:t3', 'scratch shell', 1], ['w1:t4', 'old shell', 2]]);
     assert.equal(data.workspaces[1].protected_tabs[1].reason, 'non_shell_process');
     const previews = server.calls.filter((call) => call.args.includes('cleanup-empty-tabs'));
@@ -471,5 +471,27 @@ test('archive-all-preview: a tool without the archive-all command gets a clear m
     assert.equal(response.status, 501);
     assert.equal(response.json.code, 'tool_outdated');
     assert.match(response.json.message, /does not have archive-all yet/);
+  } finally { await server.close(); }
+});
+
+test('cleanup-preview: a workspace whose every tab is empty is reported as closing entirely, and the command stays copy-only', async () => {
+  const whole = JSON.stringify({ workspace_id: 'w1', tabs_to_close: [{ tab_id: 'w1:t1', label: 'a', pane_ids: ['w1:p1'] }, { tab_id: 'w1:t2', label: 'b', pane_ids: ['w1:p2'] }], protected_tabs: [], kept_tab_id: null, kept_reason: null, close_workspace: true }, null, 2);
+  const base = fakeRunner({ handle: (file, args) => {
+    if (file === 'herdr' && args[2] === 'pane') return { code: 0, stdout: JSON.stringify({ result: { panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1' }] } }), stderr: '', timedOut: false, truncated: false };
+    if (args.includes('cleanup-empty-tabs')) return { code: 0, stdout: whole + '\nPreview only. Re-run with --execute --confirm \'w1\' to close 2 empty shell tab(s) and the workspace itself, which has nothing else in it.\n', stderr: '', timedOut: false, truncated: false };
+    return undefined;
+  } });
+  const server = await startServer({ runner: base.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('cleanup-preview', { session: 'project-a' });
+    assert.equal(response.status, 200);
+    const item = response.json.data.workspaces[0];
+    assert.equal(item.close_workspace, true);
+    assert.equal(item.kept_tab_id, '');
+    assert.equal(item.tabs_to_close.length, 2);
+    assert.equal(response.json.data.totals.workspaces_to_close, 1);
+    assert.equal(response.json.data.commands.execute_all, 'herdr-organizer --session project-a cleanup-empty-tabs --workspace w1 --execute --confirm w1');
+    for (const call of server.calls.filter((entry) => entry.args.includes('cleanup-empty-tabs'))) assert.equal(call.args.includes('--execute'), false);
   } finally { await server.close(); }
 });
