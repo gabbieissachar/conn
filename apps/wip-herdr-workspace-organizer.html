@@ -203,6 +203,9 @@ created: 2026-09-10
     .batch-counts { margin-top: 8px; color: var(--navy); font-size: 13px; }
     .member-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 0; border-top: 1px solid #eef1f6; font-size: 12px; }
     .member-line .names { min-width: 0; overflow-wrap: anywhere; }
+    .member-tabs { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0 0 8px; }
+    .member-tab { min-width: 0; overflow-wrap: anywhere; padding: 2px 8px; border-radius: 999px; background: #f2f4f9; color: var(--navy); font-size: 11px; }
+    .member-tab .tab-panes { color: #6b7490; font: 10px "DM Mono", monospace; margin-left: 4px; }
     .member-state { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; }
     .member-flag { flex-basis: 100%; color: #925a08; font-size: 11px; line-height: 1.4; }
     .archive-chip { color: #514194; font: 10px "DM Mono", monospace; }
@@ -1290,13 +1293,19 @@ created: 2026-09-10
       ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
     // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
     const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
+    // The tabs an archived workspace holds, by name, so the group shows what each workspace stores.
+    const memberTabsView = member => {
+      const tabs = (member.tabs || []).filter(tab => tab && typeof tab.label === 'string' && tab.label);
+      if (!tabs.length) return '';
+      return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span></span>`).join('')}</div>`;
+    };
     const batchMemberView = (member, session, liveIds) => {
       const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
       const restoreCommand = member.status === 'archived' ? memberRestoreCommand(member, session) : '';
       const openLayout = hasOpenLayout(member, liveIds);
       const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
         : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">Closing was not confirmed. Restore all leaves it alone. For tabs added to a group, finish-tab-add finishes it.</span>' : '';
-      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>`;
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>${memberTabsView(member)}`;
     };
     const batchView = (batch, liveIds) => {
       const counts = batch.counts || {};

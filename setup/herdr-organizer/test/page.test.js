@@ -315,3 +315,17 @@ test('a tab shows a copy button for each verified agent session id, and copying 
   assert.equal(agentSessionsView({ pane_count: 1, agent_sessions: [{ pane_id: 'w9Z:p1', client: 'claude', session_id: 'claude --resume x' }] }), '');
   assert.equal(agentSessionsView({ pane_count: 1 }), '');
 });
+
+test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
+  const view = html.slice(html.indexOf('// The tabs an archived workspace holds'), html.indexOf('const batchMemberView'));
+  const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
+  const { memberTabsView } = new Function('escapeHtml', 'plural', view + '; return { memberTabsView };')(value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])), plural);
+  const out = memberTabsView({ workspace_label: 'esim', archive_id: 'a', tabs: [{ id: 'w9J:t2', label: 'leader-esim', pane_count: 1 }, { id: 'w9J:t3', label: '<b>x</b>', pane_count: 2 }] });
+  assert.match(out, /leader-esim/);
+  assert.match(out, /1 pane/);
+  assert.match(out, /2 panes/);
+  assert.equal(out.includes('<b>x</b>'), false, 'tab names are escaped');
+  assert.equal(memberTabsView({ tabs: [] }), '');
+  assert.equal(memberTabsView({}), '');
+  assert.match(html, /\}\)\}\)<\/span>\$\{flag\}<\/div>\$\{memberTabsView\(member\)\}`|\$\{flag\}<\/div>\$\{memberTabsView\(member\)\}/);
+});
