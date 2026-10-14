@@ -26,6 +26,9 @@ class AdapterError extends Error {
 const minutes = (ms) => Math.round(ms / 60000);
 const VERIFY_TIMEOUT_MS = 900000;
 const PREFLIGHT_TIMEOUT_MS = 600000;
+// A working folder the page may show and turn into a cd command: absolute, one line, no control characters.
+const FOLDER_PATH = /^\/[^\u0000-\u001f\u007f]{0,1023}$/;
+const PANE_ID = /^[A-Za-z0-9:_-]{1,40}$/;
 const SEAL_TIMEOUT_MS = 900000;
 
 // A tool run that was killed for taking too long gets its own message, so a busy
@@ -666,8 +669,26 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     let raw;
     try { raw = await fsp.readFile(file, 'utf8'); } catch { throw new AdapterError('No snapshot yet. Refresh the snapshot first.', 404, 'no_snapshot'); }
     if (raw.length > 4 * 1024 * 1024) throw new AdapterError('The snapshot is too large to show.', 502, 'snapshot_invalid');
-    if (findLeaks(raw).length) throw new AdapterError('The snapshot contains private values and was not shown.', 502, 'snapshot_invalid');
-    try { return JSON.parse(raw); } catch { throw new AdapterError('The snapshot file is not valid JSON.', 502, 'snapshot_invalid'); }
+    let snapshot;
+    try { snapshot = JSON.parse(raw); } catch { throw new AdapterError('The snapshot file is not valid JSON.', 502, 'snapshot_invalid'); }
+    // A tab's working folders are the one place a local path is meant to reach the page, so the user can cd into them.
+    // They are checked on their own and left out of the scan that guards everything else.
+    const folders = [];
+    for (const workspace of Array.isArray(snapshot && snapshot.workspaces) ? snapshot.workspaces : []) {
+      for (const tab of Array.isArray(workspace && workspace.tabs) ? workspace.tabs : []) {
+        if (!tab || typeof tab !== 'object' || !('working_folders' in tab)) continue;
+        const list = Array.isArray(tab.working_folders) ? tab.working_folders : [];
+        const valid = list.filter((item) => item && typeof item.path === 'string' && FOLDER_PATH.test(item.path)
+          && Array.isArray(item.pane_ids) && item.pane_ids.every((id) => typeof id === 'string' && PANE_ID.test(id)));
+        folders.push([tab, valid.map((item) => ({ path: item.path, source: item.source === 'agent_files' ? 'agent_files' : 'pane', pane_ids: item.pane_ids.slice() }))]);
+        tab.working_folders = [];
+      }
+    }
+    // A folder may be a local path, but not a client session id, a socket, a bundle id or a resume command.
+    const folderLeaks = folders.some(([, valid]) => valid.some((item) => findLeaks(item.path).some((kind) => kind !== 'private-path')));
+    if (folderLeaks || findLeaks(JSON.stringify(snapshot)).length) throw new AdapterError('The snapshot contains private values and was not shown.', 502, 'snapshot_invalid');
+    for (const [tab, valid] of folders) tab.working_folders = valid;
+    return snapshot;
   }
 
   return {

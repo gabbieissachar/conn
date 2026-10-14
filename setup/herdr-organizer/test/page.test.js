@@ -229,7 +229,7 @@ test('cleanup card: a workspace of only empty tabs is shown as closing entirely,
   assert.equal(/keeps one/.test(view), false, 'the old promise that one tab always stays is gone');
 });
 
-test('add tabs to a restore group: copy-only, validated ids, finished same-session groups only, no override', () => {
+test('add tabs to the archive group: copy-only, validated ids, finished same-session groups only, no override', () => {
   const panel = html.slice(html.indexOf('const TAB_ID_PATTERN'), html.indexOf('const archiveTabKey'));
   assert.match(panel, /selected\.every\(tab => TAB_ID_PATTERN\.test\(tab\.id\)\)/);
   assert.match(panel, /BATCH_ID_PATTERN\.test\(batch\.batch_id/);
@@ -243,11 +243,47 @@ test('add tabs to a restore group: copy-only, validated ids, finished same-sessi
   assert.equal(html.includes("api.run('add-tabs"), false, 'the page never runs the command itself');
 });
 
-test('add tabs to a restore group: three modes, a disabled state with a reason, and no literal placeholder', () => {
+test('add tabs to the archive group: three modes, a disabled state with a reason, and no literal placeholder', () => {
   const panel = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
-  assert.match(panel, /\['batch', 'Add to restore group'\]/);
+  assert.match(panel, /\['batch', 'Add to archive group'\]/);
   assert.match(panel, /Run Archive all first/);
   assert.match(panel, /id="copy-move-tabs" \$\{command \? '' : 'disabled'\}/);
   assert.match(html, /data-tabs-mode/);
   assert.equal(html.includes('toggle-selected-tabs-action'), false, 'the two-way toggle is gone');
+});
+
+test('the archive group has its own tab, and the Archives tab no longer holds the group card', () => {
+  assert.match(html, /data-view="group"[^>]*>Archive group</);
+  const group = html.slice(html.indexOf('<section id="group-section"'), html.indexOf('<section id="archives-section"'));
+  assert.match(group, /id="batches"/);
+  const archives = html.slice(html.indexOf('<section id="archives-section"'), html.indexOf('</main>'));
+  assert.equal(archives.includes('id="batches"'), false, 'the group card is not on the Archives tab');
+  assert.match(html, /document\.querySelector\('#group-section'\)\.hidden = state\.view !== 'group'/);
+  assert.match(html, /VIEW_BADGES = \{[^}]*group:/);
+});
+
+test('the archive group card says it is one group per session that holds only archived workspaces', () => {
+  const card = html.slice(html.indexOf('const batchTitle'), html.indexOf('document.querySelector(\'#batches\').addEventListener'));
+  assert.match(card, /Archive group · \$\{batch\.herdr_session\}/);
+  assert.match(card, /One group per session, holding only workspaces that are still archived/);
+  assert.equal(/\[counts\.restored, 'restored'\]|\[counts\.deleted, 'deleted'\]/.test(card), false, 'restored and deleted members are not in the group, so they are not counted');
+});
+
+test('a tab shows a copy-only cd command for each working folder, quoted when the path needs it', () => {
+  const view = html.slice(html.indexOf('const shellQuote'), html.indexOf('const workspaceView'));
+  assert.match(view, /cd \$\{shellQuote\(folder\.path\)\}/);
+  assert.match(view, /data-command="\$\{escapeHtml\(command\)\}"/);
+  assert.equal(/api\.run/.test(view), false, 'showing a folder never calls the server');
+  // Run the two helpers on real values.
+  const code = view.slice(0, view.indexOf('// One line per distinct working folder'));
+  const { shellQuote, folderCommand } = new Function(code + '; return { shellQuote, folderCommand };')();
+  const root = '/Users/someone/.treehouse/firstmate-8bf1b0/3/firstmate/state/.treehouse/personal-1ab7cc/5/personal';
+  assert.equal(folderCommand({ path: root }), 'cd ' + root);
+  assert.equal(folderCommand({ path: '/Users/someone/My Work/it\'s' }), "cd '/Users/someone/My Work/it'\\''s'");
+  assert.equal(folderCommand({ path: '/tmp/a;rm -rf x' }), "cd '/tmp/a;rm -rf x'");
+  assert.equal(folderCommand({ path: 'relative/path' }), '');
+  assert.equal(folderCommand({ path: '/tmp/a\nrm x' }), '');
+  assert.equal(folderCommand({}), '');
+  assert.match(view, /agent works in/);
+  assert.match(view, /shell folder/);
 });

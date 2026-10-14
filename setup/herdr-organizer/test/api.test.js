@@ -495,3 +495,38 @@ test('cleanup-preview: a workspace whose every tab is empty is reported as closi
     for (const call of server.calls.filter((entry) => entry.args.includes('cleanup-empty-tabs'))) assert.equal(call.args.includes('--execute'), false);
   } finally { await server.close(); }
 });
+
+test('snapshot-data: a tab keeps its working folders, and a path anywhere else still refuses the snapshot', async () => {
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('herdr-organizer-test-');
+  const snapshot = 'state/workspace-organizer/live-snapshot.json';
+  tree.mkdir('state/workspace-organizer');
+  const server = await startServer({ toolRoot: tree.root });
+  const folder = '/Users/someone/.treehouse/firstmate-8bf1b0/3/firstmate/state/.treehouse/personal-1ab7cc/5/personal';
+  const tab = (extra) => ({ id: 'w9Z:t2', label: 'Work', index: 0, pane_count: 1, working_folders: [{ path: folder, source: 'agent_files', pane_ids: ['w9Z:p1'] }], ...extra });
+  const write = (value) => require('fs').writeFileSync(tree.abs(snapshot), JSON.stringify(value));
+  try {
+    const { post } = await client(server);
+    tree.write(snapshot, '{}');
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab()] }], archives: [] });
+    const ok = await post('snapshot-data');
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json.data.workspaces[0].tabs[0].working_folders, [{ path: folder, source: 'agent_files', pane_ids: ['w9Z:p1'] }]);
+    // A path in a label (or any other field) is still a private value.
+    write({ workspaces: [{ id: 'w9Z', label: folder, tabs: [tab()] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ label: folder })] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+    // A folder that is not a clean absolute path is dropped, never shown.
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ working_folders: [{ path: 'relative', pane_ids: ['w9Z:p1'] }, { path: '/tmp/a\nb', pane_ids: ['w9Z:p1'] }, { path: '/tmp/ok', pane_ids: ['bad id'] }, { path: '/tmp/ok', pane_ids: ['w9Z:p1'] }] })] }], archives: [] });
+    const cleaned = await post('snapshot-data');
+    assert.equal(cleaned.status, 200);
+    assert.deepEqual(cleaned.json.data.workspaces[0].tabs[0].working_folders, [{ path: '/tmp/ok', source: 'pane', pane_ids: ['w9Z:p1'] }]);
+    // A client session id inside a folder path still blocks the snapshot.
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ working_folders: [{ path: '/tmp/11111111-2222-4333-8444-555555555555', pane_ids: ['w9Z:p1'] }] })] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+  } finally {
+    await server.close();
+    tree.cleanup();
+  }
+});
