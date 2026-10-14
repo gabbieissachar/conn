@@ -426,8 +426,10 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return main, task, other, logs
 
-    def write_log(self, logs, session_id, paths=(), commands=()):
+    def write_log(self, logs, session_id, paths=(), commands=(), edits=()):
         lines = []
+        for path in edits:
+            lines.append({"message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": str(path)}}]}})
         for path in paths:
             lines.append({"message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": str(path)}}]}})
         for command in commands:
@@ -459,6 +461,24 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         old = [task / "a.txt"] * (ORGANIZER.AGENT_RECENT_PATHS + 50)
         self.write_log(logs, sid, paths=old + [second / "a.txt"] * ORGANIZER.AGENT_RECENT_PATHS)
         self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(second))
+
+    def test_writes_decide_the_clone_and_reads_only_break_a_tie_when_nothing_was_written(self):
+        main, task, other, logs = self.agent_world()
+        second = main.parent.parent / "task" / "app2"
+        self.git(main, "worktree", "add", "-q", "-b", "task2", str(second))
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        pane = self.agent_pane(main, sid)
+        # Many reads of one clone, a few edits in the other: the edited one is where the agent works.
+        self.write_log(logs, sid, paths=[task / "a.txt"] * 30, edits=[second / "a.txt"] * 2)
+        self.assertEqual(ORGANIZER.inferred_agent_folder(pane), str(second))
+        # A shell command that changes files counts as a write. A read-only one does not.
+        self.write_log(logs, sid, paths=[task / "a.txt"] * 5, commands=[f"git -C {second} commit -m x", f"cat {task}/a.txt", f"ls {task}", f"echo hi > {second}/out.txt"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(pane), str(second))
+        self.write_log(logs, sid, commands=[f"grep -r foo {task}", f"cat {task}/a.txt && ls {second}"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(pane), str(task), "no writes: the most read clone decides")
+        # A write to the shell's own checkout is not a clone, so the reads still decide.
+        self.write_log(logs, sid, paths=[task / "a.txt"] * 3, edits=[main / "a.txt"] * 9)
+        self.assertEqual(ORGANIZER.inferred_agent_folder(pane), str(task))
 
     def test_nothing_is_inferred_without_a_clone_other_than_the_shells_own(self):
         main, task, other, logs = self.agent_world()

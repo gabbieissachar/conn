@@ -902,6 +902,12 @@ AGENT_LOG_TAIL_BYTES = 4_000_000
 AGENT_RECENT_PATHS = 400
 ABSOLUTE_PATH_IN_COMMAND = re.compile(r"(?<![\w.])/(?:Users|home|Volumes|opt|private)/[^\s'\"`;|&()<>\\]+")
 SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+# Tools that change a file, and shell commands that most likely do. A command that only reads or lists is not a write.
+AGENT_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+SHELL_WRITE_COMMAND = re.compile(
+    r"(?:^|[\s;&|(])(?:git\s+(?:-C\s+\S+\s+)?(?:add|commit|mv|rm|checkout|switch|restore|stash|apply|merge|rebase|cherry-pick)"
+    r"|mv|cp|rm|mkdir|touch|tee|ln|install|patch|truncate|sed\s+-i\S*)\b|>>?\s*[\w\"'/.$~]"
+)
 
 
 def clean_folder(value: object) -> str | None:
@@ -938,8 +944,8 @@ def claude_session_log(session_id: str) -> Path | None:
     return next(iter(sorted(CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))), None)
 
 
-def recent_claude_paths(log: Path) -> list[str]:
-    """Absolute paths in the tool calls at the end of a Claude session log, oldest first."""
+def recent_claude_paths(log: Path) -> list[tuple[str, bool]]:
+    """(absolute path, was it written) for the tool calls at the end of a Claude session log, oldest first."""
     try:
         with log.open("rb") as handle:
             size = handle.seek(0, os.SEEK_END)
@@ -949,7 +955,7 @@ def recent_claude_paths(log: Path) -> list[str]:
             lines = handle.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return []
-    found: list[str] = []
+    found: list[tuple[str, bool]] = []
     for line in lines:
         if '"tool_use"' not in line:
             continue
@@ -962,12 +968,14 @@ def recent_claude_paths(log: Path) -> list[str]:
             if not isinstance(block, dict) or block.get("type") != "tool_use" or not isinstance(block.get("input"), dict):
                 continue
             tool_input = block["input"]
+            writes = block.get("name") in AGENT_WRITE_TOOLS
             found.extend(
-                value for key in ("file_path", "path", "notebook_path")
+                (value, writes) for key in ("file_path", "path", "notebook_path")
                 if isinstance((value := tool_input.get(key)), str) and value.startswith("/")
             )
             if isinstance(tool_input.get("command"), str):
-                found.extend(ABSOLUTE_PATH_IN_COMMAND.findall(tool_input["command"]))
+                command_writes = bool(SHELL_WRITE_COMMAND.search(tool_input["command"]))
+                found.extend((path, command_writes) for path in ABSOLUTE_PATH_IN_COMMAND.findall(tool_input["command"]))
     return found[-AGENT_RECENT_PATHS:]
 
 
@@ -977,8 +985,10 @@ def inferred_agent_folder(pane: dict[str, Any]) -> str | None:
     Herdr reports the shell's folder. An agent often starts in a project's main checkout and edits in a separate
     worktree of the same project, using absolute paths, so the shell folder says nothing about where the work is. The
     session log lists the files the agent touched. Among the worktrees of the shell folder's own repository (same shared
-    git directory), the one the agent touched most in its recent tool calls is its working clone. Nothing is inferred
-    when the shell is not in a repository, the log is missing, or the agent only touched the shell's own checkout.
+    git directory), the one the agent wrote to most in its recent tool calls is its working clone: edits, writes and
+    shell commands that change files count, and reads or listings do not. Only when the agent wrote to none of them does
+    the one it read most decide. Nothing is inferred when the shell is not in a repository, the log is missing, or the
+    agent only touched the shell's own checkout.
     """
     shell = clean_folder(pane.get("foreground_cwd") or pane.get("cwd"))
     session = pane.get("agent_session")
@@ -990,15 +1000,18 @@ def inferred_agent_folder(pane: dict[str, Any]) -> str | None:
         return None
     shell_root, common = shell_repo
     repos: dict[str, tuple[str, str] | None] = {}
-    counts: dict[str, int] = {}
-    for path in recent_claude_paths(log):
+    written: dict[str, int] = {}
+    read: dict[str, int] = {}
+    for path, was_written in recent_claude_paths(log):
         # A touched file belongs to the nearest folder that is a repository root; cache by folder to keep git calls few.
         folder = path if os.path.isdir(path) else os.path.dirname(path)
         if folder not in repos:
             repos[folder] = git_root_and_common_dir(folder)
         repo = repos[folder]
         if repo and repo[1] == common and repo[0] != shell_root:
-            counts[repo[0]] = counts.get(repo[0], 0) + 1
+            bucket = written if was_written else read
+            bucket[repo[0]] = bucket.get(repo[0], 0) + 1
+    counts = written or read
     if not counts:
         return None
     return clean_folder(max(counts, key=lambda root: counts[root]))
