@@ -246,7 +246,8 @@ test('add tabs to the archive group: copy-only, validated ids, finished same-ses
 test('add tabs to the archive group: three modes, a disabled state with a reason, and no literal placeholder', () => {
   const panel = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
   assert.match(panel, /\['batch', 'Add to archive group'\]/);
-  assert.match(panel, /Run Archive all first/);
+  assert.match(panel, /Run Archive all again to finish it/);
+  assert.match(panel, /This session has no archive group yet\. The command starts it with these tabs/);
   assert.match(panel, /id="copy-move-tabs" \$\{command \? '' : 'disabled'\}/);
   assert.match(html, /data-tabs-mode/);
   assert.equal(html.includes('toggle-selected-tabs-action'), false, 'the two-way toggle is gone');
@@ -286,4 +287,12 @@ test('a tab shows a copy-only cd command for each working folder, quoted when th
   assert.equal(folderCommand({}), '');
   assert.match(view, /agent works in/);
   assert.match(view, /shell folder/);
+});
+
+test('with no archive group yet, adding tabs starts it, confirmed by the session name, copy-only', () => {
+  const panel = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
+  assert.match(panel, /!batchChoices\.length && SESSION_NAME_PATTERN\.test\(data\.herdr_session/);
+  assert.match(panel, /add-tabs-to-batch \$\{tabArgs\}`/);
+  assert.match(panel, /--execute --confirm \$\{newGroupSession\}/);
+  assert.equal(/api\.run/.test(panel), false, 'the panel never calls the server');
 });

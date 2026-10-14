@@ -337,8 +337,13 @@ created: 2026-09-10
       if (mode === 'move' && !destinationChoices.some(workspace => workspace.id === state.destinationWorkspace)) state.destinationWorkspace = destinationChoices[0]?.id || '';
       const destination = mode === 'archive' ? state.selectedTabsArchive : mode === 'batch' ? state.selectedTabsBatch : state.destinationWorkspace;
       const chosenBatch = mode === 'batch' ? batchChoices.find(batch => batch.batch_id === destination) : null;
-      const batchBase = chosenBatch && validTabs ? `herdr-organizer --session ${chosenBatch.herdr_session} add-tabs-to-batch --batch ${destination} ${tabArgs}` : '';
-      const command = !destination ? ''
+      // A session with no archive group yet gets one from the first add. Its id is chosen when the command runs, so that run is confirmed with the session name.
+      const newGroupSession = mode === 'batch' && !batchChoices.length && SESSION_NAME_PATTERN.test(data.herdr_session || '')
+        && !(data.batches || []).some(batch => batch.herdr_session === data.herdr_session) ? data.herdr_session : '';
+      const batchBase = chosenBatch && validTabs ? `herdr-organizer --session ${chosenBatch.herdr_session} add-tabs-to-batch --batch ${destination} ${tabArgs}`
+        : newGroupSession && validTabs ? `herdr-organizer --session ${newGroupSession} add-tabs-to-batch ${tabArgs}` : '';
+      const command = mode === 'batch' && newGroupSession ? (batchBase ? `${batchBase} --execute --confirm ${newGroupSession}` : '')
+        : !destination ? ''
         : mode === 'archive' ? `herdr-organizer archive-tabs ${tabArgs} --into-archive ${destination} --execute --confirm ${destination}`
         : mode === 'batch' ? (batchBase ? `${batchBase} --execute --confirm ${destination}` : '')
         : `herdr-organizer move-tabs ${tabArgs} --to-workspace ${destination} --execute --confirm ${destination}`;
@@ -347,21 +352,24 @@ created: 2026-09-10
         : mode === 'batch'
           ? (batchChoices.length
             ? `${selected.length} selected. The command captures them into the archive group, then closes them and stops their processes. A workspace that already has an entry in the group merges into it. Copy the preview first.`
-            : `${selected.length} selected. This session has no archive group yet, or its last Archive all did not finish. Run Archive all first.`)
+            : newGroupSession
+              ? `${selected.length} selected. This session has no archive group yet. The command starts it with these tabs, then closes them and stops their processes. Copy the preview first.`
+              : `${selected.length} selected. The archive group's last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.`)
           : `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
       const title = mode === 'archive' ? 'Archive selected tabs' : mode === 'batch' ? 'Add selected tabs to the archive group' : 'Move selected tabs to another workspace';
       const label = mode === 'archive' ? 'Existing archive' : mode === 'batch' ? 'Archive group' : 'Destination workspace';
       const options = mode === 'archive'
         ? destinationChoices.map(archive => `<option value="${escapeHtml(archive.archive_id)}" ${archive.archive_id === destination ? 'selected' : ''}>${escapeHtml(archive.workspace_label || archive.archive_id)} (${escapeHtml(archive.archive_id)})</option>`).join('')
         : mode === 'batch'
-          ? batchChoices.map(batch => `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batch.batch_id)}" ${batch.batch_id === destination ? 'selected' : ''}>${escapeHtml(batchStamp(batch))}</option>`).join('')
+          ? (newGroupSession ? `<option value="" selected>New archive group for ${escapeHtml(newGroupSession)}</option>`
+            : batchChoices.map(batch => `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batch.batch_id)}" ${batch.batch_id === destination ? 'selected' : ''}>${escapeHtml(batchStamp(batch))}</option>`).join(''))
           : destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('');
       const modes = TAB_MODES.map(([key, text]) => `<button class="mode-switch" type="button" data-tabs-mode="${key}" aria-pressed="${key === mode}">${text}</button>`).join('');
       const buttons = mode === 'batch'
-        ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which member each workspace joins and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close tabs</button></div>`
+        ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which entry each workspace joins, or that it starts the group, and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close tabs</button></div>`
         : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${mode === 'archive' ? 'Copy archive selected tabs' : 'Copy move + resume'}</button>`;
       return `<div><strong>${title}</strong><p>${escapeHtml(detail)}</p><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div></div>
-        <label>${label}<select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length ? '' : 'disabled'}><option value="">Choose destination</option>${options}</select></label>
+        <label>${label}<select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>
         ${buttons}`;
     };
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
