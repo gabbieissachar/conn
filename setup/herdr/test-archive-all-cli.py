@@ -145,18 +145,28 @@ r = run("restore-batch", "--batch", bid, "--resume-agents", "--execute", "--conf
 assert len(state()["created"]) == 2, "resume must use the open layout copies, not make new workspaces"
 assert len(state()["sent"]) == 1 and state()["sent"][0] in ("w11:p1", "w12:p1"), state()["sent"]; ok("restore-batch --resume-agents adopts the open workspaces and sends one resume")
 b = json.loads(run("list-batches", check=0).stdout)[0]
-assert {m["workspace_label"]: m["status"] for m in b["members"]} == {"Alpha": "resumed", "Beta": "restored"}, b["members"]; ok("only now are the members marked restored")
+assert b["batch_id"] == bid and b["members"] == [] and b["empty"], b; ok("restored members left the group, and the group stays, empty")
+assert sorted(json.loads(path.read_text())["status"] for path in archives_dir.glob("*.json")) == ["restored", "resumed"]; ok("their archives are kept as single archives, marked restored")
 r = run("restore-batch", "--batch", bid, "--resume-agents", "--execute", "--confirm", bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["sent"]) == 1 and len(state()["created"]) == 2; ok("second resume restores nothing (no duplicates, no second resume)")
-r = run("delete-batch", "--batch", bid, "--archives", check=0); assert "2 archive(s)" in r.stdout and len(list(archives_dir.glob("*.json"))) == 2; ok("delete-batch --archives preview deletes nothing")
-r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", bid, check=1); assert len(list(archives_dir.glob("*.json"))) == 2; ok("delete-batch --archives refuses the record-only confirmation (the batch id)")
-r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", "delete-archives:" + bid, check=0); assert list(archives_dir.glob("*.json")) == [] and json.loads(run("list-batches", check=0).stdout) == []; ok("delete-batch --archives removed the group record and both archives")
+# The two restored workspaces (w11, w12) are archived again: the same group takes them as new entries.
+run("archive-all", "--execute", "--confirm", "e2e", check=0)
+batches = json.loads(run("list-batches", check=0).stdout)
+assert len(batches) == 1 and batches[0]["batch_id"] == bid and batches[0]["counts"]["archived"] == 2, batches; ok("archiving them again joins the same group as 2 new entries")
+assert len(list(archives_dir.glob("*.json"))) == 4; ok("the two restored archives and the two new ones all exist")
+r = run("delete-batch", "--batch", bid, "--archives", check=0); assert "2 archive(s)" in r.stdout and len(list(archives_dir.glob("*.json"))) == 4; ok("delete-batch --archives preview deletes nothing and counts only the group's members")
+r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", bid, check=1); assert len(list(archives_dir.glob("*.json"))) == 4; ok("delete-batch --archives refuses the record-only confirmation (the batch id)")
+r = run("delete-batch", "--batch", bid, "--archives", "--execute", "--confirm", "delete-archives:" + bid, check=0); assert len(list(archives_dir.glob("*.json"))) == 2 and json.loads(run("list-batches", check=0).stdout) == []; ok("delete-batch --archives removed the group record and its 2 archives; the 2 restored archives stay")
 # interruption
 fresh()
+archives_before = len(list(archives_dir.glob("*.json")))
 p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", "archive-all", "--execute", "--confirm", "e2e"], env={**env, "FAKE_SLOW_CLOSE": "w2"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 for _ in range(100):
     if "w1" in state()["closed"]: break
     time.sleep(0.1)
-time.sleep(0.5); p.send_signal(signal.SIGINT); out, err = p.communicate(timeout=20)
+for _ in range(100):  # interrupt only once w2's archive exists, so the run is inside its slow close
+    if len(list(archives_dir.glob("*.json"))) >= archives_before + 2: break
+    time.sleep(0.1)
+time.sleep(0.3); p.send_signal(signal.SIGINT); out, err = p.communicate(timeout=20)
 assert p.returncode != 0
 bs = sorted(json.loads(run("list-batches", check=0).stdout), key=lambda x: x["created_at"])
 latest = [x for x in bs if x["status"] == "interrupted"]; assert len(latest) == 1, [x["status"] for x in bs]
@@ -185,7 +195,23 @@ r = run("restore", "--archive", archive_id, "--execute", "--confirm", archive_id
 r = run("restore", "--archive", archive_id, "--execute", "--confirm", archive_id, check=0); assert "already has its layout open" in r.stdout, r.stdout; ok("the fresh layout copy is then found instead of making another")
 r = run("restore", "--archive", archive_id, "--resume-agents", "--execute", "--confirm", archive_id, check=0); assert "No new workspace was made" in r.stdout; ok("restore + resume adopts the open copy")
 r = run("restore", "--archive", archive_id, "--resume-agents", "--execute", "--confirm", archive_id, check=1); assert "already restored" in r.stderr; ok("a restored archive is refused without --force")
+# ---- one group per session: a workspace archived again while its layout copy is open replaces its entry ----
+def reset_organizer_state():
+    for name in ("archives", "batches"): shutil.rmtree(tool / "state" / "workspace-organizer" / name, ignore_errors=True)
+reset_organizer_state(); fresh()
+run("archive-all", "--execute", "--confirm", "e2e", check=0)
+first = json.loads(run("list-batches", check=0).stdout)[0]; first_ids = sorted(m["archive_id"] for m in first["members"]); assert len(first_ids) == 2
+r = run("restore-batch", "--execute", "--confirm", first["batch_id"], check=0)  # no --batch: the session's one group
+assert len(state()["created"]) == 2 and "laid out 2 of 2" in r.stdout, r.stdout; ok("restore-batch without --batch uses the session's one group")
+r = run("archive-all", check=0); assert "archive 2 workspace(s)" in r.stdout; ok("the layout copies are on the archive-all list")
+run("archive-all", "--execute", "--confirm", "e2e", check=0)
+groups = json.loads(run("list-batches", check=0).stdout); assert len(groups) == 1 and groups[0]["batch_id"] == first["batch_id"]; ok("the session still has one group")
+new_ids = sorted(m["archive_id"] for m in groups[0]["members"]); assert len(new_ids) == 2 and not set(new_ids) & set(first_ids), new_ids; ok("the two layout copies replaced the two earlier entries, so no workspace is listed twice")
+for old in first_ids:
+    left = json.loads((archives_dir / f"{old}.json").read_text()); assert left["status"] == "archived" and left["left_group"]["reason"] == "replaced" and left["left_group"]["by"] in new_ids, left
+ok("each replaced archive is kept as a single archive and says which entry replaced it")
 # ---- add selected live tabs to a finished batch ----
+reset_organizer_state(); fresh()
 def live_workspace(wid, label, tabs):
     st = state(); snap = st["snapshot"]
     snap["workspaces"].append({"workspace_id": wid, "label": label, "focused": False})
@@ -196,9 +222,8 @@ def live_workspace(wid, label, tabs):
 def members_of(batch_id):
     return {m["workspace_label"]: m for x in json.loads(run("list-batches", check=0).stdout) if x["batch_id"] == batch_id for m in x["members"]}
 fresh()
-known = {x["batch_id"] for x in json.loads(run("list-batches", check=0).stdout)}
 run("archive-all", "--execute", "--confirm", "e2e", check=0)
-bid = next(x["batch_id"] for x in json.loads(run("list-batches", check=0).stdout) if x["batch_id"] not in known)
+(only_group,) = json.loads(run("list-batches", check=0).stdout); bid = only_group["batch_id"]
 alpha = members_of(bid)["Alpha"]
 run("restore", "--archive", alpha["archive_id"], "--execute", "--confirm", alpha["archive_id"], check=0)
 layout_ws = members_of(bid)["Alpha"]["layout_workspace_id"]; assert layout_ws, "the layout-only restore left a workspace open"
@@ -226,7 +251,12 @@ assert len(state()["created"]) - before == 3, r.stdout; ok("restore-batch lays o
 # Ctrl-C while the only remaining Gamma tab is closing: its workspace closes whole, and the merge target is found by its original id
 live_gamma = members_of(bid)["Gamma (selected tabs)"]["archive_id"]
 p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", "add-tabs-to-batch", "--batch", bid, "--tab", "w20:t3", "--execute", "--confirm", bid], env={**env, "FAKE_SLOW_CLOSE": "w20"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-time.sleep(2); p.send_signal(signal.SIGINT); p.communicate(timeout=20); assert p.returncode != 0
+for _ in range(150):  # interrupt only once the add is inside its slow close: the archive says its last add is prepared
+    try:
+        if json.loads((archives_dir / f"{live_gamma}.json").read_text())["tab_archives"][-1]["status"] == "prepared": break
+    except (OSError, ValueError, KeyError, IndexError): pass
+    time.sleep(0.1)
+time.sleep(0.3); p.send_signal(signal.SIGINT); p.communicate(timeout=20); assert p.returncode != 0
 settled = json.loads((archives_dir / f"{live_gamma}.json").read_text())
 assert settled["status"] == "close_failed" and "w20:t3" in settled["error"] and settled["tab_archives"][-1]["status"] == "close_partial", settled["status"]
 assert [t["source_tab_id"] for t in settled["capture"]["tabs"]] == ["w20:t1", "w20:t2", "w20:t3"]; ok("Ctrl-C mid add: merged by original workspace id, archive 'close_failed', the still-open tab is named")

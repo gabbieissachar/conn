@@ -897,6 +897,133 @@ def load_archives() -> list[dict[str, Any]]:
     return sorted(archives, key=lambda archive: str(archive.get("created_at", "")), reverse=True)
 
 
+CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser() / "projects"
+AGENT_LOG_TAIL_BYTES = 4_000_000
+AGENT_RECENT_PATHS = 400
+ABSOLUTE_PATH_IN_COMMAND = re.compile(r"(?<![\w.])/(?:Users|home|Volumes|opt|private)/[^\s'\"`;|&()<>\\]+")
+SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+
+
+def clean_folder(value: object) -> str | None:
+    if isinstance(value, str) and value.startswith("/") and not any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return value
+    return None
+
+
+def git_root_and_common_dir(path: str) -> tuple[str, str] | None:
+    """The repository root a path is in and the shared git directory every worktree of that repository points at."""
+    folder = path
+    while folder and not os.path.isdir(folder):
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return None
+        folder = parent
+    try:
+        completed = subprocess.run(
+            ["git", "-C", folder, "rev-parse", "--show-toplevel", "--git-common-dir"],
+            check=False, text=True, capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = completed.stdout.splitlines()
+    if completed.returncode != 0 or len(lines) != 2:
+        return None
+    common = Path(lines[1]) if Path(lines[1]).is_absolute() else Path(folder) / lines[1]
+    return lines[0], str(common.resolve())
+
+
+def claude_session_log(session_id: str) -> Path | None:
+    if not SAFE_SESSION_ID.match(session_id) or not CLAUDE_PROJECTS_DIR.is_dir():
+        return None
+    return next(iter(sorted(CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))), None)
+
+
+def recent_claude_paths(log: Path) -> list[str]:
+    """Absolute paths in the tool calls at the end of a Claude session log, oldest first."""
+    try:
+        with log.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - AGENT_LOG_TAIL_BYTES))
+            if size > AGENT_LOG_TAIL_BYTES:
+                handle.readline()
+            lines = handle.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    found: list[str] = []
+    for line in lines:
+        if '"tool_use"' not in line:
+            continue
+        try:
+            message = json.loads(line).get("message") or {}
+        except (ValueError, AttributeError):
+            continue
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use" or not isinstance(block.get("input"), dict):
+                continue
+            tool_input = block["input"]
+            found.extend(
+                value for key in ("file_path", "path", "notebook_path")
+                if isinstance((value := tool_input.get(key)), str) and value.startswith("/")
+            )
+            if isinstance(tool_input.get("command"), str):
+                found.extend(ABSOLUTE_PATH_IN_COMMAND.findall(tool_input["command"]))
+    return found[-AGENT_RECENT_PATHS:]
+
+
+def inferred_agent_folder(pane: dict[str, Any]) -> str | None:
+    """The clone a Claude agent really works in, when that differs from the folder its shell started in.
+
+    Herdr reports the shell's folder. An agent often starts in a project's main checkout and edits in a separate
+    worktree of the same project, using absolute paths, so the shell folder says nothing about where the work is. The
+    session log lists the files the agent touched. Among the worktrees of the shell folder's own repository (same shared
+    git directory), the one the agent touched most in its recent tool calls is its working clone. Nothing is inferred
+    when the shell is not in a repository, the log is missing, or the agent only touched the shell's own checkout.
+    """
+    shell = clean_folder(pane.get("foreground_cwd") or pane.get("cwd"))
+    session = pane.get("agent_session")
+    if pane.get("agent") != "claude" or not shell or not isinstance(session, dict) or not isinstance(session.get("value"), str):
+        return None
+    log = claude_session_log(session["value"])
+    shell_repo = git_root_and_common_dir(shell)
+    if log is None or shell_repo is None:
+        return None
+    shell_root, common = shell_repo
+    repos: dict[str, tuple[str, str] | None] = {}
+    counts: dict[str, int] = {}
+    for path in recent_claude_paths(log):
+        # A touched file belongs to the nearest folder that is a repository root; cache by folder to keep git calls few.
+        folder = path if os.path.isdir(path) else os.path.dirname(path)
+        if folder not in repos:
+            repos[folder] = git_root_and_common_dir(folder)
+        repo = repos[folder]
+        if repo and repo[1] == common and repo[0] != shell_root:
+            counts[repo[0]] = counts.get(repo[0], 0) + 1
+    if not counts:
+        return None
+    return clean_folder(max(counts, key=lambda root: counts[root]))
+
+
+def pane_working_folders(panes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The distinct folders a tab's panes work in, each with the panes that are in it, so the page can offer a cd.
+
+    An agent's inferred working clone (source `agent_files`) comes first. The folder a pane's foreground process runs
+    in wins over the folder the pane started in (source `pane`). Only an absolute single-line path is kept; anything
+    else cannot be turned into a safe command.
+    """
+    folders: dict[tuple[str, str], list[str]] = {}
+    for pane in panes:
+        pane_id = str(pane.get("pane_id"))
+        agent_folder = inferred_agent_folder(pane)
+        if agent_folder:
+            folders.setdefault((agent_folder, "agent_files"), []).append(pane_id)
+        folder = clean_folder(pane.get("foreground_cwd") or pane.get("cwd"))
+        if folder:
+            folders.setdefault((folder, "pane"), []).append(pane_id)
+    ordered = sorted(folders.items(), key=lambda item: item[0][1] != "agent_files")
+    return [{"path": path, "source": source, "pane_ids": pane_ids} for (path, source), pane_ids in ordered]
+
+
 def public_workspace(
     snapshot: dict[str, Any], workspace: dict[str, Any], session: str | None, records: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -927,6 +1054,7 @@ def public_workspace(
                 "pane_count": len(panes),
                 "agent_statuses": statuses,
                 "agent_resume": agent_resume,
+                "working_folders": pane_working_folders(panes),
             }
         )
     return {
@@ -1118,13 +1246,177 @@ def batch_id_for() -> str:
     return candidate
 
 
+# ---- One archive group per Herdr session ----
+#
+# A session has one group for its whole life. Archive all and add-tabs-to-batch add to it. A member leaves the group
+# when its archive is restored (or deleted), so the group holds only workspaces that are still archived. A workspace
+# that is archived again after a restore becomes a new member, and a member whose workspace is archived again while
+# its layout copy is still open is replaced, so one workspace never has two entries. Groups made before this rule
+# (one per Archive all run) are merged into the session's oldest group the first time a locked command runs.
+
+GROUP_LEAVING_STATUSES = RESTORED_STATUSES | {"deleted"}
+
+
+def group_session_key(manifest: dict[str, Any]) -> str:
+    return str(manifest.get("herdr_session") or "")
+
+
+def group_batch_ids(manifest: dict[str, Any]) -> set[str]:
+    """The batch ids an archive may carry and still belong to this group (its own and the ones merged into it)."""
+    return {str(manifest.get("batch_id")), *(str(item) for item in manifest.get("merged_from", []) or [])}
+
+
+def prune_group_members(manifest: dict[str, Any]) -> list[str]:
+    """Drop members that were restored or whose archive is gone. Returns the archive ids dropped."""
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for member in manifest.get("members", []):
+        if isinstance(member, dict) and batch_member_view(member)["status"] not in GROUP_LEAVING_STATUSES:
+            kept.append(member)
+        else:
+            dropped.append(str(member.get("archive_id")) if isinstance(member, dict) else "")
+    if dropped:
+        manifest["members"] = kept
+    return dropped
+
+
+def read_group_manifests() -> list[tuple[Path, dict[str, Any]]]:
+    if not BATCH_DIR.exists():
+        return []
+    found: list[tuple[Path, dict[str, Any]]] = []
+    for path in BATCH_DIR.glob("*.json"):
+        try:
+            manifest = read_json(path, {})
+        except OrganizerError:
+            continue
+        if isinstance(manifest, dict) and isinstance(manifest.get("batch_id"), str) and BATCH_ID_PATTERN.match(manifest["batch_id"]):
+            found.append((path, manifest))
+    return sorted(found, key=lambda item: (str(item[1].get("created_at", "")), str(item[1]["batch_id"])))
+
+
+def merge_group_manifests(manifests: list[dict[str, Any]]) -> dict[str, Any]:
+    """One group out of several manifests of the same session: the oldest one, holding every member once."""
+    ordered = sorted(manifests, key=lambda item: (str(item.get("created_at", "")), str(item.get("batch_id"))))
+    merged = copy.deepcopy(ordered[0])
+    if len(ordered) == 1:
+        return merged
+    seen = {str(member.get("archive_id")) for member in merged.get("members", []) if isinstance(member, dict)}
+    for other in ordered[1:]:
+        for member in other.get("members", []):
+            if isinstance(member, dict) and str(member.get("archive_id")) not in seen:
+                seen.add(str(member.get("archive_id")))
+                merged.setdefault("members", []).append(copy.deepcopy(member))
+    newest = ordered[-1]
+    merged["skipped"] = copy.deepcopy(newest.get("skipped", []))
+    for key in ("status", "completed_at", "updated_at"):
+        if key in newest:
+            merged[key] = newest[key]
+    merged["merged_from"] = sorted({*(merged.get("merged_from") or []), *(str(item["batch_id"]) for item in ordered[1:])})
+    return merged
+
+
+def load_groups() -> list[tuple[Path, dict[str, Any]]]:
+    """Every session's group as it would look after the merge and the prune, without writing anything."""
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for _, manifest in read_group_manifests():
+        by_session.setdefault(group_session_key(manifest), []).append(manifest)
+    groups: list[tuple[Path, dict[str, Any]]] = []
+    for manifests in by_session.values():
+        merged = merge_group_manifests(manifests)
+        prune_group_members(merged)
+        groups.append((BATCH_DIR / f"{merged['batch_id']}.json", merged))
+    return sorted(groups, key=lambda item: str(item[1].get("created_at", "")), reverse=True)
+
+
+def group_for_session(session: str | None) -> tuple[Path, dict[str, Any]] | None:
+    return next((item for item in load_groups() if group_session_key(item[1]) == str(session or "")), None)
+
+
+def settle_groups() -> None:
+    """Write the merge and the prune to disk. Callers hold the run lock.
+
+    The canonical manifest is written first, then the archives it took over are re-pointed, and the manifests it replaced
+    are removed last, so an interruption leaves a state that the next call finishes.
+    """
+    by_session: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    for path, manifest in read_group_manifests():
+        by_session.setdefault(group_session_key(manifest), []).append((path, manifest))
+    for items in by_session.values():
+        merged = merge_group_manifests([manifest for _, manifest in items])
+        prune_group_members(merged)
+        canonical_path = BATCH_DIR / f"{merged['batch_id']}.json"
+        replaced = [path for path, manifest in items if manifest["batch_id"] != merged["batch_id"]]
+        if not replaced and merged == dict(items[0][1]):
+            continue
+        merged.pop("merged_from", None)
+        merged["updated_at"] = now()
+        write_json(canonical_path, merged)
+        for member in merged.get("members", []):
+            archive_id = str(member.get("archive_id") or "")
+            if not archive_id or Path(archive_id).name != archive_id:
+                continue
+            archive_path = ARCHIVE_DIR / f"{archive_id}.json"
+            try:
+                archive = read_json(archive_path, None)
+            except OrganizerError:
+                continue
+            if isinstance(archive, dict) and archive.get("batch_id") != merged["batch_id"]:
+                archive["batch_id"] = merged["batch_id"]
+                write_json(archive_path, archive)
+        for path in replaced:
+            path.unlink(missing_ok=True)
+
+
+def prune_group_files() -> None:
+    """After a restore or a delete, take the members that left out of their group. Callers hold the run lock."""
+    for path, manifest in read_group_manifests():
+        if prune_group_members(manifest):
+            manifest["updated_at"] = now()
+            write_json(path, manifest)
+
+
 def batch_by_id(batch_id: str) -> tuple[Path, dict[str, Any]]:
     if not isinstance(batch_id, str) or not BATCH_ID_PATTERN.match(batch_id):
         raise OrganizerError("Batch ID must look like batch-YYYYMMDD-HHMMSS.")
-    path = BATCH_DIR / f"{batch_id}.json"
-    if not path.exists():
-        raise OrganizerError(f"Batch {batch_id!r} was not found.")
-    return path, read_json(path, {})
+    groups = load_groups()
+    found = next((item for item in groups if item[1].get("batch_id") == batch_id), None)
+    if found:
+        return found
+    merged_into = next((item[1]["batch_id"] for item in groups if batch_id in (item[1].get("merged_from") or [])), None)
+    if merged_into:
+        raise OrganizerError(
+            f"Batch {batch_id!r} is now part of the one archive group for its session: {merged_into!r}. Use that ID."
+        )
+    raise OrganizerError(f"Batch {batch_id!r} was not found.")
+
+
+def resolve_group_argument(args: argparse.Namespace) -> str:
+    """The group a command names, or the one group of the session when it names none."""
+    if getattr(args, "batch", None):
+        return args.batch
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if not session:
+        raise OrganizerError("Pass --batch, or --session to use that session's archive group.")
+    found = group_for_session(session)
+    if found is None:
+        raise OrganizerError(
+            f"Session {session!r} has no archive group yet. Run archive-all first, then add to or restore from it."
+        )
+    return str(found[1]["batch_id"])
+
+
+def with_group_lock(action: str, function):
+    """Run a group command under the shared run lock after settling the groups. Only the executing form locks."""
+
+    def locked(args: argparse.Namespace) -> None:
+        if getattr(args, "execute", False):
+            with batch_run_lock(action):
+                settle_groups()
+                function(args)
+        else:
+            function(args)
+
+    return locked
 
 
 def assess_workspace_for_archive(
@@ -1190,6 +1482,7 @@ SKIP_REASON_TEXT = {
     "capture_failed": "could not be captured",
     "workspace_gone": "no longer exists",
     "workspace_changed": "changed since the preview",
+    "group_member_conflict": "matches more than one entry of the archive group",
 }
 
 
@@ -1239,6 +1532,7 @@ def archive_all_command(args: argparse.Namespace) -> None:
         return
 
     with batch_run_lock("archive-all"):
+        settle_groups()
         run_archive_batch(args, session, planned, skipped)
 
 
@@ -1273,18 +1567,19 @@ def settle_interrupted_archive(
 def run_archive_batch(
     args: argparse.Namespace, session: str, planned: list[dict[str, Any]], skipped: list[dict[str, Any]]
 ) -> None:
-    batch_id = batch_id_for()
-    manifest: dict[str, Any] = {
-        "version": 1,
-        "batch_id": batch_id,
-        "status": "in_progress",
-        "created_at": now(),
-        "herdr_session": session,
-        "members": [],
-        "skipped": list(skipped),
-    }
-    batch_path = BATCH_DIR / f"{batch_id}.json"
+    """Add every planned workspace to the session's one archive group, creating the group the first time."""
+    existing = group_for_session(session)
+    if existing:
+        batch_path, manifest = existing
+        batch_id = str(manifest["batch_id"])
+    else:
+        batch_id = batch_id_for()
+        batch_path = BATCH_DIR / f"{batch_id}.json"
+        manifest = {"version": 1, "batch_id": batch_id, "created_at": now(), "herdr_session": session, "members": []}
+    manifest.update({"status": "in_progress", "updated_at": now(), "skipped": list(skipped)})
+    manifest.pop("completed_at", None)
     write_json(batch_path, manifest)
+    added = 0
     failures: list[str] = []
     current: tuple[Path, dict[str, Any]] | None = None
     current_workspace: dict[str, str] | None = None
@@ -1301,6 +1596,19 @@ def run_archive_batch(
                 capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_changed"]}
             else:
                 capture, entry = assess_workspace_for_archive(fresh, workspace, args.session)
+            # A workspace whose layout copy is still an archived member of the group replaces that member, so the group
+            # never holds the same workspace twice. Only a workspace a restore built counts, never a matching id alone.
+            earlier = None
+            if capture is not None:
+                try:
+                    earlier = find_batch_member(manifest, batch_id, workspace_id, match_origin=False)
+                except OrganizerError as error:
+                    capture, entry = None, {
+                        "workspace_id": workspace_id,
+                        "label": item["label"],
+                        "reasons": ["group_member_conflict"],
+                        "error": str(error),
+                    }
             if capture is None:
                 manifest["skipped"].append(entry)
                 write_json(batch_path, manifest)
@@ -1312,6 +1620,10 @@ def run_archive_batch(
             manifest["members"].append(
                 {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
             )
+            if earlier:
+                manifest["members"] = [m for m in manifest["members"] if m.get("archive_id") != earlier["archive_id"]]
+                earlier["archive"]["left_group"] = {"reason": "replaced", "by": archive_id, "at": now()}
+                write_json(earlier["path"], earlier["archive"])
             write_json(batch_path, manifest)
             try:
                 close_archived_workspace(current[0], current[1], workspace_id, args.session)
@@ -1321,7 +1633,10 @@ def run_archive_batch(
                 current = None
                 continue
             current = None
+            added += 1
             print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
+            if earlier:
+                print(f"It replaces {earlier['archive_id']} in the archive group; that archive stays as a single archive.")
         finished = True
     finally:
         # Any other error or Ctrl-C must not leave the record stuck. The workspace being closed at that moment may
@@ -1330,8 +1645,12 @@ def run_archive_batch(
             settle_interrupted_archive(current, current_workspace, args.session)
         manifest["status"] = ("completed_with_failures" if failures else "completed") if finished else "interrupted"
         manifest["completed_at"] = now()
+        manifest["updated_at"] = now()
         write_json(batch_path, manifest)
-    print(f"Batch {batch_id}: archived {len(manifest['members']) - len(failures)}, skipped {len(manifest['skipped'])}.")
+    print(
+        f"Archive group {batch_id}: added {added}, skipped {len(manifest['skipped'])}. "
+        f"It now holds {len(manifest['members'])} archived workspace(s)."
+    )
     print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
     if failures:
         raise OrganizerError("Some workspaces could not be closed: " + "; ".join(failures))
@@ -1389,6 +1708,8 @@ def batch_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "batch_id": manifest.get("batch_id"),
         "status": manifest.get("status"),
         "created_at": manifest.get("created_at"),
+        "updated_at": manifest.get("updated_at"),
+        "completed_at": manifest.get("completed_at"),
         "herdr_session": manifest.get("herdr_session"),
         "members": members,
         "skipped": skipped,
@@ -1399,17 +1720,8 @@ def batch_summary(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_batches() -> list[dict[str, Any]]:
-    if not BATCH_DIR.exists():
-        return []
-    batches = []
-    for path in BATCH_DIR.glob("*.json"):
-        try:
-            manifest = read_json(path, {})
-        except OrganizerError:
-            continue
-        if isinstance(manifest, dict) and isinstance(manifest.get("batch_id"), str) and BATCH_ID_PATTERN.match(manifest["batch_id"]):
-            batches.append(manifest)
-    return sorted(batches, key=lambda batch: str(batch.get("created_at", "")), reverse=True)
+    """The archive groups, one per session, holding only members that are still archived."""
+    return [manifest for _, manifest in load_groups()]
 
 
 def list_batches_command(_: argparse.Namespace) -> None:
@@ -1417,6 +1729,7 @@ def list_batches_command(_: argparse.Namespace) -> None:
 
 
 def restore_batch_command(args: argparse.Namespace) -> None:
+    args.batch = resolve_group_argument(args)
     _, manifest = batch_by_id(args.batch)
     summary = batch_summary(manifest)
     captured_session = manifest.get("herdr_session")
@@ -1453,30 +1766,30 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         return
     failures: list[str] = []
     outcomes: dict[str, int] = {}
-    with batch_run_lock("restore-batch"):
-        for member in targets:
-            archive_id = member["archive_id"]
-            # Another run may have restored this member since the preview above.
-            if batch_member_view(member)["status"] != RESTORABLE_MEMBER_STATUS:
-                print(f"Left {archive_id} alone: no longer archived.")
-                continue
-            print(f"== {archive_id}")
-            member_args = argparse.Namespace(
-                archive=archive_id,
-                resume_agents=bool(args.resume_agents),
-                allow_unresumable_agents=False,
-                force=False,
-                execute=True,
-                confirm=archive_id,
-                session=args.session,
-            )
-            try:
-                outcome = restore_command(member_args) or "created"
-            except OrganizerError as error:
-                failures.append(f"{archive_id}: {error}")
-                print(f"Could not restore {archive_id}: {error}")
-                continue
-            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    # The run lock is already held by with_group_lock.
+    for member in targets:
+        archive_id = member["archive_id"]
+        # Another run may have restored this member since the preview above.
+        if batch_member_view(member)["status"] != RESTORABLE_MEMBER_STATUS:
+            print(f"Left {archive_id} alone: no longer archived.")
+            continue
+        print(f"== {archive_id}")
+        member_args = argparse.Namespace(
+            archive=archive_id,
+            resume_agents=bool(args.resume_agents),
+            allow_unresumable_agents=False,
+            force=False,
+            execute=True,
+            confirm=archive_id,
+            session=args.session,
+        )
+        try:
+            outcome = restore_command(member_args) or "created"
+        except OrganizerError as error:
+            failures.append(f"{archive_id}: {error}")
+            print(f"Could not restore {archive_id}: {error}")
+            continue
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
     if args.resume_agents:
         done = outcomes.get("created", 0) + outcomes.get("adopted", 0)
         print(
@@ -1512,7 +1825,7 @@ def batch_archive_paths(manifest: dict[str, Any], batch_id: str) -> tuple[list[t
             archive = read_json(path, {})
         except OrganizerError:
             archive = {}
-        if isinstance(archive, dict) and archive.get("batch_id") == batch_id:
+        if isinstance(archive, dict) and archive.get("batch_id") in group_batch_ids(manifest) | {batch_id}:
             owned.append((archive_id, path))
         else:
             left_alone.append(archive_id)
@@ -1552,20 +1865,20 @@ def delete_batch_command(args: argparse.Namespace) -> None:
         print(f"Deleted batch {args.batch}. No archive, restored workspace or live workspace was changed.")
         return
     failures: list[str] = []
-    with batch_run_lock("delete-batch"):
-        for archive_id, path in owned:
-            try:
-                path.unlink()
-            except OSError as error:
-                failures.append(f"{archive_id}: {error}")
-                continue
-            print(f"Deleted archive {archive_id}.")
-        for archive_id in left_alone:
-            print(f"Left {archive_id} alone: it does not belong to this batch.")
-        # The group record goes last, and only when every archive is gone, so a failure leaves a record to retry from.
-        if failures:
-            raise OrganizerError("Some archives could not be deleted, so the group record was kept: " + "; ".join(failures))
-        batch_path.unlink()
+    # The run lock is already held by with_group_lock.
+    for archive_id, path in owned:
+        try:
+            path.unlink()
+        except OSError as error:
+            failures.append(f"{archive_id}: {error}")
+            continue
+        print(f"Deleted archive {archive_id}.")
+    for archive_id in left_alone:
+        print(f"Left {archive_id} alone: it does not belong to this batch.")
+    # The group record goes last, and only when every archive is gone, so a failure leaves a record to retry from.
+    if failures:
+        raise OrganizerError("Some archives could not be deleted, so the group record was kept: " + "; ".join(failures))
+    batch_path.unlink()
     print(f"Deleted batch {args.batch} and {len(owned)} archive(s). No active or restored workspace was changed.")
 
 
@@ -1695,8 +2008,14 @@ def current_tab_id(snapshot: dict[str, Any], session: str | None) -> str | None:
     return str(pane["tab_id"]) if pane and pane.get("tab_id") else None
 
 
-def find_batch_member(manifest: dict[str, Any], batch_id: str, workspace_id: str) -> dict[str, Any] | None:
-    """The batch member tied to this live workspace, matched on exact recorded workspace ids only."""
+def find_batch_member(
+    manifest: dict[str, Any], batch_id: str, workspace_id: str, match_origin: bool = True
+) -> dict[str, Any] | None:
+    """The batch member tied to this live workspace, matched on exact recorded workspace ids only.
+
+    With match_origin off only a workspace a restore or a layout-only restore built counts, not one that merely has the
+    id the member's workspace had when it was captured.
+    """
     by_restore: list[dict[str, Any]] = []
     by_origin: list[dict[str, Any]] = []
     for member in manifest.get("members", []):
@@ -1708,7 +2027,7 @@ def find_batch_member(manifest: dict[str, Any], batch_id: str, workspace_id: str
             archive = read_json(path, None)
         except OrganizerError:
             continue
-        if not isinstance(archive, dict) or archive.get("batch_id") != batch_id:
+        if not isinstance(archive, dict) or archive.get("batch_id") not in group_batch_ids(manifest) | {batch_id}:
             continue
         if archive.get("status") not in MEMBER_MERGEABLE_STATUSES:
             continue
@@ -1719,7 +2038,7 @@ def find_batch_member(manifest: dict[str, Any], batch_id: str, workspace_id: str
         found = {"archive_id": archive_id, "path": path, "archive": archive}
         if workspace_id in linked:
             by_restore.append(found)
-        elif workspace_id == origin:
+        elif match_origin and workspace_id == origin:
             by_origin.append(found)
     candidates = by_restore or by_origin
     if len(candidates) > 1:
@@ -2045,6 +2364,7 @@ def finish_tab_add_command(args: argparse.Namespace) -> None:
 
 
 def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
+    args.batch = resolve_group_argument(args)
     batch_path, manifest = batch_by_id(args.batch)
     if manifest.get("status") not in BATCH_FINISHED_STATUSES:
         raise OrganizerError(
@@ -2237,6 +2557,7 @@ def delete_archive_command(args: argparse.Namespace) -> None:
         return
     require_execute_confirmation(args.execute, args.confirm, args.archive, "Delete archive")
     archive_path.unlink()
+    prune_group_files()
     print(f"Deleted archive {args.archive}. No active or restored workspace was changed.")
 
 
@@ -2800,6 +3121,18 @@ def restore_into_new_workspace(archive_path: Path, archive: dict[str, Any], args
 
 
 def restore_command(args: argparse.Namespace) -> str:
+    """Restore one archive. Once it is restored it leaves its archive group, whatever the outcome of the rest of the run."""
+    try:
+        return restore_archive(args)
+    finally:
+        if args.execute:
+            try:
+                prune_group_files()
+            except (OrganizerError, OSError) as error:
+                print(f"Note: the archive group was not updated: {error}")
+
+
+def restore_archive(args: argparse.Namespace) -> str:
     archive_path, archive = archive_by_id(args.archive)
     status = archive.get("status")
     if status not in {"archived", "restored", "resumed", "restore_partial"}:
@@ -4814,11 +5147,11 @@ def parser() -> argparse.ArgumentParser:
     restore_batch = commands.add_parser(
         "restore-batch", help="Restore every member of a batch that is still archived, one workspace each."
     )
-    restore_batch.add_argument("--batch", required=True)
+    restore_batch.add_argument("--batch", help="The session's archive group. Defaults to the one group of --session.")
     restore_batch.add_argument("--resume-agents", action="store_true")
     restore_batch.add_argument("--execute", action="store_true")
     restore_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
-    restore_batch.set_defaults(func=restore_batch_command)
+    restore_batch.set_defaults(func=with_group_lock("restore-batch", restore_batch_command))
 
     delete_batch = commands.add_parser(
         "delete-batch", help="Delete one batch record. Its archives are kept unless --archives is given."
@@ -4829,7 +5162,7 @@ def parser() -> argparse.ArgumentParser:
     )
     delete_batch.add_argument("--execute", action="store_true")
     delete_batch.add_argument("--confirm")
-    delete_batch.set_defaults(func=delete_batch_command)
+    delete_batch.set_defaults(func=with_group_lock("delete-batch", delete_batch_command))
 
     commands.add_parser("list-batches", help="Print batch summaries.").set_defaults(func=list_batches_command)
 
@@ -4852,11 +5185,11 @@ def parser() -> argparse.ArgumentParser:
         "add-tabs-to-batch",
         help="Capture selected live tabs into a finished batch, then close them. Tabs of a workspace that already has a member merge into it.",
     )
-    add_tabs_to_batch.add_argument("--batch", required=True)
+    add_tabs_to_batch.add_argument("--batch", help="The session's archive group. Defaults to the one group of --session.")
     add_tabs_to_batch.add_argument("--tab", action="append", required=True, help="Selected live tab ID. Repeat for each tab.")
     add_tabs_to_batch.add_argument("--execute", action="store_true")
     add_tabs_to_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
-    add_tabs_to_batch.set_defaults(func=with_batch_lock("add-tabs-to-batch", add_tabs_to_batch_command))
+    add_tabs_to_batch.set_defaults(func=with_group_lock("add-tabs-to-batch", add_tabs_to_batch_command))
 
     finish_tab_add = commands.add_parser(
         "finish-tab-add",

@@ -397,23 +397,29 @@ guards as `archive` to each workspace: a workspace with a working or blocked
 agent, or an agent without a verified resumable session, is skipped and
 reported with the reason. The allow flags are deliberately not offered, so run
 `archive` on a skipped workspace if you want to override. Every archive the run
-creates carries one `batch_id`, and a manifest in `state/workspace-organizer/batches/`
-lists its members and its skipped workspaces (never session ids). Confirm with
-the session name. It refuses to run, before closing anything, from inside a
-workspace it would archive, so run it from a terminal outside Herdr. A second
-run creates a second batch for the leftovers.
+joins the session's one archive group (a `batch_id`; the first run creates it). A
+manifest in `state/workspace-organizer/batches/` lists the archived members, and
+the workspaces the latest run skipped (never session ids). A session has one
+group for good: a later run adds to it, a workspace that is restored or whose
+archive is deleted leaves it, and a workspace archived again becomes one new
+entry. A workspace whose open layout copy is still a member replaces that
+member (the older archive stays as a single archive). Groups made by earlier
+runs are merged into the session's oldest group the first time a locking command
+runs. Confirm with the session name. It refuses to run, before closing anything,
+from inside a workspace it would archive, so run it from a terminal outside Herdr.
 
 ```sh
 herdr-organizer --session esim archive-all
 herdr-organizer --session esim archive-all --execute --confirm esim
 ```
 
-Restore a whole batch with `restore-batch`. It acts only on members that are
-still `archived`. Without `--resume-agents` it lays out each member that has no
+Restore a whole group with `restore-batch` (`--batch` defaults to the group of
+`--session`). It acts only on members that are still `archived`; a member leaves
+the group once it is restored. Without `--resume-agents` it lays out each member that has no
 open layout copy and marks nothing restored, so every restore command stays.
 With `--resume-agents` it resumes each member in its open layout copy, or in a
-new workspace when there is none. Members already restored, left
-`restore_partial`, or deleted are reported and left alone, and `--force` is
+new workspace when there is none. Members left `restore_partial` or not
+closed are reported and left alone, and `--force` is
 never used. It refuses a session other than the one the batch was captured
 from, and keeps going after one member fails, then exits non-zero. Confirm
 with the batch ID.
@@ -429,9 +435,11 @@ Commands that create, restore, move or delete archives, or close tabs, share one
 (`archive`, `archive-all`, `archive-tabs`, `restore`, `restore-batch`, `restore-tab`, `restore-tabs`,
 `delete-archive`, `delete-archived-tab`, `delete-batch --archives`, `move-tabs`, `resume-move`,
 `cleanup-empty-tabs`, `add-tabs-to-batch`, `finish-tab-add`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
-`list-archives`, `list-batches`, `reorder-tab` and plain `delete-batch` do not lock.
+`list-archives`, `list-batches` and `reorder-tab` do not lock. `delete-batch` and the group commands lock when they execute.
 
-Add selected live tabs to a finished batch with `add-tabs-to-batch`. It captures
+Add selected live tabs to the session's archive group with `add-tabs-to-batch`
+(`--batch` defaults to the group of `--session`; the group must already exist).
+It captures
 the tabs, then closes them and stops their processes. Tabs from one live
 workspace become one new batch member labelled `<workspace> (selected tabs)`. A tab
 whose live workspace is already tied to a member of that batch merges into that

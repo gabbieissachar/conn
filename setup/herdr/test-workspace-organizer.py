@@ -2,13 +2,16 @@
 """Unit tests for workspace-organizer.py that do not require a Herdr server."""
 
 import argparse
+import atexit
 import copy
 import io
 import importlib.util
 import json
 import os
 import shlex
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,6 +25,19 @@ SPEC = importlib.util.spec_from_file_location("workspace_organizer", MODULE_PATH
 assert SPEC and SPEC.loader
 ORGANIZER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORGANIZER)
+
+# No test may read or write the captain's real archives, groups or snapshot. Every state folder points at a scratch
+# folder for the whole run, so a test that forgets to patch one still cannot reach the real files.
+_SCRATCH_STATE = tempfile.mkdtemp(prefix="organizer-test-state-")
+atexit.register(shutil.rmtree, _SCRATCH_STATE, ignore_errors=True)
+for _name, _value in (
+    ("STATE_DIR", Path(_SCRATCH_STATE)),
+    ("ARCHIVE_DIR", Path(_SCRATCH_STATE) / "archives"),
+    ("MOVE_DIR", Path(_SCRATCH_STATE) / "moves"),
+    ("BATCH_DIR", Path(_SCRATCH_STATE) / "batches"),
+    ("LIVE_SNAPSHOT_PATH", Path(_SCRATCH_STATE) / "live-snapshot.json"),
+):
+    setattr(ORGANIZER, _name, _value)
 
 REGISTRY_PATH = Path(__file__).with_name("agent-session-registry.py")
 REGISTRY_SPEC = importlib.util.spec_from_file_location("agent_session_registry", REGISTRY_PATH)
@@ -358,6 +374,114 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             workspace["tabs"][0]["agent_resume"],
             [{"pane_id": "w1:p1", "client": "codex", "status": "needs_registration", "source": "unavailable"}],
         )
+
+    def test_a_tab_reports_each_working_folder_once_with_its_panes(self):
+        root = "/Users/someone/.treehouse/firstmate-8bf1b0/3/firstmate/state/.treehouse/personal-1ab7cc/5/personal"
+        snapshot = {
+            "tabs": [{"workspace_id": "w9Z", "tab_id": "w9Z:t2", "label": "Work"}],
+            "panes": [
+                # the folder the foreground process runs in wins over the folder the pane started in
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p1", "cwd": "/Users/someone", "foreground_cwd": root},
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p2", "cwd": root},
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p3", "cwd": "/Users/someone/other"},
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p4", "cwd": "relative"},
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p5", "cwd": "/tmp/two\nlines"},
+                {"tab_id": "w9Z:t2", "pane_id": "w9Z:p6"},
+            ],
+        }
+        workspace = ORGANIZER.public_workspace(snapshot, {"workspace_id": "w9Z", "label": "W"}, "esim", [])
+        self.assertEqual(
+            workspace["tabs"][0]["working_folders"],
+            [
+                {"path": root, "source": "pane", "pane_ids": ["w9Z:p1", "w9Z:p2"]},
+                {"path": "/Users/someone/other", "source": "pane", "pane_ids": ["w9Z:p3"]},
+            ],
+        )
+
+    def git(self, folder, *arguments):
+        subprocess.run(
+            ["git", "-C", str(folder), "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+             "-c", "core.hooksPath=/dev/null", *arguments],
+            check=True, capture_output=True,
+            env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TEMPLATE_DIR": ""},
+        )
+
+    def agent_world(self):
+        """A project checkout, a task worktree of it, an unrelated repository, and a place for Claude session logs."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        main, task, other = base / "projects" / "app", base / "task" / "app", base / "other"
+        for repository in (main, other):
+            repository.mkdir(parents=True)
+            self.git(repository, "init", "-q")
+            (repository / "a.txt").write_text("a")
+            self.git(repository, "add", ".")
+            self.git(repository, "commit", "-q", "-m", "first")
+        self.git(main, "worktree", "add", "-q", "-b", "task", str(task))
+        logs = base / "claude" / "projects" / "-encoded"
+        logs.mkdir(parents=True)
+        patcher = patch.object(ORGANIZER, "CLAUDE_PROJECTS_DIR", base / "claude" / "projects")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return main, task, other, logs
+
+    def write_log(self, logs, session_id, paths=(), commands=()):
+        lines = []
+        for path in paths:
+            lines.append({"message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": str(path)}}]}})
+        for command in commands:
+            lines.append({"message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]}})
+        (logs / f"{session_id}.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+    def agent_pane(self, main, session_id="11111111-aaaa-bbbb-cccc-222222222222"):
+        return {
+            "tab_id": "w1:t1", "pane_id": "w1:p1", "agent": "claude", "cwd": str(main), "foreground_cwd": str(main),
+            "agent_session": {"agent": "claude", "kind": "id", "value": session_id},
+        }
+
+    def test_an_agent_that_works_in_a_task_worktree_of_its_project_reports_that_clone(self):
+        main, task, other, logs = self.agent_world()
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(logs, sid, paths=[task / "a.txt", task / "missing" / "new.txt", other / "a.txt"], commands=[f"ls {task}/ && echo {main}/a.txt"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(task))
+        folders = ORGANIZER.pane_working_folders([self.agent_pane(main, sid)])
+        self.assertEqual(
+            folders,
+            [{"path": str(task), "source": "agent_files", "pane_ids": ["w1:p1"]}, {"path": str(main), "source": "pane", "pane_ids": ["w1:p1"]}],
+        )
+
+    def test_the_most_touched_worktree_wins_and_only_the_recent_calls_count(self):
+        main, task, other, logs = self.agent_world()
+        second = main.parent.parent / "task" / "app2"
+        self.git(main, "worktree", "add", "-q", "-b", "task2", str(second))
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        old = [task / "a.txt"] * (ORGANIZER.AGENT_RECENT_PATHS + 50)
+        self.write_log(logs, sid, paths=old + [second / "a.txt"] * ORGANIZER.AGENT_RECENT_PATHS)
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(second))
+
+    def test_nothing_is_inferred_without_a_clone_other_than_the_shells_own(self):
+        main, task, other, logs = self.agent_world()
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(logs, sid, paths=[main / "a.txt", other / "a.txt", "/etc/hosts"])
+        self.assertIsNone(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), "another repository is not a clone of this project")
+        self.assertEqual([f["source"] for f in ORGANIZER.pane_working_folders([self.agent_pane(main, sid)])], ["pane"])
+        self.assertIsNone(ORGANIZER.inferred_agent_folder(self.agent_pane(main, "99999999-0000-0000-0000-000000000000")), "no log")
+        pane = self.agent_pane(main, sid)
+        pane["agent"] = "codex"
+        self.assertIsNone(ORGANIZER.inferred_agent_folder(pane), "only Claude session logs are read")
+        pane = self.agent_pane(other.parent, sid)
+        self.assertIsNone(ORGANIZER.inferred_agent_folder(pane), "a shell outside any repository has no project to match")
+
+    def test_a_session_id_cannot_point_the_log_search_elsewhere(self):
+        self.agent_world()
+        for bad in ("../x", "a/b", "", "*", "short"):
+            self.assertIsNone(ORGANIZER.claude_session_log(bad), bad)
+
+    def test_a_tab_without_a_reported_folder_has_an_empty_list(self):
+        snapshot = {"tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}], "panes": [{"tab_id": "w1:t1", "pane_id": "w1:p1"}]}
+        workspace = ORGANIZER.public_workspace(snapshot, {"workspace_id": "w1", "label": "W"}, "esim", [])
+        self.assertEqual(workspace["tabs"][0]["working_folders"], [])
 
     def test_delete_archived_tab_removes_its_recovery_metadata(self):
         archive = {
@@ -2220,16 +2344,238 @@ class BatchTests(unittest.TestCase):
         self.assertNotIn("session_id", text)
         self.assertNotIn("resume_command", text)
 
-    def test_a_second_run_makes_a_second_batch_for_the_leftovers(self):
+    def test_a_second_run_adds_the_leftovers_to_the_same_group(self):
         herdr = self.world()
         self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (first,) = self.manifests()
         herdr.working.clear()
         herdr.restores["w4"] = [RESUMABLE]
         with patch.object(ORGANIZER, "batch_id_for", return_value="batch-20990101-000000"):
             self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
-        manifests = {m["batch_id"]: m for m in self.manifests()}
-        self.assertEqual(len(manifests), 2)
-        self.assertEqual([m["workspace_id"] for m in manifests["batch-20990101-000000"]["members"]], ["w3", "w4"])
+        (group,) = self.manifests()
+        self.assertEqual(group["batch_id"], first["batch_id"], "the session keeps its one group")
+        self.assertEqual(group["created_at"], first["created_at"])
+        self.assertEqual([m["workspace_id"] for m in group["members"]], ["w1", "w2", "w3", "w4"])
+        self.assertEqual(group["skipped"], [], "the skipped list is the one of the latest run")
+        for member in group["members"]:
+            self.assertEqual(json.loads((self.archives / f"{member['archive_id']}.json").read_text())["batch_id"], group["batch_id"])
+
+    def test_each_session_has_its_own_group(self):
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.world(workspaces=[("w1", "Other clean")], restores={}, working=())
+        with patch.object(ORGANIZER, "batch_id_for", return_value="batch-20990101-000000"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args(session="other", confirm="other"))
+        groups = sorted(self.manifests(), key=lambda m: m["herdr_session"])
+        self.assertEqual([(g["herdr_session"], len(g["members"])) for g in groups], [("esim", 1), ("other", 1)])
+        self.assertNotEqual(groups[0]["batch_id"], groups[1]["batch_id"])
+
+    def test_a_workspace_archived_again_after_a_restore_is_one_new_entry(self):
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        first = group["members"][0]["archive_id"]
+        # The restore marks the archive restored. The workspace it made is then archived again.
+        archive = json.loads((self.archives / f"{first}.json").read_text())
+        archive.update(status="restored", restore={"workspace_id": "w1"})
+        (self.archives / f"{first}.json").write_text(json.dumps(archive))
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        with patch.object(ORGANIZER, "archive_id_for", return_value="20990101-000000-clean"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        self.assertEqual([m["archive_id"] for m in group["members"]], ["20990101-000000-clean"], "the restored one left the group")
+        self.assertTrue((self.archives / f"{first}.json").exists(), "its archive file stays as a single archive")
+        self.assertEqual(herdr.closed, ["w1"])
+
+    def layout_copy_member(self, status="archived", **archive_extra):
+        """A group member whose layout-only restore left workspace w1 open."""
+        archive_id = "20261007-101500-01-ws1"
+        archive = {
+            "archive_id": archive_id,
+            "status": status,
+            "batch_id": "batch-20261007-101500",
+            "capture": {"workspace": {"source_workspace_id": "w77", "label": "Clean"}, "tabs": []},
+            "layout_restore": {"workspace_id": "w1", "tabs": []},
+        }
+        archive.update(archive_extra)
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{archive_id}.json", archive)
+        ORGANIZER.write_json(
+            ORGANIZER.BATCH_DIR / "batch-20261007-101500.json",
+            {
+                "version": 1, "batch_id": "batch-20261007-101500", "status": "completed", "created_at": "2026-10-07T10:15:00+00:00",
+                "herdr_session": "esim", "skipped": [],
+                "members": [{"archive_id": archive_id, "workspace_id": "w77", "workspace_label": "Clean"}],
+            },
+        )
+        return archive_id
+
+    def test_archiving_a_workspace_that_is_a_members_layout_copy_replaces_that_member(self):
+        old = self.layout_copy_member()
+        herdr = self.world(workspaces=[("w1", "Clean"), ("w2", "Two")], restores={}, working=())
+        with patch.object(ORGANIZER, "archive_id_for", side_effect=["20990101-000000-clean", "20990101-000000-two"]):
+            output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        self.assertEqual([m["archive_id"] for m in group["members"]], ["20990101-000000-clean", "20990101-000000-two"])
+        left = json.loads((self.archives / f"{old}.json").read_text())
+        self.assertEqual(left["left_group"]["by"], "20990101-000000-clean")
+        self.assertEqual(left["status"], "archived", "its archive is kept as a single archive")
+        self.assertIn(f"replaces {old}", output)
+        self.assertEqual(herdr.closed, ["w1", "w2"])
+
+    def test_a_matching_original_workspace_id_alone_never_replaces_a_member(self):
+        old = self.layout_copy_member()
+        archive = json.loads((self.archives / f"{old}.json").read_text())
+        archive.pop("layout_restore")
+        archive["capture"]["workspace"]["source_workspace_id"] = "w1"
+        (self.archives / f"{old}.json").write_text(json.dumps(archive))
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 2, "ids get reused, so only a workspace a restore built counts")
+        self.assertNotIn("left_group", json.loads((self.archives / f"{old}.json").read_text()))
+
+    def test_two_layout_copies_of_one_workspace_skip_it_instead_of_guessing(self):
+        first = self.layout_copy_member()
+        second = "20261007-101500-02-ws2"
+        archive = json.loads((self.archives / f"{first}.json").read_text())
+        archive["archive_id"] = second
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{second}.json", archive)
+        manifest = json.loads((self.batches / "batch-20261007-101500.json").read_text())
+        manifest["members"].append({"archive_id": second, "workspace_id": "w78", "workspace_label": "Clean 2"})
+        ORGANIZER.write_json(self.batches / "batch-20261007-101500.json", manifest)
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        self.assertEqual(herdr.closed, [])
+        self.assertEqual([item["reasons"] for item in group["skipped"]], [["group_member_conflict"]])
+        self.assertEqual(len(group["members"]), 2)
+
+    def test_the_groups_listing_holds_only_workspaces_that_are_still_archived(self):
+        self.make_batch(["archived", "restored", "resumed", "restore_partial", "deleted", "close_failed"])
+        (group,) = ORGANIZER.load_batches()
+        self.assertEqual([m["archive_id"][-3:] for m in group["members"]], ["ws1", "ws4", "ws6"])
+        summary = ORGANIZER.batch_summary(group)
+        self.assertEqual(summary["counts"], {"archived": 1, "restored": 0, "restore_partial": 1, "deleted": 0, "other": 1, "skipped": 1})
+        self.assertEqual(len(json.loads((self.batches / "batch-20261007-101500.json").read_text())["members"]), 6, "listing writes nothing")
+
+    def test_a_restore_takes_the_member_out_of_its_group_and_keeps_its_archive(self):
+        self.make_batch(["archived", "archived"])
+        first = "20261007-101500-01-ws1"
+
+        def restore(args):
+            path = ORGANIZER.ARCHIVE_DIR / f"{args.archive}.json"
+            archive = json.loads(path.read_text())
+            archive["status"] = "resumed"
+            path.write_text(json.dumps(archive))
+            return "created"
+
+        args = argparse.Namespace(archive=first, execute=True, confirm=first, force=False, resume_agents=True, allow_unresumable_agents=False, session="esim")
+        with patch.object(ORGANIZER, "restore_archive", side_effect=restore):
+            self.assertEqual(ORGANIZER.restore_command(args), "created")
+        (group,) = self.manifests()
+        self.assertEqual([m["archive_id"] for m in group["members"]], ["20261007-101500-02-ws2"])
+        self.assertTrue((self.archives / f"{first}.json").exists())
+
+    def test_a_restore_that_stops_part_way_leaves_the_member_in_the_group_flagged(self):
+        self.make_batch(["archived"])
+        first = "20261007-101500-01-ws1"
+
+        def restore(args):
+            path = ORGANIZER.ARCHIVE_DIR / f"{args.archive}.json"
+            path.write_text(json.dumps({"archive_id": args.archive, "status": "restore_partial", "batch_id": "batch-20261007-101500"}))
+            raise ORGANIZER.OrganizerError("stopped")
+
+        args = argparse.Namespace(archive=first, execute=True, confirm=first, force=False, resume_agents=True, allow_unresumable_agents=False, session="esim")
+        with patch.object(ORGANIZER, "restore_archive", side_effect=restore), self.assertRaises(ORGANIZER.OrganizerError):
+            ORGANIZER.restore_command(args)
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 1)
+
+    def test_a_layout_only_restore_keeps_the_member_in_the_group(self):
+        self.make_batch(["archived"])
+        first = "20261007-101500-01-ws1"
+        args = argparse.Namespace(archive=first, execute=True, confirm=first, force=False, resume_agents=False, allow_unresumable_agents=False, session="esim")
+        with patch.object(ORGANIZER, "restore_archive", return_value="laid_out"):
+            ORGANIZER.restore_command(args)
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 1)
+
+    def test_deleting_an_archive_takes_it_out_of_its_group(self):
+        self.make_batch(["archived", "archived"])
+        first = "20261007-101500-01-ws1"
+        self.run_quietly(ORGANIZER.delete_archive_command, argparse.Namespace(archive=first, execute=True, confirm=first))
+        (group,) = self.manifests()
+        self.assertEqual([m["archive_id"] for m in group["members"]], ["20261007-101500-02-ws2"])
+
+    def old_style_groups(self):
+        """Two groups of one session, as separate Archive all runs used to leave them, one member in both."""
+        self.make_batch(["archived", "archived"])
+        later = self.make_batch(["archived"], batch_id="batch-20261008-090000")
+        later["created_at"] = "2026-10-08T09:00:00+00:00"
+        later["skipped"] = [{"workspace_id": "w60", "label": "Later skip", "reasons": ["capture_failed"]}]
+        later["members"].append({"archive_id": "20261007-101500-02-ws2", "workspace_id": "w2", "workspace_label": "Ws 2"})
+        ORGANIZER.write_json(self.batches / "batch-20261008-090000.json", later)
+        self.make_batch(["archived"], batch_id="batch-20261009-090000", session="other")
+
+    def test_older_groups_of_one_session_show_as_one_group_without_writing(self):
+        self.old_style_groups()
+        groups = {g["herdr_session"]: g for g in ORGANIZER.load_batches()}
+        self.assertEqual(sorted(groups), ["esim", "other"])
+        esim = groups["esim"]
+        self.assertEqual(esim["batch_id"], "batch-20261007-101500", "the oldest group is the one that stays")
+        self.assertEqual(sorted(m["archive_id"] for m in esim["members"]), ["20261007-101500-01-ws1", "20261007-101500-02-ws2", "20261008-090000-01-ws1"])
+        self.assertEqual([item["workspace_id"] for item in esim["skipped"]], ["w60"])
+        self.assertEqual(len(list(self.batches.glob("*.json"))), 3, "a read changes no file")
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "now part of the one archive group.*batch-20261007-101500"):
+            ORGANIZER.batch_by_id("batch-20261008-090000")
+
+    def test_settling_merges_older_groups_on_disk_once(self):
+        self.old_style_groups()
+        ORGANIZER.settle_groups()
+        files = sorted(path.stem for path in self.batches.glob("*.json"))
+        self.assertEqual(files, ["batch-20261007-101500", "batch-20261009-090000"])
+        group = json.loads((self.batches / "batch-20261007-101500.json").read_text())
+        self.assertNotIn("merged_from", group)
+        self.assertEqual(len(group["members"]), 3)
+        for member in group["members"]:
+            self.assertEqual(json.loads((self.archives / f"{member['archive_id']}.json").read_text())["batch_id"], "batch-20261007-101500")
+        before = {path.name: path.read_text() for path in self.batches.glob("*.json")}
+        ORGANIZER.settle_groups()
+        self.assertEqual({path.name: path.read_text() for path in self.batches.glob("*.json")}, before, "a second settle changes nothing")
+
+    def test_settling_takes_restored_members_out_and_the_delete_still_finds_every_archive(self):
+        self.old_style_groups()
+        path = ORGANIZER.ARCHIVE_DIR / "20261008-090000-01-ws1.json"
+        archive = json.loads(path.read_text())
+        archive["status"] = "restored"
+        path.write_text(json.dumps(archive))
+        ORGANIZER.settle_groups()
+        group = json.loads((self.batches / "batch-20261007-101500.json").read_text())
+        self.assertEqual(len(group["members"]), 2)
+        output = self.run_quietly(
+            ORGANIZER.delete_batch_command,
+            argparse.Namespace(batch="batch-20261007-101500", execute=False, confirm=None, archives=True),
+        )
+        self.assertEqual(len(json.loads(output[: output.rindex("}") + 1])["archives_to_delete"]), 2)
+
+    def test_no_batch_argument_means_the_one_group_of_the_session(self):
+        self.old_style_groups()
+        args = argparse.Namespace(batch=None, session="esim")
+        self.assertEqual(ORGANIZER.resolve_group_argument(args), "batch-20261007-101500")
+        self.assertEqual(ORGANIZER.resolve_group_argument(argparse.Namespace(batch="batch-20261009-090000", session="esim")), "batch-20261009-090000")
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no archive group yet"):
+            ORGANIZER.resolve_group_argument(argparse.Namespace(batch=None, session="nobody"))
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Pass --batch, or --session"):
+            ORGANIZER.resolve_group_argument(argparse.Namespace(batch=None, session=None))
+
+    def test_restore_batch_through_the_command_line_settles_and_needs_no_batch_id(self):
+        self.old_style_groups()
+        parsed = ORGANIZER.parser().parse_args(["--session", "esim", "restore-batch", "--execute", "--confirm", "batch-20261007-101500"])
+        calls = []
+        with patch.object(ORGANIZER, "restore_command", side_effect=lambda args: calls.append(args.archive)), patch.object(ORGANIZER, "STATE_DIR", Path(self.temporary.name)):
+            self.run_quietly(parsed.func, parsed)
+        self.assertEqual(sorted(calls), ["20261007-101500-01-ws1", "20261007-101500-02-ws2", "20261008-090000-01-ws1"])
+        self.assertEqual(sorted(path.stem for path in self.batches.glob("*.json")), ["batch-20261007-101500", "batch-20261009-090000"])
 
     def test_wrong_confirmation_closes_and_writes_nothing(self):
         herdr = self.world()
@@ -2337,7 +2683,7 @@ class BatchTests(unittest.TestCase):
             with patch.object(ORGANIZER, "STATE_DIR", ORGANIZER.STATE_DIR):
                 for function, args in (
                     (ORGANIZER.archive_all_command, self.archive_args()),
-                    (ORGANIZER.restore_batch_command, self.restore_args()),
+                    (ORGANIZER.parser().parse_args(["--session", "esim", "restore-batch", "--execute", "--confirm", "batch-20261007-101500"]).func, self.restore_args()),
                 ):
                     child = os.fork()
                     if child == 0:
@@ -2536,9 +2882,9 @@ class BatchTests(unittest.TestCase):
             self.assertFalse(call.allow_unresumable_agents)
             self.assertTrue(call.resume_agents)
             self.assertEqual((call.confirm, call.execute, call.session), (call.archive, True, "esim"))
-        self.assertIn("Left 20261007-101500-02-ws2 alone: restored", output)
+        self.assertNotIn("ws2", output, "a restored member is not in the group any more")
+        self.assertNotIn("ws4", output, "a deleted member is not in the group any more")
         self.assertIn("Left 20261007-101500-03-ws3 alone: restore_partial", output)
-        self.assertIn("Left 20261007-101500-04-ws4 alone: deleted", output)
 
     def test_restore_batch_layout_only_does_not_resume_agents(self):
         self.make_batch(["archived"])
@@ -2562,12 +2908,12 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(seen), 2)
 
     def test_restore_batch_preview_and_bad_confirmation_restore_nothing(self):
-        self.make_batch(["archived", "restored"])
+        self.make_batch(["archived", "restore_partial"])
         with patch.object(ORGANIZER, "restore_command") as restore:
             output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(execute=False, confirm=None))
             preview = json.loads(output[: output.rindex("}") + 1])
             self.assertEqual(len(preview["to_restore"]), 1)
-            self.assertEqual(preview["not_restored"][0]["status"], "restored")
+            self.assertEqual(preview["not_restored"][0]["status"], "restore_partial")
             for confirm in (None, "other"):
                 with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm"):
                     self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args(confirm=confirm))
@@ -2584,7 +2930,7 @@ class BatchTests(unittest.TestCase):
         restore.assert_not_called()
 
     def test_restore_batch_with_nothing_archived_does_nothing(self):
-        self.make_batch(["restored", "deleted"])
+        self.make_batch(["restore_partial", "close_failed"])
         with patch.object(ORGANIZER, "restore_command") as restore:
             output = self.run_quietly(ORGANIZER.restore_batch_command, self.restore_args())
         restore.assert_not_called()
@@ -2599,7 +2945,7 @@ class BatchTests(unittest.TestCase):
         args = argparse.Namespace(batch=manifest["batch_id"], execute=False, confirm=None, archives=True)
         output = self.run_quietly(ORGANIZER.delete_batch_command, args)
         preview = json.loads(output[: output.rindex("}") + 1])
-        self.assertEqual(len(preview["archives_to_delete"]), 2)
+        self.assertEqual(len(preview["archives_to_delete"]), 1, "a restored or deleted member is no longer in the group")
         self.assertEqual(preview["archives_left_alone"], ["other-batch"])
         self.assertIn("still archived", output)
         self.assertIn("delete-archives:batch-20261007-101500", output)
@@ -2611,7 +2957,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(list(self.archives.glob("*.json"))), 4)
         output = self.run_quietly(ORGANIZER.delete_batch_command, argparse.Namespace(batch=manifest["batch_id"], execute=True, confirm="delete-archives:" + manifest["batch_id"], archives=True))
         self.assertIn("Left other-batch alone", output)
-        self.assertEqual(sorted(path.stem for path in self.archives.glob("*.json")), ["other-batch", "unrelated"])
+        self.assertEqual(sorted(path.stem for path in self.archives.glob("*.json")), ["20261007-101500-02-ws2", "other-batch", "unrelated"])
         self.assertEqual(list(self.batches.glob("*.json")), [])
 
     def test_delete_batch_with_archives_keeps_the_record_when_an_archive_cannot_be_deleted(self):
@@ -3249,11 +3595,11 @@ class AddTabsToBatchTests(unittest.TestCase):
             self.run_add(["w1:t1"])
         self.assertEqual(self.herdr.calls, [])
 
-    def test_tabs_merge_into_the_member_of_their_restored_workspace_and_reset_it_to_archived(self):
+    def test_tabs_merge_into_the_member_of_their_half_restored_workspace_and_reset_it_to_archived(self):
         self.write_member(
             "m1",
             "gone",
-            status="resumed",
+            status="restore_partial",
             tabs=("old:t1", "old:t2"),
             restore={"workspace_id": "w1", "tabs": [{"source_tab_id": "old:t1", "tab_id": "w1:t1"}]},
             restored_at="2026-10-12T09:00:00+00:00",
@@ -3266,7 +3612,7 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.assertNotIn("layout_restore", archive)
         self.assertNotIn("restored_at", archive)
         self.assertEqual(archive["restore_history"][0]["restore"]["workspace_id"], "w1")
-        self.assertEqual(archive["restore_history"][0]["status_before"], "resumed")
+        self.assertEqual(archive["restore_history"][0]["status_before"], "restore_partial")
         # The rebuilt tab replaces its captured original in place. The other tab is added at the end.
         self.assertEqual([tab["source_tab_id"] for tab in archive["capture"]["tabs"]], ["w1:t1", "old:t2", "w1:t3"])
         self.assertEqual(len(self.manifest()["members"]), 1)
@@ -3277,7 +3623,7 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.write_member(
             "m1",
             "gone",
-            status="resumed",
+            status="restore_partial",
             tabs=("old:t1",),
             restore={"workspace_id": "w1", "tabs": [{"source_tab_id": "old:t1", "tab_id": "w1:t1"}]},
         )
@@ -3308,12 +3654,39 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.assertEqual(len(self.manifest()["members"]), 3)
 
     def test_two_members_for_one_workspace_stop_the_run(self):
-        self.write_member("m1", "gone", restore={"workspace_id": "w1"}, status="restored")
-        self.write_member("m2", "gone2", restore={"workspace_id": "w1"}, status="restored")
+        self.write_member("m1", "gone", restore={"workspace_id": "w1"}, status="restore_partial")
+        self.write_member("m2", "gone2", restore={"workspace_id": "w1"}, status="restore_partial")
         self.write_batch(members=[("m1", "gone", "a"), ("m2", "gone2", "b")])
         with self.assertRaisesRegex(ORGANIZER.OrganizerError, "matches more than one member"):
             self.run_add(["w1:t1"])
         self.assertEqual(self.herdr.calls, [])
+
+    def test_a_restored_workspace_is_not_in_the_group_so_its_tabs_make_a_new_member(self):
+        self.write_member(
+            "m1", "gone", status="resumed", tabs=("old:t1",),
+            restore={"workspace_id": "w1", "tabs": [{"source_tab_id": "old:t1", "tab_id": "w1:t1"}]},
+        )
+        self.write_batch(members=[("m1", "gone", "Label gone")])
+        before = self.archive("m1")
+        text = self.run_add(["w1:t1"])
+        self.assertEqual(self.archive("m1"), before, "the restored archive is not touched")
+        [member] = self.manifest()["members"]
+        self.assertNotEqual(member["archive_id"], "m1")
+        self.assertIn("as a new member", text)
+        self.assertNotIn("Warning:", text)
+
+    def test_no_batch_argument_adds_to_the_one_group_of_the_session(self):
+        self.write_batch()
+        args = ORGANIZER.parser().parse_args(["--session", "esim", "add-tabs-to-batch", "--tab", "w1:t1", "--execute", "--confirm", self.BATCH])
+        with redirect_stdout(io.StringIO()), patch.object(ORGANIZER, "STATE_DIR", Path(self.temporary.name)):
+            args.func(args)
+        [member] = self.manifest()["members"]
+        self.assertEqual(self.archive(member["archive_id"])["batch_id"], self.BATCH)
+
+    def test_a_session_without_a_group_is_told_to_run_archive_all(self):
+        args = argparse.Namespace(batch=None, tab=["w1:t1"], session="esim", execute=False, confirm=None)
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no archive group yet"):
+            ORGANIZER.add_tabs_to_batch_command(args)
 
     def test_a_member_from_another_batch_is_never_merged(self):
         self.write_member("m1", "w1", batch_id="batch-20260101-000000")
@@ -3415,7 +3788,7 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.assertEqual(self.herdr.calls, [["workspace", "close", "w2"]])
 
     def test_a_pane_replaced_after_the_capture_undoes_a_merge_exactly(self):
-        self.write_member("m1", "w1", status="restored", tabs=("w1:old",), restore={"workspace_id": "w1", "tabs": []})
+        self.write_member("m1", "w1", status="restore_partial", tabs=("w1:old",), restore={"workspace_id": "w1", "tabs": []})
         self.write_batch(members=[("m1", "w1", "Label w1")])
         before = self.tree_before()
         self.herdr.mutate_at = 2
