@@ -2936,6 +2936,23 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(gone["empty"])
         self.assertEqual(gone["counts"]["deleted"], 2)
 
+    def test_a_group_member_lists_the_tabs_its_archive_holds(self):
+        manifest = self.make_batch(["archived"])
+        path = ORGANIZER.ARCHIVE_DIR / f"{manifest['members'][0]['archive_id']}.json"
+        archive = json.loads(path.read_text())
+        leaf = lambda pane: {"type": "pane", "pane_id": pane}
+        archive["capture"] = {"workspace": {"label": "Ws 1"}, "tabs": [
+            {"source_tab_id": "w1:t1", "label": "leader-esim", "layout": {"root": leaf("w1:p1")}},
+            {"source_tab_id": "w1:t2", "layout": {"root": {"type": "split", "children": [leaf("w1:p2"), leaf("w1:p3")]}}},
+        ]}
+        ORGANIZER.write_json(path, archive)
+        [member] = ORGANIZER.batch_summary(manifest)["members"]
+        self.assertEqual([(t["id"], t["label"]) for t in member["tabs"]], [("w1:t1", "leader-esim"), ("w1:t2", "w1:t2")])
+        self.assertEqual(member["tabs"][0]["pane_count"], 1)
+        # A deleted or unreadable archive has no tabs to show.
+        gone = ORGANIZER.batch_summary(self.make_batch(["deleted"], batch_id="batch-20261007-111500"))["members"][0]
+        self.assertEqual(gone["tabs"], [])
+
     def test_member_with_a_path_like_archive_id_is_treated_as_deleted(self):
         manifest = self.make_batch(["archived"])
         manifest["members"][0]["archive_id"] = "../../etc/passwd"

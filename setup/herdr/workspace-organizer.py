@@ -1805,6 +1805,7 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         "status": "deleted",
         "restored_workspace_id": None,
         "layout_workspace_id": None,
+        "tabs": [],
     }
     if not archive_id or Path(archive_id).name != archive_id:
         return view
@@ -1821,6 +1822,17 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         layout = archive.get("layout_restore")
         if isinstance(layout, dict) and isinstance(layout.get("workspace_id"), str):
             view["layout_workspace_id"] = layout["workspace_id"]
+        # What the archived workspace holds, so the group can show its tabs by name.
+        capture = archive.get("capture")
+        for tab in (capture.get("tabs") if isinstance(capture, dict) else None) or []:
+            if isinstance(tab, dict):
+                view["tabs"].append(
+                    {
+                        "id": tab.get("source_tab_id"),
+                        "label": tab.get("label") or tab.get("source_tab_id"),
+                        "pane_count": len(leaf_panes((tab.get("layout") or {}).get("root"))),
+                    }
+                )
     return view
 
 
