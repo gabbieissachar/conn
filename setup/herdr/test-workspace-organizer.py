@@ -375,6 +375,37 @@ class WorkspaceOrganizerTests(unittest.TestCase):
             [{"pane_id": "w1:p1", "client": "codex", "status": "needs_registration", "source": "unavailable"}],
         )
 
+    def test_a_tab_lists_the_verified_session_id_of_each_agent_and_nothing_else(self):
+        good = "11111111-2222-4333-8444-555555555555"
+        other = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+        snapshot = {
+            "tabs": [{"workspace_id": "w1", "tab_id": "w1:t1", "label": "Example"}],
+            "panes": [{"tab_id": "w1:t1", "pane_id": f"w1:p{n}", "agent": "claude", "agent_status": "idle"} for n in range(1, 6)],
+        }
+
+        def restore(pane, client, session_id, status, source):
+            return {"source_pane_id": pane, "client": client, "session_id": session_id, "restore_status": status, "restore_source": source}
+
+        restores = [
+            restore("w1:p1", "claude", good, "resumable", "process"),
+            restore("w1:p2", "codex", other, "resumable", "native_codex"),
+            restore("w1:p3", "claude", other, "shell_only", "unavailable"),  # not verified
+            restore("w1:p4", "claude", "not-a-session-id", "resumable", "process"),  # malformed
+            restore("w1:p5", "claude", None, "resumable", "process"),  # no id
+        ]
+        with patch.object(ORGANIZER, "agent_restore_records", return_value=restores):
+            workspace = ORGANIZER.public_workspace(snapshot, {"workspace_id": "w1", "label": "W"}, "esim", [])
+        tab = workspace["tabs"][0]
+        self.assertEqual(
+            tab["agent_sessions"],
+            [
+                {"pane_id": "w1:p1", "client": "claude", "session_id": good},
+                {"pane_id": "w1:p2", "client": "codex", "session_id": other},
+            ],
+        )
+        # The id lives only in agent_sessions, never in the resume state the page already shows.
+        self.assertNotIn(good, json.dumps(tab["agent_resume"]))
+
     def test_a_tab_reports_each_working_folder_once_with_its_panes(self):
         root = "/Users/someone/.treehouse/firstmate-8bf1b0/3/firstmate/state/.treehouse/personal-1ab7cc/5/personal"
         snapshot = {

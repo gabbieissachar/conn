@@ -1048,6 +1048,9 @@ def public_workspace(
         for pane in panes:
             status = str(pane.get("agent_status") or "idle")
             statuses[status] = statuses.get(status, 0) + 1
+        restores = [
+            restore for restore in agent_restore_records(panes, session, records) if restore.get("client") in {"codex", "claude"}
+        ]
         agent_resume = [
             {
                 "pane_id": restore.get("source_pane_id"),
@@ -1055,8 +1058,16 @@ def public_workspace(
                 "status": "resumable" if is_trusted_restore(restore) else "needs_registration",
                 "source": restore.get("restore_source"),
             }
-            for restore in agent_restore_records(panes, session, records)
-            if restore.get("client") in {"codex", "claude"}
+            for restore in restores
+        ]
+        # The verified client session id of each agent pane, so the page can offer a copy button. Only a trusted,
+        # well-formed id is kept; the page treats this field as the one place a session id may appear.
+        agent_sessions = [
+            {"pane_id": str(restore.get("source_pane_id")), "client": restore.get("client"), "session_id": restore.get("session_id")}
+            for restore in restores
+            if is_trusted_restore(restore)
+            and isinstance(restore.get("session_id"), str)
+            and re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", restore["session_id"])
         ]
         tabs.append(
             {
@@ -1067,6 +1078,7 @@ def public_workspace(
                 "pane_count": len(panes),
                 "agent_statuses": statuses,
                 "agent_resume": agent_resume,
+                "agent_sessions": agent_sessions,
                 "working_folders": pane_working_folders(panes),
             }
         )
