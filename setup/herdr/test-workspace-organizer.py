@@ -534,6 +534,19 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(written(f"mv {a}/a {b}/b"), [f"{a}/a", f"{b}/b"])
         # One command per line, and an unquoted newline ends a command.
         self.assertEqual(written(f"ls {a}\ngit -C {b} add ."), [b])
+        # A wrapped command is read as its own command line; the working folder carries in.
+        self.assertEqual(written(f"bash -c 'echo hi > {a}/out.txt'"), [f"{a}/out.txt"])
+        self.assertEqual(written(f"bash -lc \"cd {a} && git commit -m x\""), [a])
+        self.assertEqual(written(f"cd {a} && sh -c 'touch f'"), [a])
+        self.assertEqual(written(f"bash -c 'ls {a} 2>/dev/null'"), [])
+        self.assertEqual(written(f"find {a} -name '*.tmp' -delete"), [a])
+        self.assertEqual(written(f"find {a} -name '*.tmp' -exec rm {{}} +"), [a])
+        self.assertEqual(written(f"find {a} -name '*.py'"), [])
+        self.assertEqual(written(f"npm install --prefix {a}"), [a])
+        self.assertEqual(written(f"cd {a} && pnpm add left-pad"), [a])
+        self.assertEqual(written(f"npm run build --prefix {a}"), [])
+        # Code run by an interpreter is not understood, so it reads as a read.
+        self.assertEqual(written(f"python3 -c \"open('{a}/x', 'w')\""), [])
         # A command that cannot be parsed is read, never a guessed write.
         self.assertEqual(written(f"echo 'unbalanced > {a}/x"), [])
 

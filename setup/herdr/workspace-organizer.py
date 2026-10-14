@@ -909,6 +909,11 @@ GIT_WRITE_SUBCOMMANDS = {"add", "commit", "mv", "rm", "checkout", "switch", "res
 SHELL_WRITE_ALL = {"mv", "rm", "mkdir", "touch", "tee", "patch", "truncate"}
 SHELL_WRITE_DESTINATION = {"cp", "install", "ln", "rsync"}
 SHELL_WRAPPERS = {"sudo", "env", "command", "time", "nohup", "exec"}
+SHELL_INTERPRETERS = {"bash", "sh", "zsh", "dash", "ksh"}
+# Package managers change the folder they run in (or the one given with --prefix, -C or --cwd) when they install.
+PACKAGE_MANAGERS = {"npm", "pnpm", "yarn", "bun", "pip", "pip3", "uv"}
+PACKAGE_WRITE_SUBCOMMANDS = {"install", "i", "ci", "add", "remove", "uninstall", "update", "upgrade", "sync"}
+MAX_SHELL_NESTING = 3
 SHELL_SEPARATORS = {";", "&&", "||", "|", "&", "|&"}
 # Git options that take a value, so the value is not mistaken for the subcommand.
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
@@ -934,12 +939,14 @@ def split_unquoted_newlines(command: str) -> str:
     return "".join(out)
 
 
-def shell_command_paths(command: str) -> list[tuple[str, bool]]:
+def shell_command_paths(command: str, directory: str | None = None, depth: int = 0) -> list[tuple[str, bool]]:
     """(absolute path, was it written) for each absolute path in a shell command.
 
     A path is written when it is a redirect target (other than /dev/null), an argument of a command that changes files
     (a write command's destination for cp, mv, install and the like), or the folder a file-changing command runs in.
-    Reading, listing, `2>/dev/null` and `2>&1` do not count, and neither does the source side of a copy.
+    Reading, listing, `2>/dev/null` and `2>&1` do not count, and neither does the source side of a copy. A command
+    wrapped in `bash -c '...'` is read again as its own command line, `find ... -delete` and package installs count,
+    and code run by an interpreter (`python -c`) is not understood, so it reads as a read.
     """
     try:
         lexer = shlex.shlex(split_unquoted_newlines(command), posix=True, punctuation_chars=True)
@@ -949,7 +956,6 @@ def shell_command_paths(command: str) -> list[tuple[str, bool]]:
     except ValueError:
         return [(path, False) for path in ABSOLUTE_PATH_IN_COMMAND.findall(command)]
     found: list[tuple[str, bool]] = []
-    directory: str | None = None
     segment: list[str] = []
 
     def paths_in(token: str) -> list[str]:
@@ -965,6 +971,11 @@ def shell_command_paths(command: str) -> list[tuple[str, bool]]:
             return
         name = Path(words[0]).name
         args = words[1:]
+        if name in SHELL_INTERPRETERS:
+            inner = next((args[i + 1] for i, arg in enumerate(args[:-1]) if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg)), None)
+            if inner is not None and depth < MAX_SHELL_NESTING:
+                found.extend(shell_command_paths(inner, directory, depth + 1))
+                return
         if name in {"cd", "pushd"}:
             target = next((path for arg in args for path in paths_in(arg)), None)
             if target:
@@ -986,6 +997,15 @@ def shell_command_paths(command: str) -> list[tuple[str, bool]]:
                 if folder and paths_in(folder):
                     directory = paths_in(folder)[0]
         elif name in SHELL_WRITE_ALL or (name == "sed" and any(re.fullmatch(r"-[A-Za-z]*i\S*|--in-place\S*", arg) for arg in args)):
+            changes_files = True
+            written.update(i for i, arg in enumerate(args) if paths_in(arg))
+        elif name == "find" and (
+            "-delete" in args
+            or any(arg in {"-exec", "-execdir", "-ok", "-okdir"} and args[i + 1 : i + 2] and Path(args[i + 1]).name in SHELL_WRITE_ALL | SHELL_WRITE_DESTINATION for i, arg in enumerate(args))
+        ):
+            changes_files = True
+            written.update(i for i, arg in enumerate(args) if paths_in(arg))
+        elif name in PACKAGE_MANAGERS and any(arg in PACKAGE_WRITE_SUBCOMMANDS for arg in args[:3]):
             changes_files = True
             written.update(i for i, arg in enumerate(args) if paths_in(arg))
         elif name in SHELL_WRITE_DESTINATION:
