@@ -29,7 +29,9 @@ if args[:2] == ["api", "snapshot"]:
         save(s)
     print(json.dumps({"result": {"snapshot": s["snapshot"]}}))
 elif args[:2] == ["workspace", "close"]:
-    if os.environ.get("FAKE_SLOW_CLOSE") == args[2]: time.sleep(8)
+    if os.environ.get("FAKE_SLOW_CLOSE") == args[2]:
+        open(state_path + ".closing-" + args[2], "w").write("1")  # tells the test the run is now inside its slow close
+        time.sleep(8)
     snap = s["snapshot"]
     snap["workspaces"] = [w for w in snap["workspaces"] if w["workspace_id"] != args[2]]
     snap["tabs"] = [t for t in snap["tabs"] if t["workspace_id"] != args[2]]
@@ -163,9 +165,10 @@ p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--s
 for _ in range(100):
     if "w1" in state()["closed"]: break
     time.sleep(0.1)
-for _ in range(100):  # interrupt only once w2's archive exists, so the run is inside its slow close
-    if len(list(archives_dir.glob("*.json"))) >= archives_before + 2: break
+for _ in range(300):  # interrupt only once w2's close has started, so the run is inside its slow close
+    if Path(str(state_path) + ".closing-w2").exists(): break
     time.sleep(0.1)
+else: raise AssertionError("w2's slow close never started")
 time.sleep(0.3); p.send_signal(signal.SIGINT); out, err = p.communicate(timeout=20)
 assert p.returncode != 0
 bs = sorted(json.loads(run("list-batches", check=0).stdout), key=lambda x: x["created_at"])
@@ -251,11 +254,10 @@ assert len(state()["created"]) - before == 3, r.stdout; ok("restore-batch lays o
 # Ctrl-C while the only remaining Gamma tab is closing: its workspace closes whole, and the merge target is found by its original id
 live_gamma = members_of(bid)["Gamma (selected tabs)"]["archive_id"]
 p = subprocess.Popen([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", "add-tabs-to-batch", "--batch", bid, "--tab", "w20:t3", "--execute", "--confirm", bid], env={**env, "FAKE_SLOW_CLOSE": "w20"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-for _ in range(150):  # interrupt only once the add is inside its slow close: the archive says its last add is prepared
-    try:
-        if json.loads((archives_dir / f"{live_gamma}.json").read_text())["tab_archives"][-1]["status"] == "prepared": break
-    except (OSError, ValueError, KeyError, IndexError): pass
+for _ in range(300):  # interrupt only once the add is inside its slow close: the fake Herdr says the close has started
+    if Path(str(state_path) + ".closing-w20").exists(): break
     time.sleep(0.1)
+else: raise AssertionError("w20's slow close never started")
 time.sleep(0.3); p.send_signal(signal.SIGINT); p.communicate(timeout=20); assert p.returncode != 0
 settled = json.loads((archives_dir / f"{live_gamma}.json").read_text())
 assert settled["status"] == "close_failed" and "w20:t3" in settled["error"] and settled["tab_archives"][-1]["status"] == "close_partial", settled["status"]

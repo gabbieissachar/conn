@@ -511,6 +511,41 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.write_log(logs, sid, paths=[task / "a.txt"] * 3, edits=[main / "a.txt"] * 9)
         self.assertEqual(ORGANIZER.inferred_agent_folder(pane), str(task))
 
+    def test_shell_commands_count_as_writes_only_when_they_change_files(self):
+        a, b = "/Users/x/app", "/Users/x/other"
+        written = lambda command: [path for path, was_written in ORGANIZER.shell_command_paths(command) if was_written]
+        # Reads, including ones that redirect to /dev/null or merge stderr, write nothing.
+        for command in (
+            f"ls {a} 2>/dev/null", f"grep -r 'a > b' {a}", f"cat {a}/f 2>&1", f"git -C {a} status", f"git -C {a} diff | head",
+            f"ls {a} &> /dev/null", f"cat {a}/f > /dev/null", f"sed -n 1p {a}/f", f"cd {a} && git log --oneline",
+        ):
+            self.assertEqual(written(command), [], command)
+        # Real changes write the path they change.
+        self.assertEqual(written(f"echo hi > {a}/out.txt"), [f"{a}/out.txt"])
+        self.assertEqual(written(f"echo hi >> {a}/out.txt 2>/dev/null"), [f"{a}/out.txt"])
+        self.assertEqual(written(f"git -C {a} commit -m 'x > y'"), [a])
+        self.assertEqual(written(f"git -c core.x=1 -C {a} add -A"), [a])
+        self.assertEqual(written(f"sed -i '' s/a/b/ {a}/f"), [f"{a}/f"])
+        self.assertEqual(written(f"FOO=1 rm {a}/x"), [f"{a}/x"])
+        # A relative change writes the folder the command ran in.
+        self.assertEqual(written(f"cd {a} && git add -A && git commit -m x"), [a, a])
+        # Only the destination of a copy is written; a move changes both ends.
+        self.assertEqual(written(f"cp {a}/a {b}/b"), [f"{b}/b"])
+        self.assertEqual(written(f"mv {a}/a {b}/b"), [f"{a}/a", f"{b}/b"])
+        # One command per line, and an unquoted newline ends a command.
+        self.assertEqual(written(f"ls {a}\ngit -C {b} add ."), [b])
+        # A command that cannot be parsed is read, never a guessed write.
+        self.assertEqual(written(f"echo 'unbalanced > {a}/x"), [])
+
+    def test_reads_that_discard_errors_do_not_outweigh_real_edits(self):
+        main, task, other, logs = self.agent_world()
+        second = main.parent.parent / "task" / "app2"
+        self.git(main, "worktree", "add", "-q", "-b", "task2", str(second))
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        reads = [f"ls {task} 2>/dev/null", f"grep -r foo {task} 2>&1", f"cat {task}/a.txt 2>/dev/null"] * 4
+        self.write_log(logs, sid, commands=reads, edits=[second / "a.txt"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(second))
+
     def test_nothing_is_inferred_without_a_clone_other_than_the_shells_own(self):
         main, task, other, logs = self.agent_world()
         sid = "11111111-aaaa-bbbb-cccc-222222222222"
@@ -3769,6 +3804,22 @@ class AddTabsToBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ORGANIZER.OrganizerError, "now has a working or blocked agent"):
             self.run_add_new_group(["w1:t1"])
         self.assertEqual(list(self.batches.iterdir()) + list(self.archives.iterdir()), [])
+        self.assertEqual(self.herdr.calls, [])
+
+    def test_an_interrupt_before_any_tab_closes_puts_the_group_and_archive_back(self):
+        self.write_member("m1", "w1", tabs=("w1:t1",))
+        self.write_batch(members=[("m1", "w1", "Label w1")])
+        files = lambda: {path.name: json.loads(path.read_text()) for path in sorted([*self.batches.iterdir(), *self.archives.iterdir()])}
+        before = files()
+
+        def interrupt():
+            raise KeyboardInterrupt
+
+        self.herdr.mutate_at = 2
+        self.herdr.mutation = interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_add(["w1:t2"])
+        self.assertEqual(files(), before, "no prepared archive is left behind for a command nobody would finish")
         self.assertEqual(self.herdr.calls, [])
 
     def test_naming_a_missing_group_is_still_an_error(self):

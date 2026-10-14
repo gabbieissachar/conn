@@ -904,10 +904,126 @@ ABSOLUTE_PATH_IN_COMMAND = re.compile(r"(?<![\w.])/(?:Users|home|Volumes|opt|pri
 SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 # Tools that change a file, and shell commands that most likely do. A command that only reads or lists is not a write.
 AGENT_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-SHELL_WRITE_COMMAND = re.compile(
-    r"(?:^|[\s;&|(])(?:git\s+(?:-C\s+\S+\s+)?(?:add|commit|mv|rm|checkout|switch|restore|stash|apply|merge|rebase|cherry-pick)"
-    r"|mv|cp|rm|mkdir|touch|tee|ln|install|patch|truncate|sed\s+-i\S*)\b|>>?\s*[\w\"'/.$~]"
-)
+GIT_WRITE_SUBCOMMANDS = {"add", "commit", "mv", "rm", "checkout", "switch", "restore", "stash", "apply", "merge", "rebase", "cherry-pick"}
+# Commands that change every path they are given, and commands that only change the last path (the destination).
+SHELL_WRITE_ALL = {"mv", "rm", "mkdir", "touch", "tee", "patch", "truncate"}
+SHELL_WRITE_DESTINATION = {"cp", "install", "ln", "rsync"}
+SHELL_WRAPPERS = {"sudo", "env", "command", "time", "nohup", "exec"}
+SHELL_SEPARATORS = {";", "&&", "||", "|", "&", "|&"}
+# Git options that take a value, so the value is not mistaken for the subcommand.
+GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def split_unquoted_newlines(command: str) -> str:
+    """Turn each newline outside quotes into a `;`, so shlex sees one command per line."""
+    out: list[str] = []
+    quote = ""
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "\n":
+            char = " ; "
+        out.append(char)
+    return "".join(out)
+
+
+def shell_command_paths(command: str) -> list[tuple[str, bool]]:
+    """(absolute path, was it written) for each absolute path in a shell command.
+
+    A path is written when it is a redirect target (other than /dev/null), an argument of a command that changes files
+    (a write command's destination for cp, mv, install and the like), or the folder a file-changing command runs in.
+    Reading, listing, `2>/dev/null` and `2>&1` do not count, and neither does the source side of a copy.
+    """
+    try:
+        lexer = shlex.shlex(split_unquoted_newlines(command), posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return [(path, False) for path in ABSOLUTE_PATH_IN_COMMAND.findall(command)]
+    found: list[tuple[str, bool]] = []
+    directory: str | None = None
+    segment: list[str] = []
+
+    def paths_in(token: str) -> list[str]:
+        return ABSOLUTE_PATH_IN_COMMAND.findall(token)
+
+    def flush() -> None:
+        nonlocal directory, segment
+        words = list(segment)
+        segment = []
+        while words and (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]) or words[0] in SHELL_WRAPPERS):
+            words.pop(0)
+        if not words:
+            return
+        name = Path(words[0]).name
+        args = words[1:]
+        if name in {"cd", "pushd"}:
+            target = next((path for arg in args for path in paths_in(arg)), None)
+            if target:
+                directory = target
+            found.extend((path, False) for arg in args for path in paths_in(arg))
+            return
+        written: set[int] = set()  # indexes into args that are written
+        changes_files = False
+        if name == "git":
+            index, folder = 0, None
+            while index < len(args) and args[index].startswith("-"):
+                if args[index] == "-C" and index + 1 < len(args):
+                    folder = args[index + 1]
+                index += 2 if args[index] in GIT_VALUE_OPTIONS else 1
+            subcommand = args[index] if index < len(args) else ""
+            if subcommand in GIT_WRITE_SUBCOMMANDS:
+                changes_files = True
+                written.update(i for i, arg in enumerate(args) if paths_in(arg))
+                if folder and paths_in(folder):
+                    directory = paths_in(folder)[0]
+        elif name in SHELL_WRITE_ALL or (name == "sed" and any(re.fullmatch(r"-[A-Za-z]*i\S*|--in-place\S*", arg) for arg in args)):
+            changes_files = True
+            written.update(i for i, arg in enumerate(args) if paths_in(arg))
+        elif name in SHELL_WRITE_DESTINATION:
+            changes_files = True
+            operands = [i for i, arg in enumerate(args) if not arg.startswith("-")]
+            if operands and paths_in(args[operands[-1]]):
+                written.add(operands[-1])
+        wrote_a_path = False
+        for i, arg in enumerate(args):
+            for path in paths_in(arg):
+                found.append((path, i in written))
+                wrote_a_path = wrote_a_path or i in written
+        if changes_files and not wrote_a_path and directory:
+            found.append((directory, True))  # a relative path, so the folder the command runs in is what changed
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in SHELL_SEPARATORS or set(token) <= set("();&|") and token:
+            flush()
+        elif (token.startswith(">") and not token.startswith(">&")) or token in {"&>", "&>>"}:
+            target = tokens[index + 1] if index + 1 < len(tokens) else ""
+            index += 1
+            if target and not target.startswith("/dev/") and not target.startswith("&"):
+                target_paths = paths_in(target)
+                if target_paths:
+                    found.extend((path, True) for path in target_paths)
+                elif directory:
+                    found.append((directory, True))
+        elif token.startswith("<"):
+            index += 1  # a redirected input is a read, handled as an ordinary argument below
+            if index < len(tokens):
+                found.extend((path, False) for path in paths_in(tokens[index]))
+        else:
+            segment.append(token)
+        index += 1
+    flush()
+    return found
 
 
 def clean_folder(value: object) -> str | None:
@@ -974,8 +1090,7 @@ def recent_claude_paths(log: Path) -> list[tuple[str, bool]]:
                 if isinstance((value := tool_input.get(key)), str) and value.startswith("/")
             )
             if isinstance(tool_input.get("command"), str):
-                command_writes = bool(SHELL_WRITE_COMMAND.search(tool_input["command"]))
-                found.extend((path, command_writes) for path in ABSOLUTE_PATH_IN_COMMAND.findall(tool_input["command"]))
+                found.extend(shell_command_paths(tool_input["command"]))
     return found[-AGENT_RECENT_PATHS:]
 
 
@@ -2305,8 +2420,7 @@ def apply_tab_addition(
     write_json(batch_path, manifest)
     # Look again right before anything closes. If the tabs changed since the capture, undo the whole addition: nothing
     # has been closed yet, so the live tabs and the earlier archive state are exactly as they were.
-    problems = tabs_changed_since_capture(session, tabs, plan["workspace_id"] if plan["close_workspace"] else None)
-    if problems:
+    def undo_addition() -> None:
         if before is not None:
             write_json(archive_path, before)
         else:
@@ -2314,11 +2428,21 @@ def apply_tab_addition(
         manifest.clear()
         manifest.update(manifest_before)
         write_json(batch_path, manifest)
+
+    try:
+        problems = tabs_changed_since_capture(session, tabs, plan["workspace_id"] if plan["close_workspace"] else None)
+        live = {str(tab.get("tab_id")) for tab in session_snapshot(session).get("tabs", [])}
+    except BaseException:
+        # An interrupt or a failed read before anything closed: the archive is still "prepared" and nothing has been
+        # closed, so put everything back rather than leave a prepared archive that no command would pick up.
+        undo_addition()
+        raise
+    if problems:
+        undo_addition()
         raise OrganizerError(
             f"Workspace {plan['workspace_id']} changed after it was captured: {'; '.join(problems)}. "
             "Nothing was closed and nothing was added. Run the command again."
         )
-    live = {str(tab.get("tab_id")) for tab in session_snapshot(session).get("tabs", [])}
     try:
         close_captured_tabs(
             archive_path,
