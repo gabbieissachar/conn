@@ -29,6 +29,7 @@ const PREFLIGHT_TIMEOUT_MS = 600000;
 // A working folder the page may show and turn into a cd command: absolute, one line, no control characters.
 const FOLDER_PATH = /^\/[^\u0000-\u001f\u007f]{0,1023}$/;
 const PANE_ID = /^[A-Za-z0-9:_-]{1,40}$/;
+const AGENT_CLIENTS = new Set(['claude', 'codex']);
 const SEAL_TIMEOUT_MS = 900000;
 
 // A tool run that was killed for taking too long gets its own message, so a busy
@@ -671,23 +672,39 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     if (raw.length > 4 * 1024 * 1024) throw new AdapterError('The snapshot is too large to show.', 502, 'snapshot_invalid');
     let snapshot;
     try { snapshot = JSON.parse(raw); } catch { throw new AdapterError('The snapshot file is not valid JSON.', 502, 'snapshot_invalid'); }
-    // A tab's working folders are the one place a local path is meant to reach the page, so the user can cd into them.
-    // They are checked on their own and left out of the scan that guards everything else.
-    const folders = [];
+    // Two tab fields are meant to carry a value the scan would otherwise block: working folders (a local path, so the user
+    // can cd into it) and agent sessions (a client session id, so the user can copy it). Each is validated on its own and
+    // left out of the scan that guards everything else.
+    const kept = [];
     for (const workspace of Array.isArray(snapshot && snapshot.workspaces) ? snapshot.workspaces : []) {
       for (const tab of Array.isArray(workspace && workspace.tabs) ? workspace.tabs : []) {
-        if (!tab || typeof tab !== 'object' || !('working_folders' in tab)) continue;
-        const list = Array.isArray(tab.working_folders) ? tab.working_folders : [];
-        const valid = list.filter((item) => item && typeof item.path === 'string' && FOLDER_PATH.test(item.path)
-          && Array.isArray(item.pane_ids) && item.pane_ids.every((id) => typeof id === 'string' && PANE_ID.test(id)));
-        folders.push([tab, valid.map((item) => ({ path: item.path, source: item.source === 'agent_files' ? 'agent_files' : 'pane', pane_ids: item.pane_ids.slice() }))]);
-        tab.working_folders = [];
+        if (!tab || typeof tab !== 'object') continue;
+        const entry = { tab };
+        if ('working_folders' in tab) {
+          const list = Array.isArray(tab.working_folders) ? tab.working_folders : [];
+          const valid = list.filter((item) => item && typeof item.path === 'string' && FOLDER_PATH.test(item.path)
+            && Array.isArray(item.pane_ids) && item.pane_ids.every((id) => typeof id === 'string' && PANE_ID.test(id)));
+          entry.folders = valid.map((item) => ({ path: item.path, source: item.source === 'agent_files' ? 'agent_files' : 'pane', pane_ids: item.pane_ids.slice() }));
+          tab.working_folders = [];
+        }
+        if ('agent_sessions' in tab) {
+          const list = Array.isArray(tab.agent_sessions) ? tab.agent_sessions : [];
+          entry.sessions = list
+            .filter((item) => item && typeof item.pane_id === 'string' && PANE_ID.test(item.pane_id)
+              && AGENT_CLIENTS.has(item.client) && typeof item.session_id === 'string' && SESSION_UUID_RE.test(item.session_id))
+            .map((item) => ({ pane_id: item.pane_id, client: item.client, session_id: item.session_id }));
+          tab.agent_sessions = [];
+        }
+        kept.push(entry);
       }
     }
     // A folder may be a local path, but not a client session id, a socket, a bundle id or a resume command.
-    const folderLeaks = folders.some(([, valid]) => valid.some((item) => findLeaks(item.path).some((kind) => kind !== 'private-path')));
+    const folderLeaks = kept.some((entry) => (entry.folders || []).some((item) => findLeaks(item.path).some((kind) => kind !== 'private-path')));
     if (folderLeaks || findLeaks(JSON.stringify(snapshot)).length) throw new AdapterError('The snapshot contains private values and was not shown.', 502, 'snapshot_invalid');
-    for (const [tab, valid] of folders) tab.working_folders = valid;
+    for (const entry of kept) {
+      if (entry.folders) entry.tab.working_folders = entry.folders;
+      if (entry.sessions) entry.tab.agent_sessions = entry.sessions;
+    }
     return snapshot;
   }
 

@@ -296,3 +296,22 @@ test('with no archive group yet, adding tabs starts it, confirmed by the session
   assert.match(panel, /--execute --confirm \$\{newGroupSession\}/);
   assert.equal(/api\.run/.test(panel), false, 'the panel never calls the server');
 });
+
+test('a tab shows a copy button for each verified agent session id, and copying the id never calls the server', () => {
+  const view = html.slice(html.indexOf('// One line per agent in the tab whose client session id is verified'), html.indexOf('const tabView'));
+  assert.match(view, /Copy session id/);
+  assert.match(view, /data-command="\$\{escapeHtml\(item\.session_id\)\}" data-copied="Session id copied"/);
+  assert.equal(/api\.run/.test(view), false, 'showing a session id never calls the server');
+  assert.match(html, /copy\(button\.dataset\.command, button\.dataset\.copied\)/);
+  const { agentSessionsView } = new Function('escapeHtml', view + '; return { agentSessionsView };')(value => String(value));
+  const id = '11111111-2222-4333-8444-555555555555';
+  const one = agentSessionsView({ pane_count: 1, agent_sessions: [{ pane_id: 'w9Z:p1', client: 'claude', session_id: id }] });
+  assert.match(one, /claude session/);
+  assert.match(one, new RegExp('data-command="' + id + '"'));
+  assert.equal(one.includes('w9Z:p1'), false, 'a one-pane tab does not need the pane id');
+  const many = agentSessionsView({ pane_count: 2, agent_sessions: [{ pane_id: 'w9Z:p2', client: 'codex', session_id: id }] });
+  assert.match(many, /w9Z:p2/);
+  // Anything that is not a well-formed id is not offered for copying.
+  assert.equal(agentSessionsView({ pane_count: 1, agent_sessions: [{ pane_id: 'w9Z:p1', client: 'claude', session_id: 'claude --resume x' }] }), '');
+  assert.equal(agentSessionsView({ pane_count: 1 }), '');
+});

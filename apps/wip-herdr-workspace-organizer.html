@@ -263,7 +263,7 @@ created: 2026-09-10
     const matches = value => !state.query || searchText(value).includes(state.query);
     const copy = async (text, message = 'Command copied') => {
       try { await navigator.clipboard.writeText(text); showToast(message); }
-      catch { showToast(message.startsWith('Report') ? 'Could not copy. Select the report text and copy it.' : `Copy this command: ${text}`); }
+      catch { showToast(message.startsWith('Report') ? 'Could not copy. Select the report text and copy it.' : message.startsWith('Session') ? `Copy this session id: ${text}` : `Copy this command: ${text}`); }
     };
     let toastTimer;
     const showToast = message => { const toast = document.querySelector('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2600); };
@@ -292,6 +292,12 @@ created: 2026-09-10
         return `<div class="folder-line">${label}<code class="folder-path" title="${escapeHtml(folder.path)}">${escapeHtml(command)}</code>${panes}<button type="button" class="small-btn" data-command="${escapeHtml(command)}" title="Copies this cd command. Paste it in a terminal to go to this folder.">Copy cd</button></div>`;
       }).join('');
     };
+    // One line per agent in the tab whose client session id is verified, with a button that copies the bare id.
+    const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const agentSessionsView = tab => (tab.agent_sessions || []).filter(item => SESSION_ID_PATTERN.test(item?.session_id || '')).map(item => {
+      const panes = Number(tab.pane_count) > 1 ? ` <span class="pane-id">${escapeHtml(item.pane_id)}</span>` : '';
+      return `<div class="folder-line"><span class="folder-source">${escapeHtml(item.client)} session</span><code class="folder-path" title="${escapeHtml(item.session_id)}">${escapeHtml(item.session_id.slice(0, 8))}…</code>${panes}<button type="button" class="small-btn" data-command="${escapeHtml(item.session_id)}" data-copied="Session id copied" title="Copies this agent's full session id.">Copy session id</button></div>`;
+    }).join('');
     const tabView = (tab, total) => {
       const before = Math.max(0, Number(tab.index) - 1);
       const after = Math.min(total - 1, Number(tab.index) + 1);
@@ -299,6 +305,7 @@ created: 2026-09-10
         <div class="tab-line"><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</div>
         <div class="tab-meta">${escapeHtml(tab.id)} · ${tab.pane_count} pane${tab.pane_count === 1 ? '' : 's'}${tabStatuses(tab.agent_statuses)}${resumeStatuses(tab.agent_resume)}</div>
         ${workingFoldersView(tab)}
+        ${agentSessionsView(tab)}
         <label class="tab-select"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}> Select this tab to move, archive or add to the archive group</label>
         <div class="tab-actions">
           <button type="button" title="Copy a command that places this tab one position closer to the first tab in this workspace" data-command="herdr-organizer reorder-tab --tab ${escapeHtml(tab.id)} --index ${before} --execute">Copy move tab left</button>
@@ -453,7 +460,7 @@ created: 2026-09-10
       document.querySelector('#batches').innerHTML = batchesView(data);
       document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
       document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
-      document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command)));
+      document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command, button.dataset.copied)));
       document.querySelectorAll('[data-select-tab]').forEach(input => input.addEventListener('change', event => {
         if (event.target.checked) state.selectedTabs.add(event.target.dataset.selectTab);
         else state.selectedTabs.delete(event.target.dataset.selectTab);

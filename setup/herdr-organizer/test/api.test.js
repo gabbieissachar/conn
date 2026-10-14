@@ -530,3 +530,42 @@ test('snapshot-data: a tab keeps its working folders, and a path anywhere else s
     tree.cleanup();
   }
 });
+
+test('snapshot-data: a tab keeps its verified agent sessions, and a session id anywhere else still refuses the snapshot', async () => {
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('herdr-organizer-test-');
+  const snapshot = 'state/workspace-organizer/live-snapshot.json';
+  tree.mkdir('state/workspace-organizer');
+  const server = await startServer({ toolRoot: tree.root });
+  const id = '11111111-2222-4333-8444-555555555555';
+  const tab = (extra) => ({ id: 'w9Z:t2', label: 'Work', index: 0, pane_count: 1, agent_sessions: [{ pane_id: 'w9Z:p1', client: 'claude', session_id: id }], ...extra });
+  const write = (value) => require('fs').writeFileSync(tree.abs(snapshot), JSON.stringify(value));
+  try {
+    const { post } = await client(server);
+    tree.write(snapshot, '{}');
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab()] }], archives: [] });
+    const ok = await post('snapshot-data');
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json.data.workspaces[0].tabs[0].agent_sessions, [{ pane_id: 'w9Z:p1', client: 'claude', session_id: id }]);
+    // The same id in a label, or in the resume state, is still a private value.
+    write({ workspaces: [{ id: 'w9Z', label: id, tabs: [tab()] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ label: id })] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ agent_resume: [{ pane_id: 'w9Z:p1', client: 'claude', session_id: id }] })] }], archives: [] });
+    assert.equal((await post('snapshot-data')).status, 502);
+    // An entry that is not a clean id, client or pane is dropped, never shown.
+    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ agent_sessions: [
+      { pane_id: 'w9Z:p1', client: 'claude', session_id: 'claude --resume abc' },
+      { pane_id: 'w9Z:p1', client: 'shell', session_id: id },
+      { pane_id: 'bad id', client: 'claude', session_id: id },
+      { pane_id: 'w9Z:p2', client: 'codex', session_id: id },
+    ] })] }], archives: [] });
+    const cleaned = await post('snapshot-data');
+    assert.equal(cleaned.status, 200);
+    assert.deepEqual(cleaned.json.data.workspaces[0].tabs[0].agent_sessions, [{ pane_id: 'w9Z:p2', client: 'codex', session_id: id }]);
+  } finally {
+    await server.close();
+    tree.cleanup();
+  }
+});
