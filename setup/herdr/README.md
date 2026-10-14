@@ -438,8 +438,7 @@ Commands that create, restore, move or delete archives, or close tabs, share one
 `list-archives`, `list-batches` and `reorder-tab` do not lock. `delete-batch` and the group commands lock when they execute.
 
 Add selected live tabs to the session's archive group with `add-tabs-to-batch`
-(`--batch` defaults to the group of `--session`; the group must already exist).
-It captures
+(`--batch` defaults to the group of `--session`). A session with no group yet gets one from the first add; that run is confirmed with the session name, since the group id is only chosen when it executes. It captures
 the tabs, then closes them and stops their processes. Tabs from one live
 workspace become one new batch member labelled `<workspace> (selected tabs)`. A tab
 whose live workspace is already tied to a member of that batch merges into that

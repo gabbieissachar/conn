@@ -3683,10 +3683,46 @@ class AddTabsToBatchTests(unittest.TestCase):
         [member] = self.manifest()["members"]
         self.assertEqual(self.archive(member["archive_id"])["batch_id"], self.BATCH)
 
-    def test_a_session_without_a_group_is_told_to_run_archive_all(self):
-        args = argparse.Namespace(batch=None, tab=["w1:t1"], session="esim", execute=False, confirm=None)
-        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "no archive group yet"):
+    def run_add_new_group(self, tabs, execute=True, confirm="esim"):
+        args = argparse.Namespace(batch=None, tab=list(tabs), session="esim", execute=execute, confirm=confirm if execute else None)
+        output = io.StringIO()
+        with redirect_stdout(output):
             ORGANIZER.add_tabs_to_batch_command(args)
+        return output.getvalue()
+
+    def test_a_session_without_a_group_gets_one_when_tabs_are_added(self):
+        text = self.run_add_new_group(["w1:t1"], execute=False)
+        preview = json.loads(text[: text.rindex("}") + 1])
+        self.assertEqual((preview["creates_group"], preview["batch_id"]), (True, None))
+        self.assertIn("a new archive group for session 'esim'", text)
+        self.assertEqual(list(self.batches.iterdir()) + list(self.archives.iterdir()), [], "a preview writes nothing")
+        for confirm in (None, "other", "batch-20261012-100000"):
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "requires --confirm 'esim'"):
+                self.run_add_new_group(["w1:t1"], confirm=confirm)
+        self.assertEqual(self.herdr.calls, [])
+        text = self.run_add_new_group(["w1:t1"])
+        self.assertIn("Created the archive group", text)
+        [path] = list(self.batches.iterdir())
+        group = json.loads(path.read_text())
+        self.assertEqual((group["herdr_session"], group["status"]), ("esim", "completed"))
+        [member] = group["members"]
+        archive = self.archive(member["archive_id"])
+        self.assertEqual((archive["status"], archive["batch_id"]), ("archived", group["batch_id"]))
+        # The next run finds that group instead of making another.
+        self.run_add_new_group(["w2:t1", "w2:t2"], confirm=group["batch_id"])
+        self.assertEqual(len(list(self.batches.iterdir())), 1)
+
+    def test_a_first_add_that_changed_after_capture_leaves_no_empty_group_behind(self):
+        self.herdr.mutate_at = 2
+        self.herdr.mutation = lambda: self.herdr.status.update({"w1:t1": "working"})
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "now has a working or blocked agent"):
+            self.run_add_new_group(["w1:t1"])
+        self.assertEqual(list(self.batches.iterdir()) + list(self.archives.iterdir()), [])
+        self.assertEqual(self.herdr.calls, [])
+
+    def test_naming_a_missing_group_is_still_an_error(self):
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "was not found"):
+            self.run_add(["w1:t1"], batch="batch-20990101-000000")
 
     def test_a_member_from_another_batch_is_never_merged(self):
         self.write_member("m1", "w1", batch_id="batch-20260101-000000")

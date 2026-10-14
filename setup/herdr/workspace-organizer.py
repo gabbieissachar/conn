@@ -2364,14 +2364,31 @@ def finish_tab_add_command(args: argparse.Namespace) -> None:
 
 
 def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
-    args.batch = resolve_group_argument(args)
-    batch_path, manifest = batch_by_id(args.batch)
+    session = args.session or os.environ.get("HERDR_SESSION")
+    creating = False
+    if getattr(args, "batch", None):
+        batch_path, manifest = batch_by_id(args.batch)
+    else:
+        if not session:
+            raise OrganizerError("Pass --batch, or --session to use that session's archive group.")
+        found = group_for_session(session)
+        if found:
+            batch_path, manifest = found
+            args.batch = str(manifest["batch_id"])
+        else:
+            # The session has no archive group yet, so adding tabs starts it. Nothing is written before the run executes.
+            creating = True
+            args.batch = batch_id_for()
+            batch_path = BATCH_DIR / f"{args.batch}.json"
+            manifest = {
+                "version": 1, "batch_id": args.batch, "status": "completed", "created_at": now(),
+                "herdr_session": session, "members": [], "skipped": [],
+            }
     if manifest.get("status") not in BATCH_FINISHED_STATUSES:
         raise OrganizerError(
             f"Batch {args.batch!r} is {manifest.get('status')!r}. Tabs can only be added to a finished batch."
         )
     captured_session = manifest.get("herdr_session")
-    session = args.session or os.environ.get("HERDR_SESSION")
     if captured_session and session != captured_session:
         raise OrganizerError(
             f"Batch {args.batch!r} was captured from session {captured_session!r}, not {session!r}. "
@@ -2437,8 +2454,11 @@ def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
                 "did not select stay in the archive, so the next restore rebuilds them even if they are still open in the "
                 "earlier workspace, and agents already resumed there resume again."
             )
+    # A new group is confirmed with the session name, because its id is only chosen when the run executes.
+    confirmation = session if creating else args.batch
     preview = {
-        "batch_id": args.batch,
+        "batch_id": None if creating else args.batch,
+        "creates_group": creating,
         "session": captured_session,
         "additions": [
             {
@@ -2467,22 +2487,33 @@ def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
     if not args.execute:
         print(json.dumps(preview, indent=2))
         print(
-            f"Preview only. Execution captures these tab(s) into batch {args.batch}, then closes them and stops their "
-            f"processes. Re-run with --execute --confirm {args.batch!r}."
+            "Preview only. Execution captures these tab(s) into "
+            + (f"a new archive group for session {session!r}" if creating else f"batch {args.batch}")
+            + f", then closes them and stops their processes. Re-run with --execute --confirm {confirmation!r}."
         )
         for warning in warnings:
             print(f"Warning: {warning}")
         return
-    require_execute_confirmation(args.execute, args.confirm, args.batch, "Add tabs to batch")
-    for plan in plans:
-        outcome = apply_tab_addition(batch_path, manifest, args.batch, plan, members[plan["workspace_id"]], session)
-        where = "merged into its earlier member" if outcome == "merged" else "as a new member"
-        print(f"Added {len(plan['tabs'])} tab(s) from {plan['workspace_id']} ({plan['label']}) {where}.")
-        if plan["kept_tab_id"]:
-            reason = (
-                "this command runs inside the workspace" if plan["kept_reason"] == "running_inside" else "it is the only workspace"
-            )
-            print(f"Kept {plan['kept_tab_id']} open because {reason}.")
+    require_execute_confirmation(args.execute, args.confirm, confirmation, "Add tabs to batch")
+    if creating and group_for_session(session) is not None:
+        raise OrganizerError(f"Session {session!r} got an archive group since the preview. Nothing was changed. Run the command again.")
+    try:
+        for plan in plans:
+            outcome = apply_tab_addition(batch_path, manifest, args.batch, plan, members[plan["workspace_id"]], session)
+            where = "merged into its earlier member" if outcome == "merged" else "as a new member"
+            print(f"Added {len(plan['tabs'])} tab(s) from {plan['workspace_id']} ({plan['label']}) {where}.")
+            if plan["kept_tab_id"]:
+                reason = (
+                    "this command runs inside the workspace" if plan["kept_reason"] == "running_inside" else "it is the only workspace"
+                )
+                print(f"Kept {plan['kept_tab_id']} open because {reason}.")
+    except BaseException:
+        # A run that stopped before adding anything must not leave an empty group it created behind.
+        if creating and batch_path.exists() and not read_json(batch_path, {}).get("members"):
+            batch_path.unlink(missing_ok=True)
+        raise
+    if creating:
+        print(f"Created the archive group {args.batch} for session {session}.")
     print("The original processes were stopped. Restore the batch with restore-batch, or each archive on its own.")
     for warning in warnings:
         print(f"Warning: {warning}")
