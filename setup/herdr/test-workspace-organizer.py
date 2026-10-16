@@ -559,6 +559,44 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.write_log(logs, sid, commands=reads, edits=[second / "a.txt"])
         self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(second))
 
+    def test_repository_lookup_matches_git_without_starting_it(self):
+        main, task, other, _ = self.agent_world()
+        (task / "deep" / "er").mkdir(parents=True)
+        outside = main.parent.parent / "plain"
+        outside.mkdir()
+        folders = [main, task, task / "deep" / "er", other, outside, main / "missing" / "file.txt"]
+        expected = {}
+        ORGANIZER.git_root_and_common_dir.cache_clear()
+        for folder in folders:
+            expected[str(folder)] = ORGANIZER.git_root_and_common_dir(str(folder))
+        ORGANIZER.git_root_and_common_dir.cache_clear()
+        with patch.object(ORGANIZER.subprocess, "run", side_effect=AssertionError("git was started")):
+            for folder in folders:
+                self.assertEqual(ORGANIZER.git_root_and_common_dir(str(folder)), expected[str(folder)], str(folder))
+        # A worktree and its main clone share one git directory; an unrelated repository and a plain folder do not.
+        self.assertEqual(expected[str(main)][1], expected[str(task)][1])
+        self.assertEqual(expected[str(task / "deep" / "er")][0], str(task))
+        self.assertNotEqual(expected[str(other)][1], expected[str(main)][1])
+        self.assertIsNone(expected[str(outside)])
+        self.assertEqual(expected[str(main / "missing" / "file.txt")][0], str(main), "a path that is gone resolves through its nearest folder")
+
+    def test_repository_lookup_asks_git_when_a_marker_is_unreadable(self):
+        main, _, _, _ = self.agent_world()
+        broken = main.parent.parent / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("not a git marker\n")
+        ORGANIZER.git_root_and_common_dir.cache_clear()
+        calls = []
+        real = ORGANIZER.subprocess.run
+        def spy(*args, **kwargs):
+            calls.append(args[0])
+            return real(*args, **kwargs)
+        with patch.object(ORGANIZER.subprocess, "run", side_effect=spy):
+            self.assertIsNone(ORGANIZER.git_root_and_common_dir(str(broken)))
+            self.assertEqual(len(calls), 1)
+            self.assertIsNotNone(ORGANIZER.git_root_and_common_dir(str(main)))
+            self.assertEqual(len(calls), 1, "a normal clone is answered without git")
+
     def test_nothing_is_inferred_without_a_clone_other_than_the_shells_own(self):
         main, task, other, logs = self.agent_world()
         sid = "11111111-aaaa-bbbb-cccc-222222222222"
@@ -2956,12 +2994,15 @@ class BatchTests(unittest.TestCase):
         leaf = lambda pane: {"type": "pane", "pane_id": pane}
         archive["capture"] = {"workspace": {"label": "Ws 1"}, "tabs": [
             {"source_tab_id": "w1:t1", "label": "leader-esim", "layout": {"root": leaf("w1:p1")}},
-            {"source_tab_id": "w1:t2", "layout": {"root": {"type": "split", "children": [leaf("w1:p2"), leaf("w1:p3")]}}},
+            {"source_tab_id": "w1:t2", "agent_restores": [{"client": "claude", "source_pane_id": "w1:p2"}],
+             "layout": {"root": {"type": "split", "children": [leaf("w1:p2"), leaf("w1:p3")]}}},
         ]}
         ORGANIZER.write_json(path, archive)
         [member] = ORGANIZER.batch_summary(manifest)["members"]
         self.assertEqual([(t["id"], t["label"]) for t in member["tabs"]], [("w1:t1", "leader-esim"), ("w1:t2", "w1:t2")])
         self.assertEqual(member["tabs"][0]["pane_count"], 1)
+        # The page offers to resume one tab only when none of its agents is unverified.
+        self.assertEqual([(t["resumable_agent_count"], t["unresumable_agent_count"]) for t in member["tabs"]], [(0, 0), (0, 1)])
         # A deleted or unreadable archive has no tabs to show.
         gone = ORGANIZER.batch_summary(self.make_batch(["deleted"], batch_id="batch-20261007-111500"))["members"][0]
         self.assertEqual(gone["tabs"], [])

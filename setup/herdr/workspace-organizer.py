@@ -1052,14 +1052,72 @@ def clean_folder(value: object) -> str | None:
     return None
 
 
+def read_git_marker(root: str) -> str | None:
+    """The shared git directory a repository root's `.git` entry points at, read without starting git.
+
+    A normal clone has a `.git` folder, which is the shared directory. A linked worktree has a `.git` file reading
+    `gitdir: <worktree git dir>`, and that directory's `commondir` file names the shared directory. Anything unusual
+    (an unreadable or malformed marker, a missing target) returns None so the caller asks git instead.
+    """
+    marker = os.path.join(root, ".git")
+    if os.path.isdir(marker):
+        return os.path.realpath(marker)
+    try:
+        with open(marker, encoding="utf-8") as handle:
+            first = handle.readline(4096).strip()
+    except OSError:
+        return None
+    if not first.startswith("gitdir:"):
+        return None
+    git_dir = Path(first[len("gitdir:"):].strip())
+    if not git_dir.is_absolute():
+        git_dir = Path(root) / git_dir
+    if not git_dir.is_dir():
+        return None
+    try:
+        common = (git_dir / "commondir").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return str(git_dir.resolve())
+    except OSError:
+        return None
+    return str((git_dir / common).resolve()) if common else None
+
+
+def git_root_and_common_dir_from_files(folder: str) -> tuple[str, str] | None | bool:
+    """Find a folder's repository by walking up to the nearest `.git` entry.
+
+    Returns the (root, shared git directory) pair, None when no folder above has a `.git` entry (not in a repository),
+    or False when an entry exists but cannot be read safely, so the caller should ask git.
+    """
+    current = os.path.realpath(folder)
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            common = read_git_marker(current)
+            return (current, common) if common else False
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+@lru_cache(maxsize=4096)
 def git_root_and_common_dir(path: str) -> tuple[str, str] | None:
-    """The repository root a path is in and the shared git directory every worktree of that repository points at."""
+    """The repository root a path is in and the shared git directory every worktree of that repository points at.
+
+    Reads the `.git` markers directly, which is what dominated the live snapshot's time when it asked git once per
+    touched folder. It asks git only when the markers are not enough: GIT_DIR or GIT_WORK_TREE is set, or a `.git`
+    entry has an unusual shape.
+    """
     folder = path
     while folder and not os.path.isdir(folder):
         parent = os.path.dirname(folder)
         if parent == folder:
             return None
         folder = parent
+    if not os.environ.get("GIT_DIR") and not os.environ.get("GIT_WORK_TREE"):
+        found = git_root_and_common_dir_from_files(folder)
+        if found is not False:
+            return found
     try:
         completed = subprocess.run(
             ["git", "-C", folder, "rev-parse", "--show-toplevel", "--git-common-dir"],
@@ -1851,6 +1909,8 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
                         "id": tab.get("source_tab_id"),
                         "label": tab.get("label") or tab.get("source_tab_id"),
                         "pane_count": len(leaf_panes((tab.get("layout") or {}).get("root"))),
+                        "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+                        "unresumable_agent_count": sum(not is_trusted_restore(item) for item in tab.get("agent_restores", [])),
                     }
                 )
     return view
