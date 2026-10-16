@@ -206,6 +206,11 @@ created: 2026-09-10
     .member-tabs { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0 0 8px; }
     .member-tab { min-width: 0; overflow-wrap: anywhere; padding: 2px 8px; border-radius: 999px; background: #f2f4f9; color: var(--navy); font-size: 11px; }
     .member-tab .tab-panes { color: #6b7490; font: 10px "DM Mono", monospace; margin-left: 4px; }
+    .member-tab .tab-resume { margin-left: 6px; padding: 0 7px; border: 1px solid #c7cde0; border-radius: 999px; background: #fff; color: var(--navy); font: inherit; font-size: 10px; line-height: 16px; cursor: pointer; }
+    .member-tab .tab-resume:hover:not(:disabled) { background: #eef1fb; }
+    .member-tab .tab-resume:disabled { opacity: .5; cursor: not-allowed; }
+    .group-destination { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 4px; font-size: 12px; color: #4a5370; }
+    .group-destination .select { max-width: min(360px, 100%); padding: 7px 10px; }
     .member-state { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; }
     .member-flag { flex-basis: 100%; color: #925a08; font-size: 11px; line-height: 1.4; }
     .archive-chip { color: #514194; font: 10px "DM Mono", monospace; }
@@ -260,7 +265,7 @@ created: 2026-09-10
   </main>
   <div class="toast" id="toast" role="status"></div>
   <script>
-    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, groupTabDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -487,6 +492,10 @@ created: 2026-09-10
       });
       document.querySelectorAll('[data-tabs-mode]').forEach(button => button.addEventListener('click', () => {
         state.selectedTabsAction = button.dataset.tabsMode;
+        render();
+      }));
+      document.querySelectorAll('[data-group-destination]').forEach(select => select.addEventListener('change', event => {
+        state.groupTabDestinations[select.dataset.groupDestination] = event.target.value;
         render();
       }));
       document.querySelector('#restore-destination')?.addEventListener('change', event => {
@@ -1294,18 +1303,38 @@ created: 2026-09-10
     // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
     const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
     // The tabs an archived workspace holds, by name, so the group shows what each workspace stores.
-    const memberTabsView = member => {
+    // The open workspaces a single archived tab can be resumed into: only those of the session the group belongs to.
+    const groupDestinations = (batch, data) => (SESSION_NAME_PATTERN.test(batch.herdr_session || '') && batch.herdr_session === data.herdr_session ? (data.workspaces || []) : []);
+    const groupTabDestination = (batch, destinations) => {
+      if (!destinations.some(workspace => workspace.id === state.groupTabDestinations[batch.batch_id])) state.groupTabDestinations[batch.batch_id] = destinations[0]?.id || '';
+      return state.groupTabDestinations[batch.batch_id];
+    };
+    // The command for one tab: the single-tab restore into an open workspace, with the session the group was captured from.
+    const memberTabCommand = (member, tab, session, destination) => (member.status === 'archived' && destination && ARCHIVE_ID_PATTERN.test(member.archive_id || '') && TAB_ID_PATTERN.test(tab.id || '') && WORKSPACE_ID_PATTERN.test(destination) && !(tab.unresumable_agent_count > 0)
+      ? `herdr-organizer${session} restore-tab --archive ${member.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${member.archive_id}` : '');
+    // The tabs an archived workspace holds, by name, so the group shows what each workspace stores. A still-archived
+    // workspace also offers to resume just one of its tabs into an open workspace; the tab stays in the archive.
+    const memberTabsView = (member, session, destination) => {
       const tabs = (member.tabs || []).filter(tab => tab && typeof tab.label === 'string' && tab.label);
       if (!tabs.length) return '';
-      return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span></span>`).join('')}</div>`;
+      const offer = member.status === 'archived';
+      const button = tab => {
+        if (!offer) return '';
+        const command = memberTabCommand(member, tab, session, destination);
+        const why = !destination ? 'No open workspace to resume into. Refresh the snapshot, or open the workspace first.'
+          : tab.unresumable_agent_count > 0 ? 'This tab has an agent session that is not verified, so it cannot be resumed from here. Register it first.'
+          : !TAB_ID_PATTERN.test(tab.id || '') ? 'This tab has an unexpected id, so no command is built.' : '';
+        return `<button type="button" class="tab-resume" ${command ? `data-command="${escapeHtml(command)}"` : 'disabled'} title="${escapeHtml(command ? 'Copies a command that rebuilds only this tab in the chosen workspace and resumes its verified agents. The rest of the archived workspace and the tab itself stay in the archive.' : why)}">Copy resume tab</button>`;
+      };
+      return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span>${button(tab)}</span>`).join('')}</div>`;
     };
-    const batchMemberView = (member, session, liveIds) => {
+    const batchMemberView = (member, session, liveIds, destination) => {
       const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
       const restoreCommand = member.status === 'archived' ? memberRestoreCommand(member, session) : '';
       const openLayout = hasOpenLayout(member, liveIds);
       const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
         : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">Closing was not confirmed. Restore all leaves it alone. For tabs added to a group, finish-tab-add finishes it.</span>' : '';
-      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>${memberTabsView(member)}`;
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>${memberTabsView(member, session, destination)}`;
     };
     const batchView = (batch, liveIds) => {
       const counts = batch.counts || {};
@@ -1328,6 +1357,11 @@ created: 2026-09-10
       const summaryLabel = batch.empty ? 'nothing archived' : (counts.archived ? `${counts.archived} to restore` : 'nothing to restore');
       const skipped = (batch.skipped || []).map(item => `<div class="member-line"><span class="pane-id">${escapeHtml(item.workspace_id || '')}</span><span class="names">${escapeHtml(item.label || '')}</span><span class="tab-meta" style="margin:0 0 0 auto">${escapeHtml((item.reasons || []).map(reason => SKIP_SHORT[reason] || reason.replace(/_/g, ' ')).join(', '))}</span></div>`).join('');
       const open = key => (state.batchOpen[`${id}:${key}`] ? ' open' : '');
+      // Resuming one tab needs an open workspace to rebuild it in. Only workspaces of this group's own session qualify.
+      const tabDestinations = groupDestinations(batch, state.data);
+      const tabDestination = groupTabDestination(batch, tabDestinations);
+      const offersTabs = archivedMembers.some(member => (member.tabs || []).length);
+      const destinationPicker = offersTabs ? `<div class="group-destination"><label for="group-dest-${escapeHtml(id)}">Resume a single tab into</label><select class="select" id="group-dest-${escapeHtml(id)}" data-group-destination="${escapeHtml(id)}" ${tabDestinations.length ? '' : 'disabled'}>${tabDestinations.length ? tabDestinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === tabDestination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('') : '<option value="">No open workspace in this session</option>'}</select></div>` : '';
       return `<article class="archive batch">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(batchTitle(batch))}</div><div class="archive-meta">${escapeHtml(id)}${batchUpdated(batch) ? ` · updated ${escapeHtml(batchUpdated(batch))}` : ''}${batch.status && batch.status !== 'completed' ? ` · last run ${escapeHtml(String(batch.status).replace(/_/g, ' '))}` : ''}</div></div><span class="archive-state">${escapeHtml(summaryLabel)}</span></div>
         <div class="batch-counts">${escapeHtml(parts.join(' · ') || 'No members')}</div>
@@ -1339,13 +1373,13 @@ created: 2026-09-10
           ${valid && removable ? `<button class="danger" type="button" data-command="${escapeHtml(removeAll)}" title="Permanently deletes this group and its ${plural(removable, 'archive')}.${counts.archived ? ` ${counts.archived} still ${counts.archived === 1 ? 'is' : 'are'} archived, so their saved layouts and agent identities would be lost.` : ''} No live or restored workspace is changed.">Copy delete group + ${plural(removable, 'archive')}</button><button type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. Its archives stay as single archives.">Copy delete group record only</button>` : ''}
         </div>
         ${valid && removable ? `<div class="archive-meta" style="margin-top:8px;color:#a9273b">Delete group + ${plural(removable, 'archive')} is permanent.${counts.archived ? ` ${plural(counts.archived, 'member')} ${counts.archived === 1 ? 'is' : 'are'} still archived, so ${counts.archived === 1 ? 'its' : 'their'} saved layout and agent identity would be lost.` : ''} Delete group record only keeps the archives.</div>` : ''}
-        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Archived workspaces <span class="count-pill">${batch.member_count || 0}</span></span></summary>${(batch.members || []).map(member => batchMemberView(member, session, liveIds)).join('') || '<div class="tab-meta">No archived workspaces</div>'}</details>
+        <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Archived workspaces <span class="count-pill">${batch.member_count || 0}</span></span></summary>${destinationPicker}${(batch.members || []).map(member => batchMemberView(member, session, liveIds, tabDestination)).join('') || '<div class="tab-meta">No archived workspaces</div>'}</details>
         ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at last capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
       </article>`;
     };
     const batchesView = data => {
       const all = data.batches || [];
-      const list = all.filter(batch => matches(`${batch.batch_id} ${batch.herdr_session || ''} ${(batch.members || []).map(member => `${member.workspace_label} ${member.archive_id} ${member.status}`).join(' ')}`));
+      const list = all.filter(batch => matches(`${batch.batch_id} ${batch.herdr_session || ''} ${(batch.members || []).map(member => `${member.workspace_label} ${member.archive_id} ${member.status} ${(member.tabs || []).map(tab => tab.label).join(' ')}`).join(' ')}`));
       const liveIds = new Set((data.workspaces || []).map(workspace => workspace.id));
       const body = list.length ? `<div class="archives">${list.map(batch => batchView(batch, liveIds)).join('')}</div>`
         : `<div class="empty" style="min-height:90px">${all.length ? 'The archive group does not match this filter.' : 'No archive group yet. Preview Archive all on the Workspaces tab to start this session\'s group.'}</div>`;

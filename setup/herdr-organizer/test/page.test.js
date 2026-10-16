@@ -316,10 +316,16 @@ test('a tab shows a copy button for each verified agent session id, and copying 
   assert.equal(agentSessionsView({ pane_count: 1 }), '');
 });
 
-test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
-  const view = html.slice(html.indexOf('// The tabs an archived workspace holds'), html.indexOf('const batchMemberView'));
+function memberTabHelpers() {
+  const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+  const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchMemberView'));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
-  const { memberTabsView } = new Function('escapeHtml', 'plural', view + '; return { memberTabsView };')(value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])), plural);
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return new Function('escapeHtml', 'plural', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {} });
+}
+
+test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
+  const { memberTabsView } = memberTabHelpers();
   const out = memberTabsView({ workspace_label: 'esim', archive_id: 'a', tabs: [{ id: 'w9J:t2', label: 'leader-esim', pane_count: 1 }, { id: 'w9J:t3', label: '<b>x</b>', pane_count: 2 }] });
   assert.match(out, /leader-esim/);
   assert.match(out, /1 pane/);
@@ -327,5 +333,32 @@ test('the archive group lists each archived workspace\'s tabs by name, with thei
   assert.equal(out.includes('<b>x</b>'), false, 'tab names are escaped');
   assert.equal(memberTabsView({ tabs: [] }), '');
   assert.equal(memberTabsView({}), '');
-  assert.match(html, /\}\)\}\)<\/span>\$\{flag\}<\/div>\$\{memberTabsView\(member\)\}`|\$\{flag\}<\/div>\$\{memberTabsView\(member\)\}/);
+  assert.match(html, /\$\{flag\}<\/div>\$\{memberTabsView\(member, session, destination\)\}/);
+});
+
+test('an archived workspace in the group offers to resume one tab into an open workspace', () => {
+  const { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination } = memberTabHelpers();
+  const archiveId = '20261014-101500-esim';
+  const member = { archive_id: archiveId, status: 'archived', workspace_label: 'esim', tabs: [
+    { id: 'w9J:t2', label: 'leader-esim', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 },
+    { id: 'w9J:t3', label: 'unverified', pane_count: 1, resumable_agent_count: 0, unresumable_agent_count: 1 },
+  ] };
+  assert.equal(memberTabCommand(member, member.tabs[0], ' --session esim', 'w9Z'),
+    `herdr-organizer --session esim restore-tab --archive ${archiveId} --tab w9J:t2 --to-workspace w9Z --execute --confirm ${archiveId}`);
+  const out = memberTabsView(member, ' --session esim', 'w9Z');
+  assert.match(out, /--tab w9J:t2 --to-workspace w9Z/);
+  assert.equal(out.includes('--tab w9J:t3'), false, 'a tab with an unverified agent session gets no command');
+  assert.match(out, /disabled/);
+  // Nothing is offered without a destination, for a workspace that is no longer archived, or for odd ids.
+  assert.equal(memberTabCommand(member, member.tabs[0], '', ''), '');
+  assert.equal(memberTabCommand({ ...member, status: 'restored' }, member.tabs[0], '', 'w9Z'), '');
+  assert.equal(memberTabCommand(member, { id: 'w9J:t2; rm -rf x', label: 'x' }, '', 'w9Z'), '');
+  assert.equal(memberTabCommand(member, member.tabs[0], '', 'w9Z; rm'), '');
+  assert.equal(memberTabCommand({ ...member, archive_id: 'bad id' }, member.tabs[0], '', 'w9Z'), '');
+  assert.equal(memberTabsView({ ...member, status: 'restored' }, '', 'w9Z').includes('Copy resume tab'), false);
+  // Only open workspaces of the group's own session are offered, and the first one is the default.
+  const data = { herdr_session: 'esim', workspaces: [{ id: 'w9Z', label: 'one' }, { id: 'w9Y', label: 'two' }] };
+  assert.equal(groupDestinations({ herdr_session: 'esim' }, data).length, 2);
+  assert.deepEqual(groupDestinations({ herdr_session: 'other' }, data), []);
+  assert.equal(groupTabDestination({ batch_id: 'b1' }, data.workspaces), 'w9Z');
 });
