@@ -2987,6 +2987,59 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(gone["empty"])
         self.assertEqual(gone["counts"]["deleted"], 2)
 
+    def two_tab_member(self):
+        manifest = self.make_batch(["archived"])
+        archive_id = manifest["members"][0]["archive_id"]
+        path = ORGANIZER.ARCHIVE_DIR / f"{archive_id}.json"
+        archive = json.loads(path.read_text())
+        leaf = lambda pane: {"type": "pane", "pane_id": pane}
+        archive["capture"] = {"workspace": {"label": "Ws 1", "source_workspace_id": "w1"}, "tabs": [
+            {"source_tab_id": "w1:t1", "label": "one", "layout": {"root": leaf("w1:p1")}},
+            {"source_tab_id": "w1:t2", "label": "two", "layout": {"root": leaf("w1:p2")}},
+        ]}
+        ORGANIZER.write_json(path, archive)
+        return manifest, archive_id, path
+
+    def restore_tab_into_w9(self, archive_id, tab, outcomes=()):
+        args = argparse.Namespace(archive=archive_id, tab=[tab], to_workspace="w9", session="esim", execute=True,
+                                  confirm=archive_id, allow_unresumable_agents=False, resume_agents=True)
+        layout = {"layout": {"tab_id": "w9:t7", "root": {"type": "pane", "pane_id": "new-p"}}}
+        with patch.object(ORGANIZER, "session_snapshot", return_value={}), patch.object(
+            ORGANIZER, "workspace_by_id", return_value={"workspace_id": "w9", "label": "Destination"}
+        ), patch.object(ORGANIZER, "socket_call", return_value=layout), patch.object(
+            ORGANIZER, "resume_captured_tabs", return_value=list(outcomes)
+        ), redirect_stdout(io.StringIO()):
+            ORGANIZER.restore_tabs_command(args)
+
+    def test_a_resumed_tab_leaves_the_archive_and_the_last_one_takes_the_archive_out_of_the_group(self):
+        manifest, archive_id, path = self.two_tab_member()
+        self.restore_tab_into_w9(archive_id, "w1:t1")
+        saved = json.loads(path.read_text())
+        self.assertEqual([tab["source_tab_id"] for tab in saved["capture"]["tabs"]], ["w1:t2"])
+        self.assertEqual(saved["status"], "archived")
+        self.assertEqual([(item["source_tab_id"], item["status"]) for item in saved["tab_restores"]], [("w1:t1", "completed")])
+        self.assertEqual([m["archive_id"] for m in json.loads((ORGANIZER.BATCH_DIR / f"{manifest['batch_id']}.json").read_text())["members"]], [archive_id])
+        [member] = ORGANIZER.batch_summary(manifest)["members"]
+        self.assertEqual([tab["id"] for tab in member["tabs"]], ["w1:t2"])
+        # The last tab leaves too: the archive is spent and drops out of its group.
+        self.restore_tab_into_w9(archive_id, "w1:t2")
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved["capture"]["tabs"], [])
+        self.assertEqual(saved["status"], "restored")
+        self.assertEqual(json.loads((ORGANIZER.BATCH_DIR / f"{manifest['batch_id']}.json").read_text())["members"], [])
+        # It records no workspace, so archiving a resumed tab again cannot merge back into this archive.
+        self.assertNotIn("workspace_id", saved["restore"])
+        # Even if the group still listed it, the destination workspace is not linked to this archive.
+        self.assertIsNone(ORGANIZER.find_batch_member(manifest, manifest["batch_id"], "w9", match_origin=False))
+
+    def test_a_tab_whose_agent_resume_failed_stays_in_the_archive(self):
+        manifest, archive_id, path = self.two_tab_member()
+        with self.assertRaises(ORGANIZER.OrganizerError):
+            self.restore_tab_into_w9(archive_id, "w1:t1", outcomes=[{"status": "failed", "source_pane_id": "w1:p1"}])
+        saved = json.loads(path.read_text())
+        self.assertEqual([tab["source_tab_id"] for tab in saved["capture"]["tabs"]], ["w1:t1", "w1:t2"])
+        self.assertEqual(saved["tab_restores"][0]["status"], "resume_partial")
+
     def test_a_group_member_lists_the_tabs_its_archive_holds(self):
         manifest = self.make_batch(["archived"])
         path = ORGANIZER.ARCHIVE_DIR / f"{manifest['members'][0]['archive_id']}.json"

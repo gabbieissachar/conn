@@ -3109,6 +3109,18 @@ def resume_move_command(args: argparse.Namespace) -> None:
 
 
 def restore_tabs_command(args: argparse.Namespace) -> None:
+    """Restore archived tabs into a live workspace. A restored tab leaves the archive, and an archive that has no tab left leaves its group."""
+    try:
+        restore_archived_tabs(args)
+    finally:
+        if args.execute:
+            try:
+                prune_group_files()
+            except (OrganizerError, OSError) as error:
+                print(f"Note: the archive group was not updated: {error}")
+
+
+def restore_archived_tabs(args: argparse.Namespace) -> None:
     archive_path, archive = archive_by_id(args.archive)
     status = archive.get("status")
     if status not in {"archived", "restored", "resumed", "restore_partial"}:
@@ -3189,6 +3201,14 @@ def restore_tabs_command(args: argparse.Namespace) -> None:
                 }
             )
             all_outcomes.extend(outcomes)
+            if not failures:
+                # The tab is live now, so it is no longer an archived session. Nothing about it is kept that could
+                # make a later archive of it merge back into this archive: that archive starts fresh.
+                operation["tab_label"] = tab.get("label")
+                archive["capture"]["tabs"] = [
+                    item for item in archive["capture"].get("tabs", []) if item.get("source_tab_id") != operation["source_tab_id"]
+                ]
+                archive["updated_at"] = now()
         except OrganizerError as error:
             operation["status"] = "failed"
             operation["error"] = str(error)
@@ -3198,10 +3218,19 @@ def restore_tabs_command(args: argparse.Namespace) -> None:
                 f"Some archived tabs may already have been restored. The recovery records were retained: {error}"
             ) from error
         write_json(archive_path, archive)
+    if not archive.get("capture", {}).get("tabs"):
+        # Every tab went back to a live workspace. The archive is spent and leaves its group. It records no workspace
+        # link, so archiving one of those tabs again makes a new archive instead of reopening this one.
+        if archive.get("status") not in RESTORED_STATUSES:
+            archive["status"] = "restored"
+            archive["restored_at"] = now()
+            archive["restore"] = {"tab_by_tab": True}
+        write_json(archive_path, archive)
     if any(outcome.get("status") == "failed" for outcome in all_outcomes):
         raise OrganizerError("Archived tabs were restored, but one or more agent resumes failed. The recovery records were retained.")
     resumed = sum(outcome.get("action") == "resumed" for outcome in all_outcomes)
     print(f"Restored {len(selected_tabs)} archived tab(s) into workspace {args.to_workspace}.")
+    print("They left the archive. Archiving one of them again starts a new archive." + (" The archive has no tab left, so it left its group." if not archive.get("capture", {}).get("tabs") else ""))
     print(f"Resumed {resumed} verified agent session(s).")
 
 
