@@ -1324,7 +1324,7 @@ created: 2026-09-10
         const why = !destination ? 'No open workspace to resume into. Refresh the snapshot, or open the workspace first.'
           : tab.unresumable_agent_count > 0 ? 'This tab has an agent session that is not verified, so it cannot be resumed from here. Register it first.'
           : !TAB_ID_PATTERN.test(tab.id || '') ? 'This tab has an unexpected id, so no command is built.' : '';
-        return `<button type="button" class="tab-resume" ${command ? `data-command="${escapeHtml(command)}"` : 'disabled'} title="${escapeHtml(command ? 'Copies a command that rebuilds only this tab in the chosen workspace and resumes its verified agents. The rest of the archived workspace and the tab itself stay in the archive.' : why)}">Copy resume tab</button>`;
+        return `<button type="button" class="tab-resume" ${command ? `data-command="${escapeHtml(command)}"` : 'disabled'} title="${escapeHtml(command ? 'Copies a command that rebuilds only this tab in the chosen workspace and resumes its verified agents. The tab then leaves the archive; the rest of the archived workspace stays. When its last tab leaves, the archived workspace leaves the group.' : why)}">Copy resume tab</button>`;
       };
       return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span>${button(tab)}</span>`).join('')}</div>`;
     };
