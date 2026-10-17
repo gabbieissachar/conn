@@ -1,0 +1,453 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE for the design checkpoint in setup/transcript-reader/DESIGN.md.
+  build_prototype.py fills __PAYLOAD__ with private transcript text, so the built
+  page lives in the gitignored out/ folder. No network requests, no remote fonts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transcript reader (prototype)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: #1d2433; --muted: #5d6779; --faint: #8b93a3; --line: #dfe3ea; --paper: #ffffff; --wash: #f4f5f8;
+    --you: #1f5fd1; --you-wash: #e9f0fd; --mate: #6b3fc4; --mate-wash: #f1ecfb;
+    --ask: #8a5a00; --ask-wash: #fff3d6; --ask-line: #f0c45c; --ok: #2f6b45; --ok-wash: #e8f3ec;
+    --open: #b4232d; --code: #f1f3f6;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
+      --you: #8db4ff; --you-wash: #1d2a44; --mate: #c3a6ff; --mate-wash: #2a2340;
+      --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e; --ok: #8fd3a8; --ok-wash: #1b3024;
+      --open: #ff8a8a; --code: #252a34;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.5 var(--sans); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  a { color: var(--you); overflow-wrap: anywhere; }
+  .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line); }
+  .bar-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px; }
+  .wide .bar-inner { max-width: 44rem; }
+  .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+  .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
+  .tabs { display: flex; gap: 4px; margin-top: 6px; }
+  .tab { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
+  .tab[aria-selected="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+  .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
+  .btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
+  .btn:focus-visible, .tab:focus-visible, .fold:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
+  .wide main { max-width: 44rem; }
+
+  /* View A: conversation reader */
+  .divider { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin: 14px 0; }
+  .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+  .input { margin: 18px 0 6px; padding: 8px 11px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .input.captain { background: var(--you-wash); border: 1px solid color-mix(in srgb, var(--you) 30%, transparent); margin-left: 2.2rem; }
+  .input.firstmate { background: var(--mate-wash); border: 1px solid color-mix(in srgb, var(--mate) 30%, transparent); margin-right: 1.2rem; }
+  .who { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
+  .who b { color: var(--ink); }
+  .input.captain .who b { color: var(--you); }
+  .input.firstmate .who b { color: var(--mate); }
+  .clip { max-height: 13.5em; overflow: hidden; position: relative; }
+  .clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5em; background: linear-gradient(transparent, var(--paper)); }
+  .input .clip::after { background: none; }
+  .more { border: 0; background: none; color: var(--you); padding: 2px 0; font-size: 13px; }
+  .reply { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin: 6px 0 4px; }
+  .reply.needs { border-left: 4px solid var(--ask-line); }
+  .chip { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
+  .chip.needs { background: var(--ask-wash); color: var(--ask); }
+  .chip.none { background: var(--ok-wash); color: var(--ok); }
+  .chip.reminder { background: var(--code); color: var(--muted); font-weight: 600; }
+  .chip.open { background: color-mix(in srgb, var(--open) 15%, transparent); color: var(--open); }
+  .asks { background: var(--ask-wash); border-radius: 8px; padding: 6px 9px; margin: 6px 0; font-size: 15px; }
+  .asks div + div { margin-top: 4px; }
+  .asks code, .input code { font: 13px var(--mono); background: color-mix(in srgb, var(--code) 70%, transparent); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md p { margin: 0 0 .55em; }
+  .md .li { padding-left: 1.1em; text-indent: -.8em; margin: 0 0 .25em; }
+  .md .li.l2 { padding-left: 2.1em; }
+  .md h4 { margin: .6em 0 .3em; font-size: 15px; }
+  .md .ask { background: var(--ask-wash); box-shadow: -4px 0 0 var(--ask-wash), 4px 0 0 var(--ask-wash); border-radius: 3px; }
+  .md .reminder { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+  .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+  .notes { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
+  .notes button { border: 0; background: none; color: var(--muted); padding: 0; text-decoration: underline; font-size: 12px; }
+  .note-body { font-size: 14px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .fold { display: flex; width: 100%; gap: 6px; align-items: baseline; text-align: left; border: 0; border-top: 1px dashed var(--line); background: none; padding: 5px 2px; font-size: 13px; color: var(--muted); }
+  .fold .t { color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+  .fold .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .foldrun { margin: 8px 0; }
+  .is-target { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { box-shadow: 0 0 0 3px var(--you); } to { box-shadow: 0 0 0 0 transparent; } }
+
+  /* View B: fleet timeline */
+  .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin-bottom: 12px; }
+  .panel h3 { font-size: 14px; margin: 0 0 4px; }
+  .panel summary { cursor: pointer; font-size: 14px; }
+  .waiting-item { font-size: 14px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .waiting-item small { color: var(--muted); }
+  .day { position: sticky; top: var(--bar-h, 120px); z-index: 2; background: var(--wash); font-size: 12px; font-weight: 700; color: var(--muted); padding: 6px 0 3px; }
+  .gap { font-size: 11px; color: var(--faint); padding: 2px 0 2px 3.6rem; }
+  .ev { display: grid; grid-template-columns: 3.2rem 1fr; gap: 0 .4rem; padding: 6px 0; border-top: 1px solid var(--line); }
+  .ev .t { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; padding-top: 2px; }
+  .ev.is-open { box-shadow: inset 3px 0 0 var(--open); padding-left: 6px; }
+  .route { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .actor { font-weight: 600; color: var(--ink); }
+  .actor.you { color: var(--you); }
+  .state { font-size: 11px; font-weight: 700; border-radius: 99px; padding: 0 6px; background: var(--code); color: var(--muted); }
+  .state.ask { background: var(--ask-wash); color: var(--ask); }
+  .state.done { background: var(--ok-wash); color: var(--ok); }
+  .state.you { background: var(--you-wash); color: var(--you); }
+  .ev .text { font-size: 14px; overflow-wrap: anywhere; cursor: pointer; }
+  .ev .text.collapsed { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ev .detail { grid-column: 2; margin-top: 4px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .empty { color: var(--muted); text-align: center; padding: 30px 0; }
+  kbd { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+</style>
+</head>
+<body>
+<header class="bar" id="bar">
+  <div class="bar-inner">
+    <div class="title">Transcript reader <span class="proto">prototype</span></div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
+      <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
+    </div>
+    <div id="controls"></div>
+  </div>
+</header>
+<main id="main"></main>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+(() => {
+  "use strict";
+  const data = JSON.parse(document.getElementById("payload").textContent);
+  const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  let detailCount = 0;
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false };
+  const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
+  const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
+  const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
+  const fmtShortDay = s => new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(s * 1000));
+  const fmtWhen = s => s ? `${fmtDay(s)} ${fmtTime(s)}` : "";
+
+  // ---------------------------------------------------------------- tiny safe markdown
+  function inline(text) {
+    const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return esc
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+  }
+  function renderMarkdown(text, askLines = [], reminderLines = []) {
+    const asks = new Set(askLines), reminders = new Set(reminderLines);
+    const box = $("div", "md");
+    let para = null, pre = null, table = null;
+    text.split("\n").forEach((line, n) => {
+      const mark = asks.has(n) ? "ask" : reminders.has(n) ? "reminder" : "";
+      if (line.trimStart().startsWith("```")) { if (pre) { pre = null; } else { pre = $("pre"); box.append(pre); } para = null; return; }
+      if (pre) { pre.textContent += (pre.textContent ? "\n" : "") + line; return; }
+      if (line.trimStart().startsWith("|")) { if (!table) { table = $("pre"); box.append(table); } table.textContent += (table.textContent ? "\n" : "") + line; para = null; return; }
+      table = null;
+      if (!line.trim()) { para = null; return; }
+      const heading = line.match(/^#{1,6}\s+(.*)/);
+      const item = line.match(/^(\s*)(?:[-*]|\d+[.)])\s+(.*)/);
+      let el;
+      if (heading) { el = $("h4"); el.innerHTML = inline(heading[1]); para = null; }
+      else if (item) { el = $("div", "li" + (item[1].length >= 2 ? " l2" : "")); el.innerHTML = (line.trim().match(/^\d/) ? line.trim().match(/^\d+[.)]/)[0] + " " : "• ") + inline(item[2]); para = null; }
+      else if (para) { para.append(document.createElement("br")); const span = $("span", mark); span.innerHTML = inline(line); para.append(span); return; }
+      else { el = $("p"); para = el; const span = $("span", mark); span.innerHTML = inline(line); el.append(span); box.append(el); return; }
+      if (mark) el.classList.add(mark);
+      box.append(el);
+    });
+    return box;
+  }
+  function clipped(node, words, limitWords, label) {
+    const wrap = $("div");
+    if (words <= limitWords) { wrap.append(node); return wrap; }
+    const inner = $("div", "clip"); inner.append(node); wrap.append(inner);
+    const more = $("button", "more", `${label} (${words} words)`);
+    more.addEventListener("click", () => { inner.classList.remove("clip"); more.remove(); });
+    wrap.append(more);
+    return wrap;
+  }
+
+  // ---------------------------------------------------------------- View A pieces
+  function verdictChip(ex) {
+    if (ex.verdict === "needs-you") return $("span", "chip needs", "Needs you");
+    if (ex.verdict === "no-action") return $("span", "chip none", "No action");
+    return $("span", "chip reminder", "No reply");
+  }
+  function replyCard(ex) {
+    const card = $("div", "reply" + (ex.verdict === "needs-you" ? " needs" : ""));
+    const who = $("div", "who");
+    who.append(verdictChip(ex));
+    if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
+    who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
+    card.append(who);
+    // The reply's own lines that ask, pulled up front unless they already open the reply.
+    const later = (ex.ask_lines || []).filter(n => n > 1);
+    if (ex.verdict === "needs-you" && later.length) {
+      const lines = ex.reply.split("\n");
+      const asks = $("div", "asks");
+      later.slice(0, 3).forEach(n => { const d = $("div"); d.innerHTML = inline((lines[n] || "").replace(/^\s*(?:[-*]|\d+[.)])\s+/, "")); asks.append(d); });
+      if (later.length > 3) asks.append($("div", "notes", `and ${later.length - 3} more below`));
+      card.append(asks);
+    }
+    if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply"));
+    if (ex.narration && ex.narration.length || ex.tools) {
+      const notes = $("div", "notes");
+      const parts = [];
+      if (ex.narration.length) parts.push(`${ex.narration.length} working note${ex.narration.length === 1 ? "" : "s"}`);
+      if (ex.tools) parts.push(`${ex.tools} tool step${ex.tools === 1 ? "" : "s"}`);
+      const btn = $("button", null, parts.join(", "));
+      const body = $("div");
+      btn.addEventListener("click", () => {
+        if (body.childElementCount) { body.replaceChildren(); return; }
+        ex.narration.forEach(n => body.append($("div", "note-body", n)));
+      });
+      notes.append(btn, body); card.append(notes);
+    }
+    return card;
+  }
+  function inputBlock(ex, index) {
+    const block = $("div", `input ${ex.source}`);
+    block.id = `ex-${index}`;
+    const who = $("div", "who");
+    who.append($("b", null, ex.source === "captain" ? (ex.kind === "command" ? `You ran ${ex.label.split(" ")[0]}` : "You") : ex.label));
+    who.append($("span", null, fmtWhen(ex.at)));
+    if (ex.absorbed) who.append($("span", null, "· sent while it was busy"));
+    block.append(who);
+    let text = ex.input;
+    if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
+    const body = $("div", null, text);
+    block.append(clipped(body, text.split(/\s+/).length, 120, "Show all"));
+    return block;
+  }
+  function exchangeNode(ex, index) {
+    const frag = document.createDocumentFragment();
+    if (ex.source === "session") { frag.append($("div", "divider", `${ex.label} · ${fmtWhen(ex.at)}`)); return frag; }
+    if (ex.source === "wake") {
+      const box = $("div"); box.id = `ex-${index}`;
+      if (!ex.folded) {
+        box.append($("div", "who", `Wake-up · ${ex.label} · ${fmtWhen(ex.at)}`));
+        if (ex.reply) box.append(replyCard(ex));
+        frag.append(box); return frag;
+      }
+      const row = $("button", "fold");
+      row.append($("span", "t", fmtTime(ex.at)), $("span", "l", `Wake-up · ${ex.label}`), $("span", null, ex.reply ? `${ex.reply_words}w` : ""));
+      row.setAttribute("aria-expanded", "false");
+      const detail = $("div");
+      row.addEventListener("click", () => {
+        const open = row.getAttribute("aria-expanded") === "true";
+        row.setAttribute("aria-expanded", String(!open));
+        detail.replaceChildren(...(open || !ex.reply ? [] : [replyCard(ex)]));
+      });
+      box.append(row, detail); frag.append(box); return frag;
+    }
+    frag.append(inputBlock(ex, index));
+    if (ex.reply || ex.tools) frag.append(replyCard(ex));
+    return frag;
+  }
+  function renderReader() {
+    const session = data.sessions[state.session];
+    const exs = session ? session.exchanges : [];
+    const controls = document.getElementById("controls"); controls.replaceChildren();
+    const row = $("div", "controls");
+    const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
+    data.sessions.forEach((s, i) => {
+      const yours = s.exchanges.filter(e => e.source === "captain").length;
+      const first = s.exchanges.find(e => e.at), last = [...s.exchanges].reverse().find(e => e.at);
+      const span = first && last ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
+      const opt = $("option", null, `${homeName(s.home)} · ${span} · ${yours} from you`);
+      opt.value = i; if (i === state.session) opt.selected = true; select.append(opt);
+    });
+    select.addEventListener("change", () => { state.session = Number(select.value); render(); window.scrollTo(0, 0); });
+    const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
+    const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
+    const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
+    const wakes = $("button", "btn", "Wake-ups"); wakes.setAttribute("aria-pressed", String(state.showWakes)); wakes.title = "Show or fold wake-ups (w)";
+    prev.addEventListener("click", () => jump("captain", -1));
+    next.addEventListener("click", () => jump("captain", 1));
+    needs.addEventListener("click", () => jump("needs", 1));
+    wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
+    row.append(select, prev, next, needs, wakes);
+    const count = p => exs.filter(p).length;
+    const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
+    controls.append(row, summary);
+
+    const main = document.getElementById("main"); main.replaceChildren();
+    if (!exs.length) { main.append($("div", "empty", "No turns in this session.")); return; }
+    let run = null, runCount = 0;
+    exs.forEach((ex, i) => {
+      const hide = ex.folded && !state.showWakes;
+      if (hide) {
+        if (!run) { run = $("div", "foldrun"); runCount = 0; main.append(run); }
+        runCount += 1; run.dataset.count = runCount;
+        run.append(exchangeNode(ex, i));
+        return;
+      }
+      if (run) { collapseRun(run); run = null; }
+      main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i));
+    });
+    if (run) collapseRun(run);
+  }
+  function collapseRun(run) {
+    const count = Number(run.dataset.count);
+    if (count < 3) return;
+    const kids = [...run.children];
+    const toggle = $("button", "fold");
+    toggle.append($("span", "t", "··"), $("span", "l", `${count} wake-ups with nothing new for you`));
+    run.replaceChildren(toggle);
+    toggle.addEventListener("click", () => run.replaceChildren(...kids));
+  }
+  function jump(kind, dir) {
+    const session = data.sessions[state.session]; if (!session) return;
+    const nodes = session.exchanges.map((e, i) => ({ e, i })).filter(({ e }) => kind === "captain" ? e.source === "captain" : e.verdict === "needs-you" && !e.folded);
+    const barH = document.getElementById("bar").offsetHeight;
+    const positions = nodes.map(({ i }) => { const el = document.getElementById(`ex-${i}`); return el ? { el, top: el.getBoundingClientRect().top - barH - 8 } : null; }).filter(Boolean);
+    const target = dir > 0 ? positions.find(p => p.top > 4) : [...positions].reverse().find(p => p.top < -4);
+    if (!target) return;
+    window.scrollBy({ top: target.top, behavior: "smooth" });
+    target.el.classList.remove("is-target"); void target.el.offsetWidth; target.el.classList.add("is-target");
+  }
+
+  // ---------------------------------------------------------------- View B
+  const STATE_LABEL = {
+    "needs-decision": ["asks for a decision", "ask"], blocked: ["is blocked", "ask"], done: ["finished", "done"], working: ["working", ""],
+    paused: ["waiting", ""], resolved: ["settled", "done"], note: ["note", ""], message: ["instruction", ""],
+    "needs-you": ["needs you", "ask"], "no-action": ["no action", "done"], "captain-held": ["held for you", "ask"],
+  };
+  const ROUTINE = new Set(["working", "paused", "note", "resolved"]);
+  function eventMatches(ev) {
+    if (state.fleetHome !== "all" && ev.home !== state.fleetHome && ev.to !== state.fleetHome && ev.from !== state.fleetHome) return false;
+    if (state.openOnly) return ev.at >= data.since && (ev.open || (ev.kind === "reply" && ev.state === "needs-you"));
+    if (state.hideRoutine && ev.kind === "status" && ROUTINE.has(ev.state) && !ev.open) return false;
+    return ev.at >= data.since;
+  }
+  function olderOpenPanel(items) {
+    const panel = $("details", "panel");
+    panel.append($("summary", null, `Older than the window and never marked settled in the update trail: ${items.length}`));
+    panel.append($("div", "notes", "Built from update keys alone. Many of these were settled elsewhere; the list above is what the homes themselves record."));
+    items.forEach(ev => panel.append(eventRow(ev)));
+    return panel;
+  }
+  function renderFleet() {
+    const controls = document.getElementById("controls"); controls.replaceChildren();
+    const filters = $("div", "filters");
+    ["all", ...data.homes].forEach(h => {
+      const b = $("button", "btn", h === "all" ? "Everyone" : homeName(h)); b.setAttribute("aria-pressed", String(state.fleetHome === h));
+      b.addEventListener("click", () => { state.fleetHome = h; render(); }); filters.append(b);
+    });
+    const routine = $("button", "btn", "Hide routine"); routine.setAttribute("aria-pressed", String(state.hideRoutine));
+    routine.addEventListener("click", () => { state.hideRoutine = !state.hideRoutine; render(); });
+    const open = $("button", "btn", "Open items only"); open.setAttribute("aria-pressed", String(state.openOnly));
+    open.addEventListener("click", () => { state.openOnly = !state.openOnly; render(); });
+    filters.append(routine, open);
+    const shown = data.fleet.filter(eventMatches);
+    controls.append(filters, $("div", "summary", `${shown.length} of ${data.fleet.length} events · last ${Math.round((data.generated - data.since) / 3600)} hours · built ${fmtWhen(data.generated)}`));
+
+    const main = document.getElementById("main"); main.replaceChildren();
+    main.append(waitingPanel());
+    const older = data.fleet.filter(ev => ev.open && ev.at < data.since && (state.fleetHome === "all" || ev.home === state.fleetHome || ev.from === state.fleetHome));
+    if (older.length) main.append(olderOpenPanel(older));
+    if (!shown.length) { main.append($("div", "empty", "Nothing matches these filters.")); return; }
+    let day = null, last = null;
+    shown.forEach(ev => {
+      const d = fmtDay(ev.at);
+      if (d !== day) { day = d; main.append($("div", "day", d)); last = null; }
+      if (last && ev.at - last > 3600) main.append($("div", "gap", `${Math.round((ev.at - last) / 3600)} h later`));
+      last = ev.at;
+      main.append(eventRow(ev));
+    });
+  }
+  function waitingPanel() {
+    const panel = $("details", "panel");
+    const items = (data.summaries || []).flatMap(s => (s.decisions_open || []).map(d => ({ ...d, home: s.home })));
+    const sum = $("summary", null, `Waiting on you, as each home records it: ${items.length}`);
+    panel.append(sum);
+    (data.summaries || []).forEach(s => {
+      if (!s.decisions_open || !s.decisions_open.length) return;
+      panel.append($("h3", null, `${homeName(s.home)} · ${s.decisions_open.length}${s.valid ? "" : " · this home's books disagree with its live state"}`));
+      s.decisions_open.forEach(d => {
+        const item = $("div", "waiting-item");
+        item.append($("div", null, d.summary || d.id));
+        item.append($("small", null, `${d.hold_age_days != null ? `${d.hold_age_days} days old` : ""}${d.hold_until ? ` · until ${d.hold_until}` : ""} · ${d.id}`));
+        panel.append(item);
+      });
+    });
+    return panel;
+  }
+  function eventRow(ev) {
+    const row = $("div", "ev" + (ev.open ? " is-open" : ""));
+    row.append($("div", "t", fmtTime(ev.at)));
+    const body = $("div");
+    const route = $("div", "route");
+    route.append($("span", "actor" + (ev.from === "captain" ? " you" : ""), homeName(ev.from)), $("span", null, "→"), $("span", "actor" + (ev.to === "captain" ? " you" : ""), homeName(ev.to)));
+    const [label, cls] = ev.kind === "captain" ? ["you wrote", "you"] : STATE_LABEL[ev.state] || [ev.state, ""];
+    route.append($("span", `state ${cls}`, label));
+    if (ev.open) route.append($("span", "chip open", "still open"));
+    if (ev.kind === "reply" && ev.wake) route.append($("span", null, "· after a wake-up"));
+    body.append(route);
+    const text = $("div", "text collapsed");
+    text.innerHTML = inline((ev.kind === "reply" && ev.asks && ev.asks.length ? ev.asks.slice(0, 2).join(" ") : ev.text.split("\n").find(l => l.trim()) || "").replace(/^\s*(?:[-*]|\d+[.)])\s+/, ""));
+    const detail = $("div", "detail");
+    text.addEventListener("click", () => {
+      if (detail.childElementCount) { detail.replaceChildren(); text.classList.add("collapsed"); return; }
+      text.classList.remove("collapsed");
+      if (ev.kind === "status" || ev.kind === "inbox") detail.append(renderMarkdown(ev.text));
+      const turn = findTurn(ev);
+      if (turn) {
+        const btn = $("button", "more", ev.kind === "status" ? "Show how the home handled it" : ev.kind === "inbox" ? "Show the turn that received it" : "Show the whole turn");
+        const slot = $("div");
+        btn.addEventListener("click", () => { btn.remove(); slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`)); });
+        detail.append(btn, slot);
+      } else if (ev.kind === "status") {
+        detail.append($("div", "notes", "No handling turn found in the loaded sessions; routine updates often do not wake anyone."));
+      }
+    });
+    body.append(text, detail);
+    row.append(body);
+    return row;
+  }
+  function findTurn(ev) {
+    if (ev.session == null || ev.ref == null) return null;
+    const s = data.sessions.find(x => x.id === ev.session);
+    return s ? s.exchanges[ev.ref] : null;
+  }
+
+  // ---------------------------------------------------------------- shell
+  function render() {
+    document.body.classList.toggle("wide", state.view === "fleet");
+    document.getElementById("tab-reader").setAttribute("aria-selected", String(state.view === "reader"));
+    document.getElementById("tab-fleet").setAttribute("aria-selected", String(state.view === "fleet"));
+    if (state.view === "reader") renderReader(); else renderFleet();
+    document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px");
+  }
+  document.getElementById("tab-reader").addEventListener("click", () => { state.view = "reader"; render(); });
+  document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
+    if (e.key === "j") jump("captain", 1);
+    if (e.key === "k") jump("captain", -1);
+    if (e.key === "n") jump("needs", 1);
+    if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
+  });
+  const biggest = data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
+  state.session = biggest;
+  render();
+})();
+</script>
+</body>
+</html>

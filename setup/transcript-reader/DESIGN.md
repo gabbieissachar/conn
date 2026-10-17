@@ -1,0 +1,33 @@
+# Transcript reader - design checkpoint
+
+Status: phase 1 prototype, 2026-10-17. Waiting on the six decisions at the end before the real build.
+
+## What was built
+
+A throwaway prototype in `prototype/`: `build_prototype.py` (Python standard library, no model, no network) reads the Claude Code session logs of the main home and every registered second mate, plus each home's fleet records, and fills `template.html`.
+Run `python3 setup/transcript-reader/prototype/build_prototype.py` from the repo root, then open `setup/transcript-reader/out/prototype.html`.
+The page embeds private transcript text, so `out/` is gitignored. `--stats` prints counts only.
+
+- **Conversation** (view A): one session read back in order, in a 27rem column (phone width). Wake-ups fold to a one-line label, and three or more in a row collapse to one line. Every other turn gets `Needs you` or `No action` from fixed word rules. A `Needs you` reply shows its asking lines first, highlighted. A reply over 90 words shows its first lines and a "Show full reply" button. Buttons and `j`/`k`/`n` jump between your messages and between asks. A Firstmate instruction shows the steering message it delivered, not the pointer line.
+- **Fleet timeline** (view B): one time-ordered list across you, the main firstmate, the second mates and their workers. Each row shows who to whom. Phone width has no room for seven swim lanes. The rows are update lines and steering messages from the fleet records, plus your messages and the homes' replies, which only the transcripts have. A row opens its full text and, when found, the turn that handled it. A "Waiting on you" panel comes from each home's own summary.
+
+## What the real data showed
+
+Corpus: 30 home sessions, 2026-09-17 to 2026-10-17, 3,030 turns. Fleet view: the last 72 hours.
+
+- **Folding.** 82% of turns are wake-ups. Folding the ones that ask nothing hides 72% of turns but only 36% of the words. The 12% of wake-ups that do ask (305, mostly after a worker update) hold another 23% of the words.
+- **Runs.** Folded wake-ups come in 422 runs: median 2 turns, one run in ten 12 or more, the longest 143.
+- **Messages sent while busy.** 75 of your 360 messages (21%) arrived while the agent was mid-turn. They sit inside the running turn, not at a turn start. A parser that splits only at turn starts misses one message in five. The prototype splits there.
+- **Rule reliability**, hand-checked blind (labels written before seeing the rule's verdict). The first 40 replies agreed 78%. The misses were negated asks, reminders of open items and promises about later, and the rules were tuned on them. A fresh 40 then agreed 90%: all 20 wake-ups, 16 of 20 replies to you. The 4 errors were 3 false alarms (optional offers, a bold heading phrased as a question, a bold label) and 1 miss (a polite instruction). The heading, label and instruction cases are fixed. Optional offers still count as asks, which errs toward showing too much.
+- **Reminders.** 662 replies only restate items already waiting on you. The prototype marks them `No action` with a small "reminds you of open items" tag.
+- **Spine.** In 72 hours: 146 update lines (112 routine), 3 steering messages, 23 of your messages, 32 replies. Your messages and the replies exist only in transcripts. Update lines and steering messages exist only in fleet records, and cleanup deletes them when a task closes. Only 25 of 146 update lines could be tied to the turn that handled them. Routine updates often wake nobody, and some landed while no loaded session was running.
+- **Open items.** Folding update keys gives 58 decisions never marked settled. 56 of them are older than three days, and many were settled some other way. The homes' own summaries list 49 decisions waiting on you. 12 of the 19 with a recorded age are over a week old, and 5 of 6 homes flag their books as out of step with live state.
+
+## Decisions for the captain
+
+1. **Wake-ups that ask.** Fold every wake-up, or keep the 12% that ask open? Recommended: keep them open. Folding all would have hidden 305 asks in this month of sessions.
+2. **Reminders.** Does "still waiting on you" count as `Needs you`? Recommended: no. Mark it `No action` with the reminder tag, and keep the open list in the fleet view.
+3. **How much of a kept reply to show.** Recommended: the asking lines first, then the first lines of the reply, with the rest behind "Show full reply" once it passes about 90 words.
+4. **Timeline spine.** Recommended: fleet records plus your messages and the homes' replies, with the handling turn one tap away. Raw turns never become the default rows.
+5. **Source of "waiting on you".** Recommended: each home's own summary only. Do not derive open items from update keys.
+6. **Scope and delivery.** Recommended: the main home and the second mates, not workers' own sessions. Default window of 3 days, with a session picker for older reads. Rebuild with one command, and serve it with `setup/serve.sh` so it opens in a VS Code Simple Browser tab. No auto-refresh in the first version.
