@@ -21,6 +21,8 @@ No model is called; every label comes from the rules in this file.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import re
 import sys
@@ -620,7 +622,11 @@ def main() -> int:
         return 0
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    page = TEMPLATE.read_text(encoding="utf-8").replace("__PAYLOAD__", data)
+    page = TEMPLATE.read_text(encoding="utf-8")
+    # The policy allows only the page's own script, by hash, so injected markup cannot run code.
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__PAYLOAD__", data)
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")

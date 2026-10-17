@@ -8,6 +8,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; base-uri 'none'; form-action 'none'">
 <title>Transcript reader (prototype)</title>
 <style>
   :root {
@@ -144,11 +145,13 @@
 
   // ---------------------------------------------------------------- tiny safe markdown
   function inline(text) {
-    const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // Transcripts carry text from outside (pages, Slack, tool output), so every quote is
+    // escaped too: an escaped URL can never close the href attribute it is placed in.
+    const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     return esc
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+      .replace(/(https?:\/\/[^\s<>"')]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   }
   function renderMarkdown(text, askLines = [], reminderLines = []) {
     const asks = new Set(askLines), reminders = new Set(reminderLines);
