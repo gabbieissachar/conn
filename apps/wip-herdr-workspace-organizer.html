@@ -1452,12 +1452,16 @@ created: 2026-09-10
       }
       return { rows, problems };
     };
+    // A leader is picked by its label; any other live session by its pane, and starts unticked.
+    const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id ? `${row.herdr_session}|${row.pane_id}` : '';
     const contextRow = (row, thresholds) => {
       const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
       const percent = row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
       const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
-      const pick = row.leader ? `<input type="checkbox" class="handoff-pick" data-label="${escapeHtml(row.leader.label)}" aria-label="Send a handoff request to ${escapeHtml(row.leader.label)}" ${context.picked.get(row.leader.label) ? 'checked' : ''}>` : '';
+      const pickKey = pickKeyOf(row);
+      const pickName = row.leader ? row.leader.label : row.map;
+      const pick = pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
       const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.leader && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
       return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
     };
@@ -1483,23 +1487,25 @@ created: 2026-09-10
         const { rows, problems } = contextRows();
         const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
-        const pickedCount = context.leader ? context.leader.rows.filter(row => row.state === 'ok' && context.picked.get(row.label)).length : 0;
-        const actions = context.leader ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
+        const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
+        const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked; other sessions start unticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr><th>Send</th><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
       section.innerHTML = head + body;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
-      section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.label, box.checked); renderContext(); }));
+      section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.pick, box.checked); renderContext(); }));
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);
     };
     const copyHandoff = async () => {
-      const labels = (context.leader ? context.leader.rows : []).filter(row => row.state === 'ok' && context.picked.get(row.label)).map(row => row.label);
-      if (!labels.length || context.handoffBusy) return;
+      const ticked = [...new Set(contextRows().rows.map(pickKeyOf).filter(key => key && context.picked.get(key)))];
+      const labels = ticked.filter(key => !key.includes('|'));
+      const panes = ticked.filter(key => key.includes('|'));
+      if (!ticked.length || context.handoffBusy) return;
       context.handoffBusy = true; renderContext();
       try {
-        const result = await api.run('handoff-command', { labels });
-        if (!result.command) throw new Error('None of the ticked sessions has exactly one live pane any more. Refresh and tick again.');
+        const result = await api.run('handoff-command', { labels, panes });
+        if (!result.command) throw new Error('None of the ticked sessions has a live pane any more. Refresh and tick again.');
         const skipped = result.skipped.length ? `. Skipped ${result.skipped.map(item => `${item.label} (${item.state})`).join(', ')}` : '';
         await copy(result.command, `Handoff request copied for ${plural(result.ready.length, 'session')}${skipped}`);
       } catch (error) {

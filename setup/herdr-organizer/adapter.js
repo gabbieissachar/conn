@@ -755,28 +755,59 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { workspace: LEADER_WORKSPACE, rows, unexpected };
   }
 
-  // Copy-only "send a handoff request" command for the leader identities the captain ticked. Nothing is sent here:
-  // the server re-reads the audit, keeps only identities with exactly one live pane inside leader-space, and builds the
-  // command from the validated session name and pane id. The text is fixed; the browser never supplies any.
+  // Copy-only "send a handoff request" command for the sessions the captain ticked. Nothing is sent here. A leader
+  // identity is re-read from the audit and kept only with exactly one live pane inside leader-space. Any other session
+  // is a `<herdr session>|<pane id>` reference that must name a live Claude pane of a running session, so a stale or
+  // invented reference is skipped. The command is built from validated session names and pane ids with fixed text;
+  // the browser never supplies any. Only a leader is told to persist its handoff in its own home folder, since any
+  // other session (a crewmate in a task worktree) has no home of its own and the handoff skill picks the place.
   const HANDOFF_REQUEST = '/handoff to restart this session with cleaner context. Persist the handoff doc in your own home folder.';
+  const HANDOFF_REQUEST_OTHER = '/handoff to restart this session with cleaner context.';
+  const PANE_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\|(w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10})$/;
+  const sendLine = (item, request) => `herdr --session ${item.herdr_session} pane send-text ${item.pane_id} '${request}' && herdr --session ${item.herdr_session} pane send-keys ${item.pane_id} Enter`;
 
-  async function handoffCommand(labels) {
-    if (!Array.isArray(labels) || labels.length === 0 || labels.some((label) => typeof label !== 'string' || !LEADER_LABELS.includes(label))) {
-      throw new AdapterError('Pick one or more leader identities.');
+  async function handoffCommand(labels = [], panes = []) {
+    if (!Array.isArray(labels) || !Array.isArray(panes) || labels.length + panes.length === 0
+      || labels.some((label) => typeof label !== 'string' || !LEADER_LABELS.includes(label))
+      || panes.some((ref) => typeof ref !== 'string' || !PANE_REF_RE.test(ref))) {
+      throw new AdapterError('Pick one or more sessions.');
     }
-    const { rows } = await leaderSpace();
     const ready = [];
     const skipped = [];
-    for (const label of new Set(labels)) {
-      const row = rows.find((item) => item.label === label);
-      const pane = row && row.state === 'ok' ? row.panes[0] : null;
-      if (pane && PANE_ID_RE.test(pane.pane_id) && SESSION_NAME_RE.test(pane.herdr_session)) ready.push({ label, herdr_session: pane.herdr_session, pane_id: pane.pane_id });
-      else skipped.push({ label, state: row ? row.state : 'missing' });
+    const lines = [];
+    const taken = new Set();
+    if (labels.length) {
+      const { rows } = await leaderSpace();
+      for (const label of new Set(labels)) {
+        const row = rows.find((item) => item.label === label);
+        const pane = row && row.state === 'ok' ? row.panes[0] : null;
+        if (pane && PANE_ID_RE.test(pane.pane_id) && SESSION_NAME_RE.test(pane.herdr_session)) {
+          const item = { label, herdr_session: pane.herdr_session, pane_id: pane.pane_id };
+          ready.push(item);
+          lines.push(sendLine(item, HANDOFF_REQUEST));
+          taken.add(`${item.herdr_session}|${item.pane_id}`);
+        } else skipped.push({ label, state: row ? row.state : 'missing' });
+      }
     }
-    const command = ready.length
-      ? ready.map((item) => `herdr --session ${item.herdr_session} pane send-text ${item.pane_id} '${HANDOFF_REQUEST}' && herdr --session ${item.herdr_session} pane send-keys ${item.pane_id} Enter`).join('\n')
-      : null;
-    return { text: HANDOFF_REQUEST, ready, skipped, command };
+    if (panes.length) {
+      const running = new Set((await listSessions()).filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name)).map((item) => item.name));
+      const live = new Map();
+      for (const ref of new Set(panes)) {
+        const [, session, paneId] = PANE_REF_RE.exec(ref);
+        if (taken.has(ref)) continue;
+        if (!running.has(session)) { skipped.push({ label: paneId, state: 'session not running' }); continue; }
+        if (!live.has(session)) {
+          const result = await herdrCall(session, ['pane', 'list'], { timeoutMs: 20000 }).catch(() => null);
+          live.set(session, result && result.code === 0 ? parse.parseAgentPanes(result.stdout) : null);
+        }
+        const pane = (live.get(session) || []).find((item) => item.pane_id === paneId && item.agent === 'claude');
+        if (!pane) { skipped.push({ label: paneId, state: 'no live Claude pane' }); continue; }
+        const item = { label: pane.label || '', herdr_session: session, pane_id: paneId };
+        ready.push(item);
+        lines.push(sendLine(item, HANDOFF_REQUEST_OTHER));
+      }
+    }
+    return { text: HANDOFF_REQUEST, other_text: HANDOFF_REQUEST_OTHER, ready, skipped, command: lines.length ? lines.join('\n') : null };
   }
 
   // Herdr names the session a pane really runs; the gauge names the newest session it has a record for, and a

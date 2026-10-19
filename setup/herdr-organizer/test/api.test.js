@@ -750,3 +750,38 @@ test('handoff-command: builds a copy-only send command from the live audit for t
     assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
   } finally { await server.close(); }
 });
+
+test('handoff-command: any live Claude pane can be ticked by reference, with text that names no home folder', async () => {
+  const id = (n) => `aaaaaaaa-bbbb-4ccc-8ddd-00000000000${n}`;
+  const agent = (n) => ({ agent: 'claude', agent_session: { agent: 'claude', kind: 'id', value: id(n) } });
+  const panes = [
+    { pane_id: 'wK:p2', workspace_id: 'wK', agent_status: 'idle', label: 'leader-esim', ...agent(1) },
+    { pane_id: 'wX:p2', workspace_id: 'wX', agent_status: 'idle', ...agent(2) },
+    { pane_id: 'wX:p3', workspace_id: 'wX', agent_status: 'idle', agent: 'codex', agent_session: { agent: 'codex', kind: 'id', value: id(3) } },
+  ];
+  const fake = fakeRunner({
+    panes,
+    sessions: [{ default: false, name: 'project-a', running: true }, { default: false, name: 'stopped-one', running: false }],
+    handle: (file, args) => (file === 'herdr' && args.includes('workspace') && args.includes('list')
+      ? { code: 0, stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: 'wK', label: 'leader-space' }] } }), stderr: '', timedOut: false, truncated: false }
+      : undefined),
+  });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-command', { labels: ['leader-esim'], panes: ['project-a|wX:p2', 'project-a|wK:p2', 'project-a|wX:p3', 'project-a|wZ:p9', 'stopped-one|wX:p2'] });
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.ready, [{ label: 'leader-esim', herdr_session: 'project-a', pane_id: 'wK:p2' }, { label: '', herdr_session: 'project-a', pane_id: 'wX:p2' }]);
+    assert.deepEqual(data.skipped.map((item) => item.label), ['wX:p3', 'wZ:p9', 'wX:p2'], 'a codex pane, an unknown pane and a stopped session are skipped; a pane already taken as a leader is not repeated');
+    const lines = data.command.split('\n');
+    assert.equal(lines.length, 2);
+    assert.ok(lines[0].includes(data.text) && data.text.includes('own home folder'));
+    assert.ok(lines[1].includes(`'${data.other_text}'`) && !data.other_text.includes('home folder'));
+    assert.equal((await post('handoff-command', { panes: ['bad ref'] })).status, 400, 'only well-formed references');
+    assert.equal((await post('handoff-command', { panes: ["a'b|wX:p2"] })).status, 400);
+    assert.equal((await post('handoff-command', {})).status, 400);
+    assert.equal((await post('handoff-command', { panes: ['project-a|wX:p2'], text: 'x' })).status, 400, 'the browser sends no text');
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
+  } finally { await server.close(); }
+});

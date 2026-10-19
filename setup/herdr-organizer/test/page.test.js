@@ -394,7 +394,7 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
 
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
-  assert.match(view, /api\.run\('handoff-command', \{ labels \}\)/);
+  assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);
   assert.equal(/herdr --session|send-text|send-keys/.test(view), false, 'the page never assembles the shell command');
   assert.match(view, /AT_PROMPT = new Set\(\['idle', 'done'\]\)/, 'sessions at their prompt start ticked');
 });
