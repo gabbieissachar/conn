@@ -1426,32 +1426,51 @@ created: 2026-09-10
     // Read-only. Restarting a session stays manual; this only says which tab is due.
     const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
+    // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
+    const AT_PROMPT = new Set(['idle', 'done']);
+    const LEADER_STATES = { missing: 'no pane carries this label', duplicate: 'more than one pane carries this label', elsewhere: 'not in leader-space' };
+    // One row per session. A session that is a leader identity (one live pane inside leader-space) also gets a tick box
+    // for the handoff request; a leader identity the gauge has no row for still gets a row, with no percent.
+    const contextRows = () => {
+      const rows = context.data.rows.map(row => ({ ...row, leader: null }));
+      const key = (session, pane) => `${session}|${pane}`;
+      const leaders = new Map();
+      const problems = [];
+      if (context.leader) {
+        for (const item of context.leader.rows) {
+          if (item.state === 'ok') leaders.set(key(item.panes[0].herdr_session, item.panes[0].pane_id), item);
+          else problems.push(item);
+        }
+        for (const row of rows) if (row.pane_id && leaders.has(key(row.herdr_session, row.pane_id))) row.leader = leaders.get(key(row.herdr_session, row.pane_id));
+        // A labelled pane with a problem (elsewhere, duplicate) is named in its row too, without a tick box.
+        for (const item of problems) for (const pane of item.panes) for (const row of rows) if (row.pane_id === pane.pane_id && row.herdr_session === pane.herdr_session) row.problem = item;
+        for (const item of leaders.values()) {
+          if (rows.some(row => row.leader === item)) continue;
+          const pane = item.panes[0];
+          rows.push({ id: '', map: item.label, kind: 'leader', percent: null, tokens: null, estimated: false, busy: AT_PROMPT.has(pane.agent_status) ? 'idle' : pane.agent_status === 'working' ? 'busy' : 'unknown', age_s: null, herdr_session: pane.herdr_session, pane_id: pane.pane_id, title: null, leader: item });
+        }
+      }
+      return { rows, problems };
+    };
     const contextRow = (row, thresholds) => {
       const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
       const percent = row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
       const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
-      return `<tr class="ctx-row ${level}"><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${escapeHtml(row.kind)} · ${escapeHtml(row.id)}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
+      const pick = row.leader ? `<input type="checkbox" class="handoff-pick" data-label="${escapeHtml(row.leader.label)}" aria-label="Send a handoff request to ${escapeHtml(row.leader.label)}" ${context.picked.get(row.leader.label) ? 'checked' : ''}>` : '';
+      const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.leader && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
+      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
     };
-    // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
-    const AT_PROMPT = new Set(['idle', 'done']);
-    const LEADER_STATES = { ok: ['good', 'one live pane'], missing: ['warn', 'no pane carries this label'], duplicate: ['bad', 'more than one pane carries this label'], elsewhere: ['warn', 'not in leader-space'] };
-    const leaderCard = () => {
-      if (context.leaderError) return `<article class="card"><div class="card-head"><h3>Leader space</h3><span class="pill bad">could not check</span></div><div class="card-body"><div class="scope-note error">${escapeHtml(context.leaderError)}</div></div></article>`;
+    const leaderNotice = problems => {
+      if (context.leaderError) return `<div class="scope-note error" style="margin-bottom:12px">Leader space could not be checked: ${escapeHtml(context.leaderError)}</div>`;
       if (!context.leader) return '';
-      const { rows, unexpected, workspace } = context.leader;
-      const trouble = rows.filter(row => row.state !== 'ok').length + unexpected.length;
-      const body = rows.map(row => {
-        const [level, hint] = LEADER_STATES[row.state] || ['', ''];
-        const where = row.panes.length ? row.panes.map(pane => `${escapeHtml(pane.herdr_session)} · ${escapeHtml(pane.pane_id)}`).join(', ') : '<span class="tab-meta">none</span>';
-        const pane = row.state === 'ok' ? row.panes[0] : null;
-        const agent = pane ? `<span class="pill ${AT_PROMPT.has(pane.agent_status) ? 'good' : ''}">${escapeHtml(pane.agent_status)}</span>` : '<span class="tab-meta">-</span>';
-        const pick = pane ? `<input type="checkbox" class="handoff-pick" data-label="${escapeHtml(row.label)}" aria-label="Send a handoff request to ${escapeHtml(row.label)}" ${context.picked.get(row.label) ? 'checked' : ''}>` : '';
-        return `<tr class="ctx-row ${level === 'good' ? '' : level}"><td>${pick}</td><td><span class="pill ${level}" title="${escapeHtml(hint)}">${escapeHtml(row.state)}</span></td><td><strong>${escapeHtml(row.label)}</strong></td><td>${agent}</td><td>${where}</td></tr>`;
-      }).join('');
-      const pickedCount = rows.filter(row => row.state === 'ok' && context.picked.get(row.label)).length;
-      const extra = unexpected.length ? `<div class="scope-note">Unexpected leader labels: ${unexpected.map(item => `${escapeHtml(item.label)} (${escapeHtml(item.herdr_session)} · ${escapeHtml(item.pane_id)})`).join(', ')}</div>` : '';
-      return `<article class="card" style="margin-bottom:18px"><div class="card-head"><h3>Leader space</h3><span class="pill ${trouble ? 'warn' : 'good'}">${trouble ? plural(trouble, 'problem') : 'every identity unique'}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>Send</th><th>State</th><th>Identity</th><th>Agent</th><th>Where</th></tr></thead><tbody>${body}</tbody></table>${extra}<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Sessions waiting at their prompt (idle or done) start ticked. Tick a working one only if you want to interrupt its turn.</span></div><div class="tab-meta" style="margin-top:12px">Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once. A restore refuses to break this. Nothing here moves or closes anything.</div></div></article>`;
+      const unexpected = context.leader.unexpected;
+      if (!problems.length && !unexpected.length) return '';
+      const items = [
+        ...problems.map(item => `${escapeHtml(item.label)} is ${escapeHtml(item.state)} (${escapeHtml(LEADER_STATES[item.state] || '')}${item.panes.length ? `: ${item.panes.map(pane => `${escapeHtml(pane.herdr_session)} · ${escapeHtml(pane.pane_id)}`).join(', ')}` : ''})`),
+        ...unexpected.map(item => `unexpected leader label ${escapeHtml(item.label)} (${escapeHtml(item.herdr_session)} · ${escapeHtml(item.pane_id)})`),
+      ];
+      return `<div class="scope-note" style="margin-bottom:12px">Leader space: ${items.join('; ')}.</div>`;
     };
     const renderContext = () => {
       const section = document.querySelector('#context-section');
@@ -1460,11 +1479,15 @@ created: 2026-09-10
       if (context.error) body = `<div class="scope-note error">${escapeHtml(context.error)}</div>`;
       else if (!context.data) body = '<div class="skeleton"></div><div class="skeleton"></div>';
       else {
-        const { rows, thresholds } = context.data;
+        const { thresholds } = context.data;
+        const { rows, problems } = contextRows();
         const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
-        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table><div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted; it becomes exact after the session restarts onto the gauge. Restart an idle session; leave a busy one. Nothing here restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
+        const workspace = context.leader ? context.leader.workspace : 'leader-space';
+        const pickedCount = context.leader ? context.leader.rows.filter(row => row.state === 'ok' && context.picked.get(row.label)).length : 0;
+        const actions = context.leader ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr><th>Send</th><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
-      section.innerHTML = head + leaderCard() + body;
+      section.innerHTML = head + body;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
       section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.label, box.checked); renderContext(); }));
       const handoff = document.querySelector('#handoff-copy');
