@@ -77,13 +77,44 @@ test('save-manual-identity: saves through register with explicit pane ids, a std
   } finally { await env.done(); }
 });
 
-test('save-manual-identity: refuses without a fresh identity check, for verified panes, and for the wrong client', async () => {
+test('save-manual-identity: saves without any identity check, and a check can only add protection', async () => {
   const env = await manualServer();
   try {
     const { post } = await client(env.server);
     const early = await post('save-manual-identity', manual());
-    assert.equal(early.status, 409);
-    assert.equal(early.json.code, 'verify_required');
+    assert.equal(early.status, 200, early.raw);
+    assert.equal(early.json.data.masked_id, MASKED);
+    assert.equal(registerCalls(env.calls).length, 1);
+    assert.equal(early.raw.includes(ID), false);
+  } finally { await env.done(); }
+});
+
+test('save-manual-identity: replacing a different registered session needs the confirmation unless a check found the pane unverified', async () => {
+  const other = { valid_format: true, exists: true, store_folder: 'match', registered_elsewhere: false, already_registered_here: false, pane_registered_other: true };
+  const env = await manualServer({ storeCheck: other });
+  try {
+    const { post } = await client(env.server);
+    const refused = await post('save-manual-identity', manual());
+    assert.equal(refused.status, 409);
+    assert.equal(refused.json.code, 'pane_registered');
+    assert.equal(registerCalls(env.calls).length, 0);
+    const confirmed = await post('save-manual-identity', manual({ replace_existing: true }));
+    assert.equal(confirmed.status, 200, confirmed.raw);
+    assert.equal(registerCalls(env.calls).length, 1);
+    // The folder override does not stand in for the replacement.
+    const folderOnly = await post('save-manual-identity', manual({ folder_override: true }));
+    assert.equal(folderOnly.json.code, 'pane_registered');
+    // A recent check that found this pane unverified already says it may be replaced.
+    await verified(post);
+    const afterCheck = await post('save-manual-identity', manual());
+    assert.equal(afterCheck.status, 200, afterCheck.raw);
+  } finally { await env.done(); }
+});
+
+test('save-manual-identity: refuses for verified panes and for the wrong client', async () => {
+  const env = await manualServer();
+  try {
+    const { post } = await client(env.server);
     await verified(post);
     const alreadyVerified = await post('save-manual-identity', manual({ pane_id: 'w1:p1', client: 'claude', confirm: 'save:w1:p1' }));
     assert.equal(alreadyVerified.status, 409);
@@ -92,7 +123,7 @@ test('save-manual-identity: refuses without a fresh identity check, for verified
     assert.equal(wrongClient.status, 409);
     assert.equal(wrongClient.json.code, 'client_mismatch');
     const notInCheck = await post('save-manual-identity', manual({ pane_id: 'w2:p2', client: 'claude', confirm: 'save:w2:p2' }));
-    assert.equal(notInCheck.status, 409, 'a pane without an agent was never in the identity check');
+    assert.equal(notInCheck.status, 409, 'a pane without an agent is refused');
     assert.equal(registerCalls(env.calls).length, 0);
   } finally { await env.done(); }
 });

@@ -10,7 +10,11 @@ Reads one JSON object on stdin (never argv, so the id is not visible in `ps`):
 Prints one JSON object with booleans and one enum, never the id, a path or a cwd:
   {"valid_format": bool, "exists": bool,
    "store_folder": "match"|"differs"|"unknown",
-   "registered_elsewhere": bool, "already_registered_here": bool}
+   "registered_elsewhere": bool, "already_registered_here": bool,
+   "pane_registered_other": bool}
+
+`pane_registered_other` is true when the pane already has a registry record for a
+different session, so saving would replace it.
 
 It reuses the verifier's own ClaudeStore and CodexStore classes from the tool
 root so the store layouts are not re-implemented here. The registry manifest is
@@ -49,6 +53,7 @@ def check(root: Path, request: dict) -> dict:
         "store_folder": "unknown",
         "registered_elsewhere": False,
         "already_registered_here": False,
+        "pane_registered_other": False,
     }
     if client not in verifier.SUPPORTED_CLIENTS or not verifier.valid_session_id(session_id):
         return result
@@ -69,10 +74,13 @@ def check(root: Path, request: dict) -> dict:
         result["store_folder"] = "match" if record.cwd == pane_cwd else "differs"
 
     for item in load_manifest(root):
-        if item.get("client") != client or str(item.get("session_id") or "").lower() != session_id:
-            continue
         item_session = str(item.get("herdr_session") or herdr_session)
-        if (item_session, str(item.get("pane_id") or "")) == (herdr_session, pane_id):
+        here = (item_session, str(item.get("pane_id") or "")) == (herdr_session, pane_id)
+        if item.get("client") != client or str(item.get("session_id") or "").lower() != session_id:
+            if here:
+                result["pane_registered_other"] = True
+            continue
+        if here:
             result["already_registered_here"] = True
         else:
             result["registered_elsewhere"] = True

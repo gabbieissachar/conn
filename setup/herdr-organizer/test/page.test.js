@@ -100,11 +100,31 @@ const baseAa = () => ({ checking: {}, checkStarted: {}, applying: false, applied
 const baseRestart = (rows) => ({ manual: {}, applyResult: {}, verify: rows ? { esim: { data: { rows } } } : {} });
 const pane = { pane_id: 'w6:p2', client: 'codex' };
 
-test('skipped pane: before the identity check there is only a check button, never an id form', () => {
+test('skipped pane: before the identity check it offers both a check and setting the session id directly', () => {
   const { view } = loadPaneView(baseRestart(null), baseAa());
   const out = view('esim', pane);
   assert.match(out, /Check identity/);
-  assert.equal(/Set session id|<form/.test(out), false);
+  assert.match(out, /Set session id/);
+  assert.equal(/<form/.test(out), false, 'the form opens only when asked');
+  const restart = baseRestart(null);
+  restart.manual['esim|w6:p2'] = { open: true, client: 'codex', draft: '' };
+  assert.match(loadPaneView(restart, baseAa()).view('esim', pane), /<form data-manual-form>/);
+});
+
+test('skipped pane: a session id can be set while the identity check is still running', () => {
+  const aa = baseAa();
+  aa.checking.esim = true;
+  aa.checkStarted.esim = Date.now();
+  const restart = baseRestart(null);
+  assert.match(loadPaneView(restart, aa).view('esim', pane), /checking identities[\s\S]*Set session id/);
+  restart.manual['esim|w6:p2'] = { open: true, client: 'codex', draft: '' };
+  assert.match(loadPaneView(restart, aa).view('esim', pane), /<form data-manual-form>/);
+});
+
+test('the save sends the replace confirmation only when the pane already has a different session', () => {
+  assert.match(html, /replace_existing: entry\.replace === true/);
+  assert.match(html, /error\.code === 'pane_registered'\) entry\.needsReplace = true/);
+  assert.match(html, /data-action="manual-replace"/);
 });
 
 test('skipped pane: a pane the check verified offers apply and never the id form (it cannot work for it)', () => {

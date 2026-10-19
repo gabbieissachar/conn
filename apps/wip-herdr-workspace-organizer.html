@@ -603,12 +603,13 @@ created: 2026-09-10
       const entry = restart.manual[key] || {};
       const client = entry.client || row.client || 'claude';
       const override = entry.needsOverride ? `<label class="toggle"><input type="checkbox" data-action="manual-override" data-key="${escapeHtml(key)}" data-focus="override-${escapeHtml(key)}" ${entry.override ? 'checked' : ''}> ${entry.needsOverride === 'folder_unknown' ? 'The store has no folder for it, I confirm this is the right session' : 'Folder differs, I confirm this is the right session'}</label>` : '';
+      const replace = entry.needsReplace ? `<label class="toggle"><input type="checkbox" data-action="manual-replace" data-key="${escapeHtml(key)}" data-focus="replace-${escapeHtml(key)}" ${entry.replace ? 'checked' : ''}> This pane already has a different session registered, I confirm replacing it</label>` : '';
       return `<form class="manual-form" data-manual-form="${escapeHtml(key)}" autocomplete="off">
         <div class="row"><label class="field">Client<select data-manual-client="${escapeHtml(key)}">${['claude', 'codex'].map(name => `<option value="${name}" ${name === client ? 'selected' : ''}>${name}</option>`).join('')}</select></label>
           <label class="field grow">Session id<input type="text" data-manual-id="${escapeHtml(key)}" data-focus="manual-id-${escapeHtml(key)}" value="${escapeHtml(entry.draft || '')}" placeholder="36-character session id" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64"></label></div>
         <div class="tab-meta" style="margin:0">In that pane, <code>/status</code> shows the session id. The id is checked against this machine's ${escapeHtml(client)} store before anything is saved, and only a masked form is shown afterwards.</div>
         ${entry.error ? `<div class="scope-note error" style="margin:0">${escapeHtml(entry.error)}</div>` : ''}
-        ${override}
+        ${override}${replace}
         <div class="btn-row" style="margin:0"><button type="submit" class="primary-btn" ${entry.saving ? 'disabled' : ''}>${entry.saving ? 'Saving…' : 'Save identity'}</button><button type="button" data-action="manual-cancel" data-key="${escapeHtml(key)}">Cancel</button></div>
       </form>`;
     };
@@ -942,13 +943,14 @@ created: 2026-09-10
       entry.error = '';
       rerenderManual();
       try {
-        const data = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, confirm: `save:${pane}` });
+        const data = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, replace_existing: entry.replace === true, confirm: `save:${pane}` });
         restart.manual[key] = { saved: data.masked_id };
         showToast(`Identity saved for ${pane}`);
       } catch (error) {
         entry.saving = false;
         entry.error = error.message;
         if (error.code === 'folder_differs' || error.code === 'folder_unknown') entry.needsOverride = error.code;
+        if (error.code === 'pane_registered') entry.needsReplace = true;
       }
       rerenderManual();
     };
@@ -1035,8 +1037,8 @@ created: 2026-09-10
         if (target.checked) set.add(target.dataset.value); else set.delete(target.dataset.value);
         restart.seal = null;
         renderRestart();
-      } else if (target.dataset.action === 'manual-override') {
-        if (restart.manual[target.dataset.key]) restart.manual[target.dataset.key].override = target.checked;
+      } else if (target.dataset.action === 'manual-override' || target.dataset.action === 'manual-replace') {
+        if (restart.manual[target.dataset.key]) restart.manual[target.dataset.key][target.dataset.action === 'manual-replace' ? 'replace' : 'override'] = target.checked;
         renderRestart();
       } else if (target.dataset.action === 'toggle-labels') {
         restart.includeLabels = target.checked;
@@ -1117,7 +1119,7 @@ created: 2026-09-10
     // the exact command is copied for a terminal outside Herdr. The tool re-checks every workspace when it runs.
     const SKIP_TEXT = {
       active_agent: 'Has a working or blocked agent. Let it finish, then preview again.',
-      unverified_agent_session: 'Has an agent whose session is not registered, so it could not be resumed. Check its identity below, then preview again.',
+      unverified_agent_session: 'Has an agent whose session is not registered, so it could not be resumed. Set its session id below, or check its identity, then preview again.',
       capture_failed: 'Could not be captured. Run the single archive preview for it in a terminal to see why.',
       workspace_gone: 'No longer exists.',
       workspace_changed: 'Changed since the preview.'
@@ -1150,11 +1152,16 @@ created: 2026-09-10
       let control = '';
       let form = '';
       if (entry.saved) control = `<span class="pill good" title="Saved to the registry. Preview again to include this workspace.">Saved · ${escapeHtml(entry.saved)}</span>`;
-      else if (aa.checking[session]) control = `<span class="pill">checking identities… ${archiveCheckSeconds(session)}s</span>`;
+      else if (aa.checking[session]) {
+        // The check can take minutes. A session id can be set meanwhile; the server does not need the check.
+        control = `<span class="pill">checking identities… ${archiveCheckSeconds(session)}s</span><button type="button" class="small-btn" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}" title="Paste this agent's session id to register it now, without waiting for the check.">${entry.open ? 'Close form' : 'Set session id'}</button>`;
+        form = entry.open ? `<div class="inline-form">${manualFormView(session, { pane_id: pane.pane_id, client: pane.client })}</div>` : '';
+      }
       else if (found.kind === 'unchecked' || found.kind === 'not_found') {
-        control = `<button type="button" class="small-btn" style="margin-left:auto" data-aa="check" data-session="${escapeHtml(session)}">${found.kind === 'not_found' ? 'Check again' : 'Check identity'}</button>`;
+        control = `<button type="button" class="small-btn" style="margin-left:auto" data-aa="manual" data-session="${escapeHtml(session)}" data-pane="${escapeHtml(pane.pane_id)}" data-client="${escapeHtml(pane.client || '')}" title="Paste this agent's session id to register it now. It is checked against this machine's ${escapeHtml(pane.client || 'client')} store, and no identity check is needed.">${entry.open ? 'Close form' : 'Set session id'}</button><button type="button" class="small-btn" data-aa="check" data-session="${escapeHtml(session)}">${found.kind === 'not_found' ? 'Check again' : 'Check identity'}</button>`;
         if (found.kind === 'not_found') note = 'The identity check did not list this pane. Preview again to refresh the list.';
         else if (verify?.error) note = verify.error;
+        form = entry.open ? `<div class="inline-form">${manualFormView(session, { pane_id: pane.pane_id, client: pane.client })}</div>` : '';
       } else if (found.kind === 'verified') {
         const done = applied && !applied.error;
         control = done
@@ -1213,9 +1220,16 @@ created: 2026-09-10
     const renderArchiveAll = () => {
       const root = document.querySelector('#archive-all');
       if (!root || !state.data) return;
-      const focus = document.activeElement && root.contains(document.activeElement) ? document.activeElement.dataset.focus : '';
+      const active = document.activeElement && root.contains(document.activeElement) ? document.activeElement : null;
+      const focus = active ? active.dataset.focus : '';
+      // The identity check re-renders this card every second, so a session id being typed keeps its caret.
+      const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
       root.innerHTML = archiveAllView(state.data);
-      if (focus) root.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus();
+      const again = focus ? root.querySelector(`[data-focus="${CSS.escape(focus)}"]`) : null;
+      if (again) {
+        again.focus();
+        if (caret && typeof again.setSelectionRange === 'function') try { again.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ }
+      }
     };
     const runArchiveAllPreview = async () => {
       const session = cleanupSession();
@@ -1295,7 +1309,8 @@ created: 2026-09-10
     archiveAllRoot.addEventListener('change', event => {
       const clientKey = event.target.dataset?.manualClient;
       if (clientKey && restart.manual[clientKey]) { restart.manual[clientKey].client = event.target.value; rerenderManual(); return; }
-      if (event.target.dataset?.action === 'manual-override' && restart.manual[event.target.dataset.key]) { restart.manual[event.target.dataset.key].override = event.target.checked; rerenderManual(); }
+      const action = event.target.dataset?.action;
+      if ((action === 'manual-override' || action === 'manual-replace') && restart.manual[event.target.dataset.key]) { restart.manual[event.target.dataset.key][action === 'manual-replace' ? 'replace' : 'override'] = event.target.checked; rerenderManual(); }
     });
     archiveAllRoot.addEventListener('toggle', event => {
       if (event.target.dataset?.fold === 'aa-ready') state.archiveAll.readyOpen = event.target.open;
@@ -1320,7 +1335,6 @@ created: 2026-09-10
       ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
     // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
     const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
-    // The tabs an archived workspace holds, by name, so the group shows what each workspace stores.
     // The open workspaces a single archived tab can be resumed into: only those of the session the group belongs to.
     const groupDestinations = (batch, data) => (SESSION_NAME_PATTERN.test(batch.herdr_session || '') && batch.herdr_session === data.herdr_session ? (data.workspaces || []) : []);
     const groupTabDestination = (batch, destinations) => {

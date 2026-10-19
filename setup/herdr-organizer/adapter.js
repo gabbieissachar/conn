@@ -49,8 +49,9 @@ const PANE_ID_RE = /^(w[A-Za-z0-9]{1,10}):p[A-Za-z0-9]{1,10}$/;
 const TAB_ID_RE = /^(w[A-Za-z0-9]{1,10}):t[A-Za-z0-9]{1,10}$/;
 const SESSION_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const CLIENTS = new Set(['claude', 'codex']);
-// A manual identity may only be saved for a pane the most recent identity check
-// found unverified, so a check older than this must be repeated first.
+// An identity check newer than this still tells the manual save what it knows about a
+// pane: a pane it proved verified is never overwritten, and a pane it found unverified
+// may be replaced without asking again. No check is needed to save.
 const VERIFY_FRESH_MS = 60 * 60 * 1000;
 
 // Herdr context variables from the shell that started the server must never
@@ -364,7 +365,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // client store, the store's recorded folder matches the pane's folder (or the
   // override is sent), and not already claimed by another pane. It is never
   // logged, echoed or returned; the caller only gets a masked form.
-  async function saveManualIdentity({ session: sessionName, pane_id: paneId, client, session_id: sessionId, folder_override: folderOverride, confirm }) {
+  async function saveManualIdentity({ session: sessionName, pane_id: paneId, client, session_id: sessionId, folder_override: folderOverride, replace_existing: replaceExisting, confirm }) {
     const session = await requireSession(sessionName);
     if (typeof paneId !== 'string' || !PANE_ID_RE.test(paneId)) throw new AdapterError('Invalid pane.');
     requireConfirm(confirm, 'save:' + paneId);
@@ -376,9 +377,12 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     const pane = await validateLivePane(panes, paneId);
     if (pane.agent !== client) throw new AdapterError('That pane is running ' + (pane.agent || 'no supported agent') + ', not ' + client + '.', 409, 'client_mismatch');
 
+    // The identity check is optional. When a recent one covers this pane it can only add information: a
+    // verified pane is left alone, and a pane it found unverified needs no replace confirmation below.
     const seen = lastVerify.get(session);
-    if (!seen || Date.now() - seen.at > VERIFY_FRESH_MS || !seen.verified.has(paneId)) throw new AdapterError('Run the identity check for this session first, so the page knows this pane is unverified.', 409, 'verify_required');
-    if (seen.verified.get(paneId) === true) throw new AdapterError('This pane already has a verified identity. Use Apply verified identities instead.', 409, 'already_verified');
+    const fresh = seen && Date.now() - seen.at <= VERIFY_FRESH_MS && seen.verified.has(paneId);
+    const knownUnverified = Boolean(fresh) && seen.verified.get(paneId) !== true;
+    if (fresh && seen.verified.get(paneId) === true) throw new AdapterError('This pane already has a verified identity. Use Apply verified identities instead.', 409, 'already_verified');
 
     const checked = await runner(pythonBin, [storeCheckScript, toolRoot], {
       env: runEnv(),
@@ -391,6 +395,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     if (!check.valid_format) throw new AdapterError('That does not look like a session id.', 400, 'invalid_session_id');
     if (!check.exists) throw new AdapterError('That session id is not in the ' + client + ' store on this machine.', 404, 'not_in_store');
     if (check.registered_elsewhere) throw new AdapterError('That session is already registered to another pane. Remove that registration first (herdr-agent-remove), then save again.', 409, 'already_registered');
+    if (check.pane_registered_other && !knownUnverified && replaceExisting !== true) throw new AdapterError('This pane already has a different session registered. Confirm the replacement only if that one is wrong.', 409, 'pane_registered');
     if (check.store_folder !== 'match' && folderOverride !== true) {
       const unknown = check.store_folder === 'unknown';
       throw new AdapterError(unknown

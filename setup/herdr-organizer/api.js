@@ -112,7 +112,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },
     'save-manual-identity': {
       tier: 1,
-      params: { session: { type: 'string' }, pane_id: { type: 'string' }, client: { type: 'string' }, session_id: { type: 'string' }, folder_override: { type: 'boolean', optional: true }, confirm: { type: 'string' } },
+      params: { session: { type: 'string' }, pane_id: { type: 'string' }, client: { type: 'string' }, session_id: { type: 'string' }, folder_override: { type: 'boolean', optional: true }, replace_existing: { type: 'boolean', optional: true }, confirm: { type: 'string' } },
       run: (p) => tools.saveManualIdentity(p),
     },
     'seal-bundle': {

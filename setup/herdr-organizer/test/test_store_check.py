@@ -93,7 +93,21 @@ class StoreCheckTest(unittest.TestCase):
 
     def test_existing_claude_session_in_the_same_folder(self) -> None:
         result = self.run_check()
-        self.assertEqual(result, {"valid_format": True, "exists": True, "store_folder": "match", "registered_elsewhere": False, "already_registered_here": False})
+        self.assertEqual(result, {"valid_format": True, "exists": True, "store_folder": "match", "registered_elsewhere": False, "already_registered_here": False, "pane_registered_other": False})
+
+    def test_a_pane_that_holds_a_different_session_is_flagged(self) -> None:
+        self.write(self.manifest, json.dumps({"panes": [
+            {"client": "claude", "session_id": "11111111-2222-4333-8444-555555555555", "herdr_session": "project-a", "pane_id": "w1:p1"},
+        ]}))
+        result = self.run_check()
+        self.assertTrue(result["pane_registered_other"])
+        self.assertFalse(result["already_registered_here"])
+        self.assertFalse(result["registered_elsewhere"])
+        # The same pane id in another Herdr session is a different pane.
+        self.write(self.manifest, json.dumps({"panes": [
+            {"client": "claude", "session_id": "11111111-2222-4333-8444-555555555555", "herdr_session": "project-b", "pane_id": "w1:p1"},
+        ]}))
+        self.assertFalse(self.run_check()["pane_registered_other"])
 
     def test_existing_codex_session_in_the_same_folder(self) -> None:
         self.assertEqual(self.run_check(client="codex", session_id=CODEX_ID)["store_folder"], "match")
