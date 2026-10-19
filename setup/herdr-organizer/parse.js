@@ -61,6 +61,32 @@ function parseAgentPanes(jsonText) {
     }));
 }
 
+// Every pane that carries a label (herdr pane rename), with or without an agent. Used by the leader-space audit.
+function parseLabelledPanes(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return null; }
+  const list = data && Array.isArray(data.panes) ? data.panes : null;
+  if (!list) return null;
+  return list
+    .filter((item) => item && typeof item.pane_id === 'string' && typeof item.label === 'string' && item.label)
+    .map((item) => ({
+      pane_id: item.pane_id,
+      workspace_id: typeof item.workspace_id === 'string' ? item.workspace_id : '',
+      label: item.label.slice(0, 80),
+      agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
+    }));
+}
+
+function parseWorkspaceLabels(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return null; }
+  const list = data && Array.isArray(data.workspaces) ? data.workspaces : null;
+  if (!list) return null;
+  const labels = new Map();
+  for (const item of list) if (item && typeof item.workspace_id === 'string') labels.set(item.workspace_id, typeof item.label === 'string' ? item.label : '');
+  return labels;
+}
+
 function publicPane(pane) {
   return { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, agent: pane.agent, agent_status: pane.agent_status };
 }
@@ -290,6 +316,8 @@ module.exports = {
   parseSessions,
   parsePanes,
   parseAgentPanes,
+  parseLabelledPanes,
+  parseWorkspaceLabels,
   publicPane,
   parseVerifierLine,
   parseVerifierReport,

@@ -1410,7 +1410,7 @@ created: 2026-09-10
 
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '' };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     const contextRow = (row, thresholds) => {
       const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
@@ -1418,6 +1418,20 @@ created: 2026-09-10
       const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       return `<tr class="ctx-row ${level}"><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${escapeHtml(row.kind)} · ${escapeHtml(row.id)}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
+    };
+    const LEADER_STATES = { ok: ['good', 'one live pane'], missing: ['warn', 'no pane carries this label'], duplicate: ['bad', 'more than one pane carries this label'], elsewhere: ['warn', 'not in leader-space'] };
+    const leaderCard = () => {
+      if (context.leaderError) return `<article class="card"><div class="card-head"><h3>Leader space</h3><span class="pill bad">could not check</span></div><div class="card-body"><div class="scope-note error">${escapeHtml(context.leaderError)}</div></div></article>`;
+      if (!context.leader) return '';
+      const { rows, unexpected, workspace } = context.leader;
+      const trouble = rows.filter(row => row.state !== 'ok').length + unexpected.length;
+      const body = rows.map(row => {
+        const [level, hint] = LEADER_STATES[row.state] || ['', ''];
+        const where = row.panes.length ? row.panes.map(pane => `${escapeHtml(pane.herdr_session)} · ${escapeHtml(pane.pane_id)}`).join(', ') : '<span class="tab-meta">none</span>';
+        return `<tr class="ctx-row ${level === 'good' ? '' : level}"><td><span class="pill ${level}" title="${escapeHtml(hint)}">${escapeHtml(row.state)}</span></td><td><strong>${escapeHtml(row.label)}</strong></td><td>${where}</td></tr>`;
+      }).join('');
+      const extra = unexpected.length ? `<div class="scope-note">Unexpected leader labels: ${unexpected.map(item => `${escapeHtml(item.label)} (${escapeHtml(item.herdr_session)} · ${escapeHtml(item.pane_id)})`).join(', ')}</div>` : '';
+      return `<article class="card" style="margin-bottom:18px"><div class="card-head"><h3>Leader space</h3><span class="pill ${trouble ? 'warn' : 'good'}">${trouble ? plural(trouble, 'problem') : 'every identity unique'}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>State</th><th>Identity</th><th>Where</th></tr></thead><tbody>${body}</tbody></table>${extra}<div class="tab-meta" style="margin-top:12px">Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once. A restore refuses to break this. Nothing here moves or closes anything.</div></div></article>`;
     };
     const renderContext = () => {
       const section = document.querySelector('#context-section');
@@ -1430,7 +1444,7 @@ created: 2026-09-10
         const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table><div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted; it becomes exact after the session restarts onto the gauge. Restart an idle session; leave a busy one. Nothing here restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
-      section.innerHTML = head + body;
+      section.innerHTML = head + leaderCard() + body;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
     };
     const loadContext = async () => {
@@ -1438,7 +1452,11 @@ created: 2026-09-10
       context.loading = true; context.error = '';
       renderContext();
       try {
-        context.data = await api.run('context-gauge');
+        const [gauge, leader] = await Promise.allSettled([api.run('context-gauge'), api.run('leader-space')]);
+        if (gauge.status === 'rejected') throw gauge.reason;
+        context.data = gauge.value;
+        context.leader = leader.status === 'fulfilled' ? leader.value : null;
+        context.leaderError = leader.status === 'rejected' ? leader.reason.message : '';
         context.at = new Date().toLocaleTimeString();
       } catch (error) {
         context.error = error.message;

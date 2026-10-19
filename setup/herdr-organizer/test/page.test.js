@@ -367,6 +367,7 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('context-gauge'\)/);
   assert.equal(/fetch\(|confirm:|data-command/.test(view), false, 'no raw fetch, no write token, no copied command');
-  for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  assert.match(view, /api\.run\('leader-space'\)/);
+  for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy', 'row.label', 'row.state', 'pane.herdr_session', 'pane.pane_id', 'item.label']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
   assert.match(html, /data-view="context"/);
 });

@@ -718,6 +718,38 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '');
   const number = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
+  // Leader-space audit: the convention says one workspace, `leader-space`, holding one tab per identity below, and a
+  // label exists at most once. Read-only; it reports and never moves or closes anything. The same rule is enforced on
+  // restore by the organizer tool (leader_restore_problems in workspace-organizer.py).
+  const LEADER_WORKSPACE = 'leader-space';
+  const LEADER_LABELS = ['big-boss', 'leader-esim', 'leader-workspaceos', 'leader-nip', 'leader-fleet-watch', 'leader-personal-work'];
+
+  async function leaderSpace() {
+    const sessions = (await listSessions()).filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name));
+    const found = [];
+    for (const session of sessions) {
+      const [panesResult, workspacesResult] = await Promise.all([
+        herdrCall(session.name, ['pane', 'list'], { timeoutMs: 20000 }).catch(() => null),
+        herdrCall(session.name, ['workspace', 'list'], { timeoutMs: 20000 }).catch(() => null),
+      ]);
+      const panes = panesResult && panesResult.code === 0 ? parse.parseLabelledPanes(panesResult.stdout) : null;
+      const workspaces = workspacesResult && workspacesResult.code === 0 ? parse.parseWorkspaceLabels(workspacesResult.stdout) : null;
+      for (const pane of panes || []) {
+        found.push({ label: pane.label, herdr_session: session.name, pane_id: pane.pane_id, agent_status: pane.agent_status, in_leader_space: workspaces ? workspaces.get(pane.workspace_id) === LEADER_WORKSPACE : null });
+      }
+    }
+    const rows = LEADER_LABELS.map((label) => {
+      const panes = found.filter((item) => item.label === label).map(({ label: _label, ...rest }) => rest);
+      let state = 'ok';
+      if (panes.length === 0) state = 'missing';
+      else if (panes.length > 1) state = 'duplicate';
+      else if (panes[0].in_leader_space === false) state = 'elsewhere';
+      return { label, state, panes };
+    });
+    const unexpected = found.filter((item) => item.label.startsWith('leader-') && !LEADER_LABELS.includes(item.label)).map(({ label, herdr_session: session, pane_id: paneId }) => ({ label, herdr_session: session, pane_id: paneId }));
+    return { workspace: LEADER_WORKSPACE, rows, unexpected };
+  }
+
   function contextGauge() {
     return singleFlight('context-gauge', async () => {
       if (!fmHome || !gaugeScript) throw new AdapterError('The context gauge is not configured.', 501, 'gauge_unconfigured');
@@ -779,6 +811,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     listBundles,
     reconcilePreview,
     contextGauge,
+    leaderSpace,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

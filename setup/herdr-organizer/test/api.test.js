@@ -620,3 +620,41 @@ test('context-gauge: a failing or unconfigured gauge is an error, not an empty l
     assert.equal((await post('context-gauge')).status, 501);
   } finally { await unconfigured.close(); }
 });
+
+test('leader-space: reports each identity as ok, missing, duplicate or elsewhere without changing anything', async () => {
+  const panes = [
+    { pane_id: 'wK:p5', workspace_id: 'wK', tab_id: 'wK:t5', agent: 'claude', agent_status: 'working', label: 'big-boss' },
+    { pane_id: 'wK:p2', workspace_id: 'wK', tab_id: 'wK:t2', agent: 'claude', agent_status: 'idle', label: 'leader-esim' },
+    { pane_id: 'wK:p4', workspace_id: 'wK', tab_id: 'wK:t4', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
+    { pane_id: 'wJ:p2', workspace_id: 'wJ', tab_id: 'wJ:t2', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
+    { pane_id: 'wJ:p3', workspace_id: 'wJ', tab_id: 'wJ:t3', agent: 'claude', agent_status: 'idle', label: 'leader-workspaceos' },
+    { pane_id: 'wK:p9', workspace_id: 'wK', tab_id: 'wK:t9', agent: 'claude', agent_status: 'idle', label: 'leader-extra' },
+    { pane_id: 'wK:p8', workspace_id: 'wK', tab_id: 'wK:t8', agent: 'claude', agent_status: 'idle' },
+  ];
+  const workspaces = [{ workspace_id: 'wK', label: 'leader-space' }, { workspace_id: 'wJ', label: 'old workspace' }];
+  const fake = fakeRunner({
+    panes,
+    sessions: [{ default: false, name: 'project-a', running: true }],
+    handle: (file, args) => (file === 'herdr' && args.includes('workspace') && args.includes('list')
+      ? { code: 0, stdout: JSON.stringify({ result: { workspaces } }), stderr: '', timedOut: false, truncated: false }
+      : undefined),
+  });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('leader-space');
+    assert.equal(response.status, 200);
+    const byLabel = Object.fromEntries(response.json.data.rows.map((row) => [row.label, row]));
+    assert.equal(byLabel['big-boss'].state, 'ok');
+    assert.equal(byLabel['leader-esim'].state, 'ok');
+    assert.equal(byLabel['leader-nip'].state, 'duplicate', 'two panes carry the label');
+    assert.equal(byLabel['leader-workspaceos'].state, 'elsewhere', 'one pane, but outside leader-space');
+    assert.equal(byLabel['leader-fleet-watch'].state, 'missing');
+    assert.equal(byLabel['leader-personal-work'].state, 'missing');
+    assert.deepEqual(response.json.data.unexpected.map((item) => item.label), ['leader-extra']);
+    assert.equal(response.json.data.workspace, 'leader-space');
+    assert.equal((await post('leader-space', { session: 'project-a' })).status, 400, 'the browser sends no params');
+    assert.equal(server.api.ACTIONS['leader-space'].tier, 0);
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['rename', 'close', 'move', 'create'].includes(arg))), false, 'read-only calls only');
+  } finally { await server.close(); }
+});
