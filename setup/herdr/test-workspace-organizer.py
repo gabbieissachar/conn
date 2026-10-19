@@ -4183,5 +4183,131 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.assertEqual(ORGANIZER.batch_summary(self.manifest())["counts"]["archived"], 1)
 
 
+class LeaderConventionTests(unittest.TestCase):
+    """The leader convention: one `leader-space` workspace, one tab per leader label, no session resumed twice."""
+
+    LIVE = {
+        "workspaces": [{"workspace_id": "wK", "label": "leader-space"}, {"workspace_id": "wC", "label": "crew"}],
+        "tabs": [
+            {"tab_id": "wK:t2", "workspace_id": "wK", "label": "leader-esim"},
+            {"tab_id": "wK:t5", "workspace_id": "wK", "label": "big-boss"},
+            {"tab_id": "wC:t2", "workspace_id": "wC", "label": "fm-some-crew"},
+        ],
+        "panes": [
+            {"pane_id": "wK:p2", "agent_session": {"value": "7e5acf46-live"}},
+            {"pane_id": "wC:p2", "agent_session": None},
+        ],
+    }
+
+    def tab(self, label, tab_id="a:t1"):
+        return {"source_tab_id": tab_id, "label": label, "layout": {"root": {"type": "pane", "pane_id": "p1"}}}
+
+    def test_only_big_boss_and_leader_prefixed_labels_are_leader_tabs(self):
+        is_leader = ORGANIZER.is_leader_tab_label
+        self.assertTrue(is_leader("big-boss"))
+        self.assertTrue(is_leader("leader-nip"))
+        self.assertFalse(is_leader("leader-"))
+        self.assertFalse(is_leader("leader"))
+        self.assertFalse(is_leader("big_boss"))
+        self.assertFalse(is_leader("fm-some-crew"))
+        self.assertFalse(is_leader(None))
+
+    def test_a_missing_leader_tab_may_restore_into_leader_space(self):
+        problems = ORGANIZER.leader_restore_problems(self.LIVE, "leader-space", [self.tab("leader-nip")], True)
+        self.assertEqual(problems, [])
+
+    def test_a_leader_tab_that_is_already_open_is_refused(self):
+        problems = ORGANIZER.leader_restore_problems(self.LIVE, "leader-space", [self.tab("leader-esim")], True)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("already open (wK:t2)", problems[0])
+
+    def test_a_leader_tab_never_restores_outside_leader_space(self):
+        problems = ORGANIZER.leader_restore_problems(self.LIVE, "crew", [self.tab("leader-nip")], True)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("restores only into 'leader-space'", problems[0])
+
+    def test_a_second_leader_space_workspace_is_refused_and_ordinary_tabs_are_untouched(self):
+        self.assertEqual(len(ORGANIZER.leader_restore_problems(self.LIVE, "leader-space", [], False)), 1)
+        self.assertEqual(ORGANIZER.leader_restore_problems({}, "leader-space", [self.tab("leader-nip")], False), [])
+        self.assertEqual(ORGANIZER.leader_restore_problems(self.LIVE, "crew", [self.tab("fm-some-crew")], True), [])
+
+    def test_restore_tabs_refuses_a_duplicate_leader_tab_before_building_anything(self):
+        archive = {"archive_id": "example", "status": "archived", "capture": {"tabs": [self.tab("leader-esim", "w1:t1")]}}
+        args = argparse.Namespace(
+            archive="example", tab=["w1:t1"], to_workspace="wK", session="esim", execute=True, confirm="example",
+            allow_unresumable_agents=False, resume_agents=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "archive_by_id", return_value=(Path(temporary) / "example.json", archive)
+        ), patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), patch.object(
+            ORGANIZER, "socket_call"
+        ) as socket_call:
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Nothing was restored.*already open"):
+                ORGANIZER.restore_tabs_command(args)
+        socket_call.assert_not_called()
+
+    def test_restoring_a_workspace_archive_refuses_a_second_leader_space(self):
+        archive = {
+            "archive_id": "example", "status": "archived",
+            "capture": {"workspace": {"label": "leader-space"}, "tabs": [self.tab("leader-nip")]},
+        }
+        args = argparse.Namespace(
+            archive="example", session="esim", execute=True, confirm="example", force=False,
+            allow_unresumable_agents=True, resume_agents=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "archive_by_id", return_value=(Path(temporary) / "example.json", archive)
+        ), patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), patch.object(
+            ORGANIZER, "run_json"
+        ) as run_json:
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "already open"):
+                ORGANIZER.restore_archive(args)
+        run_json.assert_not_called()
+
+    def test_the_workspace_restore_preview_says_when_the_convention_blocks_it(self):
+        archive = {
+            "archive_id": "example", "status": "archived",
+            "capture": {"workspace": {"label": "leader-space"}, "tabs": [self.tab("leader-nip")]},
+        }
+        args = argparse.Namespace(
+            archive="example", session="esim", execute=False, confirm=None, force=False,
+            allow_unresumable_agents=False, resume_agents=False,
+        )
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "archive_by_id", return_value=(Path(temporary) / "example.json", archive)
+        ), patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), redirect_stdout(out):
+            self.assertEqual(ORGANIZER.restore_archive(args), "preview")
+        self.assertIn("Blocked by the leader convention", out.getvalue())
+
+    def test_live_agent_sessions_maps_each_running_session_to_its_pane(self):
+        self.assertEqual(ORGANIZER.live_agent_sessions(self.LIVE), {"7e5acf46-live": "wK:p2"})
+
+    def test_a_restore_never_resumes_a_session_that_is_already_running(self):
+        restore = {
+            "source_pane_id": "old1", "session_id": "7e5acf46-live", "resume_command": "claude --resume 7e5acf46-live",
+            "restore_status": "resumable", "restore_source": "process",
+        }
+        fresh = dict(restore, source_pane_id="old2", session_id="other-session", resume_command="claude --resume other-session")
+        tabs = [{"agent_restores": [restore, fresh]}]
+        with patch.object(ORGANIZER, "run_command") as run_command:
+            outcomes = ORGANIZER.resume_captured_tabs(
+                tabs, {"old1": "new1", "old2": "new2"}, "esim", ORGANIZER.live_agent_sessions(self.LIVE)
+            )
+        self.assertEqual(outcomes[0], {"source_pane_id": "old1", "status": "skipped", "action": "already_live", "live_pane_id": "wK:p2"})
+        self.assertEqual(outcomes[1]["action"], "resumed")
+        run_command.assert_called_once_with(["pane", "run", "new2", "claude --resume other-session"], "esim")
+
+    def test_moves_still_resume_when_no_live_sessions_are_passed(self):
+        restore = {
+            "source_pane_id": "old1", "session_id": "7e5acf46-live", "resume_command": "claude --resume 7e5acf46-live",
+            "restore_status": "resumable", "restore_source": "process",
+        }
+        with patch.object(ORGANIZER, "run_command") as run_command:
+            outcomes = ORGANIZER.resume_captured_tabs([{"agent_restores": [restore]}], {"old1": "new1"}, "esim")
+        self.assertEqual(outcomes[0]["action"], "resumed")
+        run_command.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

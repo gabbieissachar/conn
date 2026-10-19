@@ -304,6 +304,66 @@ def workspace_by_id(snapshot: dict[str, Any], workspace_id: str) -> dict[str, An
     raise OrganizerError(f"Workspace {workspace_id!r} does not exist in this Herdr session.")
 
 
+# The leader convention: every firstmate and secondmate session lives in one workspace, one tab each, and a label is
+# an identity, so it exists at most once. A restore never creates a second `leader-space`, never puts a leader tab
+# anywhere else, never recreates a leader tab that is already open, and never resumes an agent session that is already
+# running in some pane. These checks read the live snapshot, so they hold however the tabs were closed or restored.
+LEADER_WORKSPACE_LABEL = "leader-space"
+LEADER_PRIMARY_TAB_LABEL = "big-boss"
+LEADER_TAB_PREFIX = "leader-"
+
+
+def is_leader_tab_label(label: Any) -> bool:
+    text = str(label or "")
+    return text == LEADER_PRIMARY_TAB_LABEL or (text.startswith(LEADER_TAB_PREFIX) and len(text) > len(LEADER_TAB_PREFIX))
+
+
+def live_agent_sessions(snapshot: dict[str, Any]) -> dict[str, str]:
+    """Agent session id -> the pane it is running in, for every pane the live snapshot shows with an agent session."""
+    sessions: dict[str, str] = {}
+    for pane in snapshot.get("panes", []):
+        session = pane.get("agent_session")
+        value = session.get("value") if isinstance(session, dict) else None
+        if isinstance(value, str) and value:
+            sessions.setdefault(value, str(pane.get("pane_id")))
+    return sessions
+
+
+def leader_restore_problems(
+    snapshot: dict[str, Any], workspace_label: str | None, tabs: list[dict[str, Any]], destination_exists: bool
+) -> list[str]:
+    """Why restoring these tabs into a workspace with this label would break the leader convention (empty when fine)."""
+    problems: list[str] = []
+    workspaces = snapshot.get("workspaces", [])
+    if not destination_exists and workspace_label == LEADER_WORKSPACE_LABEL:
+        open_ids = [str(item.get("workspace_id")) for item in workspaces if item.get("label") == LEADER_WORKSPACE_LABEL]
+        if open_ids:
+            problems.append(
+                f"workspace {LEADER_WORKSPACE_LABEL!r} is already open ({', '.join(open_ids)}); restore the missing tabs into it instead of creating another"
+            )
+    live_tabs: dict[str, list[str]] = {}
+    for item in snapshot.get("tabs", []):
+        if is_leader_tab_label(item.get("label")):
+            live_tabs.setdefault(str(item.get("label")), []).append(str(item.get("tab_id")))
+    for tab in tabs:
+        label = tab.get("label")
+        if not is_leader_tab_label(label):
+            continue
+        if workspace_label != LEADER_WORKSPACE_LABEL:
+            problems.append(f"tab {label!r} is a leader tab and restores only into {LEADER_WORKSPACE_LABEL!r}, not {workspace_label!r}")
+        if live_tabs.get(str(label)):
+            problems.append(f"tab {label!r} is already open ({', '.join(live_tabs[str(label)])}), so a second one would duplicate it")
+    return problems
+
+
+def require_leader_restore_ok(
+    snapshot: dict[str, Any], workspace_label: str | None, tabs: list[dict[str, Any]], destination_exists: bool
+) -> None:
+    problems = leader_restore_problems(snapshot, workspace_label, tabs, destination_exists)
+    if problems:
+        raise OrganizerError("Nothing was restored. " + "; ".join(problems) + ".")
+
+
 def tabs_for_workspace(snapshot: dict[str, Any], workspace_id: str) -> list[dict[str, Any]]:
     # Herdr's snapshot emits tabs in display order. Its `number` field is a
     # user-facing label and does not reliably track a later tab.move operation.
@@ -2908,20 +2968,34 @@ def first_cwd(capture: dict[str, Any]) -> str | None:
 
 
 def resume_agents(
-    archive: dict[str, Any], pane_map: dict[str, str], session: str | None
+    archive: dict[str, Any],
+    pane_map: dict[str, str],
+    session: str | None,
+    live_sessions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    return resume_captured_tabs(archive.get("capture", {}).get("tabs", []), pane_map, session)
+    return resume_captured_tabs(archive.get("capture", {}).get("tabs", []), pane_map, session, live_sessions)
 
 
 def resume_captured_tabs(
-    captured_tabs: list[dict[str, Any]], pane_map: dict[str, str], session: str | None
+    captured_tabs: list[dict[str, Any]],
+    pane_map: dict[str, str],
+    session: str | None,
+    live_sessions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """`live_sessions` (restore paths only) maps agent session ids already running to their pane, so a restore never
+    resumes a session a second time; a move rebuilds tabs whose originals are still running and passes nothing."""
     outcomes: list[dict[str, Any]] = []
     for tab in captured_tabs:
         for restore in tab.get("agent_restores", []):
             old_pane_id = restore.get("source_pane_id")
             new_pane_id = pane_map.get(str(old_pane_id))
             command = restore.get("resume_command")
+            live_pane = (live_sessions or {}).get(str(restore.get("session_id")))
+            if live_pane and is_trusted_restore(restore):
+                outcomes.append(
+                    {"source_pane_id": old_pane_id, "status": "skipped", "action": "already_live", "live_pane_id": live_pane}
+                )
+                continue
             if not is_trusted_restore(restore) or not command or not new_pane_id:
                 outcomes.append({"source_pane_id": old_pane_id, "status": "skipped"})
                 continue
@@ -3131,6 +3205,8 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     if len(set(selected_ids)) != len(selected_ids):
         raise OrganizerError("Each --tab value must be unique.")
     selected_tabs = [archived_tab_by_id(archive, tab_id) for tab_id in selected_ids]
+    require_leader_restore_ok(snapshot, destination.get("label"), selected_tabs, True)
+    live_sessions = live_agent_sessions(snapshot)
     unavailable = unavailable_agent_restores(selected_tabs)
     preview = {
         "archive_id": args.archive,
@@ -3189,7 +3265,7 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
             if not isinstance(layout, dict):
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
             pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
-            outcomes = resume_captured_tabs([tab], pane_map, args.session) if args.resume_agents else []
+            outcomes = resume_captured_tabs([tab], pane_map, args.session, live_sessions) if args.resume_agents else []
             failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
             operation.update(
                 {
@@ -3305,7 +3381,11 @@ def restore_outcome_counts(outcomes: list[dict[str, Any]]) -> tuple[list[dict[st
 
 
 def restore_into_layout_copy(
-    archive_path: Path, archive: dict[str, Any], copy: dict[str, Any], args: argparse.Namespace
+    archive_path: Path,
+    archive: dict[str, Any],
+    copy: dict[str, Any],
+    args: argparse.Namespace,
+    live_sessions: dict[str, str] | None = None,
 ) -> str:
     """Resume agents inside the workspace an earlier layout-only restore left open, instead of making another one."""
     record: dict[str, Any] = {
@@ -3321,7 +3401,7 @@ def restore_into_layout_copy(
     busy_sources = {old for old, new in copy["pane_map"].items() if new in copy["busy"]}
     pane_map = {old: new for old, new in copy["pane_map"].items() if old not in busy_sources}
     try:
-        outcomes = resume_agents(archive, pane_map, args.session)
+        outcomes = resume_agents(archive, pane_map, args.session, live_sessions)
         for outcome in outcomes:
             if outcome.get("status") == "skipped" and outcome.get("source_pane_id") in busy_sources:
                 outcome["reason"] = "agent_running"
@@ -3345,7 +3425,9 @@ def restore_into_layout_copy(
     return "adopted"
 
 
-def restore_into_new_workspace(archive_path: Path, archive: dict[str, Any], args: argparse.Namespace) -> str:
+def restore_into_new_workspace(
+    archive_path: Path, archive: dict[str, Any], args: argparse.Namespace, live_sessions: dict[str, str] | None = None
+) -> str:
     """Create a workspace from the archive. Only a restore that also resumes agents marks the archive restored."""
     capture = archive.get("capture", {})
     workspace = capture.get("workspace", {})
@@ -3396,7 +3478,7 @@ def restore_into_new_workspace(archive_path: Path, archive: dict[str, Any], args
         if workspace.get("focused"):
             run_json(["workspace", "focus", workspace_id], args.session)
         if resuming:
-            record["agent_resume"] = resume_agents(archive, pane_map, args.session)
+            record["agent_resume"] = resume_agents(archive, pane_map, args.session, live_sessions)
             failures, sent = restore_outcome_counts(record["agent_resume"])
             archive["status"] = "restore_partial" if failures else "resumed" if sent else "restored"
         elif archive.get("status") == "restore_partial":
@@ -3442,8 +3524,14 @@ def restore_archive(args: argparse.Namespace) -> str:
         raise OrganizerError("This archive was already restored. Use --force only if you intentionally want another copy.")
     capture = archive.get("capture", {})
     unavailable = unavailable_agent_restores(capture.get("tabs", []))
+    live_snapshot = session_snapshot(args.session)
+    leader_problems = leader_restore_problems(
+        live_snapshot, capture.get("workspace", {}).get("label"), capture.get("tabs", []), False
+    )
     if not args.execute:
         print(json.dumps(archive_summary(archive), indent=2))
+        if leader_problems and not (not args.force and layout_copy_of(archive, args.session)):
+            print("Blocked by the leader convention: " + "; ".join(leader_problems) + ".")
         print(
             f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore. "
             "Without --resume-agents only the layout is rebuilt and the archive stays archived. With --resume-agents "
@@ -3459,6 +3547,10 @@ def restore_archive(args: argparse.Namespace) -> str:
             "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent sessions is acceptable."
         )
     copy = None if args.force else layout_copy_of(archive, args.session)
+    if not copy:
+        require_leader_restore_ok(
+            live_snapshot, capture.get("workspace", {}).get("label"), capture.get("tabs", []), False
+        )
     if copy and not args.resume_agents:
         print(
             f"Archive {args.archive} already has its layout open as workspace {copy['workspace_id']}. Nothing was created. "
@@ -3466,7 +3558,7 @@ def restore_archive(args: argparse.Namespace) -> str:
         )
         return "already_laid_out"
     if copy:
-        return restore_into_layout_copy(archive_path, archive, copy, args)
+        return restore_into_layout_copy(archive_path, archive, copy, args, live_agent_sessions(live_snapshot))
     earlier = archive.get("layout_restore")
     if isinstance(earlier, dict) and earlier.get("workspace_id") and not args.force:
         print(
@@ -3474,7 +3566,7 @@ def restore_archive(args: argparse.Namespace) -> str:
             + (" because that restore was interrupted" if earlier.get("error") else " because it is closed or no longer matches")
             + ". Close it if it is still open and unwanted."
         )
-    return restore_into_new_workspace(archive_path, archive, args)
+    return restore_into_new_workspace(archive_path, archive, args, live_agent_sessions(live_snapshot))
 
 
 def reorder_command(args: argparse.Namespace) -> None:
