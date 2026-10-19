@@ -605,6 +605,64 @@ test('context-gauge: joins the gauge to live panes, shows only short ids, and so
   } finally { await server.close(); }
 });
 
+test('context-gauge: a live Claude pane the gauge has no usable row for is read from its own transcript and replaces the stale row', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'organizer-claude-'));
+  const live = '33333333-aaaa-4bbb-8ccc-000000000001';
+  const compacted = '44444444-aaaa-4bbb-8ccc-000000000002';
+  const small = '55555555-aaaa-4bbb-8ccc-000000000003';
+  const bare = '66666666-aaaa-4bbb-8ccc-000000000004';
+  const usage = (tokens, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(Date.now() - 60000).toISOString(), message: { model: 'claude-x', usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: tokens - 1010 } }, ...extra });
+  const write = (id, lines) => {
+    fs.mkdirSync(path.join(root, 'projects', '-proj'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'projects', '-proj', `${id}.jsonl`), lines.join('\n') + '\n');
+  };
+  write(live, [usage(100000), usage(380000), usage(900000, { isSidechain: true }), 'not json']);
+  write(compacted, [usage(500000), JSON.stringify({ type: 'system', subtype: 'compact_boundary' })]);
+  write(small, [usage(150000)]);
+  const pane = (id, paneId, label, cwd) => ({ pane_id: paneId, agent: 'claude', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', value: id }, label, cwd, foreground_cwd: cwd, tab_id: 'w1:t1', workspace_id: 'w1' });
+  const panes = [
+    pane(live, 'w1:p1', 'leader-nip', '/fixture/homes/nip'),
+    pane(compacted, 'w1:p2', 'leader-compacted', '/fixture/homes/compacted'),
+    pane(small, 'w1:p3', 'leader-small', '/fixture/homes/small'),
+    pane(bare, 'w1:p4', 'leader-no-transcript', '/fixture/homes/bare'),
+  ];
+  const gauge = [
+    { session_id: '11111111-aaaa-4bbb-8ccc-00000000000a', map: 'secondmate-nip', kind: 'secondmate', home: '/fixture/homes/nip', current: true, source: 'statusline', percent: null, input_tokens: null, busy: 'idle claude-hook', age_s: 20000 },
+    { session_id: bare, map: 'secondmate-bare', kind: 'secondmate', home: '/fixture/homes/bare', current: true, source: 'statusline', percent: null, input_tokens: null, busy: 'idle claude-hook', age_s: 5 },
+    { session_id: live, map: 'ignored-duplicate', kind: 'ship', current: true, source: 'statusline', percent: null, busy: 'idle claude-hook' },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n';
+  const fake = fakeRunner({ panes, handle: (file) => (file === 'bash' ? { code: 0, stdout: gauge, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.map, row]));
+    assert.equal(rows['leader-nip'].percent, 38, 'the live session is read from its transcript, not the replaced one');
+    assert.equal(rows['leader-nip'].tokens, 380000);
+    assert.equal(rows['leader-nip'].pane_id, 'w1:p1');
+    assert.equal(rows['leader-nip'].busy, 'idle');
+    assert.equal(rows['leader-nip'].estimated, true);
+    assert.ok(rows['leader-nip'].age_s >= 55 && rows['leader-nip'].age_s < 300);
+    assert.equal(rows['secondmate-nip'], undefined, 'the replaced session no pane runs is dropped');
+    assert.equal(rows['ignored-duplicate'], undefined, 'a gauge row for a pane read from its transcript is not shown twice');
+    assert.equal(rows['leader-compacted'].percent, null, 'a compaction after the newest usage line makes the count unknown');
+    assert.equal(rows['leader-compacted'].tokens, null);
+    assert.equal(rows['leader-small'].percent, null, 'a count the window cannot be inferred from stays unknown');
+    assert.equal(rows['leader-small'].tokens, 150000);
+    assert.equal(rows['secondmate-bare'].pane_id, 'w1:p4', 'with no transcript the gauge row stays');
+    assert.equal(rows['leader-no-transcript'], undefined);
+    assert.equal(response.raw.includes(live), false, 'no full session id leaves the server');
+    assert.equal(response.raw.includes('/fixture/homes'), false, 'no folder leaves the server');
+  } finally {
+    await server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('context-gauge: a failing or unconfigured gauge is an error, not an empty list', async () => {
   const failing = fakeRunner({ handle: (file) => (file === 'bash' ? { code: 1, stdout: '', stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
   const server = await startServer({ runner: failing.runner });

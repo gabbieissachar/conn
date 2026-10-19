@@ -779,6 +779,82 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { text: HANDOFF_REQUEST, ready, skipped, command };
   }
 
+  // Herdr names the session a pane really runs; the gauge names the newest session it has a record for, and a
+  // session restarted without the gauge's statusline wiring leaves that record pointing at the one it replaced. So
+  // a live Claude pane the gauge has no usable row for is read from its own transcript, the same newest main-thread
+  // usage line the gauge reads, and the replaced session's row is dropped.
+  const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
+  const SMALL_WINDOW = 200000;
+  const LARGE_WINDOW = 1000000;
+
+  async function claudeTranscript(sessionId) {
+    if (!SESSION_ID_RE.test(sessionId)) return null;
+    const roots = [...new Set([env.CLAUDE_CONFIG_DIR, path.join(os.homedir(), '.claude')].filter(Boolean))];
+    for (const root of roots) {
+      let dirs;
+      try { dirs = await fsp.readdir(path.join(root, 'projects')); } catch { continue; }
+      for (const dir of dirs) {
+        const file = path.join(root, 'projects', dir, `${sessionId}.jsonl`);
+        try { if ((await fsp.stat(file)).isFile()) return file; } catch { /* not in this project folder */ }
+      }
+    }
+    return null;
+  }
+
+  // Input-side tokens of the newest main-thread usage line, read from the end of the file in growing steps. A
+  // compaction after that line makes the count unknown, as in the gauge.
+  async function transcriptUsage(file) {
+    let handle;
+    try {
+      handle = await fsp.open(file, 'r');
+      const { size } = await handle.stat();
+      for (const bytes of [262144, 4194304, 33554432]) {
+        const length = Math.min(size, bytes);
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, size - length);
+        const lines = buffer.toString('utf8').split('\n');
+        if (size > length) lines.shift();
+        let last = null;
+        for (const line of lines) {
+          let item;
+          try { item = JSON.parse(line); } catch { continue; }
+          if (!item || typeof item !== 'object') continue;
+          if (item.type === 'system' && item.subtype === 'compact_boundary') { last = { compact: true }; continue; }
+          const usage = item.message && item.message.usage;
+          if (item.type !== 'assistant' || item.isSidechain === true || item.isApiErrorMessage === true || !usage || typeof usage !== 'object' || item.message.model === '<synthetic>') continue;
+          const tokens = (number(usage.input_tokens) || 0) + (number(usage.cache_creation_input_tokens) || 0) + (number(usage.cache_read_input_tokens) || 0);
+          if (tokens > 0) last = { tokens, at: Date.parse(item.timestamp) };
+        }
+        if (last) return last.compact ? { tokens: null, at: null } : { tokens: last.tokens, at: Number.isFinite(last.at) ? last.at : null };
+        if (size <= length) break;
+      }
+    } catch { /* an unreadable transcript is an unknown count */ } finally {
+      if (handle) await handle.close().catch(() => {});
+    }
+    return { tokens: null, at: null };
+  }
+
+  async function paneRow(pane) {
+    const file = await claudeTranscript(pane.agent_session_id);
+    if (!file) return null;
+    const { tokens, at } = await transcriptUsage(file);
+    const percent = tokens !== null && tokens > SMALL_WINDOW ? Math.round((tokens * 1000) / LARGE_WINDOW) / 10 : null;
+    return {
+      id: pane.agent_session_id.slice(0, 8),
+      map: pane.label || pane.title || pane.pane_id,
+      kind: 'session',
+      percent,
+      tokens,
+      estimated: true,
+      busy: pane.agent_status === 'idle' || pane.agent_status === 'done' ? 'idle' : pane.agent_status === 'working' ? 'busy' : 'unknown',
+      age_s: at === null ? null : Math.max(0, Math.round((Date.now() - at) / 1000)),
+      herdr_session: pane.herdr_session,
+      pane_id: pane.pane_id,
+      title: pane.title,
+      cwds: pane.cwds,
+    };
+  }
+
   function contextGauge() {
     return singleFlight('context-gauge', async () => {
       if (!fmHome || !gaugeScript) throw new AdapterError('The context gauge is not configured.', 501, 'gauge_unconfigured');
@@ -794,20 +870,24 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           const result = await herdrCall(session.name, ['pane', 'list'], { timeoutMs: 20000 });
           panes = result.code === 0 ? parse.parseAgentPanes(result.stdout) : null;
         } catch { /* a session that cannot be read just has no pane column */ }
-        for (const pane of panes || []) where.set(pane.agent_session_id, { herdr_session: session.name, pane_id: pane.pane_id, title: pane.title });
+        for (const pane of panes || []) where.set(pane.agent_session_id, { ...pane, herdr_session: session.name });
       }
       const rows = [];
+      const homes = new Map();
+      const seen = new Set();
+      const unread = new Map();
       for (const line of gauge.stdout.split('\n')) {
         let item;
         try { item = JSON.parse(line); } catch { continue; }
         if (!item || typeof item.session_id !== 'string' || item.current === false) continue;
         const pane = where.get(item.session_id);
         const busy = text(item.busy, 40).split(' ')[0];
-        rows.push({
+        const percent = number(item.percent) === null ? null : Math.round(item.percent * 10) / 10;
+        const row = {
           id: item.session_id.slice(0, 8),
           map: text(item.map, 120),
           kind: text(item.kind, 20),
-          percent: number(item.percent) === null ? null : Math.round(item.percent * 10) / 10,
+          percent,
           tokens: number(item.input_tokens),
           estimated: item.source !== 'statusline' || item.window_inferred === true,
           busy: busy === 'idle' || busy === 'busy' ? busy : 'unknown',
@@ -815,10 +895,21 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           herdr_session: pane ? pane.herdr_session : null,
           pane_id: pane ? pane.pane_id : null,
           title: pane ? pane.title : null,
-        });
+        };
+        // A live Claude pane on a session the gauge has no percent for is read from its own transcript below.
+        if (pane && percent === null && pane.agent === 'claude') unread.set(item.session_id, row);
+        else { rows.push(row); seen.add(item.session_id); }
+        for (const key of [item.home, item.worktree]) if (typeof key === 'string' && key) homes.set(key, row);
       }
-      rows.sort((a, b) => (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
-      return { thresholds: { warn: CONTEXT_WARN_PERCENT, high: CONTEXT_HIGH_PERCENT }, rows };
+      const fromPanes = (await Promise.all([...where.values()].filter((pane) => pane.agent === 'claude' && !seen.has(pane.agent_session_id)).map(paneRow))).filter(Boolean);
+      const read = new Set(fromPanes.map((row) => row.pane_id));
+      for (const [sessionId, row] of unread) if (!read.has(row.pane_id)) rows.push(row);
+      // A row for a session no pane runs any more is dropped when a live pane now runs in the same home or worktree.
+      const replaced = new Set();
+      for (const row of fromPanes) for (const cwd of row.cwds) if (homes.has(cwd) && !homes.get(cwd).pane_id) replaced.add(homes.get(cwd));
+      const shown = [...rows.filter((row) => !replaced.has(row)), ...fromPanes.map(({ cwds: _cwds, ...row }) => row)];
+      shown.sort((a, b) => (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
+      return { thresholds: { warn: CONTEXT_WARN_PERCENT, high: CONTEXT_HIGH_PERCENT }, rows: shown };
     });
   }
 

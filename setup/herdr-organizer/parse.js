@@ -57,6 +57,10 @@ function parseAgentPanes(jsonText) {
     .map((item) => ({
       pane_id: item.pane_id,
       agent_session_id: item.agent_session.value,
+      agent: typeof item.agent === 'string' ? item.agent : '',
+      agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
+      label: typeof item.label === 'string' ? item.label.slice(0, 80) : '',
+      cwds: [item.cwd, item.foreground_cwd].filter((value) => typeof value === 'string' && value),
       title: typeof item.terminal_title_stripped === 'string' ? item.terminal_title_stripped.slice(0, 120) : '',
     }));
 }
