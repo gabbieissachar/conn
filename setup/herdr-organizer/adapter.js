@@ -750,6 +750,30 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { workspace: LEADER_WORKSPACE, rows, unexpected };
   }
 
+  // Copy-only "send a handoff request" command for the leader identities the captain ticked. Nothing is sent here:
+  // the server re-reads the audit, keeps only identities with exactly one live pane inside leader-space, and builds the
+  // command from the validated session name and pane id. The text is fixed; the browser never supplies any.
+  const HANDOFF_REQUEST = '/handoff to restart this session with cleaner context. Persist the handoff doc in your own home folder.';
+
+  async function handoffCommand(labels) {
+    if (!Array.isArray(labels) || labels.length === 0 || labels.some((label) => typeof label !== 'string' || !LEADER_LABELS.includes(label))) {
+      throw new AdapterError('Pick one or more leader identities.');
+    }
+    const { rows } = await leaderSpace();
+    const ready = [];
+    const skipped = [];
+    for (const label of new Set(labels)) {
+      const row = rows.find((item) => item.label === label);
+      const pane = row && row.state === 'ok' ? row.panes[0] : null;
+      if (pane && PANE_ID_RE.test(pane.pane_id) && SESSION_NAME_RE.test(pane.herdr_session)) ready.push({ label, herdr_session: pane.herdr_session, pane_id: pane.pane_id });
+      else skipped.push({ label, state: row ? row.state : 'missing' });
+    }
+    const command = ready.length
+      ? ready.map((item) => `herdr --session ${item.herdr_session} pane send-text ${item.pane_id} '${HANDOFF_REQUEST}' && herdr --session ${item.herdr_session} pane send-keys ${item.pane_id} Enter`).join('\n')
+      : null;
+    return { text: HANDOFF_REQUEST, ready, skipped, command };
+  }
+
   function contextGauge() {
     return singleFlight('context-gauge', async () => {
       if (!fmHome || !gaugeScript) throw new AdapterError('The context gauge is not configured.', 501, 'gauge_unconfigured');
@@ -812,6 +836,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     reconcilePreview,
     contextGauge,
     leaderSpace,
+    handoffCommand,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

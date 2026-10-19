@@ -368,6 +368,13 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
   assert.match(view, /api\.run\('context-gauge'\)/);
   assert.equal(/fetch\(|confirm:|data-command/.test(view), false, 'no raw fetch, no write token, no copied command');
   assert.match(view, /api\.run\('leader-space'\)/);
-  for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy', 'row.label', 'row.state', 'pane.herdr_session', 'pane.pane_id', 'item.label']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy', 'row.label', 'row.state', 'pane.herdr_session', 'pane.pane_id', 'pane.agent_status', 'item.label']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
   assert.match(html, /data-view="context"/);
+});
+
+test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /api\.run\('handoff-command', \{ labels \}\)/);
+  assert.equal(/herdr --session|send-text|send-keys/.test(view), false, 'the page never assembles the shell command');
+  assert.match(view, /AT_PROMPT = new Set\(\['idle', 'done'\]\)/, 'sessions at their prompt start ticked');
 });

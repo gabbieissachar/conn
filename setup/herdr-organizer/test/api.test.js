@@ -658,3 +658,37 @@ test('leader-space: reports each identity as ok, missing, duplicate or elsewhere
     assert.equal(fake.calls.some((call) => call.args.some((arg) => ['rename', 'close', 'move', 'create'].includes(arg))), false, 'read-only calls only');
   } finally { await server.close(); }
 });
+
+test('handoff-command: builds a copy-only send command from the live audit for ticked identities only', async () => {
+  const panes = [
+    { pane_id: 'wK:p5', workspace_id: 'wK', tab_id: 'wK:t5', agent: 'claude', agent_status: 'working', label: 'big-boss' },
+    { pane_id: 'wK:p2', workspace_id: 'wK', tab_id: 'wK:t2', agent: 'claude', agent_status: 'idle', label: 'leader-esim' },
+    { pane_id: 'wK:p4', workspace_id: 'wK', tab_id: 'wK:t4', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
+    { pane_id: 'wJ:p2', workspace_id: 'wJ', tab_id: 'wJ:t2', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
+  ];
+  const workspaces = [{ workspace_id: 'wK', label: 'leader-space' }, { workspace_id: 'wJ', label: 'old workspace' }];
+  const fake = fakeRunner({
+    panes,
+    sessions: [{ default: false, name: 'project-a', running: true }],
+    handle: (file, args) => (file === 'herdr' && args.includes('workspace') && args.includes('list')
+      ? { code: 0, stdout: JSON.stringify({ result: { workspaces } }), stderr: '', timedOut: false, truncated: false }
+      : undefined),
+  });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-command', { labels: ['leader-esim', 'leader-nip', 'leader-fleet-watch'] });
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.ready, [{ label: 'leader-esim', herdr_session: 'project-a', pane_id: 'wK:p2' }]);
+    assert.deepEqual(data.skipped, [{ label: 'leader-nip', state: 'duplicate' }, { label: 'leader-fleet-watch', state: 'missing' }]);
+    assert.equal(data.command, `herdr --session project-a pane send-text wK:p2 '${data.text}' && herdr --session project-a pane send-keys wK:p2 Enter`);
+    assert.equal(data.text.includes("'"), false, 'the fixed text cannot break out of its quotes');
+    assert.equal((await post('handoff-command', { labels: ['leader-nip'] })).json.data.command, null, 'no command when nothing is ready');
+    assert.equal((await post('handoff-command', { labels: ['rm -rf /'] })).status, 400, 'only known identities');
+    assert.equal((await post('handoff-command', { labels: [] })).status, 400);
+    assert.equal((await post('handoff-command', { labels: ['leader-esim'], text: 'x' })).status, 400, 'the browser sends no text');
+    assert.equal(server.api.ACTIONS['handoff-command'].tier, 0);
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
+  } finally { await server.close(); }
+});

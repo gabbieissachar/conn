@@ -1410,7 +1410,7 @@ created: 2026-09-10
 
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '' };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     const contextRow = (row, thresholds) => {
       const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
@@ -1419,6 +1419,8 @@ created: 2026-09-10
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       return `<tr class="ctx-row ${level}"><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${escapeHtml(row.kind)} · ${escapeHtml(row.id)}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
     };
+    // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
+    const AT_PROMPT = new Set(['idle', 'done']);
     const LEADER_STATES = { ok: ['good', 'one live pane'], missing: ['warn', 'no pane carries this label'], duplicate: ['bad', 'more than one pane carries this label'], elsewhere: ['warn', 'not in leader-space'] };
     const leaderCard = () => {
       if (context.leaderError) return `<article class="card"><div class="card-head"><h3>Leader space</h3><span class="pill bad">could not check</span></div><div class="card-body"><div class="scope-note error">${escapeHtml(context.leaderError)}</div></div></article>`;
@@ -1428,10 +1430,14 @@ created: 2026-09-10
       const body = rows.map(row => {
         const [level, hint] = LEADER_STATES[row.state] || ['', ''];
         const where = row.panes.length ? row.panes.map(pane => `${escapeHtml(pane.herdr_session)} · ${escapeHtml(pane.pane_id)}`).join(', ') : '<span class="tab-meta">none</span>';
-        return `<tr class="ctx-row ${level === 'good' ? '' : level}"><td><span class="pill ${level}" title="${escapeHtml(hint)}">${escapeHtml(row.state)}</span></td><td><strong>${escapeHtml(row.label)}</strong></td><td>${where}</td></tr>`;
+        const pane = row.state === 'ok' ? row.panes[0] : null;
+        const agent = pane ? `<span class="pill ${AT_PROMPT.has(pane.agent_status) ? 'good' : ''}">${escapeHtml(pane.agent_status)}</span>` : '<span class="tab-meta">-</span>';
+        const pick = pane ? `<input type="checkbox" class="handoff-pick" data-label="${escapeHtml(row.label)}" aria-label="Send a handoff request to ${escapeHtml(row.label)}" ${context.picked.get(row.label) ? 'checked' : ''}>` : '';
+        return `<tr class="ctx-row ${level === 'good' ? '' : level}"><td>${pick}</td><td><span class="pill ${level}" title="${escapeHtml(hint)}">${escapeHtml(row.state)}</span></td><td><strong>${escapeHtml(row.label)}</strong></td><td>${agent}</td><td>${where}</td></tr>`;
       }).join('');
+      const pickedCount = rows.filter(row => row.state === 'ok' && context.picked.get(row.label)).length;
       const extra = unexpected.length ? `<div class="scope-note">Unexpected leader labels: ${unexpected.map(item => `${escapeHtml(item.label)} (${escapeHtml(item.herdr_session)} · ${escapeHtml(item.pane_id)})`).join(', ')}</div>` : '';
-      return `<article class="card" style="margin-bottom:18px"><div class="card-head"><h3>Leader space</h3><span class="pill ${trouble ? 'warn' : 'good'}">${trouble ? plural(trouble, 'problem') : 'every identity unique'}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>State</th><th>Identity</th><th>Where</th></tr></thead><tbody>${body}</tbody></table>${extra}<div class="tab-meta" style="margin-top:12px">Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once. A restore refuses to break this. Nothing here moves or closes anything.</div></div></article>`;
+      return `<article class="card" style="margin-bottom:18px"><div class="card-head"><h3>Leader space</h3><span class="pill ${trouble ? 'warn' : 'good'}">${trouble ? plural(trouble, 'problem') : 'every identity unique'}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>Send</th><th>State</th><th>Identity</th><th>Agent</th><th>Where</th></tr></thead><tbody>${body}</tbody></table>${extra}<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Sessions waiting at their prompt (idle or done) start ticked. Tick a working one only if you want to interrupt its turn.</span></div><div class="tab-meta" style="margin-top:12px">Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once. A restore refuses to break this. Nothing here moves or closes anything.</div></div></article>`;
     };
     const renderContext = () => {
       const section = document.querySelector('#context-section');
@@ -1446,6 +1452,25 @@ created: 2026-09-10
       }
       section.innerHTML = head + leaderCard() + body;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
+      section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.label, box.checked); renderContext(); }));
+      const handoff = document.querySelector('#handoff-copy');
+      if (handoff) handoff.addEventListener('click', copyHandoff);
+    };
+    const copyHandoff = async () => {
+      const labels = (context.leader ? context.leader.rows : []).filter(row => row.state === 'ok' && context.picked.get(row.label)).map(row => row.label);
+      if (!labels.length || context.handoffBusy) return;
+      context.handoffBusy = true; renderContext();
+      try {
+        const result = await api.run('handoff-command', { labels });
+        if (!result.command) throw new Error('None of the ticked sessions has exactly one live pane any more. Refresh and tick again.');
+        const skipped = result.skipped.length ? `. Skipped ${result.skipped.map(item => `${item.label} (${item.state})`).join(', ')}` : '';
+        await copy(result.command, `Handoff request copied for ${plural(result.ready.length, 'session')}${skipped}`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        context.handoffBusy = false;
+        if (state.view === 'context') renderContext();
+      }
     };
     const loadContext = async () => {
       if (context.loading) return;
@@ -1456,6 +1481,8 @@ created: 2026-09-10
         if (gauge.status === 'rejected') throw gauge.reason;
         context.data = gauge.value;
         context.leader = leader.status === 'fulfilled' ? leader.value : null;
+        // Idle sessions start ticked; a choice the captain already made survives a refresh.
+        if (context.leader) for (const row of context.leader.rows) if (row.state === 'ok' && !context.picked.has(row.label)) context.picked.set(row.label, AT_PROMPT.has(row.panes[0].agent_status));
         context.leaderError = leader.status === 'rejected' ? leader.reason.message : '';
         context.at = new Date().toLocaleTimeString();
       } catch (error) {

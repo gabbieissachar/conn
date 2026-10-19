@@ -106,6 +106,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     bundles: { tier: 0, params: {}, run: () => tools.listBundles() },
     'context-gauge': { tier: 0, params: {}, run: () => tools.contextGauge() },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
+    'handoff-command': { tier: 0, params: { labels: { type: 'array' } }, run: (p) => tools.handoffCommand(p.labels) },
     'reconcile-preview': { tier: 0, params: { bundle: { type: 'string' } }, run: (p) => tools.reconcilePreview(p.bundle) },
     // tier 1: private local writes. Each needs a confirm token naming exactly what it changes.
     'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },
