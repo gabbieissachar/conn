@@ -10,6 +10,7 @@
 // The browser never sends a command, an argument list or free text that reaches
 // a shell. Unknown actions and unknown params are refused.
 
+const os = require('os');
 const path = require('path');
 const { createGuard } = require('./guard');
 const { createAdapter, AdapterError } = require('./adapter');
@@ -78,7 +79,10 @@ function validateParams(spec, params) {
 function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env } = {}) {
   const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
   const guard = createGuard({ port, token });
-  const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env });
+  // The firstmate home and code root the context gauge reads, as serve.sh names them.
+  const fmHome = env.HERDR_ORGANIZER_FM_HOME || path.join(os.homedir(), 'fm-homes', 'pmos');
+  const gaugeScript = env.HERDR_ORGANIZER_GAUGE_SCRIPT || path.join(os.homedir(), 'workspace', 'firstmate', 'bin', 'fm-ctx-gauge.sh');
+  const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env, fmHome, gaugeScript });
   let tier1Busy = false;
 
   async function shareReport(params) {
@@ -100,6 +104,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     snapshot: { tier: 0, params: { session: { type: 'string' } }, run: (p) => tools.refreshSnapshot(p.session) },
     'snapshot-data': { tier: 0, params: {}, run: () => tools.readSnapshot() },
     bundles: { tier: 0, params: {}, run: () => tools.listBundles() },
+    'context-gauge': { tier: 0, params: {}, run: () => tools.contextGauge() },
     'reconcile-preview': { tier: 0, params: { bundle: { type: 'string' } }, run: (p) => tools.reconcilePreview(p.bundle) },
     // tier 1: private local writes. Each needs a confirm token naming exactly what it changes.
     'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },

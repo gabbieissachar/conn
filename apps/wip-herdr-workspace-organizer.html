@@ -141,6 +141,12 @@ created: 2026-09-10
     .pane-names strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
     .pane-names span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-top: 2px; }
     .verdict { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; text-align: right; }
+    .ctx-tools { display: flex; align-items: center; gap: 12px; }
+    .ctx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .ctx-table th { padding: 0 10px 8px 0; text-align: left; color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
+    .ctx-table td { padding: 9px 10px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
+    .ctx-table th:first-child, .ctx-table td:first-child { padding-left: 12px; }
+    .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
     .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
     .evidence { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
@@ -238,6 +244,7 @@ created: 2026-09-10
       <button class="view-tab" type="button" data-view="workspaces" aria-selected="false">Workspaces</button>
       <button class="view-tab" type="button" data-view="archives" aria-selected="false">Archives</button>
       <button class="view-tab" type="button" data-view="group" aria-selected="false">Archive group</button>
+      <button class="view-tab" type="button" data-view="context" aria-selected="false">Context</button>
     </nav>
     <div class="controls" id="snapshot-controls" hidden>
       <input id="search" class="search" type="search" placeholder="Filter workspaces, tabs, or archives" aria-label="Filter organizer data">
@@ -258,6 +265,7 @@ created: 2026-09-10
     <section id="group-section" hidden>
       <div id="batches"></div>
     </section>
+    <section id="context-section" hidden></section>
     <section id="archives-section" hidden>
       <div class="section-heading"><h2>Archives</h2><span class="updated">Layouts and resumable identities only</span></div>
       <div class="archives" id="archives"></div>
@@ -431,13 +439,23 @@ created: 2026-09-10
         <div class="archive-meta" style="margin-top: 12px">Select one or more archived tabs to restore into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
       </article>`;
     };
-    const VIEW_BADGES = { restart: 'restart tools', workspaces: 'live snapshot', archives: 'live snapshot', group: 'live snapshot' };
+    const VIEW_BADGES = { restart: 'restart tools', workspaces: 'live snapshot', archives: 'live snapshot', group: 'live snapshot', context: 'context gauge' };
     const render = () => {
       const data = state.data;
       document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.view === state.view)));
       document.querySelector('#restart-section').hidden = state.view !== 'restart';
-      document.querySelector('#snapshot-controls').hidden = state.view === 'restart';
+      document.querySelector('#snapshot-controls').hidden = state.view === 'restart' || state.view === 'context';
+      document.querySelector('#context-section').hidden = state.view !== 'context';
       document.querySelector('#view-badge').textContent = VIEW_BADGES[state.view] || '';
+      if (state.view === 'context') {
+        document.querySelector('#restart-section').hidden = true;
+        document.querySelector('#workspaces-section').hidden = true;
+        document.querySelector('#archives-section').hidden = true;
+        document.querySelector('#group-section').hidden = true;
+        document.querySelector('#move-panel').innerHTML = '';
+        renderContext();
+        return;
+      }
       if (state.view === 'restart') {
         document.querySelector('#workspaces-section').hidden = true;
         document.querySelector('#archives-section').hidden = true;
@@ -1390,6 +1408,46 @@ created: 2026-09-10
       if (key) state.batchOpen[key] = event.target.open;
     }, true);
 
+    // ---- Context view: how full each agent session's context window is ----
+    // Read-only. Restarting a session stays manual; this only says which tab is due.
+    const context = { loading: false, data: null, error: '', at: null };
+    const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
+    const contextRow = (row, thresholds) => {
+      const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
+      const percent = row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
+      const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
+      const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
+      return `<tr class="ctx-row ${level}"><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${escapeHtml(row.kind)} · ${escapeHtml(row.id)}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
+    };
+    const renderContext = () => {
+      const section = document.querySelector('#context-section');
+      const head = `<div class="section-heading"><h2>Context window</h2><span class="ctx-tools"><span class="updated">${context.at ? `read ${escapeHtml(context.at)}` : 'not read yet'}</span><button id="context-reload" type="button" ${context.loading ? 'disabled' : ''}>${context.loading ? 'Reading…' : 'Refresh'}</button></span></div>`;
+      let body;
+      if (context.error) body = `<div class="scope-note error">${escapeHtml(context.error)}</div>`;
+      else if (!context.data) body = '<div class="skeleton"></div><div class="skeleton"></div>';
+      else {
+        const { rows, thresholds } = context.data;
+        const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body"><table class="ctx-table"><thead><tr><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table><div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted; it becomes exact after the session restarts onto the gauge. Restart an idle session; leave a busy one. Nothing here restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
+      }
+      section.innerHTML = head + body;
+      document.querySelector('#context-reload').addEventListener('click', loadContext);
+    };
+    const loadContext = async () => {
+      if (context.loading) return;
+      context.loading = true; context.error = '';
+      renderContext();
+      try {
+        context.data = await api.run('context-gauge');
+        context.at = new Date().toLocaleTimeString();
+      } catch (error) {
+        context.error = error.message;
+      } finally {
+        context.loading = false;
+        if (state.view === 'context') renderContext();
+      }
+    };
+
     // ---- Snapshot-backed views (Workspaces and Archives) ----
     const syncSnapshotSelect = () => {
       const select = document.querySelector('#snapshot-session');
@@ -1439,6 +1497,7 @@ created: 2026-09-10
     document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
       state.view = button.dataset.view;
       render();
+      if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); return; }
       if (state.view !== 'restart') {
         syncSnapshotSelect();
         if (!snapshotRequested) { snapshotRequested = true; refreshSnapshot(); }

@@ -362,3 +362,11 @@ test('an archived workspace in the group offers to resume one tab into an open w
   assert.deepEqual(groupDestinations({ herdr_session: 'other' }, data), []);
   assert.equal(groupTabDestination({ batch_id: 'b1' }, data.workspaces), 'w9Z');
 });
+
+test('context view: read-only, fetched through the organizer API, and escapes what it prints', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /api\.run\('context-gauge'\)/);
+  assert.equal(/fetch\(|confirm:|data-command/.test(view), false, 'no raw fetch, no write token, no copied command');
+  for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  assert.match(html, /data-view="context"/);
+});

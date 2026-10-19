@@ -95,7 +95,7 @@ function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024
   });
 }
 
-function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr' } = {}) {
+function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr', fmHome, gaugeScript } = {}) {
   if (!toolRoot) throw new Error('adapter needs the Herdr tool root');
   const registryScript = path.join(toolRoot, 'agent-session-registry.py');
   const storeCheckScript = path.join(__dirname, 'store_check.py');
@@ -708,6 +708,59 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return snapshot;
   }
 
+  // Context gauge: one read of the firstmate gauge (read-only, `fm-ctx-gauge.sh report --json`)
+  // joined to the live panes of every running non-default session, so each row names the
+  // tab to restart. The first-mate home and gauge script are fixed at construction; the
+  // browser sends nothing. Only the first eight characters of a session id leave the server.
+  const CONTEXT_WARN_PERCENT = 35;
+  const CONTEXT_HIGH_PERCENT = 50;
+  const GAUGE_TIMEOUT_MS = 120000;
+  const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '');
+  const number = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+
+  function contextGauge() {
+    return singleFlight('context-gauge', async () => {
+      if (!fmHome || !gaugeScript) throw new AdapterError('The context gauge is not configured.', 501, 'gauge_unconfigured');
+      const [gauge, sessions] = await Promise.all([
+        runner('bash', [gaugeScript, 'report', '--json'], { env: { ...runEnv(), FM_HOME: fmHome }, timeoutMs: GAUGE_TIMEOUT_MS }),
+        listSessions(),
+      ]);
+      if (gauge.code !== 0) throw new AdapterError('The context gauge could not be read.', 502, 'gauge_unavailable');
+      const where = new Map();
+      for (const session of sessions.filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name))) {
+        let panes = null;
+        try {
+          const result = await herdrCall(session.name, ['pane', 'list'], { timeoutMs: 20000 });
+          panes = result.code === 0 ? parse.parseAgentPanes(result.stdout) : null;
+        } catch { /* a session that cannot be read just has no pane column */ }
+        for (const pane of panes || []) where.set(pane.agent_session_id, { herdr_session: session.name, pane_id: pane.pane_id, title: pane.title });
+      }
+      const rows = [];
+      for (const line of gauge.stdout.split('\n')) {
+        let item;
+        try { item = JSON.parse(line); } catch { continue; }
+        if (!item || typeof item.session_id !== 'string' || item.current === false) continue;
+        const pane = where.get(item.session_id);
+        const busy = text(item.busy, 40).split(' ')[0];
+        rows.push({
+          id: item.session_id.slice(0, 8),
+          map: text(item.map, 120),
+          kind: text(item.kind, 20),
+          percent: number(item.percent) === null ? null : Math.round(item.percent * 10) / 10,
+          tokens: number(item.input_tokens),
+          estimated: item.source !== 'statusline' || item.window_inferred === true,
+          busy: busy === 'idle' || busy === 'busy' ? busy : 'unknown',
+          age_s: number(item.age_s),
+          herdr_session: pane ? pane.herdr_session : null,
+          pane_id: pane ? pane.pane_id : null,
+          title: pane ? pane.title : null,
+        });
+      }
+      rows.sort((a, b) => (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
+      return { thresholds: { warn: CONTEXT_WARN_PERCENT, high: CONTEXT_HIGH_PERCENT }, rows };
+    });
+  }
+
   return {
     listSessions,
     listSessionsView,
@@ -725,6 +778,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     sealBundle,
     listBundles,
     reconcilePreview,
+    contextGauge,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

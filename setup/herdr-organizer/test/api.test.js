@@ -569,3 +569,54 @@ test('snapshot-data: a tab keeps its verified agent sessions, and a session id a
     tree.cleanup();
   }
 });
+
+test('context-gauge: joins the gauge to live panes, shows only short ids, and sorts by context used', async () => {
+  const gauge = [
+    { session_id: '99999999-aaaa-4bbb-8ccc-000000000001', map: 'low-task', kind: 'ship', current: true, source: 'statusline', window_inferred: false, input_tokens: 90000, percent: 9, busy: 'idle claude-hook', age_s: 30 },
+    { session_id: '11111111-2222-4333-8444-555555555555', map: 'secondmate-x', kind: 'secondmate', current: true, source: 'transcript', window_inferred: true, input_tokens: 420000, percent: 42.04, busy: 'busy claude-hook', age_s: 7200 },
+    { session_id: null, map: 'superseded-task', kind: 'scout', current: false, source: 'none', percent: null, busy: 'unknown superseded' },
+    { session_id: '77777777-aaaa-4bbb-8ccc-000000000002', map: 'old-session', kind: 'ship', current: false, source: 'statusline', percent: 99, busy: 'idle claude-hook' },
+    { session_id: '88888888-aaaa-4bbb-8ccc-000000000003', map: 'primary', kind: 'primary', current: true, source: 'transcript', input_tokens: 150000, percent: null, busy: 'unknown no-record', age_s: 2 },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\nnot json\n';
+  const fake = fakeRunner({ handle: (file) => (file === 'bash' ? { code: 0, stdout: gauge, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    const { rows, thresholds } = response.json.data;
+    assert.deepEqual(thresholds, { warn: 35, high: 50 });
+    assert.deepEqual(rows.map((row) => row.map), ['secondmate-x', 'low-task', 'primary'], 'sorted by percent, unknown last, superseded and non-current rows dropped');
+    assert.equal(rows[0].id, '11111111');
+    assert.equal(rows[0].percent, 42);
+    assert.equal(rows[0].estimated, true);
+    assert.equal(rows[0].busy, 'busy');
+    assert.equal(rows[0].pane_id, 'w1:p1', 'joined to the live pane by session id');
+    assert.ok(['project-a', 'project-b'].includes(rows[0].herdr_session), 'the fixture serves one pane list to every running session');
+    assert.equal(rows[1].estimated, false);
+    assert.equal(rows[1].pane_id, null, 'no live pane for that session');
+    assert.equal(rows[2].percent, null);
+    assert.equal(response.raw.includes('11111111-2222'), false, 'no full session id leaves the server');
+    const call = fake.calls.find((item) => item.file === 'bash');
+    assert.deepEqual(call.args, ['/fixture/bin/fm-ctx-gauge.sh', 'report', '--json']);
+    assert.equal(call.env.FM_HOME, '/fixture/fm-home');
+    assert.equal((await post('context-gauge', { session: 'project-a' })).status, 400, 'the browser sends no params');
+    assert.equal(server.api.ACTIONS['context-gauge'].tier, 0);
+  } finally { await server.close(); }
+});
+
+test('context-gauge: a failing or unconfigured gauge is an error, not an empty list', async () => {
+  const failing = fakeRunner({ handle: (file) => (file === 'bash' ? { code: 1, stdout: '', stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: failing.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 502);
+    assert.equal(response.raw.includes('/secret/path'), false);
+  } finally { await server.close(); }
+  const unconfigured = await startServer({ fmHome: null });
+  try {
+    const { post } = await client(unconfigured);
+    assert.equal((await post('context-gauge')).status, 501);
+  } finally { await unconfigured.close(); }
+});

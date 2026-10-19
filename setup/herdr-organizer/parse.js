@@ -44,6 +44,23 @@ function parsePanes(jsonText) {
     }));
 }
 
+// Panes that carry an agent session id, for the context gauge join only. The id is
+// the join key held in memory by the caller; nothing that leaves the server keeps more
+// than its first eight characters. `title` is the tab or pane title Herdr reports.
+function parseAgentPanes(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return null; }
+  const list = data && Array.isArray(data.panes) ? data.panes : null;
+  if (!list) return null;
+  return list
+    .filter((item) => item && typeof item.pane_id === 'string' && item.agent_session && typeof item.agent_session.value === 'string' && item.agent_session.value)
+    .map((item) => ({
+      pane_id: item.pane_id,
+      agent_session_id: item.agent_session.value,
+      title: typeof item.terminal_title_stripped === 'string' ? item.terminal_title_stripped.slice(0, 120) : '',
+    }));
+}
+
 function publicPane(pane) {
   return { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, agent: pane.agent, agent_status: pane.agent_status };
 }
@@ -272,6 +289,7 @@ module.exports = {
   VERIFIED_CLASSES,
   parseSessions,
   parsePanes,
+  parseAgentPanes,
   publicPane,
   parseVerifierLine,
   parseVerifierReport,

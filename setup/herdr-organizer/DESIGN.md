@@ -34,7 +34,7 @@ The server enforces the tiers. The buttons only reflect them.
 
 | Tier | Actions | Page behaviour |
 |---|---|---|
-| 0 read-only | session list, snapshot, verifier report, preflight-only, cleanup-empty-tabs preview, archive-all preview, reconcile preview, bundle list, share report | Runs it |
+| 0 read-only | session list, snapshot, context gauge, verifier report, preflight-only, cleanup-empty-tabs preview, archive-all preview, reconcile preview, bundle list, share report | Runs it |
 | 1 private local writes, reversible | verifier `--apply`, save manual identity, seal bundle | Runs it behind an explicit confirm; the server re-validates every parameter |
 | 2 changes live Herdr or sends input into panes | `reconcile --confirm`, `rollback-reconcile`, archive, `archive-all --execute`, restore, `restore-batch --execute`, move or archive tabs, `add-tabs-to-batch --execute`, `finish-tab-add --execute`, `cleanup-empty-tabs --execute`, `/status` capture, resume replay | Shows the exact command and its effect; the user runs it |
 | 3 restart | restarting the computer or Herdr | Checklist item only |
