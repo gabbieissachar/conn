@@ -2300,6 +2300,20 @@ def current_tab_id(snapshot: dict[str, Any], session: str | None) -> str | None:
     return str(pane["tab_id"]) if pane and pane.get("tab_id") else None
 
 
+def origin_workspace_still_open(archive: dict[str, Any]) -> bool:
+    """Whether the workspace an archive was captured from can still be open under its recorded id.
+
+    Herdr hands a closed workspace's id, and its tab ids, out again to an unrelated workspace. Only a selected-tabs
+    archive that never closed its workspace left that workspace standing, so only it can be matched on its origin id.
+    """
+    if not archive.get("from_tabs"):
+        return False
+    return not any(
+        isinstance(item, dict) and item.get("closes_workspace") and item.get("status") == "completed"
+        for item in archive.get("tab_archives", [])
+    )
+
+
 def find_batch_member(
     manifest: dict[str, Any], batch_id: str, workspace_id: str, match_origin: bool = True
 ) -> dict[str, Any] | None:
@@ -2330,7 +2344,7 @@ def find_batch_member(
         found = {"archive_id": archive_id, "path": path, "archive": archive}
         if workspace_id in linked:
             by_restore.append(found)
-        elif match_origin and workspace_id == origin:
+        elif match_origin and workspace_id == origin and origin_workspace_still_open(archive):
             by_origin.append(found)
     candidates = by_restore or by_origin
     if len(candidates) > 1:

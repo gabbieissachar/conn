@@ -3735,6 +3735,7 @@ class AddTabsToBatchTests(unittest.TestCase):
                 ],
             },
             "restore": {},
+            "from_tabs": True,
         }
         archive.update(extra)
         (self.archives / f"{archive_id}.json").write_text(json.dumps(archive))
@@ -3862,6 +3863,24 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.run_add(["w2:t1"])
         self.assertEqual(len(self.archive("m2")["capture"]["tabs"]), 1)
         self.assertEqual(len(self.manifest()["members"]), 3)
+
+    def test_a_member_whose_workspace_was_closed_is_not_matched_by_a_reused_workspace_id(self):
+        # Herdr hands a closed workspace's id and tab ids out again, so the same ids now name unrelated live tabs.
+        closed = {"operation_id": "op", "source_tabs": ["w1:t1"], "closes_workspace": True, "status": "completed"}
+        self.write_member("m1", "w1", tabs=("w1:t1",), tab_archives=[closed])
+        self.write_batch(members=[("m1", "w1", "Label w1")])
+        before = self.archive("m1")
+        text = self.run_add(["w1:t1"])
+        self.assertEqual(self.archive("m1"), before, "the closed workspace's archive is not touched")
+        self.assertIn("as a new member", text)
+        self.assertEqual(len(self.manifest()["members"]), 2)
+
+    def test_a_whole_workspace_archive_is_not_matched_by_a_reused_workspace_id(self):
+        self.write_member("m1", "w1", tabs=("w1:t1",), from_tabs=False)
+        self.write_batch(members=[("m1", "w1", "Label w1")])
+        text = self.run_add(["w1:t1"])
+        self.assertIn("as a new member", text)
+        self.assertEqual(len(self.archive("m1")["capture"]["tabs"]), 1)
 
     def test_two_members_for_one_workspace_stop_the_run(self):
         self.write_member("m1", "gone", restore={"workspace_id": "w1"}, status="restore_partial")
