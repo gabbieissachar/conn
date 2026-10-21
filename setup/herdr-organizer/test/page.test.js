@@ -396,7 +396,7 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
 test('context view: the Claude plan rail reads through plan-usage only, prints escaped, and never states a run-out the window outlasts', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('plan-usage', fresh \? \{ fresh: true \} : \{\}\)/);
-  for (const field of ['item.label', 'plan.error', 'plan.at', 'note.text']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  for (const field of ['planName(item)', 'plan.error', 'plan.at', 'note.text', 'reset']) assert.ok(view.includes(`escapeHtml(${field}`), field);
   assert.match(view, /Date\.parse\(item\.projected_exhausted_at\) < Date\.parse\(item\.resets_at\)/, 'a run-out after the reset is not a run-out');
   assert.match(view, /plan-reload/);
 });

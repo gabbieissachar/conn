@@ -142,22 +142,17 @@ created: 2026-09-10
     .pane-names span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-top: 2px; }
     .verdict { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; text-align: right; }
     .ctx-tools { display: flex; align-items: center; gap: 12px; }
-    .ctx-split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
-    .ctx-main { min-width: 0; }
-    #plan-card { position: sticky; top: 140px; }
-    @media (max-width: 960px) { #plan-card { position: static; } }
-    @media (max-width: 960px) { .ctx-split { grid-template-columns: minmax(0, 1fr); } }
-    .plan-row { padding: 13px 16px; border-top: 1px solid var(--line); }
-    .plan-row:first-child { border-top: 0; }
-    .plan-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 9px; font-size: 12.5px; font-weight: 600; }
-    .plan-head .mono { font: 500 12px "DM Mono", monospace; color: var(--navy); }
-    .plan-bar { position: relative; height: 8px; border-radius: 99px; background: var(--wash); border: 1px solid var(--line); }
-    .plan-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--mint); }
-    .plan-bar.warn > i { background: var(--amber); } .plan-bar.bad > i { background: var(--red); }
-    .plan-bar .plan-tick { position: absolute; top: -4px; width: 2px; height: 14px; border-radius: 2px; background: var(--navy); }
-    .plan-note { margin-top: 7px; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
-    .plan-note.ahead { color: #925a08; } .plan-note.fine { color: #27806b; }
-    .plan-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 16px; border-top: 1px solid var(--line); }
+    .plan-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
+    .plan-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); font-size: 12px; white-space: nowrap; }
+    .plan-chip b { font: 500 12px "DM Mono", monospace; color: var(--navy); }
+    .plan-chip .plan-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); }
+    .plan-chip.warn .plan-dot { background: var(--amber); } .plan-chip.bad .plan-dot { background: var(--red); }
+    .plan-chip.none .plan-dot { background: var(--line); }
+    .plan-chip .plan-reset { font: 11px "DM Mono", monospace; color: var(--muted); }
+    .plan-chip .plan-ahead { font: 500 10px "DM Mono", monospace; color: #925a08; background: #fff0d9; border-radius: 999px; padding: 1px 6px; }
+    .plan-chips .updated { margin-left: 2px; }
+    .plan-chips button { padding: 6px 10px; }
+    .plan-error { flex-basis: 100%; margin: 0; }
     .ctx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .ctx-table th { padding: 0 10px 8px 0; text-align: left; color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
     .ctx-table th .ctx-sort { all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; border-radius: 3px; }
@@ -1466,24 +1461,23 @@ created: 2026-09-10
       if (item.pace === 'behind') return { tone: 'fine', text: `Under pace - ${reset}` };
       return { tone: '', text: reset };
     };
-    const planRow = item => {
-      if (item.percent_used === null) return `<div class="plan-row"><div class="plan-head"><span>${escapeHtml(item.label)}</span><span class="mono">not reported</span></div><div class="plan-note">Claude did not report this window.</div></div>`;
+    const PLAN_SHORT = { five_hour: 'Session', seven_day: 'Week', 'model:fable': 'Week (Fable)' };
+    const planName = item => PLAN_SHORT[item.id] || item.label;
+    const planChip = item => {
+      if (item.percent_used === null) return `<span class="plan-chip none" title="Claude did not report this window"><span class="plan-dot"></span>${escapeHtml(planName(item))} <b>-</b></span>`;
       const level = item.percent_used >= PLAN_HIGH ? 'bad' : item.percent_used >= PLAN_WARN ? 'warn' : '';
-      const tick = item.elapsed_percent === null ? '' : `<span class="plan-tick" style="left:${Math.min(100, Math.max(0, item.elapsed_percent))}%" title="Even burn so far: ${Math.round(item.elapsed_percent)}% of the window has passed"></span>`;
       const note = planNote(item);
-      return `<div class="plan-row"><div class="plan-head"><span>${escapeHtml(item.label)}</span><span class="mono">${Math.round(item.percent_used)}%</span></div><div class="plan-bar ${level}"><i style="width:${Math.min(100, Math.max(0, item.percent_used))}%"></i>${tick}</div><div class="plan-note ${note.tone}">${escapeHtml(note.text)}</div></div>`;
+      const reset = item.resets_at ? planWhen(item.resets_at) : '';
+      return `<span class="plan-chip ${level}" title="${escapeHtml(note.text)}"><span class="plan-dot"></span>${escapeHtml(planName(item))} <b>${Math.round(item.percent_used)}%</b>${reset ? `<span class="plan-reset">${escapeHtml(reset)}</span>` : ''}${item.pace === 'ahead' ? '<span class="plan-ahead">ahead</span>' : ''}</span>`;
     };
     const planRail = () => {
-      const button = `<button id="plan-reload" type="button" ${plan.loading ? 'disabled' : ''}>${plan.loading ? 'Reading…' : 'Refresh'}</button>`;
-      let pill = '', body;
-      if (plan.error) { pill = '<span class="pill warn">unavailable</span>'; body = `<div class="card-body"><div class="scope-note error" style="margin-top:0">${escapeHtml(plan.error)}</div></div>`; }
-      else if (!plan.data) body = '<div class="card-body"><div class="skeleton"></div></div>';
-      else {
-        const high = plan.data.windows.filter(item => item.percent_used !== null && item.percent_used >= PLAN_WARN);
-        pill = high.length ? `<span class="pill ${high.some(item => item.percent_used >= PLAN_HIGH) ? 'bad' : 'warn'}">${high.length} high</span>` : '';
-        body = `${plan.data.windows.map(planRow).join('')}<div class="plan-row"><div class="plan-note"><span style="display:inline-block;width:2px;height:11px;background:var(--navy);vertical-align:-2px;margin-right:6px"></span>even burn so far. Amber from ${PLAN_WARN}%, red from ${PLAN_HIGH}%.</div></div>`;
-      }
-      return `<article class="card" id="plan-card"><div class="card-head"><h3>Claude plan</h3>${pill}</div>${body}<div class="plan-foot"><span class="updated">${plan.at ? `updated ${escapeHtml(plan.at)}` : 'not read yet'}</span>${button}</div></article>`;
+      const button = `<button id="plan-reload" type="button" title="Read Claude plan usage again" ${plan.loading ? 'disabled' : ''}>${plan.loading ? 'Reading…' : 'Refresh plan'}</button>`;
+      let chips;
+      if (plan.error) chips = `<span class="plan-chip warn"><span class="plan-dot"></span>Claude plan unavailable</span>`;
+      else if (!plan.data) chips = '<span class="plan-chip none"><span class="plan-dot"></span>Claude plan reading…</span>';
+      else chips = plan.data.windows.map(planChip).join('');
+      const error = plan.error ? `<div class="scope-note error plan-error">${escapeHtml(plan.error)}</div>` : '';
+      return `<div class="plan-chips" id="plan-card">${chips}<span class="updated">${plan.at ? `updated ${escapeHtml(plan.at)}` : 'not read yet'}</span>${button}${error}</div>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1582,7 +1576,7 @@ created: 2026-09-10
         const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked; other sessions start unticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
-      section.innerHTML = `${head}<div class="ctx-split"><div class="ctx-main">${body}</div>${planRail()}</div>`;
+      section.innerHTML = `${head}${planRail()}${body}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
       document.querySelector('#plan-reload').addEventListener('click', () => loadPlan(true));
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
