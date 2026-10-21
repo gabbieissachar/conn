@@ -975,14 +975,19 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const callEnv = runEnv();
       if (!callEnv.NODE_EXTRA_CA_CERTS && await fsp.access(PLAN_CA_BUNDLE).then(() => true, () => false)) callEnv.NODE_EXTRA_CA_CERTS = PLAN_CA_BUNDLE;
       // --full is what carries percent used, elapsed percent and the run-out projection; the default report omits them.
-      const args = ['--provider', 'claude', '--full', '--json', ...(fresh ? [] : ['--max-age', '1m'])];
+      // --no-credential-refresh keeps this tier 0 read from letting quota-axi renew (rewrite) the Claude login through the vendor CLI.
+      const args = ['--provider', 'claude', '--full', '--json', '--no-credential-refresh', ...(fresh ? [] : ['--max-age', '1m'])];
       const result = await runner('quota-axi', args, { env: callEnv, timeoutMs: PLAN_TIMEOUT_MS });
       let provider = null;
       try { provider = (JSON.parse(result.stdout).providers || []).find((item) => item && item.provider === 'claude') || null; } catch { /* no usable report */ }
       if (!provider) throw new AdapterError('Claude plan usage could not be read. Is quota-axi installed and on PATH?', 502, 'plan_unavailable');
       const reported = new Map((Array.isArray(provider.windows) ? provider.windows : []).filter((item) => item && typeof item.id === 'string').map((item) => [item.id, item]));
+      const state = provider.state && typeof provider.state === 'object' ? provider.state : {};
+      if (state.status === 'stale' || state.stale === true) {
+        // quota-axi serves its last cached windows when the vendor read fails; those are old numbers, never shown as current.
+        throw new AdapterError('Claude plan usage is stale: quota-axi could only return an old reading. Refresh to try again.', 502, 'plan_unavailable');
+      }
       if (!PLAN_WINDOWS.some((item) => reported.has(item.id))) {
-        const state = provider.state && typeof provider.state === 'object' ? provider.state : {};
         const attempts = Array.isArray(provider.attempts) ? provider.attempts : [];
         if (state.status === 'auth_required' || attempts.some((item) => item && item.error === 'keychain_access_required')) {
           throw new AdapterError('Claude plan usage needs a one-time Keychain approval. Run quota-axi --allow-keychain-prompt in a terminal, choose Always Allow, then refresh.', 502, 'plan_needs_approval');
@@ -1004,8 +1009,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           projected_exhausted_at: planTime(pace.projectedExhaustedAt),
         };
       });
-      const refreshed = provider.state && typeof provider.state === 'object' ? planTime(provider.state.refreshedAt) : null;
-      return { windows, read_at: refreshed };
+      return { windows, read_at: planTime(state.refreshedAt) };
     });
   }
 

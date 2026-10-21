@@ -748,7 +748,7 @@ test('plan-usage: returns the three Claude windows with pace and nothing else qu
     assert.equal(readAt, '2026-10-21T08:20:52.083Z');
     assert.equal(response.raw.includes('acct-secret-key') || response.raw.includes('max-secret-plan'), false, 'no account or plan evidence leaves the server');
     const call = fake.calls.find((item) => item.file === 'quota-axi');
-    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json', '--max-age', '1m']);
+    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json', '--no-credential-refresh', '--max-age', '1m']);
     assert.equal(server.api.ACTIONS['plan-usage'].tier, 0);
   } finally { await server.close(); }
 });
@@ -763,7 +763,7 @@ test('plan-usage: fresh skips the reuse window, and the macOS certificate bundle
     assert.equal((await post('plan-usage', { fresh: 'yes' })).status, 400, 'the browser can only send a boolean');
     assert.equal((await post('plan-usage', { account: 'other' })).status, 400, 'no other parameter is accepted');
     const [call] = fake.calls.filter((item) => item.file === 'quota-axi');
-    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json']);
+    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json', '--no-credential-refresh']);
     assert.equal(call.env.NODE_EXTRA_CA_CERTS, fs.existsSync('/etc/ssl/cert.pem') ? '/etc/ssl/cert.pem' : undefined);
   } finally { await server.close(); }
   const own = quotaRunner(report);
@@ -780,6 +780,8 @@ test('plan-usage: says what is missing instead of showing an empty or stale card
     { name: 'keychain approval', stdout: quotaReport({ provider: 'claude', windows: [], state: { status: 'auth_required' }, attempts: [{ source: 'keychain', status: 'failed', error: 'keychain_access_required' }] }), code: 0, expect: /Keychain approval/ },
     { name: 'vendor fetch failure', stdout: quotaReport({ provider: 'claude', windows: [], state: { status: 'error', error: 'fetch failed' } }), code: 0, expect: /could not be read \(fetch failed\)/ },
     { name: 'no claude entry', stdout: JSON.stringify({ providers: [] }), code: 0, expect: /could not be read/ },
+    { name: 'stale cached windows', stdout: quotaReport({ provider: 'claude', windows: [quotaWindow('five_hour', 'session', 5, { status: 'on_pace' })], state: { status: 'stale', stale: true, error: 'fetch failed' } }), code: 0, expect: /stale/ },
+    { name: 'stale flag alone', stdout: quotaReport({ provider: 'claude', windows: [quotaWindow('seven_day', 'week', 5, { status: 'on_pace' })], state: { status: 'fresh', stale: true } }), code: 0, expect: /stale/ },
     { name: 'quota-axi missing', stdout: '', code: 127, expect: /quota-axi installed/ },
   ];
   for (const item of cases) {
