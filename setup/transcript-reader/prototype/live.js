@@ -59,5 +59,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, page, send, poll, pointer };
+    return { served, state, page, send, poll, pointer, clip };
   })();

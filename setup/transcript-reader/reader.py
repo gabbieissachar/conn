@@ -14,6 +14,10 @@ Usage (from the repo root):
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
 
+A pane cleared with /clear starts a new session log. A listed session is shown
+together with the sessions the same pane ran before and after it (one conversation,
+under the newest), and that newest session is added to the list.
+
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
 gitignored because they name or embed private sessions. The pages are served by
@@ -94,6 +98,14 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
         print(f"Skipping {missing}: its session log is gone")
     if not present:
         return 1
+    # A listed session that was cleared reads on in the pane's newer session, which the
+    # page shows as the same conversation; list that one too so its pane can be answered.
+    newest = [builder.session_chain(builder.find_session_file(i))[-1].stem for i in present]
+    added = [sid for sid in dict.fromkeys(newest) if sid not in ids]
+    if added:
+        ids += added
+        present += added
+        write_list(ids)
     argv = ["--out", str(PAGE)] + [arg for sid in present for arg in ("--session", sid)]
     if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
         return 1

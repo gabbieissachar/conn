@@ -23,9 +23,15 @@ Opened that way, the page:
 
 A `file://` copy of the page still reads, but cannot refresh, follow or send.
 
+In any copy of the page:
+
+- **Documents.** A markdown file a reply names (`requirements.md`, `02-Projects/x/work-log.md`, an absolute or `~` path) opens from a button under that reply, in the Documents tab: the file rendered beside its contents list (one column with a folding list at phone width). Select a passage and "Comment on this", or use "Message about this file", to send a message naming the file, its section and the passage. A relative name is looked up under the latest `cd` directory the reply gave before it, then under the turn's working directory and its parents below your home folder. Files over 512 KB are skipped. The page shows each file as it was at the last rebuild.
+- **Code boxes.** Fenced code (commands, snippets) shows in a wrapped box with a Copy button that copies exactly the code. Tables render as tables.
+- **Cleared sessions.** `/clear` starts a new session log in the same pane. The reader joins the sessions a pane ran into one conversation, under the newest one, with a divider at each clear: the log written in the same folder within two minutes before the `/clear` is the one it cleared. Naming any of them (`#s=…`, `reader.py add`) opens the whole conversation, and `reader.py` adds the newest one to the reading list. Replying to a turn from before a clear goes to the pane's current session, and the message names the earlier log, since that session never saw the turn.
+
 ## What it touches
 
-- Reads Claude Code session logs, the fleet homes' records, and Herdr's session list and snapshots.
+- Reads Claude Code session logs, the fleet homes' records, Herdr's session list and snapshots, and the markdown files replies name.
 - Writes only `out/` (gitignored: the pages embed private transcripts).
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 

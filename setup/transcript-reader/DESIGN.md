@@ -64,3 +64,11 @@ Like Lavish's "comment and send back to the agent", without an agent blocking on
 The message points at the reply instead of copying it (its time and first words, plus a quote of at most 100 characters for a passage), because the session already holds the text. Sending, following and refreshing need the page served over http by `setup/serve.sh`, so `reader.py` now prints the served links first; the server rebuilds the pages when a listed log changes, which replaces the `file://` auto-reload. The pages under `out/` are now served only through the guarded routes in `api.js`, so the shared static handler's wildcard CORS header no longer exposes them. How it works and what it touches: `README.md`.
 
 Not verified end to end: no message was sent to a real pane while building this (the tests fake Herdr), and the VS Code shortcut above was not tried in the captain's window.
+
+## Documents, code boxes and cleared sessions (2026-10-21)
+
+The captain asked for three things while trying the prototype:
+
+1. **Documents a reply names**, such as the two markdown files in the eSIM worker's Oct 14 18:25 review reply, rendered for quick browsing beside their contents list, with comments and messages to the agent. The builder finds markdown file names in a reply by fixed rules (`build_prototype.reply_documents`) and embeds each existing file once. The Documents tab shows one file at a time beside its headings (a folding list at phone width), and a selected passage or the whole file can be sent to the session as `Re the file <path>, section "<heading>", the part "<passage>": <comment>`.
+2. **Code boxes with a Copy button**, as in the Oct 21 13:46 reply that gave `cd` commands. Code wraps instead of scrolling sideways, so a whole command is visible. Tables in replies and documents now render as tables.
+3. **Sessions from before `/clear`**. A cleared pane starts a new log, so the earlier turns had disappeared from the reader. A log whose first prompt is `/clear` continues the log in the same folder last written within two minutes before it (the clear itself writes that log's final records). The reader shows such a chain as one conversation under its newest session.

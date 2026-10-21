@@ -317,6 +317,8 @@ def session_exchanges(records: list[dict]) -> list[dict]:
             current["signal_task"] = None
             exchanges.append(current)
         elif kind == "assistant" and current is not None:
+            if record.get("cwd"):
+                current["cwd"] = record["cwd"]  # where relative file names in the reply start from
             for block in (record.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict):
                     continue
@@ -549,17 +551,43 @@ def build(args) -> dict:
         since = time.time() - (args.since_hours or 72) * 3600
         chosen = [(home, path, read_jsonl(path)) for home in homes for path in home_sessions(home["home"], since)]
 
+    # A pane cleared with /clear goes on in a new session log: read the sessions it ran
+    # as one conversation, newest last, under the newest session's id.
+    threads: list[tuple[dict, list[Path], dict[Path, list[dict]]]] = []
+    for home, path, records in chosen:
+        if any(path in chain for _, chain, _ in threads):
+            continue
+        chain = session_chain(path)
+        loaded = {member: (records if member == path else read_jsonl(member)) for member in chain}
+        threads.append((home, chain, loaded))
+
     sessions = []
     fleet = collect_fleet(homes, since)
-    for home, path, records in chosen:
-        exchanges = session_exchanges(records)
+    for home, chain, loaded in threads:
+        path = chain[-1]
+        records = loaded[path]
+        exchanges = []
+        for member in chain:
+            part = session_exchanges(loaded[member])
+            if len(chain) > 1:
+                ended = member != path
+                label = f"Session {member.stem[:8]}" + (", cleared later: Reply sends to the newest session in this pane" if ended else ", the newest in this pane")
+                divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
+                divider["at"] = first_time(loaded[member])
+                finish_exchange(divider)
+                part.insert(0, divider)
+                if ended:
+                    for exchange in part[1:]:
+                        exchange["from_session"] = member.stem
+            exchanges += part
         attach_inbox_bodies(exchanges, parent_of.get(home["id"]))
         session_id = path.stem
         cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
         where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
         if where.startswith("state/.treehouse/"):
             where = "worker copy"  # a worker's isolated copy, not the home's own clone
-        sessions.append({"home": home["id"], "id": session_id, "file": str(path), "where": where, "exchanges": exchanges})
+        sessions.append({"home": home["id"], "id": session_id, "ids": [member.stem for member in chain], "file": str(path), "where": where,
+                         "exchanges": exchanges})
         for event in captain_events(home, exchanges, since):
             event["session"] = session_id
             fleet.append(event)
@@ -573,6 +601,7 @@ def build(args) -> dict:
             # A reply that asks for keyed answers links to the answer sheet, which opens on it.
             if exchange["reply"] and parse_questionnaire(exchange["reply"]):
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
+    documents = attach_documents(sessions)
     labels = pane_labels([s["id"] for s in sessions], Path(args.out).expanduser().parent / "pane-labels.json")
     for session in sessions:
         session["pane"] = labels.get(session["id"])
@@ -581,7 +610,7 @@ def build(args) -> dict:
         sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
     return {"generated": time.time(), "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
-            "summaries": summaries, "chosen": bool(args.session)}
+            "summaries": summaries, "chosen": bool(args.session), "documents": documents}
 
 
 def herdr_panes() -> dict[str, dict]:
@@ -691,6 +720,171 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
                     best = (exchange["at"], session["id"], index)
         if best:
             event["session"], event["ref"] = best[1], best[2]
+
+
+# ------------------------------------------------- files a reply names (documents)
+
+# A markdown file name or path as written in a reply: `requirements.md`, 02-Projects/x/work-log.md,
+# /abs/path.md, ~/notes.md. A URL is left out (it reads as //host/... once its scheme is cut off).
+MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
+CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
+MAX_DOCUMENT_BYTES = 512 * 1024
+
+
+def resolve_mention(token: str, cd_dirs: list[Path], cwd: str) -> Path | None:
+    """The existing markdown file a reply means by <token>, or None.
+
+    An absolute or ~ path is taken as written. A relative one is tried, in order,
+    under each directory an earlier `cd` line in the reply named (latest first),
+    then under the turn's working directory and each of its parents below the
+    home folder, since agents often name files from their repository's root.
+    """
+    raw = Path(os.path.expanduser(token))
+    if raw.is_absolute():
+        candidates = [raw]
+    else:
+        bases = list(cd_dirs)
+        if cwd:
+            here = Path(cwd)
+            bases += [here] + [parent for parent in here.parents if Path.home() in parent.parents]
+        candidates = [base / raw for base in bases]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size <= MAX_DOCUMENT_BYTES:
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def reply_documents(reply: str, cwd: str) -> list[tuple[str, Path]]:
+    """(as written, file) for each existing markdown file the reply names, in order, once each."""
+    cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(reply)]
+    found: list[tuple[str, Path]] = []
+    for match in MD_MENTION.finditer(reply):
+        token = match.group(0)
+        if token.startswith("//"):
+            continue
+        cd_dirs = [d for at, d in reversed(cds) if at < match.start() and d.is_absolute()]
+        path = resolve_mention(token, cd_dirs, cwd)
+        if path and all(path != known for _, known in found):
+            found.append((token, path))
+    return found
+
+
+def attach_documents(sessions: list[dict]) -> dict[str, dict]:
+    """Give each exchange the ids of the documents its reply names; return the documents.
+
+    Each file is read once, as it is now on disk (the page says when it last changed).
+    """
+    documents: dict[str, dict] = {}
+    for session in sessions:
+        for exchange in session["exchanges"]:
+            cwd = exchange.pop("cwd", "")
+            ids = []
+            for token, path in reply_documents(exchange.get("reply") or "", cwd):
+                key = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+                if key not in documents:
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                        mtime = path.stat().st_mtime
+                    except OSError:
+                        continue
+                    home = Path.home()
+                    shown_dir = "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
+                    documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir, "mention": token,
+                                      "mtime": mtime, "text": text}
+                ids.append(key)
+            if ids:
+                exchange["documents"] = ids
+    return documents
+
+
+# ----------------------------------------------- sessions continued after /clear
+
+CLEAR_COMMAND = "<command-name>/clear</command-name>"
+HEAD_RECORDS = 80
+
+
+def head_records(path: Path, limit: int = HEAD_RECORDS) -> list[dict]:
+    """The first parseable records of a log, without reading the whole file."""
+    records = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    records.append(value)
+                if len(records) >= limit:
+                    break
+    except OSError:
+        pass
+    return records
+
+
+def cleared_at(records: list[dict]) -> float | None:
+    """When the session began with /clear, else None.
+
+    /clear starts a new session log in the same folder; its first prompt is the
+    /clear command (after a hook or caveat note). Any other first prompt means a
+    fresh session.
+    """
+    for record in records[:HEAD_RECORDS]:
+        if record.get("type") != "user" or is_tool_result(record):
+            continue
+        text = block_text((record.get("message") or {}).get("content")).strip()
+        if CLEAR_COMMAND in text:
+            return iso_to_epoch(record.get("timestamp"))
+        if text and not record.get("isMeta") and not text.startswith("<local-command"):
+            return None
+    return None
+
+
+def cleared_from(path: Path, clear_time: float) -> Path | None:
+    """The log a /clear at <clear_time> left behind: in the same folder, last written by
+    the clear itself, so within two minutes before it (nearest wins)."""
+    best = None
+    for other in path.parent.glob("*.jsonl"):
+        if other == path:
+            continue
+        try:
+            gap = clear_time - other.stat().st_mtime
+        except OSError:
+            continue
+        if -5 <= gap <= 120 and (best is None or abs(gap) < best[0]):
+            best = (abs(gap), other)
+    return best[1] if best else None
+
+
+def session_chain(path: Path, limit: int = 20) -> list[Path]:
+    """The sessions one Claude Code pane ran across /clear, oldest first, including <path>."""
+    chain = [path]
+    while len(chain) < limit:
+        at = cleared_at(head_records(chain[0]))
+        before = cleared_from(chain[0], at) if at else None
+        if not before or before in chain:
+            break
+        chain.insert(0, before)
+    while len(chain) < limit:
+        try:
+            written = chain[-1].stat().st_mtime
+        except OSError:
+            break
+        after = None
+        for other in chain[-1].parent.glob("*.jsonl"):
+            if other in chain:
+                continue
+            at = cleared_at(head_records(other)) if other.stat().st_mtime >= written - 5 else None
+            if at is not None and -5 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
+                after = other
+                break
+        if not after:
+            break
+        chain.append(after)
+    return chain
 
 
 def write_page(template: Path, payload: dict, out: Path) -> None:

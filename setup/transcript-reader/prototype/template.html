@@ -87,6 +87,54 @@
   .md .reminder { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
   .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+  .md i { font-style: italic; }
+  .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+  .md .li + p, .md .li + .codebox, .md .li + .table-wrap { margin-top: .55em; }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
+  .md .quote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .3em; }
+  .codebox { position: relative; margin: 0 0 .55em; }
+  /* Wrapped, not scrolled sideways, so a whole command shows at once and stays clear of Copy. */
+  .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--faint); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+  .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; user-select: none; -webkit-user-select: none; }
+  .copy::before { content: attr(data-label); }
+  .copy:hover { color: var(--you); border-color: var(--you); }
+  .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+  .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
+  .md th, .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
+  .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
+  .md td:first-child, .md th:first-child { min-width: 2.5rem; }
+  .md tr.ask td { background: var(--ask-wash); }
+  .doc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+  .doc-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--you); background: var(--you-wash); color: var(--you); border-radius: 8px; padding: 3px 10px; font-size: 13px; font-weight: 600; max-width: 100%; }
+  .doc-chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-icon { font-weight: 400; }
+
+  /* Documents: a file a reply names, beside its contents list */
+  .docmode .bar-inner, .docmode main { max-width: 76rem; }
+  .docview { display: block; }
+  .toc { position: sticky; top: var(--bar-h, 120px); z-index: 3; background: var(--wash); margin: 0 0 10px; }
+  .toc summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+  .toc nav { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; margin-top: 4px; padding: 6px 0; }
+  .toc a { color: var(--muted); text-decoration: none; font-size: 13px; line-height: 1.35; padding: 4px 10px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
+  .toc a:hover { color: var(--ink); background: var(--wash); }
+  .toc a[aria-current="true"] { color: var(--you); border-left-color: var(--you); background: var(--you-wash); font-weight: 600; }
+  .toc .toc-l1 { padding-left: 22px; }
+  .toc .toc-l2 { padding-left: 34px; font-size: 12px; }
+  .doc-body { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; overflow-wrap: anywhere; }
+  .doc-md h1, .doc-md h2, .doc-md h3, .doc-md h4, .doc-md h5, .doc-md h6 { scroll-margin-top: calc(var(--bar-h, 120px) + 12px); line-height: 1.3; margin: 1.1em 0 .45em; }
+  .doc-md > :first-child { margin-top: 0; }
+  .doc-md h1 { font-size: 24px; }
+  .doc-md h2 { font-size: 20px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .doc-md h3 { font-size: 17px; }
+  .doc-md h4, .doc-md h5, .doc-md h6 { font-size: 15px; }
+  .doc-md .li.l3 { padding-left: 3.1em; }
+  @media (min-width: 820px) {
+    .docview { display: grid; grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .toc { margin: 0; background: none; }
+    .toc summary { display: none; }
+    .toc nav { margin: 0; max-height: calc(100vh - var(--bar-h, 120px) - 24px); }
+  }
   .btn.sheet { display: inline-block; margin: 6px 0 2px; text-decoration: none; color: var(--you); border-color: var(--you); font-weight: 600; }
   .notes { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
   .notes button { border: 0; background: none; color: var(--muted); padding: 0; text-decoration: underline; font-size: 12px; }
@@ -155,6 +203,7 @@
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
       <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
+      <button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>
     </div>
     <div id="controls"></div>
   </div>
@@ -187,36 +236,87 @@
   const fmtWhen = s => s ? `${fmtDay(s)} ${fmtTime(s)}` : "";
 
   // ---------------------------------------------------------------- tiny safe markdown
+  // Transcripts and documents carry text from outside (pages, Slack, tool output), so every
+  // quote is escaped too: an escaped URL can never close the href attribute it is placed in.
+  const esc = text => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   function inline(text) {
-    // Transcripts carry text from outside (pages, Slack, tool output), so every quote is
-    // escaped too: an escaped URL can never close the href attribute it is placed in.
-    const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    return esc
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
+    return text.split(/(`[^`]+`)/).map((part, i) => i % 2 ? `<code>${esc(part.slice(1, -1))}</code>` : esc(part)
+      .replace(/\[([^\]]+)\]\(([^\s)]+)\)|(https?:\/\/[^\s<>)]*[^\s<>).,;:!?])/g, (m, label, href, bare) =>
+        // A link to a local file cannot open from here: its words stay, its target shows on hover.
+        href && !/^https?:\/\//.test(href) ? `<span class="local-link" title="${href}">${label}</span>`
+          : `<a href="${href || bare}" target="_blank" rel="noopener noreferrer">${label || bare}</a>`)
       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/(https?:\/\/[^\s<>"')]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+      .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=$|[\s).,;:!?])/g, "$1<i>$2</i>")).join("");
   }
-  function renderMarkdown(text, askLines = [], reminderLines = []) {
+  // A code block in a box with a Copy button. The button's label is drawn by CSS, so
+  // selecting the code never picks it up.
+  function codeBox(label) {
+    const wrap = $("div", "codebox"), pre = $("pre"), copy = $("button", "copy");
+    copy.type = "button"; copy.dataset.label = "Copy"; copy.setAttribute("aria-label", "Copy");
+    copy.title = "Copy this to the clipboard";
+    if (label) wrap.append($("span", "code-label", label));
+    wrap.append(copy, pre);
+    return { wrap, pre, lines: [] };
+  }
+  const tableCells = line => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
+  const isTableRule = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+  function tableNode(rows) {
+    const wrap = $("div", "table-wrap"), table = $("table"), thead = $("thead"), tbody = $("tbody");
+    const head = rows.length > 1 && isTableRule(rows[1].line);
+    rows.forEach((row, i) => {
+      if (head && i === 1) return;
+      const tr = $("tr", row.mark || null);
+      tableCells(row.line).forEach(cell => { const td = $(head && i === 0 ? "th" : "td"); td.innerHTML = inline(cell); tr.append(td); });
+      (head && i === 0 ? thead : tbody).append(tr);
+    });
+    if (head) table.append(thead);
+    table.append(tbody); wrap.append(table);
+    return wrap;
+  }
+  // doc: a whole document, with real heading levels (collected in box.headings for its
+  // contents list), nested list levels and front matter; a reply keeps small headings.
+  function renderMarkdown(text, askLines = [], reminderLines = [], doc = false) {
     const asks = new Set(askLines), reminders = new Set(reminderLines);
-    const box = $("div", "md");
-    let para = null, pre = null, table = null;
+    const box = $("div", "md" + (doc ? " doc-md" : ""));
+    box.headings = [];
+    let para = null, code = null, rows = null;
+    const closeCode = () => { code.pre.textContent = code.lines.join("\n"); code = null; };
+    const closeTable = () => { if (rows) box.append(tableNode(rows)); rows = null; };
     text.split("\n").forEach((line, n) => {
       const mark = asks.has(n) ? "ask" : reminders.has(n) ? "reminder" : "";
-      if (line.trimStart().startsWith("```")) { if (pre) { pre = null; } else { pre = $("pre"); box.append(pre); } para = null; return; }
-      if (pre) { pre.textContent += (pre.textContent ? "\n" : "") + line; return; }
-      if (line.trimStart().startsWith("|")) { if (!table) { table = $("pre"); box.append(table); } table.textContent += (table.textContent ? "\n" : "") + line; para = null; return; }
-      table = null;
+      const fence = line.trimStart().match(/^(```+|~~~+)\s*([\w+#.-]*)/);
+      if (code) {
+        if (code.until ? line.trim() === code.until : fence && line.trim().startsWith(code.fence)) closeCode(); else code.lines.push(line);
+        return;
+      }
+      if (doc && n === 0 && line.trim() === "---") { code = { ...codeBox("front matter"), until: "---" }; box.append(code.wrap); return; }
+      if (fence) { closeTable(); para = null; code = { ...codeBox(fence[2]), fence: fence[1] }; box.append(code.wrap); return; }
+      if (line.trimStart().startsWith("|")) { para = null; (rows = rows || []).push({ line, mark }); return; }
+      closeTable();
       if (!line.trim()) { para = null; return; }
-      const heading = line.match(/^#{1,6}\s+(.*)/);
-      const item = line.match(/^(\s*)(?:[-*]|\d+[.)])\s+(.*)/);
+      const heading = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+      const item = line.match(/^(\s*)(?:([-*+])|(\d+[.)]))\s+(.*)/);
+      const quote = line.match(/^\s*>\s?(.*)/);
       let el;
-      if (heading) { el = $("h4"); el.innerHTML = inline(heading[1]); para = null; }
-      else if (item) { el = $("div", "li" + (item[1].length >= 2 ? " l2" : "")); el.innerHTML = (line.trim().match(/^\d/) ? line.trim().match(/^\d+[.)]/)[0] + " " : "• ") + inline(item[2]); para = null; }
+      if (heading) {
+        el = $(doc ? "h" + heading[1].length : "h4"); el.innerHTML = inline(heading[2]); para = null;
+        if (doc) { el.id = "doc-h-" + n; box.headings.push({ level: heading[1].length, text: el.textContent, el }); }
+      } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { el = $("hr"); para = null; }
+      else if (quote) { el = $("div", "quote"); el.innerHTML = inline(quote[1]); para = null; }
+      else if (item) {
+        const depth = item[1].replace(/\t/g, "    ").length;
+        el = $("div", "li" + (depth >= 4 && doc ? " l3" : depth >= 2 ? " l2" : ""));
+        const check = item[4].match(/^\[([ xX])\]\s+(.*)/);
+        const bullet = item[3] ? item[3] + " " : check ? (check[1] === " " ? "☐ " : "☑ ") : "• ";
+        el.innerHTML = esc(bullet) + inline(check ? check[2] : item[4]); para = null;
+      }
       else if (para) { para.append(document.createElement("br")); const span = $("span", mark); span.innerHTML = inline(line); para.append(span); return; }
       else { el = $("p"); para = el; const span = $("span", mark); span.innerHTML = inline(line); el.append(span); box.append(el); return; }
       if (mark) el.classList.add(mark);
       box.append(el);
     });
+    if (code) closeCode();
+    closeTable();
     return box;
   }
   function clipped(node, words, limitWords, label, key) {
@@ -243,10 +343,10 @@
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
     if (sid && ex.reply) {
-      const target = { sid, at: ex.reply_at || ex.at, reply: ex.reply, card };
+      const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
       const to = $("button", "reply-to", "Reply"); to.type = "button"; to.title = "Reply to this in its session. Select a passage first to comment on it.";
-      to.addEventListener("click", () => openDock({ ...target, passage: selectedPassage(card) }));
+      to.addEventListener("click", () => openDock(target(selectedPassage(card))));
       who.append(to);
     }
     card.append(who);
@@ -260,6 +360,19 @@
       card.append(asks);
     }
     if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply", key + ":reply"));
+    // Markdown files the reply names that exist on this machine open beside their contents list.
+    const docs = (ex.documents || []).filter(id => data.documents && data.documents[id]);
+    if (docs.length) {
+      const row = $("div", "doc-chips");
+      docs.forEach(id => {
+        const d = data.documents[id];
+        const chip = $("button", "doc-chip"); chip.type = "button"; chip.title = `Open ${d.dir}/${d.name}`;
+        chip.append($("span", "doc-icon", "▤"), $("span", null, d.name));
+        chip.addEventListener("click", () => openDocument(id, Number(key.split(":").pop())));
+        row.append(chip);
+      });
+      card.append(row);
+    }
     if (ex.sheet) {
       const go = $("a", "btn sheet", "Answer these questions →"); go.href = "questionnaire.html#q=" + encodeURIComponent(ex.sheet);
       card.append(go);
@@ -337,8 +450,7 @@
     });
     select.addEventListener("change", () => {
       state.session = Number(select.value);
-      // Keep the choice in the address, so a reload after a rebuild reopens the same session.
-      history.replaceState(null, "", "#s=" + data.sessions[state.session].id.slice(0, 8));
+      setAddress();
       render(); window.scrollTo(0, 0);
     });
     const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
@@ -513,7 +625,8 @@
   // ---------------------------------------------------------------- replying to a reply
   // The served page sends a short message to the session's own Herdr pane. It points at
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
-  const replyTargets = new WeakMap();  // reply card -> { sid, at, reply }
+  // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
+  const replyTargets = new WeakMap();
   const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
@@ -521,14 +634,22 @@
     if (!sel || sel.isCollapsed || !card.contains(sel.anchorNode) || !card.contains(sel.focusNode)) return "";
     return sel.toString().trim();
   }
-  const dockMessage = () => link.target && dock("text").value.trim() ? live.pointer(link.target.at, link.target.reply, link.target.passage) + dock("text").value.trim() : "";
+  // A reply from a session the pane has since cleared goes to the pane's newest session,
+  // which never saw it: the message says so and names the earlier log to read.
+  function replyTarget(ex, sid, card) {
+    const at = ex.reply_at || ex.at;
+    const session = data.sessions.find(s => s.id === sid);
+    const earlier = ex.from_session && session ? `[From session ${ex.from_session.slice(0, 8)}, before a /clear; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] ` : "";
+    return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p) });
+  }
+  const paneName = sid => { const s = data.sessions.find(x => x.id === sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
+  const dockPointer = () => link.target.pointer(link.target.passage);
+  const dockMessage = () => link.target && dock("text").value.trim() ? dockPointer() + dock("text").value.trim() : "";
   function openDock(target) {
     link.target = target; link.result = null;
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
     if (target.card) target.card.classList.add("is-target-reply");
-    const session = data.sessions.find(s => s.id === target.sid);
-    const name = session && session.pane ? session.pane.label : target.sid.slice(0, 8);
-    dock("target").textContent = `Reply to ${name} · ${fmtWhen(target.at)}`;
+    dock("target").textContent = target.title;
     dock("passage").hidden = !target.passage;
     dock("passage-text").textContent = target.passage ? `“${target.passage}”` : "";
     document.getElementById("dock").hidden = false;
@@ -545,7 +666,7 @@
   function renderDock() {
     if (!link.target) return;
     const text = dockMessage();
-    dock("line").textContent = text || live.pointer(link.target.at, link.target.reply, link.target.passage) + "…";
+    dock("line").textContent = text || dockPointer() + "…";
     const pane = link.panes ? link.panes[link.target.sid] : null;
     let reason = "";
     if (!live.served) reason = "Read-only copy: open the served page to send.";
@@ -571,16 +692,28 @@
     } catch (e) { link.result = { ok: false, text: e.message }; }
     link.sending = false; renderDock();
   }
-  async function copyDock() {
-    const text = dockMessage(); if (!text) return;
-    let ok = false;
-    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) {
       const t = $("textarea"); t.value = text; document.body.append(t); t.select();
+      let ok = false;
       try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
       t.remove();
+      return ok;
     }
+  }
+  async function copyDock() {
+    const text = dockMessage(); if (!text) return;
+    const ok = await copyText(text);
     link.result = { ok, text: ok ? "Copied." : "Copy failed." }; renderDock();
   }
+  // Every code box's Copy button copies exactly the code shown.
+  document.addEventListener("click", async e => {
+    const button = e.target.closest && e.target.closest("button.copy");
+    if (!button) return;
+    const ok = await copyText(button.parentElement.querySelector("pre").textContent);
+    button.dataset.label = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { button.dataset.label = "Copy"; }, 1500);
+  });
   dock("text").addEventListener("input", () => { link.result = null; renderDock(); });
   dock("text").addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendDock(); }
@@ -596,7 +729,7 @@
   function placeFloat() {
     const sel = window.getSelection();
     const node = sel && !sel.isCollapsed ? sel.anchorNode : null;
-    const card = node && (node.nodeType === 1 ? node : node.parentElement).closest(".reply");
+    const card = node && (node.nodeType === 1 ? node : node.parentElement).closest(".reply, .doc-body");
     if (!card || !replyTargets.has(card) || !selectedPassage(card)) { floatButton.hidden = true; return; }
     const rect = sel.getRangeAt(0).getBoundingClientRect();
     floatButton.hidden = false;
@@ -610,8 +743,124 @@
   floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
   floatButton.addEventListener("click", () => {
     const card = floatButton.card;
-    if (card && replyTargets.has(card)) openDock({ ...replyTargets.get(card), passage: selectedPassage(card) });
+    if (card && replyTargets.has(card)) openDock(replyTargets.get(card)(selectedPassage(card)));
   });
+
+  // ---------------------------------------------------------------- documents: a named file beside its contents
+  // The address keeps the session and, in the document view, the document, so a reload reopens both.
+  function setAddress() {
+    const session = data.sessions[state.session];
+    if (!session) return;
+    history.replaceState(null, "", "#s=" + session.id.slice(0, 8) + (state.view === "doc" && state.doc ? "&d=" + state.doc : ""));
+  }
+  // The documents the session's replies name, each with the last turn that named it.
+  function sessionDocuments(session) {
+    const seen = new Map();
+    (session ? session.exchanges : []).forEach((ex, index) => (ex.documents || []).forEach(id => {
+      if (data.documents && data.documents[id]) { seen.delete(id); seen.set(id, { id, at: ex.reply_at || ex.at, index }); }
+    }));
+    return [...seen.values()];
+  }
+  function openDocument(id, index) {
+    state.view = "doc"; state.doc = id; state.docFrom = index;
+    setAddress(); render(); window.scrollTo(0, 0);
+  }
+  const wideDoc = () => matchMedia("(min-width: 820px)").matches;
+  function docPointer(d, section, passage) {
+    let text = `Re the file ${d.dir}/${d.name}`;
+    if (section) text += `, section "${live.clip(section, 60)}"`;
+    if (passage) text += `, the part "${live.clip(passage, 100)}"`;
+    return text + ": ";
+  }
+  function renderDocView() {
+    const session = data.sessions[state.session];
+    const docs = sessionDocuments(session);
+    if (!docs.some(d => d.id === state.doc)) { state.doc = docs.length ? docs[docs.length - 1].id : null; state.docFrom = null; }
+    const entry = docs.find(d => d.id === state.doc);
+    const controls = document.getElementById("controls"); controls.replaceChildren();
+    const main = document.getElementById("main"); main.replaceChildren();
+    if (!entry) {
+      controls.append($("div", "summary", "No reply in this session names a markdown file that is on this machine."));
+      main.append($("div", "empty", "Documents a reply names (such as `requirements.md`) open here beside their contents list."));
+      return;
+    }
+    const d = data.documents[entry.id];
+    const row = $("div", "controls");
+    const select = $("select"); select.setAttribute("aria-label", "Document");
+    docs.forEach(x => {
+      const doc = data.documents[x.id];
+      const opt = $("option", null, `${doc.name} · ${doc.dir.split("/").slice(-2).join("/")} · ${fmtWhen(x.at)}`);
+      opt.value = x.id; if (x.id === entry.id) opt.selected = true; select.append(opt);
+    });
+    select.addEventListener("change", () => { state.doc = select.value; state.docFrom = null; setAddress(); render(); window.scrollTo(0, 0); });
+    const back = $("button", "btn", "← Back to the turn"); back.title = "The turn whose reply named this file";
+    back.addEventListener("click", () => {
+      const index = state.docFrom != null ? state.docFrom : entry.index;
+      state.view = "reader"; setAddress(); render();
+      const el = document.getElementById(`ex-${index}`) || [...document.querySelectorAll("#main [id^='ex-']")].find(n => Number(n.id.slice(3)) >= index);
+      if (el) el.scrollIntoView({ block: "start" });
+    });
+    const message = $("button", "btn", "Message about this file"); message.title = "Write to the session about the whole file. Select a passage to comment on it.";
+    row.append(select, back, message);
+    const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(d.mtime)}`);
+    meta.title = `${d.dir}/${d.name}, as on disk at the last rebuild`;
+    controls.append(row, meta);
+
+    const view = $("div", "docview");
+    const body = $("article", "doc-body");
+    const md = renderMarkdown(d.text, [], [], true);
+    body.append(md);
+    const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
+      pointer: p => docPointer(d, section, p) });
+    replyTargets.set(body, passage => target(passage, sectionAt(md.headings)));
+    message.addEventListener("click", () => openDock(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : "")));
+    const toc = $("details", "toc");
+    toc.append($("summary", null, `Contents (${md.headings.length})`));
+    const list = $("nav"); list.setAttribute("aria-label", "Contents");
+    const minLevel = Math.min(...md.headings.map(h => h.level));
+    md.headings.filter(h => h.level <= minLevel + 2).forEach(h => {
+      const a = $("a", "toc-l" + (h.level - minLevel), h.text); a.href = "#" + h.el.id;
+      a.addEventListener("click", e => {
+        e.preventDefault();
+        h.el.scrollIntoView({ block: "start" });
+        if (!wideDoc()) toc.open = false;
+      });
+      h.toc = a; list.append(a);
+    });
+    if (!md.headings.length) list.append($("div", "notes", "This file has no headings."));
+    toc.append(list);
+    toc.open = wideDoc();
+    view.append(toc, body);
+    main.append(view);
+    docSpy.headings = md.headings;
+    spyDoc();
+  }
+  // The heading above the selection, so a comment names its section.
+  function sectionAt(headings) {
+    const sel = window.getSelection();
+    const node = sel && sel.anchorNode;
+    if (!node) return "";
+    let found = "";
+    for (const h of headings) if (h.el === node || h.el.contains(node) || h.el.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) found = h.text;
+    return found;
+  }
+  // Marks the contents entry of the section being read.
+  const docSpy = { headings: [], frame: 0 };
+  function spyDoc() {
+    docSpy.frame = 0;
+    if (state.view !== "doc" || !docSpy.headings.length) return;
+    const line = document.getElementById("bar").offsetHeight + 24;
+    let current = docSpy.headings.filter(h => h.toc)[0];
+    for (const h of docSpy.headings) if (h.toc && h.el.getBoundingClientRect().top <= line) current = h;
+    docSpy.headings.forEach(h => { if (h.toc) h.toc.removeAttribute("aria-current"); });
+    if (current) {
+      current.toc.setAttribute("aria-current", "true");
+      const nav = current.toc.parentElement, top = current.toc.offsetTop - nav.offsetTop;
+      if (top < nav.scrollTop || top > nav.scrollTop + nav.clientHeight - 30) nav.scrollTop = top - nav.clientHeight / 3;
+    }
+  }
+  window.addEventListener("scroll", () => { if (!docSpy.frame) docSpy.frame = requestAnimationFrame(spyDoc); }, { passive: true });
+  window.addEventListener("resize", () => { const toc = document.querySelector(".toc"); if (toc && wideDoc()) toc.open = true; });
 
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
@@ -672,12 +921,12 @@
     }
     link.first = false;
     if (!link.want) return;
-    const index = data.sessions.findIndex(s => s.id === link.want);
+    const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(link.want));
     if (index < 0) return;  // the server adds it; the next refresh brings it in
     link.want = null;
-    if (index === state.session && state.view === "reader") return;
+    if (index === state.session && state.view !== "fleet") return;  // reading its conversation or a document already
     state.session = index; state.view = "reader";
-    history.replaceState(null, "", "#s=" + data.sessions[index].id.slice(0, 8));
+    setAddress();
     render();
     window.scrollTo(0, document.documentElement.scrollHeight);  // the latest turn
   }
@@ -692,13 +941,16 @@
   // ---------------------------------------------------------------- shell
   function render() {
     document.body.classList.toggle("wide", state.view === "fleet");
-    document.getElementById("tab-reader").setAttribute("aria-selected", String(state.view === "reader"));
-    document.getElementById("tab-fleet").setAttribute("aria-selected", String(state.view === "fleet"));
-    if (state.view === "reader") renderReader(); else { renderFleet(); renderLive(); }
+    document.body.classList.toggle("docmode", state.view === "doc");
+    for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
+    const docCount = sessionDocuments(data.sessions[state.session]).length;
+    document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
+    if (state.view === "reader") renderReader(); else if (state.view === "doc") renderDocView(); else { renderFleet(); renderLive(); }
     document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px");
   }
   document.getElementById("tab-reader").addEventListener("click", () => { state.view = "reader"; render(); });
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
+  document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); render(); window.scrollTo(0, 0); });
   document.addEventListener("keydown", e => {
     if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);
@@ -707,9 +959,10 @@
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
   });
   const biggest = data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
-  const wanted = (location.hash.match(/^#s=([0-9a-f-]+)$/) || [])[1];
-  const fromHash = wanted ? data.sessions.findIndex(s => s.id.startsWith(wanted)) : -1;
+  const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];
+  const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
   state.session = fromHash >= 0 ? fromHash : data.chosen ? 0 : biggest;
+  if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
   render();
 })();
 </script>

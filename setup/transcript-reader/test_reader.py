@@ -1,13 +1,17 @@
-"""Tests for reader.py session resolution and the Herdr pane naming it relies on.
+"""Tests for reader.py session resolution, the Herdr pane naming it relies on, the
+documents a reply names, and the sessions a pane ran across /clear.
 
 Run from the repo root: python3 -m unittest setup/transcript-reader/test_reader.py
 Fixtures are synthetic; no real session log or Herdr call is used.
 """
 
+import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reader  # noqa: E402
@@ -114,6 +118,117 @@ class FollowTest(unittest.TestCase):
             self.assertEqual(reader.main(["follow", *names]), 2, names)
         self.assertEqual(reader.read_list(), [])
         self.assertEqual(self.rebuilds, [])
+
+
+class DocumentsTest(unittest.TestCase):
+    """A reply's markdown file names resolve to files on disk, by fixed rules."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name).resolve()
+        self.repo = self.home / "copy" / "personal"
+        self.prd = self.repo / "02-Projects" / "esim" / "prds" / "bc49"
+        self.prd.mkdir(parents=True)
+        (self.prd / "requirements.md").write_text("# Requirements\n", encoding="utf-8")
+        (self.repo / "notes.md").write_text("notes\n", encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})  # Path.home() and ~ both read it
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def names(self, reply, cwd):
+        return [(token, path.relative_to(self.home).as_posix()) for token, path in builder.reply_documents(reply, str(cwd))]
+
+    def test_a_path_from_the_repository_root_resolves_from_a_deeper_working_directory(self):
+        reply = "**Draft:** `02-Projects/esim/prds/bc49/requirements.md` and again 02-Projects/esim/prds/bc49/requirements.md"
+        self.assertEqual(self.names(reply, self.repo / "02-Projects" / "esim"),
+                         [("02-Projects/esim/prds/bc49/requirements.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md")])
+
+    def test_a_bare_name_resolves_under_the_latest_cd_line_before_it(self):
+        reply = f"```\ncd {self.home}/elsewhere\n```\n```\ncd {self.prd}\n```\n- `requirements.md`\n- `notes.md`"
+        self.assertEqual(self.names(reply, self.repo), [("requirements.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md"),
+                                                        ("notes.md", "copy/personal/notes.md")])
+
+    def test_absolute_and_home_paths_are_taken_as_written(self):
+        reply = f"See {self.prd}/requirements.md and ~/copy/personal/notes.md."
+        self.assertEqual([path for _, path in self.names(reply, "")], ["copy/personal/02-Projects/esim/prds/bc49/requirements.md", "copy/personal/notes.md"])
+
+    def test_urls_missing_files_other_types_and_folders_above_home_are_left_out(self):
+        (self.home.parent / "outside.md").write_text("x", encoding="utf-8")
+        self.addCleanup((self.home.parent / "outside.md").unlink)
+        reply = "https://example.com/x/notes.md, `gone.md`, `requirements.txt`, `outside.md`, ../outside.md"
+        self.assertEqual(self.names(reply, self.repo), [])
+
+    def test_a_file_over_the_size_cap_is_left_out(self):
+        (self.repo / "big.md").write_text("x" * (builder.MAX_DOCUMENT_BYTES + 1), encoding="utf-8")
+        self.assertEqual(self.names("`big.md`", self.repo), [])
+
+    def test_attach_gives_turns_document_ids_and_reads_each_file_once(self):
+        sessions = [{"exchanges": [{"reply": "`requirements.md`", "cwd": str(self.prd)}, {"reply": "no files", "cwd": str(self.prd)},
+                                   {"reply": f"{self.prd}/requirements.md", "cwd": ""}]}]
+        documents = builder.attach_documents(sessions)
+        first, plain, again = sessions[0]["exchanges"]
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(first["documents"], again["documents"])
+        self.assertNotIn("documents", plain)
+        self.assertNotIn("cwd", first)
+        doc = documents[first["documents"][0]]
+        self.assertEqual((doc["name"], doc["text"], doc["mention"]), ("requirements.md", "# Requirements\n", "requirements.md"))
+        self.assertEqual(doc["dir"], "~/copy/personal/02-Projects/esim/prds/bc49")
+
+
+def log(path, records, written):
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    os.utime(path, (written, written))
+
+
+def prompt(text, at):
+    return {"type": "user", "timestamp": at, "message": {"role": "user", "content": text}}
+
+
+CLEAR = "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"
+T0 = 1792000000.0  # 2026-10-15T22:13:20Z
+
+
+def iso(seconds):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class ClearedSessionsTest(unittest.TestCase):
+    """/clear starts a new log in the same folder; the reader joins them into one conversation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        f = self.folder
+        # first ... cleared at T0+100 into second ... cleared at T0+500 into third.
+        log(f / "first.jsonl", [prompt("hello", iso(T0))], T0 + 100)
+        log(f / "second.jsonl", [{"type": "attachment", "timestamp": iso(T0 + 100)}, prompt("<local-command-caveat>x</local-command-caveat>", iso(T0 + 100)),
+                                 prompt(CLEAR, iso(T0 + 100.5)), prompt("next task", iso(T0 + 200))], T0 + 500)
+        log(f / "third.jsonl", [prompt(CLEAR, iso(T0 + 500.2)), prompt("go on", iso(T0 + 600))], T0 + 700)
+        # A session in the same folder that started fresh, and one written long before the clear.
+        log(f / "fresh.jsonl", [prompt("a new task", iso(T0 + 510))], T0 + 900)
+        log(f / "old.jsonl", [prompt("old", iso(T0 - 9000))], T0 - 8000)
+
+    def stems(self, name):
+        return [p.stem for p in builder.session_chain(self.folder / f"{name}.jsonl")]
+
+    def test_cleared_at_reads_the_clear_command_only_before_the_first_real_prompt(self):
+        self.assertEqual(builder.cleared_at(builder.head_records(self.folder / "second.jsonl")), T0 + 100.5)
+        self.assertIsNone(builder.cleared_at(builder.head_records(self.folder / "first.jsonl")))
+        self.assertIsNone(builder.cleared_at([prompt("hi", iso(T0)), prompt(CLEAR, iso(T0 + 1))]))
+
+    def test_any_session_of_a_pane_gives_the_whole_chain_oldest_first(self):
+        for name in ("first", "second", "third"):
+            self.assertEqual(self.stems(name), ["first", "second", "third"], name)
+        self.assertEqual(self.stems("fresh"), ["fresh"])
+        self.assertEqual(self.stems("old"), ["old"])
+
+    def test_no_log_written_near_the_clear_means_no_earlier_session(self):
+        os.utime(self.folder / "first.jsonl", (T0 - 3600, T0 - 3600))  # resumed and written later elsewhere
+        self.assertEqual(self.stems("third"), ["second", "third"])
 
 
 if __name__ == "__main__":
