@@ -815,8 +815,10 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // a live Claude pane the gauge has no usable row for is read from its own transcript, the same newest main-thread
   // usage line the gauge reads, and the replaced session's row is dropped.
   const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
-  const SMALL_WINDOW = 200000;
   const LARGE_WINDOW = 1000000;
+  // A transcript records tokens but not the window size. The captain's decision (2026-10-21) is to assume every
+  // session has the 1M window, so a count with no statusline percent is read against it and marked estimated.
+  const assumedPercent = (tokens) => Math.round((tokens * 1000) / LARGE_WINDOW) / 10;
 
   async function claudeTranscript(sessionId) {
     if (!SESSION_ID_RE.test(sessionId)) return null;
@@ -869,7 +871,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     const file = await claudeTranscript(pane.agent_session_id);
     if (!file) return null;
     const { tokens, at } = await transcriptUsage(file);
-    const percent = tokens !== null && tokens > SMALL_WINDOW ? Math.round((tokens * 1000) / LARGE_WINDOW) / 10 : null;
+    const percent = tokens !== null ? assumedPercent(tokens) : null;
     return {
       id: pane.agent_session_id.slice(0, 8),
       map: pane.label || pane.title || pane.pane_id,
@@ -945,7 +947,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       // A row for a session no pane runs any more is dropped when a live pane now runs in the same home or worktree.
       const replaced = new Set();
       for (const row of fromPanes) for (const cwd of row.cwds) if (homes.has(cwd) && !homes.get(cwd).pane_id) replaced.add(homes.get(cwd));
-      const shown = [...rows.filter((row) => !replaced.has(row)), ...fromPanes.map(({ cwds: _cwds, ...row }) => row)];
+      const shown = [...rows.filter((row) => !replaced.has(row)), ...fromPanes.map(({ cwds: _cwds, ...row }) => row)]
+        .map((row) => (row.percent === null && row.tokens !== null ? { ...row, percent: assumedPercent(row.tokens), estimated: true } : row));
       shown.sort((a, b) => (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
       return { thresholds: { warn: CONTEXT_WARN_PERCENT, high: CONTEXT_HIGH_PERCENT }, rows: shown };
     });
