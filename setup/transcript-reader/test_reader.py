@@ -86,5 +86,35 @@ class ResolveTest(unittest.TestCase):
             self.resolve("nothing-like-this")
 
 
+class FollowTest(unittest.TestCase):
+    """`follow` is what the server runs for the pane Herdr focuses: a full id with a log, no server start."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        (root / "projects" / "-Users-someone-home").mkdir(parents=True)
+        (root / "projects" / "-Users-someone-home" / f"{A}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.saved = (builder.PROJECTS, reader.OUT, reader.LIST, reader.rebuild)
+        builder.PROJECTS, reader.OUT, reader.LIST = root / "projects", root / "out", root / "out" / "sessions.txt"
+        self.rebuilds = []
+        reader.rebuild = lambda ids, focus=None, serve_page=True: self.rebuilds.append((list(ids), serve_page)) or 0
+
+    def tearDown(self):
+        builder.PROJECTS, reader.OUT, reader.LIST, reader.rebuild = self.saved
+        self.tmp.cleanup()
+
+    def test_adds_once_and_rebuilds_without_serving(self):
+        self.assertEqual(reader.main(["follow", A]), 0)
+        self.assertEqual(reader.main(["follow", A]), 0)
+        self.assertEqual(reader.read_list(), [A])
+        self.assertEqual(self.rebuilds, [([A], False), ([A], False)])
+
+    def test_refuses_anything_but_one_full_id_with_a_log(self):
+        for names in (["aaaaaaaa"], [C], ["leader-esim"], [A, A], []):
+            self.assertEqual(reader.main(["follow", *names]), 2, names)
+        self.assertEqual(reader.read_list(), [])
+        self.assertEqual(self.rebuilds, [])
+
+
 if __name__ == "__main__":
     unittest.main()

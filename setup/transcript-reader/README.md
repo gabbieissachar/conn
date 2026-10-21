@@ -1,0 +1,39 @@
+# Transcript reader
+
+Reads Firstmate session logs back as a conversation, and lets you answer a reply in its own Herdr pane.
+Design and decisions: `DESIGN.md`.
+
+## Run it
+
+```bash
+python3 setup/transcript-reader/reader.py add <session id, 8-char prefix, or Herdr pane label>
+python3 setup/transcript-reader/reader.py          # rebuild every listed session, start the server, print the links
+```
+
+`reader.py` also has `remove`, `list` and `panes` (live Herdr panes to pick from).
+Set `PMOS_SERVE_PORT` when the default port 8765 serves another copy of the repo.
+After changing `api.js` or `setup/serve.sh`, restart the server: `bash setup/serve.sh --restart`.
+
+Open the printed `http://localhost:…/setup/transcript-reader/out/prototype.html` link, in a browser or a VS Code browser tab.
+Opened that way, the page:
+
+- **Refreshes itself.** When a listed session writes a new turn, the server rebuilds the pages (at most every 3 seconds, only while a page is open) and the page swaps in the new turns where you are reading.
+- **Follows Herdr.** With "Follow Herdr" on, the reader shows the session of the pane Herdr has focused. A session not on the reading list is added. An address that names a session (`#s=…`) wins when the page opens.
+- **Sends replies.** "Reply" on a reply, or "Comment on this" after selecting a passage in it, opens a composer. "Send" puts the exact text shown under "Sends exactly" into that session's Herdr pane. It points at the reply instead of copying it, for example `Re your reply at 10:57 ("Checkpoint for group A"): A2=link-only`. The answer sheet's Send does the same with the picked answers.
+
+A `file://` copy of the page still reads, but cannot refresh, follow or send.
+
+## What it touches
+
+- Reads Claude Code session logs, the fleet homes' records, and Herdr's session list and snapshots.
+- Writes only `out/` (gitignored: the pages embed private transcripts).
+- Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
+
+The server routes are in `api.js`: the pages under `out/` and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
+
+## Tests
+
+```bash
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py
+node --test setup/transcript-reader/api.test.js
+```

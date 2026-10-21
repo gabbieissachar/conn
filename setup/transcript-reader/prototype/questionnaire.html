@@ -2,13 +2,14 @@
 <!--
   THROWAWAY PROTOTYPE: answering a grill-me review's decision cards in the page.
   build_questionnaire.py fills __PAYLOAD__ with private transcript text, so the built
-  page lives in the gitignored out/ folder. No network requests, no remote fonts.
+  page lives in the gitignored out/ folder. No remote requests or fonts; served by
+  setup/serve.sh, it calls only that local server (live.js) to send the answers.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Answer sheet (prototype)</title>
 <style>
   :root {
@@ -76,6 +77,9 @@
   .dock .inner { padding: 8px 12px 10px; }
   .dock .line { font: 13px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; max-height: 5.6em; overflow-y: auto; }
   .dock .line .gap { color: var(--open); }
+  .dock .line .ptr { color: var(--muted); }
+  .dock .why { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 1em; }
+  .dock .why.bad { color: var(--open); }
   .dock .acts { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
   .dock .count { flex: 1; font-size: 12px; color: var(--muted); }
   .dock button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
@@ -97,13 +101,16 @@
     <span class="count" id="count"></span>
     <button id="recommended" title="Fill unanswered cards with the option marked recommended">★ Fill</button>
     <button id="clear">Clear</button>
-    <button class="primary" id="copy">Copy</button>
+    <button id="copy">Copy</button>
+    <button class="primary" id="send" title="Send this exact text to the session's Herdr pane">Send</button>
   </div>
+  <div class="why" id="why" aria-live="polite"></div>
 </div></div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
 (() => {
   "use strict";
+/*__LIVE__*/
   const data = JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
@@ -222,9 +229,12 @@
     const a = load(state.q);
     return fields(q).filter(f => a[f.key]).map(f => `${f.key}=${a[f.key]}`).join(";");
   }
+  // The exact text Copy and Send use: a pointer to the reply that asked, then the answers.
+  const message = q => answerLine(q) ? live.pointer(q.at, q.reply) + answerLine(q) : "";
   function renderDock() {
     const q = qs[state.q]; if (!q) return;
     const a = load(state.q), line = document.getElementById("line"); line.replaceChildren();
+    line.append($("span", "ptr", live.pointer(q.at, q.reply)));
     q.cards.forEach((c, i) => {
       if (i) line.append(";");
       if (a[c.key]) line.append(`${c.key}=${a[c.key]}`); else { const g = $("span", "gap", `${c.key}=?`); line.append(g); }
@@ -233,6 +243,31 @@
     const done = q.cards.filter(c => a[c.key]).length;
     document.getElementById("count").textContent = `${done} of ${q.cards.length} answered`;
     document.getElementById("recommended").disabled = !q.cards.some(c => !a[c.key] && c.options.some(o => o.recommended));
+    renderSend();
+  }
+  // Send needs the served page and a live Herdr pane for the session; the reason shows when it cannot.
+  const link = { pane: undefined, sending: false, result: null };
+  function renderSend() {
+    const q = qs[state.q], button = document.getElementById("send"), why = document.getElementById("why");
+    const pane = q && link.pane ? link.pane[q.session] : null;
+    let reason = "";
+    if (!live.served) reason = "Read-only copy: open the served page to send.";
+    else if (link.pane === undefined) reason = "Connecting to the local server…";
+    else if (!pane) reason = "No live Herdr pane runs this session, so Send is off. Copy still works.";
+    else if (pane.status === "blocked") reason = `${pane.label} is waiting at a permission prompt or question. Answer it in Herdr first.`;
+    button.disabled = Boolean(reason) || link.sending || !message(q);
+    why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
+    why.textContent = link.result ? link.result.text : reason || (pane ? `Send goes straight to ${pane.label} in Herdr ${pane.herdr}.` : "");
+  }
+  async function sendAnswers() {
+    const q = qs[state.q], text = message(q); if (!text) return;
+    link.sending = true; link.result = null; renderSend();
+    try {
+      const sent = await live.send(q.session, text);
+      link.result = { ok: true, text: `Sent to ${sent.label} at ${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date())}.` };
+    } catch (e) { link.result = { ok: false, text: e.message }; }
+    link.sending = false; renderSend();
+    setTimeout(() => { link.result = null; renderSend(); }, 6000);
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
@@ -249,7 +284,7 @@
     renderDock();
   }
   async function copy() {
-    const text = answerLine(qs[state.q]); if (!text) return;
+    const text = message(qs[state.q]); if (!text) return;
     let ok = false;
     try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
       // Some embedded browsers block the clipboard API; fall back to a selected text box.
@@ -263,8 +298,14 @@
 
   const pick = document.getElementById("pick");
   qs.forEach((q, i) => pick.append(new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
-  pick.addEventListener("change", () => { state.q = Number(pick.value); render(); });
+  pick.addEventListener("change", () => {
+    state.q = Number(pick.value);
+    // Kept in the address, so a reload after a rebuild reopens the same questionnaire.
+    history.replaceState(null, "", "#q=" + encodeURIComponent(`${qs[state.q].session.slice(0, 8)}:${Math.round(qs[state.q].at || 0)}`));
+    render();
+  });
   document.getElementById("copy").addEventListener("click", copy);
+  document.getElementById("send").addEventListener("click", sendAnswers);
   document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); render(); });
   document.getElementById("recommended").addEventListener("click", () => {
     const a = load(state.q);
@@ -276,6 +317,14 @@
   const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
   if (linked >= 0) { state.q = linked; pick.value = String(linked); }
   render();
+  // Served, the sheet reloads itself after a rebuild (answers are kept as drafts), but
+  // never while a text box is being typed in.
+  live.poll(async () => {
+    const s = await live.state(false);
+    link.pane = s.panes || {}; renderSend();
+    const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !link.sending) location.reload();
+  });
 })();
 </script>
 </body>

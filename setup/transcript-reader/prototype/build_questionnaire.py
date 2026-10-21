@@ -17,8 +17,6 @@ private transcript text, so it is written to the gitignored out/ folder.
 from __future__ import annotations
 
 import argparse
-import base64
-import hashlib
 import json
 import re
 import sys
@@ -41,6 +39,8 @@ QUESTION_LEAD = re.compile(rf"^\*\*([^*]*?\b({KEY})\b[^*]*)\*\*\s*(.*)$")
 OPTION_BULLET = re.compile(r"^\s*[-*]\s+`([^`]+)`\s*[:\-–]?\s*(.*)$")
 # "- **B1:** Who runs the monthly pull" - a card named but not open yet.
 KEYED_BULLET = re.compile(rf"^\s*[-*]\s+\*\*({KEY}):?\*\*:?\s*(.*)$")
+# "**a)** Both: rows in ...; b) After purchase only" - lettered choices inside one table cell.
+LETTER = re.compile(r"(?:^|(?<=[\s;]))(?:\*\*)?([a-h])\)(?:\*\*)?\s+")
 
 
 def cells(line: str) -> list[str]:
@@ -74,6 +74,13 @@ def strip_md(text: str) -> str:
     return text.replace("**", "").strip()
 
 
+def lettered(cell: str) -> list[tuple[str, str]]:
+    """(letter, text) for each `a)`, `b)` choice in a cell, in order."""
+    marks = list(LETTER.finditer(cell))
+    return [(m.group(1), strip_md(cell[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(cell)]).rstrip(" ;"))
+            for i, m in enumerate(marks)]
+
+
 def parse_questionnaire(reply: str) -> dict | None:
     """The cards a reply asks to be answered, or None when it asks for no keyed answers."""
     lines = reply.splitlines()
@@ -98,6 +105,17 @@ def parse_questionnaire(reply: str) -> dict | None:
                     "key": key, "question": strip_md(get(column(header, "decision", "question"))),
                     "depends": strip_md(get(column(header, "depends"))), "recommended": get(column(header, "recommend")),
                     "options": [{"value": value, "note": "", "recommended": False} for value in BACKTICK.findall(get(answer_col))],
+                })
+            elif lettered(get(column(header, "recommend"))):
+                # Lettered choices: the recommended column holds one (the reply's own
+                # recommendation), an "other options" column the rest.
+                recommended = lettered(get(column(header, "recommend")))
+                others = lettered(get(column(header, "other", "option")))
+                cards.append({
+                    "key": key, "question": strip_md(get(column(header, "decision", "question"))),
+                    "depends": strip_md(get(column(header, "depends"))), "recommended": recommended[0][1] if len(recommended) == 1 else "",
+                    "options": [{"value": letter, "note": text, "recommended": True} for letter, text in recommended]
+                    + [{"value": letter, "note": text, "recommended": False} for letter, text in others],
                 })
             elif submitted_col is not None:
                 resolved.append({"key": key, "submitted": get(submitted_col), "decision": get(column(header, "inferred", "decision")),
@@ -191,15 +209,8 @@ def main() -> int:
         except OSError:
             names = []
     payload = {"generated": time.time(), "questionnaires": collect(names)}
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    page = TEMPLATE.read_text(encoding="utf-8")
-    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
-    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
-    page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__PAYLOAD__", data)
     out = Path(args.out).expanduser()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page, encoding="utf-8")
+    builder.write_page(TEMPLATE, payload, out)
     print(f"Wrote {out}")
     for q in payload["questionnaires"]:
         print(f"  {q['session'][:8]} {len(q['cards'])} open, {len(q['resolved'])} answered, {len(q['locked'])} locked: {q['title'][:70]}")

@@ -2,13 +2,16 @@
 <!--
   THROWAWAY PROTOTYPE for the design checkpoint in setup/transcript-reader/DESIGN.md.
   build_prototype.py fills __PAYLOAD__ with private transcript text, so the built
-  page lives in the gitignored out/ folder. No network requests, no remote fonts.
+  page lives in the gitignored out/ folder. No remote requests or fonts; served by
+  setup/serve.sh, it calls only that local server (live.js) to refresh, follow
+  Herdr's focus and send a reply to a pane.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="template" content="__TEMPLATE_HASH__">
 <title>Transcript reader (prototype)</title>
 <style>
   :root {
@@ -29,6 +32,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.5 var(--sans); }
   button { font: inherit; color: inherit; cursor: pointer; }
   a { color: var(--you); overflow-wrap: anywhere; }
@@ -66,7 +70,7 @@
   .more { border: 0; background: none; color: var(--you); padding: 2px 0; font-size: 13px; }
   .reply { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin: 6px 0 4px; }
   .reply.needs { border-left: 4px solid var(--ask-line); }
-  .chip { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
+  .chip { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
   .chip.needs { background: var(--ask-wash); color: var(--ask); }
   .chip.none { background: var(--ok-wash); color: var(--ok); }
   .chip.reminder { background: var(--code); color: var(--muted); font-weight: 600; }
@@ -117,12 +121,36 @@
   .filters { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; }
   kbd { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+
+  /* Replying to a reply: the Reply button, the selection button and the composer */
+  .reply-to { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--you); }
+  .reply.is-target-reply { box-shadow: 0 0 0 2px var(--you); }
+  .live { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .live.on { color: var(--ok); }
+  .follow-note { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: #fff; border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); }
+  .dock-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px 10px; }
+  .dock-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--muted); }
+  .dock-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dock-head button, .dock-passage button { border: 0; background: none; color: var(--muted); padding: 0 2px; font-size: 13px; }
+  .dock-passage { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); border-left: 3px solid var(--ask-line); padding-left: 7px; margin-top: 5px; }
+  .dock-passage span { flex: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .dock textarea { width: 100%; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--paper); color: var(--ink); font: 15px/1.4 var(--sans); resize: vertical; }
+  .dock-label { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .dock-line { font: 12px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 5px 8px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
+  .dock-acts { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .dock-acts .why { flex: 1; font-size: 12px; color: var(--muted); }
+  .dock-acts .why.bad { color: var(--open); }
+  .dock-acts button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 5px 11px; font-size: 13px; }
+  .dock-acts button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
+  .dock-acts button:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title">Transcript reader <span class="proto">prototype</span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a></div>
+    <div class="title">Transcript reader <span class="proto">prototype</span><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a></div>
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
       <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
@@ -131,14 +159,26 @@
   </div>
 </header>
 <main id="main"></main>
+<button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
+<div class="dock" id="dock" hidden><div class="dock-inner">
+  <div class="dock-head"><span id="dock-target"></span><button id="dock-close" type="button" aria-label="Close" title="Close (Esc)">✕</button></div>
+  <div class="dock-passage" id="dock-passage" hidden><span id="dock-passage-text"></span><button id="dock-passage-drop" type="button">remove</button></div>
+  <textarea id="dock-text" rows="3" placeholder="Your reply" aria-label="Your reply"></textarea>
+  <div class="dock-label">Sends exactly:</div>
+  <div class="dock-line" id="dock-line" aria-live="polite"></div>
+  <div class="dock-acts"><span class="why" id="dock-why" aria-live="polite"></span><button id="dock-copy" type="button">Copy</button><button class="primary" id="dock-send" type="button" title="Send to the session's Herdr pane (⌘ or Ctrl + Enter)">Send</button></div>
+</div></div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
 (() => {
   "use strict";
-  const data = JSON.parse(document.getElementById("payload").textContent);
+/*__LIVE__*/
+  let data = JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false };
+  // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true };
+  try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
   const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
   const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
@@ -178,12 +218,12 @@
     });
     return box;
   }
-  function clipped(node, words, limitWords, label) {
+  function clipped(node, words, limitWords, label, key) {
     const wrap = $("div");
-    if (words <= limitWords) { wrap.append(node); return wrap; }
+    if (words <= limitWords || state.open.has(key)) { wrap.append(node); return wrap; }
     const inner = $("div", "clip"); inner.append(node); wrap.append(inner);
     const more = $("button", "more", `${label} (${words} words)`);
-    more.addEventListener("click", () => { inner.classList.remove("clip"); more.remove(); });
+    more.addEventListener("click", () => { inner.classList.remove("clip"); more.remove(); if (key) state.open.add(key); });
     wrap.append(more);
     return wrap;
   }
@@ -194,12 +234,20 @@
     if (ex.verdict === "no-action") return $("span", "chip none", "No action");
     return $("span", "chip reminder", "No reply");
   }
-  function replyCard(ex) {
+  // key names the turn for state.open; sid, when given, makes the reply answerable from here.
+  function replyCard(ex, key, sid) {
     const card = $("div", "reply" + (ex.verdict === "needs-you" ? " needs" : ""));
     const who = $("div", "who");
     who.append(verdictChip(ex));
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
+    if (sid && ex.reply) {
+      const target = { sid, at: ex.reply_at || ex.at, reply: ex.reply, card };
+      replyTargets.set(card, target);
+      const to = $("button", "reply-to", "Reply"); to.type = "button"; to.title = "Reply to this in its session. Select a passage first to comment on it.";
+      to.addEventListener("click", () => openDock({ ...target, passage: selectedPassage(card) }));
+      who.append(to);
+    }
     card.append(who);
     // The reply's own lines that ask, pulled up front unless they already open the reply.
     const later = (ex.ask_lines || []).filter(n => n > 1);
@@ -210,7 +258,7 @@
       if (later.length > 3) asks.append($("div", "notes", `and ${later.length - 3} more below`));
       card.append(asks);
     }
-    if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply"));
+    if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply", key + ":reply"));
     if (ex.sheet) {
       const go = $("a", "btn sheet", "Answer these questions →"); go.href = "questionnaire.html#q=" + encodeURIComponent(ex.sheet);
       card.append(go);
@@ -222,15 +270,17 @@
       if (ex.tools) parts.push(`${ex.tools} tool step${ex.tools === 1 ? "" : "s"}`);
       const btn = $("button", null, parts.join(", "));
       const body = $("div");
+      const show = () => ex.narration.forEach(n => body.append($("div", "note-body", n)));
       btn.addEventListener("click", () => {
-        if (body.childElementCount) { body.replaceChildren(); return; }
-        ex.narration.forEach(n => body.append($("div", "note-body", n)));
+        if (body.childElementCount) { body.replaceChildren(); state.open.delete(key + ":notes"); return; }
+        show(); state.open.add(key + ":notes");
       });
+      if (state.open.has(key + ":notes")) show();
       notes.append(btn, body); card.append(notes);
     }
     return card;
   }
-  function inputBlock(ex, index) {
+  function inputBlock(ex, index, key) {
     const block = $("div", `input ${ex.source}`);
     block.id = `ex-${index}`;
     const who = $("div", "who");
@@ -241,32 +291,34 @@
     let text = ex.input;
     if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
     const body = $("div", null, text);
-    block.append(clipped(body, text.split(/\s+/).length, 120, "Show all"));
+    block.append(clipped(body, text.split(/\s+/).length, 120, "Show all", key + ":input"));
     return block;
   }
-  function exchangeNode(ex, index) {
+  function exchangeNode(ex, index, sid) {
     const frag = document.createDocumentFragment();
+    const key = `${sid || "detail"}:${index}`;
     if (ex.source === "session") { frag.append($("div", "divider", `${ex.label} · ${fmtWhen(ex.at)}`)); return frag; }
     if (ex.source === "wake") {
       const box = $("div"); box.id = `ex-${index}`;
       if (!ex.folded) {
         box.append($("div", "who", `Wake-up · ${ex.label} · ${fmtWhen(ex.at)}`));
-        if (ex.reply) box.append(replyCard(ex));
+        if (ex.reply) box.append(replyCard(ex, key, sid));
         frag.append(box); return frag;
       }
       const row = $("button", "fold");
       row.append($("span", "t", fmtTime(ex.at)), $("span", "l", `Wake-up · ${ex.label}`), $("span", null, ex.reply ? `${ex.reply_words}w` : ""));
-      row.setAttribute("aria-expanded", "false");
       const detail = $("div");
-      row.addEventListener("click", () => {
-        const open = row.getAttribute("aria-expanded") === "true";
-        row.setAttribute("aria-expanded", String(!open));
-        detail.replaceChildren(...(open || !ex.reply ? [] : [replyCard(ex)]));
-      });
+      const show = open => {
+        row.setAttribute("aria-expanded", String(open));
+        detail.replaceChildren(...(open && ex.reply ? [replyCard(ex, key, sid)] : []));
+        if (open) state.open.add(key + ":fold"); else state.open.delete(key + ":fold");
+      };
+      row.addEventListener("click", () => show(row.getAttribute("aria-expanded") !== "true"));
+      show(state.open.has(key + ":fold"));
       box.append(row, detail); frag.append(box); return frag;
     }
-    frag.append(inputBlock(ex, index));
-    if (ex.reply || ex.tools) frag.append(replyCard(ex));
+    frag.append(inputBlock(ex, index, key));
+    if (ex.reply || ex.tools) frag.append(replyCard(ex, key, sid));
     return frag;
   }
   function renderReader() {
@@ -292,11 +344,19 @@
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
     const wakes = $("button", "btn", "Wake-ups"); wakes.setAttribute("aria-pressed", String(state.showWakes)); wakes.title = "Show or fold wake-ups (w)";
+    const follow = $("button", "btn", "Follow Herdr"); follow.setAttribute("aria-pressed", String(state.follow));
+    follow.title = "Show the session of the pane Herdr has focused, adding it to the reading list when needed";
+    follow.hidden = !live.served;
+    follow.addEventListener("click", () => {
+      state.follow = !state.follow; link.seenSeq = null;
+      try { localStorage.setItem("tr-follow", state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
+      render();
+    });
     prev.addEventListener("click", () => jump("captain", -1));
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
-    row.append(select, prev, next, needs, wakes);
+    row.append(select, prev, next, needs, wakes, follow);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
     const pane = session && session.pane;
@@ -304,32 +364,35 @@
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
     const where = session ? `${homeName(session.home)} home${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
     const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr} · ${where}` : `No Herdr pane found · ${where}`);
-    controls.append(row, origin, summary);
+    const note = $("div", "follow-note"); note.id = "follow-note";
+    controls.append(row, origin, summary, note);
+    renderLive();
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", "No turns in this session.")); return; }
+    const sid = session.id;
     let run = null, runCount = 0;
     exs.forEach((ex, i) => {
       const hide = ex.folded && !state.showWakes;
       if (hide) {
-        if (!run) { run = $("div", "foldrun"); runCount = 0; main.append(run); }
+        if (!run) { run = $("div", "foldrun"); runCount = 0; run.dataset.key = `${sid}:${i}:run`; main.append(run); }
         runCount += 1; run.dataset.count = runCount;
-        run.append(exchangeNode(ex, i));
+        run.append(exchangeNode(ex, i, sid));
         return;
       }
       if (run) { collapseRun(run); run = null; }
-      main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i));
+      main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i, sid));
     });
     if (run) collapseRun(run);
   }
   function collapseRun(run) {
     const count = Number(run.dataset.count);
-    if (count < 3) return;
+    if (count < 3 || state.open.has(run.dataset.key)) return;
     const kids = [...run.children];
     const toggle = $("button", "fold");
     toggle.append($("span", "t", "··"), $("span", "l", `${count} wake-ups with nothing new for you`));
     run.replaceChildren(toggle);
-    toggle.addEventListener("click", () => run.replaceChildren(...kids));
+    toggle.addEventListener("click", () => { run.replaceChildren(...kids); state.open.add(run.dataset.key); });
   }
   function jump(kind, dir) {
     const session = data.sessions[state.session]; if (!session) return;
@@ -430,7 +493,7 @@
       if (turn) {
         const btn = $("button", "more", ev.kind === "status" ? "Show how the home handled it" : ev.kind === "inbox" ? "Show the turn that received it" : "Show the whole turn");
         const slot = $("div");
-        btn.addEventListener("click", () => { btn.remove(); slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`)); });
+        btn.addEventListener("click", () => { btn.remove(); slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`, null)); });
         detail.append(btn, slot);
       } else if (ev.kind === "status") {
         detail.append($("div", "notes", "No handling turn found in the loaded sessions; routine updates often do not wake anyone."));
@@ -446,18 +509,197 @@
     return s ? s.exchanges[ev.ref] : null;
   }
 
+  // ---------------------------------------------------------------- replying to a reply
+  // The served page sends a short message to the session's own Herdr pane. It points at
+  // the reply (time and opening words), quotes a selected passage, and adds the comment.
+  const replyTargets = new WeakMap();  // reply card -> { sid, at, reply }
+  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null };
+  const dock = id => document.getElementById("dock-" + id);
+  function selectedPassage(card) {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !card.contains(sel.anchorNode) || !card.contains(sel.focusNode)) return "";
+    return sel.toString().trim();
+  }
+  const dockMessage = () => link.target && dock("text").value.trim() ? live.pointer(link.target.at, link.target.reply, link.target.passage) + dock("text").value.trim() : "";
+  function openDock(target) {
+    link.target = target; link.result = null;
+    document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
+    if (target.card) target.card.classList.add("is-target-reply");
+    const session = data.sessions.find(s => s.id === target.sid);
+    const name = session && session.pane ? session.pane.label : target.sid.slice(0, 8);
+    dock("target").textContent = `Reply to ${name} · ${fmtWhen(target.at)}`;
+    dock("passage").hidden = !target.passage;
+    dock("passage-text").textContent = target.passage ? `“${target.passage}”` : "";
+    document.getElementById("dock").hidden = false;
+    document.getElementById("float-comment").hidden = true;
+    renderDock();
+    dock("text").focus();
+  }
+  function closeDock() {
+    document.getElementById("dock").hidden = true;
+    document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
+    link.target = null;
+    document.getElementById("main").style.paddingBottom = "";
+  }
+  function renderDock() {
+    if (!link.target) return;
+    const text = dockMessage();
+    dock("line").textContent = text || live.pointer(link.target.at, link.target.reply, link.target.passage) + "…";
+    const pane = link.panes ? link.panes[link.target.sid] : null;
+    let reason = "";
+    if (!live.served) reason = "Read-only copy: open the served page to send.";
+    else if (link.panes === undefined) reason = "Connecting to the local server…";
+    else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
+    else if (pane.status === "blocked") reason = `${pane.label} is waiting at a permission prompt or question. Answer it in Herdr first.`;
+    dock("send").disabled = Boolean(reason) || link.sending || !text;
+    dock("copy").disabled = !text;
+    const why = dock("why");
+    why.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
+    why.textContent = link.result ? link.result.text : reason || `Goes straight to ${pane.label}.`;
+    // Keep the end of the conversation readable above the composer.
+    document.getElementById("main").style.paddingBottom = document.getElementById("dock").offsetHeight + 24 + "px";
+  }
+  async function sendDock() {
+    const text = dockMessage(); if (!text || dock("send").disabled) return;
+    link.sending = true; link.result = null; renderDock();
+    try {
+      const sent = await live.send(link.target.sid, text);
+      link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(Date.now() / 1000)}.` };
+      dock("text").value = "";
+      setTimeout(() => { if (link.result && link.result.ok) closeDock(); }, 2500);
+    } catch (e) { link.result = { ok: false, text: e.message }; }
+    link.sending = false; renderDock();
+  }
+  async function copyDock() {
+    const text = dockMessage(); if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+      const t = $("textarea"); t.value = text; document.body.append(t); t.select();
+      try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+      t.remove();
+    }
+    link.result = { ok, text: ok ? "Copied." : "Copy failed." }; renderDock();
+  }
+  dock("text").addEventListener("input", () => { link.result = null; renderDock(); });
+  dock("text").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendDock(); }
+    if (e.key === "Escape") closeDock();
+  });
+  dock("send").addEventListener("click", sendDock);
+  dock("copy").addEventListener("click", copyDock);
+  dock("close").addEventListener("click", closeDock);
+  dock("passage-drop").addEventListener("click", () => { link.target.passage = ""; dock("passage").hidden = true; renderDock(); });
+
+  // Selecting text inside a reply offers "Comment on this" beside the selection.
+  const floatButton = document.getElementById("float-comment");
+  function placeFloat() {
+    const sel = window.getSelection();
+    const node = sel && !sel.isCollapsed ? sel.anchorNode : null;
+    const card = node && (node.nodeType === 1 ? node : node.parentElement).closest(".reply");
+    if (!card || !replyTargets.has(card) || !selectedPassage(card)) { floatButton.hidden = true; return; }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    floatButton.hidden = false;
+    floatButton.style.top = `${rect.bottom + window.scrollY + 6}px`;
+    floatButton.style.left = `${Math.max(8, Math.min(rect.left + window.scrollX, document.documentElement.clientWidth - floatButton.offsetWidth - 8))}px`;
+    floatButton.card = card;
+  }
+  document.addEventListener("mouseup", () => setTimeout(placeFloat, 0));
+  document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });
+  document.addEventListener("selectionchange", () => { const sel = window.getSelection(); if (!sel || sel.isCollapsed) floatButton.hidden = true; else if (matchMedia("(pointer: coarse)").matches) placeFloat(); });
+  floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
+  floatButton.addEventListener("click", () => {
+    const card = floatButton.card;
+    if (card && replyTargets.has(card)) openDock({ ...replyTargets.get(card), passage: selectedPassage(card) });
+  });
+
+  // ---------------------------------------------------------------- live: refresh and follow Herdr
+  function renderLive() {
+    const badge = document.getElementById("live");
+    badge.textContent = !live.served ? "read-only" : link.panes === undefined ? "connecting" : "live";
+    badge.className = "live" + (live.served && link.panes !== undefined ? " on" : "");
+    badge.title = live.served ? "Refreshes itself, follows Herdr and can send replies" : "Opened as a file: no refresh, follow or send";
+    const note = document.getElementById("follow-note");
+    if (note) {
+      const f = link.focus, b = link.build || {};
+      let text = "";
+      if (b.error) text = `Rebuild failed: ${b.error}`;
+      else if (state.follow && link.want && f && f.session_id === link.want) text = f.readable ? `Herdr is on ${f.label}; adding it to the reading list…` : `Herdr is on ${f.label}, which has no Claude session log to read.`;
+      else if (state.follow && f && !f.session_id) text = `Herdr is on ${f.label}, which runs no agent.`;
+      note.textContent = text;
+    }
+    renderDock();
+  }
+  // Where the reader is, so a refresh can put the same turn back in the same place.
+  function readingAnchor() {
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 40) return { bottom: true };
+    const barH = document.getElementById("bar").offsetHeight;
+    const el = [...document.querySelectorAll("#main [id^='ex-']")].find(node => node.getBoundingClientRect().bottom > barH);
+    return el ? { id: el.id, top: el.getBoundingClientRect().top } : { y: window.scrollY };
+  }
+  function restoreAnchor(anchor) {
+    if (anchor.bottom) { window.scrollTo(0, document.documentElement.scrollHeight); return; }
+    const el = anchor.id && document.getElementById(anchor.id);
+    if (el) window.scrollBy(0, el.getBoundingClientRect().top - anchor.top); else window.scrollTo(0, anchor.y || 0);
+  }
+  async function refreshData() {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
+    const html = await (await fetch(location.pathname, { cache: "no-store" })).text();
+    const next = new DOMParser().parseFromString(html, "text/html");
+    const template = doc => (doc.querySelector('meta[name="template"]') || {}).content;
+    // A different template hash means the page's own code or styles changed: load it fresh.
+    if (template(next) !== template(document)) { location.reload(); return; }
+    const payload = JSON.parse(next.getElementById("payload").textContent);
+    if (payload.generated <= data.generated) return;
+    const sid = data.sessions[state.session] && data.sessions[state.session].id;
+    const anchor = readingAnchor();
+    data = payload;
+    const index = data.sessions.findIndex(s => s.id === sid);
+    state.session = index >= 0 ? index : 0;
+    render();
+    restoreAnchor(anchor);
+  }
+  // Switch to the session Herdr focused, once per focus change. An address that names a
+  // session (#s=...) wins over the focus found when the page opens.
+  function applyFocus() {
+    const f = link.focus;
+    if (!state.follow || !f) return;
+    if (f.seq !== link.seenSeq) {
+      const keep = link.first && /^#s=/.test(location.hash);
+      link.seenSeq = f.seq;
+      if (!keep) link.want = f.session_id;
+    }
+    link.first = false;
+    if (!link.want) return;
+    const index = data.sessions.findIndex(s => s.id === link.want);
+    if (index < 0) return;  // the server adds it; the next refresh brings it in
+    link.want = null;
+    if (index === state.session && state.view === "reader") return;
+    state.session = index; state.view = "reader";
+    history.replaceState(null, "", "#s=" + data.sessions[index].id.slice(0, 8));
+    render();
+    window.scrollTo(0, document.documentElement.scrollHeight);  // the latest turn
+  }
+  live.poll(async () => {
+    const s = await live.state(state.follow);
+    link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
+    if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData();
+    applyFocus();
+    renderLive();
+  });
+
   // ---------------------------------------------------------------- shell
   function render() {
     document.body.classList.toggle("wide", state.view === "fleet");
     document.getElementById("tab-reader").setAttribute("aria-selected", String(state.view === "reader"));
     document.getElementById("tab-fleet").setAttribute("aria-selected", String(state.view === "fleet"));
-    if (state.view === "reader") renderReader(); else renderFleet();
+    if (state.view === "reader") renderReader(); else { renderFleet(); renderLive(); }
     document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px");
   }
   document.getElementById("tab-reader").addEventListener("click", () => { state.view = "reader"; render(); });
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
   document.addEventListener("keydown", e => {
-    if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
+    if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);
     if (e.key === "k") jump("captain", -1);
     if (e.key === "n") jump("needs", 1);

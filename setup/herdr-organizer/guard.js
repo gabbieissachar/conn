@@ -18,7 +18,9 @@ const crypto = require('crypto');
 const TOKEN_HEADER = 'x-herdr-organizer-token';
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
-function createGuard({ port, token } = {}) {
+// tokenHeader lets another module behind the same server (the transcript reader)
+// use the same checks with its own token and header name.
+function createGuard({ port, token, tokenHeader = TOKEN_HEADER } = {}) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('guard needs the served port');
   const serverToken = token || crypto.randomBytes(32).toString('hex');
   const allowedHosts = new Set(LOOPBACK_HOSTS.map((host) => host + ':' + port));
@@ -58,13 +60,13 @@ function createGuard({ port, token } = {}) {
       if (contentType !== 'application/json') return { ok: false, status: 415, message: 'JSON body required' };
     }
 
-    if (requireToken && !tokenMatches(req.headers[TOKEN_HEADER])) {
+    if (requireToken && !tokenMatches(req.headers[tokenHeader])) {
       return { ok: false, status: 403, message: 'Missing or invalid token' };
     }
     return { ok: true };
   }
 
-  return { check, token: serverToken, tokenHeader: TOKEN_HEADER };
+  return { check, token: serverToken, tokenHeader };
 }
 
 module.exports = { createGuard, TOKEN_HEADER };

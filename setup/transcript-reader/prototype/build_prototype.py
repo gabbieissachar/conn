@@ -29,6 +29,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "template.html"
+LIVE_SCRIPT = HERE / "live.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 PROJECTS = Path.home() / ".claude" / "projects"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
@@ -691,6 +693,29 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
             event["session"], event["ref"] = best[1], best[2]
 
 
+def write_page(template: Path, payload: dict, out: Path) -> None:
+    """Fill a template with the payload and the shared live.js, then write the page and its stamp.
+
+    The page is replaced in one rename, so the server never serves half a page. The
+    stamp beside it (<page>.stamp) holds the payload's build time; the served page
+    compares it with its own to know a newer build exists.
+    """
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
+    # The policy allows only the page's own script, by hash, so injected markup cannot run code.
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    # The template hash lets a served page tell a new build (swap the data) from new code (reload).
+    template_hash = hashlib.sha256(page.encode("utf-8")).hexdigest()[:16]
+    page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__TEMPLATE_HASH__", template_hash).replace("__PAYLOAD__", data)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for target, text in ((out, page), (out.with_suffix(".stamp"), repr(payload["generated"]))):
+        partial = target.with_name(f".{target.name}.partial")
+        partial.write_text(text, encoding="utf-8")
+        os.replace(partial, target)
+
+
 def stats(payload: dict) -> str:
     lines = []
     for session in payload["sessions"]:
@@ -724,16 +749,8 @@ def main() -> int:
     if args.stats:
         print(stats(payload))
         return 0
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    page = TEMPLATE.read_text(encoding="utf-8")
-    # The policy allows only the page's own script, by hash, so injected markup cannot run code.
-    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
-    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
-    page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__PAYLOAD__", data)
     out = Path(args.out).expanduser()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page, encoding="utf-8")
+    write_page(TEMPLATE, payload, out)
     print(f"Wrote {out}")
     print(stats(payload))
     return 0

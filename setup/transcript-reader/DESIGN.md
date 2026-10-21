@@ -45,4 +45,22 @@ To try the shape on particular sessions, keep a reading list with `python3 setup
 
 A grill-me review reply asks for keyed answers (`Reply with: A1=...; A2=...`). `prototype/build_questionnaire.py` finds those replies with fixed rules: a card table with `ID` and `Answer` columns (choices in backticks), a `**A2 revised.**` question followed by backtick choice bullets, a checkpoint table of answers already sent, and `**B1:**` cards under a "locked" heading. `questionnaire.html` lets the choices be picked or written, then copies one line such as `A1=accept;A2=inline`. Only a choice the reply itself calls a recommendation is marked one; none is guessed. The reader links each such reply to the sheet. Three layouts were tried (all cards, one at a time, compact); the captain picked all cards, so only that one remains.
 
-Viewing beside a Herdr tab in VS Code: `reader.py` prints `file://` links. VS Code's Integrated Browser (1.142) reloads a `file://` page when it changes on disk, and `workbench.browser.newTabPlacement: "sideGroup"` opens it in a reused, locked group beside the terminal editor.
+Viewing beside a Herdr tab in VS Code: `workbench.browser.newTabPlacement: "sideGroup"` opens VS Code's Integrated Browser (1.142) in a reused, locked group beside the terminal editor. One key can show and hide that group without closing the page or asking for an address: while a browser tab exists (`browserEditorOpen`), it focuses the first group (Herdr) and toggles it maximized, which hides the browser group and keeps its page; with no browser tab it opens the reader. `runCommands` and `workbench.action.browser.open` go in `terminal.integrated.commandsToSkipShell` so the key works while the Herdr terminal has focus.
+
+```json
+{ "key": "ctrl+alt+r", "command": "runCommands", "when": "browserEditorOpen",
+  "args": { "commands": ["workbench.action.focusFirstEditorGroup", "workbench.action.toggleMaximizeEditorGroup"] } },
+{ "key": "ctrl+alt+r", "command": "workbench.action.browser.open", "when": "!browserEditorOpen",
+  "args": "http://localhost:8765/setup/transcript-reader/out/prototype.html" }
+```
+
+## Send and follow (2026-10-21)
+
+Like Lavish's "comment and send back to the agent", without an agent blocking on a poll: the served page sends a reply or a passage comment straight into the session's Herdr pane (`herdr agent prompt`, no model involved), and follows the pane Herdr has focused. The captain chose:
+
+1. A focused session that is not on the reading list is added automatically.
+2. Send goes straight to the pane, with the exact text visible before sending. No confirm step.
+
+The message points at the reply instead of copying it (its time and first words, plus a quote of at most 100 characters for a passage), because the session already holds the text. Sending, following and refreshing need the page served over http by `setup/serve.sh`, so `reader.py` now prints the served links first; the server rebuilds the pages when a listed log changes, which replaces the `file://` auto-reload. The pages under `out/` are now served only through the guarded routes in `api.js`, so the shared static handler's wildcard CORS header no longer exposes them. How it works and what it touches: `README.md`.
+
+Not verified end to end: no message was sent to a real pane while building this (the tests fake Herdr), and the VS Code shortcut above was not tried in the captain's window.

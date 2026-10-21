@@ -7,15 +7,19 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py remove <session>...
   python3 setup/transcript-reader/reader.py list             the listed sessions
   python3 setup/transcript-reader/reader.py panes            live Herdr panes, to pick from
+  python3 setup/transcript-reader/reader.py rebuild          rebuild only (the server runs this when a log changes)
+  python3 setup/transcript-reader/reader.py follow <id>      add one full session id, then rebuild only
+                                                             (the server runs this for the pane Herdr focuses)
 
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
 
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
-gitignored because they name or embed private sessions. The page is served by
-setup/serve.sh; set PMOS_SERVE_PORT when that port serves a different copy of
-the repo. Only session logs and Herdr's pane list are read, and only out/ is written.
+gitignored because they name or embed private sessions. The pages are served by
+setup/serve.sh, which also follows Herdr's focus and sends replies to a pane (see
+README.md); set PMOS_SERVE_PORT when that port serves a different copy of the
+repo. Only session logs and Herdr's pane list are read, and only out/ is written.
 """
 
 from __future__ import annotations
@@ -81,7 +85,7 @@ def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS
     raise ValueError(f"no session or Herdr pane matches {name!r}; run `panes` to see the live ones")
 
 
-def rebuild(ids: list[str], focus: str | None = None) -> int:
+def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
     if not ids:
         print("No sessions listed yet. Add one: reader.py add <session id or Herdr pane label>")
         return 1
@@ -97,7 +101,8 @@ def rebuild(ids: list[str], focus: str | None = None) -> int:
     questions = [arg for sid in present for arg in ("--session", sid)]
     if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *questions]).returncode:
         return 1
-    serve(focus)
+    if serve_page:
+        serve(focus)
     return 0
 
 
@@ -112,13 +117,26 @@ def serve(focus: str | None) -> None:
             ok = response.status == 200
     except OSError:
         ok = False
-    # A file:// page in VS Code's Integrated Browser reloads by itself when this script rewrites it.
-    print(f"Reader:       {PAGE.as_uri()}{'#s=' + focus[:8] if focus else ''}")
-    print(f"Answer sheet: {(OUT / 'questionnaire.html').as_uri()}")
+    anchor = f"#s={focus[:8]}" if focus else ""
     if ok:
-        print(f"Also served:  {url}")
+        # Served, the pages refresh themselves, follow Herdr's focus and can send replies.
+        print(f"Reader:       {url}{anchor}")
+        print(f"Answer sheet: {sheet}")
     else:
-        print(f"Port {port} does not serve this copy of the repo; the file links above still work.")
+        print(f"Port {port} does not serve this copy of the repo, so these read-only file links cannot send or follow:")
+        print(f"Reader:       {PAGE.as_uri()}{anchor}")
+        print(f"Answer sheet: {(OUT / 'questionnaire.html').as_uri()}")
+
+
+def follow(ids: list[str], names: list[str]) -> int:
+    """Add one full session id that has a log, then rebuild without starting the server."""
+    if len(names) != 1 or not UUID.match(names[0]) or not session_files(builder.PROJECTS, names[0]):
+        print("follow takes one full session id that has a session log")
+        return 2
+    if names[0] not in ids:
+        ids.append(names[0])
+        write_list(ids)
+    return rebuild(ids, serve_page=False)
 
 
 def show(ids: list[str]) -> None:
@@ -137,6 +155,10 @@ def main(argv: list[str]) -> int:
     ids = read_list()
     if command == "refresh":
         return rebuild(ids)
+    if command == "rebuild":
+        return rebuild(ids, serve_page=False)
+    if command == "follow":
+        return follow(ids, names)
     if command == "list":
         show(ids)
         return 0

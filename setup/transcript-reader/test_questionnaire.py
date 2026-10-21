@@ -50,6 +50,34 @@ CHECKPOINT = """**Checkpoint for group A**
 Reply with: `A3=...` (or your correction on A2).
 """
 
+LETTERED = """Nathan, the first draft is ready for review. There are 2 cards in one batch.
+
+### Cards
+
+| ID | Decision | Recommended default | Other options |
+|---|---|---|---|
+| A1 | What it covers | **a)** Both: rows in the plan details (allowance, 24-hour rule) | b) After purchase only; purchase disclosure becomes its own item |
+| A2 | Reset time format | **a)** Clock time: "Resets today at 9:40 PM" | b) Countdown: "Resets in 5h 20m"; c) Both |
+
+Reply with keyed answers, for example: `A1=a; A2=b`. You can also answer `defer` or `explain` for any card.
+"""
+
+
+class LetteredTableTest(unittest.TestCase):
+    """Choices written as a), b) in a recommended column and an other-options column."""
+
+    def setUp(self):
+        self.q = parse_questionnaire(LETTERED)
+
+    def test_letters_become_choices_with_the_recommended_column_marked(self):
+        a1, a2 = self.q["cards"]
+        self.assertEqual([(o["value"], o["recommended"]) for o in a2["options"]], [("a", True), ("b", False), ("c", False)])
+        self.assertEqual(a2["options"][2]["note"], "Both")
+        self.assertEqual(a1["question"], "What it covers")
+        self.assertEqual(a1["recommended"], "Both: rows in the plan details (allowance, 24-hour rule)")
+        # A semicolon inside one choice's text does not split it.
+        self.assertEqual(a1["options"][1]["note"], "After purchase only; purchase disclosure becomes its own item")
+
 
 class CardsTableTest(unittest.TestCase):
     def setUp(self):
