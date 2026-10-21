@@ -41,7 +41,17 @@
   .bar-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px; }
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
-  .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
+  .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
+  /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
+  .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
+  .bar.collapsed .bar-toggle::before { transform: translateY(-2px) rotate(225deg); }
+  .crumb { display: none; flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 0; text-align: left; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name { white-space: nowrap; }
+  .bar.collapsed .name, .bar.collapsed .proto, .bar.collapsed #bar-more { display: none; }
+  /* The tab title already says prototype; at phone width the badge would push the title onto two lines. */
+  @media (max-width: 440px) { .proto { display: none; } }
+  .bar.collapsed .crumb { display: block; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   .tabs { display: flex; gap: 4px; margin-top: 6px; }
   .tab { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
@@ -50,7 +60,7 @@
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   .btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
-  .btn:focus-visible, .tab:focus-visible, .fold:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
   .wide main { max-width: 44rem; }
@@ -199,13 +209,15 @@
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title">Transcript reader <span class="proto">prototype</span><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a></div>
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
-      <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
-      <button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div id="bar-more">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
+        <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
+        <button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>
+      </div>
+      <div id="controls"></div>
     </div>
-    <div id="controls"></div>
   </div>
 </header>
 <main id="main"></main>
@@ -227,8 +239,9 @@
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
+  try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
   const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
   const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
@@ -435,6 +448,9 @@
     if (ex.reply || ex.tools) frag.append(replyCard(ex, key, sid));
     return frag;
   }
+  // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
+  const sessionName = s => s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
+    : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
   function renderReader() {
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
@@ -442,10 +458,7 @@
     const row = $("div", "controls");
     const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
     data.sessions.forEach((s, i) => {
-      // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
-      const name = s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
-        : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
-      const opt = $("option", null, name);
+      const opt = $("option", null, sessionName(s));
       opt.value = i; if (i === state.session) opt.selected = true; select.append(opt);
     });
     select.addEventListener("change", () => {
@@ -946,8 +959,31 @@
     const docCount = sessionDocuments(data.sessions[state.session]).length;
     document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
     if (state.view === "reader") renderReader(); else if (state.view === "doc") renderDocView(); else { renderFleet(); renderLive(); }
-    document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px");
+    paintBar();
   }
+  // A collapsed bar keeps one line: where you are, the live badge and the way back to the controls.
+  function paintBar() {
+    const bar = document.getElementById("bar"), toggle = document.getElementById("bar-toggle");
+    bar.classList.toggle("collapsed", !state.barOpen);
+    toggle.setAttribute("aria-expanded", String(state.barOpen));
+    toggle.setAttribute("aria-label", state.barOpen ? "Hide the tabs and controls" : "Show the tabs and controls");
+    toggle.title = toggle.getAttribute("aria-label");
+    const session = data.sessions[state.session];
+    const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
+    const crumb = document.getElementById("crumb");
+    crumb.textContent = state.view === "fleet" ? "Fleet timeline"
+      : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
+    crumb.title = `${crumb.textContent} · show the tabs and controls`;
+    document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
+  }
+  function setBarOpen(open) {
+    const anchor = readingAnchor();
+    state.barOpen = open;
+    try { localStorage.setItem("tr-bar", open ? "1" : "0"); } catch (e) { /* not kept */ }
+    paintBar(); restoreAnchor(anchor);
+  }
+  document.getElementById("bar-toggle").addEventListener("click", () => setBarOpen(!state.barOpen));
+  document.getElementById("crumb").addEventListener("click", () => setBarOpen(true));
   document.getElementById("tab-reader").addEventListener("click", () => { state.view = "reader"; render(); });
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
   document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); render(); window.scrollTo(0, 0); });
@@ -963,7 +999,19 @@
   const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
   state.session = fromHash >= 0 ? fromHash : data.chosen ? 0 : biggest;
   if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
+  // A reload (new page code, a restarted server, or the browser's own) keeps what was
+  // expanded and the place being read, in this tab only.
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem("tr-reading") || "null"); } catch (e) { saved = null; }
+  const same = saved && data.sessions[state.session] && saved.session === data.sessions[state.session].id;
+  if (same) { state.open = new Set(saved.open || []); state.showWakes = !!saved.showWakes; if (state.view === "reader" && saved.view === "fleet") state.view = "fleet"; }
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  window.addEventListener("pagehide", () => {
+    const session = data.sessions[state.session];
+    try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
+  });
   render();
+  if (same && saved.anchor) restoreAnchor(saved.anchor);
 })();
 </script>
 </body>
