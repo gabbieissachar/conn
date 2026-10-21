@@ -4243,7 +4243,7 @@ class LeaderConventionTests(unittest.TestCase):
     def test_a_leader_tab_never_restores_outside_leader_space(self):
         problems = ORGANIZER.leader_restore_problems(self.LIVE, "crew", [self.tab("leader-nip")], True)
         self.assertEqual(len(problems), 1)
-        self.assertIn("restores only into 'leader-space'", problems[0])
+        self.assertIn("can only go into 'leader-space'", problems[0])
 
     def test_a_second_leader_space_workspace_is_refused_and_ordinary_tabs_are_untouched(self):
         self.assertEqual(len(ORGANIZER.leader_restore_problems(self.LIVE, "leader-space", [], False)), 1)
@@ -4298,6 +4298,85 @@ class LeaderConventionTests(unittest.TestCase):
         ), patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), redirect_stdout(out):
             self.assertEqual(ORGANIZER.restore_archive(args), "preview")
         self.assertIn("Blocked by the leader convention", out.getvalue())
+
+    SELECTED = "leader-space (selected tabs) (selected tabs)"
+
+    def test_a_selected_tabs_archive_of_leader_space_is_judged_as_leader_space(self):
+        capture = {"workspace": {"label": self.SELECTED}, "tabs": [self.tab("leader-nip")]}
+        label = ORGANIZER.leader_archive_workspace_label(capture)
+        self.assertEqual(label, "leader-space")
+        self.assertEqual(ORGANIZER.leader_restore_problems({}, label, capture["tabs"], False), [])
+        problems = ORGANIZER.leader_restore_problems(self.LIVE, label, capture["tabs"], False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("already open", problems[0])
+
+    def test_a_selected_tabs_archive_mixing_leader_and_other_tabs_never_restores_as_one_workspace(self):
+        capture = {"workspace": {"label": self.SELECTED}, "tabs": [self.tab("leader-nip"), self.tab("fm-some-crew")]}
+        label = ORGANIZER.leader_archive_workspace_label(capture)
+        problems = ORGANIZER.leader_restore_problems({}, label, capture["tabs"], False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("can only go into 'leader-space'", problems[0])
+
+    def test_a_selected_tabs_archive_of_ordinary_tabs_keeps_its_own_label(self):
+        capture = {"workspace": {"label": "crew (selected tabs)"}, "tabs": [self.tab("fm-some-crew")]}
+        self.assertEqual(ORGANIZER.leader_archive_workspace_label(capture), "crew (selected tabs)")
+        self.assertEqual(ORGANIZER.leader_restore_problems({}, "crew (selected tabs)", capture["tabs"], False), [])
+        leader = {"workspace": {"label": "crew (selected tabs)"}, "tabs": [self.tab("leader-nip")]}
+        self.assertEqual(len(ORGANIZER.leader_restore_problems({}, ORGANIZER.leader_archive_workspace_label(leader), leader["tabs"], False)), 1)
+
+    def test_a_leader_selected_tabs_archive_creates_a_workspace_named_leader_space(self):
+        archive = {
+            "archive_id": "example", "status": "archived",
+            "capture": {"workspace": {"label": self.SELECTED}, "tabs": [self.tab("leader-nip")]},
+        }
+        args = argparse.Namespace(
+            archive="example", session="esim", execute=True, confirm="example", force=False,
+            allow_unresumable_agents=True, resume_agents=False,
+        )
+        stop = ORGANIZER.OrganizerError("stop after the workspace create")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            ORGANIZER, "archive_by_id", return_value=(Path(temporary) / "example.json", archive)
+        ), patch.object(ORGANIZER, "session_snapshot", return_value={"workspaces": [], "tabs": [], "panes": []}), patch.object(
+            ORGANIZER, "run_json", side_effect=stop
+        ) as run_json:
+            with self.assertRaises(ORGANIZER.OrganizerError):
+                ORGANIZER.restore_archive(args)
+        run_json.assert_called_once()
+        self.assertEqual(run_json.call_args.args[0][:3], ["workspace", "create", "--label"])
+        self.assertEqual(run_json.call_args.args[0][3], "leader-space")
+
+    def move_args(self, to_workspace, execute=False):
+        return argparse.Namespace(
+            tab=["wC:t2"], to_workspace=to_workspace, session="esim", execute=execute, confirm=None,
+            allow_active=False, allow_unresumable_agents=True, resume_agents=False,
+        )
+
+    def test_move_tabs_never_moves_a_leader_tab_out_of_leader_space(self):
+        live = dict(self.LIVE, workspaces=self.LIVE["workspaces"] + [{"workspace_id": "wD", "label": "other"}])
+        captured = [dict(self.tab("leader-esim", "wC:t2"), source_workspace_id="wC", agent_restores=[])]
+        with patch.object(ORGANIZER, "session_snapshot", return_value=live), patch.object(
+            ORGANIZER, "capture_selected_tabs", return_value=captured
+        ), patch.object(ORGANIZER, "socket_call") as socket_call, patch.object(ORGANIZER, "run_json") as run_json:
+            with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Nothing was moved.*can only go into 'leader-space', not 'other'"):
+                ORGANIZER.move_tabs_command(self.move_args("wD", execute=True))
+        socket_call.assert_not_called()
+        run_json.assert_not_called()
+
+    def test_move_tabs_lets_a_leader_tab_go_into_leader_space_and_ordinary_tabs_anywhere(self):
+        captured = [dict(self.tab("leader-esim", "wC:t2"), source_workspace_id="wC", agent_restores=[])]
+        out = io.StringIO()
+        with patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), patch.object(
+            ORGANIZER, "capture_selected_tabs", return_value=captured
+        ), redirect_stdout(out):
+            ORGANIZER.move_tabs_command(self.move_args("wK"))
+        self.assertIn("Preview only", out.getvalue())
+        ordinary = [dict(self.tab("fm-some-crew", "wK:t9"), source_workspace_id="wK", agent_restores=[])]
+        out = io.StringIO()
+        with patch.object(ORGANIZER, "session_snapshot", return_value=self.LIVE), patch.object(
+            ORGANIZER, "capture_selected_tabs", return_value=ordinary
+        ), redirect_stdout(out):
+            ORGANIZER.move_tabs_command(self.move_args("wC"))
+        self.assertIn("Preview only", out.getvalue())
 
     def test_live_agent_sessions_maps_each_running_session_to_its_pane(self):
         self.assertEqual(ORGANIZER.live_agent_sessions(self.LIVE), {"7e5acf46-live": "wK:p2"})

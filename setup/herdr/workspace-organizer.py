@@ -329,6 +329,43 @@ def live_agent_sessions(snapshot: dict[str, Any]) -> dict[str, str]:
     return sessions
 
 
+SELECTED_TABS_SUFFIX = re.compile(r"(\s*\(selected tabs\))+$")
+
+
+def base_workspace_label(label: Any) -> str | None:
+    """A workspace label without the "(selected tabs)" marks an archive of part of that workspace adds."""
+    if label is None:
+        return None
+    return SELECTED_TABS_SUFFIX.sub("", str(label))
+
+
+def leader_destination_problems(workspace_label: str | None, tabs: list[dict[str, Any]]) -> list[str]:
+    """Why these tabs cannot go into a workspace with this label: a leader tab goes only into `leader-space`."""
+    leader_labels = [str(tab.get("label")) for tab in tabs if is_leader_tab_label(tab.get("label"))]
+    if not leader_labels:
+        return []
+    if workspace_label != LEADER_WORKSPACE_LABEL:
+        return [
+            f"tab {label!r} is a leader tab and can only go into {LEADER_WORKSPACE_LABEL!r}, not {workspace_label!r}"
+            for label in leader_labels
+        ]
+    return []
+
+
+def leader_archive_workspace_label(capture: dict[str, Any]) -> str | None:
+    """The workspace label an archive restores under.
+
+    An archive of only some tabs of a workspace is labelled "<workspace> (selected tabs)". Restored as a whole, its
+    leader tabs belong in `leader-space` itself, never in a workspace carrying that marked name.
+    """
+    label = capture.get("workspace", {}).get("label")
+    base = base_workspace_label(label)
+    tabs = capture.get("tabs", [])
+    if base == LEADER_WORKSPACE_LABEL and tabs and all(is_leader_tab_label(tab.get("label")) for tab in tabs):
+        return LEADER_WORKSPACE_LABEL
+    return None if label is None else str(label)
+
+
 def leader_restore_problems(
     snapshot: dict[str, Any], workspace_label: str | None, tabs: list[dict[str, Any]], destination_exists: bool
 ) -> list[str]:
@@ -345,12 +382,11 @@ def leader_restore_problems(
     for item in snapshot.get("tabs", []):
         if is_leader_tab_label(item.get("label")):
             live_tabs.setdefault(str(item.get("label")), []).append(str(item.get("tab_id")))
+    problems.extend(leader_destination_problems(workspace_label, tabs))
     for tab in tabs:
         label = tab.get("label")
         if not is_leader_tab_label(label):
             continue
-        if workspace_label != LEADER_WORKSPACE_LABEL:
-            problems.append(f"tab {label!r} is a leader tab and restores only into {LEADER_WORKSPACE_LABEL!r}, not {workspace_label!r}")
         if live_tabs.get(str(label)):
             problems.append(f"tab {label!r} is already open ({', '.join(live_tabs[str(label)])}), so a second one would duplicate it")
     return problems
@@ -3040,6 +3076,9 @@ def move_tabs_command(args: argparse.Namespace) -> None:
             f"The destination {args.to_workspace} already contains selected tab(s): {', '.join(same_workspace)}. "
             "Use reorder-tab for tabs that stay in the same workspace."
         )
+    problems = leader_destination_problems(destination.get("label"), captured_tabs)
+    if problems:
+        raise OrganizerError("Nothing was moved. " + "; ".join(problems) + ".")
     selected_ids = {tab["source_tab_id"] for tab in captured_tabs}
     active = [
         pane
@@ -3447,7 +3486,7 @@ def restore_into_new_workspace(
     workspace = capture.get("workspace", {})
     resuming = bool(args.resume_agents)
     cwd = first_cwd(capture)
-    command = ["workspace", "create", "--label", str(workspace.get("label") or "Restored workspace")]
+    command = ["workspace", "create", "--label", str(leader_archive_workspace_label(capture) or "Restored workspace")]
     if cwd:
         command.extend(["--cwd", cwd])
     created = result_of(run_json(command, args.session))
@@ -3540,7 +3579,7 @@ def restore_archive(args: argparse.Namespace) -> str:
     unavailable = unavailable_agent_restores(capture.get("tabs", []))
     live_snapshot = session_snapshot(args.session)
     leader_problems = leader_restore_problems(
-        live_snapshot, capture.get("workspace", {}).get("label"), capture.get("tabs", []), False
+        live_snapshot, leader_archive_workspace_label(capture), capture.get("tabs", []), False
     )
     if not args.execute:
         print(json.dumps(archive_summary(archive), indent=2))
@@ -3562,9 +3601,7 @@ def restore_archive(args: argparse.Namespace) -> str:
         )
     copy = None if args.force else layout_copy_of(archive, args.session)
     if not copy:
-        require_leader_restore_ok(
-            live_snapshot, capture.get("workspace", {}).get("label"), capture.get("tabs", []), False
-        )
+        require_leader_restore_ok(live_snapshot, leader_archive_workspace_label(capture), capture.get("tabs", []), False)
     if copy and not args.resume_agents:
         print(
             f"Archive {args.archive} already has its layout open as workspace {copy['workspace_id']}. Nothing was created. "
