@@ -2,8 +2,10 @@
 """Build the phase 1 transcript-reader prototype page.
 
 Throwaway prototype for the design checkpoint in ../DESIGN.md. It only reads:
-Claude Code session logs under ~/.claude/projects and the Firstmate fleet
-records under each home's state/ folder. It never writes outside --out.
+Claude Code session logs under ~/.claude/projects, the Firstmate fleet
+records under each home's state/ folder, and Herdr's live pane list (for the
+pane labels). It writes only the page and, beside it, a cache of pane labels
+so a closed pane keeps its name.
 
 Usage (from the repo root):
   python3 setup/transcript-reader/prototype/build_prototype.py \
@@ -28,6 +30,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -560,9 +563,73 @@ def build(args) -> dict:
             fleet.append(event)
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
+    labels = pane_labels([s["id"] for s in sessions], Path(args.out).expanduser().parent / "pane-labels.json")
+    for session in sessions:
+        session["pane"] = labels.get(session["id"])
+    if args.session:
+        # Chosen sessions read newest activity first; the page opens on the first one.
+        sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
     return {"generated": time.time(), "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
-            "summaries": summaries}
+            "summaries": summaries, "chosen": bool(args.session)}
+
+
+def herdr_panes() -> dict[str, dict]:
+    """Session id -> the Herdr pane running it, from every running Herdr session.
+
+    Read-only: `herdr session list`, `pane list` and `tab list`. No Herdr, no labels.
+    """
+    def call(*argv):
+        try:
+            done = subprocess.run(["herdr", *argv], capture_output=True, text=True, timeout=10)
+            return json.loads(done.stdout) if done.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            return None
+
+    listing = call("session", "list", "--json") or {}
+    panes = {}
+    for herdr_session in listing.get("sessions") or []:
+        name = herdr_session.get("name") or ""
+        if not herdr_session.get("running") or name.startswith("-"):
+            continue
+        panes_result = (call("--session", name, "pane", "list") or {}).get("result") or {}
+        tabs_result = (call("--session", name, "tab", "list") or {}).get("result") or {}
+        panes.update(pane_index(name, panes_result.get("panes") or [], tabs_result.get("tabs") or []))
+    return panes
+
+
+def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[str, dict]:
+    """Session id -> {label, title, herdr} for the agent panes of one Herdr session.
+
+    label is the name Herdr shows for the pane: its own label, else its tab's
+    label. title is the terminal title the agent set ("Bc36 spec handoff rule 3").
+    """
+    tab_labels = {tab.get("tab_id"): tab.get("label") or "" for tab in tabs}
+    found = {}
+    for pane in panes:
+        session = (pane.get("agent_session") or {}).get("value")
+        if not session:
+            continue
+        title = pane.get("terminal_title_stripped") or ""
+        label = pane.get("label") or tab_labels.get(pane.get("tab_id")) or title
+        found[session] = {"label": label, "title": title, "herdr": herdr_session}
+    return found
+
+
+def pane_labels(session_ids: list[str], cache_path: Path) -> dict[str, dict]:
+    """Live pane labels for these sessions, falling back to the last label seen when a pane has closed."""
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    live = herdr_panes()
+    cache.update(live)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=1, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass
+    return {sid: {**cache[sid], "live": sid in live} for sid in session_ids if sid in cache}
 
 
 def session_home(homes: list[dict], records: list[dict]) -> dict:

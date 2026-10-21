@@ -270,16 +270,18 @@
     const row = $("div", "controls");
     const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
     data.sessions.forEach((s, i) => {
-      const yours = s.exchanges.filter(e => e.source === "captain").length;
-      const first = s.exchanges.find(e => e.at), last = [...s.exchanges].reverse().find(e => e.at);
-      const [a, b] = first && last ? [fmtShortDay(first.at), fmtShortDay(last.at)] : [];
-      // "Oct 14-20" when both ends share a month, so the label fits a phone-width picker.
-      const span = !a ? "no turns" : a === b ? a : a.split(" ")[0] === b.split(" ")[0] ? `${a}-${b.split(" ")[1]}` : `${a} to ${b}`;
-      const where = s.where ? " · " + s.where.split("/").pop() : "";
-      const opt = $("option", null, `${homeName(s.home)}${where} · ${span} · ${yours} from you`);
+      // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
+      const name = s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
+        : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
+      const opt = $("option", null, name);
       opt.value = i; if (i === state.session) opt.selected = true; select.append(opt);
     });
-    select.addEventListener("change", () => { state.session = Number(select.value); render(); window.scrollTo(0, 0); });
+    select.addEventListener("change", () => {
+      state.session = Number(select.value);
+      // Keep the choice in the address, so a reload after a rebuild reopens the same session.
+      history.replaceState(null, "", "#s=" + data.sessions[state.session].id.slice(0, 8));
+      render(); window.scrollTo(0, 0);
+    });
     const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
@@ -291,7 +293,12 @@
     row.append(select, prev, next, needs, wakes);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
-    controls.append(row, summary);
+    const pane = session && session.pane;
+    const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
+    const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
+    const where = session ? `${homeName(session.home)} home${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
+    const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr} · ${where}` : `No Herdr pane found · ${where}`);
+    controls.append(row, origin, summary);
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", "No turns in this session.")); return; }
@@ -451,7 +458,9 @@
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
   });
   const biggest = data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
-  state.session = biggest;
+  const wanted = (location.hash.match(/^#s=([0-9a-f-]+)$/) || [])[1];
+  const fromHash = wanted ? data.sessions.findIndex(s => s.id.startsWith(wanted)) : -1;
+  state.session = fromHash >= 0 ? fromHash : data.chosen ? 0 : biggest;
   render();
 })();
 </script>

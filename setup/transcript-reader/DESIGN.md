@@ -39,4 +39,4 @@ Corpus: 30 home sessions, 2026-09-17 to 2026-10-17, 3,030 turns. Fleet view: the
 3. Ask-first-then-clip is the right layout. How asks get picked out (today: the word rules above) is reopened once the app's overall shape is settled.
 4. to 6. As recommended.
 
-To try the shape on particular sessions, pass them by id: `--session <id>` (repeatable). Only those sessions are read, each under the home that holds its working folder, and the fleet timeline starts at the earliest of them.
+To try the shape on particular sessions, keep a reading list with `python3 setup/transcript-reader/reader.py` (`add`, `remove`, `list`, `panes`; no argument rebuilds every listed session). A session can be named by id, by its first 8 characters, or by its Herdr pane label. Only listed sessions are read, each under the home that holds its working folder, and the fleet timeline starts at the earliest of them. The session picker shows each session by its Herdr name (pane or tab label, then the pane title), and the address keeps the chosen session across reloads.
