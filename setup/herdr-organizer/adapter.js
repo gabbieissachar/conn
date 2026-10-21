@@ -951,6 +951,61 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     });
   }
 
+  // Claude plan usage: one read-only `quota-axi --provider claude --full --json` call (the three windows the Context tab
+  // shows, nothing else). The browser sends only a `fresh` flag; without it quota-axi may reuse a reading under a
+  // minute old, so a page reload does not ask the vendor again. quota-axi runs on whichever `node` is first on PATH,
+  // and a Node build whose bundled certificates cannot verify the vendor fails every request with "fetch failed",
+  // so the macOS certificate bundle is added for this call when the caller has not set one. Only percentages, reset
+  // times and pace leave the server; the account, plan and credential evidence quota-axi holds do not.
+  const PLAN_WINDOWS = [
+    { id: 'five_hour', label: 'Current session' },
+    { id: 'seven_day', label: 'Current week' },
+    { id: 'model:fable', label: 'Current week (Fable)' },
+  ];
+  const PLAN_TIMEOUT_MS = 60000;
+  const PLAN_CA_BUNDLE = '/etc/ssl/cert.pem';
+  const PLAN_PACE = new Set(['behind', 'on_pace', 'ahead', 'unknown']);
+  const planTime = (value) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null);
+
+  function planUsage(fresh = false) {
+    return singleFlight(fresh ? 'plan-usage-fresh' : 'plan-usage', async () => {
+      const callEnv = runEnv();
+      if (!callEnv.NODE_EXTRA_CA_CERTS && await fsp.access(PLAN_CA_BUNDLE).then(() => true, () => false)) callEnv.NODE_EXTRA_CA_CERTS = PLAN_CA_BUNDLE;
+      // --full is what carries percent used, elapsed percent and the run-out projection; the default report omits them.
+      const args = ['--provider', 'claude', '--full', '--json', ...(fresh ? [] : ['--max-age', '1m'])];
+      const result = await runner('quota-axi', args, { env: callEnv, timeoutMs: PLAN_TIMEOUT_MS });
+      let provider = null;
+      try { provider = (JSON.parse(result.stdout).providers || []).find((item) => item && item.provider === 'claude') || null; } catch { /* no usable report */ }
+      if (!provider) throw new AdapterError('Claude plan usage could not be read. Is quota-axi installed and on PATH?', 502, 'plan_unavailable');
+      const reported = new Map((Array.isArray(provider.windows) ? provider.windows : []).filter((item) => item && typeof item.id === 'string').map((item) => [item.id, item]));
+      if (!PLAN_WINDOWS.some((item) => reported.has(item.id))) {
+        const state = provider.state && typeof provider.state === 'object' ? provider.state : {};
+        const attempts = Array.isArray(provider.attempts) ? provider.attempts : [];
+        if (state.status === 'auth_required' || attempts.some((item) => item && item.error === 'keychain_access_required')) {
+          throw new AdapterError('Claude plan usage needs a one-time Keychain approval. Run quota-axi --allow-keychain-prompt in a terminal, choose Always Allow, then refresh.', 502, 'plan_needs_approval');
+        }
+        throw new AdapterError(`Claude plan usage could not be read (${text(state.error, 60).replace(/[^A-Za-z0-9_ .:-]/g, '') || 'no windows reported'}).`, 502, 'plan_unavailable');
+      }
+      const windows = PLAN_WINDOWS.map(({ id, label }) => {
+        const item = reported.get(id);
+        const pace = item && item.pace && typeof item.pace === 'object' ? item.pace : {};
+        const percent = item ? number(item.percentUsed) : null;
+        const elapsed = number(pace.elapsedPercent);
+        return {
+          id,
+          label,
+          percent_used: percent === null ? null : Math.round(percent * 10) / 10,
+          resets_at: item ? planTime(item.resetsAt) : null,
+          elapsed_percent: elapsed === null ? null : Math.round(elapsed * 10) / 10,
+          pace: PLAN_PACE.has(pace.status) ? pace.status : 'unknown',
+          projected_exhausted_at: planTime(pace.projectedExhaustedAt),
+        };
+      });
+      const refreshed = provider.state && typeof provider.state === 'object' ? planTime(provider.state.refreshedAt) : null;
+      return { windows, read_at: refreshed };
+    });
+  }
+
   return {
     listSessions,
     listSessionsView,
@@ -969,6 +1024,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     listBundles,
     reconcilePreview,
     contextGauge,
+    planUsage,
     leaderSpace,
     handoffCommand,
     // exposed for later phases and tests

@@ -393,6 +393,14 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
   assert.match(html, /data-view="context"/);
 });
 
+test('context view: the Claude plan rail reads through plan-usage only, prints escaped, and never states a run-out the window outlasts', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /api\.run\('plan-usage', fresh \? \{ fresh: true \} : \{\}\)/);
+  for (const field of ['item.label', 'plan.error', 'plan.at', 'note.text']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  assert.match(view, /Date\.parse\(item\.projected_exhausted_at\) < Date\.parse\(item\.resets_at\)/, 'a run-out after the reset is not a run-out');
+  assert.match(view, /plan-reload/);
+});
+
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);

@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const { startServer, client, fakeRunner, fixture } = require('./helpers');
 const { childEnv } = require('../adapter');
 const { findLeaks } = require('../text');
@@ -709,6 +710,86 @@ test('context-gauge: a failing or unconfigured gauge is an error, not an empty l
     const { post } = await client(unconfigured);
     assert.equal((await post('context-gauge')).status, 501);
   } finally { await unconfigured.close(); }
+});
+
+const quotaReport = (provider) => JSON.stringify({ generatedAt: '2026-10-21T08:20:18.161Z', schemaVersion: 5, providers: [provider] });
+const quotaRunner = (stdout, code = 0) => fakeRunner({ handle: (file) => (file === 'quota-axi' ? { code, stdout, stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
+const quotaWindow = (id, label, percentUsed, pace, resetsAt = '2026-10-25T21:59:59.888546+00:00') => ({ id, label, kind: 'weekly', percentUsed, resetsAt, windowSeconds: 604800, percentRemaining: 100 - percentUsed, pace });
+
+test('plan-usage: returns the three Claude windows with pace and nothing else quota-axi knows', async () => {
+  const report = quotaReport({
+    provider: 'claude',
+    plan: 'max-secret-plan',
+    accountKeys: ['acct-secret-key'],
+    state: { status: 'fresh', stale: false, refreshedAt: '2026-10-21T08:20:52.083Z' },
+    windows: [
+      quotaWindow('extra_usage', 'extra usage', 0, { status: 'unknown' }),
+      quotaWindow('model:fable', 'Fable week', 78.04, { status: 'ahead', elapsedPercent: 34.7309, projectedExhaustedAt: '2026-10-23T00:00:00.000Z' }),
+      quotaWindow('five_hour', 'session', 20, { status: 'behind', elapsedPercent: 83.6256 }, '2026-10-21T09:09:59.888489+00:00'),
+      quotaWindow('seven_day', 'week', 30, { status: 'sideways', elapsedPercent: 34.7309 }),
+    ],
+  });
+  const fake = quotaRunner(report);
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('plan-usage');
+    assert.equal(response.status, 200);
+    const { windows, read_at: readAt } = response.json.data;
+    assert.deepEqual(windows.map((item) => item.id), ['five_hour', 'seven_day', 'model:fable'], 'fixed order, extra usage dropped');
+    assert.deepEqual(windows.map((item) => item.label), ['Current session', 'Current week', 'Current week (Fable)']);
+    assert.deepEqual(windows.map((item) => item.percent_used), [20, 30, 78]);
+    assert.deepEqual(windows.map((item) => item.pace), ['behind', 'unknown', 'ahead'], 'an unrecognised pace word becomes unknown');
+    assert.equal(windows[0].resets_at, '2026-10-21T09:09:59.888Z');
+    assert.equal(windows[0].elapsed_percent, 83.6);
+    assert.equal(windows[2].projected_exhausted_at, '2026-10-23T00:00:00.000Z');
+    assert.equal(readAt, '2026-10-21T08:20:52.083Z');
+    assert.equal(response.raw.includes('acct-secret-key') || response.raw.includes('max-secret-plan'), false, 'no account or plan evidence leaves the server');
+    const call = fake.calls.find((item) => item.file === 'quota-axi');
+    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json', '--max-age', '1m']);
+    assert.equal(server.api.ACTIONS['plan-usage'].tier, 0);
+  } finally { await server.close(); }
+});
+
+test('plan-usage: fresh skips the reuse window, and the macOS certificate bundle is added only when the caller has none', async () => {
+  const report = quotaReport({ provider: 'claude', state: { status: 'fresh' }, windows: [quotaWindow('five_hour', 'session', 5, { status: 'on_pace' })] });
+  const fake = quotaRunner(report);
+  const server = await startServer({ runner: fake.runner, env: {} });
+  try {
+    const { post } = await client(server);
+    assert.equal((await post('plan-usage', { fresh: true })).status, 200);
+    assert.equal((await post('plan-usage', { fresh: 'yes' })).status, 400, 'the browser can only send a boolean');
+    assert.equal((await post('plan-usage', { account: 'other' })).status, 400, 'no other parameter is accepted');
+    const [call] = fake.calls.filter((item) => item.file === 'quota-axi');
+    assert.deepEqual(call.args, ['--provider', 'claude', '--full', '--json']);
+    assert.equal(call.env.NODE_EXTRA_CA_CERTS, fs.existsSync('/etc/ssl/cert.pem') ? '/etc/ssl/cert.pem' : undefined);
+  } finally { await server.close(); }
+  const own = quotaRunner(report);
+  const kept = await startServer({ runner: own.runner, env: { NODE_EXTRA_CA_CERTS: '/custom/ca.pem' } });
+  try {
+    const { post } = await client(kept);
+    assert.equal((await post('plan-usage')).status, 200);
+    assert.equal(own.calls.find((item) => item.file === 'quota-axi').env.NODE_EXTRA_CA_CERTS, '/custom/ca.pem');
+  } finally { await kept.close(); }
+});
+
+test('plan-usage: says what is missing instead of showing an empty or stale card', async () => {
+  const cases = [
+    { name: 'keychain approval', stdout: quotaReport({ provider: 'claude', windows: [], state: { status: 'auth_required' }, attempts: [{ source: 'keychain', status: 'failed', error: 'keychain_access_required' }] }), code: 0, expect: /Keychain approval/ },
+    { name: 'vendor fetch failure', stdout: quotaReport({ provider: 'claude', windows: [], state: { status: 'error', error: 'fetch failed' } }), code: 0, expect: /could not be read \(fetch failed\)/ },
+    { name: 'no claude entry', stdout: JSON.stringify({ providers: [] }), code: 0, expect: /could not be read/ },
+    { name: 'quota-axi missing', stdout: '', code: 127, expect: /quota-axi installed/ },
+  ];
+  for (const item of cases) {
+    const server = await startServer({ runner: quotaRunner(item.stdout, item.code).runner });
+    try {
+      const { post } = await client(server);
+      const response = await post('plan-usage');
+      assert.equal(response.status, 502, item.name);
+      assert.match(response.raw, item.expect, item.name);
+      assert.equal(response.raw.includes('/secret/path'), false, `${item.name}: no stderr leaks`);
+    } finally { await server.close(); }
+  }
 });
 
 test('leader-space: reports each identity as ok, missing, duplicate or elsewhere without changing anything', async () => {
