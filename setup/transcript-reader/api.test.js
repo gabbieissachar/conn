@@ -11,22 +11,28 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { create, TOKEN_HEADER } = require('./api');
+const { create, TOKEN_HEADER, TOKEN_META } = require('./api');
 
 const A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const B = 'bbbbbbbb-2222-4222-8222-222222222222';
 const C = 'cccccccc-3333-4333-8333-333333333333';
 
-function fixtureTree() {
+// A built page as build_prototype.write_page leaves it: the token tag unfilled, and the
+// payload escaping "<" (here it quotes a transcript that mentions the tag's placeholder).
+const builtPage = (title) => `<!doctype html><head>${TOKEN_META}<title>${title}</title></head>`
+  + '<script id="payload" type="application/json">{"text":"\\u003cmeta name=\\"reader-token\\" content=\\"__READER_TOKEN__\\">"}</script>';
+const tokenIn = (html) => (html.match(/<meta name="reader-token" content="([^"]*)">/) || [])[1];
+
+function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'transcript-reader-'));
   const root = path.join(base, 'repo');
-  const outDir = path.join(root, 'setup', 'transcript-reader', 'out');
+  const outDir = path.join(root, ...outParts);
   const projectsDir = path.join(base, 'projects');
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(projectsDir, '-Users-someone-home'), { recursive: true });
   const write = (file, text) => fs.writeFileSync(file, text);
-  write(path.join(outDir, 'prototype.html'), '<!doctype html><title>reader</title>');
-  write(path.join(outDir, 'questionnaire.html'), '<!doctype html><title>sheet</title>');
+  write(path.join(outDir, 'prototype.html'), builtPage('reader'));
+  write(path.join(outDir, 'questionnaire.html'), builtPage('sheet'));
   write(path.join(outDir, 'sessions.txt'), `${A}\n${B}\n`);
   write(path.join(outDir, 'prototype.stamp'), String(Date.now() / 1000 + 60));
   write(path.join(outDir, 'questionnaire.stamp'), '1');
@@ -73,16 +79,23 @@ function fakeHerdr() {
   return herdr;
 }
 
-async function start({ env = {} } = {}) {
-  const tree = fixtureTree();
+async function start({ env = {}, outParts } = {}) {
+  const tree = fixtureTree({ outParts });
   const herdr = fakeHerdr();
   let api;
-  // Requests this module does not claim get a marker answer, standing in for serve.sh's static handler.
-  const server = http.createServer((req, res) => { if (!api.handle(req, res)) { res.writeHead(299); res.end('static'); } });
+  // Requests this module does not claim go to a copy of serve.sh's static handler, which
+  // reads any file under the repo; its answers are marked so a test can tell who answered.
+  const server = http.createServer((req, res) => {
+    if (api.handle(req, res)) return;
+    fs.readFile(path.join(tree.root, decodeURIComponent(req.url.split('?')[0])), (error, data) => {
+      if (error) { res.writeHead(404, { 'X-Static': '1' }); res.end('static: not found'); return; }
+      res.writeHead(200, { 'X-Static': '1', 'Access-Control-Allow-Origin': '*' }); res.end(data);
+    });
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, now: () => clock });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, now: () => clock });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -96,12 +109,14 @@ async function start({ env = {} } = {}) {
     if (payload !== undefined) req.write(payload);
     req.end();
   });
-  const token = (await request({ path: '/api/transcript-reader/token' })).json.token;
+  // The browser opening the page in a tab, which is the only way to the token.
+  const open = (urlPath = '/setup/transcript-reader/out/prototype.html', headers = {}) => request({ path: urlPath, headers: { 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', ...headers } });
+  const token = tokenIn((await open()).raw);
   const state = (follow = false) => request({ path: '/api/transcript-reader/state' + (follow ? '?follow=1' : ''), headers: { [TOKEN_HEADER]: token } });
   const send = (body, headers = {}) => request({ method: 'POST', path: '/api/transcript-reader/send', headers: { Origin: origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: token, ...headers }, body });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   return {
-    tree, herdr, request, state, send, settle, origin,
+    tree, herdr, request, open, token, state, send, settle, origin,
     tick: (ms) => { clock += ms; },
     close: () => new Promise((resolve) => server.close(() => { tree.cleanup(); resolve(); })),
   };
@@ -110,15 +125,65 @@ async function start({ env = {} } = {}) {
 test('pages: served same-origin without CORS headers; cross-site and foreign hosts are refused', async () => {
   const t = await start();
   try {
-    const page = await t.request({ path: '/setup/transcript-reader/out/prototype.html', headers: { 'Sec-Fetch-Site': 'none' } });
+    const page = await t.open();
     assert.equal(page.status, 200);
     assert.match(page.raw, /reader/);
     assert.equal(Object.keys(page.headers).some((name) => name.startsWith('access-control')), false);
     assert.equal(page.headers['cache-control'], 'no-store');
-    assert.equal((await t.request({ path: '/setup/transcript-reader/out/questionnaire.html' })).status, 200);
+    assert.equal((await t.open('/setup/transcript-reader/out/questionnaire.html')).status, 200);
     assert.equal((await t.request({ path: '/setup/transcript-reader/out/prototype.html', headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
     assert.equal((await t.request({ path: '/setup/transcript-reader/out/prototype.html', headers: { Host: 'evil.example:80' } })).status, 403);
     assert.equal((await t.request({ path: '/setup/transcript-reader/out/prototype.html', headers: { Origin: 'http://evil.example' } })).status, 403);
+  } finally { await t.close(); }
+});
+
+test('pages: opened in a tab, a page carries the token in its tag only; it refuses frames and cuts off its opener', async () => {
+  const t = await start();
+  try {
+    const page = await t.open();
+    assert.match(t.token, /^[0-9a-f]{64}$/);
+    assert.equal(page.raw.split(t.token).length, 2, 'the token appears once, in the tag');
+    assert.ok(page.raw.includes('\\u003cmeta name=\\"reader-token\\" content=\\"__READER_TOKEN__\\">'), 'transcript text that mentions the tag is left alone');
+    assert.match(fs.readFileSync(path.join(t.tree.outDir, 'prototype.html'), 'utf8'), /content="__READER_TOKEN__">/, 'the built file never holds a token');
+    assert.equal(page.headers['content-security-policy'], "frame-ancestors 'none'");
+    assert.equal(page.headers['x-frame-options'], 'DENY');
+    assert.equal(page.headers['cross-origin-opener-policy'], 'same-origin');
+    assert.equal(tokenIn((await t.request({ path: '/setup/transcript-reader/out/prototype.html' })).raw), t.token, 'a request without Fetch-Metadata (curl) gets the page, as with the guard');
+  } finally { await t.close(); }
+});
+
+test('pages: a script fetching, framing or embedding a page from this origin gets neither the page nor the token', async () => {
+  const t = await start();
+  try {
+    for (const headers of [
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' },
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'same-origin', 'Sec-Fetch-Dest': 'empty' },
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' },
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'object' },
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' },
+    ]) {
+      const response = await t.request({ path: '/setup/transcript-reader/out/prototype.html', headers });
+      assert.equal(response.status, 403, JSON.stringify(headers));
+      assert.equal(response.raw.includes(t.token), false);
+      assert.doesNotMatch(response.raw, /payload/);
+    }
+    assert.equal((await t.open('/setup/transcript-reader/out/prototype.html', { 'Sec-Fetch-Site': 'same-origin' })).status, 200, 'a link from the other page, or a reload, still opens it');
+    for (const urlPath of ['/api/transcript-reader/token', '/api/transcript-reader/page?name=prototype.html']) {
+      const response = await t.request({ path: urlPath, headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } });
+      assert.equal(response.status, 403, urlPath);
+      assert.equal(response.raw.includes(t.token), false, urlPath);
+    }
+  } finally { await t.close(); }
+});
+
+test('pages: with the token, a page reads its own built text to swap in new turns', async () => {
+  const t = await start();
+  try {
+    const response = await t.request({ path: '/api/transcript-reader/page?name=prototype.html', headers: { [TOKEN_HEADER]: t.token } });
+    assert.equal(response.status, 200);
+    assert.equal(response.json.html, fs.readFileSync(path.join(t.tree.outDir, 'prototype.html'), 'utf8'));
+    assert.equal((await t.request({ path: '/api/transcript-reader/page?name=sessions.txt', headers: { [TOKEN_HEADER]: t.token } })).status, 404);
+    assert.equal((await t.request({ path: '/api/transcript-reader/page?name=../out/sessions.txt', headers: { [TOKEN_HEADER]: t.token } })).status, 404);
   } finally { await t.close(); }
 });
 
@@ -140,16 +205,43 @@ test('pages: the reading list, stamps and any other spelling of out/ are never h
       assert.equal(response.status, 404, urlPath);
       assert.doesNotMatch(response.raw, new RegExp(A), urlPath);
     }
-    assert.equal((await t.request({ path: '/setup/transcript-reader/README.md' })).status, 299, 'other files stay with the static handler');
+    fs.writeFileSync(path.join(t.tree.root, 'setup', 'transcript-reader', 'README.md'), 'readme');
+    const other = await t.request({ path: '/setup/transcript-reader/README.md' });
+    assert.equal(other.headers['x-static'], '1', 'other files stay with the static handler');
+    assert.equal(other.raw, 'readme');
   } finally { await t.close(); }
 });
 
-test('api: every call but the token needs the token; a cross-origin token request is refused', async () => {
+test('pages: a spelling the file system folds (Unicode form and case) or a symlink into out/ is still kept from the static handler', async () => {
+  // out/ under a folder whose name is not ASCII, written in composed form (é).
+  const t = await start({ outParts: ['setup', 'caf\u00e9', 'out'] });
+  try {
+    const variants = [
+      '/setup/cafe%CC%81/out/sessions.txt',  // decomposed (e + combining accent)
+      '/setup/CAFE%CC%81/OUT/sessions.txt',  // decomposed and upper case: toLowerCase() alone misses it
+      '/setup/CAF%C3%89/out/sessions.txt',   // composed upper case
+    ];
+    for (const urlPath of variants) {
+      const response = await t.request({ path: urlPath });
+      assert.doesNotMatch(response.raw, new RegExp(A), urlPath);
+      // Where this file system folds the spelling into out/, this module must have answered it.
+      if (fs.existsSync(path.join(t.tree.root, decodeURIComponent(urlPath)))) assert.equal(response.headers['x-static'], undefined, urlPath);
+    }
+    fs.symlinkSync(t.tree.outDir, path.join(t.tree.root, 'setup', 'shortcut'));
+    const linked = await t.request({ path: '/setup/shortcut/sessions.txt' });
+    assert.equal(linked.status, 404);
+    assert.equal(linked.headers['x-static'], undefined);
+    assert.doesNotMatch(linked.raw, new RegExp(A));
+  } finally { await t.close(); }
+});
+
+test('api: every call needs the token; there is no endpoint that hands it out', async () => {
   const t = await start();
   try {
     assert.equal((await t.request({ path: '/api/transcript-reader/state' })).status, 403);
     assert.equal((await t.request({ path: '/api/transcript-reader/state', headers: { [TOKEN_HEADER]: 'wrong' } })).status, 403);
-    assert.equal((await t.request({ path: '/api/transcript-reader/token', headers: { Origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/token' })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/token', headers: { [TOKEN_HEADER]: t.token } })).status, 404);
     assert.equal((await t.request({ method: 'OPTIONS', path: '/api/transcript-reader/send' })).status, 403);
     assert.equal((await t.send({ session_id: A, text: 'hi' }, { 'Content-Type': 'text/plain' })).status, 415);
     assert.equal((await t.send({ session_id: A, text: 'hi' }, { Origin: 'http://evil.example' })).status, 403);

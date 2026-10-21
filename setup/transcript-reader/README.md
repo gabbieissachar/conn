@@ -30,6 +30,10 @@ A `file://` copy of the page still reads, but cannot refresh, follow or send.
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
 The server routes are in `api.js`: the pages under `out/` and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
+Other apps served on the same port share the page's origin, so no endpoint hands out the token.
+The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it, so a script in another app on that port cannot read the transcripts or send a prompt either.
+A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
+A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` too, never by the shared static handler.
 
 ## Tests
 

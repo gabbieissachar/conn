@@ -5,27 +5,34 @@
   const live = (() => {
     const API = "/api/transcript-reader/";
     const served = location.protocol === "http:" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-    let token = null, header = null;
-    async function connect() {
-      const r = await fetch(API + "token", { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.message || "The server refused the page.");
-      token = j.token; header = j.header;
+    // The server writes its per-start token into the page as it serves it (api.js);
+    // no endpoint hands it out, so other pages on this origin cannot get it.
+    const token = (document.querySelector('meta[name="reader-token"]') || {}).content || "";
+    // A restarted server has a new token, which only a fresh load of the page brings:
+    // reload once, unless a text box is being typed in or the last try was under a minute ago.
+    function reloadForToken() {
+      if (document.activeElement && document.activeElement.tagName === "TEXTAREA") return false;
+      let last = 0;
+      try { last = Number(sessionStorage.getItem("reader-token-reload")) || 0; } catch (e) { last = 0; }
+      if (Date.now() - last < 60000) return false;
+      try { sessionStorage.setItem("reader-token-reload", String(Date.now())); } catch (e) { /* reload anyway */ }
+      location.reload();
+      return true;
     }
     async function call(path, options = {}) {
       if (!served) throw new Error("Open the served page (reader.py prints its address) to send or follow.");
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (!token) await connect();
-        const r = await fetch(API + path, { cache: "no-store", ...options, headers: { ...(options.headers || {}), [header]: token } });
-        let j = null; try { j = await r.json(); } catch (e) { j = null; }
-        // A restarted server hands out a new token: fetch it once and try again.
-        if (r.status === 403 && attempt === 0 && j && /token/i.test(j.message || "")) { token = null; continue; }
-        if (!r.ok) throw new Error((j && j.message) || `The server answered ${r.status}.`);
-        return j;
+      if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("This page has no server token: reload it from the address reader.py prints.");
+      const r = await fetch(API + path, { cache: "no-store", ...options, headers: { ...(options.headers || {}), "x-transcript-reader-token": token } });
+      let j = null; try { j = await r.json(); } catch (e) { j = null; }
+      if (r.status === 403 && j && /token/i.test(j.message || "")) {
+        throw new Error(reloadForToken() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
       }
-      throw new Error("The server refused the page.");
+      if (!r.ok) throw new Error((j && j.message) || `The server answered ${r.status}.`);
+      return j;
     }
     const state = follow => call("state" + (follow ? "?follow=1" : ""));
+    // The built page's current text, for a page that swaps in new turns without reloading.
+    const page = name => call("page?name=" + encodeURIComponent(name)).then(j => j.html);
     const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     // tick runs every 2 seconds while the page is visible, and at once when it is shown again.
     function poll(tick) {
@@ -52,5 +59,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, send, poll, pointer };
+    return { served, state, page, send, poll, pointer };
   })();

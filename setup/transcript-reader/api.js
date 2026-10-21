@@ -3,8 +3,9 @@
 // HTTP surface for the transcript reader. serve.sh requires this module and hands
 // it every request before its shared CORS handling.
 //
-//   GET  /setup/transcript-reader/out/<page>.html  the built pages, same-origin only
-//   GET  /api/transcript-reader/token               same-origin only; the per-start token
+//   GET  /setup/transcript-reader/out/<page>.html  the built pages, opened in a browser tab
+//                                                   only; each carries the per-start token
+//   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
 //   POST /api/transcript-reader/send                { session_id, text }: the text goes to the
@@ -14,6 +15,12 @@
 // shared static handler, which sends Access-Control-Allow-Origin: *. Every route
 // uses the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, token)
 // and never sends an Access-Control-Allow-* header.
+//
+// Other apps share this origin, so the token is never handed out by an endpoint.
+// It is written into a page only when the browser opens that page as a top-level
+// document (Fetch-Metadata navigate/document), and the page refuses framing and
+// cuts off its opener. A script on another page of this origin therefore cannot
+// fetch, frame or open a page to read the token, the transcripts or send a prompt.
 //
 // Writes: reader.py rebuilds the pages when a listed session log changes, and adds
 // the session Herdr has focused to the reading list while a page follows focus.
@@ -29,6 +36,11 @@ const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer
 const API = '/api/transcript-reader/';
 const PAGES = new Set(['prototype.html', 'questionnaire.html']);
 const TOKEN_HEADER = 'x-transcript-reader-token';
+// The templates carry this tag; the server fills it in at serve time, so the built
+// file never holds a token and the build-time script hash stays valid. The page's
+// payload escapes every "<", so the tag cannot occur in transcript text.
+const TOKEN_SLOT = '__READER_TOKEN__';
+const TOKEN_META = '<meta name="reader-token" content="' + TOKEN_SLOT + '">';
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 // Newline and tab are the only control characters a message may carry, so no escape
@@ -286,26 +298,41 @@ function create({
   // ------------------------------------------------------------------- routes
 
   function servePage(req, res, name) {
+    const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
     const verdict = guard.check(req, { requireToken: false });
-    if (!verdict.ok) { res.writeHead(verdict.status, { 'Content-Type': 'text/plain' }); res.end(verdict.message); return; }
-    if (req.method !== 'GET') { res.writeHead(405, { 'Content-Type': 'text/plain' }); res.end('GET only'); return; }
-    if (!PAGES.has(name)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
-    fs.readFile(path.join(outDir, name), (error, data) => {
-      if (error) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not built yet: run python3 setup/transcript-reader/reader.py'); return; }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
-      res.end(data);
+    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (req.method !== 'GET') { text(405, 'GET only'); return; }
+    // Only a browser tab opening the page gets it (and so the token), never a script's
+    // fetch, a frame or an embed. Like the guard, a request without Fetch-Metadata
+    // (curl, an old browser) is let through.
+    const mode = req.headers['sec-fetch-mode'];
+    const dest = req.headers['sec-fetch-dest'];
+    if ((mode !== undefined && mode !== 'navigate') || (dest !== undefined && dest !== 'document')) {
+      text(403, 'Open this page in its own browser tab.');
+      return;
+    }
+    if (!PAGES.has(name)) { text(404, 'Not found'); return; }
+    fs.readFile(path.join(outDir, name), 'utf8', (error, html) => {
+      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/reader.py'); return; }
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
+      });
+      res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
     });
   }
 
   async function dispatch(req, res, pathname, query) {
-    if (pathname === API + 'token' && req.method === 'GET') {
-      const verdict = guard.check(req, { requireToken: false });
-      if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
-      send(res, 200, { status: 'ok', token: guard.token, header: guard.tokenHeader });
-      return;
-    }
     const verdict = guard.check(req);
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (pathname === API + 'page' && req.method === 'GET') {
+      const name = query.get('name');
+      if (!PAGES.has(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
+      let html;
+      try { html = fs.readFileSync(path.join(outDir, name), 'utf8'); } catch { fail(res, 404, 'not_built', 'Not built yet.'); return; }
+      send(res, 200, { status: 'ok', html });
+      return;
+    }
     if (pathname === API + 'state' && req.method === 'GET') {
       send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1')) });
       return;
@@ -317,24 +344,42 @@ function create({
     fail(res, 404, 'not_found', 'Not found.');
   }
 
-  // Any path that resolves into out/ belongs here, however it is spelled (encoded
-  // slashes, doubled slashes, another letter case), so the shared static handler
-  // never serves a page or the reading list with its wildcard CORS header.
-  function insideOut(pathname) {
-    let decoded;
-    try { decoded = decodeURIComponent(pathname); } catch { return { inside: true, name: '' }; }
-    const full = path.join(root, decoded);
-    const base = outDir.toLowerCase();
-    const lower = full.toLowerCase();
-    if (lower !== base && !lower.startsWith(base + path.sep)) return { inside: false };
-    return { inside: true, name: path.relative(outDir, full) };
+  // Where a path really is, as the file system resolves it: the nearest existing
+  // part goes through realpath (symlinks, and macOS's own case and Unicode folding),
+  // and the missing rest is appended as spelled.
+  function realLocation(full) {
+    const rest = [];
+    let head = full;
+    for (;;) {
+      try { return path.join(fs.realpathSync.native(head), ...rest); } catch { /* not there: try its parent */ }
+      const parent = path.dirname(head);
+      if (parent === head) return full;
+      rest.unshift(path.basename(head));
+      head = parent;
+    }
+  }
+
+  // Any request whose path lands in out/ belongs here, however it is spelled (encoded
+  // slashes, doubled slashes, another letter case or Unicode form, a symlink), so the
+  // shared static handler never serves a page or the reading list with its wildcard
+  // CORS header. Both spellings are checked: the parsed URL, and the raw one that
+  // serve.sh's static handler decodes.
+  function insideOut(req, url) {
+    const realOut = realLocation(outDir);
+    for (const spelling of [url.pathname, req.url.split('?')[0]]) {
+      let decoded;
+      try { decoded = decodeURIComponent(spelling); } catch { return { inside: true, name: '' }; }
+      const real = realLocation(path.join(root, decoded));
+      if (real === realOut || real.startsWith(realOut + path.sep)) return { inside: true, name: path.relative(realOut, real) };
+    }
+    return { inside: false };
   }
 
   // Returns true when the request belongs to this module (and is handled here).
   function handle(req, res) {
     let url;
     try { url = new URL(req.url, 'http://localhost'); } catch { return false; }
-    const page = insideOut(url.pathname);
+    const page = insideOut(req, url);
     if (page.inside) { servePage(req, res, page.name); return true; }
     if (!url.pathname.startsWith(API)) return false;
     dispatch(req, res, url.pathname, url.searchParams).catch((error) => {
@@ -348,4 +393,4 @@ function create({
   return { handle, guard, scan };
 }
 
-module.exports = { create, checkText, API, TOKEN_HEADER };
+module.exports = { create, checkText, API, TOKEN_HEADER, TOKEN_META };

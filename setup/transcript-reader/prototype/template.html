@@ -11,6 +11,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="reader-token" content="__READER_TOKEN__">
 <meta name="template" content="__TEMPLATE_HASH__">
 <title>Transcript reader (prototype)</title>
 <style>
@@ -644,7 +645,7 @@
   async function refreshData() {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
-    const html = await (await fetch(location.pathname, { cache: "no-store" })).text();
+    const html = await live.page(location.pathname.split("/").pop());
     const next = new DOMParser().parseFromString(html, "text/html");
     const template = doc => (doc.querySelector('meta[name="template"]') || {}).content;
     // A different template hash means the page's own code or styles changed: load it fresh.
