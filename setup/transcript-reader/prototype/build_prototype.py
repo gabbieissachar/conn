@@ -563,6 +563,14 @@ def build(args) -> dict:
             fleet.append(event)
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+    from build_questionnaire import parse_questionnaire  # it imports this module, so only here
+    for session in sessions:
+        for exchange in session["exchanges"]:
+            # A reply that asks for keyed answers links to the answer sheet, which opens on it.
+            if exchange["reply"] and parse_questionnaire(exchange["reply"]):
+                exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
     labels = pane_labels([s["id"] for s in sessions], Path(args.out).expanduser().parent / "pane-labels.json")
     for session in sessions:
         session["pane"] = labels.get(session["id"])

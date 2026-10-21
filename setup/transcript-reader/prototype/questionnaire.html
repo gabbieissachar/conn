@@ -1,0 +1,381 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE: answering a grill-me review's decision cards in the page.
+  build_questionnaire.py fills __PAYLOAD__ with private transcript text, so the built
+  page lives in the gitignored out/ folder. No network requests, no remote fonts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; base-uri 'none'; form-action 'none'">
+<title>Answer sheet (prototype)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: #1d2433; --muted: #5d6779; --faint: #8b93a3; --line: #dfe3ea; --paper: #ffffff; --wash: #f4f5f8;
+    --you: #1f5fd1; --you-wash: #e9f0fd; --ask: #8a5a00; --ask-wash: #fff3d6; --ask-line: #f0c45c;
+    --ok: #2f6b45; --ok-wash: #e8f3ec; --open: #b4232d; --code: #f1f3f6;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
+      --you: #8db4ff; --you-wash: #1d2a44; --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e;
+      --ok: #8fd3a8; --ok-wash: #1b3024; --open: #ff8a8a; --code: #252a34;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.5 var(--sans); }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  a { color: var(--you); overflow-wrap: anywhere; }
+  :focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line); }
+  .inner { max-width: 30rem; margin: 0 auto; padding: 8px 12px; }
+  .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+  .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
+  select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .seg { display: flex; gap: 4px; margin-top: 6px; }
+  .seg button { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 4px; font-size: 13px; }
+  .seg button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  main { max-width: 30rem; margin: 0 auto; padding: 10px 12px 170px; }
+
+  details.context { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin-bottom: 12px; }
+  details.context summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+  .md { font-size: 15px; }
+  .md p { margin: .4em 0; }
+  .md h4 { margin: .7em 0 .2em; font-size: 15px; }
+  .md .li { padding-left: 1.1em; text-indent: -.8em; margin: 0 0 .25em; }
+  .md code, .card code, .row code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; }
+
+  .key { display: inline-block; font: 700 12px var(--mono); background: var(--ask-wash); color: var(--ask); border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
+  .key.done { background: var(--ok-wash); color: var(--ok); }
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .card.answered { border-left: 4px solid var(--ok); }
+  .q { font-weight: 600; }
+  .rec { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+  .rec b { color: var(--ink); font-weight: 600; }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt { border: 1px solid var(--line); background: var(--wash); border-radius: 99px; padding: 5px 11px; font-size: 14px; text-align: left; }
+  .opt[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: #fff; }
+  .opt .star { color: var(--ask); font-size: 12px; margin-left: 4px; }
+  .opt[aria-pressed="true"] .star { color: #fff; }
+  .opt-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .other { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--paper); font-size: 14px; resize: vertical; min-height: 2.4em; }
+  .hint { font-size: 12px; color: var(--faint); margin-top: 6px; }
+  .section { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+  .done-item, .locked-item { font-size: 14px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .done-item small, .locked-item small { color: var(--muted); display: block; }
+  .locked-item { color: var(--muted); }
+
+  /* One at a time */
+  .step { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .progress { height: 4px; background: var(--line); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--you); }
+  .big .opts { flex-direction: column; }
+  .big .opt { border-radius: 10px; padding: 10px 12px; font-size: 15px; }
+  .nav { display: flex; gap: 8px; margin-top: 12px; }
+  .nav button { flex: 1; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 8px; font-size: 14px; }
+  .review-row { display: grid; grid-template-columns: 2.6rem 1fr; gap: 0 6px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .review-row .a { font: 13px var(--mono); color: var(--you); overflow-wrap: anywhere; }
+  .review-row .a.none { color: var(--open); font-family: var(--sans); }
+
+  /* Compact sheet */
+  .row:first-child { border-top: 0; }
+  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; }
+  .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
+  .row { display: grid; grid-template-columns: 2.6rem 1fr; gap: 2px 6px; padding: 8px 0; border-top: 1px solid var(--line); align-items: start; }
+  .row .qline { font-size: 14px; cursor: pointer; }
+  .row .qline.clamp { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  .row select, .row input { grid-column: 2; width: 100%; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .row .rec { grid-column: 2; margin: 0; }
+
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); }
+  .dock .inner { padding: 8px 12px 10px; }
+  .dock .line { font: 13px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; max-height: 5.6em; overflow-y: auto; }
+  .dock .line .gap { color: var(--open); }
+  .dock .acts { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+  .dock .count { flex: 1; font-size: 12px; color: var(--muted); }
+  .dock button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+  .dock button:disabled { opacity: .45; cursor: default; }
+  .dock button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
+  .empty { color: var(--muted); text-align: center; padding: 30px 0; }
+</style>
+</head>
+<body>
+<header class="bar"><div class="inner">
+  <div class="title">Answer sheet <span class="proto">prototype</span></div>
+  <select class="pick" id="pick" aria-label="Questionnaire"></select>
+  <div class="seg" id="seg" role="group" aria-label="Layout">
+    <button data-v="cards">A · All cards</button>
+    <button data-v="steps">B · One at a time</button>
+    <button data-v="sheet">C · Compact</button>
+  </div>
+  <div class="meta" id="meta"></div>
+</div></header>
+<main id="main"></main>
+<div class="dock"><div class="inner">
+  <div class="line" id="line" aria-live="polite"></div>
+  <div class="acts">
+    <span class="count" id="count"></span>
+    <button id="recommended" title="Fill unanswered cards with the option marked recommended">★ Fill</button>
+    <button id="clear">Clear</button>
+    <button class="primary" id="copy">Copy</button>
+  </div>
+</div></div>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+(() => {
+  "use strict";
+  const data = JSON.parse(document.getElementById("payload").textContent);
+  const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
+  function inline(text) {
+    // Transcript text comes from outside, so every quote is escaped before any markup is added.
+    const esc = String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    return esc.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(https?:\/\/[^\s<>"')]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+  }
+  function markdown(text) {
+    const box = $("div", "md"); let pre = null, table = null;
+    text.split("\n").forEach(line => {
+      if (line.trimStart().startsWith("```")) { pre = pre ? null : box.appendChild($("pre")); return; }
+      if (pre) { pre.textContent += (pre.textContent ? "\n" : "") + line; return; }
+      if (line.trimStart().startsWith("|")) { table = table || box.appendChild($("pre")); table.textContent += (table.textContent ? "\n" : "") + line; return; }
+      table = null;
+      if (!line.trim()) return;
+      const h = line.match(/^#{1,6}\s+(.*)/), li = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)/);
+      const el = h ? $("h4") : li ? $("div", "li") : $("p");
+      el.innerHTML = h ? inline(h[1]) : li ? "• " + inline(li[1]) : inline(line);
+      box.append(el);
+    });
+    return box;
+  }
+
+  const qs = data.questionnaires;
+  const state = { q: 0, view: "cards", step: 0, expanded: new Set() };
+  try { state.view = localStorage.getItem("tr-q-view") || "cards"; } catch (e) { /* storage blocked: default layout */ }
+  const answers = {};   // questionnaire index -> { key: value }
+  const storeKey = q => `tr-q:${q.session}:${Math.round(q.at || 0)}`;
+  function load(i) {
+    if (answers[i]) return answers[i];
+    try { answers[i] = JSON.parse(localStorage.getItem(storeKey(qs[i])) || "{}"); } catch (e) { answers[i] = {}; }
+    return answers[i];
+  }
+  function save() { try { localStorage.setItem(storeKey(qs[state.q]), JSON.stringify(load(state.q))); } catch (e) { /* draft not kept */ } }
+  const clean = v => v.replace(/[;\n\r]+/g, ", ").replace(/\s+/g, " ").trim();
+  function setAnswer(key, value) {
+    const a = load(state.q);
+    if (value && clean(value)) a[key] = clean(value); else delete a[key];
+    save(); renderDock();
+  }
+  const fields = q => [...q.cards.map(c => ({ ...c, kind: "card" })), ...q.corrections.map(k => ({ key: k, kind: "correction", ...q.resolved.find(r => r.key === k) }))];
+
+  // ---------------------------------------------------------------- shared pieces
+  function optionButtons(card, onPick) {
+    const a = load(state.q), wrap = $("div", "opts");
+    const custom = a[card.key] != null && !card.options.some(o => o.value === a[card.key]);
+    card.options.forEach(o => {
+      const b = $("button", "opt", o.value); b.setAttribute("aria-pressed", String(a[card.key] === o.value));
+      if (o.recommended) { const s = $("span", "star", "★ recommended"); b.append(s); }
+      b.addEventListener("click", () => { setAnswer(card.key, a[card.key] === o.value ? "" : o.value); onPick(); });
+      wrap.append(b);
+    });
+    const other = $("button", "opt", "Write my own"); other.setAttribute("aria-pressed", String(custom));
+    wrap.append(other);
+    const box = $("textarea", "other"); box.placeholder = `Your answer for ${card.key}`; box.rows = 1;
+    box.value = custom ? a[card.key] : ""; box.hidden = !custom;
+    other.addEventListener("click", () => { box.hidden = false; box.focus(); });
+    box.addEventListener("input", () => { setAnswer(card.key, box.value); wrap.querySelectorAll(".opt").forEach(b => b.setAttribute("aria-pressed", String(b === other && !!box.value.trim()))); });
+    const frag = document.createDocumentFragment(); frag.append(wrap, box);
+    const notes = card.options.filter(o => o.note && o.note !== card.recommended);  // the recommended one is already shown above
+    notes.forEach(o => { const n = $("div", "opt-note"); n.innerHTML = `<code>${inline(o.value).replace(/<\/?code>/g, "")}</code> ${inline(o.note)}`; frag.append(n); });
+    return frag;
+  }
+  function recLine(card) {
+    if (!card.recommended) return null;
+    const r = $("div", "rec"); r.innerHTML = "<b>Recommended:</b> " + inline(card.recommended); return r;
+  }
+  function dependsHint(card) {
+    const keys = (card.depends || "").match(/\b[A-Z]\d{1,2}\b/g) || [];
+    const missing = keys.filter(k => !load(state.q)[k]);
+    return missing.length ? $("div", "hint", `Depends on ${missing.join(", ")}, not answered yet`) : null;
+  }
+  function correctionCard(f) {
+    const card = $("div", "card");
+    const head = $("div", "q"); head.append($("span", "key done", f.key), document.createTextNode("Already answered. Correct it? (optional)")); card.append(head);
+    const r = $("div", "rec"); r.innerHTML = `<b>You sent:</b> ${inline(f.submitted || "")}<br><b>Read as:</b> ${inline(f.decision || "")}`; card.append(r);
+    const box = $("textarea", "other"); box.placeholder = `Leave empty to keep ${f.key} as read`; box.value = load(state.q)[f.key] || "";
+    box.addEventListener("input", () => { setAnswer(f.key, box.value); card.classList.toggle("answered", !!box.value.trim()); });
+    card.append(box); return card;
+  }
+  function cardNode(card, onPick = () => render()) {
+    const el = $("div", "card" + (load(state.q)[card.key] ? " answered" : ""));
+    const head = $("div", "q"); head.append($("span", "key", card.key)); head.append(Object.assign(document.createElement("span"), { innerHTML: inline(card.question) }));
+    el.append(head);
+    [recLine(card), dependsHint(card)].forEach(n => n && el.append(n));
+    el.append(optionButtons(card, onPick));
+    return el;
+  }
+  function aside(q) {
+    const frag = document.createDocumentFragment();
+    if (q.resolved.length) {
+      frag.append($("div", "section", "Already answered"));
+      q.resolved.forEach(r => { const d = $("div", "done-item"); d.innerHTML = `<span class="key done">${inline(r.key)}</span>${inline(r.submitted)}<small>${inline(r.decision)}</small>`; frag.append(d); });
+    }
+    if (q.locked.length) {
+      frag.append($("div", "section", "Opens after these answers"));
+      q.locked.forEach(l => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(l.key)}</span>${inline(l.text)}`; frag.append(d); });
+    }
+    return frag;
+  }
+  function context(q) {
+    const d = $("details", "context"); d.append($("summary", null, "What this is about"));
+    d.append(markdown(q.intro || q.title)); return d;
+  }
+
+  // ---------------------------------------------------------------- layouts
+  function viewCards(q, main) {
+    main.append(context(q));
+    q.cards.forEach(c => main.append(cardNode(c)));
+    q.corrections.forEach(k => main.append(correctionCard({ key: k, ...q.resolved.find(r => r.key === k) })));
+    main.append(aside(q));
+  }
+  function viewSteps(q, main) {
+    const list = fields(q), total = list.length;
+    if (state.step > total) state.step = total;
+    const step = $("div", "step"); const bar = $("div", "progress"); const fill = $("i"); bar.append(fill);
+    fill.style.width = `${Math.round(100 * Math.min(state.step, total) / total)}%`;
+    if (state.step < total) {
+      const f = list[state.step];
+      step.append($("span", null, `Question ${state.step + 1} of ${total}`), $("span", null, f.kind === "card" ? "" : "optional"));
+      main.append(step, bar);
+      const node = f.kind === "card" ? cardNode(f, () => { if (load(state.q)[f.key]) setTimeout(() => { state.step += 1; render(); }, 220); else render(); }) : correctionCard(f);
+      node.classList.add("big"); main.append(node);
+      const nav = $("div", "nav");
+      const back = $("button", null, "Back"); back.disabled = state.step === 0; back.addEventListener("click", () => { state.step -= 1; render(); });
+      const next = $("button", null, load(state.q)[f.key] ? "Next" : "Skip"); next.addEventListener("click", () => { state.step += 1; render(); });
+      nav.append(back, next); main.append(nav);
+      main.append(context(q));
+    } else {
+      step.append($("span", null, "Review"), $("span", null, `${list.filter(f => load(state.q)[f.key]).length} of ${total} answered`));
+      main.append(step, bar);
+      const box = $("div", "card");
+      list.forEach((f, i) => {
+        const v = load(state.q)[f.key];
+        const row = $("div", "review-row"); row.append($("span", "key" + (v ? " done" : ""), f.key));
+        const right = $("div"); right.append(Object.assign(document.createElement("div"), { innerHTML: inline(f.question || "Correction") }));
+        right.append($("div", "a" + (v ? "" : " none"), v || (f.kind === "card" ? "not answered, tap to answer" : "kept as read")));
+        row.append(right); row.addEventListener("click", () => { state.step = i; render(); });
+        box.append(row);
+      });
+      main.append(box, aside(q));
+    }
+  }
+  function viewSheet(q, main) {
+    const box = $("div", "card");
+    q.cards.forEach(c => {
+      const a = load(state.q), row = $("div", "row");
+      row.append($("span", "key" + (a[c.key] ? " done" : ""), c.key));
+      const line = $("div", "qline" + (state.expanded.has(c.key) ? "" : " clamp")); line.innerHTML = inline(c.question);
+      line.title = "Tap to show the recommendation";
+      line.addEventListener("click", () => { state.expanded.has(c.key) ? state.expanded.delete(c.key) : state.expanded.add(c.key); render(); });
+      row.append(line);
+      if (state.expanded.has(c.key)) { const r = recLine(c); if (r) row.append(r); }
+      const sel = $("select"); sel.setAttribute("aria-label", `Answer for ${c.key}`);
+      sel.append(new Option("Choose…", ""));
+      c.options.forEach(o => sel.append(new Option(o.value + (o.recommended ? "  ★" : ""), o.value)));
+      sel.append(new Option("Write my own…", "__own"));
+      const custom = a[c.key] != null && !c.options.some(o => o.value === a[c.key]);
+      sel.value = custom ? "__own" : (a[c.key] || "");
+      const own = $("input"); own.placeholder = `Your answer for ${c.key}`; own.value = custom ? a[c.key] : ""; own.hidden = !custom;
+      sel.addEventListener("change", () => {
+        if (sel.value === "__own") { own.hidden = false; own.focus(); setAnswer(c.key, own.value); }
+        else { own.hidden = true; setAnswer(c.key, sel.value); }
+        row.querySelector(".key").classList.toggle("done", !!load(state.q)[c.key]);
+      });
+      own.addEventListener("input", () => { setAnswer(c.key, own.value); row.querySelector(".key").classList.toggle("done", !!load(state.q)[c.key]); });
+      row.append(sel, own); box.append(row);
+    });
+    q.corrections.forEach(k => {
+      const r = q.resolved.find(x => x.key === k) || {}, row = $("div", "row");
+      row.append($("span", "key done", k));
+      const line = $("div", "qline"); line.innerHTML = `Correct ${inline(k)}? <small>sent: ${inline(r.submitted || "")}</small>`; row.append(line);
+      const own = $("input"); own.placeholder = "Leave empty to keep it"; own.value = load(state.q)[k] || "";
+      own.addEventListener("input", () => setAnswer(k, own.value)); row.append(own); box.append(row);
+    });
+    main.append(box, context(q), aside(q));
+  }
+
+  // ---------------------------------------------------------------- dock, header
+  function answerLine(q) {
+    const a = load(state.q);
+    return fields(q).filter(f => a[f.key]).map(f => `${f.key}=${a[f.key]}`).join(";");
+  }
+  function renderDock() {
+    const q = qs[state.q]; if (!q) return;
+    const a = load(state.q), line = document.getElementById("line"); line.replaceChildren();
+    q.cards.forEach((c, i) => {
+      if (i) line.append(";");
+      if (a[c.key]) line.append(`${c.key}=${a[c.key]}`); else { const g = $("span", "gap", `${c.key}=?`); line.append(g); }
+    });
+    q.corrections.filter(k => a[k]).forEach(k => line.append(`;${k}=${a[k]}`));
+    const done = q.cards.filter(c => a[c.key]).length;
+    document.getElementById("count").textContent = `${done} of ${q.cards.length} answered`;
+    document.getElementById("recommended").disabled = !q.cards.some(c => !a[c.key] && c.options.some(o => o.recommended));
+  }
+  function render() {
+    const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
+    document.querySelectorAll("#seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state.view)));
+    if (!q) { main.append($("div", "empty", "No questionnaire found in the listed sessions.")); return; }
+    const meta = document.getElementById("meta");
+    const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
+    meta.textContent = `${where} · asked ${fmtWhen(q.at)}`;
+    if (Object.keys(q.sent || {}).length) {
+      // The answers already sent in the session, so an old questionnaire is not answered twice by mistake.
+      const sent = $("div", "sent"); sent.append(`You answered this ${fmtWhen(q.sent_at)}: `, $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";")));
+      main.append(sent);
+    }
+    ({ cards: viewCards, steps: viewSteps, sheet: viewSheet })[state.view](q, main);
+    renderDock();
+  }
+  async function copy() {
+    const text = answerLine(qs[state.q]); if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+      // Some embedded browsers block the clipboard API; fall back to a selected text box.
+      const t = $("textarea"); t.value = text; document.body.append(t); t.select();
+      try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+      t.remove();
+    }
+    const b = document.getElementById("copy"); b.textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  }
+
+  const pick = document.getElementById("pick");
+  qs.forEach((q, i) => pick.append(new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
+  pick.addEventListener("change", () => { state.q = Number(pick.value); state.step = 0; render(); });
+  document.querySelectorAll("#seg button").forEach(b => b.addEventListener("click", () => {
+    state.view = b.dataset.v; state.step = 0; try { localStorage.setItem("tr-q-view", state.view); } catch (e) { /* not kept */ } render();
+  }));
+  document.getElementById("copy").addEventListener("click", copy);
+  document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); state.step = 0; render(); });
+  document.getElementById("recommended").addEventListener("click", () => {
+    const a = load(state.q);
+    qs[state.q].cards.forEach(c => { const r = c.options.find(o => o.recommended); if (!a[c.key] && r) a[c.key] = r.value; });
+    save(); render();
+  });
+  if (!["cards", "steps", "sheet"].includes(state.view)) state.view = "cards";
+  // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
+  const wanted = decodeURIComponent((location.hash.match(/^#q=(.+)$/) || [])[1] || "");
+  const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
+  if (linked >= 0) { state.q = linked; pick.value = String(linked); }
+  render();
+})();
+</script>
+</body>
+</html>

@@ -40,3 +40,7 @@ Corpus: 30 home sessions, 2026-09-17 to 2026-10-17, 3,030 turns. Fleet view: the
 4. to 6. As recommended.
 
 To try the shape on particular sessions, keep a reading list with `python3 setup/transcript-reader/reader.py` (`add`, `remove`, `list`, `panes`; no argument rebuilds every listed session). A session can be named by id, by its first 8 characters, or by its Herdr pane label. Only listed sessions are read, each under the home that holds its working folder, and the fleet timeline starts at the earliest of them. The session picker shows each session by its Herdr name (pane or tab label, then the pane title), and the address keeps the chosen session across reloads.
+
+## Answer sheet prototype (2026-10-21)
+
+A grill-me review reply asks for keyed answers (`Reply with: A1=...; A2=...`). `prototype/build_questionnaire.py` finds those replies with fixed rules: a card table with `ID` and `Answer` columns (choices in backticks), a `**A2 revised.**` question followed by backtick choice bullets, a checkpoint table of answers already sent, and `**B1:**` cards under a "locked" heading. `questionnaire.html` lets the choices be picked or written, then copies one line such as `A1=accept;A2=inline`. Only a choice the reply itself calls a recommendation is marked one; none is guessed. The reader links each such reply to the sheet. Three layouts are on trial for the captain to pick: all cards, one at a time, and compact.

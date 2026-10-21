@@ -11,10 +11,11 @@ Usage (from the repo root):
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
 
-The list lives in out/sessions.txt and the page in out/prototype.html, both
+The list lives in out/sessions.txt, the reader in out/prototype.html and the
+answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
 gitignored because they name or embed private sessions. The page is served by
 setup/serve.sh; set PMOS_SERVE_PORT when that port serves a different copy of
-the repo. Only session logs and Herdr's pane list are read; nothing else is written.
+the repo. Only session logs and Herdr's pane list are read, and only out/ is written.
 """
 
 from __future__ import annotations
@@ -92,6 +93,10 @@ def rebuild(ids: list[str], focus: str | None = None) -> int:
     argv = ["--out", str(PAGE)] + [arg for sid in present for arg in ("--session", sid)]
     if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
         return 1
+    # The answer-sheet prototype reads the same list: replies that ask for keyed answers.
+    questions = [arg for sid in present for arg in ("--session", sid)]
+    if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *questions]).returncode:
+        return 1
     serve(focus)
     return 0
 
@@ -101,12 +106,14 @@ def serve(focus: str | None) -> None:
     port = os.environ.get("PMOS_SERVE_PORT", "8765")
     subprocess.run(["bash", str(REPO / "setup" / "serve.sh"), "--port", port], cwd=REPO, stdout=subprocess.DEVNULL)
     url = f"http://localhost:{port}/{PAGE.relative_to(REPO).as_posix()}"
+    sheet = f"http://localhost:{port}/{(OUT / 'questionnaire.html').relative_to(REPO).as_posix()}"
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
             ok = response.status == 200
     except OSError:
         ok = False
     print(f"Open: {url}{'#s=' + focus[:8] if focus else ''}")
+    print(f"Answer sheet: {sheet}")
     if not ok:
         print(f"Port {port} does not serve this copy of the repo. Rerun with PMOS_SERVE_PORT set to a free port, such as 8766.")
 
