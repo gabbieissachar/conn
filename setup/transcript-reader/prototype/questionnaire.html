@@ -11,6 +11,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="reader-token" content="__READER_TOKEN__">
+<meta name="template" content="__TEMPLATE_HASH__">
 <title>Answer sheet (prototype)</title>
 <style>
   :root {
@@ -112,7 +113,7 @@
 (() => {
   "use strict";
 /*__LIVE__*/
-  const data = JSON.parse(document.getElementById("payload").textContent);
+  let data = JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
   function inline(text) {
@@ -137,8 +138,11 @@
     return box;
   }
 
-  const qs = data.questionnaires;
+  let qs = data.questionnaires;
   const state = { q: 0 };
+  // "What this is about" stays as you left it, across re-renders and reloads.
+  const openContexts = new Set();
+  try { JSON.parse(sessionStorage.getItem("tr-q-context") || "[]").forEach(k => openContexts.add(k)); } catch (e) { /* starts closed */ }
   const answers = {};   // questionnaire index -> { key: value }
   const storeKey = q => `tr-q:${q.session}:${Math.round(q.at || 0)}`;
   function load(i) {
@@ -215,6 +219,11 @@
   }
   function context(q) {
     const d = $("details", "context"); d.append($("summary", null, "What this is about"));
+    d.open = openContexts.has(storeKey(q));
+    d.addEventListener("toggle", () => {
+      if (d.open) openContexts.add(storeKey(q)); else openContexts.delete(storeKey(q));
+      try { sessionStorage.setItem("tr-q-context", JSON.stringify([...openContexts])); } catch (e) { /* not kept */ }
+    });
     d.append(markdown(q.intro || q.title)); return d;
   }
 
@@ -231,11 +240,13 @@
     return fields(q).filter(f => a[f.key]).map(f => `${f.key}=${a[f.key]}`).join(";");
   }
   // The exact text Copy and Send use: a pointer to the reply that asked, then the answers.
-  const message = q => answerLine(q) ? live.pointer(q.at, q.reply) + answerLine(q) : "";
+  // A questionnaire from before a /clear goes to the pane's newest session, which never saw it.
+  const pointer = q => (q.from_session ? `[From session ${q.from_session.slice(0, 8)}, before a /clear; its log: ${q.log}] ` : "") + live.pointer(q.at, q.reply);
+  const message = q => answerLine(q) ? pointer(q) + answerLine(q) : "";
   function renderDock() {
     const q = qs[state.q]; if (!q) return;
     const a = load(state.q), line = document.getElementById("line"); line.replaceChildren();
-    line.append($("span", "ptr", live.pointer(q.at, q.reply)));
+    line.append($("span", "ptr", pointer(q)));
     q.cards.forEach((c, i) => {
       if (i) line.append(";");
       if (a[c.key]) line.append(`${c.key}=${a[c.key]}`); else { const g = $("span", "gap", `${c.key}=?`); line.append(g); }
@@ -298,7 +309,11 @@
   }
 
   const pick = document.getElementById("pick");
-  qs.forEach((q, i) => pick.append(new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
+  function fillPick() {
+    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
+    pick.value = String(state.q);
+  }
+  fillPick();
   pick.addEventListener("change", () => {
     state.q = Number(pick.value);
     // Kept in the address, so a reload after a rebuild reopens the same questionnaire.
@@ -318,13 +333,29 @@
   const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
   if (linked >= 0) { state.q = linked; pick.value = String(linked); }
   render();
-  // Served, the sheet reloads itself after a rebuild (answers are kept as drafts), but
-  // never while a text box is being typed in.
+  // Served, the sheet takes in a rebuild where it is: the open questionnaire is redrawn
+  // only when it changed, at the same scroll position, and never while a text box is
+  // being typed in. Only new page code reloads it.
+  async function refresh() {
+    const next = new DOMParser().parseFromString(await live.page("questionnaire.html"), "text/html");
+    const template = doc => (doc.querySelector('meta[name="template"]') || {}).content;
+    if (template(next) !== template(document)) { location.reload(); return; }
+    const payload = JSON.parse(next.getElementById("payload").textContent);
+    if (payload.generated <= data.generated) return;
+    const shown = qs[state.q], before = JSON.stringify(shown);
+    data = payload; qs = data.questionnaires;
+    Object.keys(answers).forEach(k => delete answers[k]);  // indexes may have moved; drafts reload from storage
+    const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
+    state.q = index >= 0 ? index : 0;
+    fillPick();
+    if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); }
+    else renderDock();
+  }
   live.poll(async () => {
     const s = await live.state(false);
     link.pane = s.panes || {}; renderSend();
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
-    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !link.sending) location.reload();
+    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !link.sending) await refresh();
   });
 })();
 </script>
