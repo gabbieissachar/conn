@@ -389,6 +389,7 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
   assert.equal(/fetch\(|confirm:|data-command/.test(view), false, 'no raw fetch, no write token, no copied command');
   assert.match(view, /api\.run\('leader-space'\)/);
   for (const field of ['row.map', 'row.kind', 'row.id', 'row.title', 'row.herdr_session', 'row.pane_id', 'row.busy', 'row.leader.label', 'row.problem.label', 'row.problem.state', 'pane.herdr_session', 'pane.pane_id', 'item.label', 'item.state', 'item.herdr_session', 'item.pane_id']) assert.match(view, new RegExp(`escapeHtml\\(${field.replace('.', '\\.')}`), field);
+  assert.match(view, /escapeHtml\(sessionName\(row\)\)/, 'the tab label is printed escaped');
   assert.match(html, /data-view="context"/);
 });
 

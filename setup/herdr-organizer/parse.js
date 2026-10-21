@@ -56,6 +56,7 @@ function parseAgentPanes(jsonText) {
     .filter((item) => item && typeof item.pane_id === 'string' && item.agent_session && typeof item.agent_session.value === 'string' && item.agent_session.value)
     .map((item) => ({
       pane_id: item.pane_id,
+      tab_id: typeof item.tab_id === 'string' ? item.tab_id : '',
       agent_session_id: item.agent_session.value,
       agent: typeof item.agent === 'string' ? item.agent : '',
       agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
@@ -63,6 +64,19 @@ function parseAgentPanes(jsonText) {
       cwds: [item.cwd, item.foreground_cwd].filter((value) => typeof value === 'string' && value),
       title: typeof item.terminal_title_stripped === 'string' ? item.terminal_title_stripped.slice(0, 120) : '',
     }));
+}
+
+// Herdr tab id -> the tab's label, from `herdr tab list`. Null when the output cannot be read.
+function parseTabLabels(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return null; }
+  const list = data && Array.isArray(data.tabs) ? data.tabs : null;
+  if (!list) return null;
+  const labels = new Map();
+  for (const item of list) {
+    if (item && typeof item.tab_id === 'string' && typeof item.label === 'string' && item.label) labels.set(item.tab_id, item.label.slice(0, 120));
+  }
+  return labels;
 }
 
 // Every pane that carries a label (herdr pane rename), with or without an agent. Used by the leader-space audit.
@@ -320,6 +334,7 @@ module.exports = {
   parseSessions,
   parsePanes,
   parseAgentPanes,
+  parseTabLabels,
   parseLabelledPanes,
   parseWorkspaceLabels,
   publicPane,

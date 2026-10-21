@@ -144,6 +144,10 @@ created: 2026-09-10
     .ctx-tools { display: flex; align-items: center; gap: 12px; }
     .ctx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .ctx-table th { padding: 0 10px 8px 0; text-align: left; color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
+    .ctx-table th .ctx-sort { all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; border-radius: 3px; }
+    .ctx-table th .ctx-sort:hover { color: var(--ink, inherit); }
+    .ctx-table th .ctx-sort:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+    .ctx-table th .ctx-arrow { font-size: 9px; opacity: .35; } .ctx-table th[aria-sort="ascending"] .ctx-arrow, .ctx-table th[aria-sort="descending"] .ctx-arrow { opacity: 1; }
     .ctx-table td { padding: 9px 10px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
     .ctx-table th:first-child, .ctx-table td:first-child { padding-left: 12px; }
     .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
@@ -1424,7 +1428,7 @@ created: 2026-09-10
 
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' } };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
     const AT_PROMPT = new Set(['idle', 'done']);
@@ -1452,6 +1456,8 @@ created: 2026-09-10
       }
       return { rows, problems };
     };
+    // The session's name is the herdr tab label; the gauge's own name is the fallback for a row with no live tab.
+    const sessionName = row => row.tab_label || row.map;
     // A leader is picked by its label; any other live session by its pane, and starts unticked.
     const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id ? `${row.herdr_session}|${row.pane_id}` : '';
     const contextRow = (row, thresholds) => {
@@ -1460,11 +1466,40 @@ created: 2026-09-10
       const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       const pickKey = pickKeyOf(row);
-      const pickName = row.leader ? row.leader.label : row.map;
+      const pickName = row.leader ? row.leader.label : sessionName(row);
       const pick = pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
-      const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.leader && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
-      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(row.map)}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
+      const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.tab_label && row.tab_label !== row.map ? escapeHtml(row.map) : '', row.leader && row.leader.label !== sessionName(row) && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
+      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
     };
+    // Sortable columns. `first` is the direction a first click uses: biggest first for numbers, A-Z for text, and
+    // newest first for the record age. A row with nothing to compare (no percent, no live pane) always sorts last.
+    const CONTEXT_COLUMNS = [
+      { key: 'send', label: 'Send', first: 'desc', value: row => { const key = pickKeyOf(row); return key ? (context.picked.get(key) ? 2 : 1) : null; } },
+      { key: 'used', label: 'Used', first: 'desc', value: row => row.percent },
+      { key: 'session', label: 'Session', first: 'asc', value: row => sessionName(row).toLowerCase() },
+      { key: 'where', label: 'Where', first: 'asc', value: row => row.pane_id ? `${row.herdr_session} ${row.pane_id}`.toLowerCase() : null },
+      { key: 'tokens', label: 'Tokens', first: 'desc', value: row => row.tokens },
+      { key: 'state', label: 'State', first: 'asc', value: row => row.busy },
+      { key: 'record', label: 'Record', first: 'asc', value: row => row.age_s },
+    ];
+    const sortedContextRows = rows => {
+      const column = CONTEXT_COLUMNS.find(item => item.key === context.sort.key);
+      if (!column) return rows;
+      const sign = context.sort.dir === 'asc' ? 1 : -1;
+      const compare = (a, b) => typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
+      return rows.map((row, index) => ({ row, index, value: column.value(row) })).sort((a, b) => {
+        const missing = (a.value === null || a.value === undefined) - (b.value === null || b.value === undefined);
+        if (missing) return missing;
+        if (a.value === null || a.value === undefined) return a.index - b.index;
+        return sign * compare(a.value, b.value) || a.index - b.index;
+      }).map(item => item.row);
+    };
+    const contextHead = () => CONTEXT_COLUMNS.map(column => {
+      const active = context.sort.key === column.key;
+      const aria = active ? (context.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
+      const arrow = active && context.sort.dir === 'asc' ? '▲' : '▼';
+      return `<th aria-sort="${aria}"><button type="button" class="ctx-sort" data-sort="${column.key}" title="Sort by ${column.label.toLowerCase()}">${column.label}<span class="ctx-arrow" aria-hidden="true">${arrow}</span></button></th>`;
+    }).join('');
     const leaderNotice = problems => {
       if (context.leaderError) return `<div class="scope-note error" style="margin-bottom:12px">Leader space could not be checked: ${escapeHtml(context.leaderError)}</div>`;
       if (!context.leader) return '';
@@ -1489,10 +1524,15 @@ created: 2026-09-10
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
         const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
         const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked; other sessions start unticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
-        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr><th>Send</th><th>Used</th><th>Session</th><th>Where</th><th>Tokens</th><th>State</th><th>Record</th></tr></thead><tbody>${rows.map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
       section.innerHTML = head + body;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
+      section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
+        const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
+        context.sort = context.sort.key === column.key ? { key: column.key, dir: context.sort.dir === 'asc' ? 'desc' : 'asc' } : { key: column.key, dir: column.first };
+        renderContext();
+      }));
       section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.pick, box.checked); renderContext(); }));
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);

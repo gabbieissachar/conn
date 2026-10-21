@@ -882,6 +882,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       herdr_session: pane.herdr_session,
       pane_id: pane.pane_id,
       title: pane.title,
+      tab_label: pane.tab_label,
       cwds: pane.cwds,
     };
   }
@@ -897,11 +898,16 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const where = new Map();
       for (const session of sessions.filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name))) {
         let panes = null;
+        let tabLabels = new Map();
         try {
           const result = await herdrCall(session.name, ['pane', 'list'], { timeoutMs: 20000 });
           panes = result.code === 0 ? parse.parseAgentPanes(result.stdout) : null;
         } catch { /* a session that cannot be read just has no pane column */ }
-        for (const pane of panes || []) where.set(pane.agent_session_id, { ...pane, herdr_session: session.name });
+        try {
+          const result = await herdrCall(session.name, ['tab', 'list'], { timeoutMs: 20000 });
+          tabLabels = (result.code === 0 && parse.parseTabLabels(result.stdout)) || tabLabels;
+        } catch { /* without tab labels a row keeps the gauge's own name */ }
+        for (const pane of panes || []) where.set(pane.agent_session_id, { ...pane, tab_label: tabLabels.get(pane.tab_id) || null, herdr_session: session.name });
       }
       const rows = [];
       const homes = new Map();
@@ -926,6 +932,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           herdr_session: pane ? pane.herdr_session : null,
           pane_id: pane ? pane.pane_id : null,
           title: pane ? pane.title : null,
+          tab_label: pane ? pane.tab_label : null,
         };
         // A live Claude pane on a session the gauge has no percent for is read from its own transcript below.
         if (pane && percent === null && pane.agent === 'claude') unread.set(item.session_id, row);

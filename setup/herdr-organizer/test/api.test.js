@@ -605,6 +605,38 @@ test('context-gauge: joins the gauge to live panes, shows only short ids, and so
   } finally { await server.close(); }
 });
 
+test('context-gauge: each live row carries its herdr tab label, null when the tab list cannot be read', async () => {
+  const gauge = [
+    { session_id: '11111111-2222-4333-8444-555555555555', map: 'secondmate-x', kind: 'secondmate', current: true, source: 'statusline', window_inferred: false, input_tokens: 90000, percent: 9, busy: 'idle claude-hook', age_s: 30 },
+    { session_id: '99999999-aaaa-4bbb-8ccc-000000000001', map: 'no-pane', kind: 'ship', current: true, source: 'statusline', window_inferred: false, input_tokens: 90000, percent: 8, busy: 'idle claude-hook', age_s: 30 },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n';
+  const panes = [{ pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', value: '11111111-2222-4333-8444-555555555555' }, label: 'leader-x', cwd: '/fixture/x', foreground_cwd: '/fixture/x', tab_id: 'w1:t7', workspace_id: 'w1' }];
+  const run = async (tabs) => {
+    const fake = fakeRunner({
+      panes,
+      handle: (file, args) => {
+        if (file === 'bash') return { code: 0, stdout: gauge, stderr: '', timedOut: false, truncated: false };
+        if (file === 'herdr' && args[2] === 'tab' && args[3] === 'list') return tabs;
+        return undefined;
+      },
+    });
+    const server = await startServer({ runner: fake.runner });
+    try {
+      const { post } = await client(server);
+      const response = await post('context-gauge');
+      assert.equal(response.status, 200);
+      return Object.fromEntries(response.json.data.rows.map((row) => [row.map, row]));
+    } finally { await server.close(); }
+  };
+  const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
+  let rows = await run(ok(JSON.stringify({ result: { tabs: [{ tab_id: 'w1:t7', label: 'fm-2026-10-21-the-task', workspace_id: 'w1' }, { tab_id: 'w1:t8', label: 'other' }] } })));
+  assert.equal(rows['secondmate-x'].tab_label, 'fm-2026-10-21-the-task', 'the tab the pane lives in');
+  assert.equal(rows['no-pane'].tab_label, null, 'no live pane, no tab');
+  rows = await run({ code: 1, stdout: '', stderr: 'boom', timedOut: false, truncated: false });
+  assert.equal(rows['secondmate-x'].tab_label, null, 'an unreadable tab list leaves the gauge name to the page');
+  assert.equal(rows['secondmate-x'].pane_id, 'w1:p1');
+});
+
 test('context-gauge: a live Claude pane the gauge has no usable row for is read from its own transcript and replaces the stale row', async () => {
   const fs = require('fs');
   const os = require('os');
