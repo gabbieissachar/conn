@@ -272,8 +272,11 @@
     data.sessions.forEach((s, i) => {
       const yours = s.exchanges.filter(e => e.source === "captain").length;
       const first = s.exchanges.find(e => e.at), last = [...s.exchanges].reverse().find(e => e.at);
-      const span = first && last ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
-      const opt = $("option", null, `${homeName(s.home)} · ${span} · ${yours} from you`);
+      const [a, b] = first && last ? [fmtShortDay(first.at), fmtShortDay(last.at)] : [];
+      // "Oct 14-20" when both ends share a month, so the label fits a phone-width picker.
+      const span = !a ? "no turns" : a === b ? a : a.split(" ")[0] === b.split(" ")[0] ? `${a}-${b.split(" ")[1]}` : `${a} to ${b}`;
+      const where = s.where ? " · " + s.where.split("/").pop() : "";
+      const opt = $("option", null, `${homeName(s.home)}${where} · ${span} · ${yours} from you`);
       opt.value = i; if (i === state.session) opt.selected = true; select.append(opt);
     });
     select.addEventListener("change", () => { state.session = Number(select.value); render(); window.scrollTo(0, 0); });

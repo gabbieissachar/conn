@@ -1,6 +1,6 @@
 # Transcript reader - design checkpoint
 
-Status: phase 1 prototype, 2026-10-17. Waiting on the six decisions at the end before the real build.
+Status: phase 1 prototype, 2026-10-17. Decisions answered 2026-10-21 (see the end); the overall shape is still being tried on chosen sessions before the real build.
 
 ## What was built
 
@@ -31,3 +31,12 @@ Corpus: 30 home sessions, 2026-09-17 to 2026-10-17, 3,030 turns. Fleet view: the
 4. **Timeline spine.** Recommended: fleet records plus your messages and the homes' replies, with the handling turn one tap away. Raw turns never become the default rows.
 5. **Source of "waiting on you".** Recommended: each home's own summary only. Do not derive open items from update keys.
 6. **Scope and delivery.** Recommended: the main home and the second mates, not workers' own sessions. Default window of 3 days, with a session picker for older reads. Rebuild with one command, and serve it with `setup/serve.sh` so it opens in a VS Code Simple Browser tab. No auto-refresh in the first version.
+
+## Answers (2026-10-21)
+
+1. Keep wake-ups that ask open.
+2. Reminders are tagged, not `Needs you`.
+3. Ask-first-then-clip is the right layout. How asks get picked out (today: the word rules above) is reopened once the app's overall shape is settled.
+4. to 6. As recommended.
+
+To try the shape on particular sessions, pass them by id: `--session <id>` (repeatable). Only those sessions are read, each under the home that holds its working folder, and the fleet timeline starts at the earliest of them.

@@ -13,6 +13,9 @@ Usage (from the repo root):
 With no --home, it reads the main home ~/fm-homes/pmos and every home listed
 in its data/secondmates.md. With no --session, it shows each home's current
 session (state/.lock-session) and the newest earlier session in the same folder.
+With --session, it shows exactly those sessions, each under the home whose folder
+holds the session's working directory, and the fleet timeline starts at the
+earliest of them unless --since-hours is given.
 
 The page embeds private transcript text, so the output folder is gitignored.
 No model is called; every label comes from the rules in this file.
@@ -519,7 +522,6 @@ def captain_events(home: dict, exchanges: list[dict], since: float) -> list[dict
 # ----------------------------------------------------------------- page build
 
 def build(args) -> dict:
-    since = time.time() - args.since_hours * 3600
     homes = [{"id": "main", "home": Path(args.main_home).expanduser()}]
     if args.home:
         homes += [{"id": Path(h).expanduser().name if Path(h).name != "firstmate" else Path(h).parent.name, "home": Path(h).expanduser()} for h in args.home]
@@ -527,24 +529,51 @@ def build(args) -> dict:
         homes += registered_secondmates(homes[0]["home"])
     parent_of = {mate["id"]: homes[0]["home"] for mate in homes[1:]}
 
+    # (home, session file, records) for every session to show.
+    chosen = []
+    if args.session:
+        for name in args.session:
+            path = find_session_file(name)
+            if not path:
+                raise SystemExit(f"session not found: {name}")
+            records = read_jsonl(path)
+            chosen.append((session_home(homes, records), path, records))
+        starts = [t for _, _, records in chosen for t in [first_time(records)] if t is not None]
+        since = min(starts) if args.since_hours is None and starts else time.time() - (args.since_hours or 72) * 3600
+    else:
+        since = time.time() - (args.since_hours or 72) * 3600
+        chosen = [(home, path, read_jsonl(path)) for home in homes for path in home_sessions(home["home"], since)]
+
     sessions = []
     fleet = collect_fleet(homes, since)
-    for home in homes:
-        paths = [find_session_file(s) for s in args.session] if args.session and home["id"] == "main" else home_sessions(home["home"], since)
-        for path in [p for p in paths if p]:
-            records = read_jsonl(path)
-            exchanges = session_exchanges(records)
-            attach_inbox_bodies(exchanges, parent_of.get(home["id"]))
-            session_id = path.stem
-            sessions.append({"home": home["id"], "id": session_id, "file": str(path), "exchanges": exchanges})
-            for event in captain_events(home, exchanges, since):
-                event["session"] = session_id
-                fleet.append(event)
+    for home, path, records in chosen:
+        exchanges = session_exchanges(records)
+        attach_inbox_bodies(exchanges, parent_of.get(home["id"]))
+        session_id = path.stem
+        cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
+        where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
+        if where.startswith("state/.treehouse/"):
+            where = "worker copy"  # a worker's isolated copy, not the home's own clone
+        sessions.append({"home": home["id"], "id": session_id, "file": str(path), "where": where, "exchanges": exchanges})
+        for event in captain_events(home, exchanges, since):
+            event["session"] = session_id
+            fleet.append(event)
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
     return {"generated": time.time(), "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
             "summaries": summaries}
+
+
+def session_home(homes: list[dict], records: list[dict]) -> dict:
+    """The home whose folder holds the session's working directory (longest match), else main."""
+    cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
+    inside = [h for h in homes if cwd == str(h["home"]) or cwd.startswith(str(h["home"]) + "/")]
+    return max(inside, key=lambda h: len(str(h["home"])), default=homes[0])
+
+
+def first_time(records: list[dict]) -> float | None:
+    return next((t for t in (iso_to_epoch(r.get("timestamp")) for r in records) if t is not None), None)
 
 
 def home_summary(home: dict) -> dict | None:
@@ -610,8 +639,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--main-home", default=str(MAIN_HOME))
     parser.add_argument("--home", action="append", help="secondmate home to include (default: the main home's registry)")
-    parser.add_argument("--session", action="append", help="session id or path to read for the main home")
-    parser.add_argument("--since-hours", type=float, default=72)
+    parser.add_argument("--session", action="append", help="session id or path to show (repeatable); only these are read")
+    parser.add_argument("--since-hours", type=float, help="fleet window (default 72, or from the earliest --session)")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--stats", action="store_true", help="print counts only; write no page")
     args = parser.parse_args()
