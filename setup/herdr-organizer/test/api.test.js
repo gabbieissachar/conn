@@ -3,6 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { startServer, client, fakeRunner, fixture } = require('./helpers');
 const { childEnv } = require('../adapter');
 const { findLeaks } = require('../text');
@@ -793,6 +795,65 @@ test('plan-usage: says what is missing instead of showing an empty or stale card
       assert.match(response.raw, item.expect, item.name);
       assert.equal(response.raw.includes('/secret/path'), false, `${item.name}: no stderr leaks`);
     } finally { await server.close(); }
+  }
+});
+
+const codexDay = (date, ...credits) => ({ date, product_surface_usage_values: { cli: 1 }, models: credits.map((value, index) => ({ model: `model-${index}`, speed: 'standard', credits: value })) });
+const codexHome = (tokens) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+  if (tokens) fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens }));
+  return dir;
+};
+const curlRunner = (body, status = 200, code = 0) => fakeRunner({ handle: (file) => (file === 'curl' ? { code, stdout: `${typeof body === 'string' ? body : JSON.stringify(body)}\n${status}`, stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
+
+test('codex-credits: sums week to date (from Monday) and month to date, and never puts the token on a command line', async () => {
+  const home = codexHome({ access_token: 'tok.en-secret_1', account_id: 'acct-id-1', refresh_token: 'refresh-secret' });
+  const fake = curlRunner({ units: 'percent', data: [
+    codexDay('2026-09-30', 50),
+    codexDay('2026-10-01', 1.5, 0.25),
+    codexDay('2026-10-18', 10),
+    codexDay('2026-10-19', 2, 1),
+    codexDay('2026-10-21', 0.5, 0),
+  ] });
+  const server = await startServer({ runner: fake.runner, env: { CODEX_HOME: home }, now: () => new Date(2026, 9, 21, 15, 0) });
+  try {
+    const { post } = await client(server);
+    const response = await post('codex-credits');
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.week, { since: '2026-10-19', credits: 3.5 }, 'Monday 19 October onward');
+    assert.deepEqual(data.month, { since: '2026-10-01', credits: 15.25 }, 'the 1st onward, not September');
+    assert.deepEqual(data.models.map((item) => item.model), ['model-0', 'model-1']);
+    assert.equal(data.data_through, '2026-10-21');
+    assert.equal(data.units, 'percent');
+    const call = fake.calls.find((item) => item.file === 'curl');
+    assert.deepEqual(call.args, ['-K', '-'], 'the credential rides stdin, not argv');
+    assert.match(call.input, /Bearer tok\.en-secret_1/);
+    assert.equal(response.raw.includes('secret'), false, 'no token or account evidence leaves the server');
+    assert.equal(server.api.ACTIONS['codex-credits'].tier, 0);
+    assert.equal((await post('codex-credits', { account: 'x' })).status, 400);
+  } finally { await server.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('codex-credits: says what is missing instead of showing zeros', async () => {
+  const good = { access_token: 'tok', account_id: 'acct' };
+  const cases = [
+    { name: 'no auth file', home: codexHome(null), runner: curlRunner({ data: [] }), expect: /Codex sign-in/ },
+    { name: 'token with shell or config characters', home: codexHome({ access_token: 'a"b\nc', account_id: 'acct' }), runner: curlRunner({ data: [] }), expect: /Codex sign-in/ },
+    { name: 'expired sign-in', home: codexHome(good), runner: curlRunner({ detail: 'no' }, 401), expect: /expired/ },
+    { name: 'server error', home: codexHome(good), runner: curlRunner('oops', 500), expect: /HTTP 500/ },
+    { name: 'unexpected body', home: codexHome(good), runner: curlRunner({ data: 'nope' }), expect: /could not be read/ },
+    { name: 'curl missing', home: codexHome(good), runner: curlRunner('', 0, 127), expect: /curl/ },
+  ];
+  for (const item of cases) {
+    const server = await startServer({ runner: item.runner.runner, env: { CODEX_HOME: item.home } });
+    try {
+      const { post } = await client(server);
+      const response = await post('codex-credits');
+      assert.equal(response.status, 502, item.name);
+      assert.match(response.raw, item.expect, item.name);
+      assert.equal(response.raw.includes('/secret/path'), false, `${item.name}: no stderr leaks`);
+    } finally { await server.close(); fs.rmSync(item.home, { recursive: true, force: true }); }
   }
 });
 

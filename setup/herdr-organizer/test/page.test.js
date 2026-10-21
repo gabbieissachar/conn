@@ -401,6 +401,14 @@ test('context view: the Claude plan rail reads through plan-usage only, prints e
   assert.match(view, /plan-reload/);
 });
 
+test('context view: the Codex credit chips read through codex-credits only and print escaped', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /api\.run\('codex-credits'\)/);
+  for (const field of ['name', 'title', 'codex.error']) assert.ok(view.includes(`escapeHtml(${field}`), field);
+  assert.match(view, /\$\{planRail\(\)\}\$\{codexRail\(\)\}/, 'the Codex row sits right under the Claude row');
+  assert.equal(/auth\.json|access_token|Bearer/.test(view), false, 'the page never touches a credential');
+});
+
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);

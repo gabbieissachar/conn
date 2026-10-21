@@ -96,7 +96,7 @@ function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024
   });
 }
 
-function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr', fmHome, gaugeScript } = {}) {
+function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr', fmHome, gaugeScript, now = () => new Date() } = {}) {
   if (!toolRoot) throw new Error('adapter needs the Herdr tool root');
   const registryScript = path.join(toolRoot, 'agent-session-registry.py');
   const storeCheckScript = path.join(__dirname, 'store_check.py');
@@ -1013,6 +1013,65 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     });
   }
 
+  // Codex credits: week to date and month to date, summed from the per-day, per-model credit breakdown the ChatGPT
+  // backend keeps for the signed-in Codex account (the same endpoint Codex's own usage view reads). It is read-only:
+  // the access token is read from Codex's auth file and never renewed here, and it goes to curl on stdin, never on a
+  // command line, so it cannot show in a process list. Only the sums, the dates and the model names leave the server.
+  // The week starts Monday and the month on the 1st, in this machine's local calendar; the backend's day boundary is
+  // its own, so a reading near midnight can be a day off.
+  const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage/daily-token-usage-breakdown';
+  const CODEX_TIMEOUT_MS = 30000;
+  const TOKEN_SHAPE = /^[A-Za-z0-9._-]{1,8192}$/;
+  const localDay = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const round2 = (value) => Math.round(value * 100) / 100;
+
+  function codexCredits() {
+    return singleFlight('codex-credits', async () => {
+      const authFile = path.join(env.CODEX_HOME || path.join(env.HOME || os.homedir(), '.codex'), 'auth.json');
+      let tokens = null;
+      try { tokens = JSON.parse(await fsp.readFile(authFile, 'utf8')).tokens; } catch { /* not signed in */ }
+      const token = tokens && typeof tokens.access_token === 'string' ? tokens.access_token : '';
+      const account = tokens && typeof tokens.account_id === 'string' ? tokens.account_id : '';
+      if (!TOKEN_SHAPE.test(token) || !TOKEN_SHAPE.test(account)) {
+        throw new AdapterError('Codex credits need a Codex sign-in on this machine. Run codex login, then refresh.', 502, 'codex_unavailable');
+      }
+      const config = [`url = "${CODEX_USAGE_URL}"`, `header = "Authorization: Bearer ${token}"`, `header = "chatgpt-account-id: ${account}"`, 'silent', `max-time = ${CODEX_TIMEOUT_MS / 1000 - 5}`, 'write-out = "\\n%{http_code}"'].join('\n');
+      const result = await runner('curl', ['-K', '-'], { env: runEnv(), timeoutMs: CODEX_TIMEOUT_MS, input: config });
+      const cut = result.stdout.lastIndexOf('\n');
+      const status = Number(result.stdout.slice(cut + 1));
+      if (result.code !== 0 || !Number.isInteger(status)) throw new AdapterError('Codex credits could not be read. Is curl installed and the network up?', 502, 'codex_unavailable');
+      if (status === 401 || status === 403) throw new AdapterError('Codex credits need a fresh Codex sign-in (the saved one expired). Open codex once to renew it, then refresh.', 502, 'codex_unavailable');
+      let body = null;
+      try { body = JSON.parse(result.stdout.slice(0, cut)); } catch { /* not json */ }
+      if (status !== 200 || !body || !Array.isArray(body.data)) throw new AdapterError(`Codex credits could not be read (HTTP ${status || 'none'}).`, 502, 'codex_unavailable');
+      const today = now();
+      const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
+      const since = { week: localDay(weekStart), month: `${localDay(today).slice(0, 8)}01` };
+      const sums = { week: 0, month: 0 };
+      const models = new Map();
+      let through = null;
+      for (const row of body.data) {
+        if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) continue;
+        if (through === null || row.date > through) through = row.date;
+        const credits = (Array.isArray(row.models) ? row.models : []).filter((item) => item && number(item.credits) !== null);
+        const total = credits.reduce((sum, item) => sum + item.credits, 0);
+        if (row.date >= since.week) sums.week += total;
+        if (row.date >= since.month) {
+          sums.month += total;
+          for (const item of credits) models.set(text(item.model, 60), (models.get(text(item.model, 60)) || 0) + item.credits);
+        }
+      }
+      return {
+        week: { since: since.week, credits: round2(sums.week) },
+        month: { since: since.month, credits: round2(sums.month) },
+        models: [...models].map(([model, credits]) => ({ model, credits: round2(credits) })).filter((item) => item.model && item.credits > 0).sort((a, b) => b.credits - a.credits).slice(0, 6),
+        data_through: through,
+        units: text(body.units, 20) || 'credits',
+        read_at: today.toISOString(),
+      };
+    });
+  }
+
   return {
     listSessions,
     listSessionsView,
@@ -1032,6 +1091,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     reconcilePreview,
     contextGauge,
     planUsage,
+    codexCredits,
     leaderSpace,
     handoffCommand,
     // exposed for later phases and tests

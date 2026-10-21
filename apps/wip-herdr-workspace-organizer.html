@@ -1443,6 +1443,8 @@ created: 2026-09-10
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '' };
+    // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
+    const codex = { loading: false, data: null, error: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
     const planClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const planWhen = iso => {
@@ -1478,6 +1480,21 @@ created: 2026-09-10
       else chips = plan.data.windows.map(planChip).join('');
       const error = plan.error ? `<div class="scope-note error plan-error">${escapeHtml(plan.error)}</div>` : '';
       return `<div class="plan-chips" id="plan-card">${chips}<span class="updated">${plan.at ? `updated ${escapeHtml(plan.at)}` : 'not read yet'}</span>${button}${error}</div>`;
+    };
+    const creditText = value => (value >= 100 ? Math.round(value) : value >= 10 ? value.toFixed(1) : value.toFixed(2)).toString();
+    const codexChip = (name, item, title) => `<span class="plan-chip" title="${escapeHtml(title)}"><span class="plan-dot"></span>${escapeHtml(name)} <b>${creditText(item.credits)}</b><span class="plan-reset">credits</span></span>`;
+    const codexRail = () => {
+      let chips;
+      if (codex.error) chips = `<span class="plan-chip warn"><span class="plan-dot"></span>Codex credits unavailable</span>`;
+      else if (!codex.data) chips = '<span class="plan-chip none"><span class="plan-dot"></span>Codex credits reading…</span>';
+      else {
+        const { week, month, models, data_through: through, units } = codex.data;
+        const unit = units && units !== 'credits' ? ` (the usage service labels its unit "${units}")` : '';
+        const split = models.length ? ` Month by model: ${models.map(item => `${item.model} ${creditText(item.credits)}`).join(', ')}.` : '';
+        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}${unit}. Data through ${through || 'unknown'}.`)}${codexChip('Month to date', month, `Credits used since ${month.since}${unit}. Data through ${through || 'unknown'}.${split}`)}`;
+      }
+      const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
+      return `<div class="plan-chips" id="codex-card">${chips}${error}</div>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1576,9 +1593,9 @@ created: 2026-09-10
         const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked; other sessions start unticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
-      section.innerHTML = `${head}${planRail()}${body}`;
+      section.innerHTML = `${head}${planRail()}${codexRail()}${body}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
-      document.querySelector('#plan-reload').addEventListener('click', () => loadPlan(true));
+      document.querySelector('#plan-reload').addEventListener('click', () => { loadPlan(true); loadCodex(); });
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
         const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
         context.sort = context.sort.key === column.key ? { key: column.key, dir: context.sort.dir === 'asc' ? 'desc' : 'asc' } : { key: column.key, dir: column.first };
@@ -1642,8 +1659,21 @@ created: 2026-09-10
         if (state.view === 'context') renderContext();
       }
     };
+    const loadCodex = async () => {
+      if (codex.loading) return;
+      codex.loading = true;
+      try {
+        codex.data = await api.run('codex-credits');
+        codex.error = '';
+      } catch (error) {
+        codex.data = null; codex.error = error.message;
+      } finally {
+        codex.loading = false;
+        if (state.view === 'context') renderContext();
+      }
+    };
     // Re-read while the Context tab is open and the browser tab is in front; a hidden tab asks nothing.
-    setInterval(() => { if (state.view === 'context' && !document.hidden) loadPlan(false); }, PLAN_REFRESH_MS);
+    setInterval(() => { if (state.view === 'context' && !document.hidden) { loadPlan(false); loadCodex(); } }, PLAN_REFRESH_MS);
 
     // ---- Snapshot-backed views (Workspaces and Archives) ----
     const syncSnapshotSelect = () => {
@@ -1694,7 +1724,7 @@ created: 2026-09-10
     document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
       state.view = button.dataset.view;
       render();
-      if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); if (!plan.data && !plan.error && !plan.loading) loadPlan(false); return; }
+      if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); if (!plan.data && !plan.error && !plan.loading) loadPlan(false); if (!codex.data && !codex.error && !codex.loading) loadCodex(); return; }
       if (state.view !== 'restart') {
         syncSnapshotSelect();
         if (!snapshotRequested) { snapshotRequested = true; refreshSnapshot(); }
