@@ -36,6 +36,7 @@
   .bar-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px; }
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+  .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   .tabs { display: flex; gap: 4px; margin-top: 6px; }
   .tab { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
@@ -121,7 +122,7 @@
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title">Transcript reader <span class="proto">prototype</span></div>
+    <div class="title">Transcript reader <span class="proto">prototype</span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a></div>
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
       <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>

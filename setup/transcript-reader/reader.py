@@ -112,10 +112,13 @@ def serve(focus: str | None) -> None:
             ok = response.status == 200
     except OSError:
         ok = False
-    print(f"Open: {url}{'#s=' + focus[:8] if focus else ''}")
-    print(f"Answer sheet: {sheet}")
-    if not ok:
-        print(f"Port {port} does not serve this copy of the repo. Rerun with PMOS_SERVE_PORT set to a free port, such as 8766.")
+    # A file:// page in VS Code's Integrated Browser reloads by itself when this script rewrites it.
+    print(f"Reader:       {PAGE.as_uri()}{'#s=' + focus[:8] if focus else ''}")
+    print(f"Answer sheet: {(OUT / 'questionnaire.html').as_uri()}")
+    if ok:
+        print(f"Also served:  {url}")
+    else:
+        print(f"Port {port} does not serve this copy of the repo; the file links above still work.")
 
 
 def show(ids: list[str]) -> None:

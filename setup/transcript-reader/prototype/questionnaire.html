@@ -37,10 +37,10 @@
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-  .seg { display: flex; gap: 4px; margin-top: 6px; }
-  .seg button { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 4px; font-size: 13px; }
-  .seg button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
   .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .title a { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
+  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; }
+  .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
   main { max-width: 30rem; margin: 0 auto; padding: 10px 12px 170px; }
 
   details.context { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin-bottom: 12px; }
@@ -49,7 +49,7 @@
   .md p { margin: .4em 0; }
   .md h4 { margin: .7em 0 .2em; font-size: 15px; }
   .md .li { padding-left: 1.1em; text-indent: -.8em; margin: 0 0 .25em; }
-  .md code, .card code, .row code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md code, .card code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; }
 
   .key { display: inline-block; font: 700 12px var(--mono); background: var(--ask-wash); color: var(--ask); border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
@@ -72,28 +72,6 @@
   .done-item small, .locked-item small { color: var(--muted); display: block; }
   .locked-item { color: var(--muted); }
 
-  /* One at a time */
-  .step { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
-  .progress { height: 4px; background: var(--line); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
-  .progress i { display: block; height: 100%; background: var(--you); }
-  .big .opts { flex-direction: column; }
-  .big .opt { border-radius: 10px; padding: 10px 12px; font-size: 15px; }
-  .nav { display: flex; gap: 8px; margin-top: 12px; }
-  .nav button { flex: 1; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 8px; font-size: 14px; }
-  .review-row { display: grid; grid-template-columns: 2.6rem 1fr; gap: 0 6px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
-  .review-row .a { font: 13px var(--mono); color: var(--you); overflow-wrap: anywhere; }
-  .review-row .a.none { color: var(--open); font-family: var(--sans); }
-
-  /* Compact sheet */
-  .row:first-child { border-top: 0; }
-  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; }
-  .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
-  .row { display: grid; grid-template-columns: 2.6rem 1fr; gap: 2px 6px; padding: 8px 0; border-top: 1px solid var(--line); align-items: start; }
-  .row .qline { font-size: 14px; cursor: pointer; }
-  .row .qline.clamp { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-  .row select, .row input { grid-column: 2; width: 100%; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-  .row .rec { grid-column: 2; margin: 0; }
-
   .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); }
   .dock .inner { padding: 8px 12px 10px; }
   .dock .line { font: 13px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; max-height: 5.6em; overflow-y: auto; }
@@ -108,13 +86,8 @@
 </head>
 <body>
 <header class="bar"><div class="inner">
-  <div class="title">Answer sheet <span class="proto">prototype</span></div>
+  <div class="title">Answer sheet <span class="proto">prototype</span><a href="prototype.html">← Reader</a></div>
   <select class="pick" id="pick" aria-label="Questionnaire"></select>
-  <div class="seg" id="seg" role="group" aria-label="Layout">
-    <button data-v="cards">A · All cards</button>
-    <button data-v="steps">B · One at a time</button>
-    <button data-v="sheet">C · Compact</button>
-  </div>
   <div class="meta" id="meta"></div>
 </div></header>
 <main id="main"></main>
@@ -157,8 +130,7 @@
   }
 
   const qs = data.questionnaires;
-  const state = { q: 0, view: "cards", step: 0, expanded: new Set() };
-  try { state.view = localStorage.getItem("tr-q-view") || "cards"; } catch (e) { /* storage blocked: default layout */ }
+  const state = { q: 0 };
   const answers = {};   // questionnaire index -> { key: value }
   const storeKey = q => `tr-q:${q.session}:${Math.round(q.at || 0)}`;
   function load(i) {
@@ -238,79 +210,13 @@
     d.append(markdown(q.intro || q.title)); return d;
   }
 
-  // ---------------------------------------------------------------- layouts
+  // ---------------------------------------------------------------- page
   function viewCards(q, main) {
     main.append(context(q));
     q.cards.forEach(c => main.append(cardNode(c)));
     q.corrections.forEach(k => main.append(correctionCard({ key: k, ...q.resolved.find(r => r.key === k) })));
     main.append(aside(q));
   }
-  function viewSteps(q, main) {
-    const list = fields(q), total = list.length;
-    if (state.step > total) state.step = total;
-    const step = $("div", "step"); const bar = $("div", "progress"); const fill = $("i"); bar.append(fill);
-    fill.style.width = `${Math.round(100 * Math.min(state.step, total) / total)}%`;
-    if (state.step < total) {
-      const f = list[state.step];
-      step.append($("span", null, `Question ${state.step + 1} of ${total}`), $("span", null, f.kind === "card" ? "" : "optional"));
-      main.append(step, bar);
-      const node = f.kind === "card" ? cardNode(f, () => { if (load(state.q)[f.key]) setTimeout(() => { state.step += 1; render(); }, 220); else render(); }) : correctionCard(f);
-      node.classList.add("big"); main.append(node);
-      const nav = $("div", "nav");
-      const back = $("button", null, "Back"); back.disabled = state.step === 0; back.addEventListener("click", () => { state.step -= 1; render(); });
-      const next = $("button", null, load(state.q)[f.key] ? "Next" : "Skip"); next.addEventListener("click", () => { state.step += 1; render(); });
-      nav.append(back, next); main.append(nav);
-      main.append(context(q));
-    } else {
-      step.append($("span", null, "Review"), $("span", null, `${list.filter(f => load(state.q)[f.key]).length} of ${total} answered`));
-      main.append(step, bar);
-      const box = $("div", "card");
-      list.forEach((f, i) => {
-        const v = load(state.q)[f.key];
-        const row = $("div", "review-row"); row.append($("span", "key" + (v ? " done" : ""), f.key));
-        const right = $("div"); right.append(Object.assign(document.createElement("div"), { innerHTML: inline(f.question || "Correction") }));
-        right.append($("div", "a" + (v ? "" : " none"), v || (f.kind === "card" ? "not answered, tap to answer" : "kept as read")));
-        row.append(right); row.addEventListener("click", () => { state.step = i; render(); });
-        box.append(row);
-      });
-      main.append(box, aside(q));
-    }
-  }
-  function viewSheet(q, main) {
-    const box = $("div", "card");
-    q.cards.forEach(c => {
-      const a = load(state.q), row = $("div", "row");
-      row.append($("span", "key" + (a[c.key] ? " done" : ""), c.key));
-      const line = $("div", "qline" + (state.expanded.has(c.key) ? "" : " clamp")); line.innerHTML = inline(c.question);
-      line.title = "Tap to show the recommendation";
-      line.addEventListener("click", () => { state.expanded.has(c.key) ? state.expanded.delete(c.key) : state.expanded.add(c.key); render(); });
-      row.append(line);
-      if (state.expanded.has(c.key)) { const r = recLine(c); if (r) row.append(r); }
-      const sel = $("select"); sel.setAttribute("aria-label", `Answer for ${c.key}`);
-      sel.append(new Option("Choose…", ""));
-      c.options.forEach(o => sel.append(new Option(o.value + (o.recommended ? "  ★" : ""), o.value)));
-      sel.append(new Option("Write my own…", "__own"));
-      const custom = a[c.key] != null && !c.options.some(o => o.value === a[c.key]);
-      sel.value = custom ? "__own" : (a[c.key] || "");
-      const own = $("input"); own.placeholder = `Your answer for ${c.key}`; own.value = custom ? a[c.key] : ""; own.hidden = !custom;
-      sel.addEventListener("change", () => {
-        if (sel.value === "__own") { own.hidden = false; own.focus(); setAnswer(c.key, own.value); }
-        else { own.hidden = true; setAnswer(c.key, sel.value); }
-        row.querySelector(".key").classList.toggle("done", !!load(state.q)[c.key]);
-      });
-      own.addEventListener("input", () => { setAnswer(c.key, own.value); row.querySelector(".key").classList.toggle("done", !!load(state.q)[c.key]); });
-      row.append(sel, own); box.append(row);
-    });
-    q.corrections.forEach(k => {
-      const r = q.resolved.find(x => x.key === k) || {}, row = $("div", "row");
-      row.append($("span", "key done", k));
-      const line = $("div", "qline"); line.innerHTML = `Correct ${inline(k)}? <small>sent: ${inline(r.submitted || "")}</small>`; row.append(line);
-      const own = $("input"); own.placeholder = "Leave empty to keep it"; own.value = load(state.q)[k] || "";
-      own.addEventListener("input", () => setAnswer(k, own.value)); row.append(own); box.append(row);
-    });
-    main.append(box, context(q), aside(q));
-  }
-
   // ---------------------------------------------------------------- dock, header
   function answerLine(q) {
     const a = load(state.q);
@@ -330,7 +236,6 @@
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
-    document.querySelectorAll("#seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state.view)));
     if (!q) { main.append($("div", "empty", "No questionnaire found in the listed sessions.")); return; }
     const meta = document.getElementById("meta");
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
@@ -340,7 +245,7 @@
       const sent = $("div", "sent"); sent.append(`You answered this ${fmtWhen(q.sent_at)}: `, $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";")));
       main.append(sent);
     }
-    ({ cards: viewCards, steps: viewSteps, sheet: viewSheet })[state.view](q, main);
+    viewCards(q, main);
     renderDock();
   }
   async function copy() {
@@ -358,18 +263,14 @@
 
   const pick = document.getElementById("pick");
   qs.forEach((q, i) => pick.append(new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
-  pick.addEventListener("change", () => { state.q = Number(pick.value); state.step = 0; render(); });
-  document.querySelectorAll("#seg button").forEach(b => b.addEventListener("click", () => {
-    state.view = b.dataset.v; state.step = 0; try { localStorage.setItem("tr-q-view", state.view); } catch (e) { /* not kept */ } render();
-  }));
+  pick.addEventListener("change", () => { state.q = Number(pick.value); render(); });
   document.getElementById("copy").addEventListener("click", copy);
-  document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); state.step = 0; render(); });
+  document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); render(); });
   document.getElementById("recommended").addEventListener("click", () => {
     const a = load(state.q);
     qs[state.q].cards.forEach(c => { const r = c.options.find(o => o.recommended); if (!a[c.key] && r) a[c.key] = r.value; });
     save(); render();
   });
-  if (!["cards", "steps", "sheet"].includes(state.view)) state.view = "cards";
   // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
   const wanted = decodeURIComponent((location.hash.match(/^#q=(.+)$/) || [])[1] || "");
   const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
