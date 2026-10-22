@@ -641,6 +641,40 @@ test('context-gauge: each live row carries its herdr tab label, null when the ta
   assert.equal(rows['secondmate-x'].pane_id, 'w1:p1');
 });
 
+test('archive-context: reads an archived Claude session\'s last context from its transcript by the first 8 characters, and never returns more', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'organizer-claude-'));
+  const usage = (tokens, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(Date.now() - 3600000).toISOString(), message: { model: 'claude-x', usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: tokens - 1010 } }, ...extra });
+  const write = (project, id, lines) => {
+    fs.mkdirSync(path.join(root, 'projects', project), { recursive: true });
+    fs.writeFileSync(path.join(root, 'projects', project, `${id}.jsonl`), lines.join('\n') + '\n');
+  };
+  write('-proj-a', 'aaaaaaaa-1111-4bbb-8ccc-000000000001', [usage(100000), usage(410000), usage(900000, { isSidechain: true })]);
+  write('-proj-b', 'bbbbbbbb-1111-4bbb-8ccc-000000000002', [usage(500000), JSON.stringify({ type: 'system', subtype: 'compact_boundary' })]);
+  write('-proj-b', 'cccccccc-1111-4bbb-8ccc-000000000003', [usage(250000)]);
+  write('-proj-b', 'notes.txt', ['ignored']);
+  const server = await startServer({ runner: fakeRunner({}).runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-context', { prefixes: ['aaaaaaaa', 'bbbbbbbb', 'cccccccc', 'dddddddd', 'aaaaaaaa'] });
+    assert.equal(response.status, 200);
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.id, row]));
+    assert.deepEqual(Object.keys(rows).sort(), ['aaaaaaaa', 'cccccccc'], 'a compacted session and a session with no transcript have no row');
+    assert.equal(rows.aaaaaaaa.percent, 41, 'the newest main-thread usage line against the assumed 1M window');
+    assert.equal(rows.aaaaaaaa.tokens, 410000);
+    assert.equal(rows.aaaaaaaa.estimated, true);
+    assert.ok(rows.aaaaaaaa.age_s >= 3500 && rows.aaaaaaaa.age_s < 4000);
+    assert.equal(response.raw.includes('1111-4bbb'), false, 'no whole session id leaves the server');
+    assert.equal(response.raw.includes(root), false, 'no path leaves the server');
+    assert.deepEqual((await post('archive-context', { prefixes: ['../../etc', 'short', 'aaaaaaaa/x', 5] })).json.data.rows, [], 'only 8-character ids are looked up');
+    assert.equal((await post('archive-context', {})).status, 400);
+    assert.equal((await post('archive-context', { prefixes: ['aaaaaaaa'], path: '/x' })).status, 400);
+    assert.equal(server.api.ACTIONS['archive-context'].tier, 0);
+  } finally { await server.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('context-gauge: a live Claude pane the gauge has no usable row for is read from its own transcript and replaces the stale row', async () => {
   const fs = require('fs');
   const os = require('os');

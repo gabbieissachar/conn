@@ -889,6 +889,38 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     };
   }
 
+  // The context an archived Claude session had when it last ran, for the Archive group tab. The page only knows the first
+  // 8 characters of each session id (the gauge shows the same), so one pass over the transcript folders finds the files
+  // whose name starts with a requested prefix. A session with no transcript, or one compacted after its last usage line,
+  // simply has no row.
+  const ARCHIVE_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
+  async function archiveContext(prefixes = []) {
+    const wanted = [...new Set((Array.isArray(prefixes) ? prefixes : []).filter((item) => typeof item === 'string' && ARCHIVE_PREFIX_RE.test(item)))].slice(0, 64);
+    if (!wanted.length) return { rows: [] };
+    const files = new Map();
+    const roots = [...new Set([env.CLAUDE_CONFIG_DIR, path.join(os.homedir(), '.claude')].filter(Boolean))];
+    for (const root of roots) {
+      let dirs;
+      try { dirs = await fsp.readdir(path.join(root, 'projects')); } catch { continue; }
+      for (const dir of dirs) {
+        let names;
+        try { names = await fsp.readdir(path.join(root, 'projects', dir)); } catch { continue; }
+        for (const name of names) {
+          if (!name.endsWith('.jsonl')) continue;
+          const prefix = name.slice(0, 8);
+          if (wanted.includes(prefix) && !files.has(prefix)) files.set(prefix, path.join(root, 'projects', dir, name));
+        }
+      }
+    }
+    const rows = [];
+    for (const [id, file] of files) {
+      const { tokens, at } = await transcriptUsage(file);
+      if (tokens === null) continue;
+      rows.push({ id, percent: assumedPercent(tokens), tokens, estimated: true, age_s: at === null ? null : Math.max(0, Math.round((Date.now() - at) / 1000)) });
+    }
+    return { rows };
+  }
+
   function contextGauge() {
     return singleFlight('context-gauge', async () => {
       if (!fmHome || !gaugeScript) throw new AdapterError('The context gauge is not configured.', 501, 'gauge_unconfigured');
@@ -1112,6 +1144,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     listBundles,
     reconcilePreview,
     contextGauge,
+    archiveContext,
     planUsage,
     codexCredits,
     leaderSpace,

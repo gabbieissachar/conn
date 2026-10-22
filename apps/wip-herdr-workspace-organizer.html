@@ -176,9 +176,6 @@ created: 2026-09-10
     .ctx-compact .compact-tab { padding: 6px 8px; }
     .ctx-compact .compact-tab .tab-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ctx-compact .compact-tab .pill { flex: none; }
-    .ctx-compact .compact-tab.no-pick { cursor: default; }
-    .ctx-compact .compact-tab.no-pick .tab-name { color: var(--muted); font-weight: 500; }
-    .ctx-compact .pick-gap { width: 13px; flex: none; }
     .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
     .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
@@ -247,6 +244,7 @@ created: 2026-09-10
     .member-tab .tab-panes { color: #6b7490; font: 10px "DM Mono", monospace; margin-left: 4px; }
     .member-tab .tab-resume { margin-left: 6px; padding: 0 7px; border: 1px solid #c7cde0; border-radius: 999px; background: #fff; color: var(--navy); font: inherit; font-size: 10px; line-height: 16px; cursor: pointer; }
     .member-tab .tab-resume:hover:not(:disabled) { background: #eef1fb; }
+    .member-tab .pill { margin-left: 6px; padding: 0 6px; font-size: 10px; }
     .member-tab .tab-resume:disabled { opacity: .5; cursor: not-allowed; }
     .group-destination { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 4px; font-size: 12px; color: #4a5370; }
     .group-destination .select { max-width: min(360px, 100%); padding: 7px 10px; }
@@ -528,6 +526,7 @@ created: 2026-09-10
       if (state.archiveAll.result && state.archiveAll.result.session !== cleanupSession()) state.archiveAll = freshArchiveAll();
       renderArchiveAll();
       document.querySelector('#batches').innerHTML = batchesView(data);
+      if (state.view === 'group') loadArchiveContext(data);
       document.querySelector('#workspaces').classList.toggle('compact', state.compact);
       document.querySelector('#compact-toggle').setAttribute('aria-pressed', String(state.compact));
       document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(state.compact ? compactWorkspaceView : workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
@@ -1392,6 +1391,16 @@ created: 2026-09-10
       ? `herdr-organizer${session} restore-tab --archive ${member.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${member.archive_id}` : '');
     // The tabs an archived workspace holds, by name, so the group shows what each workspace stores. A still-archived
     // workspace also offers to resume just one of its tabs into an open workspace; the tab stays in the archive.
+    // How full the session's context was when last recorded, from the context gauge (read by the Context tab's loader). A tab
+    // with several agent sessions shows the fullest one; a tab the gauge has no record for shows nothing.
+    // The gauge's own row wins; a session the gauge does not know is read from its transcript (archiveContext).
+    const archivedContextPill = tab => {
+      if (!context.data) return '';
+      const rows = (tab.agent_session_prefixes || []).map(id => context.data.rows.find(row => row.id === id && row.percent !== null) || archiveContext.rows.get(id)).filter(Boolean);
+      if (!rows.length) return '';
+      const top = rows.reduce((best, row) => (row.percent > best.percent ? row : best));
+      return `<span class="pill ${percentLevel(top.percent, context.data.thresholds)}" title="Context used when this session last ran${top.estimated ? ' (estimated from its transcript, against a 1M window)' : ''}. Amber from ${context.data.thresholds.warn}%, red from ${context.data.thresholds.high}%.">${top.estimated ? '~' : ''}${top.percent}%</span>`;
+    };
     const memberTabsView = (member, session, destination) => {
       const tabs = (member.tabs || []).filter(tab => tab && typeof tab.label === 'string' && tab.label);
       if (!tabs.length) return '';
@@ -1404,7 +1413,7 @@ created: 2026-09-10
           : !TAB_ID_PATTERN.test(tab.id || '') ? 'This tab has an unexpected id, so no command is built.' : '';
         return `<button type="button" class="tab-resume" ${command ? `data-command="${escapeHtml(command)}"` : 'disabled'} title="${escapeHtml(command ? 'Copies a command that rebuilds only this tab in the chosen workspace and resumes its verified agents. The tab then leaves the archive; the rest of the archived workspace stays. When its last tab leaves, the archived workspace leaves the group.' : why)}">Copy resume tab</button>`;
       };
-      return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span>${button(tab)}</span>`).join('')}</div>`;
+      return `<div class="member-tabs" aria-label="Tabs in ${escapeHtml(member.workspace_label || member.archive_id)}">${tabs.map(tab => `<span class="member-tab" title="${escapeHtml(tab.id || '')}">${escapeHtml(tab.label)}<span class="tab-panes">${plural(Number(tab.pane_count) || 0, 'pane')}</span>${archivedContextPill(tab)}${button(tab)}</span>`).join('')}</div>`;
     };
     const batchMemberView = (member, session, liveIds, destination) => {
       const [label, tone] = MEMBER_STATUS[member.status] || [member.status || 'unknown', ''];
@@ -1423,6 +1432,9 @@ created: 2026-09-10
       const resume = `${base} --resume-agents --execute --confirm ${id}`;
       const layout = `${base} --execute --confirm ${id}`;
       const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
+      // Tabs held twice: the older copy of a tab that was restored out of its archive and then archived again.
+      const duplicates = (batch.duplicate_tabs || []).filter(item => item && typeof item.label === 'string' && ARCHIVE_ID_PATTERN.test(item.archive_id || ''));
+      const dedupe = `herdr-organizer${session} dedupe-group --batch ${id} --execute --confirm ${id}`;
       const removeAll = `herdr-organizer delete-batch --batch ${id} --archives --execute --confirm delete-archives:${id}`;
       const removable = (batch.members || []).filter(member => member.status !== 'deleted').length;
       const canRestore = valid && counts.archived > 0;
@@ -1447,9 +1459,11 @@ created: 2026-09-10
         <div class="archive-actions">
           <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
           <button type="button" ${canLayout ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canLayout ? 'Copies one command that rebuilds the layout of every archived member that has no open copy, as fresh shells. Nothing is marked restored and every restore command stays.' : (canRestore ? 'Every archived member already has its layout open' : why)}">Copy restore all (layout only)</button>
+          ${valid && duplicates.length ? `<button class="danger" type="button" data-command="${escapeHtml(dedupe)}" title="Copies one command that permanently removes the older copy of each duplicated tab from its archive. The newer archive keeps its copy, and no live workspace changes. Run it with the same command plus no --execute to preview.">Copy remove ${plural(duplicates.length, 'duplicate tab')}</button>` : ''}
           ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this empty group record. The next Archive all starts the group again.">Copy delete group</button>` : ''}
           ${valid && removable ? `<button class="danger" type="button" data-command="${escapeHtml(removeAll)}" title="Permanently deletes this group and its ${plural(removable, 'archive')}.${counts.archived ? ` ${counts.archived} still ${counts.archived === 1 ? 'is' : 'are'} archived, so their saved layouts and agent identities would be lost.` : ''} No live or restored workspace is changed.">Copy delete group + ${plural(removable, 'archive')}</button><button type="button" data-command="${escapeHtml(remove)}" title="Removes this group record only. Its archives stay as single archives.">Copy delete group record only</button>` : ''}
         </div>
+        ${valid && duplicates.length ? `<div class="archive-meta" style="margin-top:8px">${plural(duplicates.length, 'tab')} held twice: ${duplicates.map(item => escapeHtml(item.label)).join(', ')}. Each was restored out of an older archive and archived again. Removing keeps the newer copy.</div>` : ''}
         ${valid && removable ? `<div class="archive-meta" style="margin-top:8px;color:#a9273b">Delete group + ${plural(removable, 'archive')} is permanent.${counts.archived ? ` ${plural(counts.archived, 'member')} ${counts.archived === 1 ? 'is' : 'are'} still archived, so ${counts.archived === 1 ? 'its' : 'their'} saved layout and agent identity would be lost.` : ''} Delete group record only keeps the archives.</div>` : ''}
         <details class="fold" data-batch-fold="${escapeHtml(id)}:members"${open('members')} style="margin-top:12px"><summary><span class="group-title">Archived workspaces <span class="count-pill">${batch.member_count || 0}</span></span></summary>${destinationPicker}${(batch.members || []).map(member => batchMemberView(member, session, liveIds, tabDestination)).join('') || '<div class="tab-meta">No archived workspaces</div>'}</details>
         ${skipped ? `<details class="fold" data-batch-fold="${escapeHtml(id)}:skipped"${open('skipped')}><summary><span class="group-title">Skipped at last capture <span class="count-pill">${batch.skipped.length}</span></span></summary>${skipped}</details>` : ''}
@@ -1474,6 +1488,8 @@ created: 2026-09-10
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '' };
+    // Last-run context of archived sessions the gauge has no row for, read once per session id prefix from the transcripts.
+    const archiveContext = { rows: new Map(), asked: new Set(), loading: false };
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
     const codex = { loading: false, data: null, error: '', at: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
@@ -1561,7 +1577,8 @@ created: 2026-09-10
     const sessionName = row => row.tab_label || row.map;
     // A leader is picked by its label; any other live session by its pane. Nothing starts ticked.
     const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id ? `${row.herdr_session}|${row.pane_id}` : '';
-    const contextLevel = (row, thresholds) => row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
+    const percentLevel = (percent, thresholds) => percent >= thresholds.high ? 'bad' : percent >= thresholds.warn ? 'warn' : 'good';
+    const contextLevel = (row, thresholds) => row.percent === null ? '' : percentLevel(row.percent, thresholds);
     const contextPercent = (row, level) => row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
     const handoffPickBox = row => {
       const pickKey = pickKeyOf(row);
@@ -1569,14 +1586,11 @@ created: 2026-09-10
       return pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
     };
     // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
-    const contextCompactRow = (row, thresholds) => {
-      const pick = handoffPickBox(row);
-      return `<${pick ? 'label' : 'div'} class="compact-tab${pick ? '' : ' no-pick'}"${pick ? '' : ' title="no live pane"'}>${pick || '<span class="pick-gap"></span>'}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}</${pick ? 'label' : 'div'}>`;
-    };
+    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}</label>`;
     const contextRow = (row, thresholds) => {
       const level = contextLevel(row, thresholds);
       const percent = contextPercent(row, level);
-      const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
+      const where = `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}`;
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       const pick = handoffPickBox(row);
       const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.tab_label && row.tab_label !== row.map ? escapeHtml(row.map) : '', row.leader && row.leader.label !== sessionName(row) && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
@@ -1630,12 +1644,14 @@ created: 2026-09-10
       else if (!context.data) body = '<div class="skeleton"></div><div class="skeleton"></div>';
       else {
         const { thresholds } = context.data;
-        const { rows, problems } = contextRows();
-        const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
+        // Only sessions with a live pane are listed. An archived session's last context shows on the Archive group tab.
+        const { rows: allRows, problems } = contextRows();
+        const rows = allRows.filter(row => row.pane_id);
+        const due = rows.filter(row => row.percent !== null && row.percent >= thresholds.warn).length;
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
         const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
-        const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
-        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
+        const actions = rows.length ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript. Sessions with no live pane are not listed; an archived session's last context shows on the Archive group tab. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No live agent sessions.</div>';
       }
       section.innerHTML = `${head}${planRail()}${codexRail()}${body}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
@@ -1689,9 +1705,25 @@ created: 2026-09-10
       } finally {
         context.loading = false;
         if (state.view === 'context') renderContext();
+        else if (state.view === 'group' && state.data) render();
       }
     };
 
+    const loadArchiveContext = async data => {
+      if (archiveContext.loading) return;
+      const wanted = [...new Set((data.batches || []).flatMap(batch => (batch.members || []).flatMap(member => (member.tabs || []).flatMap(tab => tab.agent_session_prefixes || []))))]
+        .filter(id => /^[A-Za-z0-9_-]{8}$/.test(id) && !archiveContext.asked.has(id)).slice(0, 64);
+      if (!wanted.length) return;
+      archiveContext.loading = true;
+      wanted.forEach(id => archiveContext.asked.add(id));
+      try {
+        const result = await api.run('archive-context', { prefixes: wanted });
+        for (const row of result.rows || []) archiveContext.rows.set(row.id, row);
+      } catch { /* without a reading the tab just shows no percent */ } finally {
+        archiveContext.loading = false;
+        if (state.view === 'group' && state.data) render();
+      }
+    };
     const loadPlan = async fresh => {
       if (plan.loading) return;
       plan.loading = true;
@@ -1779,6 +1811,7 @@ created: 2026-09-10
       state.view = button.dataset.view;
       render();
       if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); if (!plan.data && !plan.error && !plan.loading) loadPlan(false); if (!codex.data && !codex.error && !codex.loading) loadCodex(); return; }
+      if (state.view === 'group' && !context.data && !context.loading) loadContext();
       if (state.view !== 'restart') {
         syncSnapshotSelect();
         if (!snapshotRequested) { snapshotRequested = true; refreshSnapshot(); }

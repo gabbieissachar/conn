@@ -336,12 +336,12 @@ test('a tab shows a copy button for each verified agent session id, and copying 
   assert.equal(agentSessionsView({ pane_count: 1 }), '');
 });
 
-function memberTabHelpers() {
+function memberTabHelpers(context = { data: null }, archiveContext = { rows: new Map() }) {
   const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
   const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchMemberView'));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  return new Function('escapeHtml', 'plural', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {} });
+  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('percentLevel'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {} }, context, archiveContext);
 }
 
 test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
@@ -354,6 +354,43 @@ test('the archive group lists each archived workspace\'s tabs by name, with thei
   assert.equal(memberTabsView({ tabs: [] }), '');
   assert.equal(memberTabsView({}), '');
   assert.match(html, /\$\{flag\}<\/div>\$\{memberTabsView\(member, session, destination\)\}/);
+});
+
+test('the archive group shows how full each archived session\'s context was, from the gauge, before it is restored', () => {
+  const data = { thresholds: { warn: 35, high: 60 }, rows: [
+    { id: 'abcdef12', percent: 41.5, estimated: false },
+    { id: 'abcdef12', percent: 12, estimated: false },
+    { id: '99999999', percent: 70, estimated: true },
+    { id: 'aaaaaaaa', percent: null, estimated: true },
+  ] };
+  const { archivedContextPill, memberTabsView } = memberTabHelpers({ data });
+  assert.match(archivedContextPill({ agent_session_prefixes: ['abcdef12'] }), /pill warn[^>]*>41\.5%</, 'the fullest record of the session, amber from the warn threshold');
+  assert.match(archivedContextPill({ agent_session_prefixes: ['99999999'] }), /pill bad[^>]*>~70%</, 'an estimate is marked and red from the high threshold');
+  assert.equal(archivedContextPill({ agent_session_prefixes: ['aaaaaaaa'] }), '', 'no percent, no pill');
+  assert.equal(archivedContextPill({ agent_session_prefixes: ['zzzzzzzz'] }), '', 'no gauge record, no pill');
+  assert.equal(archivedContextPill({}), '');
+  assert.match(memberTabsView({ workspace_label: 'w', archive_id: 'a', tabs: [{ id: 'w9J:t2', label: 'x', pane_count: 1, agent_session_prefixes: ['abcdef12'] }] }), /41\.5%/);
+  assert.equal(memberTabHelpers().archivedContextPill({ agent_session_prefixes: ['abcdef12'] }), '', 'nothing before the gauge has been read');
+  // A session the gauge does not know is read from its transcript; the gauge's own row still wins when both exist.
+  const fromTranscript = memberTabHelpers({ data }, { rows: new Map([['zzzzzzzz', { id: 'zzzzzzzz', percent: 52, estimated: true }], ['abcdef12', { id: 'abcdef12', percent: 99, estimated: true }]]) }).archivedContextPill;
+  assert.match(fromTranscript({ agent_session_prefixes: ['zzzzzzzz'] }), /pill warn[^>]*>~52%</);
+  assert.match(fromTranscript({ agent_session_prefixes: ['abcdef12'] }), />41\.5%</, 'the gauge row wins');
+  assert.match(html, /api\.run\('archive-context', \{ prefixes: wanted \}\)/);
+  assert.match(html, /if \(state\.view === 'group'\) loadArchiveContext\(data\)/);
+  assert.match(html, /state\.view === 'group' && !context\.data && !context\.loading\) loadContext\(\)/, 'opening the group reads the gauge');
+});
+
+test('the archive group offers a copy-only command that removes tabs held twice, and only when there are some', () => {
+  const view = html.slice(html.indexOf('const batchView'), html.indexOf('const batchesView'));
+  assert.match(view, /dedupe-group --batch \$\{id\} --execute --confirm \$\{id\}/);
+  assert.match(view, /valid && duplicates\.length \? `<button class="danger"/, 'the button appears only when the snapshot lists duplicates');
+  assert.ok(view.includes('escapeHtml(item.label)'), 'tab names are escaped');
+  assert.match(view, /ARCHIVE_ID_PATTERN\.test\(item\.archive_id/, 'only well-formed ids are listed');
+});
+
+test('context view: only sessions with a live pane are listed', () => {
+  const view = html.slice(html.indexOf('const renderContext'), html.indexOf('const copyHandoff'));
+  assert.match(view, /allRows\.filter\(row => row\.pane_id\)/);
 });
 
 test('an archived workspace in the group offers to resume one tab into an open workspace', () => {
