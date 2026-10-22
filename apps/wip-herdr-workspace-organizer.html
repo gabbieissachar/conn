@@ -1475,7 +1475,7 @@ created: 2026-09-10
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '' };
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
-    const codex = { loading: false, data: null, error: '' };
+    const codex = { loading: false, data: null, error: '', at: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
     const planClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const planWhen = iso => {
@@ -1527,7 +1527,8 @@ created: 2026-09-10
         chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${codexChip('Month to date', month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`)}`;
       }
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
-      return `<div class="plan-chips" id="codex-card">${chips}${error}</div>`;
+      const button = `<button id="codex-reload" type="button" title="Read Codex credits again" ${codex.loading ? 'disabled' : ''}>${codex.loading ? 'Reading…' : 'Refresh credits'}</button>`;
+      return `<div class="plan-chips" id="codex-card">${chips}<span class="updated">${codex.at ? `updated ${escapeHtml(codex.at)}` : 'not read yet'}</span>${button}${error}</div>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1644,6 +1645,7 @@ created: 2026-09-10
         renderContext();
       });
       document.querySelector('#plan-reload').addEventListener('click', () => { loadPlan(true); loadCodex(); });
+      document.querySelector('#codex-reload').addEventListener('click', loadCodex);
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
         const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
         context.sort = context.sort.key === column.key ? { key: column.key, dir: context.sort.dir === 'asc' ? 'desc' : 'asc' } : { key: column.key, dir: column.first };
@@ -1711,6 +1713,7 @@ created: 2026-09-10
       try {
         codex.data = await api.run('codex-credits');
         codex.error = '';
+        codex.at = planClock(new Date().toISOString());
       } catch (error) {
         codex.data = null; codex.error = error.message;
       } finally {
