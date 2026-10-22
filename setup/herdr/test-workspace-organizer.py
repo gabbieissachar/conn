@@ -3260,6 +3260,7 @@ class BatchTests(unittest.TestCase):
             "the live tab id now holds a different tab": dict(new_tab=self.tab("wAE:t2", "something else", "S1")),
             "the live tab holds another agent session": dict(new_tab=self.tab("wAE:t2", "design", "S2")),
             "the live tab lost its agent": dict(new_tab=self.tab("wAE:t2", "design")),
+            "a shell-only tab on both sides (no session to prove identity)": dict(old_tabs=[self.tab("wA8:t2", "design"), self.tab("wA8:t3", "doctor")], new_tab=self.tab("wAE:t2", "design")),
             "the restore was into another tab": dict(restore={"destination_tab_id": "wAE:t9"}),
         }
         for name, overrides in cases.items():
@@ -3289,9 +3290,9 @@ class BatchTests(unittest.TestCase):
         self.duplicate_group(new_workspace="wGONE")
         old = self.stored(self.OLD_ID)
         old["tab_restores"][0].update(destination_workspace_id="w1", destination_tab_id="w1:t1")
-        old["capture"]["tabs"][0] = self.tab("wA8:t2", "main")
+        old["capture"]["tabs"][0] = self.tab("wA8:t2", "main", "S1")
         ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{self.OLD_ID}.json", old)
-        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={"w1": [dict(RESUMABLE, session_id="S1")]}, working=())
         with patch.object(ORGANIZER, "archive_id_for", return_value="20990101-000000-clean"):
             output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
         self.assertEqual(herdr.closed, ["w1"])

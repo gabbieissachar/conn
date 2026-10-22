@@ -2428,7 +2428,8 @@ def superseded_group_tabs(manifest: dict[str, Any], batch_id: str) -> list[dict[
     If that workspace (or the tab alone) is archived into the group later, the same tab is then in two members. The
     older entry is stale only when all of this holds: its restore into the live tab finished, a newer archived member
     was captured from that workspace after that restore and holds a tab with that live tab id and the same label, and
-    both tabs carry the same agent session. Ids alone never decide, because Herdr hands closed ids out again.
+    both tabs carry the same agent session. Ids and labels alone never decide, because Herdr hands closed ids out
+    again, so a shell-only tab is never removed this way.
     """
     loaded: list[tuple[Path, dict[str, Any]]] = []
     for member in manifest.get("members", []):
@@ -2473,7 +2474,8 @@ def superseded_group_tabs(manifest: dict[str, Any], batch_id: str) -> list[dict[
                 if new_tab is None:
                     continue
                 old_sessions, new_sessions = tab_session_ids(old_tab), tab_session_ids(new_tab)
-                if (old_sessions or new_sessions) and not old_sessions & new_sessions:
+                # A tab with no agent session has nothing but a reusable id and label to go on, so it is never called stale.
+                if not old_sessions & new_sessions:
                     continue
                 found.append(
                     {
