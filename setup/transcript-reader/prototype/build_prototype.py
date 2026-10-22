@@ -843,20 +843,59 @@ def cleared_at(records: list[dict]) -> float | None:
     return None
 
 
+def bridge_id(records: list[dict]) -> str:
+    """The remote-control link a log names first, or "". A /clear keeps the process's link."""
+    for record in records:
+        if record.get("type") == "bridge-session" and record.get("bridgeSessionId"):
+            return record["bridgeSessionId"]
+    return ""
+
+
+def names_bridge(path: Path, bridge: str) -> bool:
+    """Whether a log's own bridge-session records name this remote-control link. A turn that
+    merely quotes the id (a search, a tool result) does not count."""
+    needle = f'"{bridge}"'
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if needle not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict) and record.get("type") == "bridge-session" and record.get("bridgeSessionId") == bridge:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def cleared_from(path: Path, clear_time: float) -> Path | None:
-    """The log a /clear at <clear_time> left behind: in the same folder, last written by
-    the clear itself, so within two minutes before it (nearest wins)."""
-    best = None
-    for other in path.parent.glob("*.jsonl"):
-        if other == path:
-            continue
-        try:
-            gap = clear_time - other.stat().st_mtime
-        except OSError:
-            continue
-        if -5 <= gap <= 120 and (best is None or abs(gap) < best[0]):
-            best = (abs(gap), other)
-    return best[1] if best else None
+    """The log a /clear at <clear_time> left behind, last written by the clear itself, so
+    within two minutes before it (nearest wins).
+
+    It is the log that names the same remote-control link, in any project folder: a session
+    resumed from another directory keeps its old folder, but its /clear starts the new log
+    under the current one. Only that process writes the link, so its old log may also get
+    its last records up to 30 seconds after the clear. Without a link to match, it is the
+    nearest log in the same folder, written at most 5 seconds after the clear.
+    """
+    def nearest(candidates, late, keep=lambda other: True):
+        best = None
+        for other in candidates:
+            if other == path:
+                continue
+            try:
+                gap = clear_time - other.stat().st_mtime
+            except OSError:
+                continue
+            if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
+                best = (abs(gap), other)
+        return best[1] if best else None
+    bridge = bridge_id(head_records(path))
+    linked = nearest(PROJECTS.glob("*/*.jsonl"), 30, lambda other: names_bridge(other, bridge)) if bridge else None
+    return linked or nearest(path.parent.glob("*.jsonl"), 5)
 
 
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
@@ -874,11 +913,16 @@ def session_chain(path: Path, limit: int = 20) -> list[Path]:
         except OSError:
             break
         after = None
-        for other in chain[-1].parent.glob("*.jsonl"):
+        # The next log may sit in another project folder (see cleared_from).
+        for other in sorted({*chain[-1].parent.glob("*.jsonl"), *PROJECTS.glob("*/*.jsonl")}):
             if other in chain:
                 continue
-            at = cleared_at(head_records(other)) if other.stat().st_mtime >= written - 5 else None
-            if at is not None and -5 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
+            try:
+                recent = other.stat().st_mtime >= written - 5
+            except OSError:
+                continue
+            at = cleared_at(head_records(other)) if recent else None
+            if at is not None and -30 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
                 after = other
                 break
         if not after:

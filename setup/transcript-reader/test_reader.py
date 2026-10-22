@@ -201,7 +201,11 @@ class ClearedSessionsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.folder = Path(self.tmp.name)
+        projects = mock.patch.object(builder, "PROJECTS", Path(self.tmp.name))
+        projects.start()
+        self.addCleanup(projects.stop)
+        self.folder = Path(self.tmp.name) / "project"
+        self.folder.mkdir()
         f = self.folder
         # first ... cleared at T0+100 into second ... cleared at T0+500 into third.
         log(f / "first.jsonl", [prompt("hello", iso(T0))], T0 + 100)
@@ -229,6 +233,31 @@ class ClearedSessionsTest(unittest.TestCase):
     def test_no_log_written_near_the_clear_means_no_earlier_session(self):
         os.utime(self.folder / "first.jsonl", (T0 - 3600, T0 - 3600))  # resumed and written later elsewhere
         self.assertEqual(self.stems("third"), ["second", "third"])
+
+    def test_a_clear_after_a_resume_from_another_folder_is_joined_by_its_remote_control_link(self):
+        # Resumed from another directory, the session kept its old folder; the /clear started
+        # the new log under the current one, so only the shared link ties them together.
+        root = Path(self.tmp.name)
+        (root / "resumed").mkdir()
+        (root / "elsewhere").mkdir()
+        bridge = lambda link, at: {"type": "bridge-session", "bridgeSessionId": link, "timestamp": iso(at)}
+        log(root / "resumed" / "before.jsonl", [prompt("hello", iso(T0 + 1000)), bridge("cse_01Link", T0 + 1000), bridge("", T0 + 1100)], T0 + 1100)
+        log(root / "elsewhere" / "other-link.jsonl", [prompt("another pane", iso(T0 + 1000)), bridge("cse_01Other", T0 + 1000)], T0 + 1100.2)
+        log(self.folder / "after.jsonl", [bridge("cse_01Link", T0 + 1100.1), prompt(CLEAR, iso(T0 + 1100.3)), prompt("go on", iso(T0 + 1200))], T0 + 1300)
+        log(self.folder / "same-folder.jsonl", [prompt("busy nearby", iso(T0 + 1050))], T0 + 1100.3)
+        paths = lambda name: [p.stem for p in builder.session_chain(next(root.glob(f"*/{name}.jsonl")))]
+        self.assertEqual(paths("after"), ["before", "after"])
+        self.assertEqual(paths("before"), ["before", "after"])
+        self.assertEqual(paths("same-folder"), ["same-folder"])
+
+    def test_a_linked_log_may_be_written_up_to_30_seconds_after_the_clear(self):
+        link = {"type": "bridge-session", "bridgeSessionId": "cse_01Link", "timestamp": iso(T0 + 2000)}
+        log(self.folder / "late.jsonl", [prompt("hello", iso(T0 + 2000)), link], T0 + 2112)
+        log(self.folder / "next.jsonl", [link, prompt(CLEAR, iso(T0 + 2100)), prompt("go on", iso(T0 + 2200))], T0 + 2300)
+        log(self.folder / "quoted.jsonl", [prompt('the link was "cse_01Link"', iso(T0 + 2000))], T0 + 2101)
+        self.assertEqual(self.stems("next"), ["late", "next"])
+        self.assertEqual(self.stems("late"), ["late", "next"])
+        self.assertEqual(self.stems("quoted"), ["quoted"])
 
 
 if __name__ == "__main__":
