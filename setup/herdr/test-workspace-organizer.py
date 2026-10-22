@@ -3194,6 +3194,117 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ORGANIZER.OrganizerError, "not found"):
             self.run_quietly(ORGANIZER.delete_batch_command, args)
 
+    # ---- one tab never sits in the group twice ----
+    GROUP_ID = "batch-20261007-101500"
+    OLD_ID = "20261014-090000-old-selected-tabs"
+    NEW_ID = "20261019-090000-personal"
+
+    def tab(self, tab_id, label, session=None):
+        agents = [{"restore_status": "resumable", "restore_source": "process", "client": "claude", "session_id": session}] if session else []
+        return {"source_tab_id": tab_id, "label": label, "layout": {"root": {"type": "pane", "pane_id": f"{tab_id}p"}}, "agent_restores": agents}
+
+    def duplicate_group(self, old_tabs=None, restore=None, new_tab=None, new_created="2026-10-19T09:00:00+00:00", new_status="archived", new_workspace="wAE"):
+        """An older member whose tab wA8:t2 was restored into live wAE:t2, and a newer member of wAE holding that live tab."""
+        operation = {
+            "operation_id": "restore-1", "source_tab_id": "wA8:t2", "destination_workspace_id": "wAE", "destination_tab_id": "wAE:t2",
+            "started_at": "2026-10-16T03:16:39+00:00", "completed_at": "2026-10-16T03:16:40+00:00", "status": "completed",
+        }
+        operation.update(restore or {})
+        old = {
+            "archive_id": self.OLD_ID, "status": "archived", "batch_id": self.GROUP_ID, "created_at": "2026-10-14T09:00:00+00:00",
+            "capture": {"workspace": {"source_workspace_id": "wA8", "label": "Old"}, "tabs": old_tabs or [self.tab("wA8:t2", "design", "S1"), self.tab("wA8:t3", "doctor")]},
+            "tab_restores": [operation],
+        }
+        new = {
+            "archive_id": self.NEW_ID, "status": new_status, "batch_id": self.GROUP_ID, "created_at": new_created,
+            "capture": {"workspace": {"source_workspace_id": new_workspace, "label": "personal"}, "tabs": [new_tab or self.tab("wAE:t2", "design", "S1")]},
+        }
+        for archive in (old, new):
+            ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{archive['archive_id']}.json", archive)
+        manifest = {
+            "version": 1, "batch_id": self.GROUP_ID, "status": "completed", "created_at": "2026-10-07T10:15:00+00:00",
+            "herdr_session": "esim", "skipped": [],
+            "members": [{"archive_id": a, "workspace_id": "x", "workspace_label": "x"} for a in (self.OLD_ID, self.NEW_ID)],
+        }
+        ORGANIZER.write_json(ORGANIZER.BATCH_DIR / f"{self.GROUP_ID}.json", manifest)
+        return manifest
+
+    def stored(self, archive_id):
+        return json.loads((self.archives / f"{archive_id}.json").read_text())
+
+    def test_a_restored_tab_that_is_archived_again_is_removed_from_the_older_member(self):
+        manifest = self.duplicate_group()
+        removed = ORGANIZER.retire_superseded_tabs(ORGANIZER.BATCH_DIR / f"{self.GROUP_ID}.json", manifest, self.GROUP_ID)
+        self.assertEqual(removed, [{"archive_id": self.OLD_ID, "tab_id": "wA8:t2", "label": "design", "by": self.NEW_ID}])
+        old = self.stored(self.OLD_ID)
+        self.assertEqual([t["source_tab_id"] for t in old["capture"]["tabs"]], ["wA8:t3"], "only the stale tab goes")
+        self.assertEqual(old["tab_restores"], [], "the stale tab's restore record goes with it")
+        self.assertEqual(old["superseded_tabs"][0]["by"], self.NEW_ID)
+        self.assertEqual([m["archive_id"] for m in self.manifests()[0]["members"]], [self.OLD_ID, self.NEW_ID], "both members stay in the group")
+        self.assertEqual([t["source_tab_id"] for t in self.stored(self.NEW_ID)["capture"]["tabs"]], ["wAE:t2"], "the newer copy is untouched")
+
+    def test_an_older_member_whose_only_tab_is_stale_leaves_the_group_and_stays_a_single_archive(self):
+        manifest = self.duplicate_group(old_tabs=[self.tab("wA8:t2", "design", "S1")])
+        ORGANIZER.retire_superseded_tabs(ORGANIZER.BATCH_DIR / f"{self.GROUP_ID}.json", manifest, self.GROUP_ID)
+        self.assertEqual([m["archive_id"] for m in self.manifests()[0]["members"]], [self.NEW_ID])
+        old = self.stored(self.OLD_ID)
+        self.assertEqual(old["left_group"]["by"], self.NEW_ID)
+        self.assertEqual(len(old["capture"]["tabs"]), 1, "its capture is kept")
+
+    def test_a_tab_is_only_called_stale_when_every_condition_holds(self):
+        cases = {
+            "the restore never finished": dict(restore={"status": "prepared"}),
+            "the newer member was captured before the restore": dict(new_created="2026-10-15T09:00:00+00:00"),
+            "the newer member is not archived": dict(new_status="close_failed"),
+            "the newer member is from another workspace": dict(new_workspace="wZZ"),
+            "the live tab id now holds a different tab": dict(new_tab=self.tab("wAE:t2", "something else", "S1")),
+            "the live tab holds another agent session": dict(new_tab=self.tab("wAE:t2", "design", "S2")),
+            "the live tab lost its agent": dict(new_tab=self.tab("wAE:t2", "design")),
+            "the restore was into another tab": dict(restore={"destination_tab_id": "wAE:t9"}),
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                manifest = self.duplicate_group(**overrides)
+                self.assertEqual(ORGANIZER.superseded_group_tabs(manifest, self.GROUP_ID), [], name)
+                self.assertEqual(len(self.stored(self.OLD_ID)["capture"]["tabs"]), 2)
+
+    def test_dedupe_group_previews_then_removes_only_with_the_batch_id(self):
+        self.duplicate_group()
+        args = argparse.Namespace(batch=self.GROUP_ID, session="esim", execute=False, confirm=None)
+        output = self.run_quietly(ORGANIZER.dedupe_group_command, args)
+        self.assertIn("Preview only", output)
+        self.assertIn('"tab_id": "wA8:t2"', output)
+        self.assertEqual(len(self.stored(self.OLD_ID)["capture"]["tabs"]), 2, "a preview changes nothing")
+        args.execute = True
+        with self.assertRaises(ORGANIZER.OrganizerError):
+            self.run_quietly(ORGANIZER.dedupe_group_command, args)
+        self.assertEqual(len(self.stored(self.OLD_ID)["capture"]["tabs"]), 2, "a wrong confirmation changes nothing")
+        args.confirm = self.GROUP_ID
+        self.run_quietly(ORGANIZER.dedupe_group_command, args)
+        self.assertEqual(len(self.stored(self.OLD_ID)["capture"]["tabs"]), 1)
+        self.assertIn("holds no tab twice", self.run_quietly(ORGANIZER.dedupe_group_command, args))
+
+    def test_archive_all_removes_the_stale_copy_of_a_tab_it_just_archived(self):
+        # w1 is the live workspace the old member's tab was restored into; archive-all captures its tab w1:t1.
+        self.duplicate_group(new_workspace="wGONE")
+        old = self.stored(self.OLD_ID)
+        old["tab_restores"][0].update(destination_workspace_id="w1", destination_tab_id="w1:t1")
+        old["capture"]["tabs"][0] = self.tab("wA8:t2", "main")
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{self.OLD_ID}.json", old)
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        with patch.object(ORGANIZER, "archive_id_for", return_value="20990101-000000-clean"):
+            output = self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.assertEqual(herdr.closed, ["w1"])
+        self.assertEqual([t["source_tab_id"] for t in self.stored(self.OLD_ID)["capture"]["tabs"]], ["wA8:t3"])
+        self.assertIn("Removed the older copy of tab wA8:t2 (main)", output)
+
+    def test_a_failure_while_removing_duplicates_never_fails_the_run_that_archived_the_work(self):
+        manifest = self.duplicate_group()
+        out = io.StringIO()
+        with patch.object(ORGANIZER, "retire_superseded_tabs", side_effect=ORGANIZER.OrganizerError("boom")), redirect_stdout(out):
+            ORGANIZER.retire_duplicate_tabs(ORGANIZER.BATCH_DIR / f"{self.GROUP_ID}.json", manifest, self.GROUP_ID)
+        self.assertIn("Run dedupe-group to retry", out.getvalue())
+
 
 class LayoutHerdr:
     """A Herdr that can create workspaces, rebuild layouts and take resume commands, with nothing real behind it."""

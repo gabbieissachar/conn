@@ -1878,6 +1878,15 @@ def settle_interrupted_archive(
     write_json(archive_path, archive)
 
 
+def retire_duplicate_tabs(batch_path: Path, manifest: dict[str, Any], batch_id: str) -> None:
+    """Keep a group from holding one tab twice after a run. A failure here never fails the run that archived the work."""
+    try:
+        for item in retire_superseded_tabs(batch_path, manifest, batch_id):
+            print(f"Removed the older copy of tab {item['tab_id']} ({item['label']}) from {item['archive_id']}; {item['by']} holds it.")
+    except (OrganizerError, OSError) as error:
+        print(f"Warning: could not remove duplicate tabs from the group ({error}). Run dedupe-group to retry.")
+
+
 def run_archive_batch(
     args: argparse.Namespace, session: str, planned: list[dict[str, Any]], skipped: list[dict[str, Any]]
 ) -> None:
@@ -1951,6 +1960,7 @@ def run_archive_batch(
             print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
             if earlier:
                 print(f"It replaces {earlier['archive_id']} in the archive group; that archive stays as a single archive.")
+        retire_duplicate_tabs(batch_path, manifest, batch_id)
         finished = True
     finally:
         # Any other error or Ctrl-C must not leave the record stuck. The workspace being closed at that moment may
@@ -2401,6 +2411,136 @@ def restored_tab_sources(archive: dict[str, Any]) -> dict[str, str]:
             if isinstance(item, dict) and item.get("tab_id") and item.get("source_tab_id"):
                 sources[str(item["tab_id"])] = str(item["source_tab_id"])
     return sources
+
+
+def tab_session_ids(tab: dict[str, Any]) -> set[str]:
+    return {
+        str(item.get("session_id"))
+        for item in tab.get("agent_restores", [])
+        if isinstance(item, dict) and item.get("session_id")
+    }
+
+
+def superseded_group_tabs(manifest: dict[str, Any], batch_id: str) -> list[dict[str, Any]]:
+    """Archived tabs of the group that a newer member holds a fresher copy of.
+
+    A tab restored into another workspace by `restore-tabs` stays in its member, because the member is still archived.
+    If that workspace (or the tab alone) is archived into the group later, the same tab is then in two members. The
+    older entry is stale only when all of this holds: its restore into the live tab finished, a newer archived member
+    was captured from that workspace after that restore and holds a tab with that live tab id and the same label, and
+    both tabs carry the same agent session. Ids alone never decide, because Herdr hands closed ids out again.
+    """
+    loaded: list[tuple[Path, dict[str, Any]]] = []
+    for member in manifest.get("members", []):
+        archive_id = str(member.get("archive_id") or "") if isinstance(member, dict) else ""
+        if not archive_id or Path(archive_id).name != archive_id:
+            continue
+        path = ARCHIVE_DIR / f"{archive_id}.json"
+        try:
+            archive = read_json(path, None)
+        except OrganizerError:
+            continue
+        if not isinstance(archive, dict) or archive.get("batch_id") not in group_batch_ids(manifest) | {batch_id}:
+            continue
+        if archive.get("status") == "archived":
+            loaded.append((path, archive))
+    found: list[dict[str, Any]] = []
+    for old_path, old in loaded:
+        old_tabs = old.get("capture", {}).get("tabs", [])
+        for operation in old.get("tab_restores", []):
+            if not isinstance(operation, dict) or operation.get("status") != "completed":
+                continue
+            workspace_id = operation.get("destination_workspace_id")
+            live_tab_id = operation.get("destination_tab_id")
+            old_tab = next((tab for tab in old_tabs if str(tab.get("source_tab_id")) == str(operation.get("source_tab_id"))), None)
+            if old_tab is None or not workspace_id or not live_tab_id:
+                continue
+            restored_at = str(operation.get("completed_at") or operation.get("started_at") or "")
+            for new_path, new in loaded:
+                if new is old or str(new.get("created_at", "")) < restored_at:
+                    continue
+                capture = new.get("capture", {})
+                if str(capture.get("workspace", {}).get("source_workspace_id")) != str(workspace_id):
+                    continue
+                new_tab = next(
+                    (
+                        tab
+                        for tab in capture.get("tabs", [])
+                        if str(tab.get("source_tab_id")) == str(live_tab_id) and tab.get("label") == old_tab.get("label")
+                    ),
+                    None,
+                )
+                if new_tab is None:
+                    continue
+                old_sessions, new_sessions = tab_session_ids(old_tab), tab_session_ids(new_tab)
+                if (old_sessions or new_sessions) and not old_sessions & new_sessions:
+                    continue
+                found.append(
+                    {
+                        "archive_id": str(old["archive_id"]),
+                        "path": old_path,
+                        "archive": old,
+                        "tab_id": str(old_tab["source_tab_id"]),
+                        "label": old_tab.get("label"),
+                        "by": str(new["archive_id"]),
+                    }
+                )
+                break
+    return found
+
+
+def retire_superseded_tabs(batch_path: Path, manifest: dict[str, Any], batch_id: str) -> list[dict[str, Any]]:
+    """Remove the stale older copy of every tab the group holds twice. Callers hold the run lock.
+
+    The newer member already holds the tab, so nothing is lost. An older member left with other tabs loses just that
+    tab; one whose only tab is stale leaves the group and stays as a single archive, like a replaced member.
+    """
+    by_archive: dict[str, list[dict[str, Any]]] = {}
+    for item in superseded_group_tabs(manifest, batch_id):
+        by_archive.setdefault(item["archive_id"], []).append(item)
+    left: set[str] = set()
+    for archive_id, items in by_archive.items():
+        archive = items[0]["archive"]
+        stale = {item["tab_id"] for item in items}
+        tabs = archive.get("capture", {}).get("tabs", [])
+        if any(str(tab.get("source_tab_id")) not in stale for tab in tabs):
+            for item in items:
+                delete_archived_tab(archive, item["tab_id"])
+                archive.setdefault("superseded_tabs", []).append(
+                    {"source_tab_id": item["tab_id"], "label": item["label"], "by": item["by"], "at": now()}
+                )
+        else:
+            archive["left_group"] = {"reason": "replaced", "by": items[0]["by"], "at": now()}
+            left.add(archive_id)
+        write_json(items[0]["path"], archive)
+    if left:
+        manifest["members"] = [m for m in manifest.get("members", []) if str(m.get("archive_id")) not in left]
+        manifest["updated_at"] = now()
+        write_json(batch_path, manifest)
+    return [{key: item[key] for key in ("archive_id", "tab_id", "label", "by")} for items in by_archive.values() for item in items]
+
+
+def dedupe_group_command(args: argparse.Namespace) -> None:
+    args.batch = resolve_group_argument(args)
+    batch_path, manifest = batch_by_id(args.batch)
+    stale = [
+        {key: item[key] for key in ("archive_id", "tab_id", "label", "by")}
+        for item in superseded_group_tabs(manifest, args.batch)
+    ]
+    if not stale:
+        print(f"Batch {args.batch} holds no tab twice. Nothing to remove.")
+        return
+    if not args.execute:
+        print(json.dumps({"batch_id": args.batch, "stale_tabs": stale}, indent=2))
+        print(
+            f"Preview only. Each stale tab is an older copy of a tab that the `by` archive holds. "
+            f"Re-run with --execute --confirm {args.batch!r} to remove them. No live workspace changes."
+        )
+        return
+    require_execute_confirmation(args.execute, args.confirm, args.batch, "Remove duplicate tabs")
+    removed = retire_superseded_tabs(batch_path, manifest, args.batch)
+    for item in removed:
+        print(f"Removed the older copy of tab {item['tab_id']} ({item['label']}) from {item['archive_id']}; {item['by']} holds it.")
 
 
 def plan_batch_tab_additions(
@@ -2858,6 +2998,7 @@ def add_tabs_to_batch_command(args: argparse.Namespace) -> None:
                     "this command runs inside the workspace" if plan["kept_reason"] == "running_inside" else "it is the only workspace"
                 )
                 print(f"Kept {plan['kept_tab_id']} open because {reason}.")
+        retire_duplicate_tabs(batch_path, manifest, args.batch)
     except BaseException:
         # A run that stopped before adding anything must not leave an empty group it created behind.
         if creating and batch_path.exists() and not read_json(batch_path, {}).get("members"):
@@ -5634,6 +5775,15 @@ def parser() -> argparse.ArgumentParser:
     add_tabs_to_batch.add_argument("--execute", action="store_true")
     add_tabs_to_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
     add_tabs_to_batch.set_defaults(func=with_group_lock("add-tabs-to-batch", add_tabs_to_batch_command))
+
+    dedupe_group = commands.add_parser(
+        "dedupe-group",
+        help="Remove tabs the archive group holds twice (an older copy of a tab that was restored, then archived again).",
+    )
+    dedupe_group.add_argument("--batch", help="The session's archive group. Defaults to the one group of --session.")
+    dedupe_group.add_argument("--execute", action="store_true")
+    dedupe_group.add_argument("--confirm", help="Must exactly equal the batch ID.")
+    dedupe_group.set_defaults(func=with_group_lock("dedupe-group", dedupe_group_command))
 
     finish_tab_add = commands.add_parser(
         "finish-tab-add",
