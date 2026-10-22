@@ -48,6 +48,7 @@ const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 // sequence (such as the end of a bracketed paste) can reach the terminal.
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const MAX_TEXT = 4000;
+const SENDABLE = new Set(['idle', 'working', 'done']);
 // Text left unsent in the pane's input box would join the front of a message, so send
 // empties the box first. Ctrl+K and Ctrl+U delete to the end and the start of one screen
 // line, and at a line's end or start remove the line break, so pairs of them empty the box
@@ -294,6 +295,9 @@ function create({
     if (matches.length > 1) throw new RequestError('Several Herdr panes show that session, so nothing was sent.', 409, 'several_panes');
     const pane = matches[0];
     if (pane.status === 'blocked') throw new RequestError('The agent is waiting at a permission prompt or question, so nothing was sent. Answer it in Herdr first.', 409, 'agent_blocked');
+    // Herdr's own guide: `unknown` (or any other state) does not show the agent is in the
+    // foreground, so the text could land in a shell. A working agent queues the message.
+    if (!SENDABLE.has(pane.status)) throw new RequestError('Herdr cannot tell what the agent is doing (it may be suspended to a shell), so nothing was sent. Check the pane first.', 409, 'agent_unknown');
     if (sending) throw new RequestError('Another message is still being sent.', 409, 'busy');
     sending = true;
     try {

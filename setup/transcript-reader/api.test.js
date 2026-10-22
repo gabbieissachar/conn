@@ -343,7 +343,7 @@ test('send: the exact text goes to the one pane running the session, with no Her
   } finally { await t.close(); }
 });
 
-test('send: bad input, unlisted sessions, missing panes and blocked agents are refused before Herdr is asked', async () => {
+test('send: bad input, unlisted sessions, missing panes and blocked or unknown agents are refused before Herdr is asked', async () => {
   const t = await start();
   try {
     const refused = [
@@ -364,6 +364,10 @@ test('send: bad input, unlisted sessions, missing panes and blocked agents are r
     const blocked = await t.send({ session_id: B, text: 'hi' });
     assert.equal(blocked.status, 409);
     assert.equal(blocked.json.code, 'agent_blocked');
+    t.herdr.panes[0] = { ...t.herdr.panes[0], agent_status: 'unknown' };
+    const unknown = await t.send({ session_id: B, text: 'hi' });
+    assert.equal(unknown.status, 409);
+    assert.equal(unknown.json.code, 'agent_unknown');
     assert.equal(t.herdr.agentCalls().length, 0);
   } finally { await t.close(); }
 });
@@ -395,6 +399,15 @@ test('send: when Herdr cannot empty the input box, the message is not sent', asy
     assert.equal(failed.json.code, 'herdr_failed');
     assert.equal(t.herdr.keys().length, 1);
     assert.equal(t.herdr.prompts().length, 0);
+  } finally { await t.close(); }
+});
+
+test('send: a message of several lines goes to Herdr as one prompt', async () => {
+  const t = await start();
+  try {
+    const sent = await t.send({ session_id: A, text: 'first line\r\n\n- second line\n\tindented' });
+    assert.equal(sent.status, 200);
+    assert.deepEqual(t.herdr.prompts().map((call) => call.args[call.args.length - 1]), ['first line\n\n- second line\n\tindented']);
   } finally { await t.close(); }
 });
 

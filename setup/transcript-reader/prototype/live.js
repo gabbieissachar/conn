@@ -47,7 +47,9 @@
       document.addEventListener("visibilitychange", run);
       run();
     }
-    const clip = (text, max) => { const t = text.replace(/\s+/g, " ").trim(); return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t; };
+    // Quoted words come from an agent's reply. Should the line ever land in a shell, `$`,
+    // backticks and backslashes are what could run or escape there, so quotes drop them.
+    const clip = (text, max) => { const t = text.replace(/[`$\\]/g, "").replace(/\s+/g, " ").trim(); return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t; };
     // The start of a message about one reply. It points at the reply (its time and opening
     // words) instead of copying it, because the session already holds the text.
     function pointer(at, reply, passage) {

@@ -187,23 +187,32 @@
   .live { font-size: 11px; font-weight: 600; color: var(--muted); }
   .live.on { color: var(--ok); }
   .follow-note { font-size: 12px; color: var(--muted); margin-top: 3px; }
-  .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: #fff; border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
-  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); }
-  .dock-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px 10px; }
+  .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
+  .dock-inner { max-width: 27rem; margin: 0 auto; padding: 6px 12px 8px; }
+  .dock-chip { border: 1px solid color-mix(in srgb, var(--you) 35%, transparent); background: var(--you-wash); border-radius: 8px; padding: 5px 8px; margin-bottom: 5px; }
   .dock-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--muted); }
   .dock-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dock-head button, .dock-passage button { border: 0; background: none; color: var(--muted); padding: 0 2px; font-size: 13px; }
   .dock-passage { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); border-left: 3px solid var(--ask-line); padding-left: 7px; margin-top: 5px; }
   .dock-passage span { flex: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .dock textarea { width: 100%; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--paper); color: var(--ink); font: 15px/1.4 var(--sans); resize: vertical; }
   .dock-label { font-size: 11px; color: var(--faint); margin-top: 4px; }
-  .dock-line { font: 12px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 5px 8px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 5.6em; overflow-y: auto; }
-  .dock-acts { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-  .dock-acts .why { flex: 1; font-size: 12px; color: var(--muted); }
-  .dock-acts .why.bad { color: var(--open); }
-  .dock-acts button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 5px 11px; font-size: 13px; }
-  .dock-acts button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
-  .dock-acts button:disabled { opacity: .45; cursor: default; }
+  .dock-line { font: 12px/1.4 var(--mono); background: var(--paper); border-radius: 6px; padding: 4px 7px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 4.2em; overflow-y: auto; }
+  .dock-acts { display: flex; gap: 8px; align-items: baseline; min-height: 20px; }
+  .dock-acts .why { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dock-acts .why.bad { color: var(--open); white-space: normal; }
+  .dock-acts .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dock-acts .count.bad { color: var(--open); font-weight: 600; }
+  .dock-acts button { border: 0; background: none; color: var(--muted); font-size: 12px; padding: 0 2px; }
+  .dock-worker { font-size: 12px; color: var(--ask); }
+  .dock-row { display: flex; gap: 6px; align-items: flex-end; margin-top: 4px; }
+  /* 16px keeps a phone from zooming in when the box is tapped. */
+  .dock textarea { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 6px 9px; background: var(--paper); color: var(--ink); font: 16px/1.4 var(--sans); resize: none; overflow-y: auto; }
+  .dock textarea:focus { outline: 2px solid var(--you); outline-offset: -1px; }
+  .dock-row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 14px; font-size: 14px; }
+  .dock button:disabled { opacity: .45; cursor: default; }
+  .input.pending { opacity: .6; border-style: dashed; }
+  .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
 </style>
 </head>
 <body>
@@ -222,13 +231,17 @@
 </header>
 <main id="main"></main>
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
+<button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
 <div class="dock" id="dock" hidden><div class="dock-inner">
-  <div class="dock-head"><span id="dock-target"></span><button id="dock-close" type="button" aria-label="Close" title="Close (Esc)">✕</button></div>
-  <div class="dock-passage" id="dock-passage" hidden><span id="dock-passage-text"></span><button id="dock-passage-drop" type="button">remove</button></div>
-  <textarea id="dock-text" rows="3" placeholder="Your reply" aria-label="Your reply"></textarea>
-  <div class="dock-label">Sends exactly:</div>
-  <div class="dock-line" id="dock-line" aria-live="polite"></div>
-  <div class="dock-acts"><span class="why" id="dock-why" aria-live="polite"></span><button id="dock-copy" type="button">Copy</button><button class="primary" id="dock-send" type="button" title="Send to the session's Herdr pane (⌘ or Ctrl + Enter)">Send</button></div>
+  <div class="dock-chip" id="dock-chip" hidden>
+    <div class="dock-head"><span id="dock-chip-title"></span><button id="dock-chip-drop" type="button" aria-label="Remove the pointer" title="Send a plain message instead (Esc)">✕</button></div>
+    <div class="dock-passage" id="dock-passage" hidden><span id="dock-passage-text"></span><button id="dock-passage-drop" type="button">remove</button></div>
+    <div class="dock-label" id="dock-label">Sends exactly:</div>
+    <div class="dock-line" id="dock-line" aria-live="polite"></div>
+  </div>
+  <div class="dock-acts"><span class="why" id="dock-status" aria-live="polite"></span><span class="count" id="dock-count" hidden></span><button id="dock-copy" type="button" title="Copy the message">Copy</button></div>
+  <div class="dock-worker" id="dock-worker" hidden>This is a worker. Firstmate only sees direct messages at its next review.</div>
+  <div class="dock-row"><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
 </div></div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
@@ -495,7 +508,7 @@
     renderLive();
 
     const main = document.getElementById("main"); main.replaceChildren();
-    if (!exs.length) { main.append($("div", "empty", "No turns in this session.")); return; }
+    if (!exs.length) { main.append($("div", "empty", "No turns in this session."), ...pendingNodes(session)); return; }
     const sid = session.id;
     let run = null, runCount = 0;
     exs.forEach((ex, i) => {
@@ -510,6 +523,7 @@
       main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i, sid));
     });
     if (run) collapseRun(run);
+    main.append(...pendingNodes(session));
   }
   // Opening a conversation starts at its latest turn, placed under the bar so it reads from its first line.
   // Wake-ups folded after it stay as the one-line rows below.
@@ -648,7 +662,7 @@
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null };
+  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -665,53 +679,131 @@
   }
   const paneName = sid => { const s = data.sessions.find(x => x.id === sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
   const dockPointer = () => link.target.pointer(link.target.passage);
-  const dockMessage = () => link.target && dock("text").value.trim() ? dockPointer() + dock("text").value.trim() : "";
+  // What Send types into the pane: the words as written, after the pointer when a reply or a
+  // file is attached. A slash command goes alone, so the agent still reads it as a command.
+  const dockTyped = () => dock("text").value.trim();
+  const dockMessage = () => { const typed = dockTyped(); return !typed ? "" : link.target && !typed.startsWith("/") ? dockPointer() + typed : typed; };
+  // The bar always writes to the session on screen; the Fleet timeline mixes sessions, so it has none.
+  const dockSession = () => state.view !== "fleet" ? data.sessions[state.session] : null;
+  const SENDABLE = new Set(["idle", "working", "done"]);
+  const MAX_SEND = 4000;
+  // Reply and "Comment on this" attach a pointer to the bar and keep what is already typed.
   function openDock(target) {
     link.target = target; link.result = null;
-    document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
-    if (target.card) target.card.classList.add("is-target-reply");
-    dock("target").textContent = target.title;
-    dock("passage").hidden = !target.passage;
-    dock("passage-text").textContent = target.passage ? `“${target.passage}”` : "";
-    document.getElementById("dock").hidden = false;
+    markTarget();
     document.getElementById("float-comment").hidden = true;
     renderDock();
     dock("text").focus();
   }
-  function closeDock() {
-    document.getElementById("dock").hidden = true;
+  function dropTarget() { link.target = null; markTarget(); renderDock(); }
+  function markTarget() {
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
-    link.target = null;
-    document.getElementById("main").style.paddingBottom = "";
+    if (link.target && link.target.card) link.target.card.classList.add("is-target-reply");
+  }
+  // An unsent message is kept per session in this tab, so a reload for new code keeps it.
+  const drafts = (() => { try { return JSON.parse(sessionStorage.getItem("tr-drafts") || "{}") || {}; } catch (e) { return {}; } })();
+  function saveDraft() {
+    const session = dockSession(); if (!session) return;
+    if (dock("text").value.trim()) drafts[session.id] = dock("text").value; else delete drafts[session.id];
+    try { sessionStorage.setItem("tr-drafts", JSON.stringify(drafts)); } catch (e) { /* kept until the page reloads */ }
+  }
+  // The box grows with the message up to six lines, then scrolls inside itself.
+  function growDock() {
+    const box = dock("text");
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight + 2, parseFloat(getComputedStyle(box).lineHeight) * 6 + 14) + "px";
   }
   function renderDock() {
-    if (!link.target) return;
-    const text = dockMessage();
-    dock("line").textContent = text || dockPointer() + "…";
-    const pane = link.panes ? link.panes[link.target.sid] : null;
+    const bar = document.getElementById("dock"), main = document.getElementById("main");
+    const session = dockSession();
+    bar.hidden = !session;
+    if (!session) { main.style.paddingBottom = ""; placeNewReply(); return; }
+    if (link.dockSid !== session.id) {
+      link.dockSid = session.id; link.result = null;
+      if (link.target && link.target.sid !== session.id) { link.target = null; markTarget(); }
+      dock("text").value = drafts[session.id] || ""; growDock();
+    }
+    const name = paneName(session.id);
+    dock("text").placeholder = `Message ${name}`;
+    dock("text").setAttribute("aria-label", `Message ${name}`);
+    const text = dockMessage(), target = link.target;
+    dock("chip").hidden = !target;
+    if (target) {
+      dock("chip-title").textContent = target.title;
+      dock("passage").hidden = !target.passage;
+      dock("passage-text").textContent = target.passage ? `“${target.passage}”` : "";
+      const command = dockTyped().startsWith("/");
+      dock("label").textContent = command ? "Sends exactly (a command goes alone, without the pointer):" : "Sends exactly:";
+      dock("line").textContent = text || dockPointer() + "…";
+    }
+    const pane = link.panes ? link.panes[session.id] : null;
     let reason = "";
     if (!live.served) reason = "Read-only copy: open the served page to send.";
     else if (link.panes === undefined) reason = "Connecting to the local server…";
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
-    else if (pane.status === "blocked") reason = `${pane.label} is waiting at a permission prompt or question. Answer it in Herdr first.`;
-    dock("send").disabled = Boolean(reason) || link.sending || !text;
+    else if (pane.status === "blocked") reason = `${pane.label} is at a permission prompt or question. Answer it in Herdr first.`;
+    else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
+    const over = text.length > MAX_SEND;
+    dock("send").disabled = Boolean(reason) || link.sending || !text || over;
     dock("copy").disabled = !text;
-    const why = dock("why");
-    why.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    why.textContent = link.result ? link.result.text : reason || `Goes straight to ${pane.label}.`;
-    // Keep the end of the conversation readable above the composer.
-    document.getElementById("main").style.paddingBottom = document.getElementById("dock").offsetHeight + 24 + "px";
+    const count = dock("count");
+    count.hidden = text.length <= 3500;
+    count.textContent = `${text.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
+    count.classList.toggle("bad", over);
+    const status = dock("status");
+    status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
+    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${pane.status}${link.sending ? " · sending…" : ""}`;
+    dock("worker").hidden = session.where !== "worker copy";
+    // Keep the end of the conversation readable above the bar.
+    main.style.paddingBottom = bar.offsetHeight + 24 + "px";
+    placeNewReply();
   }
   async function sendDock() {
     const text = dockMessage(); if (!text || dock("send").disabled) return;
+    const session = dockSession();
+    // These end or reset the session, so they ask first.
+    const command = (text.match(/^\/(clear|exit|quit)\b/) || [])[0];
+    if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${command === "/clear" ? "starts that session over" : "ends that session"}.`)) return;
     link.sending = true; link.result = null; renderDock();
     try {
-      const sent = await live.send(link.target.sid, text);
-      link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(Date.now() / 1000)}.` };
-      dock("text").value = "";
-      setTimeout(() => { if (link.result && link.result.ok) closeDock(); }, 2500);
+      const sent = await live.send(session.id, text);
+      const at = Date.now() / 1000;
+      link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(at)}.` };
+      link.pending.push({ sid: session.id, text, at, label: sent.label });
+      dock("text").value = ""; saveDraft(); growDock();
+      link.target = null; markTarget();
+      setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 4000);
+      if (state.view === "reader") { render(); window.scrollTo(0, document.documentElement.scrollHeight); }
     } catch (e) { link.result = { ok: false, text: e.message }; }
     link.sending = false; renderDock();
+  }
+  // A sent message shows at once, faded, until the session's log has it.
+  function pendingNodes(session) {
+    const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2);
+    link.pending = link.pending.filter(p => p.sid !== session.id || !landed(p));
+    return link.pending.filter(p => p.sid === session.id).map(p => {
+      const block = $("div", "input captain pending"), who = $("div", "who");
+      const late = Date.now() / 1000 - p.at > 60;
+      who.append($("b", null, "You"), $("span", null, late ? `Sent ${fmtTime(p.at)} · not in the log yet; check the pane` : `Sent ${fmtTime(p.at)} · waiting for ${p.label}`));
+      block.append(who, $("div", null, p.text));
+      return block;
+    });
+  }
+  // "New reply ↓" sits above the bar while new turns arrive below where you are reading.
+  const newReply = document.getElementById("new-reply");
+  const atBottom = () => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 40;
+  function placeNewReply() {
+    if (state.view !== "reader" || atBottom()) link.newer = false;
+    newReply.hidden = !link.newer;
+    const bar = document.getElementById("dock");
+    newReply.style.bottom = (bar.hidden ? 0 : bar.offsetHeight + parseFloat(bar.style.bottom || 0)) + 12 + "px";
+  }
+  newReply.addEventListener("click", () => { link.newer = false; showLatest(); placeNewReply(); });
+  window.addEventListener("scroll", () => { if (link.newer && atBottom()) placeNewReply(); }, { passive: true });
+  // A phone keyboard shrinks the visual viewport; the bar rides above it.
+  if (window.visualViewport) {
+    const lift = () => { document.getElementById("dock").style.bottom = Math.max(0, window.innerHeight - visualViewport.height - visualViewport.offsetTop) + "px"; placeNewReply(); };
+    visualViewport.addEventListener("resize", lift); visualViewport.addEventListener("scroll", lift);
   }
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {
@@ -735,14 +827,17 @@
     button.dataset.label = ok ? "Copied" : "Copy failed";
     setTimeout(() => { button.dataset.label = "Copy"; }, 1500);
   });
-  dock("text").addEventListener("input", () => { link.result = null; renderDock(); });
+  dock("text").addEventListener("input", () => { link.result = null; growDock(); saveDraft(); renderDock(); });
+  // Enter sends and Shift+Enter starts a new line. On a touch screen the return key starts a
+  // new line and the Send button sends.
+  const touch = matchMedia("(pointer: coarse)");
   dock("text").addEventListener("keydown", e => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendDock(); }
-    if (e.key === "Escape") closeDock();
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && (!touch.matches || e.metaKey || e.ctrlKey)) { e.preventDefault(); sendDock(); }
+    if (e.key === "Escape" && link.target) dropTarget();
   });
   dock("send").addEventListener("click", sendDock);
   dock("copy").addEventListener("click", copyDock);
-  dock("close").addEventListener("click", closeDock);
+  dock("chip-drop").addEventListener("click", () => { dropTarget(); dock("text").focus(); });
   dock("passage-drop").addEventListener("click", () => { link.target.passage = ""; dock("passage").hidden = true; renderDock(); });
 
   // Selecting text inside a reply offers "Comment on this" beside the selection.
@@ -923,12 +1018,15 @@
     const payload = JSON.parse(next.getElementById("payload").textContent);
     if (payload.generated <= data.generated) return;
     const sid = data.sessions[state.session] && data.sessions[state.session].id;
+    const mark = s => s ? `${s.exchanges.length}:${(s.exchanges[s.exchanges.length - 1] || {}).reply_words || 0}` : "";
+    const before = mark(data.sessions[state.session]);
     const anchor = readingAnchor();
     data = payload;
-    const index = data.sessions.findIndex(s => s.id === sid);
+    const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
     state.session = index >= 0 ? index : 0;
     render();
     restoreAnchor(anchor);
+    if (state.view === "reader" && !anchor.bottom && index >= 0 && mark(data.sessions[state.session]) !== before) { link.newer = true; placeNewReply(); }
   }
   // Switch to the session Herdr focused, once per focus change. An address that names a
   // session (#s=...) wins over the focus found when the page opens.
@@ -968,6 +1066,7 @@
     document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
     if (state.view === "reader") renderReader(); else if (state.view === "doc") renderDocView(); else { renderFleet(); renderLive(); }
     paintBar();
+    renderDock();
   }
   // A collapsed bar keeps one line: where you are, the live badge and the way back to the controls.
   function paintBar() {
