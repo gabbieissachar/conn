@@ -1050,30 +1050,39 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const cut = result.stdout.lastIndexOf('\n');
       const status = Number(result.stdout.slice(cut + 1));
       if (result.code !== 0 || !Number.isInteger(status)) throw new AdapterError('Codex credits could not be read. Is curl installed and the network up?', 502, 'codex_unavailable');
-      if (status === 401 || status === 403) throw new AdapterError('Codex credits need a fresh Codex sign-in (the saved one expired). Open codex once to renew it, then refresh.', 502, 'codex_unavailable');
+      if (status === 401) throw new AdapterError('Codex credits need a fresh Codex sign-in (the saved one expired). Open codex once to renew it, then refresh.', 502, 'codex_unavailable');
+      // The credit report is an enterprise route, so a 403 is more likely "this account has no access" than an expired login.
+      if (status === 403) throw new AdapterError('Codex credits are not available for this account (the credit report refused access). Check the account has the Codex credit report, then refresh.', 502, 'codex_unavailable');
       let body = null;
       try { body = JSON.parse(result.stdout.slice(0, cut)); } catch { /* not json */ }
       if (status !== 200 || !body || !Array.isArray(body.data)) throw new AdapterError(`Codex credits could not be read (HTTP ${status || 'none'}).`, 502, 'codex_unavailable');
       // A day with a missing or non-numeric amount is unknown, not zero: refuse the whole reading rather than undercount.
-      const incomplete = () => new AdapterError('Codex credits came back incomplete (a day has no usable amount), so no total is shown. Refresh to try again.', 502, 'codex_unavailable');
+      const incomplete = () => new AdapterError('Codex credits came back incomplete (a day is missing or has no usable amount), so no total is shown. Refresh to try again.', 502, 'codex_unavailable');
       const sums = { week: 0, month: 0 };
       const models = new Map();
+      const byModel = body.breakdown === 'model';
+      const seen = new Set();
       let through = null;
-      let earliest = null;
       for (const row of body.data) {
         if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !row.values || typeof row.values !== 'object' || Array.isArray(row.values)) throw incomplete();
         const credits = Object.entries(row.values);
         if (credits.length === 0 || credits.some(([, value]) => number(value) === null)) throw incomplete();
+        if (seen.has(row.date)) throw incomplete();
+        seen.add(row.date);
         if (through === null || row.date > through) through = row.date;
-        if (earliest === null || row.date < earliest) earliest = row.date;
         const total = credits.reduce((sum, [, value]) => sum + value, 0);
         if (row.date >= since.week) sums.week += total;
         if (row.date >= since.month) {
           sums.month += total;
-          for (const [model, value] of credits) models.set(text(model, 60), (models.get(text(model, 60)) || 0) + value);
+          if (byModel) for (const [model, value] of credits) models.set(text(model, 60), (models.get(text(model, 60)) || 0) + value);
         }
       }
-      if (earliest === null || earliest > query.get('start_date')) throw incomplete();
+      // Every UTC day from the first requested day through today (UTC) must be present: a missing day is unknown, not zero.
+      // A later local-only day the service has not started yet is not required.
+      const lastDay = query.get('end_date') < utcToday ? query.get('end_date') : utcToday;
+      for (let day = query.get('start_date'); day <= lastDay; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) {
+        if (!seen.has(day)) throw incomplete();
+      }
       return {
         week: { since: since.week, credits: round2(sums.week), usd: round2(sums.week * CODEX_USD_PER_CREDIT) },
         month: { since: since.month, credits: round2(sums.month), usd: round2(sums.month * CODEX_USD_PER_CREDIT) },

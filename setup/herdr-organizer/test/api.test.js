@@ -804,16 +804,19 @@ const codexHome = (tokens) => {
   if (tokens) fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens }));
   return dir;
 };
+// Every day from `from` through `to` (YYYY-MM-DD) with 0 credits, so a test only names the days that carry usage.
+const codexDays = (from, to, usage = {}) => {
+  const days = [];
+  for (let day = from; day <= to; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) days.push(codexDay(day, ...(usage[day] || [0])));
+  return days;
+};
 const curlRunner = (body, status = 200, code = 0) => fakeRunner({ handle: (file) => (file === 'curl' ? { code, stdout: `${typeof body === 'string' ? body : JSON.stringify(body)}\n${status}`, stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
 
 test('codex-credits: sums week to date (from Monday) and month to date, and never puts the token on a command line', async () => {
   const home = codexHome({ access_token: 'tok.en-secret_1', account_id: 'acct-id-1', refresh_token: 'refresh-secret' });
   const fake = curlRunner({ breakdown: 'model', data: [
     codexDay('2026-09-30', 50),
-    codexDay('2026-10-01', 1.5, 0.25),
-    codexDay('2026-10-18', 10),
-    codexDay('2026-10-19', 2, 1),
-    codexDay('2026-10-21', 0.5, 0),
+    ...codexDays('2026-10-01', '2026-10-21', { '2026-10-01': [1.5, 0.25], '2026-10-18': [10], '2026-10-19': [2, 1], '2026-10-21': [0.5, 0] }),
   ] });
   const server = await startServer({ runner: fake.runner, env: { CODEX_HOME: home }, now: () => new Date(2026, 9, 21, 15, 0) });
   try {
@@ -841,6 +844,10 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
   const cases = [
     { name: 'no auth file', home: codexHome(null), runner: curlRunner({ data: [] }), expect: /Codex sign-in/ },
     { name: 'token with shell or config characters', home: codexHome({ access_token: 'a"b\nc', account_id: 'acct' }), runner: curlRunner({ data: [] }), expect: /Codex sign-in/ },
+    { name: 'a missing day in the middle', home: codexHome(good), runner: curlRunner({ breakdown: 'model', data: [...codexDays('2026-10-01', '2026-10-09'), ...codexDays('2026-10-11', '2026-10-21')] }), expect: /incomplete/ },
+    { name: 'the trailing day is missing', home: codexHome(good), runner: curlRunner({ breakdown: 'model', data: codexDays('2026-10-01', '2026-10-20') }), expect: /incomplete/ },
+    { name: 'a day listed twice', home: codexHome(good), runner: curlRunner({ breakdown: 'model', data: [...codexDays('2026-10-01', '2026-10-21'), codexDay('2026-10-05', 3)] }), expect: /incomplete/ },
+    { name: 'no access to the credit report', home: codexHome(good), runner: curlRunner({ detail: 'no' }, 403), expect: /not available for this account/ },
     { name: 'expired sign-in', home: codexHome(good), runner: curlRunner({ detail: 'no' }, 401), expect: /expired/ },
     { name: 'server error', home: codexHome(good), runner: curlRunner('oops', 500), expect: /HTTP 500/ },
     { name: 'unexpected body', home: codexHome(good), runner: curlRunner({ data: 'nope' }), expect: /could not be read/ },
@@ -862,6 +869,19 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
       assert.equal(response.raw.includes('/secret/path'), false, `${item.name}: no stderr leaks`);
     } finally { await server.close(); fs.rmSync(item.home, { recursive: true, force: true }); }
   }
+});
+
+test('codex-credits: a breakdown that is not by model still totals, but never labels its keys as models', async () => {
+  const home = codexHome({ access_token: 'tok', account_id: 'acct' });
+  const fake = curlRunner({ breakdown: 'user', data: codexDays('2026-10-01', '2026-10-21', { '2026-10-21': [4] }) });
+  const server = await startServer({ runner: fake.runner, env: { CODEX_HOME: home }, now: () => new Date(2026, 9, 21, 15, 0) });
+  try {
+    const { post } = await client(server);
+    const response = await post('codex-credits');
+    assert.equal(response.status, 200);
+    assert.equal(response.json.data.month.credits, 4);
+    assert.deepEqual(response.json.data.models, []);
+  } finally { await server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('leader-space: reports each identity as ok, missing, duplicate or elsewhere without changing anything', async () => {
