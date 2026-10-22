@@ -409,6 +409,15 @@ test('context view: the Codex credit chips read through codex-credits only and p
   assert.equal(/auth\.json|access_token|Bearer/.test(view), false, 'the page never touches a credential');
 });
 
+test('workspaces view: the compact toggle shows names and tick boxes only, escaped, and is remembered safely', () => {
+  const view = html.slice(html.indexOf('const compactTabView'), html.indexOf('const workspaceView'));
+  assert.match(view, /data-select-tab="\$\{escapeHtml\(tab\.id\)\}"/, 'compact rows keep the selection tick box');
+  for (const field of ['tab.label', 'workspace.label']) assert.ok(view.includes(`escapeHtml(${field}`), field);
+  assert.equal(/data-command|Copy /.test(view), false, 'compact view carries no copy buttons or folder lines');
+  assert.match(html, /try \{ return localStorage\.getItem\(COMPACT_KEY\) === '1'; \} catch \{ return false; \}/);
+  assert.match(html, /workspaces\.map\(state\.compact \? compactWorkspaceView : workspaceView\)/);
+});
+
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);

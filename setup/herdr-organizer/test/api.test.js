@@ -828,6 +828,7 @@ test('codex-credits: sums week to date (from Monday) and month to date, and neve
     assert.equal(data.units, 'percent');
     const call = fake.calls.find((item) => item.file === 'curl');
     assert.deepEqual(call.args, ['-K', '-'], 'the credential rides stdin, not argv');
+    assert.match(call.input, /url = "https:\/\/chatgpt\.com\/backend-api\/wham\/usage\/daily-token-usage-breakdown\?start_date=2026-10-01&end_date=2026-10-2[12]&group_by=day"/, 'the same inclusive date range and day grouping Codex asks for');
     assert.match(call.input, /Bearer tok\.en-secret_1/);
     assert.equal(response.raw.includes('secret'), false, 'no token or account evidence leaves the server');
     assert.equal(server.api.ACTIONS['codex-credits'].tier, 0);
@@ -843,10 +844,15 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
     { name: 'expired sign-in', home: codexHome(good), runner: curlRunner({ detail: 'no' }, 401), expect: /expired/ },
     { name: 'server error', home: codexHome(good), runner: curlRunner('oops', 500), expect: /HTTP 500/ },
     { name: 'unexpected body', home: codexHome(good), runner: curlRunner({ data: 'nope' }), expect: /could not be read/ },
+    { name: 'a day with no models list', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', product_surface_usage_values: { cli: 3 } }] }), expect: /incomplete/ },
+    { name: 'a model with a missing amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', models: [{ model: 'm' }] }] }), expect: /incomplete/ },
+    { name: 'a model with a text amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', models: [{ model: 'm', credits: '5' }] }] }), expect: /incomplete/ },
+    { name: 'no days at all', home: codexHome(good), runner: curlRunner({ data: [] }), expect: /incomplete/ },
+    { name: 'the first requested day is missing', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-05', 1)] }), expect: /incomplete/ },
     { name: 'curl missing', home: codexHome(good), runner: curlRunner('', 0, 127), expect: /curl/ },
   ];
   for (const item of cases) {
-    const server = await startServer({ runner: item.runner.runner, env: { CODEX_HOME: item.home } });
+    const server = await startServer({ runner: item.runner.runner, env: { CODEX_HOME: item.home }, now: () => new Date(2026, 9, 21, 15, 0) });
     try {
       const { post } = await client(server);
       const response = await post('codex-credits');

@@ -1035,7 +1035,14 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       if (!TOKEN_SHAPE.test(token) || !TOKEN_SHAPE.test(account)) {
         throw new AdapterError('Codex credits need a Codex sign-in on this machine. Run codex login, then refresh.', 502, 'codex_unavailable');
       }
-      const config = [`url = "${CODEX_USAGE_URL}"`, `header = "Authorization: Bearer ${token}"`, `header = "chatgpt-account-id: ${account}"`, 'silent', `max-time = ${CODEX_TIMEOUT_MS / 1000 - 5}`, 'write-out = "\\n%{http_code}"'].join('\n');
+      // Codex's own client asks for an inclusive UTC date range grouped by day; ask for the same, from the earlier of the
+      // week and month starts to whichever of the local and UTC days is later.
+      const today = now();
+      const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
+      const since = { week: localDay(weekStart), month: `${localDay(today).slice(0, 8)}01` };
+      const utcToday = today.toISOString().slice(0, 10);
+      const query = new URLSearchParams({ start_date: since.week < since.month ? since.week : since.month, end_date: localDay(today) > utcToday ? localDay(today) : utcToday, group_by: 'day' });
+      const config = [`url = "${CODEX_USAGE_URL}?${query}"`, `header = "Authorization: Bearer ${token}"`, `header = "chatgpt-account-id: ${account}"`, 'silent', `max-time = ${CODEX_TIMEOUT_MS / 1000 - 5}`, 'write-out = "\\n%{http_code}"'].join('\n');
       const result = await runner('curl', ['-K', '-'], { env: runEnv(), timeoutMs: CODEX_TIMEOUT_MS, input: config });
       const cut = result.stdout.lastIndexOf('\n');
       const status = Number(result.stdout.slice(cut + 1));
@@ -1044,16 +1051,18 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       let body = null;
       try { body = JSON.parse(result.stdout.slice(0, cut)); } catch { /* not json */ }
       if (status !== 200 || !body || !Array.isArray(body.data)) throw new AdapterError(`Codex credits could not be read (HTTP ${status || 'none'}).`, 502, 'codex_unavailable');
-      const today = now();
-      const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
-      const since = { week: localDay(weekStart), month: `${localDay(today).slice(0, 8)}01` };
+      // A day with a missing or non-numeric amount is unknown, not zero: refuse the whole reading rather than undercount.
+      const incomplete = () => new AdapterError('Codex credits came back incomplete (a day has no usable amount), so no total is shown. Refresh to try again.', 502, 'codex_unavailable');
       const sums = { week: 0, month: 0 };
       const models = new Map();
       let through = null;
+      let earliest = null;
       for (const row of body.data) {
-        if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) continue;
+        if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !Array.isArray(row.models)) throw incomplete();
+        if (row.models.some((item) => !item || number(item.credits) === null)) throw incomplete();
         if (through === null || row.date > through) through = row.date;
-        const credits = (Array.isArray(row.models) ? row.models : []).filter((item) => item && number(item.credits) !== null);
+        if (earliest === null || row.date < earliest) earliest = row.date;
+        const credits = row.models;
         const total = credits.reduce((sum, item) => sum + item.credits, 0);
         if (row.date >= since.week) sums.week += total;
         if (row.date >= since.month) {
@@ -1061,6 +1070,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           for (const item of credits) models.set(text(item.model, 60), (models.get(text(item.model, 60)) || 0) + item.credits);
         }
       }
+      if (earliest === null || earliest > query.get('start_date')) throw incomplete();
       return {
         week: { since: since.week, credits: round2(sums.week) },
         month: { since: since.month, credits: round2(sums.month) },

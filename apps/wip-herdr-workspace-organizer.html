@@ -91,6 +91,17 @@ created: 2026-09-10
     .focused { color: var(--purple); font: 10px "DM Mono", monospace; text-transform: uppercase; }
     .tab-select { display: flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--muted); font-size: 11px; cursor: pointer; }
     .tab-select input { margin: 0; accent-color: var(--purple); }
+    .heading-tools { display: flex; align-items: center; gap: 12px; }
+    .heading-tools button[aria-pressed="true"] { background: var(--purple); border-color: var(--purple); color: #fff; }
+    .workspaces.compact { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+    .workspaces.compact .workspace-head { padding: 9px 12px; border-bottom: 0; }
+    .workspaces.compact .workspace-title strong { font-size: 13px; }
+    .compact-tabs { padding: 2px 6px 8px; }
+    .compact-tab { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    .compact-tab:hover { background: #f4f2fc; }
+    .compact-tab input { margin: 0; accent-color: var(--purple); flex: none; }
+    .compact-tab .tab-name { font-weight: 500; font-size: 12px; min-width: 0; }
+    .compact-tab .focused { margin-left: auto; flex: none; }
     .archives { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
     .archive { padding: 14px 15px; }
     .archive-line { justify-content: space-between; gap: 10px; }
@@ -274,7 +285,7 @@ created: 2026-09-10
       <section class="summary" id="summary"></section>
       <div id="archive-all"></div>
       <div id="cleanup-all"></div>
-      <div class="section-heading"><h2>Live workspaces</h2><span class="updated" id="updated">No snapshot loaded</span></div>
+      <div class="section-heading"><h2>Live workspaces</h2><div class="heading-tools"><button type="button" id="compact-toggle" class="small-btn" aria-pressed="false" title="Show only each workspace name and its tab names, keeping the tick boxes. The choice is remembered in this browser.">Compact</button><span class="updated" id="updated">No snapshot loaded</span></div></div>
       <div class="workspaces" id="workspaces"></div>
     </section>
     <section id="group-section" hidden>
@@ -288,7 +299,10 @@ created: 2026-09-10
   </main>
   <div class="toast" id="toast" role="status"></div>
   <script>
-    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, groupTabDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '' };
+    // Compact Workspaces view: a per-viewer convenience, so a blocked or empty browser store just means the full view.
+    const COMPACT_KEY = 'herdr-organizer-compact-workspaces';
+    function readCompact() { try { return localStorage.getItem(COMPACT_KEY) === '1'; } catch { return false; } }
+    const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, groupTabDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '', compact: readCompact() };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
     const searchText = value => String(value ?? '').toLowerCase();
     const matches = value => !state.query || searchText(value).includes(state.query);
@@ -344,6 +358,12 @@ created: 2026-09-10
         </div>
       </article>`;
     };
+    // Compact rows keep the tab's own tick box, so Move, Archive and Add to archive group work exactly as in the full view.
+    const compactTabView = tab => `<label class="compact-tab" title="${escapeHtml(`${tab.id} - select to move, archive or add to the archive group`)}"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</label>`;
+    const compactWorkspaceView = workspace => `<article class="workspace">
+      <div class="workspace-head"><div class="workspace-title"><strong title="${escapeHtml(workspace.label)}">${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${plural(workspace.tab_count, 'tab')}</span></div>
+      <div class="compact-tabs">${workspace.tabs.map(compactTabView).join('') || '<div class="tab-meta">No tabs</div>'}</div>
+    </article>`;
     const workspaceView = workspace => `<article class="workspace">
       <div class="workspace-head"><div class="workspace-title"><strong>${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${plural(workspace.tab_count, 'tab')} · ${plural(workspace.pane_count, 'pane')}</span></div>
       <div class="tabs">${workspace.tabs.map(tab => tabView(tab, workspace.tab_count)).join('') || '<div class="tab-meta">No tabs</div>'}</div>
@@ -499,7 +519,9 @@ created: 2026-09-10
       if (state.archiveAll.result && state.archiveAll.result.session !== cleanupSession()) state.archiveAll = freshArchiveAll();
       renderArchiveAll();
       document.querySelector('#batches').innerHTML = batchesView(data);
-      document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
+      document.querySelector('#workspaces').classList.toggle('compact', state.compact);
+      document.querySelector('#compact-toggle').setAttribute('aria-pressed', String(state.compact));
+      document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(state.compact ? compactWorkspaceView : workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
       document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
       document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command, button.dataset.copied)));
       document.querySelectorAll('[data-select-tab]').forEach(input => input.addEventListener('change', event => {
@@ -1490,8 +1512,9 @@ created: 2026-09-10
       else {
         const { week, month, models, data_through: through, units } = codex.data;
         const unit = units && units !== 'credits' ? ` (the usage service labels its unit "${units}")` : '';
+        const unitNote = units && units !== 'credits' ? `<span class="tab-meta" title="Each model's amount is a credits field; the service's response labels its unit &quot;${escapeHtml(units)}&quot;. Check one day against the Codex usage page.">service unit: ${escapeHtml(units)}</span>` : '';
         const split = models.length ? ` Month by model: ${models.map(item => `${item.model} ${creditText(item.credits)}`).join(', ')}.` : '';
-        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}${unit}. Data through ${through || 'unknown'}.`)}${codexChip('Month to date', month, `Credits used since ${month.since}${unit}. Data through ${through || 'unknown'}.${split}`)}`;
+        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}${unit}. Data through ${through || 'unknown'}.`)}${codexChip('Month to date', month, `Credits used since ${month.since}${unit}. Data through ${through || 'unknown'}.${split}`)}${unitNote}`;
       }
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       return `<div class="plan-chips" id="codex-card">${chips}${error}</div>`;
@@ -1719,6 +1742,11 @@ created: 2026-09-10
     };
     document.querySelector('#search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); render(); });
     document.querySelector('#reload').addEventListener('click', refreshSnapshot);
+    document.querySelector('#compact-toggle').addEventListener('click', () => {
+      state.compact = !state.compact;
+      try { localStorage.setItem(COMPACT_KEY, state.compact ? '1' : '0'); } catch { /* the choice just is not remembered */ }
+      render();
+    });
     document.querySelector('#snapshot-session').addEventListener('change', event => { state.snapshotSession = event.target.value; refreshSnapshot(); });
     let snapshotRequested = false;
     document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
