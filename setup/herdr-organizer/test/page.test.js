@@ -422,5 +422,13 @@ test('context view: the handoff request command is built by the server from tick
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);
   assert.equal(/herdr --session|send-text|send-keys/.test(view), false, 'the page never assembles the shell command');
-  assert.match(view, /AT_PROMPT = new Set\(\['idle', 'done'\]\)/, 'sessions at their prompt start ticked');
+  assert.equal(/picked\.set\(row\.label/.test(view), false, 'no session starts ticked: the only writer of a tick is the box itself');
+});
+
+test('context view: the compact toggle keeps the tick box, puts the percent next to the name, and is remembered safely', () => {
+  const view = html.slice(html.indexOf('const contextCompactRow'), html.indexOf('const contextRow = '));
+  assert.match(view, /handoffPickBox\(row\)/, 'compact rows keep the handoff tick box');
+  assert.ok(view.indexOf('escapeHtml(sessionName(row))') < view.indexOf('contextPercent(row'), 'the percent follows the session name');
+  assert.match(html, /try \{ return localStorage\.getItem\(CONTEXT_COMPACT_KEY\) === '1'; \} catch \{ return false; \}/);
+  assert.match(html, /context\.compact \? `<div class="ctx-compact">/);
 });

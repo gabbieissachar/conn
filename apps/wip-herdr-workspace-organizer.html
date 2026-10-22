@@ -172,6 +172,13 @@ created: 2026-09-10
     .ctx-table th .ctx-arrow { font-size: 9px; opacity: .35; } .ctx-table th[aria-sort="ascending"] .ctx-arrow, .ctx-table th[aria-sort="descending"] .ctx-arrow { opacity: 1; }
     .ctx-table td { padding: 9px 10px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
     .ctx-table th:first-child, .ctx-table td:first-child { padding-left: 12px; }
+    .ctx-compact { display: flex; flex-direction: column; max-width: 520px; }
+    .ctx-compact .compact-tab { padding: 6px 8px; }
+    .ctx-compact .compact-tab .tab-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctx-compact .compact-tab .pill { flex: none; }
+    .ctx-compact .compact-tab.no-pick { cursor: default; }
+    .ctx-compact .compact-tab.no-pick .tab-name { color: var(--muted); font-weight: 500; }
+    .ctx-compact .pick-gap { width: 13px; flex: none; }
     .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
     .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
@@ -301,6 +308,8 @@ created: 2026-09-10
   <script>
     // Compact Workspaces view: a per-viewer convenience, so a blocked or empty browser store just means the full view.
     const COMPACT_KEY = 'herdr-organizer-compact-workspaces';
+    const CONTEXT_COMPACT_KEY = 'herdr-organizer-compact-context';
+    function readContextCompact() { try { return localStorage.getItem(CONTEXT_COMPACT_KEY) === '1'; } catch { return false; } }
     function readCompact() { try { return localStorage.getItem(COMPACT_KEY) === '1'; } catch { return false; } }
     const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, groupTabDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '', compact: readCompact() };
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
@@ -1461,7 +1470,7 @@ created: 2026-09-10
 
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' } };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '' };
@@ -1549,16 +1558,26 @@ created: 2026-09-10
     };
     // The session's name is the herdr tab label; the gauge's own name is the fallback for a row with no live tab.
     const sessionName = row => row.tab_label || row.map;
-    // A leader is picked by its label; any other live session by its pane, and starts unticked.
+    // A leader is picked by its label; any other live session by its pane. Nothing starts ticked.
     const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id ? `${row.herdr_session}|${row.pane_id}` : '';
-    const contextRow = (row, thresholds) => {
-      const level = row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
-      const percent = row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
-      const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
-      const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
+    const contextLevel = (row, thresholds) => row.percent === null || !row.pane_id ? '' : row.percent >= thresholds.high ? 'bad' : row.percent >= thresholds.warn ? 'warn' : 'good';
+    const contextPercent = (row, level) => row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
+    const handoffPickBox = row => {
       const pickKey = pickKeyOf(row);
       const pickName = row.leader ? row.leader.label : sessionName(row);
-      const pick = pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
+      return pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
+    };
+    // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
+    const contextCompactRow = (row, thresholds) => {
+      const pick = handoffPickBox(row);
+      return `<${pick ? 'label' : 'div'} class="compact-tab${pick ? '' : ' no-pick'}"${pick ? '' : ' title="no live pane"'}>${pick || '<span class="pick-gap"></span>'}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}</${pick ? 'label' : 'div'}>`;
+    };
+    const contextRow = (row, thresholds) => {
+      const level = contextLevel(row, thresholds);
+      const percent = contextPercent(row, level);
+      const where = row.pane_id ? `${escapeHtml(row.herdr_session)} · ${escapeHtml(row.pane_id)}${row.title ? ` · ${escapeHtml(row.title)}` : ''}` : '<span class="tab-meta">no live pane</span>';
+      const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
+      const pick = handoffPickBox(row);
       const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.tab_label && row.tab_label !== row.map ? escapeHtml(row.map) : '', row.leader && row.leader.label !== sessionName(row) && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
       return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
     };
@@ -1604,7 +1623,7 @@ created: 2026-09-10
     };
     const renderContext = () => {
       const section = document.querySelector('#context-section');
-      const head = `<div class="section-heading"><h2>Context window</h2><span class="ctx-tools"><span class="updated">${context.at ? `read ${escapeHtml(context.at)}` : 'not read yet'}</span><button id="context-reload" type="button" ${context.loading ? 'disabled' : ''}>${context.loading ? 'Reading…' : 'Refresh'}</button></span></div>`;
+      const head = `<div class="section-heading"><h2>Context window</h2><span class="ctx-tools"><button type="button" id="context-compact" class="small-btn" aria-pressed="${context.compact}" title="Show only each session name with its percent used, keeping the tick boxes. The choice is remembered in this browser.">Compact</button><span class="updated">${context.at ? `read ${escapeHtml(context.at)}` : 'not read yet'}</span><button id="context-reload" type="button" ${context.loading ? 'disabled' : ''}>${context.loading ? 'Reading…' : 'Refresh'}</button></span></div>`;
       let body;
       if (context.error) body = `<div class="scope-note error">${escapeHtml(context.error)}</div>`;
       else if (!context.data) body = '<div class="skeleton"></div><div class="skeleton"></div>';
@@ -1614,11 +1633,16 @@ created: 2026-09-10
         const due = rows.filter(row => row.pane_id && row.percent !== null && row.percent >= thresholds.warn).length;
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
         const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
-        const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Leader sessions waiting at their prompt (idle or done) start ticked; other sessions start unticked. Tick a working one only if you want to interrupt its turn.</span></div>` : '';
-        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
+        const actions = rows.some(row => row.pane_id) ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript; a row with no live pane is a finished or closed session and is not counted. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No gauge records yet.</div>';
       }
       section.innerHTML = `${head}${planRail()}${codexRail()}${body}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
+      document.querySelector('#context-compact').addEventListener('click', () => {
+        context.compact = !context.compact;
+        try { localStorage.setItem(CONTEXT_COMPACT_KEY, context.compact ? '1' : '0'); } catch { /* the choice just is not remembered */ }
+        renderContext();
+      });
       document.querySelector('#plan-reload').addEventListener('click', () => { loadPlan(true); loadCodex(); });
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
         const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
@@ -1656,8 +1680,6 @@ created: 2026-09-10
         if (gauge.status === 'rejected') throw gauge.reason;
         context.data = gauge.value;
         context.leader = leader.status === 'fulfilled' ? leader.value : null;
-        // Idle sessions start ticked; a choice the captain already made survives a refresh.
-        if (context.leader) for (const row of context.leader.rows) if (row.state === 'ok' && !context.picked.has(row.label)) context.picked.set(row.label, AT_PROMPT.has(row.panes[0].agent_status));
         context.leaderError = leader.status === 'rejected' ? leader.reason.message : '';
         context.at = new Date().toLocaleTimeString();
       } catch (error) {
