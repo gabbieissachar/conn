@@ -1013,13 +1013,16 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     });
   }
 
-  // Codex credits: week to date and month to date, summed from the per-day, per-model credit breakdown the ChatGPT
-  // backend keeps for the signed-in Codex account (the same endpoint Codex's own usage view reads). It is read-only:
+  // Codex credits: week to date and month to date, summed from the per-day, per-model credit usage the ChatGPT backend
+  // keeps for the signed-in Codex account (the endpoint behind Codex's own credit view; the sibling
+  // daily-token-usage-breakdown reports percent of an allowance under a field named credits, which is not credits). The
+  // dollar figure is credits times a fixed rate. It is read-only:
   // the access token is read from Codex's auth file and never renewed here, and it goes to curl on stdin, never on a
   // command line, so it cannot show in a process list. Only the sums, the dates and the model names leave the server.
   // The week starts Monday and the month on the 1st, in this machine's local calendar; the backend's day boundary is
   // its own, so a reading near midnight can be a day off.
-  const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage/daily-token-usage-breakdown';
+  const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage/daily-workspace-user-credit-usage';
+  const CODEX_USD_PER_CREDIT = 0.04;
   const CODEX_TIMEOUT_MS = 30000;
   const TOKEN_SHAPE = /^[A-Za-z0-9._-]{1,8192}$/;
   const localDay = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -1035,13 +1038,13 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       if (!TOKEN_SHAPE.test(token) || !TOKEN_SHAPE.test(account)) {
         throw new AdapterError('Codex credits need a Codex sign-in on this machine. Run codex login, then refresh.', 502, 'codex_unavailable');
       }
-      // Codex's own client asks for an inclusive UTC date range grouped by day; ask for the same, from the earlier of the
-      // week and month starts to whichever of the local and UTC days is later.
+      // An inclusive UTC date range, as Codex's own client sends it, broken down by model, from the earlier of the week and
+      // month starts to whichever of the local and UTC days is later.
       const today = now();
       const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
       const since = { week: localDay(weekStart), month: `${localDay(today).slice(0, 8)}01` };
       const utcToday = today.toISOString().slice(0, 10);
-      const query = new URLSearchParams({ start_date: since.week < since.month ? since.week : since.month, end_date: localDay(today) > utcToday ? localDay(today) : utcToday, group_by: 'day' });
+      const query = new URLSearchParams({ start_date: since.week < since.month ? since.week : since.month, end_date: localDay(today) > utcToday ? localDay(today) : utcToday, breakdown: 'model' });
       const config = [`url = "${CODEX_USAGE_URL}?${query}"`, `header = "Authorization: Bearer ${token}"`, `header = "chatgpt-account-id: ${account}"`, 'silent', `max-time = ${CODEX_TIMEOUT_MS / 1000 - 5}`, 'write-out = "\\n%{http_code}"'].join('\n');
       const result = await runner('curl', ['-K', '-'], { env: runEnv(), timeoutMs: CODEX_TIMEOUT_MS, input: config });
       const cut = result.stdout.lastIndexOf('\n');
@@ -1058,25 +1061,25 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       let through = null;
       let earliest = null;
       for (const row of body.data) {
-        if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !Array.isArray(row.models)) throw incomplete();
-        if (row.models.some((item) => !item || number(item.credits) === null)) throw incomplete();
+        if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !row.values || typeof row.values !== 'object' || Array.isArray(row.values)) throw incomplete();
+        const credits = Object.entries(row.values);
+        if (credits.length === 0 || credits.some(([, value]) => number(value) === null)) throw incomplete();
         if (through === null || row.date > through) through = row.date;
         if (earliest === null || row.date < earliest) earliest = row.date;
-        const credits = row.models;
-        const total = credits.reduce((sum, item) => sum + item.credits, 0);
+        const total = credits.reduce((sum, [, value]) => sum + value, 0);
         if (row.date >= since.week) sums.week += total;
         if (row.date >= since.month) {
           sums.month += total;
-          for (const item of credits) models.set(text(item.model, 60), (models.get(text(item.model, 60)) || 0) + item.credits);
+          for (const [model, value] of credits) models.set(text(model, 60), (models.get(text(model, 60)) || 0) + value);
         }
       }
       if (earliest === null || earliest > query.get('start_date')) throw incomplete();
       return {
-        week: { since: since.week, credits: round2(sums.week) },
-        month: { since: since.month, credits: round2(sums.month) },
+        week: { since: since.week, credits: round2(sums.week), usd: round2(sums.week * CODEX_USD_PER_CREDIT) },
+        month: { since: since.month, credits: round2(sums.month), usd: round2(sums.month * CODEX_USD_PER_CREDIT) },
+        usd_per_credit: CODEX_USD_PER_CREDIT,
         models: [...models].map(([model, credits]) => ({ model, credits: round2(credits) })).filter((item) => item.model && item.credits > 0).sort((a, b) => b.credits - a.credits).slice(0, 6),
         data_through: through,
-        units: text(body.units, 20) || 'credits',
         read_at: today.toISOString(),
       };
     });

@@ -798,7 +798,7 @@ test('plan-usage: says what is missing instead of showing an empty or stale card
   }
 });
 
-const codexDay = (date, ...credits) => ({ date, product_surface_usage_values: { cli: 1 }, models: credits.map((value, index) => ({ model: `model-${index}`, speed: 'standard', credits: value })) });
+const codexDay = (date, ...credits) => ({ date, values: Object.fromEntries(credits.map((value, index) => [`model-${index}`, value])) });
 const codexHome = (tokens) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
   if (tokens) fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens }));
@@ -808,7 +808,7 @@ const curlRunner = (body, status = 200, code = 0) => fakeRunner({ handle: (file)
 
 test('codex-credits: sums week to date (from Monday) and month to date, and never puts the token on a command line', async () => {
   const home = codexHome({ access_token: 'tok.en-secret_1', account_id: 'acct-id-1', refresh_token: 'refresh-secret' });
-  const fake = curlRunner({ units: 'percent', data: [
+  const fake = curlRunner({ breakdown: 'model', data: [
     codexDay('2026-09-30', 50),
     codexDay('2026-10-01', 1.5, 0.25),
     codexDay('2026-10-18', 10),
@@ -821,14 +821,14 @@ test('codex-credits: sums week to date (from Monday) and month to date, and neve
     const response = await post('codex-credits');
     assert.equal(response.status, 200);
     const data = response.json.data;
-    assert.deepEqual(data.week, { since: '2026-10-19', credits: 3.5 }, 'Monday 19 October onward');
-    assert.deepEqual(data.month, { since: '2026-10-01', credits: 15.25 }, 'the 1st onward, not September');
+    assert.deepEqual(data.week, { since: '2026-10-19', credits: 3.5, usd: 0.14 }, 'Monday 19 October onward');
+    assert.deepEqual(data.month, { since: '2026-10-01', credits: 15.25, usd: 0.61 }, 'the 1st onward, not September; 4 cents a credit');
+    assert.equal(data.usd_per_credit, 0.04);
     assert.deepEqual(data.models.map((item) => item.model), ['model-0', 'model-1']);
     assert.equal(data.data_through, '2026-10-21');
-    assert.equal(data.units, 'percent');
     const call = fake.calls.find((item) => item.file === 'curl');
     assert.deepEqual(call.args, ['-K', '-'], 'the credential rides stdin, not argv');
-    assert.match(call.input, /url = "https:\/\/chatgpt\.com\/backend-api\/wham\/usage\/daily-token-usage-breakdown\?start_date=2026-10-01&end_date=2026-10-2[12]&group_by=day"/, 'the same inclusive date range and day grouping Codex asks for');
+    assert.match(call.input, /url = "https:\/\/chatgpt\.com\/backend-api\/wham\/usage\/daily-workspace-user-credit-usage\?start_date=2026-10-01&end_date=2026-10-2[12]&breakdown=model"/, 'the credit endpoint, an inclusive date range, split by model');
     assert.match(call.input, /Bearer tok\.en-secret_1/);
     assert.equal(response.raw.includes('secret'), false, 'no token or account evidence leaves the server');
     assert.equal(server.api.ACTIONS['codex-credits'].tier, 0);
@@ -844,9 +844,10 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
     { name: 'expired sign-in', home: codexHome(good), runner: curlRunner({ detail: 'no' }, 401), expect: /expired/ },
     { name: 'server error', home: codexHome(good), runner: curlRunner('oops', 500), expect: /HTTP 500/ },
     { name: 'unexpected body', home: codexHome(good), runner: curlRunner({ data: 'nope' }), expect: /could not be read/ },
-    { name: 'a day with no models list', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', product_surface_usage_values: { cli: 3 } }] }), expect: /incomplete/ },
-    { name: 'a model with a missing amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', models: [{ model: 'm' }] }] }), expect: /incomplete/ },
-    { name: 'a model with a text amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', models: [{ model: 'm', credits: '5' }] }] }), expect: /incomplete/ },
+    { name: 'a day with no values', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02' }] }), expect: /incomplete/ },
+    { name: 'a day with an empty values list', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', values: {} }] }), expect: /incomplete/ },
+    { name: 'a model with a null amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', values: { m: null } }] }), expect: /incomplete/ },
+    { name: 'a model with a text amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', values: { m: '5' } }] }), expect: /incomplete/ },
     { name: 'no days at all', home: codexHome(good), runner: curlRunner({ data: [] }), expect: /incomplete/ },
     { name: 'the first requested day is missing', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-05', 1)] }), expect: /incomplete/ },
     { name: 'curl missing', home: codexHome(good), runner: curlRunner('', 0, 127), expect: /curl/ },

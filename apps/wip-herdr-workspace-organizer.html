@@ -1503,18 +1503,19 @@ created: 2026-09-10
       const error = plan.error ? `<div class="scope-note error plan-error">${escapeHtml(plan.error)}</div>` : '';
       return `<div class="plan-chips" id="plan-card">${chips}<span class="updated">${plan.at ? `updated ${escapeHtml(plan.at)}` : 'not read yet'}</span>${button}${error}</div>`;
     };
-    const creditText = value => (value >= 100 ? Math.round(value) : value >= 10 ? value.toFixed(1) : value.toFixed(2)).toString();
-    const codexChip = (name, item, title) => `<span class="plan-chip" title="${escapeHtml(title)}"><span class="plan-dot"></span>${escapeHtml(name)} <b>${creditText(item.credits)}</b><span class="plan-reset">credits</span></span>`;
+    // Credits read like 3,023 (a fraction only below 100); the dollar value is the server's credits x rate, written 121$.
+    const creditText = value => (value >= 100 ? Math.round(value).toLocaleString() : value >= 10 ? value.toFixed(1) : value.toFixed(2)).toString();
+    const usdText = value => `${value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(value >= 10 ? 1 : 2)}$`;
+    const codexChip = (name, item, title) => `<span class="plan-chip" title="${escapeHtml(title)}"><span class="plan-dot"></span>${escapeHtml(name)} <b>${creditText(item.credits)}</b><span class="plan-reset">credits (${usdText(item.usd)})</span></span>`;
     const codexRail = () => {
       let chips;
       if (codex.error) chips = `<span class="plan-chip warn"><span class="plan-dot"></span>Codex credits unavailable</span>`;
       else if (!codex.data) chips = '<span class="plan-chip none"><span class="plan-dot"></span>Codex credits reading…</span>';
       else {
-        const { week, month, models, data_through: through, units } = codex.data;
-        const unit = units && units !== 'credits' ? ` (the usage service labels its unit "${units}")` : '';
-        const unitNote = units && units !== 'credits' ? `<span class="tab-meta" title="Each model's amount is a credits field; the service's response labels its unit &quot;${escapeHtml(units)}&quot;. Check one day against the Codex usage page.">service unit: ${escapeHtml(units)}</span>` : '';
+        const { week, month, models, data_through: through, usd_per_credit: rate } = codex.data;
+        const cost = ` Cost is credits x $${rate} per credit.`;
         const split = models.length ? ` Month by model: ${models.map(item => `${item.model} ${creditText(item.credits)}`).join(', ')}.` : '';
-        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}${unit}. Data through ${through || 'unknown'}.`)}${codexChip('Month to date', month, `Credits used since ${month.since}${unit}. Data through ${through || 'unknown'}.${split}`)}${unitNote}`;
+        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${codexChip('Month to date', month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`)}`;
       }
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       return `<div class="plan-chips" id="codex-card">${chips}${error}</div>`;
