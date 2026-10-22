@@ -2017,6 +2017,9 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
                         "pane_count": len(leaf_panes((tab.get("layout") or {}).get("root"))),
                         "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
                         "unresumable_agent_count": sum(not is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+                        # The first 8 characters of each agent session id, as the context gauge shows them, so the page can
+                        # look up how full each archived session's context was. Never a whole session id.
+                        "agent_session_prefixes": sorted({str(item["session_id"])[:8] for item in tab.get("agent_restores", []) if isinstance(item, dict) and item.get("session_id")}),
                     }
                 )
     return view
@@ -2054,6 +2057,11 @@ def batch_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "counts": counts,
         "member_count": len(members),
         "empty": not any(member["status"] != "deleted" for member in members),
+        # Tabs the group holds twice (see superseded_group_tabs); fixed fields only. `dedupe-group` removes them.
+        "duplicate_tabs": [
+            {key: item[key] for key in ("archive_id", "tab_id", "label", "by")}
+            for item in superseded_group_tabs(manifest, str(manifest.get("batch_id") or ""))
+        ],
     }
 
 

@@ -3056,6 +3056,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(member["tabs"][0]["pane_count"], 1)
         # The page offers to resume one tab only when none of its agents is unverified.
         self.assertEqual([(t["resumable_agent_count"], t["unresumable_agent_count"]) for t in member["tabs"]], [(0, 0), (0, 1)])
+        self.assertEqual([t["agent_session_prefixes"] for t in member["tabs"]], [[], []])
         # A deleted or unreadable archive has no tabs to show.
         gone = ORGANIZER.batch_summary(self.make_batch(["deleted"], batch_id="batch-20261007-111500"))["members"][0]
         self.assertEqual(gone["tabs"], [])
@@ -3268,6 +3269,20 @@ class BatchTests(unittest.TestCase):
                 manifest = self.duplicate_group(**overrides)
                 self.assertEqual(ORGANIZER.superseded_group_tabs(manifest, self.GROUP_ID), [], name)
                 self.assertEqual(len(self.stored(self.OLD_ID)["capture"]["tabs"]), 2)
+
+    def test_the_snapshot_lists_the_duplicate_tabs_and_only_the_first_eight_session_characters(self):
+        manifest = self.duplicate_group()
+        old = self.stored(self.OLD_ID)
+        old["capture"]["tabs"][0]["agent_restores"][0]["session_id"] = "abcdef12-3456-7890-abcd-ef1234567890"
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{self.OLD_ID}.json", old)
+        new = self.stored(self.NEW_ID)
+        new["capture"]["tabs"][0]["agent_restores"][0]["session_id"] = "abcdef12-3456-7890-abcd-ef1234567890"
+        ORGANIZER.write_json(ORGANIZER.ARCHIVE_DIR / f"{self.NEW_ID}.json", new)
+        summary = ORGANIZER.batch_summary(manifest)
+        self.assertEqual(summary["duplicate_tabs"], [{"archive_id": self.OLD_ID, "tab_id": "wA8:t2", "label": "design", "by": self.NEW_ID}])
+        tabs = {m["archive_id"]: m["tabs"] for m in summary["members"]}
+        self.assertEqual(tabs[self.OLD_ID][0]["agent_session_prefixes"], ["abcdef12"])
+        self.assertNotIn("3456-7890", json.dumps(summary), "no whole session id reaches the snapshot")
 
     def test_dedupe_group_previews_then_removes_only_with_the_batch_id(self):
         self.duplicate_group()
