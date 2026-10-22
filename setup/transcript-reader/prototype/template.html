@@ -464,7 +464,7 @@
     select.addEventListener("change", () => {
       state.session = Number(select.value);
       setAddress();
-      render(); window.scrollTo(0, 0);
+      render(); showLatest();
     });
     const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
@@ -510,6 +510,14 @@
       main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i, sid));
     });
     if (run) collapseRun(run);
+  }
+  // Opening a conversation starts at its latest turn, placed under the bar so it reads from its first line.
+  // Wake-ups folded after it stay as the one-line rows below.
+  function showLatest() {
+    const turns = document.querySelectorAll("#main > [id^='ex-']");
+    const el = turns[turns.length - 1];
+    if (!el) { window.scrollTo(0, document.documentElement.scrollHeight); return; }
+    window.scrollTo(0, window.scrollY + el.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
   }
   function collapseRun(run) {
     const count = Number(run.dataset.count);
@@ -941,7 +949,7 @@
     state.session = index; state.view = "reader";
     setAddress();
     render();
-    window.scrollTo(0, document.documentElement.scrollHeight);  // the latest turn
+    showLatest();
   }
   live.poll(async () => {
     const s = await live.state(state.follow);
@@ -984,7 +992,11 @@
   }
   document.getElementById("bar-toggle").addEventListener("click", () => setBarOpen(!state.barOpen));
   document.getElementById("crumb").addEventListener("click", () => setBarOpen(true));
-  document.getElementById("tab-reader").addEventListener("click", () => { state.view = "reader"; render(); });
+  document.getElementById("tab-reader").addEventListener("click", () => {
+    const opening = state.view !== "reader";
+    state.view = "reader"; render();
+    if (opening) showLatest();
+  });
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
   document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); render(); window.scrollTo(0, 0); });
   document.addEventListener("keydown", e => {
@@ -1011,7 +1023,7 @@
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
   render();
-  if (same && saved.anchor) restoreAnchor(saved.anchor);
+  if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
 })();
 </script>
 </body>

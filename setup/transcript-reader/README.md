@@ -25,6 +25,7 @@ A `file://` copy of the page still reads, but cannot refresh, follow or send.
 
 In any copy of the page:
 
+- **Opens at the latest turn.** Opening a conversation, from a new tab, the session picker, the Conversation tab or Follow Herdr, scrolls to its newest turn, placed under the header. Wake-ups folded after it stay as one-line rows below. A reload of the same conversation in the same tab keeps your place instead.
 - **Documents.** A markdown file a reply names (`requirements.md`, `02-Projects/x/work-log.md`, an absolute or `~` path) opens from a button under that reply, in the Documents tab: the file rendered beside its contents list (one column with a folding list at phone width). Select a passage and "Comment on this", or use "Message about this file", to send a message naming the file, its section and the passage. A relative name is looked up under the latest `cd` directory the reply gave before it, then under the turn's working directory and its parents below your home folder. Files over 512 KB are skipped. The page shows each file as it was at the last rebuild.
 - **Code boxes.** Fenced code (commands, snippets) shows in a wrapped box with a Copy button that copies exactly the code. Tables render as tables.
 - **Collapsible header.** The chevron at the top right folds the tabs and controls into one line naming the session, document or view. Tap that line or the chevron to bring them back. The choice is kept in this browser.
