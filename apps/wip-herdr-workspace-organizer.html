@@ -1455,6 +1455,8 @@ created: 2026-09-10
       const base = `herdr-organizer${session} restore-batch --batch ${id}`;
       const resume = `${base} --resume-agents --execute --confirm ${id}`;
       const layout = `${base} --execute --confirm ${id}`;
+      const snapshotRestore = `${base} --snapshot-only --resume-agents --execute --confirm ${id}`;
+      const snapshotCount = (batch.members || []).filter(member => member.status === 'archived' && member.snapshot).length;
       const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
       // Tabs held twice: the older copy of a tab that was restored out of its archive and then archived again.
       const duplicates = (batch.duplicate_tabs || []).filter(item => item && typeof item.label === 'string' && ARCHIVE_ID_PATTERN.test(item.archive_id || ''));
@@ -1481,7 +1483,8 @@ created: 2026-09-10
         <div class="batch-counts">${escapeHtml(parts.join(' · ') || 'No members')}</div>
         ${batch.empty ? '<div class="archive-meta" style="margin-top:8px">No workspace is archived in this group. A workspace leaves the group when it is restored, and Archive all or adding tabs puts workspaces back in.</div>' : ''}
         <div class="archive-actions">
-          <button class="primary" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
+          ${valid && snapshotCount ? `<button class="primary" type="button" data-command="${escapeHtml(snapshotRestore)}" title="Copies one command that restores only the ${plural(snapshotCount, 'workspace')} a snapshot saved before a restart and resumes their verified agents. A workspace Herdr already brought back is adopted, not rebuilt. The group's other archives are not touched.">Copy restore snapshot + resume agents</button>` : ''}
+          <button class="${valid && snapshotCount ? '' : 'primary'}" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
           <button type="button" ${canLayout ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canLayout ? 'Copies one command that rebuilds the layout of every archived member that has no open copy, as fresh shells. Nothing is marked restored and every restore command stays.' : (canRestore ? 'Every archived member already has its layout open' : why)}">Copy restore all (layout only)</button>
           ${valid && duplicates.length ? `<button class="danger" type="button" data-command="${escapeHtml(dedupe)}" title="Copies one command that permanently removes the older copy of each duplicated tab from its archive. The newer archive keeps its copy, and no live workspace changes. Run it with the same command plus no --execute to preview.">Copy remove ${plural(duplicates.length, 'duplicate tab')}</button>` : ''}
           ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this empty group record. The next Archive all starts the group again.">Copy delete group</button>` : ''}

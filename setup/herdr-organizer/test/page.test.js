@@ -461,6 +461,8 @@ test('archive all offers a copy-only snapshot command and the group marks snapsh
   assert.match(html, /data-aa-copy="\$\{escapeHtml\(snapshotPreviewCommand\)\}"/, 'the preview-only snapshot command is copied');
   assert.match(html, /result\?\.commands\?\.snapshot_preview/, 'it comes from the preview, with a fallback built from the session');
   assert.match(html, /Copy snapshot preview/);
+  assert.match(html, /\$\{base\} --snapshot-only --resume-agents --execute --confirm \$\{id\}/, 'the group has a command that restores only the snapshot members');
+  assert.match(html, /Copy restore snapshot \+ resume agents/);
   assert.match(html, /<h3>Save a snapshot before a restart<\/h3>/, 'the snapshot has its own card');
   assert.match(html, /member\.snapshot \? '<span class="pill"[^']*>snapshot<\/span>'/);
 });
