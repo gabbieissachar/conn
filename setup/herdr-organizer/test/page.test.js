@@ -464,7 +464,8 @@ test('archive all offers a copy-only snapshot command and the group marks snapsh
   assert.match(html, /\$\{base\} --snapshot-only --resume-agents --execute --confirm \$\{id\}/, 'the group has a command that restores only the snapshot members');
   assert.match(html, /Copy restore snapshot \+ resume agents/);
   assert.match(html, /<h3>Save a snapshot before a restart<\/h3>/, 'the snapshot has its own card');
-  assert.match(html, /member\.snapshot \? '<span class="pill"[^']*>snapshot<\/span>'/);
+  assert.match(html, /member\.snapshot \? `<span class="pill"[^`]*>snapshot · \$\{plural\(\(member\.tabs \|\| \[\]\)\.length, 'tab'\)\}<\/span>`/, 'a snapshot member shows its tab count');
+  assert.match(html, /Snapshot: \$\{plural\(snapshotCount, 'workspace'\)\} · \$\{plural\(snapshotTabs, 'tab'\)\}/, 'the group line says how many workspaces and tabs the snapshot holds');
 });
 
 test('context view: the Codex month chip is a share of the 3,000 credit limit with the Claude amber and red lines', () => {
