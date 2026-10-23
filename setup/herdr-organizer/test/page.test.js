@@ -446,6 +446,13 @@ test('context view: the Codex credit chips read through codex-credits only and p
   assert.equal(/auth\.json|access_token|Bearer/.test(view), false, 'the page never touches a credential');
 });
 
+test('archive all offers a copy-only snapshot command and the group marks snapshot members', () => {
+  assert.match(html, /const canSnapshot = Boolean\(result\?\.commands\?\.snapshot\) && !stale;/, 'stale previews disable it like the execute copy');
+  assert.match(html, /data-aa-copy="\$\{escapeHtml\(canSnapshot \? result\.commands\.snapshot : ''\)\}"/, 'copy-only, built from the preview');
+  assert.match(html, /Copy snapshot for restart/);
+  assert.match(html, /member\.snapshot \? '<span class="pill"[^']*>snapshot<\/span>'/);
+});
+
 test('context view: the Codex month chip is a share of the 3,000 credit limit with the Claude amber and red lines', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /CODEX_MONTH_LIMIT = 3000/);

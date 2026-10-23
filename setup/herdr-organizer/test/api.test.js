@@ -369,6 +369,7 @@ test('archive-all-preview: runs the read-only preview, drops free text, and buil
     for (const flag of ['--execute', '--confirm', '--allow-active', '--allow-unresumable-agents']) assert.equal(runs[0].args.includes(flag), false, flag);
     assert.equal(data.commands.preview, 'herdr-organizer --session project-a archive-all');
     assert.equal(data.commands.execute, 'herdr-organizer --session project-a archive-all --execute --confirm project-a');
+    assert.equal(data.commands.snapshot, 'herdr-organizer --session project-a archive-all --snapshot --execute --confirm project-a');
   } finally { await server.close(); }
 });
 
@@ -382,6 +383,18 @@ test('archive-all-preview: with nothing to archive there is no execute command',
     assert.equal(response.status, 200);
     assert.equal(response.json.data.totals.to_archive, 0);
     assert.equal(response.json.data.commands.execute, '');
+    assert.match(response.json.data.commands.snapshot, /--snapshot --execute --confirm project-a$/, 'a working-agent workspace can still be saved as a snapshot');
+  } finally { await server.close(); }
+});
+
+test('archive-all-preview: with nothing that could be saved there is no snapshot command either', async () => {
+  const bare = fixture('archive-all-preview.txt').replace(/"to_archive": \[[\s\S]*?\n  \],\n  "skipped"/, '"to_archive": [],\n  "skipped"').replace(/"active_agent"/g, '"capture_failed"');
+  const runner = fakeRunner({ handle: (file, args) => (args.includes('archive-all') ? { code: 0, stdout: bare, stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: runner.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-all-preview', { session: 'project-a' });
+    assert.equal(response.json.data.commands.snapshot, '');
   } finally { await server.close(); }
 });
 

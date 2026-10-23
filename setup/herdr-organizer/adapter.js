@@ -660,8 +660,13 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       to_archive: preview.to_archive,
       skipped: preview.skipped,
       totals: { workspaces: preview.to_archive.length + preview.skipped.length + preview.omitted, to_archive: preview.to_archive.length, skipped: preview.skipped.length, omitted: preview.omitted },
-      // Copy-only. Archiving closes workspaces, so the page never runs the execute form.
-      commands: { preview: base, execute: preview.to_archive.length ? base + ' --execute --confirm ' + session : '' },
+      // Copy-only. Archiving closes workspaces, so the page never runs the execute form. The snapshot form closes nothing
+      // and also takes a workspace with a working agent, so it is offered whenever something could be saved.
+      commands: {
+        preview: base,
+        execute: preview.to_archive.length ? base + ' --execute --confirm ' + session : '',
+        snapshot: preview.to_archive.length || preview.skipped.some((item) => item.reasons.includes('active_agent')) ? base + ' --snapshot --execute --confirm ' + session : '',
+      },
     };
   }
 
