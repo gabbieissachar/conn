@@ -425,7 +425,8 @@ captured tab (same label, same layout shape): that workspace is adopted, only
 panes without an agent get a resume command, and sessions already running are
 skipped. A workspace that is only partly back (or more than one look-alike) is
 left archived with the reason and counted as left alone, never rebuilt on top;
-`--force` still makes another copy. `restore-tab` and `restore-tabs` adopt an
+`--force` still makes another copy. `restore-batch --snapshot-only` restores just the snapshot members and
+leaves the group's ordinary archives alone. `restore-tab` and `restore-tabs` adopt an
 already-open tab of a snapshot member the same way. Leader tabs keep their rule:
 a natively restored one is adopted, never duplicated.
 

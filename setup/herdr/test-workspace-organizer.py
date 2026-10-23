@@ -4834,6 +4834,49 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertIn("Left 1 archive(s) alone", output.getvalue())
         self.assertEqual(self.herdr.created, [])
 
+    def run_batch(self, **overrides):
+        values = dict(batch="batch-20261023-100000", resume_agents=True, execute=True, confirm="batch-20261023-100000", session="esim", snapshot_only=False)
+        values.update(overrides)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ORGANIZER.restore_batch_command(argparse.Namespace(**values))
+        return output.getvalue()
+
+    def write_mixed_group(self):
+        self.write_archive()
+        ordinary_id = "20261023-100100-beta"
+        ordinary = self.archive()
+        ordinary.update({"archive_id": ordinary_id, "batch_id": "batch-20261023-100000"})
+        ordinary.pop("snapshot")
+        ordinary["capture"]["workspace"].update({"source_workspace_id": "w2", "label": "Beta"})
+        ORGANIZER.write_json(self.archives / f"{ordinary_id}.json", ordinary)
+        snapshot = self.archive()
+        snapshot["batch_id"] = "batch-20261023-100000"
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", snapshot)
+        ORGANIZER.write_json(
+            self.batches / "batch-20261023-100000.json",
+            {"version": 1, "batch_id": "batch-20261023-100000", "herdr_session": "esim", "status": "completed",
+             "members": [{"archive_id": self.ARCHIVE_ID, "workspace_id": "w1", "workspace_label": "Alpha"},
+                         {"archive_id": ordinary_id, "workspace_id": "w2", "workspace_label": "Beta"}]},
+        )
+        return ordinary_id
+
+    def test_restore_batch_snapshot_only_leaves_the_groups_ordinary_archives_alone(self):
+        ordinary_id = self.write_mixed_group()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.run_batch(snapshot_only=True)
+        self.assertEqual(self.archive()["status"], "resumed")
+        ordinary = json.loads((self.archives / f"{ordinary_id}.json").read_text())
+        self.assertEqual(ordinary["status"], "archived", "an ordinary archive in the same group is not restored")
+        self.assertEqual(self.herdr.created, [])
+
+    def test_restore_batch_without_the_flag_still_restores_every_archived_member(self):
+        ordinary_id = self.write_mixed_group()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.run_batch()
+        ordinary = json.loads((self.archives / f"{ordinary_id}.json").read_text())
+        self.assertNotEqual(ordinary["status"], "archived")
+
     def test_a_restored_tab_that_is_already_open_in_the_destination_is_adopted(self):
         self.write_archive()
         self.herdr.add_workspace("w9", "Elsewhere")

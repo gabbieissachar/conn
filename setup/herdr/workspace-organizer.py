@@ -2009,8 +2009,8 @@ def run_archive_batch(
     )
     if snapshot:
         print(
-            "Nothing was closed. After the restart, restore the group with restore-batch --resume-agents: a workspace "
-            "Herdr already brought back is adopted, not rebuilt."
+            "Nothing was closed. After the restart, restore the snapshot with restore-batch --snapshot-only --resume-agents: "
+            "a workspace Herdr already brought back is adopted, not rebuilt."
         )
     else:
         print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
@@ -2125,10 +2125,15 @@ def restore_batch_command(args: argparse.Namespace) -> None:
             f"Batch {args.batch!r} was captured from session {captured_session!r}, not {session!r}. "
             f"Re-run with --session {captured_session}."
         )
-    targets = [member for member in summary["members"] if member["status"] == RESTORABLE_MEMBER_STATUS]
-    left_alone = [member for member in summary["members"] if member["status"] != RESTORABLE_MEMBER_STATUS]
+    members = summary["members"]
+    # The group also holds ordinary archives; --snapshot-only restores just the ones a snapshot saved before a restart.
+    if getattr(args, "snapshot_only", False):
+        members = [member for member in members if member.get("snapshot")]
+    targets = [member for member in members if member["status"] == RESTORABLE_MEMBER_STATUS]
+    left_alone = [member for member in members if member["status"] != RESTORABLE_MEMBER_STATUS]
     preview = {
         "batch_id": args.batch,
+        "snapshot_only": bool(getattr(args, "snapshot_only", False)),
         "to_restore": [
             {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "layout_workspace_id": m["layout_workspace_id"]}
             for m in targets
@@ -2148,7 +2153,7 @@ def restore_batch_command(args: argparse.Namespace) -> None:
     for member in left_alone:
         print(f"Left {member['archive_id']} alone: {member['status']}.")
     if not targets:
-        print("Nothing to restore: no member of this batch is still archived.")
+        print("Nothing to restore: no snapshot member of this batch is still archived." if getattr(args, "snapshot_only", False) else "Nothing to restore: no member of this batch is still archived.")
         return
     failures: list[str] = []
     outcomes: dict[str, int] = {}
@@ -6001,6 +6006,9 @@ def parser() -> argparse.ArgumentParser:
     )
     restore_batch.add_argument("--batch", help="The session's archive group. Defaults to the one group of --session.")
     restore_batch.add_argument("--resume-agents", action="store_true")
+    restore_batch.add_argument(
+        "--snapshot-only", action="store_true", help="Restore only the members a snapshot saved, not the group's other archives."
+    )
     restore_batch.add_argument("--execute", action="store_true")
     restore_batch.add_argument("--confirm", help="Must exactly equal the batch ID.")
     restore_batch.set_defaults(func=with_group_lock("restore-batch", restore_batch_command))
