@@ -665,6 +665,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       commands: {
         preview: base,
         execute: preview.to_archive.length ? base + ' --execute --confirm ' + session : '',
+        snapshot_preview: base + ' --snapshot',
         snapshot: preview.to_archive.length || preview.skipped.some((item) => item.reasons.includes('active_agent')) ? base + ' --snapshot --execute --confirm ' + session : '',
       },
     };
@@ -722,8 +723,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // joined to the live panes of every running non-default session, so each row names the
   // tab to restart. The first-mate home and gauge script are fixed at construction; the
   // browser sends nothing. Only the first eight characters of a session id leave the server.
-  const CONTEXT_WARN_PERCENT = 35;
-  const CONTEXT_HIGH_PERCENT = 50;
+  const CONTEXT_WARN_PERCENT = 18;
+  const CONTEXT_HIGH_PERCENT = 25;
   const GAUGE_TIMEOUT_MS = 120000;
   const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '');
   const number = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);

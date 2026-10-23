@@ -1251,6 +1251,7 @@ created: 2026-09-10
       const result = aa.result;
       const session = cleanupSession();
       const stale = Boolean(result) && Boolean(aa.snapshotAt) && aa.snapshotAt !== (data.generated_at || '');
+      const snapshotPreviewCommand = result?.commands?.snapshot_preview || (SESSION_NAME_PATTERN.test(session) ? `herdr-organizer --session ${session} archive-all --snapshot` : '');
       const previewCommand = result?.commands?.preview || (SESSION_NAME_PATTERN.test(session) ? `herdr-organizer --session ${session} archive-all` : '');
       let body = '';
       if (aa.loading) body = '<div class="skeleton" style="margin-top:14px"></div>';
@@ -1276,9 +1277,13 @@ created: 2026-09-10
         <p class="lede">Archives every live workspace that passes the safety checks and closes it, into the session's archive group, which you can restore together from the Archive group tab. A workspace with a working agent, or an agent without a registered session id, is skipped and listed with the reason. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-aa="preview" ${canPreview ? '' : 'disabled'} title="${session ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${aa.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview archive all')}</button>
           <button type="button" data-aa-copy="${escapeHtml(previewCommand)}" ${previewCommand ? '' : 'disabled'} title="Copies the preview command to run in your terminal">Copy archive all preview</button>
-          <button type="button" class="danger" data-aa-copy="${escapeHtml(canCopy ? result.commands.execute : '')}" ${canCopy ? '' : 'disabled'} title="${canCopy ? 'Copies the command that archives and closes the workspaces listed above' : 'Preview first. The command is built from the preview'}">Copy archive all</button>
-          <button type="button" data-aa-copy="${escapeHtml(canSnapshot ? result.commands.snapshot : '')}" ${canSnapshot ? '' : 'disabled'} title="${canSnapshot ? 'Copies a command that saves every workspace into the archive group without closing anything, working agents included, for a computer restart' : (result && !stale ? 'The preview offered no snapshot command. Either there is nothing to save, or the organizer server is older than this page: restart it with setup/serve.sh --restart' : 'Preview first. The command is built from the preview')}">Copy snapshot for restart</button></div>
+          <button type="button" class="danger" data-aa-copy="${escapeHtml(canCopy ? result.commands.execute : '')}" ${canCopy ? '' : 'disabled'} title="${canCopy ? 'Copies the command that archives and closes the workspaces listed above' : 'Preview first. The command is built from the preview'}">Copy archive all</button></div>
         ${body}
+      </div></article>
+      <article class="card cleanup-all"><div class="card-head"><h3>Save a snapshot before a restart</h3></div><div class="card-body">
+        <p class="lede">Saves every workspace into the archive group without closing anything, working agents included. Run it just before you restart the computer. Afterwards, restoring a member from the Archive group skips whatever Herdr brought back.</p>
+        <div class="btn-row"><button type="button" data-aa-copy="${escapeHtml(snapshotPreviewCommand)}" ${snapshotPreviewCommand ? '' : 'disabled'} title="Copies the snapshot preview command to run in your terminal. It lists what would be saved and changes nothing">Copy snapshot preview</button>
+          <button type="button" data-aa-copy="${escapeHtml(canSnapshot ? result.commands.snapshot : '')}" ${canSnapshot ? '' : 'disabled'} title="${canSnapshot ? 'Copies the command that saves the workspaces without closing anything' : (result && !stale ? 'The preview offered no snapshot command. Either there is nothing to save, or the organizer server is older than this page: restart it with setup/serve.sh --restart' : 'Preview archive all first. The command is built from that preview')}">Copy snapshot for restart</button></div>
       </div></article>`;
     };
     const renderArchiveAll = () => {

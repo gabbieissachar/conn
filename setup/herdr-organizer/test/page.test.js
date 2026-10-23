@@ -458,6 +458,10 @@ test('archive all offers a copy-only snapshot command and the group marks snapsh
   assert.match(html, /const canSnapshot = Boolean\(result\?\.commands\?\.snapshot\) && !stale;/, 'stale previews disable it like the execute copy');
   assert.match(html, /data-aa-copy="\$\{escapeHtml\(canSnapshot \? result\.commands\.snapshot : ''\)\}"/, 'copy-only, built from the preview');
   assert.match(html, /Copy snapshot for restart/);
+  assert.match(html, /data-aa-copy="\$\{escapeHtml\(snapshotPreviewCommand\)\}"/, 'the preview-only snapshot command is copied');
+  assert.match(html, /result\?\.commands\?\.snapshot_preview/, 'it comes from the preview, with a fallback built from the session');
+  assert.match(html, /Copy snapshot preview/);
+  assert.match(html, /<h3>Save a snapshot before a restart<\/h3>/, 'the snapshot has its own card');
   assert.match(html, /member\.snapshot \? '<span class="pill"[^']*>snapshot<\/span>'/);
 });
 

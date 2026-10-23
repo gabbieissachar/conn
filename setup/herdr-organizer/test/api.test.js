@@ -370,6 +370,7 @@ test('archive-all-preview: runs the read-only preview, drops free text, and buil
     assert.equal(data.commands.preview, 'herdr-organizer --session project-a archive-all');
     assert.equal(data.commands.execute, 'herdr-organizer --session project-a archive-all --execute --confirm project-a');
     assert.equal(data.commands.snapshot, 'herdr-organizer --session project-a archive-all --snapshot --execute --confirm project-a');
+    assert.equal(data.commands.snapshot_preview, 'herdr-organizer --session project-a archive-all --snapshot', 'the snapshot has its own preview-only command');
   } finally { await server.close(); }
 });
 
@@ -601,7 +602,7 @@ test('context-gauge: joins the gauge to live panes, shows only short ids, and so
     const response = await post('context-gauge');
     assert.equal(response.status, 200);
     const { rows, thresholds } = response.json.data;
-    assert.deepEqual(thresholds, { warn: 35, high: 50 });
+    assert.deepEqual(thresholds, { warn: 18, high: 25 });
     assert.deepEqual(rows.map((row) => row.map), ['secondmate-x', 'primary', 'low-task'], 'sorted by percent, superseded and non-current rows dropped');
     assert.equal(rows[0].id, '11111111');
     assert.equal(rows[0].percent, 42);
