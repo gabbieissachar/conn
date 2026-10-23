@@ -209,7 +209,17 @@
   /* 16px keeps a phone from zooming in when the box is tapped. */
   .dock textarea { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 6px 9px; background: var(--paper); color: var(--ink); font: 16px/1.4 var(--sans); resize: none; overflow-y: auto; }
   .dock textarea:focus { outline: 2px solid var(--you); outline-offset: -1px; }
-  .dock-row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 14px; font-size: 14px; }
+  .dock-row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 14px; font-size: 14px; white-space: nowrap; }
+  .dock-row button.alt { background: var(--paper); color: var(--you); padding: 7px 10px; }
+  .dock-batch { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; margin-bottom: 5px; }
+  .dock-batch .dock-head button:first-child { flex: 1; min-width: 0; text-align: left; color: var(--ink); font-weight: 600; }
+  .dock-batch ol { list-style: none; margin: 3px 0 0; padding: 0; max-height: 28vh; overflow-y: auto; }
+  .dock-batch li { display: flex; gap: 6px; align-items: baseline; font-size: 13px; padding: 4px 0; border-top: 1px solid var(--line); }
+  .dock-batch .n { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .dock-batch .what { flex: 1; min-width: 0; }
+  .dock-batch .what small { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dock-batch .what span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .dock-batch li button { border: 0; background: none; color: var(--muted); font-size: 12px; padding: 0 2px; }
   .dock button:disabled { opacity: .45; cursor: default; }
   .input.pending { opacity: .6; border-style: dashed; }
   .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
@@ -233,6 +243,10 @@
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
 <div class="dock" id="dock" hidden><div class="dock-inner">
+  <div class="dock-batch" id="dock-batch" hidden>
+    <div class="dock-head"><button id="dock-batch-toggle" type="button" aria-expanded="true" aria-controls="dock-batch-list"></button><button id="dock-batch-clear" type="button" title="Remove every comment from the batch">Clear all</button></div>
+    <ol id="dock-batch-list"></ol>
+  </div>
   <div class="dock-chip" id="dock-chip" hidden>
     <div class="dock-head"><span id="dock-chip-title"></span><button id="dock-chip-drop" type="button" aria-label="Remove the pointer" title="Send a plain message instead (Esc)">✕</button></div>
     <div class="dock-passage" id="dock-passage" hidden><span id="dock-passage-text"></span><button id="dock-passage-drop" type="button">remove</button></div>
@@ -241,7 +255,7 @@
   </div>
   <div class="dock-acts"><span class="why" id="dock-status" aria-live="polite"></span><span class="count" id="dock-count" hidden></span><button id="dock-copy" type="button" title="Copy the message">Copy</button></div>
   <div class="dock-worker" id="dock-worker" hidden>This is a worker. Firstmate only sees direct messages at its next review.</div>
-  <div class="dock-row"><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
+  <div class="dock-row"><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button class="alt" id="dock-add" type="button" title="Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)">Add</button><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
 </div></div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
@@ -662,7 +676,7 @@
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false };
+  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -688,8 +702,13 @@
   const SENDABLE = new Set(["idle", "working", "done"]);
   const MAX_SEND = 4000;
   // Reply and "Comment on this" attach a pointer to the bar and keep what is already typed.
+  // A comment already written against another pointer goes into the batch first, so
+  // commenting on one passage after another collects them all.
   function openDock(target) {
-    link.target = target; link.result = null;
+    const typed = dockTyped();
+    const queued = Boolean(link.target && typed && !typed.startsWith("/")) && addToBatch();
+    link.target = target;
+    link.result = queued ? { ok: true, text: `The last comment went into the batch (${batchOf(target.sid).length}).` } : null;
     markTarget();
     document.getElementById("float-comment").hidden = true;
     renderDock();
@@ -707,6 +726,87 @@
     if (dock("text").value.trim()) drafts[session.id] = dock("text").value; else delete drafts[session.id];
     try { sessionStorage.setItem("tr-drafts", JSON.stringify(drafts)); } catch (e) { /* kept until the page reloads */ }
   }
+  // Comments waiting to go together, kept per session in this tab like drafts. Each keeps its
+  // pointer as written, with and without the passage, so Edit can put it back in the box.
+  const batches = (() => { try { return JSON.parse(sessionStorage.getItem("tr-batches") || "{}") || {}; } catch (e) { return {}; } })();
+  const batchOf = sid => batches[sid] || [];
+  function saveBatch(sid, items) {
+    if (items.length) batches[sid] = items; else delete batches[sid];
+    try { sessionStorage.setItem("tr-batches", JSON.stringify(batches)); } catch (e) { /* kept until the page reloads */ }
+  }
+  const itemText = item => item.pointer + item.typed;
+  // What Send types into the pane. With a batch, every comment goes in one message, numbered
+  // in order, with what is in the box last.
+  function outgoing() {
+    const session = dockSession(); if (!session) return "";
+    const parts = batchOf(session.id).map(itemText);
+    const current = dockMessage();
+    if (current) parts.push(current);
+    if (parts.length < 2) return parts[0] || "";
+    return `${parts.length} comments:\n\n` + parts.map((t, i) => `${i + 1}. ${t}`).join("\n\n");
+  }
+  function addToBatch() {
+    const session = dockSession(), typed = dockTyped();
+    if (!session || !typed) return false;
+    if (typed.startsWith("/")) { link.result = { ok: false, text: "A command goes on its own, so it cannot join a batch." }; renderDock(); return false; }
+    const target = link.target;
+    const item = { title: target ? target.title : "Message", passage: target ? target.passage : "", typed,
+      pointer: target ? dockPointer() : "", bare: target ? target.pointer("") : "" };
+    const items = batchOf(session.id).slice();
+    // An edited comment goes back to its place.
+    const at = link.editing && link.editing.sid === session.id ? Math.min(link.editing.index, items.length) : items.length;
+    items.splice(at, 0, item);
+    saveBatch(session.id, items);
+    link.editing = null; link.batchOpen = true;
+    dock("text").value = ""; saveDraft(); growDock();
+    link.target = null; markTarget();
+    link.result = { ok: true, text: `Added to the batch (${items.length}). Send sends them all.` };
+    renderDock();
+    return true;
+  }
+  function editItem(index) {
+    const session = dockSession(); if (!session) return;
+    if (dockTyped()) { link.result = { ok: false, text: "Add or clear what is in the box first." }; renderDock(); return; }
+    const items = batchOf(session.id).slice();
+    const [item] = items.splice(index, 1);
+    saveBatch(session.id, items);
+    link.editing = { sid: session.id, index };
+    link.target = item.pointer ? { sid: session.id, card: null, passage: item.passage, title: item.title, pointer: p => p ? item.pointer : item.bare } : null;
+    markTarget();
+    dock("text").value = item.typed; saveDraft(); growDock();
+    link.result = null; renderDock(); dock("text").focus();
+  }
+  function removeItem(index) {
+    const session = dockSession(); if (!session) return;
+    const items = batchOf(session.id).slice(); items.splice(index, 1);
+    saveBatch(session.id, items);
+    if (link.editing && link.editing.sid === session.id && link.editing.index > index) link.editing.index -= 1;
+    renderDock();
+  }
+  function renderBatch(session) {
+    const items = batchOf(session.id);
+    dock("batch").hidden = !items.length;
+    const sig = JSON.stringify([session.id, link.batchOpen, items]);
+    if (!items.length || sig === link.batchSig) return;
+    link.batchSig = sig;
+    const toggle = dock("batch-toggle");
+    toggle.textContent = `${link.batchOpen ? "▾" : "▸"} Batch · ${items.length} comment${items.length === 1 ? "" : "s"} to send together`;
+    toggle.setAttribute("aria-expanded", String(link.batchOpen));
+    const list = dock("batch-list");
+    list.hidden = !link.batchOpen;
+    list.replaceChildren(...items.map((item, i) => {
+      const li = $("li"), what = $("div", "what");
+      // The pointer as it will be sent names the reply or file better than the pane's name.
+      what.append($("small", null, item.pointer ? item.pointer.replace(/:\s*$/, "") : "Plain message"), $("span", null, item.typed));
+      what.title = itemText(item);
+      const edit = $("button", null, "Edit"); edit.type = "button"; edit.title = "Put this comment back in the box";
+      edit.addEventListener("click", () => editItem(i));
+      const drop = $("button", null, "✕"); drop.type = "button"; drop.setAttribute("aria-label", `Remove comment ${i + 1}`);
+      drop.addEventListener("click", () => removeItem(i));
+      li.append($("span", "n", `${i + 1}.`), what, edit, drop);
+      return li;
+    }));
+  }
   // The box grows with the message up to six lines, then scrolls inside itself.
   function growDock() {
     const box = dock("text");
@@ -719,21 +819,23 @@
     bar.hidden = !session;
     if (!session) { main.style.paddingBottom = ""; placeNewReply(); return; }
     if (link.dockSid !== session.id) {
-      link.dockSid = session.id; link.result = null;
+      link.dockSid = session.id; link.result = null; link.editing = null;
       if (link.target && link.target.sid !== session.id) { link.target = null; markTarget(); }
       dock("text").value = drafts[session.id] || ""; growDock();
     }
     const name = paneName(session.id);
     dock("text").placeholder = `Message ${name}`;
     dock("text").setAttribute("aria-label", `Message ${name}`);
-    const text = dockMessage(), target = link.target;
+    renderBatch(session);
+    const text = dockMessage(), target = link.target, out = outgoing(), batch = batchOf(session.id);
     dock("chip").hidden = !target;
     if (target) {
       dock("chip-title").textContent = target.title;
       dock("passage").hidden = !target.passage;
       dock("passage-text").textContent = target.passage ? `“${target.passage}”` : "";
       const command = dockTyped().startsWith("/");
-      dock("label").textContent = command ? "Sends exactly (a command goes alone, without the pointer):" : "Sends exactly:";
+      const queued = batchOf(session.id).length;
+      dock("label").textContent = command ? "Sends exactly (a command goes alone, without the pointer):" : queued ? `Comment ${queued + 1} reads:` : "Sends exactly:";
       dock("line").textContent = text || dockPointer() + "…";
     }
     const pane = link.panes ? link.panes[session.id] : null;
@@ -743,12 +845,17 @@
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
     else if (pane.status === "blocked") reason = `${pane.label} is at a permission prompt or question. Answer it in Herdr first.`;
     else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
-    const over = text.length > MAX_SEND;
-    dock("send").disabled = Boolean(reason) || link.sending || !text || over;
-    dock("copy").disabled = !text;
+    const command = dockTyped().startsWith("/");
+    if (!reason && batch.length && command) reason = "A command goes on its own: send the batch first, or clear it.";
+    const over = out.length > MAX_SEND;
+    dock("send").disabled = Boolean(reason) || link.sending || !out || over;
+    const total = batch.length + (dockTyped() ? 1 : 0);
+    dock("send").textContent = batch.length ? `Send ${total}` : "Send";
+    dock("add").disabled = !dockTyped() || command;
+    dock("copy").disabled = !out;
     const count = dock("count");
-    count.hidden = text.length <= 3500;
-    count.textContent = `${text.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
+    count.hidden = out.length <= 3500;
+    count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
     count.classList.toggle("bad", over);
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
@@ -759,7 +866,7 @@
     placeNewReply();
   }
   async function sendDock() {
-    const text = dockMessage(); if (!text || dock("send").disabled) return;
+    const text = outgoing(); if (!text || dock("send").disabled) return;
     const session = dockSession();
     // These end or reset the session, so they ask first.
     const command = (text.match(/^\/(clear|exit|quit)\b/) || [])[0];
@@ -771,6 +878,7 @@
       link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(at)}.` };
       link.pending.push({ sid: session.id, text, at, label: sent.label });
       dock("text").value = ""; saveDraft(); growDock();
+      saveBatch(session.id, []); link.editing = null;
       link.target = null; markTarget();
       setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 4000);
       if (state.view === "reader") { render(); window.scrollTo(0, document.documentElement.scrollHeight); }
@@ -815,7 +923,7 @@
     }
   }
   async function copyDock() {
-    const text = dockMessage(); if (!text) return;
+    const text = outgoing(); if (!text) return;
     const ok = await copyText(text);
     link.result = { ok, text: ok ? "Copied." : "Copy failed." }; renderDock();
   }
@@ -828,14 +936,22 @@
     setTimeout(() => { button.dataset.label = "Copy"; }, 1500);
   });
   dock("text").addEventListener("input", () => { link.result = null; growDock(); saveDraft(); renderDock(); });
-  // Enter sends and Shift+Enter starts a new line. On a touch screen the return key starts a
-  // new line and the Send button sends.
+  // Enter sends, Shift+Enter starts a new line and Cmd+Enter or Ctrl+Enter adds to the batch.
+  // On a touch screen the return key starts a new line and the buttons add and send.
   const touch = matchMedia("(pointer: coarse)");
   dock("text").addEventListener("keydown", e => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && (!touch.matches || e.metaKey || e.ctrlKey)) { e.preventDefault(); sendDock(); }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); addToBatch(); return; }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); sendDock(); }
     if (e.key === "Escape" && link.target) dropTarget();
   });
   dock("send").addEventListener("click", sendDock);
+  dock("add").addEventListener("click", () => { addToBatch(); dock("text").focus(); });
+  dock("batch-toggle").addEventListener("click", () => { link.batchOpen = !link.batchOpen; renderDock(); });
+  dock("batch-clear").addEventListener("click", () => {
+    const session = dockSession(), n = session ? batchOf(session.id).length : 0;
+    if (!n || !confirm(`Remove all ${n} comment${n === 1 ? "" : "s"} from the batch?`)) return;
+    saveBatch(session.id, []); link.editing = null; renderDock();
+  });
   dock("copy").addEventListener("click", copyDock);
   dock("chip-drop").addEventListener("click", () => { dropTarget(); dock("text").focus(); });
   dock("passage-drop").addEventListener("click", () => { link.target.passage = ""; dock("passage").hidden = true; renderDock(); });
