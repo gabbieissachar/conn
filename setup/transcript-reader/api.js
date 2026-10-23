@@ -11,6 +11,10 @@
 //   POST /api/transcript-reader/send                { session_id, text }: empties the input box
 //                                                   of the one live Herdr pane running that
 //                                                   session, then sends the text there
+//   POST /api/transcript-reader/reopen              { session_id }: lists a session whose pane
+//                                                   has closed, to read again, and rebuilds
+//   POST /api/transcript-reader/close               { session_id }: takes a session off the
+//                                                   reading list and rebuilds
 //
 // The pages embed private transcripts, so they are served here rather than by the
 // shared static handler, which sends Access-Control-Allow-Origin: *. Every route
@@ -25,7 +29,8 @@
 //
 // Writes: reader.py rebuilds the pages when a listed session log changes or a listed
 // session's pane closes (dropping it from the reading list), and adds the session
-// Herdr has focused to the reading list while a page follows focus.
+// Herdr has focused to the reading list while a page follows focus. reopen and close
+// change the reading list only on a click in the page.
 // A prompt reaches a pane only through send, which the page calls on a click.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
 
@@ -236,9 +241,7 @@ function create({
   // ----------------------------------------------------------------- rebuilds
 
   function runReader(args, adding = null) {
-    build.running = { args: args[0], adding };
-    const started = runner(pythonBin, ['-I', readerScript, ...args], { env: runEnv(), cwd: root, timeoutMs: 60000, maxBytes: 64 * 1024 });
-    started.then((result) => {
+    const done = runner(pythonBin, ['-I', readerScript, ...args], { env: runEnv(), cwd: root, timeoutMs: 60000, maxBytes: 64 * 1024 }).then((result) => {
       if (result.code === 0) { build.error = null; build.failedAt = 0; }
       else {
         build.failedAt = now();
@@ -246,7 +249,10 @@ function create({
         build.error = result.timedOut ? 'The rebuild took over a minute and was stopped.' : (lines[lines.length - 1] || 'The rebuild failed.').slice(0, 200);
         if (adding) build.failedAdds.set(adding, now());
       }
+      return result;
     }).finally(() => { build.running = null; build.lastEnd = now(); });
+    build.running = { args: args[0], adding, done };
+    return done;
   }
 
   // Rebuild when a listed session's log is newer than the page or its pane closed, or add the focused session.
@@ -295,6 +301,22 @@ function create({
       panes,
       build: { running: Boolean(build.running), adding: build.running ? build.running.adding : null, error: build.error },
     };
+  }
+
+  // ------------------------------------------------------------ reopen, close
+
+  // Reopen lists a session to read again, even though its pane has closed; close takes one
+  // off the list. Each waits for a running rebuild, runs its own, and answers when the page is built.
+  async function changeList(command, body) {
+    for (const key of Object.keys(body)) if (key !== 'session_id') throw new RequestError('Unknown field.');
+    const sessionId = body.session_id;
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) throw new RequestError('Invalid session id.');
+    if (command === 'reopen' && !logPath(sessionId)) throw new RequestError('That session has no log to read.', 404, 'no_log');
+    if (command === 'close' && !listed().includes(sessionId)) throw new RequestError('That session is not on the reading list.', 409, 'not_listed');
+    while (build.running) await build.running.done;
+    const result = await runReader([command, sessionId]);
+    if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
+    return { stamp: stamp('prototype.stamp') };
   }
 
   // -------------------------------------------------------------------- send
@@ -376,6 +398,12 @@ function create({
     if (pathname === API + 'send' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
+    }
+    for (const command of ['reopen', 'close']) {
+      if (pathname === API + command && req.method === 'POST') {
+        send(res, 200, { status: 'ok', ...(await changeList(command, await readJsonBody(req))) });
+        return;
+      }
     }
     fail(res, 404, 'not_found', 'Not found.');
   }

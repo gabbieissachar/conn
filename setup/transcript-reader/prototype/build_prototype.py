@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -530,6 +531,9 @@ def captain_events(home: dict, exchanges: list[dict], since: float) -> list[dict
 # ----------------------------------------------------------------- page build
 
 def build(args) -> dict:
+    # The build time is taken before any log is read, so a turn written while this build runs
+    # leaves its log newer than the stamp and the server rebuilds again.
+    started = time.time()
     homes = [{"id": "main", "home": Path(args.main_home).expanduser()}]
     if args.home:
         homes += [{"id": Path(h).expanduser().name if Path(h).name != "firstmate" else Path(h).parent.name, "home": Path(h).expanduser()} for h in args.home]
@@ -603,15 +607,20 @@ def build(args) -> dict:
             if exchange["reply"] and parse_questionnaire(exchange["reply"]):
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
     documents = attach_documents(sessions)
-    labels = pane_labels([s["id"] for s in sessions], Path(args.out).expanduser().parent / "pane-labels.json")
+    out_dir = Path(args.out).expanduser().parent
+    live = herdr_panes()
+    labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
+    reopened = set(read_ids(out_dir / "reopened.txt"))
     for session in sessions:
         session["pane"] = labels.get(session["id"])
+        session["reopened"] = bool(reopened & set(session["ids"]))
+    closed = closed_panes(out_dir / "pane-labels.json", live, {sid for s in sessions for sid in s["ids"]}) if args.session else []
     if args.session:
         # Chosen sessions read newest activity first; the page opens on the first one.
         sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
-    return {"generated": time.time(), "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
-            "summaries": summaries, "chosen": bool(args.session), "documents": documents}
+    return {"generated": started, "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
+            "summaries": summaries, "chosen": bool(args.session), "documents": documents, "closed": closed}
 
 
 def herdr_panes() -> dict[str, dict]:
@@ -656,13 +665,14 @@ def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[
     return found
 
 
-def pane_labels(session_ids: list[str], cache_path: Path) -> dict[str, dict]:
+def pane_labels(session_ids: list[str], cache_path: Path, live: dict[str, dict] | None = None) -> dict[str, dict]:
     """Live pane labels for these sessions, falling back to the last label seen when a pane has closed."""
     try:
         cache = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         cache = {}
-    live = herdr_panes()
+    if live is None:
+        live = herdr_panes()
     cache.update(live)
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -670,6 +680,51 @@ def pane_labels(session_ids: list[str], cache_path: Path) -> dict[str, dict]:
     except OSError:
         pass
     return {sid: {**cache[sid], "live": sid in live} for sid in session_ids if sid in cache}
+
+
+def read_ids(path: Path) -> list[str]:
+    try:
+        return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def closed_panes(cache_path: Path, live: dict[str, dict], shown: set[str], days: float = 14, limit: int = 40) -> list[dict]:
+    """Sessions whose Herdr pane has closed and that the page does not show, newest first.
+
+    They come from the pane-label cache (every session seen in a pane), so the page can offer
+    to reopen one for reading. Only those whose log changed in the last <days> are offered.
+    """
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not live:
+        return []  # with no live pane at all, Herdr is not running and nothing can be told closed
+    since = time.time() - days * 86400
+    found = []
+    for sid, pane in cache.items():
+        if sid in live or sid in shown:
+            continue
+        path = find_session_file(sid)
+        try:
+            at = path.stat().st_mtime if path else 0
+        except OSError:
+            continue
+        if at >= since:
+            found.append({"id": sid, "label": pane.get("label") or sid[:8], "title": pane.get("title") or "", "herdr": pane.get("herdr") or "", "at": at,
+                          "path": path})
+    found.sort(key=lambda item: item["at"], reverse=True)
+    # A pane cleared with /clear left several sessions, which read as one conversation under the
+    # newest. Only sessions sharing a pane label can be one pane, so only those chains are walked.
+    offered, joined = [], set()
+    for item in found:
+        if item["id"] in joined:
+            continue
+        if sum(other["herdr"] == item["herdr"] and other["label"] == item["label"] for other in found) > 1:
+            joined.update(member.stem for member in session_chain(item["path"]))
+        offered.append({k: v for k, v in item.items() if k != "path"})
+    return offered[:limit]
 
 
 def session_home(homes: list[dict], records: list[dict]) -> dict:
@@ -982,11 +1037,21 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     template_hash = hashlib.sha256(page.encode("utf-8")).hexdigest()[:16]
     page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__TEMPLATE_HASH__", template_hash).replace("__PAYLOAD__", data)
     out.parent.mkdir(parents=True, exist_ok=True)
-    for target, text in ((out, page), (out.with_suffix(".stamp"), repr(payload["generated"]))):
-        # A rebuild started by hand can overlap the server's own, so each writes its own file.
-        partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
-        partial.write_text(text, encoding="utf-8")
-        os.replace(partial, target)
+    stamp = out.with_suffix(".stamp")
+    # A rebuild started by hand can overlap the server's own. Each writes its own file, and the
+    # page and its stamp are replaced together under a lock, never by a build older than the
+    # one already there, so the stamp always describes the page beside it.
+    with open(out.with_name(f".{out.name}.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if float(stamp.read_text(encoding="utf-8")) > payload["generated"]:
+                return
+        except (OSError, ValueError):
+            pass
+        for target, text in ((out, page), (stamp, repr(payload["generated"]))):
+            partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+            partial.write_text(text, encoding="utf-8")
+            os.replace(partial, target)
 
 
 def stats(payload: dict) -> str:

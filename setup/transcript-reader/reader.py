@@ -11,6 +11,9 @@ Usage (from the repo root):
                                                              or a listed session's pane closes)
   python3 setup/transcript-reader/reader.py follow <id>      add one full session id, then rebuild only
                                                              (the server runs this for the pane Herdr focuses)
+  python3 setup/transcript-reader/reader.py reopen <id>      list one full session id whose pane has closed, kept
+                                                             until closed, then rebuild only (the page's picker)
+  python3 setup/transcript-reader/reader.py close <id>       take one full session id off the list, then rebuild only
 
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
@@ -22,7 +25,9 @@ under the newest), and that newest session is added to the list.
 Every rebuild drops a listed session whose Herdr pane has closed: one that ran in a
 pane before, while neither it nor a later session of its pane runs in one now. A
 session never seen in a Herdr pane stays, and nothing is dropped while Herdr shows
-no pane at all (after a restart, before Herdr is back).
+no pane at all (after a restart, before Herdr is back). A session reopened to read
+again (`reopen`, or "Closed panes" in the page's session picker) stays until it is
+closed (`close`, or the page's "Close" button).
 
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
@@ -50,6 +55,7 @@ OUT = HERE / "out"
 LIST = OUT / "sessions.txt"
 PAGE = OUT / "prototype.html"
 PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in; the builder writes it
+REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pane does not drop
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
@@ -106,11 +112,12 @@ def drop_closed(ids: list[str]) -> list[str]:
         seen = json.loads(PANE_CACHE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         seen = {}
+    reopened = set(builder.read_ids(REOPENED))
     kept = []
     for sid in ids:
         path = builder.find_session_file(sid)
         pane = [member.stem for member in builder.session_chain(path)] if path else [sid]
-        if any(member in live for member in pane) or not any(member in seen for member in pane):
+        if any(member in live or member in reopened for member in pane) or not any(member in seen for member in pane):
             kept.append(sid)
         else:
             print(f"Dropping {sid[:8]}: its Herdr pane has closed")
@@ -187,6 +194,44 @@ def follow(ids: list[str], names: list[str]) -> int:
     return rebuild(ids, serve_page=False)
 
 
+def reopen(ids: list[str], names: list[str]) -> int:
+    """List one full session id with a log and keep it when its pane is closed, then rebuild without serving."""
+    if len(names) != 1 or not UUID.match(names[0]) or not session_files(builder.PROJECTS, names[0]):
+        print("reopen takes one full session id that has a session log")
+        return 2
+    sid = names[0]
+    marked = builder.read_ids(REOPENED)
+    if sid not in marked:
+        OUT.mkdir(parents=True, exist_ok=True)
+        REOPENED.write_text("".join(f"{i}\n" for i in marked + [sid]), encoding="utf-8")
+    if sid not in ids:
+        ids.append(sid)
+        write_list(ids)
+    return rebuild(ids, serve_page=False)
+
+
+def close(ids: list[str], names: list[str]) -> int:
+    """Take one full session id off the list (and the reopened list), then rebuild without serving."""
+    if len(names) != 1 or not UUID.match(names[0]):
+        print("close takes one full session id")
+        return 2
+    # The page shows a cleared pane's sessions as one conversation, so all of them go.
+    path = builder.find_session_file(names[0])
+    pane = {names[0]} | ({member.stem for member in builder.session_chain(path)} if path else set())
+    marked = builder.read_ids(REOPENED)
+    if pane & set(marked):
+        REOPENED.write_text("".join(f"{i}\n" for i in marked if i not in pane), encoding="utf-8")
+    if not pane & set(ids):
+        print(f"{names[0][:8]} is not on the reading list")
+        return 1
+    ids = [i for i in ids if i not in pane]
+    write_list(ids)
+    if not ids:
+        print("The reading list is empty now; the page keeps its last build")
+        return 0
+    return rebuild(ids, serve_page=False)
+
+
 def show(ids: list[str]) -> None:
     labels = builder.pane_labels(ids, OUT / "pane-labels.json")
     for sid in ids:
@@ -207,6 +252,10 @@ def main(argv: list[str]) -> int:
         return rebuild(ids, serve_page=False)
     if command == "follow":
         return follow(ids, names)
+    if command == "reopen":
+        return reopen(ids, names)
+    if command == "close":
+        return close(ids, names)
     if command == "list":
         show(ids)
         return 0

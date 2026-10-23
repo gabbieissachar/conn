@@ -130,9 +130,9 @@ class ClosedPanesTest(unittest.TestCase):
         folder.mkdir(parents=True)
         for sid in (A, B, C):
             (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
-        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE)
+        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE, reader.REOPENED)
         builder.PROJECTS, reader.OUT = root / "projects", root / "out"
-        reader.LIST, reader.PANE_CACHE = reader.OUT / "sessions.txt", reader.OUT / "pane-labels.json"
+        reader.LIST, reader.PANE_CACHE, reader.REOPENED = reader.OUT / "sessions.txt", reader.OUT / "pane-labels.json", reader.OUT / "reopened.txt"
         reader.OUT.mkdir()
         self.live = {}
         builder.herdr_panes = lambda: self.live
@@ -140,7 +140,7 @@ class ClosedPanesTest(unittest.TestCase):
         builder.session_chain = lambda path: self.chains.get(path.stem, [path])
 
     def tearDown(self):
-        builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE = self.saved
+        builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE, reader.REOPENED = self.saved
         self.tmp.cleanup()
 
     def seen(self, *ids):
@@ -170,6 +170,50 @@ class ClosedPanesTest(unittest.TestCase):
             self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 0)
         self.assertEqual(reader.read_list(), [A])
         self.assertEqual(run.call_args_list[0].args[0][-2:], ["--session", A])
+
+    def test_a_reopened_session_stays_until_it_is_closed_with_its_whole_pane(self):
+        self.seen(A, B, C)
+        self.live = {C: PANES[C]}
+        log = builder.find_session_file
+        self.chains[A] = self.chains[B] = [log(A), log(B)]
+        rebuilds = []
+        with mock.patch.object(reader, "rebuild", lambda ids, focus=None, serve_page=True: rebuilds.append((list(ids), serve_page)) or 0):
+            self.assertEqual(reader.main(["reopen", A]), 0)
+            self.assertEqual(reader.read_list(), [A])
+            self.assertEqual(reader.drop_closed([A, B]), [A, B], "both sessions of the reopened pane stay")
+            reader.write_list([A, B])
+            self.assertEqual(reader.main(["close", B]), 0, "closing the newest session closes the conversation")
+        self.assertEqual(reader.read_list(), [])
+        self.assertEqual(builder.read_ids(reader.REOPENED), [])
+        self.assertEqual(rebuilds, [([A], False)])
+        self.assertEqual(reader.drop_closed([A]), [], "closed again, it is dropped like any closed pane")
+
+    def test_reopen_and_close_take_one_full_id(self):
+        for command in ("reopen", "close"):
+            for names in (["aaaaaaaa"], [A, B], [], ["leader-esim"]):
+                self.assertEqual(reader.main([command, *names]), 2, (command, names))
+        self.assertEqual(reader.main(["reopen", "dddddddd-4444-4444-8444-444444444444"]), 2, "no log")
+        self.assertEqual(reader.main(["close", C]), 1, "not listed")
+        self.assertEqual(reader.read_list(), [])
+
+    def test_closed_panes_offers_recent_logs_of_panes_neither_live_nor_shown(self):
+        self.seen(A, B, C)
+        old = builder.find_session_file(C)
+        os.utime(old, (T0 - 30 * 86400, T0 - 30 * 86400))
+        with mock.patch.object(builder.time, "time", return_value=T0):
+            for sid in (A, B):
+                os.utime(builder.find_session_file(sid), (T0 - 60, T0 - 60))
+            offered = builder.closed_panes(reader.PANE_CACHE, {A: PANES[A]}, set())
+            self.assertEqual([item["id"] for item in offered], [B], "A is live; C's log is a month old")
+            self.assertEqual(offered[0]["label"], PANES[B]["label"])
+            self.assertEqual(builder.closed_panes(reader.PANE_CACHE, {A: PANES[A]}, {B}), [], "B is already shown")
+            self.assertEqual(builder.closed_panes(reader.PANE_CACHE, {}, set()), [], "no live pane: Herdr is not running")
+            # B was cleared into C in the same pane: one entry, the newest.
+            os.utime(builder.find_session_file(C), (T0 - 30, T0 - 30))
+            reader.PANE_CACHE.write_text(json.dumps({A: PANES[A], B: PANES[B], C: PANES[B]}), encoding="utf-8")
+            log = builder.find_session_file
+            self.chains[B] = self.chains[C] = [log(B), log(C)]
+            self.assertEqual([item["id"] for item in builder.closed_panes(reader.PANE_CACHE, {A: PANES[A]}, set())], [C])
 
     def test_when_every_pane_has_closed_the_page_keeps_its_last_build(self):
         self.seen(A)
@@ -269,6 +313,23 @@ class DocumentsTest(unittest.TestCase):
         self.assertNotIn("documents", before)
         self.assertEqual(during["documents"], after["documents"])
         self.assertNotIn("touched", during)
+
+
+class WritePageTest(unittest.TestCase):
+    """The page and its stamp are written together, and never by a build older than the one there."""
+
+    def test_an_older_build_finishing_last_leaves_the_newer_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "prototype.html"
+            template = Path(tmp) / "t.html"
+            template.write_text("<script>x</script>__PAYLOAD__", encoding="utf-8")
+            builder.write_page(template, {"generated": 20.0, "n": "new"}, out)
+            builder.write_page(template, {"generated": 10.0, "n": "old"}, out)
+            self.assertIn('"new"', out.read_text(encoding="utf-8"))
+            self.assertEqual(float(out.with_suffix(".stamp").read_text(encoding="utf-8")), 20.0)
+            builder.write_page(template, {"generated": 30.0, "n": "newer"}, out)
+            self.assertIn('"newer"', out.read_text(encoding="utf-8"))
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir() if p.name.endswith(".partial")), [])
 
 
 def log(path, records, written):

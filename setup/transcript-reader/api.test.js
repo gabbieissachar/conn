@@ -120,9 +120,10 @@ async function start({ env = {}, outParts } = {}) {
   const token = tokenIn((await open()).raw);
   const state = (follow = false) => request({ path: '/api/transcript-reader/state' + (follow ? '?follow=1' : ''), headers: { [TOKEN_HEADER]: token } });
   const send = (body, headers = {}) => request({ method: 'POST', path: '/api/transcript-reader/send', headers: { Origin: origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: token, ...headers }, body });
+  const post = (command, body, headers = {}) => request({ method: 'POST', path: '/api/transcript-reader/' + command, headers: { Origin: origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: token, ...headers }, body });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   return {
-    tree, herdr, request, open, token, state, send, settle, origin,
+    tree, herdr, request, open, token, state, send, post, settle, origin,
     tick: (ms) => { clock += ms; },
     close: () => new Promise((resolve) => server.close(() => { tree.cleanup(); resolve(); })),
   };
@@ -350,6 +351,34 @@ test('state: a listed session whose pane closes starts one rebuild; Herdr not an
     await t.state();
     await t.settle();
     assert.equal(t.herdr.readerRuns().length, 1, 'no panes listed is not a closed pane');
+  } finally { await t.close(); }
+});
+
+test('reopen and close: one click runs reader.py with that session and answers once it has rebuilt', async () => {
+  const t = await start();
+  try {
+    const opened = await t.post('reopen', { session_id: C });
+    assert.equal(opened.status, 200, opened.raw);
+    const closed = await t.post('close', { session_id: B });
+    assert.equal(closed.status, 200, closed.raw);
+    assert.deepEqual(t.herdr.readerRuns(), [['reopen', C], ['close', B]]);
+    assert.equal(t.herdr.agentCalls().length, 0, 'no pane is touched');
+  } finally { await t.close(); }
+});
+
+test('reopen and close: bad input, a session without a log, an unlisted close and a foreign page are refused', async () => {
+  const t = await start();
+  try {
+    const refused = [
+      ['reopen', { session_id: C, extra: 1 }, 400],
+      ['reopen', { session_id: 'not-an-id' }, 400],
+      ['reopen', { session_id: 'dddddddd-4444-4444-8444-444444444444' }, 404],
+      ['close', { session_id: C }, 409],
+    ];
+    for (const [command, body, status] of refused) assert.equal((await t.post(command, body)).status, status, command + ' ' + JSON.stringify(body));
+    assert.equal((await t.post('reopen', { session_id: C }, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await t.post('close', { session_id: A }, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.deepEqual(t.herdr.readerRuns(), []);
   } finally { await t.close(); }
 });
 
