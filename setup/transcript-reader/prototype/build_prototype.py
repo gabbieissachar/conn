@@ -327,6 +327,7 @@ def session_exchanges(records: list[dict]) -> list[dict]:
                 elif block.get("type") == "tool_use":
                     current["events"].append(("tool", block.get("name") or "tool", None))
                     current["tools"] += 1
+                    current.setdefault("touched", []).extend(tool_documents(block.get("input"), record.get("cwd") or ""))
     for exchange in exchanges:
         finish_exchange(exchange)
     return exchanges
@@ -731,23 +732,53 @@ CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
 
 
-def resolve_mention(token: str, cd_dirs: list[Path], cwd: str) -> Path | None:
+def tool_documents(tool_input, cwd: str) -> list[str]:
+    """Markdown files a tool call names, as absolute paths that may not exist.
+
+    A path field (Read, Edit and Write give `file_path`) is taken whole. A shell
+    command's file names start from its latest `cd` before them, else from the
+    working directory, so `cd ~/copy && cat prds/x/requirements.md` counts.
+    """
+    if not isinstance(tool_input, dict):
+        return []
+    found = []
+    for key, value in tool_input.items():
+        if not isinstance(value, str):
+            continue
+        if key.endswith("path") and MD_MENTION.fullmatch(value):
+            tokens, cds = [(0, value)], []
+        elif key == "command":
+            tokens = [(m.start(), m.group(0)) for m in MD_MENTION.finditer(value) if not m.group(0).startswith("//")]
+            cds = [(m.start(), os.path.expanduser(m.group(1).strip("\"'"))) for m in CD_LINE.finditer(value)]
+        else:
+            continue
+        for at, token in tokens:
+            base = next((d for start, d in reversed(cds) if start < at and os.path.isabs(d)), cwd)
+            path = os.path.join(base, os.path.expanduser(token))
+            if os.path.isabs(path):
+                found.append(os.path.normpath(path))
+    return found
+
+
+def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str] = ()) -> Path | None:
     """The existing markdown file a reply means by <token>, or None.
 
     An absolute or ~ path is taken as written. A relative one is tried, in order,
     under each directory an earlier `cd` line in the reply named (latest first),
-    then under the turn's working directory and each of its parents below the
-    home folder, since agents often name files from their repository's root.
+    then as the end of a path the session's own tool calls named so far (latest
+    first, since agents name a file they just edited by its short name), then
+    under the turn's working directory and each of its parents below the home
+    folder, since agents often name files from their repository's root.
     """
     raw = Path(os.path.expanduser(token))
     if raw.is_absolute():
         candidates = [raw]
     else:
-        bases = list(cd_dirs)
+        candidates = [base / raw for base in cd_dirs]
+        candidates += [Path(path) for path in reversed(touched) if Path(path).parts[-len(raw.parts):] == raw.parts]
         if cwd:
             here = Path(cwd)
-            bases += [here] + [parent for parent in here.parents if Path.home() in parent.parents]
-        candidates = [base / raw for base in bases]
+            candidates += [base / raw for base in [here] + [parent for parent in here.parents if Path.home() in parent.parents]]
     for candidate in candidates:
         try:
             if candidate.is_file() and candidate.stat().st_size <= MAX_DOCUMENT_BYTES:
@@ -757,7 +788,7 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str) -> Path | None:
     return None
 
 
-def reply_documents(reply: str, cwd: str) -> list[tuple[str, Path]]:
+def reply_documents(reply: str, cwd: str, touched: list[str] = ()) -> list[tuple[str, Path]]:
     """(as written, file) for each existing markdown file the reply names, in order, once each."""
     cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(reply)]
     found: list[tuple[str, Path]] = []
@@ -766,7 +797,7 @@ def reply_documents(reply: str, cwd: str) -> list[tuple[str, Path]]:
         if token.startswith("//"):
             continue
         cd_dirs = [d for at, d in reversed(cds) if at < match.start() and d.is_absolute()]
-        path = resolve_mention(token, cd_dirs, cwd)
+        path = resolve_mention(token, cd_dirs, cwd, touched)
         if path and all(path != known for _, known in found):
             found.append((token, path))
     return found
@@ -776,13 +807,16 @@ def attach_documents(sessions: list[dict]) -> dict[str, dict]:
     """Give each exchange the ids of the documents its reply names; return the documents.
 
     Each file is read once, as it is now on disk (the page says when it last changed).
+    A short name can match a file the session's tool calls named in this turn or an earlier one.
     """
     documents: dict[str, dict] = {}
     for session in sessions:
+        touched: list[str] = []
         for exchange in session["exchanges"]:
             cwd = exchange.pop("cwd", "")
+            touched += exchange.pop("touched", [])
             ids = []
-            for token, path in reply_documents(exchange.get("reply") or "", cwd):
+            for token, path in reply_documents(exchange.get("reply") or "", cwd, touched):
                 key = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
                 if key not in documents:
                     try:

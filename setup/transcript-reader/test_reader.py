@@ -176,6 +176,39 @@ class DocumentsTest(unittest.TestCase):
         self.assertEqual((doc["name"], doc["text"], doc["mention"]), ("requirements.md", "# Requirements\n", "requirements.md"))
         self.assertEqual(doc["dir"], "~/copy/personal/02-Projects/esim/prds/bc49")
 
+    def test_tool_calls_name_files_by_path_field_or_from_a_shell_commands_cd(self):
+        read = {"file_path": f"{self.prd}/requirements.md"}
+        shell = {"command": f"cd {self.repo} && D=context; cat notes.md $D/baseline.md\ncd ~/copy\nsed -n 1p personal/a.md", "description": "x.md"}
+        self.assertEqual(builder.tool_documents(read, ""), [f"{self.prd}/requirements.md"])
+        # A shell variable is not expanded, so $D/baseline.md names a file that is not there and never matches.
+        self.assertEqual(builder.tool_documents(shell, "/elsewhere"),
+                         [f"{self.repo}/notes.md", f"{self.repo}/D/baseline.md", f"{self.home}/copy/personal/a.md"])
+        self.assertEqual(builder.tool_documents({"command": "cat plan.md"}, "/work"), ["/work/plan.md"])
+        self.assertEqual(builder.tool_documents({"command": "cat plan.md"}, ""), [])
+        self.assertEqual(builder.tool_documents({"file_path": "/a/b.py"}, ""), [])
+
+    def test_a_short_name_matches_the_latest_file_the_session_touched_before_the_working_directory(self):
+        other = self.home / "worktree" / "context"
+        other.mkdir(parents=True)
+        (other / "notes.md").write_text("other notes\n", encoding="utf-8")
+        touched = [f"{self.repo}/notes.md", f"{other}/notes.md", f"{self.home}/gone/requirements.md"]
+        self.assertEqual([path.relative_to(self.home).as_posix() for _, path in builder.reply_documents("`notes.md:12`, `context/notes.md`, `requirements.md`", str(self.prd), touched)],
+                         ["worktree/context/notes.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md"])
+
+    def test_a_turn_matches_files_touched_in_its_own_and_earlier_turns_only(self):
+        far = self.home / "worktree" / "design-baseline.md"
+        far.parent.mkdir(parents=True)
+        far.write_text("# Baseline\n", encoding="utf-8")
+        records = [prompt("first", iso(T0)), reply("`design-baseline.md` is next", T0 + 1),
+                   prompt("second", iso(T0 + 10)), tool_use("Edit", {"file_path": str(far)}, T0 + 11), reply("Changed `design-baseline.md`.", T0 + 12),
+                   prompt("third", iso(T0 + 20)), reply("Still `design-baseline.md`.", T0 + 21)]
+        sessions = [{"exchanges": builder.session_exchanges(records)}]
+        builder.attach_documents(sessions)
+        before, during, after = sessions[0]["exchanges"]
+        self.assertNotIn("documents", before)
+        self.assertEqual(during["documents"], after["documents"])
+        self.assertNotIn("touched", during)
+
 
 def log(path, records, written):
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
@@ -184,6 +217,15 @@ def log(path, records, written):
 
 def prompt(text, at):
     return {"type": "user", "timestamp": at, "message": {"role": "user", "content": text}}
+
+
+def reply(text, at, cwd="/nowhere"):
+    return {"type": "assistant", "timestamp": iso(at), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def tool_use(name, tool_input, at, cwd="/nowhere"):
+    return {"type": "assistant", "timestamp": iso(at), "cwd": cwd,
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "name": name, "input": tool_input}]}}
 
 
 CLEAR = "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"
