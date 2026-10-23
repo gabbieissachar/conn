@@ -3321,6 +3321,87 @@ class BatchTests(unittest.TestCase):
             ORGANIZER.retire_duplicate_tabs(ORGANIZER.BATCH_DIR / f"{self.GROUP_ID}.json", manifest, self.GROUP_ID)
         self.assertIn("Run dedupe-group to retry", out.getvalue())
 
+    # --archive-all --snapshot: saves the group without closing anything.
+
+    def snapshot_args(self, **overrides):
+        return self.archive_args(snapshot=True, **overrides)
+
+    def archive_file(self, archive_id):
+        return json.loads((self.archives / f"{archive_id}.json").read_text())
+
+    def test_a_snapshot_closes_nothing_and_includes_a_working_agent(self):
+        herdr = self.world()
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.assertEqual(herdr.closed, [])
+        (group,) = self.manifests()
+        self.assertEqual([m["workspace_id"] for m in group["members"]], ["w1", "w2", "w3"])
+        self.assertEqual([item["workspace_id"] for item in group["skipped"]], ["w4"], "an unverified agent is still skipped")
+        for member in group["members"]:
+            archive = self.archive_file(member["archive_id"])
+            self.assertEqual(archive["status"], "archived")
+            self.assertTrue(archive["snapshot"])
+            self.assertEqual(archive["batch_id"], group["batch_id"])
+            self.assertTrue(ORGANIZER.batch_member_view(member)["snapshot"])
+        self.assertIn("Nothing was closed", output)
+        self.assertNotIn("processes were stopped", output)
+
+    def test_a_snapshot_preview_lists_a_working_workspace_and_changes_nothing(self):
+        herdr = self.world()
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args(execute=False, confirm=None))
+        preview = json.loads(output[: output.rindex("}") + 1])
+        self.assertTrue(preview["snapshot"])
+        entries = {item["workspace_id"]: item for item in preview["to_archive"]}
+        self.assertEqual(list(entries), ["w1", "w2", "w3"])
+        self.assertEqual(entries["w3"]["active_agent_panes"], 1)
+        self.assertEqual(herdr.closed, [])
+        self.assertFalse(self.batches.exists() or self.archives.exists())
+
+    def test_a_snapshot_may_run_inside_a_workspace_on_its_own_list(self):
+        os.environ["HERDR_WORKSPACE_ID"] = "w1"
+        herdr = self.world()
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "running inside"):
+            self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.assertEqual(herdr.closed, [])
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 3)
+
+    def test_a_newer_snapshot_replaces_the_older_one_of_the_same_workspace(self):
+        self.world(workspaces=[("w1", "Clean"), ("w2", "Two")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        first = [m["archive_id"] for m in group["members"]]
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        second = [m["archive_id"] for m in group["members"]]
+        self.assertEqual(len(second), 2)
+        self.assertFalse(set(first) & set(second), "every member is a fresh snapshot")
+        for archive_id in first:
+            self.assertEqual(self.archive_file(archive_id)["left_group"]["reason"], "replaced")
+        self.assertIn("replaces", output)
+
+    def test_a_snapshot_is_not_replaced_by_a_workspace_with_the_same_id_and_another_label(self):
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.world(workspaces=[("w1", "Different")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual([m["workspace_label"] for m in group["members"]], ["Clean", "Different"])
+
+    def test_a_closing_archive_replaces_the_snapshot_of_the_same_workspace(self):
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        snapshot_id = group["members"][0]["archive_id"]
+        herdr = self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.archive_args())
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 1)
+        self.assertNotEqual(group["members"][0]["archive_id"], snapshot_id)
+        self.assertEqual(herdr.closed, ["w1"])
+        self.assertEqual(self.archive_file(snapshot_id)["left_group"]["reason"], "replaced")
+        self.assertNotIn("snapshot", self.archive_file(group["members"][0]["archive_id"]))
+
 
 class LayoutHerdr:
     """A Herdr that can create workspaces, rebuild layouts and take resume commands, with nothing real behind it."""
@@ -4532,6 +4613,225 @@ class LeaderConventionTests(unittest.TestCase):
             outcomes = ORGANIZER.resume_captured_tabs([{"agent_restores": [restore]}], {"old1": "new1"}, "esim")
         self.assertEqual(outcomes[0]["action"], "resumed")
         run_command.assert_called_once()
+
+
+class NativeHerdr(LayoutHerdr):
+    """A Herdr that came back from a restart with workspaces of its own, so a restore must not rebuild them."""
+
+    def __init__(self):
+        super().__init__()
+        self.applied = []
+
+    def add_workspace(self, wid, label, status="unknown", agent=None, tab_label="main", session_id=None):
+        self.data["workspaces"].append({"workspace_id": wid, "label": label})
+        self.data["tabs"].append({"workspace_id": wid, "tab_id": f"{wid}:t1", "label": tab_label})
+        pane = {"tab_id": f"{wid}:t1", "pane_id": f"{wid}:p1", "agent_status": status}
+        if agent:
+            pane["agent"] = agent
+        if session_id:
+            pane["agent_session"] = {"value": session_id}
+        self.data["panes"].append(pane)
+
+    def run_json(self, arguments, _session):
+        if arguments[:2] == ["workspace", "create"]:
+            wid = f"w{20 + len(self.created)}"
+            self.created.append(wid)
+            self.add_workspace(wid, arguments[3])
+            return {"result": {"workspace_id": wid, "tab_id": f"{wid}:t1"}}
+        return {"result": {}}
+
+    def socket_call(self, session, method, params):
+        if method == "layout.apply":
+            self.applied.append(params)
+        return super().socket_call(session, method, params)
+
+
+class SnapshotRestoreTests(unittest.TestCase):
+    """Restoring a snapshot member after a restart skips what Herdr already brought back."""
+
+    ARCHIVE_ID = "20261023-100000-alpha"
+    SESSION_ID = "11111111-2222-3333-4444-555555555555"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.archives = Path(self.temporary.name) / "archives"
+        self.batches = Path(self.temporary.name) / "batches"
+        for target, value in (("ARCHIVE_DIR", self.archives), ("BATCH_DIR", self.batches)):
+            patcher = patch.object(ORGANIZER, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.herdr = NativeHerdr()
+        for name, value in (
+            ("session_snapshot", self.herdr.snapshot),
+            ("run_json", self.herdr.run_json),
+            ("socket_call", self.herdr.socket_call),
+            ("run_command", self.herdr.run_command),
+        ):
+            patcher = patch.object(ORGANIZER, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write_archive(self, label="Alpha", tab_label="main", snapshot=True, session_id=SESSION_ID):
+        agent = {
+            "client": "codex", "restore_status": "resumable", "restore_source": "manifest",
+            "source_pane_id": "w1:p1", "resume_command": "codex resume x", "session_id": session_id,
+        }
+        archive = {
+            "archive_id": self.ARCHIVE_ID,
+            "status": "archived",
+            "restore": {},
+            "capture": {
+                "workspace": {"source_workspace_id": "w1", "label": label, "focused": False},
+                "tabs": [{"source_tab_id": "w1:t1", "label": tab_label, "layout": {"root": {"type": "pane", "pane_id": "w1:p1"}}, "agent_restores": [agent]}],
+            },
+        }
+        if snapshot:
+            archive["snapshot"] = True
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
+
+    def args(self, **overrides):
+        values = dict(archive=self.ARCHIVE_ID, resume_agents=True, allow_unresumable_agents=False, force=False, execute=True, confirm=self.ARCHIVE_ID, session="esim")
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def run_restore(self, **overrides):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = ORGANIZER.restore_command(self.args(**overrides))
+        self.output = output.getvalue()
+        return result
+
+    def archive(self):
+        return json.loads((self.archives / f"{self.ARCHIVE_ID}.json").read_text())
+
+    def test_a_workspace_herdr_brought_back_is_adopted_and_only_its_shell_gets_the_resume(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.assertEqual(self.run_restore(), "adopted")
+        self.assertEqual(self.herdr.created, [], "no workspace is built")
+        self.assertEqual(self.herdr.sent, ["w9:p1"])
+        archive = self.archive()
+        self.assertEqual(archive["status"], "resumed")
+        self.assertTrue(archive["restore"]["adopted_native_workspace"])
+        self.assertIn("already brought this workspace back", self.output)
+
+    def test_an_agent_herdr_already_runs_is_not_resumed_again(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id=self.SESSION_ID)
+        self.assertEqual(self.run_restore(), "adopted")
+        self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.herdr.created, [])
+
+    def test_a_pane_with_any_agent_is_left_alone(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", status="working", agent="claude")
+        self.run_restore()
+        self.assertEqual(self.herdr.sent, [])
+
+    def test_nothing_open_builds_the_workspace_as_before(self):
+        self.write_archive()
+        self.assertEqual(self.run_restore(), "created")
+        self.assertEqual(self.herdr.created, ["w20"])
+        self.assertEqual(self.herdr.sent, ["w20:p1"])
+
+    def test_a_workspace_open_without_the_tab_is_left_alone_and_stays_archived(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", tab_label="other")
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual(self.herdr.created, [])
+        self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.archive()["status"], "archived")
+        self.assertIn("without tab(s) main", self.output)
+
+    def test_an_agent_session_running_elsewhere_stops_a_rebuild(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Somewhere else", status="idle", agent="codex", session_id=self.SESSION_ID)
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual(self.herdr.created, [])
+        self.assertIn("already run in other open workspaces", self.output)
+
+    def test_more_than_one_look_alike_is_ambiguous(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.herdr.add_workspace("w10", "Alpha")
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual(self.herdr.created, [])
+        self.assertIn("more than one open workspace", self.output)
+
+    def test_force_is_the_only_way_to_another_copy(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.assertEqual(self.run_restore(force=True), "created")
+        self.assertEqual(self.herdr.created, ["w20"])
+
+    def test_a_layout_only_restore_reports_the_open_workspace_and_changes_nothing(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.assertEqual(self.run_restore(resume_agents=False), "already_laid_out")
+        self.assertEqual(self.herdr.created, [])
+        self.assertEqual(self.archive()["status"], "archived")
+        self.assertIn("Herdr already brought it back as workspace w9", self.output)
+
+    def test_an_ordinary_archive_is_never_matched_against_open_workspaces(self):
+        self.write_archive(snapshot=False)
+        self.herdr.add_workspace("w9", "Alpha")
+        self.assertEqual(self.run_restore(), "created")
+        self.assertEqual(self.herdr.created, ["w20"])
+
+    def test_a_natively_restored_leader_workspace_is_adopted_not_refused(self):
+        self.write_archive(label="leader-space", tab_label="big-boss")
+        self.herdr.add_workspace("w9", "leader-space", tab_label="big-boss")
+        self.assertEqual(self.run_restore(), "adopted")
+        self.assertEqual(self.herdr.created, [])
+
+    def test_a_partly_restored_leader_workspace_is_skipped_and_never_duplicated(self):
+        self.write_archive(label="leader-space", tab_label="big-boss")
+        self.herdr.add_workspace("w9", "leader-space", tab_label="leader-other")
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual(self.herdr.created, [])
+
+    def test_restore_batch_counts_a_partly_restored_member_as_left_alone_not_failed(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", tab_label="other")
+        ORGANIZER.write_json(
+            self.batches / "batch-20261023-100000.json",
+            {"version": 1, "batch_id": "batch-20261023-100000", "herdr_session": "esim", "status": "completed",
+             "members": [{"archive_id": self.ARCHIVE_ID, "workspace_id": "w1", "workspace_label": "Alpha"}]},
+        )
+        archive = self.archive()
+        archive["batch_id"] = "batch-20261023-100000"
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ORGANIZER.restore_batch_command(
+                argparse.Namespace(batch="batch-20261023-100000", resume_agents=True, execute=True, confirm="batch-20261023-100000", session="esim")
+            )
+        self.assertIn("Left 1 archive(s) alone", output.getvalue())
+        self.assertEqual(self.herdr.created, [])
+
+    def test_a_restored_tab_that_is_already_open_in_the_destination_is_adopted(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Elsewhere")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ORGANIZER.restore_tabs_command(
+                argparse.Namespace(archive=self.ARCHIVE_ID, tab=["w1:t1"], to_workspace="w9", resume_agents=True,
+                                   allow_unresumable_agents=False, force=False, execute=True, confirm=self.ARCHIVE_ID, session="esim")
+            )
+        self.assertEqual(self.herdr.applied, [], "the open tab is not rebuilt")
+        self.assertEqual(self.herdr.sent, ["w9:p1"])
+        self.assertIn("already open", output.getvalue())
+
+    def test_a_tab_that_is_not_open_is_rebuilt_as_before(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Elsewhere", tab_label="other")
+        with redirect_stdout(io.StringIO()):
+            ORGANIZER.restore_tabs_command(
+                argparse.Namespace(archive=self.ARCHIVE_ID, tab=["w1:t1"], to_workspace="w9", resume_agents=False,
+                                   allow_unresumable_agents=False, force=False, execute=True, confirm=self.ARCHIVE_ID, session="esim")
+            )
+        self.assertEqual(len(self.herdr.applied), 1)
 
 
 if __name__ == "__main__":

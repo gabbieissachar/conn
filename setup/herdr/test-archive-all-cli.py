@@ -281,6 +281,28 @@ out, err = p.communicate(timeout=20)
 assert p.returncode != 0 and "changed after it was captured" in err and "Nothing was closed" in err, (out, err)
 assert "w30" in {w["workspace_id"] for w in state()["snapshot"]["workspaces"]}, "the workspace was not closed"
 assert {pth.name: pth.read_text() for pth in sorted(archives_dir.glob("*.json"))} == before; ok("a tab opened after the capture stops the workspace close and the add is undone")
+# ---- restart snapshot: saved without closing, restored after a restart that Herdr partly undid by itself ----
+reset_organizer_state(); fresh()
+r = run("archive-all", "--snapshot", check=0); assert "snapshot (nothing is closed)" in r.stdout, r.stdout; ok("snapshot preview says nothing is closed")
+r = run("archive-all", "--snapshot", "--execute", "--confirm", "e2e", check=0); print(r.stdout.strip())
+assert state()["closed"] == [] and "Nothing was closed" in r.stdout; ok("snapshot --execute closed nothing")
+(snap_group,) = json.loads(run("list-batches", check=0).stdout); snap_bid = snap_group["batch_id"]
+assert sorted(m["workspace_label"] for m in snap_group["members"]) == ["Alpha", "Beta"] and all(m["status"] == "archived" and m["snapshot"] for m in snap_group["members"]), snap_group["members"]; ok("the group holds Alpha and Beta as archived snapshot members")
+r = run("archive-all", "--snapshot", "--execute", "--confirm", "e2e", check=0)
+(snap_group,) = json.loads(run("list-batches", check=0).stdout); assert len(snap_group["members"]) == 2 and "replaces" in r.stdout; ok("a second snapshot replaces the first, so no workspace is listed twice")
+for path in sorted(archives_dir.glob("*.json")):
+    a = json.loads(path.read_text())
+    if a["capture"]["workspace"]["label"] == "Alpha" and a.get("status") == "archived" and "left_group" not in a:
+        a["capture"]["tabs"][0]["agent_restores"] = [{"client": "codex", "restore_status": "resumable", "restore_source": "manifest", "resume_command": "codex resume 00000000-0000-0000-0000-000000000000", "source_pane_id": "w1:p1", "session_id": "00000000-0000-0000-0000-000000000000"}]
+        path.write_text(json.dumps(a))
+# The restart: Herdr comes back with Alpha under a new id and nothing else.
+st = state(); st["snapshot"] = {"workspaces": [{"workspace_id": "w7", "label": "Alpha", "focused": True}], "tabs": [{"workspace_id": "w7", "tab_id": "w7:t1", "label": "main"}], "panes": [{"tab_id": "w7:t1", "pane_id": "w7:p1", "agent_status": "unknown"}]}
+st["created"] = []; st["sent"] = []; state_path.write_text(json.dumps(st))
+r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); print(r.stdout.strip())
+st = state(); assert st["sent"] == ["w7:p1"], st["sent"]; assert len(st["created"]) == 1, st["created"]; ok("Alpha (back natively) got its resume in the open workspace; only Beta was built")
+assert "already brought this workspace back" in r.stdout; ok("the restore said it adopted what Herdr brought back")
+(snap_group,) = json.loads(run("list-batches", check=0).stdout); assert snap_group["members"] == [], snap_group; ok("both restored members left the group")
+r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["sent"]) == 1; ok("a second restore changes nothing")
 assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
 server.close(); shutil.rmtree(root)
 print("ALL REAL-CLI CHECKS PASSED")

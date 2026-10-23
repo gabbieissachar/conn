@@ -413,6 +413,27 @@ herdr-organizer --session esim archive-all
 herdr-organizer --session esim archive-all --execute --confirm esim
 ```
 
+Before restarting the computer, `archive-all --snapshot` saves every workspace
+into the same group without closing anything. A working or blocked agent is
+included too (the restart stops it anyway; it resumes from its saved session),
+and an agent without a verified session still skips its workspace. Snapshot
+members are flagged, and a newer snapshot or a closing archive of the same
+workspace (same id and same label) replaces the older snapshot. After the
+restart Herdr may bring workspaces back by itself. Restoring a snapshot member
+first looks for one open workspace with its label and a live twin of every
+captured tab (same label, same layout shape): that workspace is adopted, only
+panes without an agent get a resume command, and sessions already running are
+skipped. A workspace that is only partly back (or more than one look-alike) is
+left archived with the reason and counted as left alone, never rebuilt on top;
+`--force` still makes another copy. `restore-tab` and `restore-tabs` adopt an
+already-open tab of a snapshot member the same way. Leader tabs keep their rule:
+a natively restored one is adopted, never duplicated.
+
+```sh
+herdr-organizer --session esim archive-all --snapshot
+herdr-organizer --session esim archive-all --snapshot --execute --confirm esim
+```
+
 Restore a whole group with `restore-batch` (`--batch` defaults to the group of
 `--session`). It acts only on members that are still `archived`; a member leaves
 the group once it is restored. Without `--resume-agents` it lays out each member that has no

@@ -1425,13 +1425,17 @@ def require_execute_confirmation(execute: bool, confirmation: str | None, expect
 
 
 def prepare_archive(
-    archive_id: str, capture: dict[str, Any], session: str | None, batch_id: str | None = None
+    archive_id: str, capture: dict[str, Any], session: str | None, batch_id: str | None = None, snapshot: bool = False
 ) -> tuple[Path, dict[str, Any]]:
-    """Write the archive file in the prepared state, before anything is closed."""
+    """Write the archive file in the prepared state, before anything is closed.
+
+    A snapshot closes nothing, so its file is written once, already `archived`, and flagged `snapshot`: its workspace
+    is still open and a restore must first check whether Herdr brought that workspace back by itself.
+    """
     archive = {
         "version": 1,
         "archive_id": archive_id,
-        "status": "prepared",
+        "status": "archived" if snapshot else "prepared",
         "created_at": now(),
         "herdr_session": session or os.environ.get("HERDR_SESSION"),
         "capture": capture,
@@ -1439,6 +1443,9 @@ def prepare_archive(
     }
     if batch_id:
         archive["batch_id"] = batch_id
+    if snapshot:
+        archive["snapshot"] = True
+        archive["archived_at"] = archive["created_at"]
     archive_path = ARCHIVE_DIR / f"{archive_id}.json"
     write_json(archive_path, archive)
     return archive_path, archive
@@ -1734,18 +1741,19 @@ def with_group_lock(action: str, function):
 
 
 def assess_workspace_for_archive(
-    snapshot: dict[str, Any], workspace: dict[str, Any], session: str | None
+    snapshot: dict[str, Any], workspace: dict[str, Any], session: str | None, allow_active: bool = False
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Return (capture, entry). The capture is None when the workspace must be skipped.
 
     The same guards as the single `archive` command apply, and neither allow flag
-    is ever passed on the caller's behalf.
+    is ever passed on the caller's behalf. Only a snapshot, which closes nothing, passes `allow_active`: a working
+    agent is captured like an idle one because the workspace stays open and nothing stops it.
     """
     workspace_id = str(workspace["workspace_id"])
     entry: dict[str, Any] = {"workspace_id": workspace_id, "label": str(workspace.get("label") or workspace_id)}
     reasons: list[str] = []
     active = active_agents(snapshot, workspace_id)
-    if active:
+    if active and not allow_active:
         reasons.append("active_agent")
         entry["active_pane_ids"] = [str(pane.get("pane_id")) for pane in active]
     try:
@@ -1769,6 +1777,8 @@ def assess_workspace_for_archive(
     entry["resumable_agent_panes"] = sum(
         is_trusted_restore(item) for tab in capture["tabs"] for item in tab.get("agent_restores", [])
     )
+    if active and allow_active:
+        entry["active_agent_panes"] = len(active)
     return capture, entry
 
 
@@ -1810,25 +1820,29 @@ def archive_all_command(args: argparse.Namespace) -> None:
     session = args.session or os.environ.get("HERDR_SESSION")
     if not session:
         raise OrganizerError("archive-all needs a named Herdr session. Pass --session <name>.")
+    snapshot_mode = bool(getattr(args, "snapshot", False))
     snapshot = session_snapshot(args.session)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for workspace in snapshot.get("workspaces", []):
-        capture, entry = assess_workspace_for_archive(snapshot, workspace, args.session)
+        capture, entry = assess_workspace_for_archive(snapshot, workspace, args.session, allow_active=snapshot_mode)
         (planned if capture is not None else skipped).append(entry)
     inside_id = current_workspace_id(snapshot, session)
-    inside = next((entry for entry in planned if entry["workspace_id"] == inside_id), None)
+    # A snapshot closes nothing, so running inside a workspace on its list is harmless.
+    inside = None if snapshot_mode else next((entry for entry in planned if entry["workspace_id"] == inside_id), None)
     preview = {
         "session": session,
         "workspace_total": len(snapshot.get("workspaces", [])),
         "to_archive": planned,
         "skipped": skipped,
         "running_inside": {"workspace_id": inside["workspace_id"], "label": inside["label"]} if inside else None,
+        "snapshot": snapshot_mode,
     }
     if not args.execute:
         print(json.dumps(preview, indent=2))
+        verb = "snapshot (nothing is closed)" if snapshot_mode else "archive"
         print(
-            f"Preview only. Re-run with --execute --confirm {session!r} to archive {len(planned)} workspace(s) "
+            f"Preview only. Re-run with --execute --confirm {session!r} to {verb} {len(planned)} workspace(s) "
             f"and skip {len(skipped)}."
         )
         return
@@ -1847,7 +1861,7 @@ def archive_all_command(args: argparse.Namespace) -> None:
 
     with batch_run_lock("archive-all"):
         settle_groups()
-        run_archive_batch(args, session, planned, skipped)
+        run_archive_batch(args, session, planned, skipped, snapshot=snapshot_mode)
 
 
 def settle_interrupted_archive(
@@ -1888,9 +1902,16 @@ def retire_duplicate_tabs(batch_path: Path, manifest: dict[str, Any], batch_id: 
 
 
 def run_archive_batch(
-    args: argparse.Namespace, session: str, planned: list[dict[str, Any]], skipped: list[dict[str, Any]]
+    args: argparse.Namespace,
+    session: str,
+    planned: list[dict[str, Any]],
+    skipped: list[dict[str, Any]],
+    snapshot: bool = False,
 ) -> None:
-    """Add every planned workspace to the session's one archive group, creating the group the first time."""
+    """Add every planned workspace to the session's one archive group, creating the group the first time.
+
+    A snapshot adds the same kind of member but closes nothing, so the workspaces and their agents keep running.
+    """
     existing = group_for_session(session)
     if existing:
         batch_path, manifest = existing
@@ -1918,13 +1939,18 @@ def run_archive_batch(
             elif str(workspace.get("label") or workspace_id) != item["label"]:
                 capture, entry = None, {"workspace_id": workspace_id, "label": item["label"], "reasons": ["workspace_changed"]}
             else:
-                capture, entry = assess_workspace_for_archive(fresh, workspace, args.session)
+                capture, entry = assess_workspace_for_archive(fresh, workspace, args.session, allow_active=snapshot)
             # A workspace whose layout copy is still an archived member of the group replaces that member, so the group
             # never holds the same workspace twice. Only a workspace a restore built counts, never a matching id alone.
-            earlier = None
+            # The same goes for an earlier snapshot of this very workspace (same id and label).
+            earlier_members: list[dict[str, Any]] = []
             if capture is not None:
                 try:
-                    earlier = find_batch_member(manifest, batch_id, workspace_id, match_origin=False)
+                    layout_member = find_batch_member(manifest, batch_id, workspace_id, match_origin=False)
+                    snapshot_member = find_snapshot_member(manifest, batch_id, workspace_id, item["label"])
+                    earlier_members = [m for m in (layout_member, snapshot_member) if m]
+                    if len({m["archive_id"] for m in earlier_members}) < len(earlier_members):
+                        earlier_members = earlier_members[:1]
                 except OrganizerError as error:
                     capture, entry = None, {
                         "workspace_id": workspace_id,
@@ -1938,27 +1964,33 @@ def run_archive_batch(
                 print(f"Skipped {describe_skip(entry)}")
                 continue
             archive_id = archive_id_for(item["label"])
-            current = prepare_archive(archive_id, capture, args.session, batch_id)
+            archive_path, archive = prepare_archive(archive_id, capture, args.session, batch_id, snapshot=snapshot)
+            # A snapshot is already complete, so an interrupt has nothing to settle.
+            current = None if snapshot else (archive_path, archive)
             current_workspace = {"workspace_id": workspace_id, "label": item["label"]}
             manifest["members"].append(
                 {"archive_id": archive_id, "workspace_id": workspace_id, "workspace_label": item["label"]}
             )
-            if earlier:
+            for earlier in earlier_members:
                 manifest["members"] = [m for m in manifest["members"] if m.get("archive_id") != earlier["archive_id"]]
                 earlier["archive"]["left_group"] = {"reason": "replaced", "by": archive_id, "at": now()}
                 write_json(earlier["path"], earlier["archive"])
             write_json(batch_path, manifest)
-            try:
-                close_archived_workspace(current[0], current[1], workspace_id, args.session)
-            except OrganizerError as error:
-                failures.append(f"{workspace_id} ({item['label']}): {error}")
-                print(f"Could not close {workspace_id}; archive {archive_id} is marked close_failed.")
+            if snapshot:
+                added += 1
+                print(f"Saved a snapshot of {workspace_id} ({item['label']}) as {archive_id}. It stays open.")
+            else:
+                try:
+                    close_archived_workspace(archive_path, archive, workspace_id, args.session)
+                except OrganizerError as error:
+                    failures.append(f"{workspace_id} ({item['label']}): {error}")
+                    print(f"Could not close {workspace_id}; archive {archive_id} is marked close_failed.")
+                    current = None
+                    continue
                 current = None
-                continue
-            current = None
-            added += 1
-            print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
-            if earlier:
+                added += 1
+                print(f"Archived {workspace_id} ({item['label']}) as {archive_id}.")
+            for earlier in earlier_members:
                 print(f"It replaces {earlier['archive_id']} in the archive group; that archive stays as a single archive.")
         retire_duplicate_tabs(batch_path, manifest, batch_id)
         finished = True
@@ -1975,7 +2007,13 @@ def run_archive_batch(
         f"Archive group {batch_id}: added {added}, skipped {len(manifest['skipped'])}. "
         f"It now holds {len(manifest['members'])} archived workspace(s)."
     )
-    print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
+    if snapshot:
+        print(
+            "Nothing was closed. After the restart, restore the group with restore-batch --resume-agents: a workspace "
+            "Herdr already brought back is adopted, not rebuilt."
+        )
+    else:
+        print("The original processes were stopped. Restore the group with restore-batch, or each archive on its own.")
     if failures:
         raise OrganizerError("Some workspaces could not be closed: " + "; ".join(failures))
 
@@ -1989,6 +2027,7 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         "status": "deleted",
         "restored_workspace_id": None,
         "layout_workspace_id": None,
+        "snapshot": False,
         "tabs": [],
     }
     if not archive_id or Path(archive_id).name != archive_id:
@@ -2000,6 +2039,7 @@ def batch_member_view(member: dict[str, Any]) -> dict[str, Any]:
         archive = None
     if isinstance(archive, dict):
         view["status"] = str(archive.get("status") or "unknown")
+        view["snapshot"] = bool(archive.get("snapshot"))
         restore = archive.get("restore")
         if isinstance(restore, dict):
             view["restored_workspace_id"] = restore.get("workspace_id")
@@ -2136,6 +2176,11 @@ def restore_batch_command(args: argparse.Namespace) -> None:
             print(f"Could not restore {archive_id}: {error}")
             continue
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    if outcomes.get("native_partial"):
+        print(
+            f"Left {outcomes['native_partial']} archive(s) alone because Herdr already restored part of them. "
+            "They stay in the group; restore their missing tabs with restore-tab."
+        )
     if args.resume_agents:
         done = outcomes.get("created", 0) + outcomes.get("adopted", 0)
         print(
@@ -2408,6 +2453,35 @@ def find_batch_member(
             + ". Nothing was changed."
         )
     return candidates[0] if candidates else None
+
+
+def find_snapshot_member(
+    manifest: dict[str, Any], batch_id: str, workspace_id: str, label: str
+) -> dict[str, Any] | None:
+    """The still-archived snapshot member of this very workspace: same recorded workspace id and the same label.
+
+    A newer capture of a workspace replaces its older snapshot, so the group never holds one workspace twice. The
+    label has to agree as well, because Herdr hands a closed workspace's id out again. A closing archive never
+    counts here: only a snapshot can have been taken from a workspace that is still standing.
+    """
+    found: list[dict[str, Any]] = []
+    for member in manifest.get("members", []):
+        archive_id = str(member.get("archive_id") or "") if isinstance(member, dict) else ""
+        if not archive_id or Path(archive_id).name != archive_id:
+            continue
+        path = ARCHIVE_DIR / f"{archive_id}.json"
+        try:
+            archive = read_json(path, None)
+        except OrganizerError:
+            continue
+        if not isinstance(archive, dict) or not archive.get("snapshot") or archive.get("status") != "archived":
+            continue
+        if archive.get("batch_id") not in group_batch_ids(manifest) | {batch_id}:
+            continue
+        workspace = archive.get("capture", {}).get("workspace", {})
+        if str(workspace.get("source_workspace_id")) == workspace_id and str(workspace.get("label")) == label:
+            found.append({"archive_id": archive_id, "path": path, "archive": archive})
+    return found[0] if len(found) == 1 else None
 
 
 def restored_tab_sources(archive: dict[str, Any]) -> dict[str, str]:
@@ -3409,7 +3483,19 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     if len(set(selected_ids)) != len(selected_ids):
         raise OrganizerError("Each --tab value must be unique.")
     selected_tabs = [archived_tab_by_id(archive, tab_id) for tab_id in selected_ids]
-    require_leader_restore_ok(snapshot, destination.get("label"), selected_tabs, True)
+    # A snapshot tab may already be open in the destination because Herdr brought it back after a restart. Such a tab
+    # is adopted, not rebuilt, and it is no leader-convention problem: it is the one tab, not a second.
+    twins: dict[str, dict[str, Any]] = {}
+    if archive.get("snapshot") and not args.force:
+        taken: set[str] = set()
+        for tab_id, tab in zip(selected_ids, selected_tabs, strict=True):
+            twin = live_twin_tab(snapshot, args.to_workspace, tab, args.session, taken)
+            if twin:
+                taken.add(twin["tab_id"])
+                twins[tab_id] = twin
+    require_leader_restore_ok(
+        snapshot, destination.get("label"), [tab for tab_id, tab in zip(selected_ids, selected_tabs, strict=True) if tab_id not in twins], True
+    )
     live_sessions = live_agent_sessions(snapshot)
     unavailable = unavailable_agent_restores(selected_tabs)
     preview = {
@@ -3422,6 +3508,7 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
                 "tab_label": tab.get("label"),
                 "pane_count": len(leaf_panes(tab.get("layout", {}).get("root"))),
                 "resumable_agent_count": sum(is_trusted_restore(item) for item in tab.get("agent_restores", [])),
+                "already_open_tab_id": twins[tab_id]["tab_id"] if tab_id in twins else None,
             }
             for tab_id, tab in zip(selected_ids, selected_tabs, strict=True)
         ],
@@ -3455,20 +3542,32 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     all_outcomes: list[dict[str, Any]] = []
     for tab, operation in zip(selected_tabs, operations, strict=True):
         try:
-            applied = socket_call(
-                args.session,
-                "layout.apply",
-                {
-                    "workspace_id": args.to_workspace,
-                    "tab_label": tab.get("label"),
-                    "focus": False,
-                    "root": tab.get("layout", {}).get("root"),
-                },
-            )
-            layout = applied.get("layout")
-            if not isinstance(layout, dict):
-                raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
-            pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
+            twin = twins.get(str(operation["source_tab_id"]))
+            if twin:
+                layout = {"tab_id": twin["tab_id"]}
+                # A pane that already shows an agent is left alone, whatever Herdr restored there.
+                busy = {
+                    str(pane.get("pane_id"))
+                    for pane in snapshot.get("panes", [])
+                    if str(pane.get("tab_id")) == twin["tab_id"] and live_agent_running(pane)
+                }
+                pane_map = {old: new for old, new in twin["pane_map"].items() if new not in busy}
+                operation["adopted_native_tab"] = True
+            else:
+                applied = socket_call(
+                    args.session,
+                    "layout.apply",
+                    {
+                        "workspace_id": args.to_workspace,
+                        "tab_label": tab.get("label"),
+                        "focus": False,
+                        "root": tab.get("layout", {}).get("root"),
+                    },
+                )
+                layout = applied.get("layout")
+                if not isinstance(layout, dict):
+                    raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
+                pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
             outcomes = resume_captured_tabs([tab], pane_map, args.session, live_sessions) if args.resume_agents else []
             failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
             operation.update(
@@ -3510,6 +3609,8 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
         raise OrganizerError("Archived tabs were restored, but one or more agent resumes failed. The recovery records were retained.")
     resumed = sum(outcome.get("action") == "resumed" for outcome in all_outcomes)
     print(f"Restored {len(selected_tabs)} archived tab(s) into workspace {args.to_workspace}.")
+    if twins:
+        print(f"{len(twins)} of them were already open (Herdr brought them back), so they were adopted and not rebuilt.")
     print("They left the archive. Archiving one of them again starts a new archive." + (" The archive has no tab left, so it left its group." if not archive.get("capture", {}).get("tabs") else ""))
     print(f"Resumed {resumed} verified agent session(s).")
 
@@ -3579,6 +3680,87 @@ def layout_copy_of(archive: dict[str, Any], session: str | None) -> dict[str, An
     return {"workspace_id": str(workspace_id), "tab_ids": tab_ids, "pane_map": pane_map, "busy": busy}
 
 
+def live_twin_tab(
+    snapshot: dict[str, Any], workspace_id: str, captured_tab: dict[str, Any], session: str | None, taken: set[str]
+) -> dict[str, Any] | None:
+    """The live tab in this workspace that a capture was brought back as: the same label and the same layout shape.
+
+    `taken` holds the live tabs already paired with another captured tab. Ids alone never decide, because Herdr hands
+    closed ids out again; the label and the split structure have to agree as well.
+    """
+    captured_root = captured_tab.get("layout", {}).get("root")
+    for live in tabs_for_workspace(snapshot, workspace_id):
+        tab_id = str(live.get("tab_id"))
+        if tab_id in taken or str(live.get("label") or "") != str(captured_tab.get("label") or ""):
+            continue
+        exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
+        live_root = exported.get("root") if isinstance(exported, dict) else None
+        if layout_topology(live_root) != layout_topology(captured_root):
+            continue
+        return {"tab_id": tab_id, "pane_map": matching_pane_map(captured_root, live_root)}
+    return None
+
+
+def native_workspace_copy(archive: dict[str, Any], snapshot: dict[str, Any], session: str | None) -> dict[str, Any] | None:
+    """For a snapshot archive: has Herdr already brought this workspace back by itself?
+
+    `{"state": "match", "copy": ...}` when exactly one open workspace has the archive's label and a live twin of every
+    captured tab; the copy has the same shape `layout_copy_of` returns, so the layout-copy path adopts it. A workspace
+    that is only partly back, more than one look-alike, or agent sessions of the archive running somewhere else give
+    `{"state": "partial", "reason": ...}`: nothing is rebuilt then, because a rebuild would duplicate what is open.
+    None when nothing of it is open.
+    """
+    capture = archive.get("capture", {})
+    captured_tabs = capture.get("tabs", [])
+    if not captured_tabs:
+        return None
+    label = str(leader_archive_workspace_label(capture) or "")
+    running = set().union(*(tab_session_ids(tab) for tab in captured_tabs)) & set(live_agent_sessions(snapshot))
+    complete: list[dict[str, Any]] = []
+    missing_by_workspace: dict[str, list[str]] = {}
+    try:
+        for workspace in snapshot.get("workspaces", []):
+            if str(workspace.get("label") or "") != label:
+                continue
+            workspace_id = str(workspace.get("workspace_id"))
+            taken: set[str] = set()
+            pane_map: dict[str, str] = {}
+            missing: list[str] = []
+            for tab in captured_tabs:
+                twin = live_twin_tab(snapshot, workspace_id, tab, session, taken)
+                if twin is None:
+                    missing.append(str(tab.get("label")))
+                    continue
+                taken.add(twin["tab_id"])
+                pane_map.update(twin["pane_map"])
+            if missing:
+                missing_by_workspace[workspace_id] = missing
+                continue
+            busy = {
+                str(pane.get("pane_id"))
+                for pane in snapshot.get("panes", [])
+                if str(pane.get("tab_id")) in taken and live_agent_running(pane)
+            }
+            complete.append({"workspace_id": workspace_id, "tab_ids": sorted(taken), "pane_map": pane_map, "busy": busy})
+    except OrganizerError as error:
+        return {"state": "partial", "reason": f"the open workspaces could not be inspected ({error})"}
+    if len(complete) == 1:
+        return {"state": "match", "copy": complete[0]}
+    if len(complete) > 1:
+        return {"state": "partial", "reason": "more than one open workspace looks like it: " + ", ".join(item["workspace_id"] for item in complete)}
+    if missing_by_workspace:
+        return {
+            "state": "partial",
+            "reason": "; ".join(
+                f"workspace {workspace_id} is open without tab(s) {', '.join(labels)}"
+                for workspace_id, labels in missing_by_workspace.items()
+            ),
+        }
+    if running:
+        return {"state": "partial", "reason": f"{len(running)} of its agent session(s) already run in other open workspaces"}
+    return None
+
+
 def restore_outcome_counts(outcomes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
     return failures, sum(outcome.get("status") == "sent" for outcome in outcomes)
@@ -3590,14 +3772,18 @@ def restore_into_layout_copy(
     copy: dict[str, Any],
     args: argparse.Namespace,
     live_sessions: dict[str, str] | None = None,
+    native: bool = False,
 ) -> str:
-    """Resume agents inside the workspace an earlier layout-only restore left open, instead of making another one."""
+    """Resume agents inside the workspace an earlier layout-only restore left open, instead of making another one.
+
+    With `native` the open workspace is one Herdr brought back by itself after a restart (a snapshot member).
+    """
     record: dict[str, Any] = {
         "workspace_id": copy["workspace_id"],
         "started_at": now(),
         "tabs": [{"tab_id": tab_id} for tab_id in copy["tab_ids"]],
         "agent_resume": [],
-        "adopted_layout_copy": True,
+        "adopted_native_workspace" if native else "adopted_layout_copy": True,
     }
     archive["status"] = "restore_partial"
     archive["restore"] = record
@@ -3620,6 +3806,8 @@ def restore_into_layout_copy(
         write_json(archive_path, archive)
         raise
     print(f"Restored archive {args.archive} by resuming its agents in the open workspace {copy['workspace_id']}. No new workspace was made.")
+    if native:
+        print("Herdr had already brought this workspace back after the restart, so nothing was rebuilt.")
     print(f"Resumed {sum(outcome.get('action') == 'resumed' for outcome in outcomes)} verified agent session(s).")
     skipped_running = sum(outcome.get("reason") == "agent_running" for outcome in outcomes)
     if skipped_running:
@@ -3732,9 +3920,15 @@ def restore_archive(args: argparse.Namespace) -> str:
     leader_problems = leader_restore_problems(
         live_snapshot, leader_archive_workspace_label(capture), capture.get("tabs", []), False
     )
+    # A snapshot member was captured while its workspace was open, so Herdr may have brought it back by itself.
+    native = native_workspace_copy(archive, live_snapshot, args.session) if archive.get("snapshot") and not args.force else None
     if not args.execute:
         print(json.dumps(archive_summary(archive), indent=2))
-        if leader_problems and not (not args.force and layout_copy_of(archive, args.session)):
+        if native and native["state"] == "match":
+            print(f"Herdr already has this workspace open as {native['copy']['workspace_id']}. Nothing would be rebuilt.")
+        elif native:
+            print(f"Herdr already restored part of this workspace ({native['reason']}). Nothing would be restored; use --force for another copy.")
+        elif leader_problems and not (not args.force and layout_copy_of(archive, args.session)):
             print("Blocked by the leader convention: " + "; ".join(leader_problems) + ".")
         print(
             f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore. "
@@ -3751,16 +3945,26 @@ def restore_archive(args: argparse.Namespace) -> str:
             "It was not restored. Use --allow-unresumable-agents only if restoring the layout without its agent sessions is acceptable."
         )
     copy = None if args.force else layout_copy_of(archive, args.session)
+    adopted_native = False
+    if not copy and native:
+        if native["state"] != "match":
+            print(
+                f"Archive {args.archive} was left alone: Herdr already restored part of it ({native['reason']}). "
+                "Restore the missing tabs with restore-tab, or add --force for another copy."
+            )
+            return "native_partial"
+        copy, adopted_native = native["copy"], True
     if not copy:
         require_leader_restore_ok(live_snapshot, leader_archive_workspace_label(capture), capture.get("tabs", []), False)
     if copy and not args.resume_agents:
+        where = "Herdr already brought it back as" if adopted_native else "already has its layout open as"
         print(
-            f"Archive {args.archive} already has its layout open as workspace {copy['workspace_id']}. Nothing was created. "
+            f"Archive {args.archive} {where} workspace {copy['workspace_id']}. Nothing was created. "
             "Run restore --resume-agents to resume the agents there, or add --force for another copy."
         )
         return "already_laid_out"
     if copy:
-        return restore_into_layout_copy(archive_path, archive, copy, args, live_agent_sessions(live_snapshot))
+        return restore_into_layout_copy(archive_path, archive, copy, args, live_agent_sessions(live_snapshot), native=adopted_native)
     earlier = archive.get("layout_restore")
     if isinstance(earlier, dict) and earlier.get("workspace_id") and not args.force:
         print(
@@ -5737,6 +5941,12 @@ def parser() -> argparse.ArgumentParser:
     )
     archive_all.add_argument("--execute", action="store_true")
     archive_all.add_argument("--confirm", help="Must exactly equal the session name.")
+    archive_all.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="Save every workspace into the archive group without closing anything, working agents included, "
+        "for a computer restart. A restore afterwards skips what Herdr already brought back.",
+    )
     archive_all.set_defaults(func=archive_all_command)
 
     restore_batch = commands.add_parser(
