@@ -48,16 +48,19 @@ created: 2026-09-10
     button:focus-visible, input:focus-visible { outline: 3px solid #bcb1ed; outline-offset: 2px; }
     main { max-width: 1240px; margin: 0 auto; padding: 26px 24px 60px; }
     .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 30px; }
-    .move-panel { position: fixed; right: 24px; bottom: 22px; z-index: 4; display: grid; grid-template-columns: minmax(220px, 1fr) 190px auto; align-items: end; gap: 11px; width: min(720px, calc(100vw - 48px)); padding: 15px 16px; border: 1px solid #cfd7e7; border-radius: 10px; background: rgba(255,255,255,.96); backdrop-filter: blur(14px); box-shadow: 0 14px 34px rgba(33, 47, 83, .18); }
+    .move-panel { position: fixed; right: 24px; bottom: 22px; z-index: 4; display: grid; gap: 8px; width: min(560px, calc(100vw - 48px)); padding: 10px 12px; border: 1px solid #cfd7e7; border-radius: 10px; background: rgba(255,255,255,.96); backdrop-filter: blur(14px); box-shadow: 0 14px 34px rgba(33, 47, 83, .18); }
     .move-panel:empty { display: none; }
-    .move-panel strong { display: block; font-size: 14px; }
-    .move-panel p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; }
-    .move-panel .mode-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .move-panel .mode-switch { padding: 6px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
+    .move-panel strong { font-size: 13px; }
+    .move-panel .mp-head, .move-panel .mp-body { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+    .move-panel .mp-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .move-panel .mode-row { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+    .move-panel .mode-switch { padding: 4px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
     .move-panel .mode-switch[aria-pressed="true"] { color: white; background: var(--purple); }
-    .move-panel .panel-actions { display: grid; gap: 6px; }
-    .move-panel label { display: block; color: var(--muted); font: 11px "DM Mono", monospace; }
-    .move-panel select { width: 100%; margin-top: 6px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--paper); }
+    .move-panel .panel-actions { display: flex; gap: 6px; }
+    .move-panel .mp-body > button, .move-panel .panel-actions button { padding: 7px 10px; font-size: 12px; white-space: nowrap; }
+    .move-panel .mp-dest { display: flex; flex: 1 1 200px; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font: 11px "DM Mono", monospace; }
+    .move-panel .mp-dest span { flex: none; }
+    .move-panel select { flex: 1; min-width: 0; width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--paper); font-size: 12px; }
     .move-panel .primary { color: white; background: var(--purple); }
     .move-panel .primary:disabled { cursor: not-allowed; opacity: .45; }
     .metric { min-height: 100px; padding: 17px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
@@ -260,7 +263,7 @@ created: 2026-09-10
     .skeleton { height: 54px; border-radius: 8px; background: linear-gradient(90deg, #eef1f6, #f7f8fb, #eef1f6); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
     @keyframes shimmer { to { background-position: -200% 0; } }
     @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
-    @media (max-width: 640px) { .summary, .move-panel { grid-template-columns: 1fr; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; }
+    @media (max-width: 640px) { .summary { grid-template-columns: 1fr; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; }
       .pane-row { grid-template-columns: 1fr; } .verdict, .evidence { align-items: flex-start; justify-content: flex-start; text-align: left; } .view-tabs { flex-wrap: wrap; } .controls { flex-wrap: wrap; } .select { max-width: none; flex: 1; } }
   </style>
 </head>
@@ -412,37 +415,36 @@ created: 2026-09-10
         : mode === 'archive' ? `herdr-organizer archive-tabs ${tabArgs} --into-archive ${destination} --execute --confirm ${destination}`
         : mode === 'batch' ? (batchBase ? `${batchBase} --execute --confirm ${destination}` : '')
         : `herdr-organizer move-tabs ${tabArgs} --to-workspace ${destination} --execute --confirm ${destination}`;
-      const detail = mode === 'archive'
-        ? `${selected.length} selected. The command adds them to the archive, then closes only their live tabs. Each live workspace keeps at least one tab.`
-        : mode === 'batch'
-          ? (batchChoices.length
-            ? `${selected.length} selected. The command captures them into the archive group, then closes them and stops their processes. A workspace that already has an entry in the group merges into it. Copy the preview first.`
-            : newGroupSession
-              ? `${selected.length} selected. This session has no archive group yet. The command starts it with these tabs, then closes them and stops their processes. Copy the preview first.`
-              : `${selected.length} selected. The archive group's last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.`)
-          : `${selected.length} selected. The command rebuilds their layouts, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.`;
-      const title = mode === 'archive' ? 'Archive selected tabs' : mode === 'batch' ? 'Add selected tabs to the archive group' : 'Move selected tabs to another workspace';
-      const label = mode === 'archive' ? 'Existing archive' : mode === 'batch' ? 'Archive group' : 'Destination workspace';
+      const blockedGroup = mode === 'batch' && !batchChoices.length && !newGroupSession;
+      // The explanation of each command lives in a tooltip, so the panel itself stays one slim bar.
+      const MODE_TIPS = {
+        move: 'Rebuilds the tabs in another workspace, closes the originals, then resumes any Codex or Claude sessions whose real CLI session can be identified before the move.',
+        archive: 'Adds the tabs to an existing archive, then closes only their live tabs. Each live workspace keeps at least one tab.',
+        batch: 'Captures the tabs into the archive group, then closes them and stops their processes. A workspace that already has an entry in the group merges into it. Copy the preview first.',
+      };
+      const detail = mode === 'batch' && newGroupSession ? 'This session has no archive group yet. The command starts it with these tabs, then closes them and stops their processes. Copy the preview first.' : MODE_TIPS[mode];
+      const title = mode === 'archive' ? 'Archive selected tabs' : mode === 'batch' ? 'Add selected tabs to the archive group' : 'Move selected tabs';
+      const label = mode === 'archive' ? 'Into archive' : mode === 'batch' ? 'Group' : 'To workspace';
       const options = mode === 'archive'
         ? destinationChoices.map(archive => `<option value="${escapeHtml(archive.archive_id)}" ${archive.archive_id === destination ? 'selected' : ''}>${escapeHtml(archive.workspace_label || archive.archive_id)} (${escapeHtml(archive.archive_id)})</option>`).join('')
         : mode === 'batch'
           ? (newGroupSession ? `<option value="" selected>New archive group for ${escapeHtml(newGroupSession)}</option>`
             : batchChoices.map(batch => `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batch.batch_id)}" ${batch.batch_id === destination ? 'selected' : ''}>${escapeHtml(batchStamp(batch))}</option>`).join(''))
           : destinationChoices.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('');
-      const modes = TAB_MODES.map(([key, text]) => `<button class="mode-switch" type="button" data-tabs-mode="${key}" aria-pressed="${key === mode}">${text}</button>`).join('');
+      const modes = TAB_MODES.map(([key, text]) => `<button class="mode-switch" type="button" data-tabs-mode="${key}" aria-pressed="${key === mode}" title="${escapeHtml(key === mode ? detail : MODE_TIPS[key])}">${text}</button>`).join('');
       const buttons = mode === 'batch'
-        ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which entry each workspace joins, or that it starts the group, and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close tabs</button></div>`
-        : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">${mode === 'archive' ? 'Copy archive selected tabs' : 'Copy move + resume'}</button>`;
-      return `<div><strong>${title}</strong><p>${escapeHtml(detail)}</p><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div></div>
-        <label>${label}<select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>
-        ${buttons}`;
+        ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which entry each workspace joins, or that it starts the group, and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close</button></div>`
+        : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="${escapeHtml(detail)}">${mode === 'archive' ? 'Copy archive' : 'Copy move + resume'}</button>`;
+      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">${title}</strong><span class="count-pill">${selected.length} selected</span><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div></div>
+        ${blockedGroup ? '<p class="mp-note">The archive group\'s last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.</p>' : ''}
+        <div class="mp-body"><label class="mp-dest"><span>${label}</span><select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>${buttons}</div>`;
     };
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
     const restorePanelView = data => {
       const selected = data.archives.flatMap(archive => (archive.tabs || []).map(tab => ({ archive, tab }))).filter(({ archive, tab }) => state.selectedArchivedTabs.has(archiveTabKey(archive.archive_id, tab.id)));
       if (!selected.length) return '';
       const archiveIds = new Set(selected.map(({ archive }) => archive.archive_id));
-      if (archiveIds.size !== 1) return '<div><strong>Restore selected archived tabs</strong><p>Select tabs from one archive at a time.</p></div><button type="button" disabled>Choose one archive</button>';
+      if (archiveIds.size !== 1) return '<div class="mp-head"><strong>Restore selected archived tabs</strong></div><p class="mp-note">Select tabs from one archive at a time.</p>';
       const archiveId = selected[0].archive.archive_id;
       const destinations = data.workspaces || [];
       if (!destinations.some(workspace => workspace.id === state.archiveDestinations[archiveId])) state.archiveDestinations[archiveId] = destinations[0]?.id || '';
@@ -453,10 +455,10 @@ created: 2026-09-10
         : '';
       const detail = unavailable.length
         ? `${unavailable.length} selected tab${unavailable.length === 1 ? ' has' : 's have'} an unavailable agent session. Register it before restoring.`
-        : `${selected.length} selected from this archive. The command rebuilds them in the destination and resumes verified Codex or Claude sessions.`;
-      return `<div><strong>Restore selected archived tabs</strong><p>${escapeHtml(detail)}</p></div>
-        <label>Destination workspace<select id="restore-destination" ${destinations.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label>
-        <button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}">Copy restore + resume</button>`;
+        : 'Rebuilds the selected tabs in the destination and resumes verified Codex or Claude sessions.';
+      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">Restore selected archived tabs</strong><span class="count-pill">${selected.length} selected</span></div>
+        ${unavailable.length ? `<p class="mp-note">${escapeHtml(detail)}</p>` : ''}
+        <div class="mp-body"><label class="mp-dest"><span>To workspace</span><select id="restore-destination" ${destinations.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="${escapeHtml(detail)}">Copy restore + resume</button></div>`;
     };
     const archivedTabView = (archive, tab) => {
       const key = archiveTabKey(archive.archive_id, tab.id);
@@ -1256,7 +1258,7 @@ created: 2026-09-10
       const canCopy = Boolean(result?.commands?.execute) && !stale;
       const canSnapshot = Boolean(result?.commands?.snapshot) && !stale;
       return `<article class="card cleanup-all"><div class="card-head"><h3>Archive all workspaces</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
-        <p class="lede">Archives every live workspace that passes the safety checks and closes it, into the session's archive group, which you can restore together from the Archive group tab. A workspace with a working agent, or an agent without a registered session id, is skipped and listed with the reason. Previewing closes nothing. To restart the computer instead, copy the snapshot command: it saves everything into the same group without closing anything and includes working agents. After the restart, restore the group from the Archive group tab; whatever Herdr already brought back is skipped.</p>
+        <p class="lede">Archives every live workspace that passes the safety checks and closes it, into the session's archive group, which you can restore together from the Archive group tab. A workspace with a working agent, or an agent without a registered session id, is skipped and listed with the reason. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-aa="preview" ${canPreview ? '' : 'disabled'} title="${session ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${aa.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview archive all')}</button>
           <button type="button" data-aa-copy="${escapeHtml(previewCommand)}" ${previewCommand ? '' : 'disabled'} title="Copies the preview command to run in your terminal">Copy archive all preview</button>
           <button type="button" class="danger" data-aa-copy="${escapeHtml(canCopy ? result.commands.execute : '')}" ${canCopy ? '' : 'disabled'} title="${canCopy ? 'Copies the command that archives and closes the workspaces listed above' : 'Preview first. The command is built from the preview'}">Copy archive all</button>
