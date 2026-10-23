@@ -273,6 +273,14 @@ test('add tabs to the archive group: three modes, a disabled state with a reason
   assert.equal(html.includes('toggle-selected-tabs-action'), false, 'the two-way toggle is gone');
 });
 
+test('the selected-tabs panel has a dismiss button that clears the selection, and Esc does the same', () => {
+  assert.equal((html.match(/data-panel-close="tabs"/g) || []).length, 1);
+  assert.ok((html.match(/data-panel-close="archived"/g) || []).length >= 2, 'the restore panel and its one-archive notice both have it');
+  assert.match(html, /\(state\.view === 'archives' \? state\.selectedArchivedTabs : state\.selectedTabs\)\.clear\(\)/);
+  assert.match(html, /event\.key !== 'Escape'/);
+  assert.match(html, /addEventListener\('click', dismissSelection\)/);
+});
+
 test('the archive group has its own tab, and the Archives tab no longer holds the group card', () => {
   assert.match(html, /data-view="group"[^>]*>Archive group</);
   const group = html.slice(html.indexOf('<section id="group-section"'), html.indexOf('<section id="archives-section"'));

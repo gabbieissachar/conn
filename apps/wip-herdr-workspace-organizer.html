@@ -53,6 +53,9 @@ created: 2026-09-10
     .move-panel strong { font-size: 13px; }
     .move-panel .mp-head, .move-panel .mp-body { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
     .move-panel .mp-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .move-panel .mp-close { flex: none; margin-left: auto; padding: 0 7px; border-radius: 6px; color: var(--muted); background: transparent; font-size: 17px; line-height: 24px; }
+    .move-panel .mp-close:hover { color: var(--ink); background: #edf0f5; }
+    .move-panel .mode-row + .mp-close { margin-left: 0; }
     .move-panel .mode-row { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
     .move-panel .mode-switch { padding: 4px 8px; color: #514194; background: #e7e2fb; font-size: 11px; }
     .move-panel .mode-switch[aria-pressed="true"] { color: white; background: var(--purple); }
@@ -435,7 +438,7 @@ created: 2026-09-10
       const buttons = mode === 'batch'
         ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which entry each workspace joins, or that it starts the group, and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close</button></div>`
         : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="${escapeHtml(detail)}">${mode === 'archive' ? 'Copy archive' : 'Copy move + resume'}</button>`;
-      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">${title}</strong><span class="count-pill">${selected.length} selected</span><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div></div>
+      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">${title}</strong><span class="count-pill">${selected.length} selected</span><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div><button class="mp-close" type="button" data-panel-close="tabs" aria-label="Dismiss and clear the selection" title="Dismiss and clear the selection (Esc)">&times;</button></div>
         ${blockedGroup ? '<p class="mp-note">The archive group\'s last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.</p>' : ''}
         <div class="mp-body"><label class="mp-dest"><span>${label}</span><select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>${buttons}</div>`;
     };
@@ -444,7 +447,7 @@ created: 2026-09-10
       const selected = data.archives.flatMap(archive => (archive.tabs || []).map(tab => ({ archive, tab }))).filter(({ archive, tab }) => state.selectedArchivedTabs.has(archiveTabKey(archive.archive_id, tab.id)));
       if (!selected.length) return '';
       const archiveIds = new Set(selected.map(({ archive }) => archive.archive_id));
-      if (archiveIds.size !== 1) return '<div class="mp-head"><strong>Restore selected archived tabs</strong></div><p class="mp-note">Select tabs from one archive at a time.</p>';
+      if (archiveIds.size !== 1) return '<div class="mp-head"><strong>Restore selected archived tabs</strong><button class="mp-close" type="button" data-panel-close="archived" aria-label="Dismiss and clear the selection" title="Dismiss and clear the selection (Esc)">&times;</button></div><p class="mp-note">Select tabs from one archive at a time.</p>';
       const archiveId = selected[0].archive.archive_id;
       const destinations = data.workspaces || [];
       if (!destinations.some(workspace => workspace.id === state.archiveDestinations[archiveId])) state.archiveDestinations[archiveId] = destinations[0]?.id || '';
@@ -456,7 +459,7 @@ created: 2026-09-10
       const detail = unavailable.length
         ? `${unavailable.length} selected tab${unavailable.length === 1 ? ' has' : 's have'} an unavailable agent session. Register it before restoring.`
         : 'Rebuilds the selected tabs in the destination and resumes verified Codex or Claude sessions.';
-      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">Restore selected archived tabs</strong><span class="count-pill">${selected.length} selected</span></div>
+      return `<div class="mp-head"><strong title="${escapeHtml(detail)}">Restore selected archived tabs</strong><span class="count-pill">${selected.length} selected</span><button class="mp-close" type="button" data-panel-close="archived" aria-label="Dismiss and clear the selection" title="Dismiss and clear the selection (Esc)">&times;</button></div>
         ${unavailable.length ? `<p class="mp-note">${escapeHtml(detail)}</p>` : ''}
         <div class="mp-body"><label class="mp-dest"><span>To workspace</span><select id="restore-destination" ${destinations.length ? '' : 'disabled'}><option value="">Choose destination</option>${destinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === destination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}</select></label><button class="primary" type="button" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="${escapeHtml(detail)}">Copy restore + resume</button></div>`;
     };
@@ -484,6 +487,17 @@ created: 2026-09-10
       </article>`;
     };
     const VIEW_BADGES = { restart: 'restart tools', workspaces: 'live snapshot', archives: 'live snapshot', group: 'live snapshot', context: 'context gauge' };
+    // The close button and Esc drop the selection, which is what keeps the bottom panel open.
+    const dismissSelection = () => {
+      if (!document.querySelector('#move-panel').childElementCount) return false;
+      (state.view === 'archives' ? state.selectedArchivedTabs : state.selectedTabs).clear();
+      render();
+      return true;
+    };
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '')) return;
+      if (dismissSelection()) event.preventDefault();
+    });
     const render = () => {
       const data = state.data;
       document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.view === state.view)));
@@ -534,6 +548,7 @@ created: 2026-09-10
       document.querySelector('#workspaces').innerHTML = workspaces.length ? workspaces.map(state.compact ? compactWorkspaceView : workspaceView).join('') : '<div class="empty">No workspaces match this filter.</div>';
       document.querySelector('#archives').innerHTML = archives.length ? archives.map(archiveView).join('') : '<div class="empty">No archives yet. Preview an archive from a workspace when you are ready to close it.</div>';
       document.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => copy(button.dataset.command, button.dataset.copied)));
+      document.querySelectorAll('[data-panel-close]').forEach(button => button.addEventListener('click', dismissSelection));
       document.querySelectorAll('[data-select-tab]').forEach(input => input.addEventListener('change', event => {
         if (event.target.checked) state.selectedTabs.add(event.target.dataset.selectTab);
         else state.selectedTabs.delete(event.target.dataset.selectTab);
