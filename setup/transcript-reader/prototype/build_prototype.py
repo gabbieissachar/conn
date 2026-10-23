@@ -445,7 +445,7 @@ def find_session_file(session: str) -> Path | None:
     candidate = Path(session).expanduser()
     if candidate.is_file():
         return candidate
-    matches = sorted(PROJECTS.glob(f"*/{session}.jsonl"))
+    matches = [path for path in all_logs() if path.stem == session]
     return matches[0] if matches else None
 
 
@@ -920,9 +920,58 @@ def attach_documents(sessions: list[dict]) -> dict[str, dict]:
 CLEAR_COMMAND = "<command-name>/clear</command-name>"
 HEAD_RECORDS = 80
 
+# Walking one chain looks at every log in every project folder, several times over, and a
+# build walks one chain per listed session. So a build lists each folder and reads each
+# log's head once, and again only after the folder or the log changes.
+_LISTINGS: dict[Path, tuple[int, list[Path]]] = {}
+_HEADS: dict[Path, tuple[tuple[int, int], list[dict]]] = {}
+_BRIDGES: dict[tuple[Path, str], tuple[tuple[int, int], bool]] = {}
+
+
+def file_version(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def listing(folder: Path, pattern: str) -> list[Path]:
+    """The entries of <folder> matching <pattern>, listed again only once the folder changes."""
+    try:
+        stamp = folder.stat().st_mtime_ns
+    except OSError:
+        return []
+    cached = _LISTINGS.get(folder / pattern)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    found = sorted(folder.glob(pattern))
+    _LISTINGS[folder / pattern] = (stamp, found)
+    return found
+
+
+def logs_in(folder: Path) -> list[Path]:
+    return listing(folder, "*.jsonl")
+
+
+def all_logs() -> list[Path]:
+    """Every session log, in every project folder."""
+    return [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
+
 
 def head_records(path: Path, limit: int = HEAD_RECORDS) -> list[dict]:
     """The first parseable records of a log, without reading the whole file."""
+    version = file_version(path) if limit == HEAD_RECORDS else None
+    cached = _HEADS.get(path)
+    if version and cached and cached[0] == version:
+        return cached[1]
+    records = read_head(path, limit)
+    if version:
+        _HEADS[path] = (version, records)
+    return records
+
+
+def read_head(path: Path, limit: int) -> list[dict]:
     records = []
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -969,6 +1018,17 @@ def bridge_id(records: list[dict]) -> str:
 def names_bridge(path: Path, bridge: str) -> bool:
     """Whether a log's own bridge-session records name this remote-control link. A turn that
     merely quotes the id (a search, a tool result) does not count."""
+    version = file_version(path)
+    cached = _BRIDGES.get((path, bridge))
+    if version and cached and cached[0] == version:
+        return cached[1]
+    found = reads_bridge(path, bridge)
+    if version:
+        _BRIDGES[(path, bridge)] = (version, found)
+    return found
+
+
+def reads_bridge(path: Path, bridge: str) -> bool:
     needle = f'"{bridge}"'
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -1009,8 +1069,8 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
                 best = (abs(gap), other)
         return best[1] if best else None
     bridge = bridge_id(head_records(path))
-    linked = nearest(PROJECTS.glob("*/*.jsonl"), 30, lambda other: names_bridge(other, bridge)) if bridge else None
-    return linked or nearest(path.parent.glob("*.jsonl"), 5)
+    linked = nearest(all_logs(), 30, lambda other: names_bridge(other, bridge)) if bridge else None
+    return linked or nearest(logs_in(path.parent), 5)
 
 
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
@@ -1029,7 +1089,7 @@ def session_chain(path: Path, limit: int = 20) -> list[Path]:
             break
         after = None
         # The next log may sit in another project folder (see cleared_from).
-        for other in sorted({*chain[-1].parent.glob("*.jsonl"), *PROJECTS.glob("*/*.jsonl")}):
+        for other in sorted({*logs_in(chain[-1].parent), *all_logs()}):
             if other in chain:
                 continue
             try:
