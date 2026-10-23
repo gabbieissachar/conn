@@ -54,6 +54,7 @@ function fakeHerdr() {
       { pane_id: 'w1:p4', tab_id: 'w1:t1', terminal_title_stripped: 'zsh' },
     ],
     promptResult: { code: 0, stdout: '{}', stderr: '' },
+    keysResult: { code: 0, stdout: '{}', stderr: '' },
     calls: [],
   };
   const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
@@ -71,10 +72,13 @@ function fakeHerdr() {
       return ok(JSON.stringify({ result: { snapshot: { focused_pane_id: herdr.focused, panes: herdr.panes, tabs: [{ tab_id: 'w1:t2', label: 'fm-task-tab' }] } } }));
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
+    if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
     if (file === 'python3') return ok('');
     return { code: 1, stdout: '', stderr: 'unexpected command', timedOut: false, truncated: false };
   };
-  herdr.prompts = () => herdr.calls.filter((call) => call.args[2] === 'agent');
+  herdr.prompts = () => herdr.calls.filter((call) => call.args[2] === 'agent' && call.args[3] === 'prompt');
+  herdr.keys = () => herdr.calls.filter((call) => call.args[2] === 'agent' && call.args[3] === 'send-keys');
+  herdr.agentCalls = () => herdr.calls.filter((call) => call.args[2] === 'agent');
   herdr.readerRuns = () => herdr.calls.filter((call) => call.file === 'python3').map((call) => call.args.slice(2));
   return herdr;
 }
@@ -95,7 +99,7 @@ async function start({ env = {}, outParts } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, now: () => clock });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, now: () => clock, pause: async () => {} });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -245,7 +249,7 @@ test('api: every call needs the token; there is no endpoint that hands it out', 
     assert.equal((await t.request({ method: 'OPTIONS', path: '/api/transcript-reader/send' })).status, 403);
     assert.equal((await t.send({ session_id: A, text: 'hi' }, { 'Content-Type': 'text/plain' })).status, 415);
     assert.equal((await t.send({ session_id: A, text: 'hi' }, { Origin: 'http://evil.example' })).status, 403);
-    assert.equal(t.herdr.prompts().length, 0);
+    assert.equal(t.herdr.agentCalls().length, 0);
   } finally { await t.close(); }
 });
 
@@ -360,6 +364,36 @@ test('send: bad input, unlisted sessions, missing panes and blocked agents are r
     const blocked = await t.send({ session_id: B, text: 'hi' });
     assert.equal(blocked.status, 409);
     assert.equal(blocked.json.code, 'agent_blocked');
+    assert.equal(t.herdr.agentCalls().length, 0);
+  } finally { await t.close(); }
+});
+
+test('send: the pane\'s input box is emptied, a few keys at a time, before the message goes', async () => {
+  const t = await start();
+  try {
+    const sent = await t.send({ session_id: B, text: 'hi' });
+    assert.equal(sent.status, 200, sent.raw);
+    const agent = t.herdr.agentCalls();
+    const keys = t.herdr.keys();
+    assert.equal(keys.length, 25);
+    assert.deepEqual(agent.slice(0, keys.length), keys, 'every clearing call comes before the prompt');
+    assert.deepEqual(agent[agent.length - 1].args, ['--session', 'esim', 'agent', 'prompt', 'w1:p2', 'hi']);
+    for (const call of keys) {
+      assert.deepEqual(call.args.slice(0, 5), ['--session', 'esim', 'agent', 'send-keys', 'w1:p2']);
+      // Only line-deleting keys: never ctrl+c or esc, which would stop a working agent.
+      assert.deepEqual(call.args.slice(5), ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u']);
+    }
+  } finally { await t.close(); }
+});
+
+test('send: when Herdr cannot empty the input box, the message is not sent', async () => {
+  const t = await start();
+  try {
+    t.herdr.keysResult = { code: 1, stdout: '', stderr: 'socket gone' };
+    const failed = await t.send({ session_id: A, text: 'hi' });
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'herdr_failed');
+    assert.equal(t.herdr.keys().length, 1);
     assert.equal(t.herdr.prompts().length, 0);
   } finally { await t.close(); }
 });

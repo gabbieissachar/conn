@@ -20,6 +20,7 @@ Opened that way, the page:
 - **Refreshes itself.** When a listed session writes a new turn, the server rebuilds the pages (at most every 3 seconds, only while a page is open) and the page swaps in the new turns where you are reading. When the page's own code changes it reloads, keeping the replies you expanded and your place.
 - **Follows Herdr.** With "Follow Herdr" on, the reader shows the session of the pane Herdr has focused. A session not on the reading list is added. An address that names a session (`#s=…`) wins when the page opens.
 - **Sends replies.** "Reply" on a reply, or "Comment on this" after selecting a passage in it, opens a composer. "Send" puts the exact text shown under "Sends exactly" into that session's Herdr pane. It points at the reply instead of copying it, for example `Re your reply at 10:57 ("Checkpoint for group A"): A2=link-only`. The answer sheet's Send does the same with the picked answers.
+- **Empties the pane's input box before sending.** Text typed in the Herdr pane and not sent would otherwise join the front of the message, so each send first deletes it (Ctrl+K and Ctrl+U, up to about 100 screen lines). These keys never stop a working agent, unlike Ctrl+C or Esc. Anything you had typed there is gone, so send from the pane itself if you want to keep it.
 
 A `file://` copy of the page still reads, but cannot refresh, follow or send.
 

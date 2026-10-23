@@ -8,8 +8,9 @@
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
-//   POST /api/transcript-reader/send                { session_id, text }: the text goes to the
-//                                                   one live Herdr pane running that session
+//   POST /api/transcript-reader/send                { session_id, text }: empties the input box
+//                                                   of the one live Herdr pane running that
+//                                                   session, then sends the text there
 //
 // The pages embed private transcripts, so they are served here rather than by the
 // shared static handler, which sends Access-Control-Allow-Origin: *. Every route
@@ -47,6 +48,15 @@ const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 // sequence (such as the end of a bracketed paste) can reach the terminal.
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const MAX_TEXT = 4000;
+// Text left unsent in the pane's input box would join the front of a message, so send
+// empties the box first. Ctrl+K and Ctrl+U delete to the end and the start of one screen
+// line, and at a line's end or start remove the line break, so pairs of them empty the box
+// from wherever the cursor is, and neither interrupts a working agent the way Ctrl+C or
+// Esc would. Claude Code ignored a burst of 32 pairs in one write (25 went through), so the
+// keys go a few pairs per call with a pause between. 25 calls clear 100 screen lines.
+const CLEAR_KEYS = ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u'];
+const CLEAR_CALLS = 25;
+const CLEAR_PAUSE_MS = 40;
 const MAX_BODY_BYTES = 16 * 1024;
 const SCAN_TTL_MS = 700;
 const REBUILD_GAP_MS = 3000;
@@ -111,6 +121,7 @@ function parseJson(text) {
 
 function create({
   root, port, runner = defaultRunner, env = process.env, now = () => Date.now(),
+  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
 } = {}) {
@@ -286,6 +297,11 @@ function create({
     if (sending) throw new RequestError('Another message is still being sent.', 409, 'busy');
     sending = true;
     try {
+      for (let i = 0; i < CLEAR_CALLS; i += 1) {
+        if (i) await pause(CLEAR_PAUSE_MS);
+        const cleared = await runner(herdrBin, ['--session', pane.herdr, 'agent', 'send-keys', pane.pane_id, ...CLEAR_KEYS], { env: runEnv(), timeoutMs: 5000 });
+        if (cleared.code !== 0) throw new RequestError('Herdr could not empty the pane\'s input box, so nothing was sent. Check the pane before sending again.', 502, 'herdr_failed');
+      }
       const result = await runner(herdrBin, ['--session', pane.herdr, 'agent', 'prompt', pane.pane_id, text], { env: runEnv(), timeoutMs: 15000 });
       if (result.code !== 0) {
         if (/agent_blocked/.test(result.stdout + result.stderr)) throw new RequestError('The agent is waiting at a permission prompt or question, so nothing was sent. Answer it in Herdr first.', 409, 'agent_blocked');
