@@ -949,7 +949,8 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__TEMPLATE_HASH__", template_hash).replace("__PAYLOAD__", data)
     out.parent.mkdir(parents=True, exist_ok=True)
     for target, text in ((out, page), (out.with_suffix(".stamp"), repr(payload["generated"]))):
-        partial = target.with_name(f".{target.name}.partial")
+        # A rebuild started by hand can overlap the server's own, so each writes its own file.
+        partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
         partial.write_text(text, encoding="utf-8")
         os.replace(partial, target)
 
