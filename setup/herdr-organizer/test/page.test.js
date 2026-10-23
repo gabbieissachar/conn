@@ -446,6 +446,14 @@ test('context view: the Codex credit chips read through codex-credits only and p
   assert.equal(/auth\.json|access_token|Bearer/.test(view), false, 'the page never touches a credential');
 });
 
+test('context view: the Codex month chip is a share of the 3,000 credit limit with the Claude amber and red lines', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /CODEX_MONTH_LIMIT = 3000/);
+  assert.match(view, /percent = item\.credits \/ CODEX_MONTH_LIMIT \* 100;\s*const level = percent >= PLAN_HIGH \? 'bad' : percent >= PLAN_WARN \? 'warn' : ''/);
+  assert.match(view, /codexMonthChip\(month,/, 'the month chip uses the limit view and the week chip stays plain');
+  assert.match(view, /Over the \$\{CODEX_MONTH_LIMIT\.toLocaleString\(\)\} limit by/, 'going over the limit is said in the tooltip');
+});
+
 test('workspaces view: the compact toggle shows names and tick boxes only, escaped, and is remembered safely', () => {
   const view = html.slice(html.indexOf('const compactTabView'), html.indexOf('const workspaceView'));
   assert.match(view, /data-select-tab="\$\{escapeHtml\(tab\.id\)\}"/, 'compact rows keep the selection tick box');

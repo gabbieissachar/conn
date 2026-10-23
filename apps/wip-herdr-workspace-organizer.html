@@ -1493,6 +1493,8 @@ created: 2026-09-10
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
     const codex = { loading: false, data: null, error: '', at: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
+    // The captain's monthly Codex credit limit; the Month chip reads as a share of it, amber and red on the same lines as the Claude windows.
+    const CODEX_MONTH_LIMIT = 3000;
     const planClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const planWhen = iso => {
       const ms = Date.parse(iso) - Date.now();
@@ -1532,6 +1534,13 @@ created: 2026-09-10
     const creditText = value => (value >= 100 ? Math.round(value).toLocaleString() : value >= 10 ? value.toFixed(1) : value.toFixed(2)).toString();
     const usdText = value => `${value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(value >= 10 ? 1 : 2)}$`;
     const codexChip = (name, item, title) => `<span class="plan-chip" title="${escapeHtml(title)}"><span class="plan-dot"></span>${escapeHtml(name)} <b>${creditText(item.credits)}</b><span class="plan-reset">credits (${usdText(item.usd)})</span></span>`;
+    const codexMonthChip = (item, title) => {
+      const percent = item.credits / CODEX_MONTH_LIMIT * 100;
+      const level = percent >= PLAN_HIGH ? 'bad' : percent >= PLAN_WARN ? 'warn' : '';
+      const left = CODEX_MONTH_LIMIT - item.credits;
+      const note = left >= 0 ? `${creditText(left)} credits left of the ${CODEX_MONTH_LIMIT.toLocaleString()} limit.` : `Over the ${CODEX_MONTH_LIMIT.toLocaleString()} limit by ${creditText(-left)} credits.`;
+      return `<span class="plan-chip ${level}" title="${escapeHtml(`${title} ${note} Amber from ${PLAN_WARN}%, red from ${PLAN_HIGH}%.`)}"><span class="plan-dot"></span>Month to date <b>${Math.round(percent)}%</b><span class="plan-reset">${creditText(item.credits)} of ${CODEX_MONTH_LIMIT.toLocaleString()} credits (${usdText(item.usd)})</span></span>`;
+    };
     const codexRail = () => {
       let chips;
       if (codex.error) chips = `<span class="plan-chip warn"><span class="plan-dot"></span>Codex credits unavailable</span>`;
@@ -1540,7 +1549,7 @@ created: 2026-09-10
         const { week, month, models, data_through: through, usd_per_credit: rate } = codex.data;
         const cost = ` Cost is credits x $${rate} per credit.`;
         const split = models.length ? ` Month by model: ${models.map(item => `${item.model} ${creditText(item.credits)}`).join(', ')}.` : '';
-        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${codexChip('Month to date', month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`)}`;
+        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${codexMonthChip(month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`)}`;
       }
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       const button = `<button id="codex-reload" type="button" title="Read Codex credits again" ${codex.loading ? 'disabled' : ''}>${codex.loading ? 'Reading…' : 'Refresh credits'}</button>`;
