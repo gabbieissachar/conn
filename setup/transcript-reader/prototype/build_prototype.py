@@ -144,7 +144,7 @@ def wake_label(text: str) -> tuple[str, str]:
 
 
 def classify_input(text: str, origin_kind: str | None, is_meta: bool) -> tuple[str, str, str]:
-    """(source, kind, label). source is captain, firstmate, wake or session."""
+    """(source, kind, label). source is captain, firstmate, wake or session; peer_input adds peer."""
     stripped = text.strip()
     if origin_kind == "task-notification" or stripped.startswith("<task-notification>"):
         kind, label = wake_label(text)
@@ -167,6 +167,27 @@ def classify_input(text: str, origin_kind: str | None, is_meta: bool) -> tuple[s
         tail = f" {args.group(1).strip()}" if args and args.group(1).strip() else ""
         return "captain", "command", f"{command.group(1)}{tail}"
     return "captain", "message", "You"
+
+
+def peer_input(origin: dict) -> tuple[str, str, str] | None:
+    """(source, kind, label) for a message from another agent session, else None.
+
+    Claude Code marks these isMeta, so without this they read as command output.
+    A hand-back is a background agent reporting its finished task, folded like a
+    wake-up; anything else is a message another session sent this one.
+    """
+    if origin.get("kind") != "peer":
+        return None
+    name = str(origin.get("name") or origin.get("from") or "another session").strip()
+    if origin.get("handback"):
+        return "wake", "handback", f"Hand-back from {name}"
+    return "peer", "message", f"From {name}"
+
+
+def peer_text(origin: dict, text: str) -> str:
+    """The message itself: the origin's body, without the wrapper the log adds around it."""
+    body = origin.get("body")
+    return body if isinstance(body, str) and body.strip() else text
 
 
 def clean_input(text: str) -> str:
@@ -297,10 +318,12 @@ def session_exchanges(records: list[dict]) -> list[dict]:
             text = block_text((record.get("message") or {}).get("content"))
             if not text.strip():
                 continue
-            origin = (record.get("origin") or {}).get("kind")
-            source, sub, label = classify_input(text, origin, bool(record.get("isMeta")))
+            origin = record.get("origin") or {}
+            peer = peer_input(origin)
+            source, sub, label = peer or classify_input(text, origin.get("kind"), bool(record.get("isMeta")))
             if source == "session" and sub == "command-output":
                 continue
+            text = peer_text(origin, text) if peer else text
             current = new_exchange(source, sub, label, clean_input(text), record.get("timestamp"))
             current["signal_task"] = signal_task(text) if source == "wake" else None
             exchanges.append(current)
@@ -308,8 +331,10 @@ def session_exchanges(records: list[dict]) -> list[dict]:
             attachment = record["attachment"]
             prompt = attachment.get("prompt")
             text = prompt if isinstance(prompt, str) else block_text(prompt)
-            origin = (attachment.get("origin") or {}).get("kind")
-            source, sub, label = classify_input(text, origin, False)
+            origin = attachment.get("origin") or {}
+            peer = peer_input(origin)
+            source, sub, label = peer or classify_input(text, origin.get("kind"), False)
+            text = peer_text(origin, text) if peer else text
             if source == "wake" or current is None:
                 if current is not None:
                     current["notices"].append({"label": label, "signal_task": signal_task(text) if source == "wake" else None})
@@ -519,7 +544,8 @@ def captain_events(home: dict, exchanges: list[dict], since: float) -> list[dict
         if exchange["source"] == "captain":
             events.append({"kind": "captain", "state": "message", "from": "captain", "to": home["id"], "home": home["id"],
                            "at": exchange["at"], "text": exchange["input"], "ref": index})
-        if exchange["reply"] and (exchange["source"] == "captain" or exchange["verdict"] == "needs-you"):
+        # A reply to another agent session is not addressed to the captain.
+        if exchange["reply"] and exchange["source"] != "peer" and (exchange["source"] == "captain" or exchange["verdict"] == "needs-you"):
             lines = exchange["reply"].splitlines()
             events.append({"kind": "reply", "state": exchange["verdict"], "from": home["id"], "to": "captain", "home": home["id"],
                            "at": exchange["reply_at"] or exchange["at"], "text": exchange["reply"], "ref": index,

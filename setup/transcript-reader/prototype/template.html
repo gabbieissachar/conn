@@ -75,6 +75,7 @@
   .input { margin: 18px 0 6px; padding: 8px 11px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .input.captain { background: var(--you-wash); border: 1px solid color-mix(in srgb, var(--you) 30%, transparent); margin-left: 2.2rem; }
   .input.firstmate { background: var(--mate-wash); border: 1px solid color-mix(in srgb, var(--mate) 30%, transparent); margin-right: 1.2rem; }
+  .input.peer { background: var(--wash); border: 1px solid var(--line); margin-right: 1.2rem; }
   .who { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
   .who b { color: var(--ink); }
   .input.captain .who b { color: var(--you); }
@@ -83,7 +84,7 @@
   .clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5em; background: linear-gradient(transparent, var(--paper)); }
   .input .clip::after { background: none; }
   .more { border: 0; background: none; color: var(--you); padding: 2px 0; font-size: 13px; }
-  .reply { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin: 6px 0 4px; }
+  .reply { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin: 6px 0 4px; overflow-wrap: anywhere; }
   .reply.needs { border-left: 4px solid var(--ask-line); }
   .chip { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
   .chip.needs { background: var(--ask-wash); color: var(--ask); }
@@ -551,7 +552,7 @@
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
     row.append(select, prev, next, needs, wakes, shut, follow);
     const count = p => exs.filter(p).length;
-    const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
+    const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.source === "peer") ? count(e => e.source === "peer") + " from other sessions · " : ""}${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
     const pane = session && session.pane;
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
