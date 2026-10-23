@@ -4632,6 +4632,15 @@ class NativeHerdr(LayoutHerdr):
             pane["agent_session"] = {"value": session_id}
         self.data["panes"].append(pane)
 
+    def add_tab(self, wid, tab_id, tab_label="main", status="unknown", agent=None, session_id=None):
+        self.data["tabs"].append({"workspace_id": wid, "tab_id": tab_id, "label": tab_label})
+        pane = {"tab_id": tab_id, "pane_id": f"{tab_id}:p1", "agent_status": status}
+        if agent:
+            pane["agent"] = agent
+        if session_id:
+            pane["agent_session"] = {"value": session_id}
+        self.data["panes"].append(pane)
+
     def run_json(self, arguments, _session):
         if arguments[:2] == ["workspace", "create"]:
             wid = f"w{20 + len(self.created)}"
@@ -4643,6 +4652,11 @@ class NativeHerdr(LayoutHerdr):
     def socket_call(self, session, method, params):
         if method == "layout.apply":
             self.applied.append(params)
+            if params.get("workspace_id"):
+                tab = f"{params['workspace_id']}:t9"
+                return {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": f"{tab}:p1"}}}
+        if method == "layout.export" and any(pane["pane_id"] == f"{params['tab_id']}:p1" for pane in self.data["panes"]) and not params["tab_id"].endswith(":t1"):
+            return {"layout": {"tab_id": params["tab_id"], "root": {"type": "pane", "pane_id": f"{params['tab_id']}:p1"}}}
         return super().socket_call(session, method, params)
 
 
@@ -4714,7 +4728,7 @@ class SnapshotRestoreTests(unittest.TestCase):
         archive = self.archive()
         self.assertEqual(archive["status"], "resumed")
         self.assertTrue(archive["restore"]["adopted_native_workspace"])
-        self.assertIn("already brought this workspace back", self.output)
+        self.assertIn("already open, so nothing was rebuilt", self.output)
 
     def test_an_agent_herdr_already_runs_is_not_resumed_again(self):
         self.write_archive()
@@ -4723,11 +4737,21 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertEqual(self.herdr.sent, [])
         self.assertEqual(self.herdr.created, [])
 
-    def test_a_pane_with_any_agent_is_left_alone(self):
+    def test_a_pane_running_another_agent_is_never_taken_for_the_captured_one(self):
         self.write_archive()
         self.herdr.add_workspace("w9", "Alpha", status="working", agent="claude")
-        self.run_restore()
+        self.assertEqual(self.run_restore(), "native_partial")
         self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.herdr.created, [])
+        self.assertEqual(self.archive()["status"], "archived", "the captured session is not running anywhere, so the member stays")
+        self.assertIn("runs another agent session", self.output)
+
+    def test_a_pane_running_a_different_session_leaves_the_archive_archived(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id="99999999-0000-0000-0000-000000000000")
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual(self.herdr.sent, [])
+        self.assertEqual(self.archive()["status"], "archived")
 
     def test_nothing_open_builds_the_workspace_as_before(self):
         self.write_archive()
@@ -4771,7 +4795,7 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertEqual(self.run_restore(resume_agents=False), "already_laid_out")
         self.assertEqual(self.herdr.created, [])
         self.assertEqual(self.archive()["status"], "archived")
-        self.assertIn("Herdr already brought it back as workspace w9", self.output)
+        self.assertIn("is already open as workspace w9", self.output)
 
     def test_an_ordinary_archive_is_never_matched_against_open_workspaces(self):
         self.write_archive(snapshot=False)
@@ -4822,6 +4846,49 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertEqual(self.herdr.applied, [], "the open tab is not rebuilt")
         self.assertEqual(self.herdr.sent, ["w9:p1"])
         self.assertIn("already open", output.getvalue())
+
+    def write_two_main_tabs(self):
+        self.write_archive()
+        archive = self.archive()
+        first = archive["capture"]["tabs"][0]
+        second = json.loads(json.dumps(first))
+        second.update({"source_tab_id": "w1:t2", "layout": {"root": {"type": "pane", "pane_id": "w1:p2"}}})
+        second["agent_restores"][0].update({"source_pane_id": "w1:p2", "session_id": "S2-session", "resume_command": "codex resume s2"})
+        archive["capture"]["tabs"].append(second)
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
+
+    def restore_one_tab(self, tab):
+        with redirect_stdout(io.StringIO()):
+            ORGANIZER.restore_tabs_command(
+                argparse.Namespace(archive=self.ARCHIVE_ID, tab=[tab], to_workspace="w9", resume_agents=True,
+                                   allow_unresumable_agents=False, force=False, execute=True, confirm=self.ARCHIVE_ID, session="esim")
+            )
+
+    def test_restoring_the_second_same_label_tab_never_adopts_the_live_tab_of_the_first(self):
+        self.write_two_main_tabs()
+        self.herdr.add_workspace("w9", "Elsewhere", session_id=self.SESSION_ID, status="idle", agent="codex")
+        self.restore_one_tab("w1:t2")
+        self.assertEqual(len(self.herdr.applied), 1, "the second tab is rebuilt, not mistaken for the open one")
+        self.assertEqual(self.herdr.sent, ["w9:t9:p1"], "only the rebuilt tab gets its resume, the first tab's live agent gets nothing")
+        remaining = [tab["source_tab_id"] for tab in self.archive()["capture"]["tabs"]]
+        self.assertEqual(remaining, ["w1:t1"], "only the restored tab leaves the archive; the first stays archived")
+
+    def test_restoring_the_first_tab_adopts_its_live_twin_even_with_a_second_same_label_tab(self):
+        self.write_two_main_tabs()
+        self.herdr.add_workspace("w9", "Elsewhere", session_id=self.SESSION_ID, status="idle", agent="codex")
+        self.restore_one_tab("w1:t1")
+        self.assertEqual(self.herdr.applied, [])
+        remaining = [tab["source_tab_id"] for tab in self.archive()["capture"]["tabs"]]
+        self.assertEqual(remaining, ["w1:t2"])
+
+    def test_a_live_tab_running_the_other_session_is_paired_with_its_own_captured_tab(self):
+        self.write_two_main_tabs()
+        self.herdr.add_workspace("w9", "Elsewhere", tab_label="other")
+        self.herdr.add_tab("w9", "w9:t2", status="idle", agent="codex", session_id="S2-session")
+        self.herdr.add_tab("w9", "w9:t3")
+        self.restore_one_tab("w1:t2")
+        self.assertEqual(self.herdr.applied, [])
+        self.assertNotIn("w9:t2:p1", self.herdr.sent, "its own session is already running there")
 
     def test_a_tab_that_is_not_open_is_rebuilt_as_before(self):
         self.write_archive()

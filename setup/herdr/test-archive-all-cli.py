@@ -300,7 +300,7 @@ st = state(); st["snapshot"] = {"workspaces": [{"workspace_id": "w7", "label": "
 st["created"] = []; st["sent"] = []; state_path.write_text(json.dumps(st))
 r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); print(r.stdout.strip())
 st = state(); assert st["sent"] == ["w7:p1"], st["sent"]; assert len(st["created"]) == 1, st["created"]; ok("Alpha (back natively) got its resume in the open workspace; only Beta was built")
-assert "already brought this workspace back" in r.stdout; ok("the restore said it adopted what Herdr brought back")
+assert "already open, so nothing was rebuilt" in r.stdout; ok("the restore said it adopted what Herdr brought back")
 (snap_group,) = json.loads(run("list-batches", check=0).stdout); assert snap_group["members"] == [], snap_group; ok("both restored members left the group")
 r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["sent"]) == 1; ok("a second restore changes nothing")
 assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")

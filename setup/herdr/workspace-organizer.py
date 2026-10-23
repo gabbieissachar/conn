@@ -3485,14 +3485,15 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     selected_tabs = [archived_tab_by_id(archive, tab_id) for tab_id in selected_ids]
     # A snapshot tab may already be open in the destination because Herdr brought it back after a restart. Such a tab
     # is adopted, not rebuilt, and it is no leader-convention problem: it is the one tab, not a second.
+    # The pairing runs over every captured tab of the archive, not only the selected ones, so a live tab that belongs to
+    # a tab left behind is never taken for a selected one. Only the selected tabs' pairs are used.
     twins: dict[str, dict[str, Any]] = {}
     if archive.get("snapshot") and not args.force:
-        taken: set[str] = set()
-        for tab_id, tab in zip(selected_ids, selected_tabs, strict=True):
-            twin = live_twin_tab(snapshot, args.to_workspace, tab, args.session, taken)
-            if twin:
-                taken.add(twin["tab_id"])
-                twins[tab_id] = twin
+        captured = archive.get("capture", {}).get("tabs", [])
+        pairs, _conflicted = pair_live_twins(snapshot, args.to_workspace, captured, args.session)
+        for index, twin in pairs.items():
+            if str(captured[index].get("source_tab_id")) in selected_ids:
+                twins[str(captured[index].get("source_tab_id"))] = twin
     require_leader_restore_ok(
         snapshot, destination.get("label"), [tab for tab_id, tab in zip(selected_ids, selected_tabs, strict=True) if tab_id not in twins], True
     )
@@ -3610,7 +3611,7 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     resumed = sum(outcome.get("action") == "resumed" for outcome in all_outcomes)
     print(f"Restored {len(selected_tabs)} archived tab(s) into workspace {args.to_workspace}.")
     if twins:
-        print(f"{len(twins)} of them were already open (Herdr brought them back), so they were adopted and not rebuilt.")
+        print(f"{len(twins)} of them were already open, so they were adopted and not rebuilt.")
     print("They left the archive. Archiving one of them again starts a new archive." + (" The archive has no tab left, so it left its group." if not archive.get("capture", {}).get("tabs") else ""))
     print(f"Resumed {resumed} verified agent session(s).")
 
@@ -3680,25 +3681,73 @@ def layout_copy_of(archive: dict[str, Any], session: str | None) -> dict[str, An
     return {"workspace_id": str(workspace_id), "tab_ids": tab_ids, "pane_map": pane_map, "busy": busy}
 
 
-def live_twin_tab(
-    snapshot: dict[str, Any], workspace_id: str, captured_tab: dict[str, Any], session: str | None, taken: set[str]
-) -> dict[str, Any] | None:
-    """The live tab in this workspace that a capture was brought back as: the same label and the same layout shape.
-
-    `taken` holds the live tabs already paired with another captured tab. Ids alone never decide, because Herdr hands
-    closed ids out again; the label and the split structure have to agree as well.
+def twin_agent_fit(
+    snapshot: dict[str, Any], pane_map: dict[str, str], captured_tab: dict[str, Any], pane_sessions: dict[str, str]
+) -> int | None:
+    """How well a live tab fits a captured tab's agents: None when a pane of it runs an agent that is not the captured
+    session (a fresh agent Herdr relaunched, or another session), else the number of captured sessions running there.
     """
-    captured_root = captured_tab.get("layout", {}).get("root")
-    for live in tabs_for_workspace(snapshot, workspace_id):
-        tab_id = str(live.get("tab_id"))
-        if tab_id in taken or str(live.get("label") or "") != str(captured_tab.get("label") or ""):
+    panes = {str(pane.get("pane_id")): pane for pane in snapshot.get("panes", [])}
+    fit = 0
+    for restore in captured_tab.get("agent_restores", []):
+        if not restore.get("session_id"):
             continue
-        exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
-        live_root = exported.get("root") if isinstance(exported, dict) else None
-        if layout_topology(live_root) != layout_topology(captured_root):
+        new_pane_id = pane_map.get(str(restore.get("source_pane_id")))
+        pane = panes.get(str(new_pane_id))
+        if pane is None or not live_agent_running(pane):
             continue
-        return {"tab_id": tab_id, "pane_map": matching_pane_map(captured_root, live_root)}
-    return None
+        if pane_sessions.get(str(new_pane_id)) != str(restore["session_id"]):
+            return None
+        fit += 1
+    return fit
+
+
+def pair_live_twins(
+    snapshot: dict[str, Any], workspace_id: str, captured_tabs: list[dict[str, Any]], session: str | None
+) -> tuple[dict[int, dict[str, Any]], set[int]]:
+    """Pair the captured tabs with the live tabs of this workspace that they were brought back as.
+
+    A twin has the same label and the same layout shape. Ids alone never decide, because Herdr hands closed ids out
+    again. A live tab whose pane runs an agent other than the captured session is no twin: adopting it would drop the
+    captured session without resuming it. A tab with agents takes the live tab that runs its own session first, and each
+    live tab pairs with one captured tab only. Returns the pairs by captured-tab index, and the indexes whose look-alike
+    live tabs all run another agent.
+    """
+    pane_sessions = {pane_id: session_id for session_id, pane_id in live_agent_sessions(snapshot).items()}
+    exports: dict[str, Any] = {}
+    candidates: list[list[dict[str, Any]]] = []
+    conflicted: set[int] = set()
+    for index, captured_tab in enumerate(captured_tabs):
+        captured_root = captured_tab.get("layout", {}).get("root")
+        found: list[dict[str, Any]] = []
+        look_alike = False
+        for live in tabs_for_workspace(snapshot, workspace_id):
+            tab_id = str(live.get("tab_id"))
+            if str(live.get("label") or "") != str(captured_tab.get("label") or ""):
+                continue
+            if tab_id not in exports:
+                exported = socket_call(session, "layout.export", {"tab_id": tab_id}).get("layout")
+                exports[tab_id] = exported.get("root") if isinstance(exported, dict) else None
+            if layout_topology(exports[tab_id]) != layout_topology(captured_root):
+                continue
+            look_alike = True
+            pane_map = matching_pane_map(captured_root, exports[tab_id])
+            fit = twin_agent_fit(snapshot, pane_map, captured_tab, pane_sessions)
+            if fit is not None:
+                found.append({"tab_id": tab_id, "pane_map": pane_map, "fit": fit})
+        candidates.append(found)
+        if look_alike and not found:
+            conflicted.add(index)
+    pairs: dict[int, dict[str, Any]] = {}
+    taken: set[str] = set()
+    for index in sorted(range(len(captured_tabs)), key=lambda item: (not tab_session_ids(captured_tabs[item]), item)):
+        free = [twin for twin in candidates[index] if twin["tab_id"] not in taken]
+        if not free:
+            continue
+        best = max(free, key=lambda twin: twin["fit"])
+        taken.add(best["tab_id"])
+        pairs[index] = {"tab_id": best["tab_id"], "pane_map": best["pane_map"]}
+    return pairs, conflicted & (set(range(len(captured_tabs))) - set(pairs))
 
 
 def native_workspace_copy(archive: dict[str, Any], snapshot: dict[str, Any], session: str | None) -> dict[str, Any] | None:
@@ -3723,19 +3772,17 @@ def native_workspace_copy(archive: dict[str, Any], snapshot: dict[str, Any], ses
             if str(workspace.get("label") or "") != label:
                 continue
             workspace_id = str(workspace.get("workspace_id"))
-            taken: set[str] = set()
-            pane_map: dict[str, str] = {}
-            missing: list[str] = []
-            for tab in captured_tabs:
-                twin = live_twin_tab(snapshot, workspace_id, tab, session, taken)
-                if twin is None:
-                    missing.append(str(tab.get("label")))
-                    continue
-                taken.add(twin["tab_id"])
-                pane_map.update(twin["pane_map"])
+            pairs, conflicted = pair_live_twins(snapshot, workspace_id, captured_tabs, session)
+            missing = [
+                str(tab.get("label")) + (" (open, but it runs another agent session)" if index in conflicted else "")
+                for index, tab in enumerate(captured_tabs)
+                if index not in pairs
+            ]
             if missing:
                 missing_by_workspace[workspace_id] = missing
                 continue
+            taken = {twin["tab_id"] for twin in pairs.values()}
+            pane_map = {old: new for twin in pairs.values() for old, new in twin["pane_map"].items()}
             busy = {
                 str(pane.get("pane_id"))
                 for pane in snapshot.get("panes", [])
@@ -3807,7 +3854,7 @@ def restore_into_layout_copy(
         raise
     print(f"Restored archive {args.archive} by resuming its agents in the open workspace {copy['workspace_id']}. No new workspace was made.")
     if native:
-        print("Herdr had already brought this workspace back after the restart, so nothing was rebuilt.")
+        print("The workspace was already open, so nothing was rebuilt.")
     print(f"Resumed {sum(outcome.get('action') == 'resumed' for outcome in outcomes)} verified agent session(s).")
     skipped_running = sum(outcome.get("reason") == "agent_running" for outcome in outcomes)
     if skipped_running:
@@ -3957,7 +4004,7 @@ def restore_archive(args: argparse.Namespace) -> str:
     if not copy:
         require_leader_restore_ok(live_snapshot, leader_archive_workspace_label(capture), capture.get("tabs", []), False)
     if copy and not args.resume_agents:
-        where = "Herdr already brought it back as" if adopted_native else "already has its layout open as"
+        where = "is already open as" if adopted_native else "already has its layout open as"
         print(
             f"Archive {args.archive} {where} workspace {copy['workspace_id']}. Nothing was created. "
             "Run restore --resume-agents to resume the agents there, or add --force for another copy."

@@ -429,6 +429,15 @@ left archived with the reason and counted as left alone, never rebuilt on top;
 already-open tab of a snapshot member the same way. Leader tabs keep their rule:
 a natively restored one is adopted, never duplicated.
 
+A live tab only counts as a captured tab's twin if no pane of it runs an agent
+other than the captured session; a fresh agent Herdr relaunched there, or
+another session, leaves the member archived (`restore-tab` rebuilds that tab
+instead of adopting the open one). Pairing runs over all of the archive's
+tabs, so a live tab that belongs to a tab left behind is never taken for a
+selected one. Restoring a snapshot member while everything is still open
+adopts it and consumes it, as any restore does, so do not run `restore-batch`
+before the restart.
+
 ```sh
 herdr-organizer --session esim archive-all --snapshot
 herdr-organizer --session esim archive-all --snapshot --execute --confirm esim
