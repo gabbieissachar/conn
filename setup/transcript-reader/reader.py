@@ -7,7 +7,8 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py remove <session>...
   python3 setup/transcript-reader/reader.py list             the listed sessions
   python3 setup/transcript-reader/reader.py panes            live Herdr panes, to pick from
-  python3 setup/transcript-reader/reader.py rebuild          rebuild only (the server runs this when a log changes)
+  python3 setup/transcript-reader/reader.py rebuild          rebuild only (the server runs this when a log changes
+                                                             or a listed session's pane closes)
   python3 setup/transcript-reader/reader.py follow <id>      add one full session id, then rebuild only
                                                              (the server runs this for the pane Herdr focuses)
 
@@ -17,6 +18,11 @@ Herdr pane label (exact, or a unique part of the label or the pane's title).
 A pane cleared with /clear starts a new session log. A listed session is shown
 together with the sessions the same pane ran before and after it (one conversation,
 under the newest), and that newest session is added to the list.
+
+Every rebuild drops a listed session whose Herdr pane has closed: one that ran in a
+pane before, while neither it nor a later session of its pane runs in one now. A
+session never seen in a Herdr pane stays, and nothing is dropped while Herdr shows
+no pane at all (after a restart, before Herdr is back).
 
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
@@ -28,6 +34,7 @@ repo. Only session logs and Herdr's pane list are read, and only out/ is written
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -42,6 +49,7 @@ import build_prototype as builder  # noqa: E402
 OUT = HERE / "out"
 LIST = OUT / "sessions.txt"
 PAGE = OUT / "prototype.html"
+PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in; the builder writes it
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
@@ -89,7 +97,34 @@ def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS
     raise ValueError(f"no session or Herdr pane matches {name!r}; run `panes` to see the live ones")
 
 
+def drop_closed(ids: list[str]) -> list[str]:
+    """The list without the sessions whose Herdr pane has closed (see the module help)."""
+    live = builder.herdr_panes()
+    if not live:
+        return ids
+    try:
+        seen = json.loads(PANE_CACHE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        seen = {}
+    kept = []
+    for sid in ids:
+        path = builder.find_session_file(sid)
+        pane = [member.stem for member in builder.session_chain(path)] if path else [sid]
+        if any(member in live for member in pane) or not any(member in seen for member in pane):
+            kept.append(sid)
+        else:
+            print(f"Dropping {sid[:8]}: its Herdr pane has closed")
+    return kept
+
+
 def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
+    kept = drop_closed(ids)
+    if kept != ids:
+        ids = kept
+        write_list(ids)
+        if not ids:
+            print("Every listed session's pane has closed; the page keeps its last build")
+            return 1
     if not ids:
         print("No sessions listed yet. Add one: reader.py add <session id or Herdr pane label>")
         return 1
@@ -107,6 +142,7 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
         present += added
         write_list(ids)
     argv = ["--out", str(PAGE)] + [arg for sid in present for arg in ("--session", sid)]
+    sys.stdout.flush()  # keep this script's lines ahead of the builders' in a pipe
     if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
         return 1
     # The answer-sheet prototype reads the same list: replies that ask for keyed answers.

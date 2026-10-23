@@ -23,8 +23,9 @@
 // cuts off its opener. A script on another page of this origin therefore cannot
 // fetch, frame or open a page to read the token, the transcripts or send a prompt.
 //
-// Writes: reader.py rebuilds the pages when a listed session log changes, and adds
-// the session Herdr has focused to the reading list while a page follows focus.
+// Writes: reader.py rebuilds the pages when a listed session log changes or a listed
+// session's pane closes (dropping it from the reading list), and adds the session
+// Herdr has focused to the reading list while a page follows focus.
 // A prompt reaches a pane only through send, which the page calls on a click.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
 
@@ -134,7 +135,10 @@ function create({
   let scanning = null;
   const focusSeen = new Map();
   const focus = { seq: 0, herdr: null };
-  const build = { running: null, lastEnd: 0, failedAt: 0, error: null, failedAdds: new Map() };
+  const build = { running: null, lastEnd: 0, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false };
+  // Listed sessions seen running in a pane. One that leaves while Herdr still answers had
+  // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
+  const seenLive = new Set();
   let sending = false;
 
   // ------------------------------------------------------------- local records
@@ -245,7 +249,7 @@ function create({
     }).finally(() => { build.running = null; build.lastEnd = now(); });
   }
 
-  // Rebuild when a listed session's log is newer than the page, or add the focused session.
+  // Rebuild when a listed session's log is newer than the page or its pane closed, or add the focused session.
   function maybeRebuild(ids, focused, follow) {
     if (build.running || now() - build.lastEnd < REBUILD_GAP_MS) return;
     if (follow && focused && focused.session_id && !ids.includes(focused.session_id) && logPath(focused.session_id)) {
@@ -255,13 +259,25 @@ function create({
     if (build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS) return;
     const built = stamp('prototype.stamp');
     const newest = Math.max(0, ...ids.map((id) => { const file = logPath(id); return file ? mtimeMs(file) : 0; }));
-    if (ids.length && (built === null || newest > built * 1000)) runReader(['rebuild']);
+    if (ids.length && (build.paneClosed || built === null || newest > built * 1000)) { build.paneClosed = false; runReader(['rebuild']); }
+  }
+
+  function notePaneChanges(ids, sessions) {
+    if (!sessions.length) return;  // Herdr not answering says nothing about panes
+    const live = new Set(sessions.flatMap((session) => session.panes.map((pane) => pane.session_id)));
+    for (const id of seenLive) {
+      if (live.has(id)) continue;
+      seenLive.delete(id);
+      if (ids.includes(id)) build.paneClosed = true;
+    }
+    for (const id of ids) if (live.has(id)) seenLive.add(id);
   }
 
   async function state(follow) {
     const ids = listed();
     const sessions = await scan();
     const focused = trackFocus(sessions);
+    notePaneChanges(ids, sessions);
     maybeRebuild(ids, focused, follow);
     const panes = {};
     for (const session of sessions) {

@@ -55,12 +55,14 @@ function fakeHerdr() {
     ],
     promptResult: { code: 0, stdout: '{}', stderr: '' },
     keysResult: { code: 0, stdout: '{}', stderr: '' },
+    down: false,
     calls: [],
   };
   const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
   herdr.runner = async (file, args, options = {}) => {
     herdr.calls.push({ file, args: args.slice(), env: options.env });
     if (file === 'herdr' && args[0] === 'session') {
+      if (herdr.down) return { code: 1, stdout: '', stderr: 'herdr is not running', timedOut: false, truncated: false };
       return ok(JSON.stringify({ sessions: [
         { name: 'default', default: true, running: true },
         { name: '-h', default: false, running: true },
@@ -325,6 +327,29 @@ test('state: a listed log newer than the page starts one rebuild, spaced out', a
     await t.state();
     await t.settle();
     assert.equal(t.herdr.readerRuns().length, 1, 'a page newer than every log is left alone');
+  } finally { await t.close(); }
+});
+
+test('state: a listed session whose pane closes starts one rebuild; Herdr not answering starts none', async () => {
+  const t = await start();
+  try {
+    await t.state();
+    await t.settle();
+    const panes = t.herdr.panes;
+    t.herdr.panes = panes.filter((pane) => pane.pane_id !== 'w1:p2');  // B's pane closed
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.equal(t.herdr.readerRuns().length, 1, 'one closed pane, one rebuild');
+    t.herdr.down = true;
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.equal(t.herdr.readerRuns().length, 1, 'no panes listed is not a closed pane');
   } finally { await t.close(); }
 });
 

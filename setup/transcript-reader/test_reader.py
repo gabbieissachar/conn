@@ -120,6 +120,67 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(self.rebuilds, [])
 
 
+class ClosedPanesTest(unittest.TestCase):
+    """A rebuild drops listed sessions whose Herdr pane has closed, and only those."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        folder = root / "projects" / "-Users-someone-home"
+        folder.mkdir(parents=True)
+        for sid in (A, B, C):
+            (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE)
+        builder.PROJECTS, reader.OUT = root / "projects", root / "out"
+        reader.LIST, reader.PANE_CACHE = reader.OUT / "sessions.txt", reader.OUT / "pane-labels.json"
+        reader.OUT.mkdir()
+        self.live = {}
+        builder.herdr_panes = lambda: self.live
+        self.chains = {}
+        builder.session_chain = lambda path: self.chains.get(path.stem, [path])
+
+    def tearDown(self):
+        builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE = self.saved
+        self.tmp.cleanup()
+
+    def seen(self, *ids):
+        reader.PANE_CACHE.write_text(json.dumps({sid: PANES.get(sid, PANES[A]) for sid in ids}), encoding="utf-8")
+
+    def test_a_session_seen_in_a_pane_that_no_longer_runs_is_dropped(self):
+        self.seen(A, B)
+        self.live = {A: PANES[A]}
+        self.assertEqual(reader.drop_closed([A, B, C]), [A, C], "B closed; C never ran in a Herdr pane")
+
+    def test_a_cleared_session_stays_while_its_pane_runs_a_later_one(self):
+        self.seen(A, B)
+        self.live = {C: PANES[C]}
+        log = builder.find_session_file
+        self.chains[B] = [log(B), log(C)]
+        self.assertEqual(reader.drop_closed([A, B]), [B])
+
+    def test_nothing_is_dropped_while_herdr_shows_no_pane(self):
+        self.seen(A, B)
+        self.assertEqual(reader.drop_closed([A, B]), [A, B])
+
+    def test_a_rebuild_writes_the_shorter_list(self):
+        self.seen(A, B)
+        self.live = {A: PANES[A]}
+        reader.write_list([A, B])
+        with mock.patch.object(reader.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 0)
+        self.assertEqual(reader.read_list(), [A])
+        self.assertEqual(run.call_args_list[0].args[0][-2:], ["--session", A])
+
+    def test_when_every_pane_has_closed_the_page_keeps_its_last_build(self):
+        self.seen(A)
+        self.live = {C: PANES[C]}
+        reader.write_list([A])
+        with mock.patch.object(reader.subprocess, "run") as run:
+            self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 1)
+        self.assertEqual(reader.read_list(), [])
+        run.assert_not_called()
+
+
 class DocumentsTest(unittest.TestCase):
     """A reply's markdown file names resolve to files on disk, by fixed rules."""
 
