@@ -276,7 +276,7 @@ test('add tabs to the archive group: three modes, a disabled state with a reason
 test('the selected-tabs panel has a dismiss button that clears the selection, and Esc does the same', () => {
   assert.equal((html.match(/data-panel-close="tabs"/g) || []).length, 1);
   assert.ok((html.match(/data-panel-close="archived"/g) || []).length >= 2, 'the restore panel and its one-archive notice both have it');
-  assert.match(html, /\(state\.view === 'archives' \? state\.selectedArchivedTabs : state\.selectedTabs\)\.clear\(\)/);
+  assert.match(html, /\(state\.view === 'archives' \? state\.selectedArchivedTabs : state\.view === 'group' \? state\.selectedGroupTabs : state\.selectedTabs\)\.clear\(\)/);
   assert.match(html, /event\.key !== 'Escape'/);
   assert.match(html, /addEventListener\('click', dismissSelection\)/);
 });
@@ -349,7 +349,7 @@ function memberTabHelpers(context = { data: null }, archiveContext = { rows: new
   const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchMemberView'));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('percentLevel'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {} }, context, archiveContext);
+  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), line('percentLevel'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {}, selectedGroupTabs: new Set() }, context, archiveContext);
 }
 
 test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
@@ -361,7 +361,7 @@ test('the archive group lists each archived workspace\'s tabs by name, with thei
   assert.equal(out.includes('<b>x</b>'), false, 'tab names are escaped');
   assert.equal(memberTabsView({ tabs: [] }), '');
   assert.equal(memberTabsView({}), '');
-  assert.match(html, /\$\{flag\}<\/div>\$\{memberTabsView\(member, session, destination\)\}/);
+  assert.match(html, /\$\{flag\}<\/div>\$\{memberTabsView\(member, session, destination, batchId\)\}/);
 });
 
 test('the archive group shows how full each archived session\'s context was, from the gauge, before it is restored', () => {
@@ -394,6 +394,41 @@ test('the archive group offers a copy-only command that removes tabs held twice,
   assert.match(view, /valid && duplicates\.length \? `<button class="danger"/, 'the button appears only when the snapshot lists duplicates');
   assert.ok(view.includes('escapeHtml(item.label)'), 'tab names are escaped');
   assert.match(view, /ARCHIVE_ID_PATTERN\.test\(item\.archive_id/, 'only well-formed ids are listed');
+});
+
+test('tabs picked inside the archive group restore into one workspace, one command per archive', () => {
+  const key = (archive, tab) => `${archive}::${tab}`;
+  const archiveA = '20261014-101500-esim';
+  const archiveB = '20261014-101600-ops';
+  const state = { groupTabDestinations: {}, selectedGroupTabs: new Set([key(archiveA, 'w9J:t2'), key(archiveA, 'w9J:t4'), key(archiveB, 'w8K:t2')]), selectedGroupBatch: 'batch-20261014-101500' };
+  const helpers = (stateValue = state) => {
+    const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+    const view = html.slice(html.indexOf('const groupPanelView'), html.indexOf('const archivedTabView'));
+    const groupView = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const memberTabsView'));
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return new Function('escapeHtml', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), groupView, view, 'return { groupPanelView };'].join('\n'))(escapeHtml, stateValue);
+  };
+  const tab = (id, unresumable = 0) => ({ id, label: id, pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: unresumable });
+  const batch = { batch_id: 'batch-20261014-101500', herdr_session: 'esim', members: [
+    { archive_id: archiveA, status: 'archived', tabs: [tab('w9J:t2'), tab('w9J:t3'), tab('w9J:t4')] },
+    { archive_id: archiveB, status: 'archived', tabs: [tab('w8K:t2')] },
+  ] };
+  const data = { herdr_session: 'esim', workspaces: [{ id: 'w9Z', label: 'one' }, { id: 'w9Y', label: 'two' }], batches: [batch] };
+  const out = helpers().groupPanelView(data);
+  assert.match(out, /3 selected/);
+  const command = out.match(/class="primary"[^>]*data-command="([^"]*)"/)[1];
+  const parts = command.split(' &amp;&amp; ');
+  assert.equal(parts.length, 2, 'one restore per archive that gives up tabs');
+  assert.equal(parts[0], `herdr-organizer --session esim restore-tabs --archive ${archiveA} --tab w9J:t2 --tab w9J:t4 --to-workspace w9Z --execute --confirm ${archiveA}`);
+  assert.match(parts[1], new RegExp(`--archive ${archiveB} --tab w8K:t2 --to-workspace w9Z --execute --confirm ${archiveB}$`));
+  // A tab with an unverified agent session blocks the whole command and says why.
+  const blocked = helpers({ ...state, selectedGroupTabs: new Set([key(archiveA, 'w9J:t2')]) }).groupPanelView({ ...data, batches: [{ ...batch, members: [{ ...batch.members[0], tabs: [tab('w9J:t2', 1)] }] }] });
+  assert.match(blocked, /data-command=""/);
+  assert.match(blocked, /not verified/);
+  // No selection, no panel; a group of another session has no destination.
+  assert.equal(helpers({ ...state, selectedGroupTabs: new Set() }).groupPanelView(data), '');
+  assert.match(helpers({ ...state, groupTabDestinations: {} }).groupPanelView({ ...data, herdr_session: 'other' }), /data-command=""/);
+  assert.match(html, /document\.querySelector\('#move-panel'\)\.innerHTML = state\.view === 'archives' \? restorePanelView\(data\) : state\.view === 'group' \? groupPanelView\(data\)/);
 });
 
 test('context view: only sessions with a live pane are listed', () => {
