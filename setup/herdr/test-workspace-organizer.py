@@ -3828,6 +3828,7 @@ class AddTabsHerdr:
         self.restores = {}
         self.closed = set()
         self.pane_override = {}
+        self.labels = {}
         self.snapshots = 0
         self.mutate_at = None
         self.mutation = None
@@ -3836,7 +3837,7 @@ class AddTabsHerdr:
         self.snapshots += 1
         if self.mutate_at == self.snapshots and self.mutation:
             self.mutation()
-        workspaces = [{"workspace_id": wid, "label": f"Label {wid}"} for wid in self.layout]
+        workspaces = [{"workspace_id": wid, "label": self.labels.get(wid, f"Label {wid}")} for wid in self.layout]
         tabs = [
             {"workspace_id": wid, "tab_id": f"{wid}:t{n}", "label": f"tab {n}"}
             for wid, count in self.layout.items()
@@ -3976,6 +3977,13 @@ class AddTabsToBatchTests(unittest.TestCase):
         self.assertEqual([tab["source_tab_id"] for tab in archive["capture"]["tabs"]], ["w1:t1", "w1:t2"])
         self.assertEqual(archive["tab_archives"][0]["status"], "completed")
         self.assertIn("as a new member", text)
+
+    def test_a_workspace_already_marked_as_selected_tabs_is_not_marked_twice(self):
+        self.write_batch()
+        self.herdr.labels = {"w1": "Label w1 (selected tabs) (selected tabs)"}
+        self.run_add(["w1:t1"])
+        [member] = self.manifest()["members"]
+        self.assertEqual(member["workspace_label"], "Label w1 (selected tabs)")
 
     def test_a_preview_changes_nothing(self):
         self.write_batch()

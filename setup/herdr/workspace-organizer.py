@@ -2825,7 +2825,7 @@ def apply_tab_addition(
         archive_id = member["archive_id"]
         outcome = "merged"
     else:
-        label = f"{plan['label']} (selected tabs)"
+        label = f"{base_workspace_label(plan['label'])} (selected tabs)"
         archive_id = archive_id_for(label)
         capture = {
             "workspace": {
