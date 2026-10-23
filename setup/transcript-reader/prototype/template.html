@@ -52,6 +52,10 @@
   /* The tab title already says prototype; at phone width the badge would push the title onto two lines. */
   @media (max-width: 440px) { .proto { display: none; } }
   .bar.collapsed .crumb { display: block; }
+  /* Collapsed on a conversation, the one line is a session picker instead of a plain name. */
+  .crumb-session { display: none; flex: 1 1 auto; min-width: 0; max-width: 100%; height: 28px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); text-overflow: ellipsis; }
+  .bar.collapsed.pick .crumb { display: none; }
+  .bar.collapsed.pick .crumb-session { display: block; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   .tabs { display: flex; gap: 4px; margin-top: 6px; }
   .tab { flex: 1; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
@@ -228,7 +232,7 @@
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div id="bar-more">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
@@ -478,21 +482,25 @@
   // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
   const sessionName = s => s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
     : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
+  function fillSessions(select) {
+    select.replaceChildren(...data.sessions.map((s, i) => {
+      const opt = $("option", null, sessionName(s));
+      opt.value = i; opt.selected = i === state.session; return opt;
+    }));
+  }
+  function pickSession(value) {
+    state.session = Number(value);
+    setAddress();
+    render(); showLatest();
+  }
   function renderReader() {
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
     const controls = document.getElementById("controls"); controls.replaceChildren();
     const row = $("div", "controls");
     const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
-    data.sessions.forEach((s, i) => {
-      const opt = $("option", null, sessionName(s));
-      opt.value = i; if (i === state.session) opt.selected = true; select.append(opt);
-    });
-    select.addEventListener("change", () => {
-      state.session = Number(select.value);
-      setAddress();
-      render(); showLatest();
-    });
+    fillSessions(select);
+    select.addEventListener("change", () => pickSession(select.value));
     const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
@@ -1193,6 +1201,9 @@
     toggle.title = toggle.getAttribute("aria-label");
     const session = data.sessions[state.session];
     const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
+    const pick = state.view === "reader" && data.sessions.length > 1;
+    bar.classList.toggle("pick", pick);
+    if (pick && !state.barOpen) fillSessions(document.getElementById("crumb-session"));
     const crumb = document.getElementById("crumb");
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
       : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
@@ -1207,6 +1218,7 @@
   }
   document.getElementById("bar-toggle").addEventListener("click", () => setBarOpen(!state.barOpen));
   document.getElementById("crumb").addEventListener("click", () => setBarOpen(true));
+  document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
   document.getElementById("tab-reader").addEventListener("click", () => {
     const opening = state.view !== "reader";
     state.view = "reader"; render();
