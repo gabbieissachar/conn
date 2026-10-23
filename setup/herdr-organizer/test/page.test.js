@@ -349,7 +349,7 @@ function memberTabHelpers(context = { data: null }, archiveContext = { rows: new
   const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchMemberView'));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), line('percentLevel'), view, 'return { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {}, selectedGroupTabs: new Set() }, context, archiveContext);
+  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), line('percentLevel'), view, 'return { memberPickKeys, memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {}, selectedGroupTabs: new Set() }, context, archiveContext);
 }
 
 test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
@@ -429,6 +429,21 @@ test('tabs picked inside the archive group restore into one workspace, one comma
   assert.equal(helpers({ ...state, selectedGroupTabs: new Set() }).groupPanelView(data), '');
   assert.match(helpers({ ...state, groupTabDestinations: {} }).groupPanelView({ ...data, herdr_session: 'other' }), /data-command=""/);
   assert.match(html, /document\.querySelector\('#move-panel'\)\.innerHTML = state\.view === 'archives' \? restorePanelView\(data\) : state\.view === 'group' \? groupPanelView\(data\)/);
+});
+
+test('the archive group can select every tab of one archived workspace at once, and a stacked mark reads once', () => {
+  const { memberPickKeys } = memberTabHelpers();
+  const archiveId = '20261014-101500-esim';
+  const tab = id => ({ id, label: id, pane_count: 1 });
+  assert.deepEqual(memberPickKeys({ archive_id: archiveId, status: 'archived', tabs: [tab('w9J:t2'), tab('w9J:t3'), { id: 'bad id', label: 'x' }, { id: 'w9J:t4', label: '' }] }),
+    [`${archiveId}::w9J:t2`, `${archiveId}::w9J:t3`], 'only well-formed, named tabs can be picked');
+  assert.deepEqual(memberPickKeys({ archive_id: archiveId, status: 'restored', tabs: [tab('w9J:t2')] }), [], 'a restored workspace offers nothing');
+  assert.deepEqual(memberPickKeys({ archive_id: 'bad id', status: 'archived', tabs: [tab('w9J:t2')] }), []);
+  assert.match(html, /pickKeys\.length > 1 \? `<button type="button" class="small-btn" data-select-group-member=/, 'a workspace with one tab needs no shortcut');
+  const tidy = new Function(html.split('\n').find(row => row.trim().startsWith('const tidyLabel = ')).trim() + '\nreturn tidyLabel;')();
+  assert.equal(tidy('leader-space (selected tabs) (selected tabs)'), 'leader-space (selected tabs)');
+  assert.equal(tidy('crew'), 'crew');
+  assert.equal(tidy(null), '');
 });
 
 test('context view: only sessions with a live pane are listed', () => {
@@ -515,7 +530,10 @@ test('workspaces view: the compact toggle shows names and tick boxes only, escap
   const view = html.slice(html.indexOf('const compactTabView'), html.indexOf('const workspaceView'));
   assert.match(view, /data-select-tab="\$\{escapeHtml\(tab\.id\)\}"/, 'compact rows keep the selection tick box');
   for (const field of ['tab.label', 'workspace.label']) assert.ok(view.includes(`escapeHtml(${field}`), field);
-  assert.equal(/data-command|Copy /.test(view), false, 'compact view carries no copy buttons or folder lines');
+  // The one copy button copies the tab's own name, escaped, so a tab can be referred to quickly. No command and no folder lines.
+  assert.match(view, /class="copy-name" data-command="\$\{escapeHtml\(tab\.label\)\}" data-copied="Tab name copied"/);
+  assert.equal((view.match(/data-command/g) || []).length, 1, 'compact view carries no command buttons or folder lines');
+  assert.equal(/Copy (move|archive|cleanup|restore)/.test(view), false);
   assert.match(html, /try \{ return localStorage\.getItem\(COMPACT_KEY\) === '1'; \} catch \{ return false; \}/);
   assert.match(html, /workspaces\.map\(state\.compact \? compactWorkspaceView : workspaceView\)/);
 });

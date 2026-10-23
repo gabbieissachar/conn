@@ -108,6 +108,10 @@ created: 2026-09-10
     .compact-tab input { margin: 0; accent-color: var(--purple); flex: none; }
     .compact-tab .tab-name { font-weight: 500; font-size: 12px; min-width: 0; }
     .compact-tab .focused { margin-left: auto; flex: none; }
+    .compact-tab .copy-name { flex: none; margin-left: auto; padding: 1px 7px; border: 1px solid #c7cde0; border-radius: 999px; background: #fff; color: var(--navy); font-size: 10px; font-weight: 500; line-height: 16px; opacity: .6; }
+    .compact-tab .focused + .copy-name { margin-left: 6px; }
+    .compact-tab:hover .copy-name, .compact-tab .copy-name:focus-visible { opacity: 1; }
+    .compact-tab .copy-name:hover { background: #eef1fb; }
     .archives { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
     .archive { padding: 14px 15px; }
     .archive-line { justify-content: space-between; gap: 10px; }
@@ -375,7 +379,7 @@ created: 2026-09-10
       </article>`;
     };
     // Compact rows keep the tab's own tick box, so Move, Archive and Add to archive group work exactly as in the full view.
-    const compactTabView = tab => `<label class="compact-tab" title="${escapeHtml(`${tab.id} - select to move, archive or add to the archive group`)}"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}</label>`;
+    const compactTabView = tab => `<label class="compact-tab" title="${escapeHtml(`${tab.id} - select to move, archive or add to the archive group`)}"><input type="checkbox" data-select-tab="${escapeHtml(tab.id)}" ${state.selectedTabs.has(tab.id) ? 'checked' : ''}><span class="tab-name">${escapeHtml(tab.label)}</span>${tab.focused ? '<span class="focused">focused</span>' : ''}<button type="button" class="copy-name" data-command="${escapeHtml(tab.label)}" data-copied="Tab name copied" title="Copies this tab's name, ${escapeHtml(tab.label)}">Copy name</button></label>`;
     const compactWorkspaceView = workspace => `<article class="workspace">
       <div class="workspace-head"><div class="workspace-title"><strong title="${escapeHtml(workspace.label)}">${escapeHtml(workspace.label)}</strong>${workspace.focused ? '<span class="focused">focused</span>' : ''}</div><span class="counts">${plural(workspace.tab_count, 'tab')}</span></div>
       <div class="compact-tabs">${workspace.tabs.map(compactTabView).join('') || '<div class="tab-meta">No tabs</div>'}</div>
@@ -445,6 +449,8 @@ created: 2026-09-10
         ${blockedGroup ? '<p class="mp-note">The archive group\'s last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.</p>' : ''}
         <div class="mp-body"><label class="mp-dest"><span>${label}</span><select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>${buttons}</div>`;
     };
+    // Older archives stacked the "(selected tabs)" mark once per round trip. One mark says it.
+    const tidyLabel = label => String(label ?? '').replace(/(\s*\(selected tabs\))+$/, match => (match.trim() ? ' (selected tabs)' : ''));
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
     const restorePanelView = data => {
       const selected = data.archives.flatMap(archive => (archive.tabs || []).map(tab => ({ archive, tab }))).filter(({ archive, tab }) => state.selectedArchivedTabs.has(archiveTabKey(archive.archive_id, tab.id)));
@@ -507,7 +513,7 @@ created: 2026-09-10
       const resume = `${restore} --resume-agents --execute --confirm ${archive.archive_id}`;
       const remove = `herdr-organizer delete-archive --archive ${archive.archive_id} --execute --confirm ${archive.archive_id}`;
       return `<article class="archive">
-        <div class="archive-line"><div><div class="archive-name">${escapeHtml(archive.workspace_label || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
+        <div class="archive-line"><div><div class="archive-name">${escapeHtml(tidyLabel(archive.workspace_label) || archive.archive_id)}</div><div class="archive-meta">${escapeHtml(archive.archive_id)}</div></div><span class="archive-state">${escapeHtml(archive.status || 'unknown')}</span></div>
         <div class="archive-meta">${plural(archive.tab_count, 'tab')} · ${plural(archive.pane_count, 'pane')} · ${archive.resumable_pane_count} resumable · ${archive.shell_only_pane_count} unavailable${groupedArchiveIds().has(archive.archive_id) ? ` · <span class="archive-chip" title="This archive is in the session's archive group. It leaves the group when it is restored.">in archive group</span>` : ''}</div>
         <div class="archive-actions"><button type="button" data-command="${escapeHtml(restore)}">Copy restore preview</button><button class="primary" type="button" data-command="${escapeHtml(execute)}">Copy restore layout</button><button type="button" data-command="${escapeHtml(resume)}">Copy restore + resume agents</button><button class="danger" type="button" title="Permanently removes this saved archive only. It does not change any active or restored workspace." data-command="${escapeHtml(remove)}">Copy delete archive</button></div>
         <div class="archive-meta" style="margin-top: 12px">Select one or more archived tabs to restore into an active workspace</div>${(archive.tabs || []).map(tab => archivedTabView(archive, tab)).join('')}
@@ -611,6 +617,17 @@ created: 2026-09-10
           state.selectedGroupBatch = batchId;
           state.selectedGroupTabs.add(key);
         } else state.selectedGroupTabs.delete(key);
+        render();
+      }));
+      document.querySelectorAll('[data-select-group-member]').forEach(button => button.addEventListener('click', () => {
+        const batchId = button.dataset.batchId;
+        const member = (state.data.batches || []).filter(batch => batch.batch_id === batchId).flatMap(batch => batch.members || []).find(item => item.archive_id === button.dataset.selectGroupMember);
+        const keys = member ? memberPickKeys(member) : [];
+        if (!keys.length) return;
+        if (state.selectedGroupBatch !== batchId) state.selectedGroupTabs.clear();
+        state.selectedGroupBatch = batchId;
+        if (keys.every(key => state.selectedGroupTabs.has(key))) keys.forEach(key => state.selectedGroupTabs.delete(key));
+        else keys.forEach(key => state.selectedGroupTabs.add(key));
         render();
       }));
       document.querySelector('#group-restore-destination')?.addEventListener('change', event => {
@@ -1468,6 +1485,9 @@ created: 2026-09-10
       const top = rows.reduce((best, row) => (row.percent > best.percent ? row : best));
       return `<span class="pill ${percentLevel(top.percent, context.data.thresholds)}" title="Context used when this session last ran${top.estimated ? ' (estimated from its transcript, against a 1M window)' : ''}. Amber from ${context.data.thresholds.warn}%, red from ${context.data.thresholds.high}%.">${top.estimated ? '~' : ''}${top.percent}%</span>`;
     };
+    // The keys of the tabs of an archived member that can be ticked for a group restore.
+    const memberPickKeys = member => (member.status === 'archived' && ARCHIVE_ID_PATTERN.test(member.archive_id || '')
+      ? (member.tabs || []).filter(tab => tab && typeof tab.label === 'string' && tab.label && TAB_ID_PATTERN.test(tab.id || '')).map(tab => archiveTabKey(member.archive_id, tab.id)) : []);
     const memberTabsView = (member, session, destination, batchId) => {
       const tabs = (member.tabs || []).filter(tab => tab && typeof tab.label === 'string' && tab.label);
       if (!tabs.length) return '';
@@ -1494,7 +1514,10 @@ created: 2026-09-10
       const openLayout = hasOpenLayout(member, liveIds);
       const flag = member.status === 'restore_partial' ? '<span class="member-flag">Restore stopped part-way. Restore all leaves it alone. Check it in the archive list below.</span>'
         : (member.status === 'close_failed' || member.status === 'prepared') ? '<span class="member-flag">Closing was not confirmed. Restore all leaves it alone. For tabs added to a group, finish-tab-add finishes it.</span>' : '';
-      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(member.workspace_label || member.archive_id)}</span><span class="member-state"><span class="pill ${tone}">${escapeHtml(label)}</span>${member.snapshot ? `<span class="pill" title="Saved by a snapshot while the workspace was open. A restore skips what Herdr already brought back.">snapshot · ${plural((member.tabs || []).length, 'tab')}</span>` : ''}${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>${memberTabsView(member, session, destination, batchId)}`;
+      const pickKeys = memberPickKeys(member);
+      const allPicked = pickKeys.length > 0 && pickKeys.every(key => state.selectedGroupTabs.has(key));
+      const pickAll = pickKeys.length > 1 ? `<button type="button" class="small-btn" data-select-group-member="${escapeHtml(member.archive_id)}" data-batch-id="${escapeHtml(batchId)}" aria-pressed="${allPicked}" title="${allPicked ? 'Clears the selection of this workspace\'s tabs.' : 'Selects every tab of this workspace, to restore them together into one open workspace.'}">${allPicked ? 'Clear tabs' : 'Select all tabs'}</button>` : '';
+      return `<div class="member-line"><span class="pane-id">${escapeHtml(member.workspace_id || '')}</span><span class="names">${escapeHtml(tidyLabel(member.workspace_label) || member.archive_id)}</span><span class="member-state">${pickAll}<span class="pill ${tone}">${escapeHtml(label)}</span>${member.snapshot ? `<span class="pill" title="Saved by a snapshot while the workspace was open. A restore skips what Herdr already brought back.">snapshot · ${plural((member.tabs || []).length, 'tab')}</span>` : ''}${openLayout ? `<span class="pill" title="A layout-only restore left workspace ${escapeHtml(member.layout_workspace_id)} open. The archive is not marked restored.">layout open</span>` : ''}${restoreCommand ? `<button type="button" class="small-btn" data-command="${escapeHtml(restoreCommand)}" title="${openLayout ? 'Copies a command that resumes this workspace\'s agents in the layout copy that is already open, then marks it restored. Other members of the group are not touched.' : 'Copies a command that restores only this workspace as fresh shells and resumes its verified agents. Other members of the group are not touched.'}">Copy restore + resume agents</button>` : ''}</span>${flag}</div>${memberTabsView(member, session, destination, batchId)}`;
     };
     const batchView = (batch, liveIds) => {
       const counts = batch.counts || {};
