@@ -76,7 +76,8 @@
   .input.captain { background: var(--you-wash); border: 1px solid color-mix(in srgb, var(--you) 30%, transparent); margin-left: 2.2rem; }
   .input.firstmate { background: var(--mate-wash); border: 1px solid color-mix(in srgb, var(--mate) 30%, transparent); margin-right: 1.2rem; }
   .input.peer { background: var(--wash); border: 1px solid var(--line); margin-right: 1.2rem; }
-  .who { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
+  .who { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
+  .who > b, .who > span, .who > button { white-space: nowrap; }
   .who b { color: var(--ink); }
   .input.captain .who b { color: var(--you); }
   .input.firstmate .who b { color: var(--mate); }
@@ -450,6 +451,12 @@
     return row;
   }
   function inputBlock(ex, index, key) {
+    // A repeated doorbell delivers nothing new: one line, so it does not bury the reply.
+    if (ex.source === "firstmate" && ex.repeat) {
+      const line = $("div", "divider", `Firstmate rang again · ${fmtTime(ex.at)}`);
+      line.id = `ex-${index}`; line.title = `${fmtWhen(ex.at)}: the doorbell for the Firstmate instruction above, again`;
+      return line;
+    }
     const block = $("div", `input ${ex.source}`);
     block.id = `ex-${index}`;
     const who = $("div", "who");
@@ -461,6 +468,7 @@
     if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
     const body = $("div", null, text);
     block.append(clipped(body, text.split(/\s+/).length, 120, "Show all", key + ":input"));
+    if (ex.source === "firstmate" && ex.undelivered) block.append($("div", "notes", "The instruction itself was not found in its inbox; this is only the line that pointed to it."));
     const chips = docChips(ex.input_documents, key);
     if (chips) block.append(chips);
     return block;

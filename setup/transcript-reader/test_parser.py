@@ -230,6 +230,45 @@ class SessionExchangesTest(unittest.TestCase):
         self.assertEqual(queued_handback["notices"], [{"label": "Hand-back from doc-checker", "signal_task": None}])
 
 
+class DoorbellTest(unittest.TestCase):
+    """A steering doorbell shows the inbox messages it delivered, in either format."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home, self.parent = Path(self.tmp.name) / "mate", Path(self.tmp.name) / "main"
+        inbox = self.parent / "state" / "fix-login.inbox"
+        (inbox / "handled").mkdir(parents=True)
+        (inbox / "handled" / "1.msg").write_text("at=2026-10-23T10:00:05Z\n--\n[fm-from-firstmate] Rebase onto main first.", encoding="utf-8")
+        self.addCleanup(self.tmp.cleanup)
+
+    def steer(self, text):
+        [turn] = builder.session_exchanges([user(text, 0), say("Rebased.", 9)])
+        builder.attach_inbox_bodies([turn], [self.home, self.parent])
+        return turn
+
+    def test_current_format_names_the_inbox_in_the_steering_homes_state(self):
+        turn = self.steer(": Firstmate instruction waiting: list \"$FM_TASK_INBOX\"/*.msg in your 'fix-login.inbox' "
+                          "steering inbox, read and act on each in numeric order, then mv each into its handled/.")
+        self.assertEqual((turn["kind"], turn["delivered"], turn["undelivered"]), ("steer", ["Rebase onto main first."], False))
+
+    def test_a_second_ring_for_the_same_message_is_a_repeat(self):
+        ring = ": Firstmate instruction waiting: list \"$FM_TASK_INBOX\"/*.msg in your 'fix-login.inbox' steering inbox, read it."
+        first, again = builder.session_exchanges([user(ring, 6), tool(7), queued(ring, 8), say("Rebased.", 9)])
+        builder.attach_inbox_bodies([first, again], [self.home, self.parent])
+        self.assertEqual((first["delivered"], first["repeat"]), (["Rebase onto main first."], False))
+        self.assertEqual((again["delivered"], again["repeat"], again["undelivered"]), ([], True, False))
+
+    def test_absolute_path_format(self):
+        turn = self.steer(f"Firstmate instruction waiting: read '{self.parent}/state/fix-login.inbox'")
+        self.assertEqual(turn["delivered"], ["Rebase onto main first."])
+
+    def test_an_inbox_that_cannot_be_found_is_said_so(self):
+        turn = self.steer(": Firstmate instruction waiting: list \"$FM_TASK_INBOX\"/*.msg in your 'gone.inbox' steering inbox, read it.")
+        self.assertEqual((turn["delivered"], turn["undelivered"]), ([], True))
+        self.assertEqual(builder.doorbell_inbox("in your '../x' steering inbox", [self.home]), None)
+
+
 class CaptainEventsTest(unittest.TestCase):
     def test_replies_to_another_session_stay_off_the_captains_timeline(self):
         exchanges = builder.session_exchanges([

@@ -104,6 +104,9 @@ DOORBELL = re.compile(
     r"Firstmate:\s|\[fm-from-firstmate\])"
 )
 INBOX_PATH = re.compile(r"(?:list|read)\s+'?(/[^'\s]+?\.(?:inbox|msg))'?(?:/|\s|$)")
+# Firstmate's current doorbell names the inbox only, shell-quoted: list "$FM_TASK_INBOX"/*.msg
+# in your '<task>.inbox' steering inbox. It lives in the state/ folder of the home that steers.
+INBOX_NAME = re.compile(r"in your '((?:[^']|'\\'')+)' steering inbox")
 WAKE_LINE = re.compile(r"firstmate watcher wake[^\n]*\n\s*([a-z-]+)(?::\s*([^\n]*))?")
 BACKGROUND = re.compile(r'Background (?:command|shell command) "([^"]*)"\s*(completed|failed|was stopped)?')
 LOCAL_COMMAND = re.compile(r"<command-name>(/[\w:-]+)</command-name>")
@@ -491,20 +494,34 @@ def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
     return found[:limit]
 
 
-def attach_inbox_bodies(exchanges: list[dict], parent_home: Path | None) -> None:
-    """A doorbell only names an inbox. Show the messages it delivered."""
+def doorbell_inbox(text: str, homes: list[Path]) -> Path | None:
+    """The steering inbox a doorbell names: by absolute path, or by name in the state/
+    folder of the first of <homes> that has it (the session's home, then its parent's)."""
+    match = INBOX_PATH.search(text)
+    if match:
+        path = Path(match.group(1))
+        directory = path if path.suffix == ".inbox" else path.parent
+        return directory.parent if directory.name == "handled" else directory
+    match = INBOX_NAME.search(text)
+    if match:
+        name = match.group(1).replace("'\\''", "'")
+        if "/" not in name and name not in (".", ".."):
+            found = [home / "state" / name for home in homes if (home / "state" / name).is_dir()]
+            return found[0] if found else Path("/nonexistent") / name
+    return None
+
+
+def attach_inbox_bodies(exchanges: list[dict], homes: list[Path]) -> None:
+    """A doorbell only names an inbox. Show the messages it delivered, and say so when
+    none is found, rather than leave the pointer line looking like the instruction."""
     seen: set[tuple[str, str]] = set()
     cache: dict[str, list[dict]] = {}
     for exchange in exchanges:
         if exchange["source"] != "firstmate" or exchange["kind"] != "steer":
             continue
-        match = INBOX_PATH.search(exchange["input"])
-        if not match:
+        directory = doorbell_inbox(exchange["input"], homes)
+        if directory is None:
             continue
-        path = Path(match.group(1))
-        directory = path if path.suffix == ".inbox" else path.parent
-        if directory.name == "handled":
-            directory = directory.parent
         if str(directory) not in cache:
             cache[str(directory)] = read_inbox(directory) if directory.is_dir() else []
         delivered = []
@@ -516,6 +533,11 @@ def attach_inbox_bodies(exchanges: list[dict], parent_home: Path | None) -> None
                 delivered.append(message)
                 seen.add(ident)
         exchange["delivered"] = [m["text"] for m in delivered]
+        # Firstmate rings again while a message waits unread; those rings deliver nothing new.
+        exchange["repeat"] = not delivered and exchange["at"] is not None and any(
+            (str(directory), m["file"]) in seen and m["at"] is not None and m["at"] <= exchange["at"] + 60
+            for m in cache[str(directory)])
+        exchange["undelivered"] = not delivered and not exchange["repeat"]
 
 
 def collect_fleet(homes: list[dict], since: float) -> list[dict]:
@@ -634,7 +656,7 @@ def build(args) -> dict:
                     for exchange in part[1:]:
                         exchange["from_session"] = member.stem
             exchanges += part
-        attach_inbox_bodies(exchanges, parent_of.get(home["id"]))
+        attach_inbox_bodies(exchanges, [h for h in (home["home"], parent_of.get(home["id"])) if h])
         session_id = path.stem
         cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
         where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
