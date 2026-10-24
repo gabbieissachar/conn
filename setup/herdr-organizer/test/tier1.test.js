@@ -354,16 +354,25 @@ test('tier 1 actions still need every cross-site protection', async () => {
   try {
     const { token } = await client(server);
     const { request } = require('./helpers');
-    const body = { action: 'seal-bundle', params: { sessions: ['project-a'], confirm: 'seal:project-a' } };
-    for (const headers of [
-      { Host: 'localhost:' + server.port, Origin: 'https://evil.example', 'Content-Type': 'application/json', 'X-Herdr-Organizer-Token': token },
-      { Host: 'localhost:' + server.port, Origin: server.origin, 'Content-Type': 'application/json' },
-      { Host: 'evil.example:' + server.port, Origin: server.origin, 'Content-Type': 'application/json', 'X-Herdr-Organizer-Token': token },
-      { Host: 'localhost:' + server.port, Origin: server.origin, 'Content-Type': 'text/plain', 'X-Herdr-Organizer-Token': token },
-    ]) {
-      const response = await request({ port: server.port, method: 'POST', path: '/api/herdr-organizer/run', headers, body });
-      assert.ok([403, 415].includes(response.status), String(response.status));
+    const bodies = [
+      { action: 'seal-bundle', params: { sessions: ['project-a'], confirm: 'seal:project-a' } },
+      { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w2:p1' } },
+    ];
+    // Every action the server runs at tier 1 or above is covered, so a new one cannot be added without a body here.
+    const covered = bodies.map((body) => body.action);
+    for (const [name, action] of Object.entries(server.api.ACTIONS)) if (action.tier >= 1 && !['verify-apply', 'save-manual-identity'].includes(name)) assert.ok(covered.includes(name), name + ' needs a cross-site case');
+    for (const body of bodies) {
+      for (const headers of [
+        { Host: 'localhost:' + server.port, Origin: 'https://evil.example', 'Content-Type': 'application/json', 'X-Herdr-Organizer-Token': token },
+        { Host: 'localhost:' + server.port, Origin: server.origin, 'Content-Type': 'application/json' },
+        { Host: 'evil.example:' + server.port, Origin: server.origin, 'Content-Type': 'application/json', 'X-Herdr-Organizer-Token': token },
+        { Host: 'localhost:' + server.port, Origin: server.origin, 'Content-Type': 'text/plain', 'X-Herdr-Organizer-Token': token },
+      ]) {
+        const response = await request({ port: server.port, method: 'POST', path: '/api/herdr-organizer/run', headers, body });
+        assert.ok([403, 415].includes(response.status), body.action + ' ' + response.status);
+      }
     }
     assert.equal(server.calls.filter((call) => call.args.includes('prepare-restart-recovery')).length, 0, 'nothing was sealed');
+    assert.equal(server.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
   } finally { await server.close(); }
 });

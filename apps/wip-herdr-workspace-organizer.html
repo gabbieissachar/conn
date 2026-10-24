@@ -188,6 +188,9 @@ created: 2026-09-10
     .ctx-table td { padding: 9px 10px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
     .ctx-table th:first-child, .ctx-table td:first-child { padding-left: 12px; }
     .ctx-compact { display: flex; flex-direction: column; max-width: 520px; }
+    .open-tab { flex: none; padding: 1px 9px; border: 1px solid #c7cde0; border-radius: 999px; background: #fff; color: var(--navy); font-size: 11px; font-weight: 500; line-height: 18px; cursor: pointer; }
+    .open-tab:hover { background: #eef1fb; } .open-tab:disabled { opacity: .5; cursor: default; }
+    .ctx-compact .compact-tab .open-tab { margin-left: auto; }
     .ctx-compact .compact-tab { padding: 6px 8px; }
     .ctx-compact .compact-tab .tab-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ctx-compact .compact-tab .pill { flex: none; }
@@ -1702,8 +1705,10 @@ created: 2026-09-10
       const pickName = row.leader ? row.leader.label : sessionName(row);
       return pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
     };
+    // Shows the session's tab in the attached Herdr window. View only: it types nothing and closes nothing.
+    const openTabButton = row => row.pane_id && row.herdr_session ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It only switches the tab; nothing is typed or changed.">Open</button>` : '';
     // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
-    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}</label>`;
+    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${openTabButton(row)}</label>`;
     const contextRow = (row, thresholds) => {
       const level = contextLevel(row, thresholds);
       const percent = contextPercent(row, level);
@@ -1711,7 +1716,7 @@ created: 2026-09-10
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       const pick = handoffPickBox(row);
       const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.tab_label && row.tab_label !== row.map ? escapeHtml(row.map) : '', row.leader && row.leader.label !== sessionName(row) && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
-      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td></tr>`;
+      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td><td>${openTabButton(row)}</td></tr>`;
     };
     // Sortable columns. `first` is the direction a first click uses: biggest first for numbers, A-Z for text, and
     // newest first for the record age. A row with nothing to compare (no percent, no live pane) always sorts last.
@@ -1741,7 +1746,7 @@ created: 2026-09-10
       const aria = active ? (context.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none';
       const arrow = active && context.sort.dir === 'asc' ? '▲' : '▼';
       return `<th aria-sort="${aria}"><button type="button" class="ctx-sort" data-sort="${column.key}" title="Sort by ${column.label.toLowerCase()}">${column.label}<span class="ctx-arrow" aria-hidden="true">${arrow}</span></button></th>`;
-    }).join('');
+    }).join('') + '<th>Open</th>';
     const leaderNotice = problems => {
       if (context.leaderError) return `<div class="scope-note error" style="margin-bottom:12px">Leader space could not be checked: ${escapeHtml(context.leaderError)}</div>`;
       if (!context.leader) return '';
@@ -1768,7 +1773,7 @@ created: 2026-09-10
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
         const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
         const actions = rows.length ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
-        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript. Sessions with no live pane are not listed; an archived session's last context shows on the Archive group tab. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything.</div></div></article>` : '<div class="empty">No live agent sessions.</div>';
+        body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript. Sessions with no live pane are not listed; an archived session's last context shows on the Archive group tab. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything; Open only switches your Herdr window to that session's tab.</div></div></article>` : '<div class="empty">No live agent sessions.</div>';
       }
       section.innerHTML = `${head}${planRail()}${codexRail()}${body}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
@@ -1785,8 +1790,22 @@ created: 2026-09-10
         renderContext();
       }));
       section.querySelectorAll('.handoff-pick').forEach(box => box.addEventListener('change', () => { context.picked.set(box.dataset.pick, box.checked); renderContext(); }));
+      section.querySelectorAll('.open-tab').forEach(button => button.addEventListener('click', event => { event.preventDefault(); openTab(button); }));
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);
+    };
+    // The server finds the tab from the live pane list; the page sends only the session name and pane id.
+    const openTab = async button => {
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await api.run('focus-tab', { session: button.dataset.session, pane_id: button.dataset.pane });
+        showToast(`Showing ${button.dataset.name} in Herdr session ${button.dataset.session}. Switch to your Herdr window.`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        button.disabled = false;
+      }
     };
     const copyHandoff = async () => {
       const ticked = [...new Set(contextRows().rows.map(pickKeyOf).filter(key => key && context.picked.get(key)))];

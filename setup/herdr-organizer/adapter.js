@@ -115,8 +115,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return promise;
   }
 
-  // Read-only Herdr call against one named session. When HERDR_LAB_HELPER is
-  // set, the isolated lab helper is the only route to Herdr, as the organizer does.
+  // Herdr call against one named session: read-only everywhere except focusTab, which only changes which tab the
+  // attached client shows. When HERDR_LAB_HELPER is set, the isolated lab helper is the only route to Herdr, as the
+  // organizer does.
   function herdrCall(session, args, options = {}) {
     const helper = env.HERDR_LAB_HELPER;
     if (helper) return runner(helper, ['run', session, ...args], { env: runEnv(), ...options });
@@ -761,6 +762,20 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { workspace: LEADER_WORKSPACE, rows, unexpected };
   }
 
+  // View only: shows one session's tab in the Herdr window the captain has attached, so a row of the Context tab can
+  // be opened to check on it. It types nothing into a pane, closes nothing and writes no record, and a second click
+  // is the same as the first. The browser names a session and a pane id; the tab comes from the live pane list and is
+  // never taken from the browser, so a pane id Herdr has handed out again resolves to whatever runs there now.
+  async function focusTab(sessionName, paneId) {
+    const session = await requireSession(sessionName);
+    if (typeof paneId !== 'string' || !PANE_ID_RE.test(paneId)) throw new AdapterError('Invalid pane.');
+    const pane = (await readPanes(session)).find((item) => item.pane_id === paneId);
+    if (!pane || !TAB_ID_RE.test(pane.tab_id)) throw new AdapterError('That session is not open any more. Refresh the list.', 404, 'pane_gone');
+    const result = await herdrCall(session, ['tab', 'focus', pane.tab_id], { timeoutMs: 15000 });
+    if (result.code !== 0) throw new AdapterError('Herdr could not show that tab.', 502, 'herdr_unavailable');
+    return { herdr_session: session, tab_id: pane.tab_id };
+  }
+
   // Copy-only "send a handoff request" command for the sessions the captain ticked. Nothing is sent here. A leader
   // identity is re-read from the audit and kept only with exactly one live pane inside leader-space. Any other session
   // is a `<herdr session>|<pane id>` reference that must name a live Claude pane of a running session, so a stale or
@@ -1155,6 +1170,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     codexCredits,
     leaderSpace,
     handoffCommand,
+    focusTab,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },
   };

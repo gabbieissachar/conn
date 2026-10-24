@@ -1038,3 +1038,51 @@ test('handoff-command: any live Claude pane can be ticked by reference, with tex
     assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
   } finally { await server.close(); }
 });
+
+test('focus-tab: shows the tab of a live pane, finds the tab itself and sends nothing into any pane', async () => {
+  const fake = fakeRunner({
+    handle: (file, args) => (file === 'herdr' && args.includes('tab') && args.includes('focus')
+      ? { code: 0, stdout: '{"result":{"type":"ok"}}', stderr: '', timedOut: false, truncated: false }
+      : undefined),
+  });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1' });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json.data, { herdr_session: 'project-a', tab_id: 'w2:t1' });
+    const focus = fake.calls.filter((call) => call.args.includes('focus'));
+    assert.equal(focus.length, 1);
+    assert.deepEqual(focus[0].args, ['--session', 'project-a', 'tab', 'focus', 'w2:t1'], 'the tab comes from the live pane list');
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'run', 'prompt', 'close', 'rename'].includes(arg))), false);
+    assert.equal(server.api.ACTIONS['focus-tab'].lock, false, 'opening a tab never waits on a seal');
+  } finally { await server.close(); }
+});
+
+test('focus-tab: refuses a stopped or default session, a malformed or unknown pane, extra params and a tab id from the browser', async () => {
+  const fake = fakeRunner();
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    for (const session of ['default', 'stopped-one', 'nope', '-h', '--execute']) assert.equal((await post('focus-tab', { session, pane_id: 'w2:p1' })).status, 400, session);
+    for (const pane_id of ['bad', "w2:p1'; rm -rf /", '--all', 'w2:t1']) assert.equal((await post('focus-tab', { session: 'project-a', pane_id })).status, 400, pane_id);
+    const gone = await post('focus-tab', { session: 'project-a', pane_id: 'w9:p9' });
+    assert.equal(gone.status, 404);
+    assert.equal(gone.json.code, 'pane_gone');
+    assert.equal((await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1', tab_id: 'w1:t1' })).status, 400, 'the browser names no tab');
+    assert.equal((await post('focus-tab', { session: 'project-a' })).status, 400);
+    assert.equal(fake.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
+  } finally { await server.close(); }
+});
+
+test('focus-tab: a Herdr failure is reported, not hidden', async () => {
+  const fake = fakeRunner({ handle: (file, args) => (args.includes('tab') && args.includes('focus') ? { code: 1, stdout: '', stderr: 'no such tab', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1' });
+    assert.equal(response.status, 502);
+    assert.equal(response.json.code, 'herdr_unavailable');
+    assert.equal(response.raw.includes('no such tab'), false, 'Herdr output does not reach the browser');
+  } finally { await server.close(); }
+});

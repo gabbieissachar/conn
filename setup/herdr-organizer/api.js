@@ -110,6 +110,9 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'codex-credits': { tier: 0, params: {}, run: () => tools.codexCredits() },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },
+    // View only (no confirm, no input into any pane): shows a session's tab in the attached Herdr window. It takes
+    // the tier 1 route's cross-site protections but not its one-at-a-time lock, so opening a tab never waits on a seal.
+    'focus-tab': { tier: 1, lock: false, params: { session: { type: 'string' }, pane_id: { type: 'string' } }, run: (p) => tools.focusTab(p.session, p.pane_id) },
     'reconcile-preview': { tier: 0, params: { bundle: { type: 'string' } }, run: (p) => tools.reconcilePreview(p.bundle) },
     // tier 1: private local writes. Each needs a confirm token naming exactly what it changes.
     'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },
@@ -147,7 +150,8 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     const action = ACTIONS[body.action];
     for (const key of Object.keys(body)) if (key !== 'action' && key !== 'params') throw new AdapterError('Unknown field.');
     const params = validateParams(action.params, body.params);
-    if (action.tier >= 1) {
+    const locks = action.tier >= 1 && action.lock !== false;
+    if (locks) {
       if (tier1Busy) { fail(res, 409, 'busy', 'Another change is still running. Wait for it to finish.'); return; }
       tier1Busy = true;
     }
@@ -155,7 +159,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
       const data = await action.run(params);
       send(res, 200, { status: 'ok', action: body.action, data });
     } finally {
-      if (action.tier >= 1) tier1Busy = false;
+      if (locks) tier1Busy = false;
     }
   }
 

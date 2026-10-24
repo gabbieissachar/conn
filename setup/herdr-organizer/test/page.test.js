@@ -555,3 +555,12 @@ test('context view: the compact toggle keeps the tick box, puts the percent next
   assert.match(html, /try \{ return localStorage\.getItem\(CONTEXT_COMPACT_KEY\) === '1'; \} catch \{ return false; \}/);
   assert.match(html, /context\.compact \? `<div class="ctx-compact">/);
 });
+
+test('context table: every session row has an Open button that sends only a session name and pane id', () => {
+  assert.match(html, /const openTabButton = row => row\.pane_id && row\.herdr_session/);
+  assert.match(html, /\$\{openTabButton\(row\)\}<\/td><\/tr>/, 'the table row carries it');
+  assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{openTabButton\(row\)\}<\/label>/, 'and so does the compact row');
+  const handler = html.slice(html.indexOf('const openTab = async'), html.indexOf('const copyHandoff'));
+  assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane \}\)/);
+  assert.equal(/tab_id|command|args/.test(handler), false, 'the page names no tab and builds no command');
+});
