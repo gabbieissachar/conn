@@ -789,7 +789,7 @@
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -1017,7 +1017,7 @@
     count.classList.toggle("bad", over);
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}`;
+    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? ` · Herdr is on ${link.held}; following once this box is sent or left` : ""}`;
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -1036,11 +1036,13 @@
     if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${SESSION_COMMANDS[command]}.`)) return;
     // What this send carries. The box stays open while it runs (emptying the pane's input box
     // first takes a second or more), so only these are removed when it returns.
-    const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value;
+    const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
+    // Taken before the send: the log stamps the message when the pane receives it, which is
+    // before Herdr answers (emptying the pane's input box first takes a second or more).
+    const at = Date.now() / 1000;
     link.sending = true; link.result = null; renderDock();
     try {
       const sent = await live.send(sid, text);
-      const at = Date.now() / 1000;
       link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(at)}.` };
       link.pending.push({ sid, text, at, label: sent.label });
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
@@ -1052,13 +1054,22 @@
         delete drafts[sid]; keep("tr-drafts", drafts);
       }
       setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 4000);
-      if (state.view === "reader") { render(); window.scrollTo(0, document.documentElement.scrollHeight); }
+      // A plain message shows at the end, where its reply will come. A reply to an older turn
+      // keeps your place there; the faded message waits at the end.
+      if (state.view === "reader") {
+        const anchor = readingAnchor();
+        render();
+        if (pointed && !anchor.bottom) restoreAnchor(anchor); else window.scrollTo(0, document.documentElement.scrollHeight);
+      }
     } catch (e) { link.result = { ok: false, text: e.message }; }
     link.sending = false; renderDock();
   }
-  // A sent message shows at once, faded, until the session's log has it.
+  // A sent message shows at once, faded, until the session's log has it: one of your messages
+  // from after the send that starts with the same words (a command, by its time alone).
+  const opening = text => text.replace(/\s+/g, " ").trim().slice(0, 80);
   function pendingNodes(session) {
-    const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2);
+    const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2
+      && (p.text.startsWith("/") || opening(e.input || "") === opening(p.text)));
     link.pending = link.pending.filter(p => p.sid !== session.id || !landed(p));
     return link.pending.filter(p => p.sid === session.id).map(p => {
       const block = $("div", "input captain pending"), who = $("div", "who");
@@ -1323,7 +1334,7 @@
   // session (#s=...) wins over the focus found when the page opens.
   function applyFocus() {
     const f = link.focus;
-    if (!state.follow || !f) return;
+    if (!state.follow || !f) { link.held = null; return; }
     if (f.seq !== link.seenSeq) {
       const keep = link.first && link.keepOpening;
       link.seenSeq = f.seq;
@@ -1333,6 +1344,10 @@
     if (!link.want) return;
     const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(link.want));
     if (index < 0) return;  // the server adds it; the next refresh brings it in
+    // A message being written stays with its session: the switch waits until the box is
+    // left or emptied, so the next Enter cannot go to the pane Herdr moved to.
+    link.held = index !== state.session && writing() ? f.label : null;
+    if (link.held) { renderDock(); return; }
     link.want = null;
     if (index === state.session && state.view !== "fleet") return;  // reading its conversation or a document already
     state.session = index; state.view = "reader";
@@ -1340,6 +1355,7 @@
     render();
     showLatest();
   }
+  const writing = () => document.activeElement === dock("text") && Boolean(dockTyped());
   live.poll(async () => {
     const s = await live.state(state.follow);
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
