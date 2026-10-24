@@ -418,7 +418,10 @@ into the same group without closing anything. A working or blocked agent is
 included too (the restart stops it anyway; it resumes from its saved session),
 and an agent without a verified session still skips its workspace. Snapshot
 members are flagged, and a newer snapshot or a closing archive of the same
-workspace (same id and same label) replaces the older snapshot. After the
+workspace replaces the older snapshot. The same workspace means the same id and
+either the same label or a shared agent session, so renaming a workspace between
+two snapshots leaves one member; a reused id with another label and other
+sessions is a different workspace and keeps its own member. After the
 restart Herdr may bring workspaces back by itself. Restoring a snapshot member
 first looks for one open workspace with its label and a live twin of every
 captured tab (same label, same layout shape): that workspace is adopted, only
@@ -426,7 +429,10 @@ panes without an agent get a resume command, and sessions already running are
 skipped. A workspace that is only partly back (or more than one look-alike) is
 left archived with the reason and counted as left alone, never rebuilt on top;
 `--force` still makes another copy. `restore-batch --snapshot-only` restores just the snapshot members and
-leaves the group's ordinary archives alone. `restore-tab` and `restore-tabs` adopt an
+leaves the group's ordinary archives alone. If a group still holds two snapshots of
+one renamed workspace (made before the rename was recognised), the run restores only the
+newer one and leaves the older archived with the reason, and it never resumes a session a
+member of the same run already resumed, so no agent session runs twice. `restore-tab` and `restore-tabs` adopt an
 already-open tab of a snapshot member the same way. Leader tabs keep their rule:
 a natively restored one is adopted, never duplicated.
 

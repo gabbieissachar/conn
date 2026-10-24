@@ -3402,6 +3402,68 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.archive_file(snapshot_id)["left_group"]["reason"], "replaced")
         self.assertNotIn("snapshot", self.archive_file(group["members"][0]["archive_id"]))
 
+    def session_restore(self, session_id):
+        return dict(RESUMABLE, session_id=session_id)
+
+    def test_a_renamed_workspace_replaces_its_earlier_snapshot(self):
+        herdr = self.world(
+            workspaces=[("w1", "Alpha"), ("w2", "Two")],
+            restores={"w1": [self.session_restore("S1")], "w2": [self.session_restore("S2")]},
+            working=(),
+        )
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        first = {m["workspace_id"]: m["archive_id"] for m in group["members"]}
+        herdr.workspaces[0]["label"] = "Beta"
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual(sorted((m["workspace_id"], m["workspace_label"]) for m in group["members"]), [("w1", "Beta"), ("w2", "Two")])
+        for archive_id in first.values():
+            self.assertEqual(self.archive_file(archive_id)["left_group"]["reason"], "replaced")
+        self.assertIn(f"It replaces {first['w1']}", output)
+
+    def test_a_snapshot_is_kept_when_the_same_id_comes_back_with_another_label_and_another_session(self):
+        self.world(workspaces=[("w1", "Alpha")], restores={"w1": [self.session_restore("S1")]}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.world(workspaces=[("w1", "Other")], restores={"w1": [self.session_restore("S9")]}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual([m["workspace_label"] for m in group["members"]], ["Alpha", "Other"], "a reused id is not a rename")
+
+    def test_two_workspaces_sharing_a_label_each_replace_only_their_own_snapshot(self):
+        herdr = self.world(
+            workspaces=[("w1", "Same"), ("w2", "Same")],
+            restores={"w1": [self.session_restore("S1")], "w2": [self.session_restore("S2")]},
+            working=(),
+        )
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual(sorted(m["workspace_id"] for m in group["members"]), ["w1", "w2"], "same label, two workspaces, two members")
+        herdr.workspaces[0]["label"] = "Renamed"
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual(sorted((m["workspace_id"], m["workspace_label"]) for m in group["members"]), [("w1", "Renamed"), ("w2", "Same")])
+        self.assertEqual(len(list(self.archives.glob("*.json"))), 6, "every replaced snapshot stays as a single archive")
+
+    def test_a_newer_snapshot_replaces_every_older_snapshot_of_the_workspace(self):
+        herdr = self.world(workspaces=[("w1", "Alpha")], restores={"w1": [self.session_restore("S1")]}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        # A group made before the rename fix: the renamed workspace was added as a second member.
+        (group,) = self.manifests()
+        herdr.workspaces[0]["label"] = "Beta"
+        older = group["members"][0]
+        stale = dict(self.archive_file(older["archive_id"]))
+        stale.update(archive_id="20260101-000000-beta")
+        stale["capture"] = json.loads(json.dumps(stale["capture"]))
+        stale["capture"]["workspace"]["label"] = "Beta"
+        ORGANIZER.write_json(self.archives / "20260101-000000-beta.json", stale)
+        group["members"].append({"archive_id": "20260101-000000-beta", "workspace_id": "w1", "workspace_label": "Beta"})
+        ORGANIZER.write_json(self.batches / f"{group['batch_id']}.json", group)
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 1, "both stale members of w1 are replaced")
+
 
 class LayoutHerdr:
     """A Herdr that can create workspaces, rebuild layouts and take resume commands, with nothing real behind it."""
@@ -4884,6 +4946,58 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.run_batch()
         ordinary = json.loads((self.archives / f"{ordinary_id}.json").read_text())
         self.assertNotEqual(ordinary["status"], "archived")
+
+    def write_snapshot_member(self, archive_id, label, session_ids, batch_id="batch-20261023-100000"):
+        """A snapshot member of w1 holding one single-pane tab per session id."""
+        tabs = []
+        for number, session_id in enumerate(session_ids, start=1):
+            agent = {
+                "client": "codex", "restore_status": "resumable", "restore_source": "manifest",
+                "source_pane_id": f"w1:p{number}", "resume_command": f"codex resume {session_id}", "session_id": session_id,
+            }
+            tabs.append({"source_tab_id": f"w1:t{number}", "label": "main" if number == 1 else f"tab {number}",
+                         "layout": {"root": {"type": "pane", "pane_id": f"w1:p{number}"}}, "agent_restores": [agent]})
+        archive = {
+            "archive_id": archive_id, "status": "archived", "snapshot": True, "batch_id": batch_id, "restore": {},
+            "capture": {"workspace": {"source_workspace_id": "w1", "label": label, "focused": False}, "tabs": tabs},
+        }
+        ORGANIZER.write_json(self.archives / f"{archive_id}.json", archive)
+        return {"archive_id": archive_id, "workspace_id": "w1", "workspace_label": label}
+
+    def write_group(self, *members):
+        ORGANIZER.write_json(
+            self.batches / "batch-20261023-100000.json",
+            {"version": 1, "batch_id": "batch-20261023-100000", "herdr_session": "esim", "status": "completed", "members": list(members)},
+        )
+
+    def test_a_renamed_workspace_held_twice_by_a_group_is_resumed_once_in_the_newer_member(self):
+        older = self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1"])
+        newer = self.write_snapshot_member("20261023-100100-beta", "Beta", ["S1"])
+        self.write_group(older, newer)
+        self.herdr.add_workspace("w9", "Beta")
+        output = self.run_batch(snapshot_only=True)
+        self.assertEqual(self.herdr.created, [], "the stale name is not rebuilt")
+        self.assertEqual(self.herdr.sent, ["w9:p1"], "the session is resumed once, in the workspace Herdr brought back")
+        self.assertEqual(json.loads((self.archives / "20261023-100000-alpha.json").read_text())["status"], "archived")
+        self.assertEqual(json.loads((self.archives / "20261023-100100-beta.json").read_text())["status"], "resumed")
+        self.assertIn("Left 20261023-100000-alpha alone: the newer snapshot member 20261023-100100-beta", output)
+
+    def test_a_session_one_member_resumed_is_not_resumed_again_by_a_later_member(self):
+        older = self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1", "S2"])
+        newer = self.write_snapshot_member("20261023-100100-beta", "Beta", ["S1"])
+        self.write_group(older, newer)
+        self.herdr.add_workspace("w9", "Beta")
+        self.run_batch(snapshot_only=True)
+        self.assertEqual(len(self.herdr.sent), 2, "S1 and S2 once each, though Herdr has not reported S1 running yet")
+        self.assertNotIn("w9:p1", self.herdr.sent)
+
+    def test_members_that_hold_different_sessions_are_both_restored(self):
+        first = self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1"])
+        second = self.write_snapshot_member("20261023-100100-beta", "Beta", ["S2"])
+        self.write_group(first, second)
+        self.run_batch(snapshot_only=True)
+        self.assertEqual(len(self.herdr.created), 2)
+        self.assertEqual(len(self.herdr.sent), 2)
 
     def test_a_restored_tab_that_is_already_open_in_the_destination_is_adopted(self):
         self.write_archive()
