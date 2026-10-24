@@ -1655,8 +1655,11 @@ def owner_records(session: str, state_dirs: list[Path]) -> list[dict[str, Any]]:
 
 
 def owner_expected_labels(record: dict[str, Any]) -> set[str]:
-    """The tab labels a worker's tab may carry: `fm-<task>`, the bare task id (secondmates) and the label its home recorded."""
-    labels = {f"fm-{record['task']}", record["task"]}
+    """The tab labels a worker's tab may carry: `fm-<task>`, the label its home recorded and, for a secondmate only, the
+    bare task id. Any other task id is a name anyone may give a tab (`notes`), so it proves nothing."""
+    labels = {f"fm-{record['task']}"}
+    if record["values"].get("kind") == "secondmate":
+        labels.add(record["task"])
     presentation = record["state_dir"] / f"{record['key']}.herdr-presentation"
     try:
         recorded = parse_key_values(presentation.read_text()).get("task_label")
@@ -1687,9 +1690,33 @@ def replace_file_atomically(path: Path, expected: str, text: str) -> Path:
     return backup
 
 
-def owner_relink_target(record: dict[str, Any], panes: dict[str, dict[str, Any]], tabs: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
+def owner_describe(record: dict[str, Any]) -> str:
+    return f"{record['task']} in {record['state_dir']}"
+
+
+def owner_relink_target(
+    record: dict[str, Any],
+    panes: dict[str, dict[str, Any]],
+    tabs: dict[str, dict[str, Any]],
+    owners: dict[str, list[dict[str, Any]]] | None = None,
+) -> tuple[str | None, str]:
     """The live pane this worker now runs in, or None with the reason. A pane the command itself rebuilt is exact; otherwise
-    the one live tab carrying the worker's label, with one pane or exactly one agent pane."""
+    the one live tab carrying the worker's label, with one pane or exactly one agent pane.
+
+    `owners` maps a pane id to every record, in any home, that already names it. A pane another record owns is never a
+    target: the worker running there is that record's, whatever label it carries.
+    """
+    target, why = owner_label_target(record, panes, tabs)
+    if target is not None:
+        other = [item for item in (owners or {}).get(target, []) if item is not record]
+        if other:
+            return None, f"pane {target} already belongs to the record of {owner_describe(other[0])}"
+    return target, why
+
+
+def owner_label_target(
+    record: dict[str, Any], panes: dict[str, dict[str, Any]], tabs: dict[str, dict[str, Any]]
+) -> tuple[str | None, str]:
     expected = owner_expected_labels(record)
     old_pane = record["values"]["herdr_pane_id"]
     moved = PANE_MOVES.get(old_pane)
@@ -1713,20 +1740,30 @@ def owner_relink_target(record: dict[str, Any], panes: dict[str, dict[str, Any]]
 
 
 def reconcile_owner_records(session: str, before: dict[str, Any] | None, execute: bool) -> list[dict[str, Any]]:
-    """Point every stale owner record of this session at the worker's live pane, or mark it archived.
+    """Point the stale owner records of this session at the worker's live pane, or mark them archived.
 
     `before` is the snapshot taken before the command: a record whose pane was live then and is gone now was archived
-    by it. Without `before` (a standalone run) nothing is marked, only relinked.
+    by it. Only the records the command touched are looked at then: a pane it closed or rebuilt, never a record that
+    was already stale before it ran, and a command that changed no pane (one refused for a wrong `--confirm`)
+    touches none. Without `before` (a standalone run) every stale record is looked at and nothing is marked, only
+    relinked. A record is only ever pointed at a pane that no record in any home owns, and a pane two stale records
+    want is left to neither.
     """
     snapshot = session_snapshot(session)
     panes = {str(pane.get("pane_id")): pane for pane in snapshot.get("panes", [])}
     tabs = {str(tab.get("tab_id")): tab for tab in snapshot.get("tabs", [])}
     before_panes = {str(pane.get("pane_id")) for pane in before.get("panes", [])} if before else None
+    if before_panes is not None and not PANE_MOVES and before_panes == set(panes):
+        return []
     state_dirs = owner_state_dirs()
     results: list[dict[str, Any]] = []
     if not state_dirs:
         results.append({"status": "flagged", "detail": "no firstmate home state directory was found, so no worker record can be updated"})
     records = owner_records(session, state_dirs)
+    owners: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        owners.setdefault(record["values"]["herdr_pane_id"], []).append(record)
+    plans: list[tuple[dict[str, Any], dict[str, Any], str, str]] = []
     for record in records:
         values = record["values"]
         old_pane = values["herdr_pane_id"]
@@ -1737,7 +1774,9 @@ def reconcile_owner_records(session: str, before: dict[str, Any] | None, execute
                 marker.unlink(missing_ok=True)
                 results.append({**result, "status": "cleared", "detail": "archived marker removed, the worker's pane is live"})
             continue
-        target, why = owner_relink_target(record, panes, tabs)
+        if before_panes is not None and old_pane not in before_panes and old_pane not in PANE_MOVES:
+            continue
+        target, why = owner_relink_target(record, panes, tabs, owners)
         if target is None and why != NO_LIVE_TAB:
             results.append({**result, "status": "flagged", "detail": f"its pane is gone and the worker could not be found again: {why}"})
             continue
@@ -1755,6 +1794,19 @@ def reconcile_owner_records(session: str, before: dict[str, Any] | None, execute
                 results.append(result)
             elif before_panes is None:
                 results.append({**result, "status": "gone", "detail": why})
+            continue
+        plans.append((record, result, target, why))
+    wanted: dict[str, list[dict[str, Any]]] = {}
+    for record, _result, target, _why in plans:
+        wanted.setdefault(target, []).append(record)
+    for record, result, target, why in plans:
+        values = record["values"]
+        old_pane = values["herdr_pane_id"]
+        marker = record["state_dir"] / f"{record['key']}.herdr-archived"
+        if len(wanted[target]) > 1:
+            others = ", ".join(owner_describe(item) for item in wanted[target] if item is not record)
+            results.append({**result, "status": "flagged", "detail": (
+                f"its pane is gone and pane {target} is also the only match for the record of {others}, so neither was changed")})
             continue
         pane = panes[target]
         tab = tabs.get(str(pane.get("tab_id")), {})

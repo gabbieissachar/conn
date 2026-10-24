@@ -492,10 +492,17 @@ of its session in every home under `~/.treehouse/firstmate-*/*/firstmate/state` 
 
 - A record whose pane is gone and whose worker is found again is rewritten, all four fields together, to the new
   pane. The worker is found by the pane the command itself rebuilt, or else by the one live tab labelled `fm-<task>`
-  (with one pane, or exactly one agent pane). The new tab's label must match `fm-<task>`, the bare task id or the label
-  the home recorded; otherwise nothing is written and a warning says why. The old record is kept beside it as
+  (with one pane, or exactly one agent pane). The new tab's label must match `fm-<task>` or the label the home
+  recorded, and for a secondmate record the bare task id too (any other bare id, such as `notes`, is a name anyone may
+  give a tab); otherwise nothing is written and a warning says why. The old record is kept beside it as
   `<task>.meta.herdr-relink-<time>-<id>.bak`, the write is atomic and it is refused if the record changed meanwhile.
   The home's `<task>.herdr-presentation` ids follow when they matched the old pane.
+- A record is only pointed at a pane that no record in any home already names, so two homes never own one worker.
+  When the only match is such a pane, or two stale records want the same pane, the records are left alone and the
+  warning names the other record.
+- An executing command looks only at the records it touched: those whose pane it closed or rebuilt. A record that
+  was already stale before it ran is left for `relink-owner-records`, and a command that changed no pane, such as one
+  refused for a wrong `--confirm`, touches no record.
 - A record whose pane this command closed, with no live tab carrying the label, gets a `<task>.herdr-archived` marker
   (task, old ids, tab label, time) so the home can tell an archived worker from a dead one. The marker is removed when
   the worker comes back. The record itself keeps its ids.

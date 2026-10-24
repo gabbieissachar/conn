@@ -349,6 +349,19 @@ st["created"] = []; st["sent"] = []; state_path.write_text(json.dumps(st))
 meta = homes / "acc-task.meta"
 meta.write_text("window=e2e:w40:p1\nendpoint_task_id=acc-task\nkind=scout\nbackend=herdr\nherdr_session=e2e\nherdr_workspace_id=w40\nherdr_tab_id=w40:t1\nherdr_pane_id=w40:p1\ndecision_keys=\n")
 original_meta = meta.read_text()
+# A stale record of an unrelated worker (its pane is gone and a live tab carries its label) is not the business of a command
+# that did not touch it, and a command refused for a wrong confirmation writes no record at all.
+decoy = homes / "decoy-task.meta"
+decoy.write_text("window=e2e:w77:p1\nendpoint_task_id=decoy-task\nkind=scout\nbackend=herdr\nherdr_session=e2e\nherdr_workspace_id=w77\nherdr_tab_id=w77:t1\nherdr_pane_id=w77:p1\ndecision_keys=\n")
+decoy_text = decoy.read_text()
+st = state(); snap = st["snapshot"]
+snap["workspaces"].append({"workspace_id": "w50", "label": "Decoy", "focused": False})
+snap["tabs"].append({"workspace_id": "w50", "tab_id": "w50:t1", "label": "fm-decoy-task"})
+snap["panes"].append({"tab_id": "w50:t1", "pane_id": "w50:p1", "agent_status": "unknown"}); state_path.write_text(json.dumps(st))
+r = run("archive", "--workspace", "w40", "--execute", "--confirm", "wrong", check=1, extra_env=owned)
+assert decoy.read_text() == decoy_text and meta.read_text() == original_meta, (r.stdout, r.stderr)
+assert not list(homes.glob("*.bak")) and not list(homes.glob("*.herdr-archived")) and "Worker record" not in r.stdout, (r.stdout, r.stderr)
+ok("a command refused for a wrong confirmation writes no worker record")
 r = run("archive", "--workspace", "w40", "--execute", "--confirm", "w40", check=0, extra_env=owned); print(r.stdout.strip())
 worker_archive = re.search(r"as (\S+)\.", r.stdout).group(1)
 assert "marked archived" in r.stdout and "acc-task" in r.stdout, r.stdout
@@ -361,6 +374,9 @@ rewritten = dict(line.split("=", 1) for line in meta.read_text().splitlines())
 assert rewritten["window"] == f"e2e:{new_workspace}:p1" and rewritten["herdr_workspace_id"] == new_workspace and rewritten["herdr_tab_id"] == f"{new_workspace}:t1" and rewritten["herdr_pane_id"] == f"{new_workspace}:p1", rewritten
 assert rewritten["endpoint_task_id"] == "acc-task" and rewritten["kind"] == "scout" and not marker.exists(); ok("restoring it rewrites the record to the new ids, clears the marker and touches nothing else")
 assert len(list(homes.glob("acc-task.meta.herdr-relink-*.bak"))) == 1 and original_meta in next(homes.glob("*.bak")).read_text(); ok("the old record is kept beside it")
+assert decoy.read_text() == decoy_text and not list(homes.glob("decoy-task.meta.*")); ok("the archive and the restore left the unrelated stale record alone")
+r = run("relink-owner-records", check=0, extra_env=owned); assert "Would update worker record: decoy-task" in r.stdout, r.stdout; ok("the standalone check still finds that record")
+decoy.unlink()
 r = run("relink-owner-records", check=0, extra_env=owned); assert "Every worker record of this session points at a live pane" in r.stdout, r.stdout; ok("a standalone check then finds nothing stale")
 server.close(); shutil.rmtree(root)
 print("ALL REAL-CLI CHECKS PASSED")

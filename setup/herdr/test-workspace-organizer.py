@@ -5292,6 +5292,80 @@ class OwnerRecordTests(unittest.TestCase):
         self.assertEqual(ORGANIZER.parse_key_values(mine.read_text())["herdr_pane_id"], "wCM:p2")
         self.assertEqual(theirs.read_text(), before)
 
+    def test_a_dead_record_is_never_pointed_at_a_pane_another_homes_record_owns(self):
+        dead = self.meta(state=self.home, task="herdr-fix-worker")
+        live = self.meta(state=self.other, task="herdr-fix-worker", pane="wB:p1", tab="wB:t1", workspace="wB")
+        texts = (dead.read_text(), live.read_text())
+        now = self.snapshot([("wB:t1", "fm-herdr-fix-worker")], [("wB:p1", "wB:t1", "idle")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "flagged")
+        self.assertIn("already belongs to the record of herdr-fix-worker", result["detail"])
+        self.assertEqual((dead.read_text(), live.read_text()), texts, "two homes never own one worker")
+        self.assertEqual(sorted(path.name for path in self.root.rglob("*.bak")), [], "nothing was written, so nothing was backed up")
+
+    def test_a_dead_and_a_live_record_of_one_task_in_one_home_do_not_end_on_one_pane(self):
+        dead = self.meta(task="job")
+        live = self.meta(task="job-2", pane="wD:p1", tab="wD:t1", workspace="wD")
+        live.write_text(live.read_text().replace("endpoint_task_id=job-2", "endpoint_task_id=job"))
+        text = dead.read_text()
+        now = self.snapshot([("wD:t1", "fm-job")], [("wD:p1", "wD:t1", "idle")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "flagged")
+        self.assertEqual(dead.read_text(), text)
+
+    def test_two_stale_records_that_want_the_same_pane_are_both_left_alone_and_reported(self):
+        first = self.meta(state=self.home, task="twin-task")
+        second = self.meta(state=self.other, task="twin-task", pane="wAZ:p9", tab="wAZ:t9")
+        texts = (first.read_text(), second.read_text())
+        now = self.snapshot([("wCM:t2", "fm-twin-task")], [("wCM:p2", "wCM:t2", "idle")])
+        results = self.reconcile(now)
+        self.assertEqual([item["status"] for item in results], ["flagged", "flagged"])
+        self.assertIn("neither was changed", results[0]["detail"])
+        self.assertEqual((first.read_text(), second.read_text()), texts)
+
+    def test_a_bare_task_id_is_a_label_only_for_a_secondmate_record(self):
+        ordinary = self.meta(task="notes")
+        text = ordinary.read_text()
+        now = self.snapshot([("wC:t1", "notes")], [("wC:p1", "wC:t1", "unknown")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "gone", "a tab anyone may name `notes` is not the worker")
+        self.assertEqual(ordinary.read_text(), text)
+        secondmate = ordinary
+        secondmate.write_text(text.replace("kind=scout", "kind=secondmate"))
+        [result] = self.reconcile(now)
+        self.assertEqual((result["status"], result["new"]), ("relinked", "wC:p1"))
+        self.assertEqual(ORGANIZER.parse_key_values(secondmate.read_text())["herdr_pane_id"], "wC:p1")
+
+    def test_a_command_touches_only_the_records_it_closed_or_rebuilt(self):
+        untouched = self.meta(task="other-task", pane="wX:p1", tab="wX:t1", workspace="wX")
+        touched = self.meta()
+        text = untouched.read_text()
+        before = self.snapshot([("wAZ:t2", f"fm-{self.TASK}")], [("wAZ:p2", "wAZ:t2", "idle")])
+        now = self.snapshot(
+            [("wCM:t2", f"fm-{self.TASK}"), ("wY:t1", "fm-other-task")], [("wCM:p2", "wCM:t2", "idle"), ("wY:p1", "wY:t1", "idle")]
+        )
+        ORGANIZER.note_pane_moves({"wAZ:p2": "wCM:p2"})
+        results = self.reconcile(now, before)
+        self.assertEqual([item["task"] for item in results], [self.TASK])
+        self.assertEqual(ORGANIZER.parse_key_values(touched.read_text())["herdr_pane_id"], "wCM:p2")
+        self.assertEqual(untouched.read_text(), text, "a record that was already stale before the command is not this command's")
+        [standalone] = self.reconcile(now)
+        self.assertEqual((standalone["task"], standalone["new"]), ("other-task", "wY:p1"), "the standalone check still repairs it")
+
+    def test_a_command_refused_for_a_wrong_confirmation_writes_no_record(self):
+        stale = self.meta()
+        text = stale.read_text()
+        snapshot = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        args = argparse.Namespace(command="archive-all", execute=True, session="esim")
+        output = io.StringIO()
+        with patch.object(ORGANIZER, "session_snapshot", return_value=snapshot), redirect_stdout(output):
+            with self.assertRaises(ORGANIZER.OrganizerError):
+                with ORGANIZER.owner_record_tracking(args):
+                    ORGANIZER.require_execute_confirmation(True, "wrong", "esim", "Archive all")
+        self.assertEqual(stale.read_text(), text)
+        self.assertEqual(output.getvalue(), "", "a refused command reports nothing about records")
+        self.assertEqual(sorted(path.name for path in self.home.iterdir()), [stale.name])
+
     def test_a_preview_changes_nothing(self):
         path = self.meta()
         text = path.read_text()
