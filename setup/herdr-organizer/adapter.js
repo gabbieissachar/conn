@@ -717,6 +717,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       if (entry.folders) entry.tab.working_folders = entry.folders;
       if (entry.sessions) entry.tab.agent_sessions = entry.sessions;
     }
+    // When the computer last started, so the page can tell a snapshot taken before a restart from one taken after it.
+    snapshot.boot_time = new Date(Date.now() - os.uptime() * 1000).toISOString();
     return snapshot;
   }
 

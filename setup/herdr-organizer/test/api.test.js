@@ -337,6 +337,8 @@ test('snapshot-data: serves the snapshot from the tool root and refuses one that
     const ok = await post('snapshot-data');
     assert.equal(ok.status, 200);
     assert.equal(ok.json.data.workspaces[0].label, 'Alpha');
+    const boot = Date.parse(ok.json.data.boot_time);
+    assert.ok(Number.isFinite(boot) && boot < Date.now() && boot > Date.now() - 400 * 24 * 3600 * 1000, 'the snapshot carries the time the computer last started');
     require('fs').writeFileSync(tree.abs(snapshot), JSON.stringify({ workspaces: [{ id: 'w1', label: 'claude --resume 11111111-2222-4333-8444-555555555555', tabs: [] }] }));
     const leaky = await post('snapshot-data');
     assert.equal(leaky.status, 502);

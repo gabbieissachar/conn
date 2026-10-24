@@ -1491,6 +1491,19 @@ created: 2026-09-10
       ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
     // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
     const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
+    // A snapshot is for after a restart. When every snapshot member was captured after the computer last started, the workspaces
+    // are still open, and a restore now would adopt them and take them out of the group. Unknown times never block. Boot time
+    // does not see a Herdr restart without a reboot, which is why the page keeps a deliberate way to copy the command anyway.
+    const snapshotNotRebooted = (members, archives, bootTime) => {
+      const boot = Date.parse(bootTime);
+      if (!members.length || !Number.isFinite(boot)) return false;
+      return members.every(member => {
+        const archive = (archives || []).find(item => item.archive_id === member.archive_id);
+        const captured = archive ? Date.parse(archive.created_at) : NaN;
+        return Number.isFinite(captured) && captured > boot;
+      });
+    };
+    const NOT_REBOOTED_REASON = 'This snapshot was taken after the computer last started, so its workspaces are probably still open. Restoring now would take them out of the group. Restart the computer first, then restore.';
     // The open workspaces a single archived tab can be resumed into: only those of the session the group belongs to.
     const groupDestinations = (batch, data) => (SESSION_NAME_PATTERN.test(batch.herdr_session || '') && batch.herdr_session === data.herdr_session ? (data.workspaces || []) : []);
     // The picker above a group's per-tab buttons offers every workspace except leader-space and starts on the first one (a group holds many archives, so no name decides); a leader tab's button goes to leader-space on its own.
@@ -1562,6 +1575,7 @@ created: 2026-09-10
       const snapshotRestore = `${base} --snapshot-only --resume-agents --execute --confirm ${id}`;
       const snapshotMembers = (batch.members || []).filter(member => member.status === 'archived' && member.snapshot);
       const snapshotCount = snapshotMembers.length;
+      const notRebooted = snapshotNotRebooted(snapshotMembers, state.data.archives, state.data.boot_time);
       const snapshotTabs = snapshotMembers.reduce((total, member) => total + (member.tabs || []).length, 0);
       const snapshotAgents = snapshotMembers.reduce((total, member) => total + (member.tabs || []).reduce((sum, tab) => sum + (Number(tab.resumable_agent_count) || 0), 0), 0);
       const remove = `herdr-organizer delete-batch --batch ${id} --execute --confirm ${id}`;
@@ -1591,7 +1605,8 @@ created: 2026-09-10
         ${snapshotCount ? `<div class="batch-counts" style="margin-top:4px">${escapeHtml(`Snapshot: ${plural(snapshotCount, 'workspace')} · ${plural(snapshotTabs, 'tab')} · ${plural(snapshotAgents, 'resumable agent')}`)}</div>` : ''}
         ${batch.empty ? '<div class="archive-meta" style="margin-top:8px">No workspace is archived in this group. A workspace leaves the group when it is restored, and Archive all or adding tabs puts workspaces back in.</div>' : ''}
         <div class="archive-actions">
-          ${valid && snapshotCount ? `<button class="primary" type="button" data-command="${escapeHtml(snapshotRestore)}" title="Copies one command that restores only the ${plural(snapshotCount, 'workspace')} (${plural(snapshotTabs, 'tab')}) a snapshot saved before a restart and resumes their verified agents. A workspace Herdr already brought back is adopted, not rebuilt. The group's other archives are not touched.">Copy restore snapshot + resume agents</button>` : ''}
+          ${valid && snapshotCount && !notRebooted ? `<button class="primary" type="button" data-command="${escapeHtml(snapshotRestore)}" title="Copies one command that restores only the ${plural(snapshotCount, 'workspace')} (${plural(snapshotTabs, 'tab')}) a snapshot saved before a restart and resumes their verified agents. A workspace Herdr already brought back is adopted, not rebuilt. The group's other archives are not touched.">Copy restore snapshot + resume agents</button>` : ''}
+          ${valid && snapshotCount && notRebooted ? `<button class="primary" type="button" disabled title="${escapeHtml(NOT_REBOOTED_REASON)}">Copy restore snapshot + resume agents</button><button type="button" data-command="${escapeHtml(snapshotRestore)}" title="${escapeHtml(`${NOT_REBOOTED_REASON} Copy it anyway only when Herdr restarted without the computer restarting and these workspaces are gone.`)}">Copy anyway (computer not restarted)</button>` : ''}
           <button class="${valid && snapshotCount ? '' : 'primary'}" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
           <button type="button" ${canLayout ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canLayout ? 'Copies one command that rebuilds the layout of every archived member that has no open copy, as fresh shells. Nothing is marked restored and every restore command stays.' : (canRestore ? 'Every archived member already has its layout open' : why)}">Copy restore all (layout only)</button>
           ${valid && duplicates.length ? `<button class="danger" type="button" data-command="${escapeHtml(dedupe)}" title="Copies one command that permanently removes the older copy of each duplicated tab from its archive. The newer archive keeps its copy, and no live workspace changes. Run it with the same command plus no --execute to preview.">Copy remove ${plural(duplicates.length, 'duplicate tab')}</button>` : ''}

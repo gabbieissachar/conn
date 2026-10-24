@@ -479,6 +479,23 @@ test('a leader tab in the group has its own resume button aimed at leader-space,
   assert.match(blocked, /no leader-space workspace is open/);
 });
 
+test('the snapshot restore button is disabled when every snapshot member was captured after the last boot, with a deliberate way around it', () => {
+  const start = html.indexOf('const snapshotNotRebooted = ');
+  const vm = require('node:vm');
+  const { snapshotNotRebooted } = vm.runInNewContext(`${html.slice(start, html.indexOf('const NOT_REBOOTED_REASON'))}; ({ snapshotNotRebooted })`, {});
+  const boot = '2026-10-25T00:00:00Z';
+  const archives = [{ archive_id: 'a1', created_at: '2026-10-25T02:00:00Z' }, { archive_id: 'a2', created_at: '2026-10-24T20:00:00Z' }, { archive_id: 'a3', created_at: 'not a time' }];
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }], archives, boot), true, 'captured after boot: the workspaces are still open');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a2' }], archives, boot), false, 'captured before boot: the restart happened');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }, { archive_id: 'a2' }], archives, boot), false, 'one member from before the boot is enough to allow the restore');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a3' }], archives, boot), false, 'an unreadable time never blocks');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'missing' }], archives, boot), false, 'a member with no archive never blocks');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }], archives, undefined), false, 'no boot time never blocks');
+  assert.equal(snapshotNotRebooted([], archives, boot), false);
+  assert.match(html, /snapshotCount && notRebooted \? `<button class="primary" type="button" disabled/, 'the primary button is disabled with the reason');
+  assert.match(html, /Copy anyway \(computer not restarted\)/, 'a Herdr-only restart can still copy the command, on purpose');
+});
+
 test('the archive group can select every tab of one archived workspace at once, and a stacked mark reads once', () => {
   const { memberPickKeys } = memberTabHelpers();
   const archiveId = '20261014-101500-esim';
