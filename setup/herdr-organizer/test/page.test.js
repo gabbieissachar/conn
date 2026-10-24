@@ -601,9 +601,15 @@ test('workspaces view: the compact toggle shows names and tick boxes only, escap
   assert.equal(/Copy (move|archive|cleanup|restore)/.test(view), false);
   assert.match(html, /try \{ return localStorage\.getItem\(COMPACT_KEY\) === '1'; \} catch \{ return false; \}/);
   assert.match(html, /workspaces\.map\(state\.compact \? compactWorkspaceView : workspaceView\)/);
-  // Names wrap in the compact Workspaces view so a phone shows them in full; the Context view's rows are not touched.
+  // Names wrap in the compact Workspaces view so a phone shows them in full; the Context rows wrap the same way (next test).
   assert.match(html, /\.workspaces\.compact \.compact-tab \.tab-name \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere/);
   assert.doesNotMatch(html, /\.workspaces\.compact \.workspace-title strong \{[^}]*white-space: normal/, 'workspace names keep their one line');
+});
+
+test('phone layout: Context session names wrap instead of being cut, and the header stops sticking on a narrow screen', () => {
+  assert.match(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere/);
+  assert.doesNotMatch(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*text-overflow: ellipsis/, 'no ellipsis on a session name');
+  assert.match(html, /@media \(max-width: 600px\) \{ \.topbar \{ position: static; \} \}/);
 });
 
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
