@@ -538,7 +538,7 @@ test('workspaces view: the compact toggle shows names and tick boxes only, escap
   assert.match(html, /workspaces\.map\(state\.compact \? compactWorkspaceView : workspaceView\)/);
   // Names wrap in the compact Workspaces view so a phone shows them in full; the Context view's rows are not touched.
   assert.match(html, /\.workspaces\.compact \.compact-tab \.tab-name \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere/);
-  assert.match(html, /\.workspaces\.compact \.workspace-title strong \{[^}]*white-space: normal/);
+  assert.doesNotMatch(html, /\.workspaces\.compact \.workspace-title strong \{[^}]*white-space: normal/, 'workspace names keep their one line');
 });
 
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
