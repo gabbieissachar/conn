@@ -219,6 +219,17 @@ test('pages: the reading list, stamps and any other spelling of out/ are never h
   } finally { await t.close(); }
 });
 
+test('pages: a request URL nothing can parse is refused here, never passed to the static handler', async () => {
+  const t = await start();
+  try {
+    const response = await t.request({ path: '//[' });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers['x-static'], undefined);
+    const after = await t.request({ path: '/setup/transcript-reader/README.md' });
+    assert.notEqual(after.status, 0, 'the server still answers');
+  } finally { await t.close(); }
+});
+
 test('pages: a spelling the file system folds (Unicode form and case) or a symlink into out/ is still kept from the static handler', async () => {
   // out/ under a folder whose name is not ASCII, written in composed form (é).
   const t = await start({ outParts: ['setup', 'caf\u00e9', 'out'] });

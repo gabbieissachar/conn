@@ -442,7 +442,13 @@ function create({
   // Returns true when the request belongs to this module (and is handled here).
   function handle(req, res) {
     let url;
-    try { url = new URL(req.url, 'http://localhost'); } catch { return false; }
+    // A request URL nothing can parse may still name out/, so it is refused here rather
+    // than passed on to the shared static handler.
+    try { url = new URL(req.url, 'http://localhost'); } catch {
+      res.writeHead(400, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+      res.end('Bad request');
+      return true;
+    }
     const page = insideOut(req, url);
     if (page.inside) { servePage(req, res, page.name); return true; }
     if (!url.pathname.startsWith(API)) return false;
