@@ -436,10 +436,17 @@ member of the same run already resumed, so no agent session runs twice. `restore
 already-open tab of a snapshot member the same way. Leader tabs keep their rule:
 a natively restored one is adopted, never duplicated.
 
-A live tab only counts as a captured tab's twin if no pane of it runs an agent
-other than the captured session; a fresh agent Herdr relaunched there, or
-another session, leaves the member archived (`restore-tab` rebuilds that tab
-instead of adopting the open one). Pairing runs over all of the archive's
+A live tab only counts as a captured tab's twin if the evidence agrees. A label
+and a layout shape are not enough (Herdr's default tab label is `1`): every pane
+must be in the folder of the captured pane, and every pane that would be typed a
+resume command must be at a plain shell prompt, so an editor or a dev server
+never gets the text. A folder missing on either side cannot be compared and
+counts as no evidence. No pane of it may run an agent other than the captured
+session either; a fresh agent Herdr relaunched there, or another session, also
+fails. A whole workspace with such a tab stays archived and the output says why
+("open, but its pane w9:p1 is in another folder than the captured pane"), and
+`restore-tab` prints the same reason and rebuilds that tab instead of adopting the
+open one. Pairing runs over all of the archive's
 tabs, so a live tab that belongs to a tab left behind is never taken for a
 selected one. Restoring a snapshot member while everything is still open
 adopts it and consumes it, as any restore does, so do not run `restore-batch`

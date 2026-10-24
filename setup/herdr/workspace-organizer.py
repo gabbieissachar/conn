@@ -3858,12 +3858,20 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     # The pairing runs over every captured tab of the archive, not only the selected ones, so a live tab that belongs to
     # a tab left behind is never taken for a selected one. Only the selected tabs' pairs are used.
     twins: dict[str, dict[str, Any]] = {}
+    not_adopted: list[str] = []
     if archive.get("snapshot") and not args.force:
         captured = archive.get("capture", {}).get("tabs", [])
-        pairs, _conflicted = pair_live_twins(snapshot, args.to_workspace, captured, args.session)
+        pairs, refused = pair_live_twins(snapshot, args.to_workspace, captured, args.session)
         for index, twin in pairs.items():
             if str(captured[index].get("source_tab_id")) in selected_ids:
                 twins[str(captured[index].get("source_tab_id"))] = twin
+        # An open tab with the same label that is not proven to be the captured one is left alone and the tab is rebuilt.
+        not_adopted = [
+            f"Tab {captured[index].get('label')!r} ({captured[index].get('source_tab_id')}) was not adopted from an open tab "
+            f"with the same label: {reason}. It is rebuilt instead."
+            for index, reason in sorted(refused.items())
+            if str(captured[index].get("source_tab_id")) in selected_ids
+        ]
     require_leader_restore_ok(
         snapshot, destination.get("label"), [tab for tab_id, tab in zip(selected_ids, selected_tabs, strict=True) if tab_id not in twins], True
     )
@@ -3887,11 +3895,15 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
     }
     if not args.execute:
         print(json.dumps(preview, indent=2))
+        for note in not_adopted:
+            print(note)
         print(
             f"Preview only. Re-run with --execute --confirm {args.archive!r} to restore {len(selected_tabs)} archived tab(s) into {args.to_workspace}."
         )
         return
     require_execute_confirmation(args.execute, args.confirm, args.archive, "Restore archived tabs")
+    for note in not_adopted:
+        print(note)
     if unavailable and not args.allow_unresumable_agents:
         pane_ids = ", ".join(str(item.get("source_pane_id")) for item in unavailable)
         raise OrganizerError(
@@ -4073,25 +4085,61 @@ def twin_agent_fit(
     return fit
 
 
+def twin_problem(
+    snapshot: dict[str, Any],
+    pane_map: dict[str, str],
+    captured_tab: dict[str, Any],
+    live_root: dict[str, Any] | None,
+    session: str | None,
+) -> str | None:
+    """Why a live tab with the captured tab's label and shape is still not the tab Herdr brought back, or None.
+
+    A label and a shape are not evidence: Herdr's default tab label is `1`, and a shell is a shell. The tab is a twin
+    only when every pane is in the captured pane's folder, and every pane that is going to be typed a resume command
+    is at a plain shell prompt, so nothing running there (an editor, a dev server) gets the text. A folder that is
+    missing on either side cannot be compared, so it is no evidence either.
+    """
+    live_leaves = {str(leaf.get("pane_id")): leaf for leaf in leaf_panes(live_root)}
+    for captured_leaf in leaf_panes(captured_tab.get("layout", {}).get("root")):
+        live_leaf = live_leaves.get(pane_map.get(str(captured_leaf.get("pane_id")), ""), {})
+        captured_folder = clean_folder(captured_leaf.get("cwd"))
+        live_folder = clean_folder(live_leaf.get("cwd"))
+        if not captured_folder or not live_folder:
+            return f"the folder of its pane {live_leaf.get('pane_id')} cannot be compared with the captured one"
+        if os.path.normpath(captured_folder) != os.path.normpath(live_folder):
+            return f"its pane {live_leaf.get('pane_id')} is in another folder than the captured pane"
+    panes = {str(pane.get("pane_id")): pane for pane in snapshot.get("panes", [])}
+    for restore in captured_tab.get("agent_restores", []):
+        new_pane_id = pane_map.get(str(restore.get("source_pane_id")))
+        pane = panes.get(str(new_pane_id))
+        if pane is None or not is_trusted_restore(restore) or not restore.get("resume_command"):
+            continue
+        # An agent that runs the captured session is skipped, not typed into. twin_agent_fit settled whose it is.
+        if not live_agent_running(pane) and not pane_is_shell_prompt(str(new_pane_id), session):
+            return f"its pane {new_pane_id} is not at a plain shell prompt, something is running there"
+    return None
+
+
 def pair_live_twins(
     snapshot: dict[str, Any], workspace_id: str, captured_tabs: list[dict[str, Any]], session: str | None
-) -> tuple[dict[int, dict[str, Any]], set[int]]:
+) -> tuple[dict[int, dict[str, Any]], dict[int, str]]:
     """Pair the captured tabs with the live tabs of this workspace that they were brought back as.
 
-    A twin has the same label and the same layout shape. Ids alone never decide, because Herdr hands closed ids out
+    A twin has the same label and the same layout shape, and `twin_problem` finds nothing against it (same folders,
+    a plain shell prompt wherever a resume would be typed). Ids alone never decide, because Herdr hands closed ids out
     again. A live tab whose pane runs an agent other than the captured session is no twin: adopting it would drop the
     captured session without resuming it. A tab with agents takes the live tab that runs its own session first, and each
-    live tab pairs with one captured tab only. Returns the pairs by captured-tab index, and the indexes whose look-alike
-    live tabs all run another agent.
+    live tab pairs with one captured tab only. Returns the pairs by captured-tab index, and for the indexes whose
+    look-alike live tabs are all refused the reason.
     """
     pane_sessions = {pane_id: session_id for session_id, pane_id in live_agent_sessions(snapshot).items()}
     exports: dict[str, Any] = {}
     candidates: list[list[dict[str, Any]]] = []
-    conflicted: set[int] = set()
+    refused: dict[int, str] = {}
     for index, captured_tab in enumerate(captured_tabs):
         captured_root = captured_tab.get("layout", {}).get("root")
         found: list[dict[str, Any]] = []
-        look_alike = False
+        reason = ""
         for live in tabs_for_workspace(snapshot, workspace_id):
             tab_id = str(live.get("tab_id"))
             if str(live.get("label") or "") != str(captured_tab.get("label") or ""):
@@ -4101,14 +4149,16 @@ def pair_live_twins(
                 exports[tab_id] = exported.get("root") if isinstance(exported, dict) else None
             if layout_topology(exports[tab_id]) != layout_topology(captured_root):
                 continue
-            look_alike = True
             pane_map = matching_pane_map(captured_root, exports[tab_id])
             fit = twin_agent_fit(snapshot, pane_map, captured_tab, pane_sessions)
-            if fit is not None:
+            problem = "it runs another agent session" if fit is None else twin_problem(snapshot, pane_map, captured_tab, exports[tab_id], session)
+            if problem is None:
                 found.append({"tab_id": tab_id, "pane_map": pane_map, "fit": fit})
+            else:
+                reason = reason or problem
         candidates.append(found)
-        if look_alike and not found:
-            conflicted.add(index)
+        if reason and not found:
+            refused[index] = reason
     pairs: dict[int, dict[str, Any]] = {}
     taken: set[str] = set()
     for index in sorted(range(len(captured_tabs)), key=lambda item: (not tab_session_ids(captured_tabs[item]), item)):
@@ -4118,7 +4168,7 @@ def pair_live_twins(
         best = max(free, key=lambda twin: twin["fit"])
         taken.add(best["tab_id"])
         pairs[index] = {"tab_id": best["tab_id"], "pane_map": best["pane_map"]}
-    return pairs, conflicted & (set(range(len(captured_tabs))) - set(pairs))
+    return pairs, {index: reason for index, reason in refused.items() if index not in pairs}
 
 
 def native_workspace_copy(archive: dict[str, Any], snapshot: dict[str, Any], session: str | None) -> dict[str, Any] | None:
@@ -4143,9 +4193,9 @@ def native_workspace_copy(archive: dict[str, Any], snapshot: dict[str, Any], ses
             if str(workspace.get("label") or "") != label:
                 continue
             workspace_id = str(workspace.get("workspace_id"))
-            pairs, conflicted = pair_live_twins(snapshot, workspace_id, captured_tabs, session)
+            pairs, refused = pair_live_twins(snapshot, workspace_id, captured_tabs, session)
             missing = [
-                str(tab.get("label")) + (" (open, but it runs another agent session)" if index in conflicted else "")
+                str(tab.get("label")) + (f" (open, but {refused[index]})" if index in refused else "")
                 for index, tab in enumerate(captured_tabs)
                 if index not in pairs
             ]

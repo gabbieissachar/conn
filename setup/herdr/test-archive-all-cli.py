@@ -56,6 +56,11 @@ elif args[:2] == ["workspace", "create"]:
     print(json.dumps({"result": {"workspace_id": wid, "tab_id": f"{wid}:t1"}}))
 elif args[:2] == ["pane", "run"]:
     s.setdefault("sent", []).append(args[2]); save(s); print(json.dumps({"result": {}}))
+elif args[:2] == ["pane", "process-info"]:
+    # A plain shell prompt, unless the test says a program runs in the pane.
+    program = s.get("programs", {}).get(args[3])
+    running = [{"pid": 1, "name": "zsh"}] + ([{"pid": 2, "name": program}] if program else [])
+    print(json.dumps({"result": {"process_info": {"shell_pid": 1, "foreground_processes": running}}}))
 elif args[:2] == ["workspace", "focus"]:
     print(json.dumps({"result": {}}))
 elif args[:2] == ["session", "list"]:
@@ -91,7 +96,8 @@ def handle(conn):
             p = req["params"]
             if req["method"] == "layout.export":
                 wid = p["tab_id"].split(":")[0]
-                res = {"layout": {"tab_id": p["tab_id"], "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
+                folders = json.loads((root / "cwd-override.json").read_text()) if (root / "cwd-override.json").exists() else {}
+                res = {"layout": {"tab_id": p["tab_id"], "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": folders.get(f"{wid}:p1", "/tmp")}}}
             elif req["method"] == "layout.apply":
                 if (root / "slow-apply").exists(): time.sleep(8)
                 tab = p.get("tab_id") or f"{p['workspace_id']}:t9"
@@ -312,6 +318,27 @@ st = state(); assert st["sent"] == ["w7:p1"], st["sent"]; assert len(st["created
 assert "already open, so nothing was rebuilt" in r.stdout; ok("the restore said it adopted what Herdr brought back")
 (snap_group,) = json.loads(run("list-batches", check=0).stdout); assert snap_group["members"] == [], snap_group; ok("both restored members left the group")
 r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["sent"]) == 1; ok("a second restore changes nothing")
+assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
+# ---- a restart brings Alpha back, but its pane is in another folder or runs a program: nothing is typed into it ----
+for why, folders, programs in (("another folder", {"w7:p1": "/elsewhere"}, {}), ("a running program", {}, {"w7:p1": "vim"})):
+    reset_organizer_state(); fresh()
+    run("archive-all", "--snapshot", "--execute", "--confirm", "e2e", check=0)
+    (snap_group,) = json.loads(run("list-batches", check=0).stdout); snap_bid = snap_group["batch_id"]
+    for path in sorted(archives_dir.glob("*.json")):
+        a = json.loads(path.read_text())
+        if a["capture"]["workspace"]["label"] == "Alpha":
+            a["capture"]["tabs"][0]["agent_restores"] = [{"client": "codex", "restore_status": "resumable", "restore_source": "manifest", "resume_command": "codex resume 00000000-0000-0000-0000-000000000000", "source_pane_id": "w1:p1", "session_id": "00000000-0000-0000-0000-000000000000"}]
+            path.write_text(json.dumps(a))
+    st = state(); st["snapshot"] = {"workspaces": [{"workspace_id": "w7", "label": "Alpha", "focused": True}], "tabs": [{"workspace_id": "w7", "tab_id": "w7:t1", "label": "main"}], "panes": [{"tab_id": "w7:t1", "pane_id": "w7:p1", "agent_status": "unknown"}]}
+    st["created"] = []; st["sent"] = []; st["programs"] = programs; state_path.write_text(json.dumps(st))
+    (root / "cwd-override.json").write_text(json.dumps(folders))
+    r = run("restore-batch", "--snapshot-only", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); print(r.stdout.strip())
+    st = state(); assert "w7:p1" not in st["sent"], (why, st["sent"])
+    alpha = next(json.loads(path.read_text()) for path in archives_dir.glob("*.json") if json.loads(path.read_text())["capture"]["workspace"]["label"] == "Alpha")
+    assert alpha["status"] == "archived", (why, alpha["status"])
+    assert "was left alone" in r.stdout and "open, but" in r.stdout, (why, r.stdout); ok(f"Alpha back natively with {why}: no resume typed into it, the member stays archived")
+    (root / "cwd-override.json").unlink()
+    st = state(); st["programs"] = {}; state_path.write_text(json.dumps(st))
 assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
 # ---- a worker spawned by a firstmate home: archive it, restore it, and its home's record follows it ----
 homes = root / "homes" / "state"; homes.mkdir(parents=True)

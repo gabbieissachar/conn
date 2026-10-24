@@ -4686,11 +4686,18 @@ class LeaderConventionTests(unittest.TestCase):
 
 
 class NativeHerdr(LayoutHerdr):
-    """A Herdr that came back from a restart with workspaces of its own, so a restore must not rebuild them."""
+    """A Herdr that came back from a restart with workspaces of its own, so a restore must not rebuild them.
+
+    Every pane works in FOLDER and sits at a plain shell prompt unless a test says otherwise (`cwds`, `programs`).
+    """
+
+    FOLDER = "/work/alpha"
 
     def __init__(self):
         super().__init__()
         self.applied = []
+        self.cwds = {}
+        self.programs = {}
 
     def add_workspace(self, wid, label, status="unknown", agent=None, tab_label="main", session_id=None):
         self.data["workspaces"].append({"workspace_id": wid, "label": label})
@@ -4717,6 +4724,10 @@ class NativeHerdr(LayoutHerdr):
             self.created.append(wid)
             self.add_workspace(wid, arguments[3])
             return {"result": {"workspace_id": wid, "tab_id": f"{wid}:t1"}}
+        if arguments[:2] == ["pane", "process-info"]:
+            program = self.programs.get(arguments[3], "zsh")
+            running = [{"pid": 100, "name": "zsh"}] + ([{"pid": 200, "name": program}] if program != "zsh" else [])
+            return {"result": {"process_info": {"shell_pid": 100, "foreground_processes": running}}}
         return {"result": {}}
 
     def socket_call(self, session, method, params):
@@ -4726,8 +4737,13 @@ class NativeHerdr(LayoutHerdr):
                 tab = f"{params['workspace_id']}:t9"
                 return {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": f"{tab}:p1"}}}
         if method == "layout.export" and any(pane["pane_id"] == f"{params['tab_id']}:p1" for pane in self.data["panes"]) and not params["tab_id"].endswith(":t1"):
-            return {"layout": {"tab_id": params["tab_id"], "root": {"type": "pane", "pane_id": f"{params['tab_id']}:p1"}}}
-        return super().socket_call(session, method, params)
+            result = {"layout": {"tab_id": params["tab_id"], "root": {"type": "pane", "pane_id": f"{params['tab_id']}:p1"}}}
+        else:
+            result = super().socket_call(session, method, params)
+        if method == "layout.export":
+            root = result["layout"]["root"]
+            root["cwd"] = self.cwds.get(root["pane_id"], self.FOLDER)
+        return result
 
 
 class SnapshotRestoreTests(unittest.TestCase):
@@ -4767,7 +4783,7 @@ class SnapshotRestoreTests(unittest.TestCase):
             "restore": {},
             "capture": {
                 "workspace": {"source_workspace_id": "w1", "label": label, "focused": False},
-                "tabs": [{"source_tab_id": "w1:t1", "label": tab_label, "layout": {"root": {"type": "pane", "pane_id": "w1:p1"}}, "agent_restores": [agent]}],
+                "tabs": [{"source_tab_id": "w1:t1", "label": tab_label, "layout": {"root": {"type": "pane", "pane_id": "w1:p1", "cwd": NativeHerdr.FOLDER}}, "agent_restores": [agent]}],
             },
         }
         if snapshot:
@@ -4956,7 +4972,7 @@ class SnapshotRestoreTests(unittest.TestCase):
                 "source_pane_id": f"w1:p{number}", "resume_command": f"codex resume {session_id}", "session_id": session_id,
             }
             tabs.append({"source_tab_id": f"w1:t{number}", "label": "main" if number == 1 else f"tab {number}",
-                         "layout": {"root": {"type": "pane", "pane_id": f"w1:p{number}"}}, "agent_restores": [agent]})
+                         "layout": {"root": {"type": "pane", "pane_id": f"w1:p{number}", "cwd": NativeHerdr.FOLDER}}, "agent_restores": [agent]})
         archive = {
             "archive_id": archive_id, "status": "archived", "snapshot": True, "batch_id": batch_id, "restore": {},
             "capture": {"workspace": {"source_workspace_id": "w1", "label": label, "focused": False}, "tabs": tabs},
@@ -5017,7 +5033,7 @@ class SnapshotRestoreTests(unittest.TestCase):
         archive = self.archive()
         first = archive["capture"]["tabs"][0]
         second = json.loads(json.dumps(first))
-        second.update({"source_tab_id": "w1:t2", "layout": {"root": {"type": "pane", "pane_id": "w1:p2"}}})
+        second.update({"source_tab_id": "w1:t2", "layout": {"root": {"type": "pane", "pane_id": "w1:p2", "cwd": NativeHerdr.FOLDER}}})
         second["agent_restores"][0].update({"source_pane_id": "w1:p2", "session_id": "S2-session", "resume_command": "codex resume s2"})
         archive["capture"]["tabs"].append(second)
         ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
@@ -5054,6 +5070,99 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.restore_one_tab("w1:t2")
         self.assertEqual(self.herdr.applied, [])
         self.assertNotIn("w9:t2:p1", self.herdr.sent, "its own session is already running there")
+
+    def restore_tab_output(self, tab="w1:t1", **overrides):
+        values = dict(archive=self.ARCHIVE_ID, tab=[tab], to_workspace="w9", resume_agents=True, allow_unresumable_agents=False,
+                      force=False, execute=True, confirm=self.ARCHIVE_ID, session="esim")
+        values.update(overrides)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ORGANIZER.restore_tabs_command(argparse.Namespace(**values))
+        return output.getvalue()
+
+    def test_a_same_label_tab_in_another_folder_is_not_adopted_and_the_tab_is_rebuilt(self):
+        # Herdr's default tab label is `1`: a snapshot tab with it must not take over an unrelated tab with the same name.
+        self.write_archive(tab_label="1")
+        self.herdr.add_workspace("w9", "Unrelated", tab_label="1")
+        self.herdr.cwds["w9:p1"] = "/home/other"
+        output = self.restore_tab_output()
+        self.assertEqual(len(self.herdr.applied), 1, "the tab is rebuilt")
+        self.assertEqual(self.herdr.sent, ["w9:t9:p1"], "nothing is typed into the unrelated tab")
+        self.assertIn("was not adopted from an open tab with the same label: its pane w9:p1 is in another folder", output)
+        self.assertEqual(self.archive()["capture"]["tabs"], [], "the rebuilt tab left the archive, the open one was never its twin")
+
+    def test_a_same_label_tab_in_the_same_folder_at_a_shell_prompt_is_still_adopted(self):
+        self.write_archive(tab_label="1")
+        self.herdr.add_workspace("w9", "Unrelated", tab_label="1")
+        output = self.restore_tab_output()
+        self.assertEqual(self.herdr.applied, [])
+        self.assertEqual(self.herdr.sent, ["w9:p1"])
+        self.assertNotIn("not adopted", output)
+
+    def test_a_same_label_tab_running_a_program_is_not_adopted(self):
+        self.write_archive(tab_label="1")
+        self.herdr.add_workspace("w9", "Unrelated", tab_label="1")
+        self.herdr.programs["w9:p1"] = "vim"
+        output = self.restore_tab_output()
+        self.assertNotIn("w9:p1", self.herdr.sent, "an editor is never typed into")
+        self.assertEqual(self.herdr.sent, ["w9:t9:p1"])
+        self.assertIn("is not at a plain shell prompt", output)
+
+    def test_a_tab_whose_process_cannot_be_read_is_not_adopted(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Elsewhere")
+        with patch.object(ORGANIZER, "pane_is_shell_prompt", return_value=False):
+            self.restore_tab_output()
+        self.assertNotIn("w9:p1", self.herdr.sent)
+        self.assertEqual(len(self.herdr.applied), 1)
+
+    def test_a_folder_missing_on_either_side_is_no_evidence(self):
+        self.write_archive()
+        archive = self.archive()
+        del archive["capture"]["tabs"][0]["layout"]["root"]["cwd"]
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
+        self.herdr.add_workspace("w9", "Elsewhere")
+        output = self.restore_tab_output()
+        self.assertNotIn("w9:p1", self.herdr.sent)
+        self.assertIn("cannot be compared with the captured one", output)
+
+    def test_the_tab_preview_says_why_an_open_tab_was_not_adopted_and_changes_nothing(self):
+        self.write_archive(tab_label="1")
+        self.herdr.add_workspace("w9", "Unrelated", tab_label="1")
+        self.herdr.cwds["w9:p1"] = "/home/other"
+        output = self.restore_tab_output(execute=False, confirm=None)
+        self.assertIn("in another folder than the captured pane", output)
+        self.assertEqual((self.herdr.applied, self.herdr.sent), ([], []))
+        self.assertEqual(len(self.archive()["capture"]["tabs"]), 1)
+
+    def test_two_shell_twins_pair_by_folder_and_not_by_order(self):
+        self.write_two_main_tabs()
+        archive = self.archive()
+        archive["capture"]["tabs"][1]["layout"]["root"]["cwd"] = "/work/beta"
+        ORGANIZER.write_json(self.archives / f"{self.ARCHIVE_ID}.json", archive)
+        self.herdr.add_workspace("w9", "Elsewhere")
+        self.herdr.add_tab("w9", "w9:t2")
+        self.herdr.cwds.update({"w9:p1": "/work/beta", "w9:t2:p1": "/work/alpha"})
+        self.restore_tab_output("w1:t1")
+        self.assertEqual(self.herdr.applied, [], "the first captured tab found its twin")
+        self.assertEqual(self.herdr.sent, ["w9:t2:p1"], "the twin in its own folder, not the first same-label tab")
+
+    def test_a_workspace_herdr_brought_back_in_another_folder_is_left_archived_with_the_reason(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.herdr.cwds["w9:p1"] = "/home/other"
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
+        self.assertEqual(self.archive()["status"], "archived")
+        self.assertIn("open, but its pane w9:p1 is in another folder than the captured pane", self.output)
+
+    def test_a_workspace_herdr_brought_back_with_a_program_in_its_pane_is_left_archived(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha")
+        self.herdr.programs["w9:p1"] = "node"
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
+        self.assertIn("is not at a plain shell prompt", self.output)
 
     def test_a_tab_that_is_not_open_is_rebuilt_as_before(self):
         self.write_archive()
