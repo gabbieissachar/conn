@@ -609,7 +609,8 @@ test('workspaces view: the compact toggle shows names and tick boxes only, escap
 test('phone layout: Context session names wrap instead of being cut, and the header stops sticking on a narrow screen', () => {
   assert.match(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere/);
   assert.doesNotMatch(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*text-overflow: ellipsis/, 'no ellipsis on a session name');
-  assert.match(html, /@media \(max-width: 600px\) \{ \.topbar \{ position: static; \} \}/);
+  assert.match(html, /@media \(max-width: 600px\) \{ \.topbar \{ position: static; \} \.controls \{ flex-wrap: wrap; \} \.search \{ flex: 1 1 100%; \} \}/, 'the filter has its own row on a phone');
+  assert.match(html, /\.toast \{[^}]*max-width: calc\(100vw - 48px\); overflow-wrap: anywhere/, 'a long message stays inside the screen');
 });
 
 test('context view: the handoff request command is built by the server from ticked identities, never by the page', () => {
