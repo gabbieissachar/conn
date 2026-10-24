@@ -797,12 +797,15 @@
     return sel.toString().trim();
   }
   // A reply from a session the pane has since cleared goes to the pane's newest session,
-  // which never saw it: the message says so and names the earlier log to read.
+  // which never saw it, and one from before the session's last compaction is held only as a
+  // summary: the message says so, names the log to read, and gives what the reply asked.
   function replyTarget(ex, sid, card) {
     const at = ex.reply_at || ex.at;
     const session = data.sessions.find(s => s.id === sid);
-    const earlier = ex.from_session && session ? `[From session ${ex.from_session.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] ` : "";
-    return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p) });
+    const earlier = !session ? ""
+      : ex.from_session ? `[From session ${ex.from_session.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] `
+      : ex.compacted_away ? `[From before this session's last compaction; its log: ${session.file}] ` : "";
+    return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p, Boolean(earlier), ex.asks || []) });
   }
   const paneName = sid => { const s = data.sessions.find(x => x.id === sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
   const dockPointer = () => link.target.pointer(link.target.passage);

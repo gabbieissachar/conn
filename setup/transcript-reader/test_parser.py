@@ -213,6 +213,18 @@ class SessionExchangesTest(unittest.TestCase):
         self.assertEqual((compacted["source"], compacted["kind"]), ("session", "compacted"))
         self.assertEqual((interrupted["source"], interrupted["kind"]), ("session", "interrupted"))
 
+    def test_replies_before_the_last_compaction_are_marked_as_no_longer_held(self):
+        exchanges = self.exchanges([
+            user("Fix it", 0), say("Which branch?", 1),
+            user("This session is being continued from a previous conversation", 2), say("Resumed.", 3),
+            user("Use main", 4), say("Done on main.", 5),
+        ])
+        builder.mark_compacted_away(exchanges)
+        self.assertEqual([e.get("compacted_away", False) for e in exchanges], [True, False, False])
+        unchanged = self.exchanges([user("Fix it", 0), say("Which branch?", 1)])
+        builder.mark_compacted_away(unchanged)
+        self.assertNotIn("compacted_away", unchanged[0])
+
     def test_a_peer_message_starts_its_own_turn_and_keeps_the_previous_reply(self):
         mine, theirs = self.exchanges([
             user("Fix the login page", 0), tool(1), say("Fixed.", 2),

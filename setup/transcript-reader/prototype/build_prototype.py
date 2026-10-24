@@ -634,6 +634,43 @@ def captain_events(home: dict, exchanges: list[dict], since: float) -> list[dict
 
 # ----------------------------------------------------------------- page build
 
+def chain_exchanges(chain: list[Path], loaded: dict[Path, list[dict]]) -> list[dict]:
+    """The turns of a pane's sessions, oldest first, with a divider at each session change.
+
+    The pane's newest session no longer holds a reply from an earlier session (marked
+    from_session) or from before its own last compaction (marked compacted_away), so a
+    message about such a reply has to say what it read.
+    """
+    path = chain[-1]
+    exchanges = []
+    for member in chain:
+        part = session_exchanges(loaded[member])
+        if len(chain) > 1:
+            ended = member != path
+            after = chain[chain.index(member) + 1] if ended else None
+            how = "cleared later" if after and cleared_at(head_records(after)) is not None else "until Claude restarted"
+            label = f"Session {member.stem[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
+            divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
+            divider["at"] = first_time(loaded[member])
+            finish_exchange(divider)
+            part.insert(0, divider)
+            if ended:
+                for exchange in part[1:]:
+                    exchange["from_session"] = member.stem
+        if member == path:
+            mark_compacted_away(part)
+        exchanges += part
+    return exchanges
+
+
+def mark_compacted_away(exchanges: list[dict]) -> None:
+    """Mark the replies before a session's last compaction: it holds only a summary of them."""
+    last = max((i for i, exchange in enumerate(exchanges) if exchange["kind"] == "compacted"), default=-1)
+    for exchange in exchanges[:last]:
+        if exchange["reply"]:
+            exchange["compacted_away"] = True
+
+
 def build(args) -> dict:
     # The build time is taken before any log is read, so a turn written while this build runs
     # leaves its log newer than the stamp and the server rebuilds again.
@@ -679,22 +716,7 @@ def build(args) -> dict:
     for home, chain, loaded in threads:
         path = chain[-1]
         records = loaded[path]
-        exchanges = []
-        for member in chain:
-            part = session_exchanges(loaded[member])
-            if len(chain) > 1:
-                ended = member != path
-                after = chain[chain.index(member) + 1] if ended else None
-                how = "cleared later" if after and cleared_at(head_records(after)) is not None else "until Claude restarted"
-                label = f"Session {member.stem[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
-                divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
-                divider["at"] = first_time(loaded[member])
-                finish_exchange(divider)
-                part.insert(0, divider)
-                if ended:
-                    for exchange in part[1:]:
-                        exchange["from_session"] = member.stem
-            exchanges += part
+        exchanges = chain_exchanges(chain, loaded)
         attach_inbox_bodies(exchanges, [h for h in (home["home"], parent_of.get(home["id"])) if h])
         session_id = path.stem
         cwd = next((r["cwd"] for r in records if r.get("cwd")), "")

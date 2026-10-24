@@ -353,6 +353,8 @@ def collect(session_names: list[str]) -> list[dict]:
                 continue
             seen.add(member)
             exchanges = builder.session_exchanges(builder.read_jsonl(member))
+            if member.stem == head:
+                builder.mark_compacted_away(exchanges)
             for index, exchange in enumerate(exchanges):
                 questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
                 if not questionnaire:
@@ -363,6 +365,7 @@ def collect(session_names: list[str]) -> list[dict]:
                     **questionnaire, "session": head, "pane": cache.get(head), "at": exchange["reply_at"] or exchange["at"],
                     "reply": exchange["reply"], "sent": sent, "sent_at": answer["at"] if answer and sent else None,
                     **({"from_session": member.stem, "log": str(member)} if member.stem != head else {}),
+                    **({"compacted_away": True, "log": str(member)} if exchange.get("compacted_away") else {}),
                 })
     found.sort(key=lambda q: q["at"] or 0, reverse=True)
     return found

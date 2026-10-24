@@ -240,8 +240,14 @@
     return fields(q).filter(f => a[f.key]).map(f => `${f.key}=${a[f.key]}`).join(";");
   }
   // The exact text Copy and Send use: a pointer to the reply that asked, then the answers.
-  // A questionnaire from before a /clear goes to the pane's newest session, which never saw it.
-  const pointer = q => (q.from_session ? `[From session ${q.from_session.slice(0, 8)}, before a /clear; its log: ${q.log}] ` : "") + live.pointer(q.at, q.reply);
+  // A questionnaire from before a /clear goes to the pane's newest session, which never saw
+  // it, and one from before a compaction is held only as a summary: both name the log and
+  // give the questions the answers are keyed to.
+  const pointer = q => {
+    const earlier = q.from_session ? `[From session ${q.from_session.slice(0, 8)}, before a /clear; its log: ${q.log}] `
+      : q.compacted_away ? `[From before this session's last compaction; its log: ${q.log}] ` : "";
+    return earlier + live.pointer(q.at, q.reply, "", Boolean(earlier), q.cards.map(c => `${c.key}: ${c.question}`));
+  };
   const message = q => answerLine(q) ? pointer(q) + answerLine(q) : "";
   function renderDock() {
     const q = qs[state.q]; if (!q) return;

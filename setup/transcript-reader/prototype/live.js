@@ -53,13 +53,18 @@
     // backticks and backslashes are what could run or escape there, so quotes drop them.
     const clip = (text, max) => { const t = text.replace(/[`$\\]/g, "").replace(/\s+/g, " ").trim(); return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t; };
     // The start of a message about one reply. It points at the reply (its time and opening
-    // words) instead of copying it, because the session already holds the text.
-    function pointer(at, reply, passage) {
+    // words) instead of copying it, because the session holds the text. A session that no
+    // longer holds it (cleared since, or compacted: `unheld`) gets what the reply asked, its
+    // asking lines, or else the first few hundred characters in place of the opening words.
+    function pointer(at, reply, passage, unheld = false, asks = []) {
       const opening = reply.split("\n").map(l => l.replace(/^[\s#>*\-\d.)|]+/, "").replace(/[*`_]/g, "").trim()).find(Boolean) || "";
       const when = new Date(at * 1000), today = new Date();
       const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(when);
       const day = when.toDateString() === today.toDateString() ? "" : new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(when) + " ";
-      let text = `Re your reply at ${day}${time} ("${clip(opening, 60)}")`;
+      let text = `Re your reply at ${day}${time}`;
+      if (!unheld) text += ` ("${clip(opening, 60)}")`;
+      else if (asks.length) text += ` ("${clip(opening, 60)}"), which asked: "${clip(asks.map(a => a.replace(/[*_]/g, "")).join(" / "), 400)}"`;
+      else text += `, which began: "${clip(reply.replace(/[*_#>|]/g, ""), 300)}"`;
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
