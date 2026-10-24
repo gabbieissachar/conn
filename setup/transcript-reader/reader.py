@@ -110,6 +110,7 @@ def drop_closed(ids: list[str]) -> list[str]:
     live = builder.herdr_panes()
     if not live:
         return ids
+    builder.pane_labels([], PANE_CACHE, live)  # records the panes live sessions run in, for session_chain
     try:
         seen = json.loads(PANE_CACHE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

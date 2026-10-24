@@ -656,8 +656,12 @@ def build(args) -> dict:
         since = time.time() - (args.since_hours or 72) * 3600
         chosen = [(home, path, read_jsonl(path)) for home in homes for path in home_sessions(home["home"], since)]
 
-    # A pane cleared with /clear goes on in a new session log: read the sessions it ran
-    # as one conversation, newest last, under the newest session's id.
+    # A pane cleared with /clear, or with Claude restarted in it, goes on in a new session
+    # log: read the sessions it ran as one conversation, newest last, under the newest id.
+    # The pane each session ran in comes from Herdr now and the pane-label cache before.
+    out_dir = Path(args.out).expanduser().parent
+    live = herdr_panes()
+    pane_labels([], out_dir / "pane-labels.json", live)
     threads: list[tuple[dict, list[Path], dict[Path, list[dict]]]] = []
     for home, path, records in chosen:
         if any(path in chain for _, chain, _ in threads):
@@ -676,7 +680,9 @@ def build(args) -> dict:
             part = session_exchanges(loaded[member])
             if len(chain) > 1:
                 ended = member != path
-                label = f"Session {member.stem[:8]}" + (", cleared later: Reply sends to the newest session in this pane" if ended else ", the newest in this pane")
+                after = chain[chain.index(member) + 1] if ended else None
+                how = "cleared later" if after and cleared_at(head_records(after)) is not None else "until Claude restarted"
+                label = f"Session {member.stem[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
                 divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
                 divider["at"] = first_time(loaded[member])
                 finish_exchange(divider)
@@ -707,8 +713,6 @@ def build(args) -> dict:
             if exchange["reply"] and parse_questionnaire(exchange["reply"]):
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
     documents = attach_documents(sessions)
-    out_dir = Path(args.out).expanduser().parent
-    live = herdr_panes()
     labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
     reopened = set(read_ids(out_dir / "reopened.txt"))
     for session in sessions:
@@ -723,10 +727,44 @@ def build(args) -> dict:
             "summaries": summaries, "chosen": bool(args.session), "documents": documents, "closed": closed}
 
 
+CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
+
+
+def running_claude_sessions() -> dict[int, str]:
+    """pid -> session id of every running Claude Code process, from the record each keeps
+    in ~/.claude/sessions (it follows /clear and --resume)."""
+    found = {}
+    for record in sorted(CLAUDE_SESSIONS.glob("*.json")):
+        try:
+            data = json.loads(record.read_text(encoding="utf-8"))
+            pid, session = int(data["pid"]), str(data["sessionId"])
+            os.kill(pid, 0)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        found[pid] = session
+    return found
+
+
+def pane_session(claimed: str | None, process_info: dict | None, running: dict[int, str]) -> str | None:
+    """The Claude session a pane really runs. Herdr keeps the id it was first told even when
+    Claude is restarted in the same pane (Firstmate swaps a worker's model that way), so an id
+    no running Claude process holds is checked against the pane's foreground process."""
+    if not running or claimed in running.values() or process_info is None:
+        return claimed
+    processes = process_info.get("foreground_processes") or []
+    for process in processes:
+        if process.get("pid") in running:
+            return running[process["pid"]]
+    if any(process.get("argv0") == "claude" for process in processes):
+        return claimed  # a Claude process without its record: nothing better to go on
+    return None  # Claude has exited; the pane holds a shell
+
+
 def herdr_panes() -> dict[str, dict]:
     """Session id -> the Herdr pane running it, from every running Herdr session.
 
-    Read-only: `herdr session list`, `pane list` and `tab list`. No Herdr, no labels.
+    Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for a
+    Claude pane whose session id no running Claude holds. No Herdr, no labels.
     """
     def call(*argv):
         try:
@@ -736,6 +774,7 @@ def herdr_panes() -> dict[str, dict]:
             return None
 
     listing = call("session", "list", "--json") or {}
+    running = running_claude_sessions()
     panes = {}
     for herdr_session in listing.get("sessions") or []:
         name = herdr_session.get("name") or ""
@@ -743,7 +782,14 @@ def herdr_panes() -> dict[str, dict]:
             continue
         panes_result = (call("--session", name, "pane", "list") or {}).get("result") or {}
         tabs_result = (call("--session", name, "tab", "list") or {}).get("result") or {}
-        panes.update(pane_index(name, panes_result.get("panes") or [], tabs_result.get("tabs") or []))
+        found = panes_result.get("panes") or []
+        for pane in found:
+            claimed = (pane.get("agent_session") or {}).get("value")
+            if pane.get("agent") == "claude" and running and claimed not in running.values() and pane.get("pane_id"):
+                info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
+                actual = pane_session(claimed, info, running)
+                pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
+        panes.update(pane_index(name, found, tabs_result.get("tabs") or []))
     return panes
 
 
@@ -761,7 +807,7 @@ def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[
             continue
         title = pane.get("terminal_title_stripped") or ""
         label = pane.get("label") or tab_labels.get(pane.get("tab_id")) or title
-        found[session] = {"label": label, "title": title, "herdr": herdr_session}
+        found[session] = {"label": label, "title": title, "herdr": herdr_session, "pane": pane.get("pane_id") or ""}
     return found
 
 
@@ -774,6 +820,8 @@ def pane_labels(session_ids: list[str], cache_path: Path, live: dict[str, dict] 
     if live is None:
         live = herdr_panes()
     cache.update(live)
+    _PANE_HISTORY.clear()
+    _PANE_HISTORY.update(cache)  # session_chain joins a pane's sessions across a restart with it
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=1, sort_keys=True), encoding="utf-8")
@@ -1169,36 +1217,85 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
 
 
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
-    """The sessions one Claude Code pane ran across /clear, oldest first, including <path>."""
+    """The sessions one Claude Code pane ran across /clear, or across Claude restarted in the
+    same pane, oldest first, including <path>."""
     chain = [path]
     while len(chain) < limit:
         at = cleared_at(head_records(chain[0]))
-        before = cleared_from(chain[0], at) if at else None
+        before = cleared_from(chain[0], at) if at else restarted_from(chain[0])
         if not before or before in chain:
             break
         chain.insert(0, before)
     while len(chain) < limit:
-        try:
-            written = chain[-1].stat().st_mtime
-        except OSError:
-            break
-        after = None
-        # The next log may sit in another project folder (see cleared_from).
-        for other in sorted({*logs_in(chain[-1].parent), *all_logs()}):
-            if other in chain:
-                continue
-            try:
-                recent = other.stat().st_mtime >= written - 5
-            except OSError:
-                continue
-            at = cleared_at(head_records(other)) if recent else None
-            if at is not None and -30 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
-                after = other
-                break
+        after = cleared_into(chain) or restarted_into(chain)
         if not after:
             break
         chain.append(after)
     return chain
+
+
+# Every pane a session was seen in (the pane-label cache), set by pane_labels.
+_PANE_HISTORY: dict[str, dict] = {}
+RESTART_WINDOW = 600  # seconds from the old session's last write to the new one's first
+
+
+def same_pane(a: dict, b: dict) -> bool:
+    if a.get("herdr") != b.get("herdr"):
+        return False
+    if a.get("pane") and b.get("pane"):
+        return a["pane"] == b["pane"]
+    return bool(a.get("label")) and a.get("label") == b.get("label")  # entries cached before panes were
+
+
+def restarted(before: Path, after: Path) -> bool:
+    """Whether <after> is Claude started afresh in the pane <before> ran in, right after it."""
+    a, b = _PANE_HISTORY.get(before.stem), _PANE_HISTORY.get(after.stem)
+    if not a or not b or before == after or not same_pane(a, b):
+        return False
+    head = head_records(after)
+    start = first_time(head)
+    try:
+        ended = before.stat().st_mtime
+    except OSError:
+        return False
+    return cleared_at(head) is None and start is not None and -30 <= start - ended <= RESTART_WINDOW
+
+
+def pane_neighbours(path: Path) -> list[Path]:
+    """Logs of the other sessions seen in the same pane as <path>."""
+    mine = _PANE_HISTORY.get(path.stem)
+    if not mine:
+        return []
+    found = (find_session_file(sid) for sid, entry in _PANE_HISTORY.items() if sid != path.stem and same_pane(mine, entry))
+    return [log for log in found if log]
+
+
+def restarted_from(path: Path) -> Path | None:
+    return next((other for other in pane_neighbours(path) if restarted(other, path)), None)
+
+
+def restarted_into(chain: list[Path]) -> Path | None:
+    return next((other for other in pane_neighbours(chain[-1]) if other not in chain and restarted(chain[-1], other)), None)
+
+
+def cleared_into(chain: list[Path]) -> Path | None:
+    """The log a /clear in the pane started after the chain's last log, if any."""
+    try:
+        written = chain[-1].stat().st_mtime
+    except OSError:
+        return None
+    # The next log may sit in another project folder (see cleared_from).
+    for other in sorted({*logs_in(chain[-1].parent), *all_logs()}):
+        if other in chain:
+            continue
+        try:
+            recent = other.stat().st_mtime >= written - 5
+        except OSError:
+            continue
+        at = cleared_at(head_records(other)) if recent else None
+        if at is not None and -30 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
+            return other
+    return None
 
 
 def write_page(template: Path, payload: dict, out: Path) -> None:

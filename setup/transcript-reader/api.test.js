@@ -28,6 +28,7 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   const root = path.join(base, 'repo');
   const outDir = path.join(root, ...outParts);
   const projectsDir = path.join(base, 'projects');
+  const claudeSessionsDir = path.join(base, 'sessions');  // no running Claude unless a test writes one
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(projectsDir, '-Users-someone-home'), { recursive: true });
   const write = (file, text) => fs.writeFileSync(file, text);
@@ -40,7 +41,7 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   // Logs older than the page, so no rebuild starts unless a test asks for one.
   const old = new Date(Date.now() - 3600 * 1000);
   for (const id of [A, B, C]) fs.utimesSync(path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), old, old);
-  return { root, outDir, projectsDir, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  return { root, outDir, projectsDir, claudeSessionsDir, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "esim" plus sessions that must never be read.
@@ -53,6 +54,7 @@ function fakeHerdr() {
       { pane_id: 'w1:p3', tab_id: 'w1:t3', label: 'unlisted', agent_status: 'idle', agent_session: { value: C } },
       { pane_id: 'w1:p4', tab_id: 'w1:t1', terminal_title_stripped: 'zsh' },
     ],
+    processInfo: {},
     promptResult: { code: 0, stdout: '{}', stderr: '' },
     keysResult: { code: 0, stdout: '{}', stderr: '' },
     down: false,
@@ -72,6 +74,9 @@ function fakeHerdr() {
     }
     if (file === 'herdr' && args[2] === 'api' && args[3] === 'snapshot') {
       return ok(JSON.stringify({ result: { snapshot: { focused_pane_id: herdr.focused, panes: herdr.panes, tabs: [{ tab_id: 'w1:t2', label: 'fm-task-tab' }] } } }));
+    }
+    if (file === 'herdr' && args[2] === 'pane' && args[3] === 'process-info') {
+      return ok(JSON.stringify({ result: { process_info: { foreground_processes: herdr.processInfo[args[5]] || [] } } }));
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
@@ -101,7 +106,7 @@ async function start({ env = {}, outParts } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, now: () => clock, pause: async () => {} });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, now: () => clock, pause: async () => {} });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -280,6 +285,24 @@ test('state: names the focused pane and the live panes of listed sessions only; 
     const read = t.herdr.calls.filter((call) => call.args[0] === '--session').map((call) => call.args[1]);
     assert.deepEqual([...new Set(read)], ['esim']);
     assert.equal(t.herdr.readerRuns().length, 0, 'nothing was rebuilt');
+  } finally { await t.close(); }
+});
+
+test('state: a Claude pane whose session id no running Claude holds takes its foreground Claude\'s session', async () => {
+  const t = await start();
+  try {
+    // Claude restarted in A's pane now runs C (this test process stands in for it); B's pane is back at its shell.
+    fs.mkdirSync(t.tree.claudeSessionsDir);
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: C }));
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, '999999999.json'), JSON.stringify({ pid: 999999999, sessionId: B }));  // not running
+    t.herdr.panes = t.herdr.panes.map((pane) => (pane.agent_session ? { ...pane, agent: 'claude' } : pane));
+    t.herdr.processInfo = { 'w1:p1': [{ pid: process.pid, argv0: 'claude' }], 'w1:p2': [{ pid: 4242, argv0: 'zsh' }] };
+    const { json } = await t.state();
+    assert.equal(json.focus.session_id, C);
+    assert.equal(json.focus.listed, false);
+    assert.deepEqual(Object.keys(json.panes), [], 'neither listed session runs in a pane now');
+    const asked = t.herdr.calls.filter((call) => call.args[3] === 'process-info').map((call) => call.args[5]);
+    assert.deepEqual(asked, ['w1:p1', 'w1:p2'], 'a pane whose id a running Claude holds is not asked about');
   } finally { await t.close(); }
 });
 

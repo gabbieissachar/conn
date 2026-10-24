@@ -798,7 +798,7 @@
   function replyTarget(ex, sid, card) {
     const at = ex.reply_at || ex.at;
     const session = data.sessions.find(s => s.id === sid);
-    const earlier = ex.from_session && session ? `[From session ${ex.from_session.slice(0, 8)}, before a /clear; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] ` : "";
+    const earlier = ex.from_session && session ? `[From session ${ex.from_session.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] ` : "";
     return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p) });
   }
   const paneName = sid => { const s = data.sessions.find(x => x.id === sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
@@ -848,7 +848,7 @@
   // A pointer written before the pane was cleared names a reply the newest session never saw.
   function carried(sid, from) {
     const session = data.sessions.find(s => s.id === sid);
-    return from && from !== sid && session ? `[From session ${from.slice(0, 8)}, before a /clear; its log: ${session.file.replace(/[^/]+$/, from + ".jsonl")}] ` : "";
+    return from && from !== sid && session ? `[From session ${from.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, from + ".jsonl")}] ` : "";
   }
   const withNote = (note, pointer) => pointer && note && !pointer.startsWith("[From session") ? note + pointer : pointer;
   // A pointer kept as text (a draft's or a batched comment's), back as the bar's target.

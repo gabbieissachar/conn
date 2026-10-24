@@ -130,6 +130,7 @@ function create({
   root, port, runner = defaultRunner, env = process.env, now = () => Date.now(),
   pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
+  claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
@@ -195,12 +196,48 @@ function create({
         if (!entry || !entry.running || entry.default || typeof entry.name !== 'string' || !SESSION_NAME_RE.test(entry.name)) continue;
         const result = await runner(herdrBin, ['--session', entry.name, 'api', 'snapshot'], { env: runEnv(), timeoutMs: 5000 });
         const snapshot = (((result.code === 0 && parseJson(result.stdout)) || {}).result || {}).snapshot;
-        if (snapshot) sessions.push(readSnapshot(entry.name, snapshot));
+        if (snapshot) sessions.push(await checkSessions(readSnapshot(entry.name, snapshot)));
       }
       scanned = { at: now(), sessions };
       return sessions;
     })().finally(() => { scanning = null; });
     return scanning;
+  }
+
+  // pid -> session id of every running Claude Code process, from the record each keeps in
+  // ~/.claude/sessions (it follows /clear and --resume).
+  function runningClaude() {
+    const found = new Map();
+    let names = [];
+    try { names = fs.readdirSync(claudeSessionsDir).filter((name) => name.endsWith('.json')); } catch { return found; }
+    for (const name of names) {
+      const record = parseJson(fs.readFileSync(path.join(claudeSessionsDir, name), 'utf8')) || {};
+      if (!Number.isInteger(record.pid) || typeof record.sessionId !== 'string' || !SESSION_ID_RE.test(record.sessionId)) continue;
+      try { process.kill(record.pid, 0); } catch { continue; }
+      found.set(record.pid, record.sessionId);
+    }
+    return found;
+  }
+
+  // Herdr keeps the session id it was first told even when Claude is restarted in the same
+  // pane (Firstmate swaps a worker's model that way). A Claude pane whose id no running Claude
+  // holds takes the session of its foreground Claude process, or none when the pane is back
+  // at its shell. Read-only: `herdr pane process-info`, asked only for such panes.
+  async function checkSessions(session) {
+    const running = runningClaude();
+    if (!running.size) return session;
+    const held = new Set(running.values());
+    for (const pane of session.panes) {
+      if (pane.agent !== 'claude' || held.has(pane.session_id)) continue;
+      const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
+      const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
+      if (!info) continue;
+      const processes = Array.isArray(info.foreground_processes) ? info.foreground_processes : [];
+      const actual = processes.map((process) => running.get(process.pid)).find(Boolean);
+      if (actual) pane.session_id = actual;
+      else if (!processes.some((process) => process.argv0 === 'claude')) pane.session_id = null;
+    }
+    return session;
   }
 
   // A pane's name as Herdr shows it: its own label, else its tab's label, else the terminal title.
@@ -213,6 +250,7 @@ function create({
       panes.push({
         pane_id: pane.pane_id,
         session_id: typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : null,
+        agent: typeof pane.agent === 'string' ? pane.agent : null,
         status: typeof pane.agent_status === 'string' ? pane.agent_status : 'unknown',
         label: String(pane.label || tabLabels.get(pane.tab_id) || pane.terminal_title_stripped || pane.pane_id).slice(0, 120),
       });

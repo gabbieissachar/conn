@@ -39,7 +39,7 @@ class PaneIndexTest(unittest.TestCase):
         tabs = [{"tab_id": "w1:t1", "label": "leader-esim"}, {"tab_id": "w1:t2", "label": "fm-bc36-final-spec"}]
         index = builder.pane_index("esim", panes, tabs)
         self.assertEqual(index[A]["label"], "leader-esim")
-        self.assertEqual(index[B], {"label": "fm-bc36-final-spec", "title": "Bc36 spec", "herdr": "esim"})
+        self.assertEqual(index[B], {"label": "fm-bc36-final-spec", "title": "Bc36 spec", "herdr": "esim", "pane": "w1:p2"})
         self.assertEqual(index[C]["label"], "Review")
         self.assertEqual(len(index), 3)
 
@@ -449,6 +449,45 @@ class ClearedSessionsTest(unittest.TestCase):
         self.assertEqual(self.stems("next"), ["late", "next"])
         self.assertEqual(self.stems("late"), ["late", "next"])
         self.assertEqual(self.stems("quoted"), ["quoted"])
+
+    def test_claude_restarted_in_the_same_pane_joins_the_session_before_it(self):
+        # Firstmate swaps a worker's model by starting Claude again in its pane: a fresh log, no /clear.
+        f = self.folder
+        log(f / "haiku.jsonl", [prompt("the brief", iso(T0 + 3000))], T0 + 3060)
+        log(f / "sonnet.jsonl", [prompt("the brief again", iso(T0 + 3135))], T0 + 4000)
+        log(f / "much-later.jsonl", [prompt("another task", iso(T0 + 4800))], T0 + 5000)
+        log(f / "next-door.jsonl", [prompt("a neighbour", iso(T0 + 3100))], T0 + 3900)
+        pane = {"herdr": "esim", "pane": "w1:p2", "label": "fm-task"}
+        history = {"haiku": {**pane, "pane": ""}, "sonnet": pane, "much-later": pane,
+                   "next-door": {**pane, "pane": "w1:p3", "label": "fm-other"}}
+        with mock.patch.dict(builder._PANE_HISTORY, history, clear=True):
+            self.assertEqual(self.stems("sonnet"), ["haiku", "sonnet"])
+            self.assertEqual(self.stems("haiku"), ["haiku", "sonnet"])
+            self.assertEqual(self.stems("much-later"), ["much-later"])
+            self.assertEqual(self.stems("next-door"), ["next-door"])
+        self.assertEqual(self.stems("sonnet"), ["sonnet"], "no pane history, no join")
+
+
+class PaneSessionTest(unittest.TestCase):
+    """Herdr can keep a pane's first session id after Claude restarts in it."""
+
+    running = {101: A, 202: B}
+
+    def info(self, *processes):
+        return {"foreground_processes": [dict(zip(("pid", "argv0"), p)) for p in processes]}
+
+    def test_an_id_a_running_claude_holds_is_kept_without_asking(self):
+        self.assertEqual(builder.pane_session(A, None, self.running), A)
+
+    def test_a_stale_id_gives_way_to_the_session_of_the_panes_foreground_claude(self):
+        self.assertEqual(builder.pane_session(C, self.info((202, "claude")), self.running), B)
+
+    def test_a_pane_back_at_its_shell_runs_no_session(self):
+        self.assertIsNone(builder.pane_session(C, self.info((303, "zsh")), self.running))
+
+    def test_without_process_records_herdr_is_taken_at_its_word(self):
+        self.assertEqual(builder.pane_session(C, self.info((303, "claude")), self.running), C)
+        self.assertEqual(builder.pane_session(C, self.info((202, "claude")), {}), C)
 
 
 if __name__ == "__main__":
