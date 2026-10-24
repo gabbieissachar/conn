@@ -782,7 +782,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { herdr_session: session, tab_id: pane.tab_id };
   }
 
-  // Copy-only "send a handoff request" command for the sessions the captain ticked. Nothing is sent here. A leader
+  // Copy-only "send a handoff request" command for the sessions the user ticked. Nothing is sent here. A leader
   // identity is re-read from the audit and kept only with exactly one live pane inside leader-space. Any other session
   // is a `<herdr session>|<pane id>|<first 8 characters of its session id>` reference that must name a live Claude pane
   // of a running session that still runs that session, so a stale, reused or invented reference is skipped. The command is built from validated session names and pane ids with fixed text;
@@ -844,7 +844,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // usage line the gauge reads, and the replaced session's row is dropped.
   const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
   const LARGE_WINDOW = 1000000;
-  // A transcript records tokens but not the window size. The captain's decision (2026-10-21) is to assume every
+  // A transcript records tokens but not the window size. The user's decision (2026-10-21) is to assume every
   // session has the 1M window, so a count with no statusline percent is read against it and marked estimated.
   const assumedPercent = (tokens) => Math.round((tokens * 1000) / LARGE_WINDOW) / 10;
 

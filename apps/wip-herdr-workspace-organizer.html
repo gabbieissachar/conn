@@ -1643,7 +1643,7 @@ created: 2026-09-10
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
     const codex = { loading: false, data: null, error: '', at: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
-    // The captain's monthly Codex credit limit; the Month chip reads as a share of it, amber and red on the same lines as the Claude windows.
+    // The user's monthly Codex credit limit; the Month chip reads as a share of it, amber and red on the same lines as the Claude windows.
     const CODEX_MONTH_LIMIT = 3000;
     const planClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const planWhen = iso => {
