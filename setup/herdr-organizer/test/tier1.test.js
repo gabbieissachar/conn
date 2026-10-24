@@ -355,12 +355,14 @@ test('tier 1 actions still need every cross-site protection', async () => {
     const { token } = await client(server);
     const { request } = require('./helpers');
     const bodies = [
+      { action: 'verify-apply', params: { session: 'project-a', confirm: 'apply:project-a' } },
+      { action: 'save-manual-identity', params: manual() },
       { action: 'seal-bundle', params: { sessions: ['project-a'], confirm: 'seal:project-a' } },
-      { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w2:p1' } },
+      { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w1:p1', id: '11111111' } },
     ];
     // Every action the server runs at tier 1 or above is covered, so a new one cannot be added without a body here.
     const covered = bodies.map((body) => body.action);
-    for (const [name, action] of Object.entries(server.api.ACTIONS)) if (action.tier >= 1 && !['verify-apply', 'save-manual-identity'].includes(name)) assert.ok(covered.includes(name), name + ' needs a cross-site case');
+    for (const [name, action] of Object.entries(server.api.ACTIONS)) if (action.tier >= 1) assert.ok(covered.includes(name), name + ' needs a cross-site case');
     for (const body of bodies) {
       for (const headers of [
         { Host: 'localhost:' + server.port, Origin: 'https://evil.example', 'Content-Type': 'application/json', 'X-Herdr-Organizer-Token': token },
@@ -374,5 +376,8 @@ test('tier 1 actions still need every cross-site protection', async () => {
     }
     assert.equal(server.calls.filter((call) => call.args.includes('prepare-restart-recovery')).length, 0, 'nothing was sealed');
     assert.equal(server.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
+    assert.equal(server.calls.filter((call) => call.args.includes('--apply')).length, 0, 'no identity was applied');
+    assert.equal(registerCalls(server.calls).length, 0, 'no manual identity was registered');
+    assert.equal(server.calls.some((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py')), false, 'the manual identity check did not start');
   } finally { await server.close(); }
 });

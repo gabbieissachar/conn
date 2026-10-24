@@ -40,6 +40,7 @@ function parsePanes(jsonText) {
       tab_id: typeof item.tab_id === 'string' ? item.tab_id : '',
       agent: typeof item.agent === 'string' ? item.agent : '',
       agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
+      agent_session_id: item.agent_session && typeof item.agent_session.value === 'string' ? item.agent_session.value : '',
       cwd: typeof item.foreground_cwd === 'string' && item.foreground_cwd ? item.foreground_cwd : (typeof item.cwd === 'string' ? item.cwd : ''),
     }));
 }
@@ -92,6 +93,8 @@ function parseLabelledPanes(jsonText) {
       workspace_id: typeof item.workspace_id === 'string' ? item.workspace_id : '',
       label: item.label.slice(0, 80),
       agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
+      // Only the first 8 characters of the session id leave the parser, the same prefix the gauge rows carry.
+      session_prefix: item.agent_session && typeof item.agent_session.value === 'string' ? item.agent_session.value.slice(0, 8) : '',
     }));
 }
 

@@ -1688,15 +1688,21 @@ created: 2026-09-10
         for (const item of leaders.values()) {
           if (rows.some(row => row.leader === item)) continue;
           const pane = item.panes[0];
-          rows.push({ id: '', map: item.label, kind: 'leader', percent: null, tokens: null, estimated: false, busy: AT_PROMPT.has(pane.agent_status) ? 'idle' : pane.agent_status === 'working' ? 'busy' : 'unknown', age_s: null, herdr_session: pane.herdr_session, pane_id: pane.pane_id, title: null, leader: item });
+          rows.push({ id: pane.id || '', map: item.label, kind: 'leader', percent: null, tokens: null, estimated: false, busy: AT_PROMPT.has(pane.agent_status) ? 'idle' : pane.agent_status === 'working' ? 'busy' : 'unknown', age_s: null, herdr_session: pane.herdr_session, pane_id: pane.pane_id, title: null, leader: item });
         }
       }
       return { rows, problems };
     };
     // The session's name is the herdr tab label; the gauge's own name is the fallback for a row with no live tab.
     const sessionName = row => row.tab_label || row.map;
-    // A leader is picked by its label; any other live session by its pane. Nothing starts ticked.
-    const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id ? `${row.herdr_session}|${row.pane_id}` : '';
+    // A leader is picked by its label; any other live session by its pane and the first 8 characters of its session id,
+    // so a pane id Herdr hands to another session later is a different key and never comes up ticked. Nothing starts ticked.
+    const pickKeyOf = row => row.leader ? row.leader.label : row.pane_id && row.id ? `${row.herdr_session}|${row.pane_id}|${row.id}` : '';
+    // A tick belongs to the session it was made on: after a reload, drop ticks whose row is gone or now shows another session.
+    const prunePicks = (picked, rows) => {
+      const present = new Set(rows.map(pickKeyOf));
+      for (const key of [...picked.keys()]) if (!present.has(key)) picked.delete(key);
+    };
     const percentLevel = (percent, thresholds) => percent >= thresholds.high ? 'bad' : percent >= thresholds.warn ? 'warn' : 'good';
     const contextLevel = (row, thresholds) => row.percent === null ? '' : percentLevel(row.percent, thresholds);
     const contextPercent = (row, level) => row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
@@ -1706,7 +1712,7 @@ created: 2026-09-10
       return pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
     };
     // Shows the session's tab in the attached Herdr window. View only: it types nothing and closes nothing.
-    const openTabButton = row => row.pane_id && row.herdr_session ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It only switches the tab; nothing is typed or changed.">Open</button>` : '';
+    const openTabButton = row => row.pane_id && row.herdr_session && row.id ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-id="${escapeHtml(row.id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It only switches the tab; nothing is typed or changed.">Open</button>` : '';
     // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
     const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${openTabButton(row)}</label>`;
     const contextRow = (row, thresholds) => {
@@ -1794,12 +1800,12 @@ created: 2026-09-10
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);
     };
-    // The server finds the tab from the live pane list; the page sends only the session name and pane id.
+    // The server finds the tab from the live pane list and refuses a pane that runs another session than the row's; the page sends only the session name, the pane id and the row's 8-character session id.
     const openTab = async button => {
       if (button.disabled) return;
       button.disabled = true;
       try {
-        await api.run('focus-tab', { session: button.dataset.session, pane_id: button.dataset.pane });
+        await api.run('focus-tab', { session: button.dataset.session, pane_id: button.dataset.pane, id: button.dataset.id });
         showToast(`Showing ${button.dataset.name} in Herdr session ${button.dataset.session}. Switch to your Herdr window.`);
       } catch (error) {
         showToast(error.message);
@@ -1835,6 +1841,7 @@ created: 2026-09-10
         context.data = gauge.value;
         context.leader = leader.status === 'fulfilled' ? leader.value : null;
         context.leaderError = leader.status === 'rejected' ? leader.reason.message : '';
+        prunePicks(context.picked, contextRows().rows);
         context.at = new Date().toLocaleTimeString();
       } catch (error) {
         context.error = error.message;

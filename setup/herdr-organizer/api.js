@@ -112,7 +112,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },
     // View only (no confirm, no input into any pane): shows a session's tab in the attached Herdr window. It takes
     // the tier 1 route's cross-site protections but not its one-at-a-time lock, so opening a tab never waits on a seal.
-    'focus-tab': { tier: 1, lock: false, params: { session: { type: 'string' }, pane_id: { type: 'string' } }, run: (p) => tools.focusTab(p.session, p.pane_id) },
+    'focus-tab': { tier: 1, lock: false, params: { session: { type: 'string' }, pane_id: { type: 'string' }, id: { type: 'string' } }, run: (p) => tools.focusTab(p.session, p.pane_id, p.id) },
     'reconcile-preview': { tier: 0, params: { bundle: { type: 'string' } }, run: (p) => tools.reconcilePreview(p.bundle) },
     // tier 1: private local writes. Each needs a confirm token naming exactly what it changes.
     'verify-apply': { tier: 1, params: { session: { type: 'string' }, confirm: { type: 'string' } }, run: (p) => tools.applyVerified(p.session, p.confirm) },

@@ -747,7 +747,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const panes = panesResult && panesResult.code === 0 ? parse.parseLabelledPanes(panesResult.stdout) : null;
       const workspaces = workspacesResult && workspacesResult.code === 0 ? parse.parseWorkspaceLabels(workspacesResult.stdout) : null;
       for (const pane of panes || []) {
-        found.push({ label: pane.label, herdr_session: session.name, pane_id: pane.pane_id, agent_status: pane.agent_status, in_leader_space: workspaces ? workspaces.get(pane.workspace_id) === LEADER_WORKSPACE : null });
+        found.push({ label: pane.label, herdr_session: session.name, pane_id: pane.pane_id, id: pane.session_prefix, agent_status: pane.agent_status, in_leader_space: workspaces ? workspaces.get(pane.workspace_id) === LEADER_WORKSPACE : null });
       }
     }
     const rows = LEADER_LABELS.map((label) => {
@@ -762,15 +762,19 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { workspace: LEADER_WORKSPACE, rows, unexpected };
   }
 
-  // View only: shows one session's tab in the Herdr window the captain has attached, so a row of the Context tab can
+  // View only: shows one session's tab in the Herdr window the user has attached, so a row of the Context tab can
   // be opened to check on it. It types nothing into a pane, closes nothing and writes no record, and a second click
-  // is the same as the first. The browser names a session and a pane id; the tab comes from the live pane list and is
-  // never taken from the browser, so a pane id Herdr has handed out again resolves to whatever runs there now.
-  async function focusTab(sessionName, paneId) {
+  // is the same as the first. The browser names a session, a pane id and the first 8 characters of the session id the
+  // row showed; the tab comes from the live pane list and is never taken from the browser. A row can be minutes old
+  // and Herdr hands a pane id out again after a close, so the pane found must still run the row's session.
+  const SESSION_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
+  async function focusTab(sessionName, paneId, sessionPrefix) {
     const session = await requireSession(sessionName);
     if (typeof paneId !== 'string' || !PANE_ID_RE.test(paneId)) throw new AdapterError('Invalid pane.');
+    if (typeof sessionPrefix !== 'string' || !SESSION_PREFIX_RE.test(sessionPrefix)) throw new AdapterError('Invalid session.');
     const pane = (await readPanes(session)).find((item) => item.pane_id === paneId);
     if (!pane || !TAB_ID_RE.test(pane.tab_id)) throw new AdapterError('That session is not open any more. Refresh the list.', 404, 'pane_gone');
+    if (!pane.agent_session_id.startsWith(sessionPrefix)) throw new AdapterError('That pane runs another session now. Refresh the list.', 409, 'session_moved');
     const result = await herdrCall(session, ['tab', 'focus', pane.tab_id], { timeoutMs: 15000 });
     if (result.code !== 0) throw new AdapterError('Herdr could not show that tab.', 502, 'herdr_unavailable');
     return { herdr_session: session, tab_id: pane.tab_id };
@@ -778,13 +782,13 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
 
   // Copy-only "send a handoff request" command for the sessions the captain ticked. Nothing is sent here. A leader
   // identity is re-read from the audit and kept only with exactly one live pane inside leader-space. Any other session
-  // is a `<herdr session>|<pane id>` reference that must name a live Claude pane of a running session, so a stale or
-  // invented reference is skipped. The command is built from validated session names and pane ids with fixed text;
+  // is a `<herdr session>|<pane id>|<first 8 characters of its session id>` reference that must name a live Claude pane
+  // of a running session that still runs that session, so a stale, reused or invented reference is skipped. The command is built from validated session names and pane ids with fixed text;
   // the browser never supplies any. Only a leader is told to persist its handoff in its own home folder, since any
   // other session (a crewmate in a task worktree) has no home of its own and the handoff skill picks the place.
   const HANDOFF_REQUEST = '/handoff to restart this session with cleaner context. Persist the handoff doc in your own home folder.';
   const HANDOFF_REQUEST_OTHER = '/handoff to restart this session with cleaner context.';
-  const PANE_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\|(w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10})$/;
+  const PANE_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\|(w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10})\|([A-Za-z0-9_-]{8})$/;
   const sendLine = (item, request) => `herdr --session ${item.herdr_session} pane send-text ${item.pane_id} '${request}' && herdr --session ${item.herdr_session} pane send-keys ${item.pane_id} Enter`;
 
   async function handoffCommand(labels = [], panes = []) {
@@ -814,8 +818,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const running = new Set((await listSessions()).filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name)).map((item) => item.name));
       const live = new Map();
       for (const ref of new Set(panes)) {
-        const [, session, paneId] = PANE_REF_RE.exec(ref);
-        if (taken.has(ref)) continue;
+        const [, session, paneId, prefix] = PANE_REF_RE.exec(ref);
+        if (taken.has(`${session}|${paneId}`)) continue;
         if (!running.has(session)) { skipped.push({ label: paneId, state: 'session not running' }); continue; }
         if (!live.has(session)) {
           const result = await herdrCall(session, ['pane', 'list'], { timeoutMs: 20000 }).catch(() => null);
@@ -823,6 +827,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         }
         const pane = (live.get(session) || []).find((item) => item.pane_id === paneId && item.agent === 'claude');
         if (!pane) { skipped.push({ label: paneId, state: 'no live Claude pane' }); continue; }
+        if (!pane.agent_session_id.startsWith(prefix)) { skipped.push({ label: paneId, state: 'runs another session now' }); continue; }
         const item = { label: pane.label || '', herdr_session: session, pane_id: paneId };
         ready.push(item);
         lines.push(sendLine(item, HANDOFF_REQUEST_OTHER));

@@ -548,6 +548,27 @@ test('context view: the handoff request command is built by the server from tick
   assert.equal(/picked\.set\(row\.label/.test(view), false, 'no session starts ticked: the only writer of a tick is the box itself');
 });
 
+// Runs the page's own pick-key and prune functions on plain rows, so the check is of the shipped code and not of a copy.
+function pickFunctions() {
+  const start = html.indexOf('const pickKeyOf = ');
+  const end = html.indexOf('const percentLevel = ');
+  const vm = require('node:vm');
+  return vm.runInNewContext(`${html.slice(start, end)}; ({ pickKeyOf, prunePicks })`, {});
+}
+
+test('context view: a tick is keyed by session, pane and session id, and a reload drops ticks whose session changed', () => {
+  const { pickKeyOf, prunePicks } = pickFunctions();
+  const row = (id, pane) => ({ id, herdr_session: 'project-a', pane_id: pane, leader: null });
+  assert.equal(pickKeyOf(row('aaaaaaaa', 'wC1:p3')), 'project-a|wC1:p3|aaaaaaaa');
+  assert.equal(pickKeyOf({ ...row('', 'wC1:p3') }), '', 'a pane with no session id is not pickable');
+  assert.equal(pickKeyOf({ ...row('bbbbbbbb', 'wK:p2'), leader: { label: 'leader-esim' } }), 'leader-esim', 'a leader keeps its label key');
+  // Session X is ticked in wC1:p3; the next load shows session Y in the same pane, and X is gone.
+  const picked = new Map([['project-a|wC1:p3|aaaaaaaa', true], ['project-a|wC1:p4|cccccccc', true], ['leader-esim', true]]);
+  prunePicks(picked, [row('dddddddd', 'wC1:p3'), row('cccccccc', 'wC1:p4'), { ...row('', 'wK:p2'), leader: { label: 'leader-esim' } }]);
+  assert.deepEqual([...picked.keys()].sort(), ['leader-esim', 'project-a|wC1:p4|cccccccc'], 'the pane that now runs another session is not ticked');
+  assert.equal(picked.get(pickKeyOf(row('dddddddd', 'wC1:p3'))), undefined, 'the new session in the reused pane starts unticked');
+});
+
 test('context view: the compact toggle keeps the tick box, puts the percent next to the name, and is remembered safely', () => {
   const view = html.slice(html.indexOf('const contextCompactRow'), html.indexOf('const contextRow = '));
   assert.match(view, /handoffPickBox\(row\)/, 'compact rows keep the handoff tick box');
@@ -556,11 +577,11 @@ test('context view: the compact toggle keeps the tick box, puts the percent next
   assert.match(html, /context\.compact \? `<div class="ctx-compact">/);
 });
 
-test('context table: every session row has an Open button that sends only a session name and pane id', () => {
-  assert.match(html, /const openTabButton = row => row\.pane_id && row\.herdr_session/);
+test('context table: every session row has an Open button that sends only a session name, pane id and the row\'s 8-character session id', () => {
+  assert.match(html, /const openTabButton = row => row\.pane_id && row\.herdr_session && row\.id/);
   assert.match(html, /\$\{openTabButton\(row\)\}<\/td><\/tr>/, 'the table row carries it');
   assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{openTabButton\(row\)\}<\/label>/, 'and so does the compact row');
   const handler = html.slice(html.indexOf('const openTab = async'), html.indexOf('const copyHandoff'));
-  assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane \}\)/);
+  assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane, id: button\.dataset\.id \}\)/);
   assert.equal(/tab_id|command|args/.test(handler), false, 'the page names no tab and builds no command');
 });

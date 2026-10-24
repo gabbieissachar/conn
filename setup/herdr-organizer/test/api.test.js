@@ -935,7 +935,7 @@ test('codex-credits: a breakdown that is not by model still totals, but never la
 test('leader-space: reports each identity as ok, missing, duplicate or elsewhere without changing anything', async () => {
   const panes = [
     { pane_id: 'wK:p5', workspace_id: 'wK', tab_id: 'wK:t5', agent: 'claude', agent_status: 'working', label: 'big-boss' },
-    { pane_id: 'wK:p2', workspace_id: 'wK', tab_id: 'wK:t2', agent: 'claude', agent_status: 'idle', label: 'leader-esim' },
+    { pane_id: 'wK:p2', workspace_id: 'wK', tab_id: 'wK:t2', agent: 'claude', agent_status: 'idle', label: 'leader-esim', agent_session: { agent: 'claude', kind: 'id', value: 'abcdefgh-0000-4000-8000-000000000000' } },
     { pane_id: 'wK:p4', workspace_id: 'wK', tab_id: 'wK:t4', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
     { pane_id: 'wJ:p2', workspace_id: 'wJ', tab_id: 'wJ:t2', agent: 'claude', agent_status: 'idle', label: 'leader-nip' },
     { pane_id: 'wJ:p3', workspace_id: 'wJ', tab_id: 'wJ:t3', agent: 'claude', agent_status: 'idle', label: 'leader-workspaceos' },
@@ -958,6 +958,9 @@ test('leader-space: reports each identity as ok, missing, duplicate or elsewhere
     const byLabel = Object.fromEntries(response.json.data.rows.map((row) => [row.label, row]));
     assert.equal(byLabel['big-boss'].state, 'ok');
     assert.equal(byLabel['leader-esim'].state, 'ok');
+    assert.equal(byLabel['leader-esim'].panes[0].id, 'abcdefgh', 'the row carries the first 8 characters of the pane\'s session id, so Open can name the session');
+    assert.equal(byLabel['big-boss'].panes[0].id, '', 'a pane with no session has no prefix');
+    assert.equal(response.raw.includes('abcdefgh-0000'), false, 'never more than 8 characters of a session id');
     assert.equal(byLabel['leader-nip'].state, 'duplicate', 'two panes carry the label');
     assert.equal(byLabel['leader-workspaceos'].state, 'elsewhere', 'one pane, but outside leader-space');
     assert.equal(byLabel['leader-fleet-watch'].state, 'missing');
@@ -1005,7 +1008,7 @@ test('handoff-command: builds a copy-only send command from the live audit for t
 });
 
 test('handoff-command: any live Claude pane can be ticked by reference, with text that names no home folder', async () => {
-  const id = (n) => `aaaaaaaa-bbbb-4ccc-8ddd-00000000000${n}`;
+  const id = (n) => `aaaaaaa${n}-bbbb-4ccc-8ddd-00000000000${n}`;
   const agent = (n) => ({ agent: 'claude', agent_session: { agent: 'claude', kind: 'id', value: id(n) } });
   const panes = [
     { pane_id: 'wK:p2', workspace_id: 'wK', agent_status: 'idle', label: 'leader-esim', ...agent(1) },
@@ -1022,19 +1025,22 @@ test('handoff-command: any live Claude pane can be ticked by reference, with tex
   const server = await startServer({ runner: fake.runner });
   try {
     const { post } = await client(server);
-    const response = await post('handoff-command', { labels: ['leader-esim'], panes: ['project-a|wX:p2', 'project-a|wK:p2', 'project-a|wX:p3', 'project-a|wZ:p9', 'stopped-one|wX:p2'] });
+    const response = await post('handoff-command', { labels: ['leader-esim'], panes: ['project-a|wX:p2|aaaaaaa2', 'project-a|wK:p2|aaaaaaa1', 'project-a|wX:p3|aaaaaaa3', 'project-a|wZ:p9|aaaaaaa9', 'stopped-one|wX:p2|aaaaaaa2', 'project-a|wX:p2|aaaaaaa7'] });
     assert.equal(response.status, 200);
     const data = response.json.data;
     assert.deepEqual(data.ready, [{ label: 'leader-esim', herdr_session: 'project-a', pane_id: 'wK:p2' }, { label: '', herdr_session: 'project-a', pane_id: 'wX:p2' }]);
-    assert.deepEqual(data.skipped.map((item) => item.label), ['wX:p3', 'wZ:p9', 'wX:p2'], 'a codex pane, an unknown pane and a stopped session are skipped; a pane already taken as a leader is not repeated');
+    assert.deepEqual(data.skipped.map((item) => item.label), ['wX:p3', 'wZ:p9', 'wX:p2', 'wX:p2'], 'a codex pane, an unknown pane, a stopped session and a pane that runs another session now are skipped; a pane already taken as a leader is not repeated');
+    assert.equal(data.skipped[3].state, 'runs another session now', 'a pane id reused by another session is never offered');
     const lines = data.command.split('\n');
     assert.equal(lines.length, 2);
     assert.ok(lines[0].includes(data.text) && data.text.includes('own home folder'));
     assert.ok(lines[1].includes(`'${data.other_text}'`) && !data.other_text.includes('home folder'));
     assert.equal((await post('handoff-command', { panes: ['bad ref'] })).status, 400, 'only well-formed references');
-    assert.equal((await post('handoff-command', { panes: ["a'b|wX:p2"] })).status, 400);
+    assert.equal((await post('handoff-command', { panes: ["a'b|wX:p2|aaaaaaa2"] })).status, 400);
+    assert.equal((await post('handoff-command', { panes: ['project-a|wX:p2'] })).status, 400, 'a reference without the session id is refused');
+    assert.equal((await post('handoff-command', { panes: ['project-a|wX:p2|short'] })).status, 400);
     assert.equal((await post('handoff-command', {})).status, 400);
-    assert.equal((await post('handoff-command', { panes: ['project-a|wX:p2'], text: 'x' })).status, 400, 'the browser sends no text');
+    assert.equal((await post('handoff-command', { panes: ['project-a|wX:p2|aaaaaaa2'], text: 'x' })).status, 400, 'the browser sends no text');
     assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
   } finally { await server.close(); }
 });
@@ -1048,12 +1054,12 @@ test('focus-tab: shows the tab of a live pane, finds the tab itself and sends no
   const server = await startServer({ runner: fake.runner });
   try {
     const { post } = await client(server);
-    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1' });
+    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1', id: '11111111' });
     assert.equal(response.status, 200);
-    assert.deepEqual(response.json.data, { herdr_session: 'project-a', tab_id: 'w2:t1' });
+    assert.deepEqual(response.json.data, { herdr_session: 'project-a', tab_id: 'w1:t1' });
     const focus = fake.calls.filter((call) => call.args.includes('focus'));
     assert.equal(focus.length, 1);
-    assert.deepEqual(focus[0].args, ['--session', 'project-a', 'tab', 'focus', 'w2:t1'], 'the tab comes from the live pane list');
+    assert.deepEqual(focus[0].args, ['--session', 'project-a', 'tab', 'focus', 'w1:t1'], 'the tab comes from the live pane list');
     assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'run', 'prompt', 'close', 'rename'].includes(arg))), false);
     assert.equal(server.api.ACTIONS['focus-tab'].lock, false, 'opening a tab never waits on a seal');
   } finally { await server.close(); }
@@ -1064,14 +1070,34 @@ test('focus-tab: refuses a stopped or default session, a malformed or unknown pa
   const server = await startServer({ runner: fake.runner });
   try {
     const { post } = await client(server);
-    for (const session of ['default', 'stopped-one', 'nope', '-h', '--execute']) assert.equal((await post('focus-tab', { session, pane_id: 'w2:p1' })).status, 400, session);
-    for (const pane_id of ['bad', "w2:p1'; rm -rf /", '--all', 'w2:t1']) assert.equal((await post('focus-tab', { session: 'project-a', pane_id })).status, 400, pane_id);
-    const gone = await post('focus-tab', { session: 'project-a', pane_id: 'w9:p9' });
+    for (const session of ['default', 'stopped-one', 'nope', '-h', '--execute']) assert.equal((await post('focus-tab', { session, pane_id: 'w1:p1', id: '11111111' })).status, 400, session);
+    for (const pane_id of ['bad', "w2:p1'; rm -rf /", '--all', 'w2:t1']) assert.equal((await post('focus-tab', { session: 'project-a', pane_id, id: '11111111' })).status, 400, pane_id);
+    const gone = await post('focus-tab', { session: 'project-a', pane_id: 'w9:p9', id: '11111111' });
     assert.equal(gone.status, 404);
     assert.equal(gone.json.code, 'pane_gone');
-    assert.equal((await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1', tab_id: 'w1:t1' })).status, 400, 'the browser names no tab');
+    assert.equal((await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1', id: '11111111', tab_id: 'w1:t1' })).status, 400, 'the browser names no tab');
     assert.equal((await post('focus-tab', { session: 'project-a' })).status, 400);
+    assert.equal((await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1' })).status, 400, 'the row\'s session id is required');
+    for (const id of ['short', '1111111111', "1111111';", '--all', '11111 11']) assert.equal((await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1', id })).status, 400, id);
     assert.equal(fake.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
+  } finally { await server.close(); }
+});
+
+test('focus-tab: a pane that runs another session than the row showed is refused and nothing is focused', async () => {
+  const fake = fakeRunner();
+  const server = await startServer({ runner: fake.runner });
+  try {
+    const { post } = await client(server);
+    // Pane w1:p1 runs session 11111111-...; the row was read when that pane ran another session.
+    const moved = await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1', id: '99999999' });
+    assert.equal(moved.status, 409);
+    assert.equal(moved.json.code, 'session_moved');
+    // A pane with no agent session at all cannot match any row.
+    const none = await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1', id: '11111111' });
+    assert.equal(none.status, 409);
+    assert.equal(none.json.code, 'session_moved');
+    assert.equal(fake.calls.filter((call) => call.args.includes('focus')).length, 0, 'no tab was focused');
+    assert.equal(moved.raw.includes('11111111-2222'), false, 'no full session id reaches the browser');
   } finally { await server.close(); }
 });
 
@@ -1080,7 +1106,7 @@ test('focus-tab: a Herdr failure is reported, not hidden', async () => {
   const server = await startServer({ runner: fake.runner });
   try {
     const { post } = await client(server);
-    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w2:p1' });
+    const response = await post('focus-tab', { session: 'project-a', pane_id: 'w1:p1', id: '11111111' });
     assert.equal(response.status, 502);
     assert.equal(response.json.code, 'herdr_unavailable');
     assert.equal(response.raw.includes('no such tab'), false, 'Herdr output does not reach the browser');
