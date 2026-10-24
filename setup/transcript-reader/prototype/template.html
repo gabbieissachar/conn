@@ -801,13 +801,15 @@
   // summary: the message says so, names the log to read, and gives what the reply asked.
   function replyTarget(ex, sid, card) {
     const at = ex.reply_at || ex.at;
-    const session = data.sessions.find(s => s.id === sid);
+    const session = sessionOf(sid);
     const earlier = !session ? ""
       : ex.from_session ? `[From session ${ex.from_session.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] `
       : ex.compacted_away ? `[From before this session's last compaction; its log: ${session.file}] ` : "";
     return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p, Boolean(earlier), ex.asks || []) });
   }
-  const paneName = sid => { const s = data.sessions.find(x => x.id === sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
+  // A conversation by any of its sessions' ids: after a /clear its newest id changes.
+  const sessionOf = sid => data.sessions.find(s => (s.ids || [s.id]).includes(sid));
+  const paneName = sid => { const s = sessionOf(sid); return s && s.pane ? s.pane.label : sid.slice(0, 8); };
   const dockPointer = () => link.target.pointer(link.target.passage);
   // What Send types into the pane: the words as written, after the pointer when a reply or a
   // file is attached. A slash command goes alone, so the agent still reads it as a command.
@@ -853,10 +855,10 @@
   }
   // A pointer written before the pane was cleared names a reply the newest session never saw.
   function carried(sid, from) {
-    const session = data.sessions.find(s => s.id === sid);
+    const session = sessionOf(sid);
     return from && from !== sid && session ? `[From session ${from.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, from + ".jsonl")}] ` : "";
   }
-  const withNote = (note, pointer) => pointer && note && !pointer.startsWith("[From session") ? note + pointer : pointer;
+  const withNote = (note, pointer) => pointer && note && !pointer.startsWith("[From ") ? note + pointer : pointer;
   // A pointer kept as text (a draft's or a batched comment's), back as the bar's target.
   const frozenTarget = (sid, saved, from) => ({ sid, card: null, passage: saved.passage, title: saved.title,
     pointer: p => withNote(carried(sid, from), p ? saved.pointer : saved.bare) });
@@ -1047,7 +1049,7 @@
       link.pending.push({ sid, text, at, label: sent.label });
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
       const onScreen = dockSession();
-      if (onScreen && onScreen.id === sid && dock("text").value === sentBox) {
+      if (onScreen && (onScreen.ids || [onScreen.id]).includes(sid) && dock("text").value === sentBox) {
         dock("text").value = ""; link.editing = null;
         link.target = null; markTarget(); saveDraft(); growDock();
       } else if (draftOf(sid) && draftOf(sid).text === sentBox) {
@@ -1309,6 +1311,20 @@
     const el = anchor.id && document.getElementById(anchor.id);
     if (el) window.scrollBy(0, el.getBoundingClientRect().top - anchor.top); else window.scrollTo(0, anchor.y || 0);
   }
+  // Turns are keyed and anchored by position, and a /clear joins the cleared session's turns
+  // under a divider at the top, moving every turn down. A conversation's first real turn (a
+  // divider shares its time) shows how far they moved, so what was open and the place read
+  // can follow them to the conversation's newest id.
+  const isDivider = e => e.source === "session" && (e.kind === "cleared" || e.kind === "current");
+  const firstTurn = session => { const i = session.exchanges.findIndex(e => !isDivider(e)); return i < 0 ? null : { i, at: session.exchanges[i].at }; };
+  function moveTurns(first, fromSid, session, open, anchor) {
+    const j = first ? session.exchanges.findIndex(e => !isDivider(e) && e.at === first.at) : -1;
+    const shift = j < 0 ? 0 : j - first.i;
+    const keyRe = new RegExp("^" + fromSid + ":(\\d+)(.*)$");
+    const keys = new Set([...open].map(k => { const m = k.match(keyRe); return m ? `${session.id}:${Number(m[1]) + shift}${m[2]}` : k; }));
+    if (anchor && anchor.id) anchor.id = "ex-" + (Number(anchor.id.slice(3)) + shift);
+    return keys;
+  }
   async function refreshData(now = false) {
     const sel = window.getSelection();
     if (!now && sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
@@ -1323,9 +1339,14 @@
     const mark = s => s ? `${s.exchanges.length}:${(s.exchanges[s.exchanges.length - 1] || {}).reply_words || 0}` : "";
     const before = mark(data.sessions[state.session]);
     const anchor = readingAnchor();
+    const first = data.sessions[state.session] ? firstTurn(data.sessions[state.session]) : null;
     data = payload;
     const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
     state.session = index >= 0 ? index : 0;
+    if (index >= 0 && data.sessions[index].id !== sid) {  // a /clear gave the conversation a newer session
+      state.open = moveTurns(first, sid, data.sessions[index], state.open, anchor);
+      setAddress();
+    }
     render();
     restoreAnchor(anchor);
     if (state.view === "reader" && !anchor.bottom && index >= 0 && mark(data.sessions[state.session]) !== before) { link.newer = true; placeNewReply(); }
@@ -1434,12 +1455,17 @@
   // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
   // Decided here, before the page writes its own address below.
   link.keepOpening = fromHash >= 0 || fromSaved >= 0;
-  const same = saved && data.sessions[state.session] && saved.session === data.sessions[state.session].id;
-  if (same) { state.open = new Set(saved.open || []); state.showWakes = !!saved.showWakes; if (state.view === "reader" && saved.view === "fleet") state.view = "fleet"; }
+  const opened = data.sessions[state.session];
+  const same = saved && opened && (opened.ids || [opened.id]).includes(saved.session);
+  if (same) {
+    state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
+    state.showWakes = !!saved.showWakes;
+    if (state.view === "reader" && saved.view === "fleet") state.view = "fleet";
+  }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   window.addEventListener("pagehide", () => {
     const session = data.sessions[state.session];
-    try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
+    try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
   setAddress();
   render();
