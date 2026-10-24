@@ -666,7 +666,7 @@ def chain_exchanges(chain: list[Path], loaded: dict[Path, list[dict]]) -> list[d
 
 def mark_compacted_away(exchanges: list[dict]) -> None:
     """Mark the replies before a session's last compaction: it holds only a summary of them."""
-    last = max((i for i, exchange in enumerate(exchanges) if exchange["kind"] == "compacted"), default=-1)
+    last = max((i for i, exchange in enumerate(exchanges) if exchange["kind"] == "compacted"), default=0)
     for exchange in exchanges[:last]:
         if exchange["reply"]:
             exchange["compacted_away"] = True

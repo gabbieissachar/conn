@@ -221,9 +221,9 @@ class SessionExchangesTest(unittest.TestCase):
         ])
         builder.mark_compacted_away(exchanges)
         self.assertEqual([e.get("compacted_away", False) for e in exchanges], [True, False, False])
-        unchanged = self.exchanges([user("Fix it", 0), say("Which branch?", 1)])
+        unchanged = self.exchanges([user("Fix it", 0), say("Which branch?", 1), user("Use main", 2), say("Done on main.", 3)])
         builder.mark_compacted_away(unchanged)
-        self.assertNotIn("compacted_away", unchanged[0])
+        self.assertEqual([e.get("compacted_away", False) for e in unchanged], [False, False], "no compaction, nothing marked")
 
     def test_a_peer_message_starts_its_own_turn_and_keeps_the_previous_reply(self):
         mine, theirs = self.exchanges([
