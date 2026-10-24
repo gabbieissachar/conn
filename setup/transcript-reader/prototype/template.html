@@ -137,6 +137,7 @@
   .toc .toc-l1 { padding-left: 22px; }
   .toc .toc-l2 { padding-left: 34px; font-size: 12px; }
   .doc-body { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; overflow-wrap: anywhere; }
+  #main > [id^="ex-"] { scroll-margin-top: calc(var(--bar-h, 120px) + 8px); }
   .doc-md h1, .doc-md h2, .doc-md h3, .doc-md h4, .doc-md h5, .doc-md h6 { scroll-margin-top: calc(var(--bar-h, 120px) + 12px); line-height: 1.3; margin: 1.1em 0 .45em; }
   .doc-md > :first-child { margin-top: 0; }
   .doc-md h1 { font-size: 24px; }
@@ -1006,12 +1007,17 @@
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
     placeNewReply();
   }
+  const SESSION_COMMANDS = {
+    "/clear": "starts that session over", "/exit": "ends that session", "/quit": "ends that session",
+    "/compact": "replaces that session's earlier turns with a summary", "/logout": "signs that agent out",
+    "/rewind": "opens a menu in the pane to roll that session back",
+  };
   async function sendDock() {
     const text = outgoing(); if (!text || dock("send").disabled) return;
     const session = dockSession();
-    // These end or reset the session, so they ask first.
-    const command = (text.match(/^\/(clear|exit|quit)\b/) || [])[0];
-    if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${command === "/clear" ? "starts that session over" : "ends that session"}.`)) return;
+    // These end, reset, shrink or sign out the session, so they ask first.
+    const command = (text.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
+    if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${SESSION_COMMANDS[command]}.`)) return;
     // What this send carries. The box stays open while it runs (emptying the pane's input box
     // first takes a second or more), so only these are removed when it returns.
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value;
@@ -1303,7 +1309,7 @@
     const f = link.focus;
     if (!state.follow || !f) return;
     if (f.seq !== link.seenSeq) {
-      const keep = link.first && /^#s=/.test(location.hash);
+      const keep = link.first && link.keepOpening;
       link.seenSeq = f.seq;
       if (!keep) link.want = f.session_id;
     }
@@ -1384,12 +1390,18 @@
   const biggest = data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
   const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];
   const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
-  state.session = fromHash >= 0 ? fromHash : data.chosen ? 0 : biggest;
-  if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
   // A reload (new page code, a restarted server, or the browser's own) keeps what was
   // expanded and the place being read, in this tab only.
   let saved = null;
   try { saved = JSON.parse(sessionStorage.getItem("tr-reading") || "null"); } catch (e) { saved = null; }
+  // With no address (the answer sheet's "← Reader", or a link without #s=), this tab's
+  // last conversation wins over the list's order, which changes whenever a session writes.
+  const fromSaved = !wanted && saved && saved.session ? data.sessions.findIndex(s => (s.ids || [s.id]).includes(saved.session)) : -1;
+  state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : data.chosen ? 0 : biggest;
+  if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
+  // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
+  // Decided here, before the page writes its own address below.
+  link.keepOpening = fromHash >= 0 || fromSaved >= 0;
   const same = saved && data.sessions[state.session] && saved.session === data.sessions[state.session].id;
   if (same) { state.open = new Set(saved.open || []); state.showWakes = !!saved.showWakes; if (state.view === "reader" && saved.view === "fleet") state.view = "fleet"; }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
@@ -1397,6 +1409,7 @@
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
+  setAddress();
   render();
   if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
 })();
