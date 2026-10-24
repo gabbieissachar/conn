@@ -54,7 +54,8 @@ function fakeHerdr() {
       { pane_id: 'w1:p3', tab_id: 'w1:t3', label: 'unlisted', agent_status: 'idle', agent_session: { value: C } },
       { pane_id: 'w1:p4', tab_id: 'w1:t1', terminal_title_stripped: 'zsh' },
     ],
-    processInfo: {},
+    // Claude in the foreground of each agent pane; a test changes it for a pane at its shell.
+    processInfo: { 'w1:p1': [{ pid: 1001, argv0: 'claude' }], 'w1:p2': [{ pid: 1002, argv0: 'claude' }], 'w1:p3': [{ pid: 1003, argv0: 'claude' }] },
     promptResult: { code: 0, stdout: '{}', stderr: '' },
     keysResult: { code: 0, stdout: '{}', stderr: '' },
     down: false,
@@ -457,6 +458,36 @@ test('send: bad input, unlisted sessions, missing panes and blocked or unknown a
     assert.equal(unknown.status, 409);
     assert.equal(unknown.json.code, 'agent_unknown');
     assert.equal(t.herdr.agentCalls().length, 0);
+  } finally { await t.close(); }
+});
+
+test('send: nothing goes unless the pane\'s foreground holds Claude running that session', async () => {
+  const t = await start();
+  try {
+    fs.mkdirSync(t.tree.claudeSessionsDir);
+    // This test process stands in for a running Claude; its record names the session it holds.
+    const runs = (id) => fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: id }));
+    const refused = async (code, status = 409) => {
+      const response = await t.send({ session_id: B, text: 'hi' });
+      assert.equal(response.status, status, response.raw);
+      assert.equal(response.json.code, code);
+    };
+    // Claude suspended with Ctrl+Z: Herdr keeps the agent and its last state, but zsh is in front.
+    t.herdr.processInfo['w1:p2'] = [{ pid: 4242, argv0: 'zsh' }];
+    await refused('agent_not_foreground');
+    t.herdr.processInfo['w1:p2'] = [];
+    await refused('agent_not_foreground');
+    // A Claude in front whose record names another session.
+    runs(C);
+    t.herdr.processInfo['w1:p2'] = [{ pid: process.pid, argv0: 'claude' }];
+    await refused('other_session');
+    assert.equal(t.herdr.agentCalls().length, 0, 'no key and no prompt reached the pane');
+    // The pane's own Claude, by its record, even when Herdr names the process by its version.
+    runs(B);
+    t.herdr.processInfo['w1:p2'] = [{ pid: 4243, argv0: 'caffeinate' }, { pid: process.pid, argv0: '2.1.309' }];
+    const sent = await t.send({ session_id: B, text: 'hi' });
+    assert.equal(sent.status, 200, sent.raw);
+    assert.equal(t.herdr.prompts().length, 1);
   } finally { await t.close(); }
 });
 

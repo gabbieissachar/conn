@@ -359,6 +359,23 @@ function create({
 
   // -------------------------------------------------------------------- send
 
+  // Herdr's guide: a retained agent identity (even idle or done) does not mean the agent is in
+  // the foreground; after Ctrl+Z a shell is, and each line sent would run as a command. So the
+  // pane's foreground must hold Claude running this very session (by its ~/.claude/sessions
+  // record), or a Claude without a record. Read-only: `herdr pane process-info`.
+  async function checkForeground(pane, sessionId) {
+    const result = await runner(herdrBin, ['--session', pane.herdr, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
+    const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
+    if (!info) throw new RequestError('Herdr could not say what runs in the pane, so nothing was sent. Check the pane first.', 502, 'herdr_failed');
+    const processes = Array.isArray(info.foreground_processes) ? info.foreground_processes : [];
+    const running = runningClaude();
+    const held = processes.map((process) => running.get(process.pid)).filter(Boolean);
+    if (held.includes(sessionId)) return;
+    if (held.length) throw new RequestError('The pane now runs another Claude session, so nothing was sent. Reload the page.', 409, 'other_session');
+    if (processes.some((process) => process.argv0 === 'claude')) return;
+    throw new RequestError('The agent is not in the foreground of its pane (it may be suspended to a shell), so nothing was sent. Check the pane first.', 409, 'agent_not_foreground');
+  }
+
   async function sendPrompt(body) {
     for (const key of Object.keys(body)) if (key !== 'session_id' && key !== 'text') throw new RequestError('Unknown field.');
     const sessionId = body.session_id;
@@ -374,6 +391,7 @@ function create({
     // Herdr's own guide: `unknown` (or any other state) does not show the agent is in the
     // foreground, so the text could land in a shell. A working agent queues the message.
     if (!SENDABLE.has(pane.status)) throw new RequestError('Herdr cannot tell what the agent is doing (it may be suspended to a shell), so nothing was sent. Check the pane first.', 409, 'agent_unknown');
+    await checkForeground(pane, sessionId);
     if (sending) throw new RequestError('Another message is still being sent.', 409, 'busy');
     sending = true;
     try {
