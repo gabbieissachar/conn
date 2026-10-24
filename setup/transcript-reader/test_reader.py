@@ -7,6 +7,7 @@ Fixtures are synthetic; no real session log or Herdr call is used.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -22,24 +23,24 @@ B = "aaaaaabb-2222-4222-8222-222222222222"
 C = "cccccccc-3333-4333-8333-333333333333"
 
 PANES = {
-    A: {"label": "leader-esim", "title": "Secondmate eSIM session handoff", "herdr": "esim"},
-    B: {"label": "fm-2026-10-05-esim-bc36-final-spec", "title": "Bc36 spec handoff rule 3", "herdr": "esim"},
-    C: {"label": "fm-2026-10-05-esim-bc36-spec-review", "title": "ESIM BC36 spec review handoff", "herdr": "esim"},
+    A: {"label": "leader-alpha", "title": "Secondmate alpha session handoff", "herdr": "work"},
+    B: {"label": "fm-2026-10-05-alpha-x12-final-spec", "title": "X12 spec handoff rule 3", "herdr": "work"},
+    C: {"label": "fm-2026-10-05-alpha-x12-spec-review", "title": "Alpha X12 spec review handoff", "herdr": "work"},
 }
 
 
 class PaneIndexTest(unittest.TestCase):
     def test_pane_label_then_tab_label_then_title(self):
         panes = [
-            {"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "leader-esim", "terminal_title_stripped": "Handoff", "agent_session": {"value": A}},
-            {"pane_id": "w1:p2", "tab_id": "w1:t2", "label": None, "terminal_title_stripped": "Bc36 spec", "agent_session": {"value": B}},
+            {"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "leader-alpha", "terminal_title_stripped": "Handoff", "agent_session": {"value": A}},
+            {"pane_id": "w1:p2", "tab_id": "w1:t2", "label": None, "terminal_title_stripped": "X12 spec", "agent_session": {"value": B}},
             {"pane_id": "w1:p3", "tab_id": "w1:t9", "terminal_title_stripped": "Review", "agent_session": {"value": C}},
             {"pane_id": "w1:p4", "tab_id": "w1:t1", "terminal_title_stripped": "a shell, no agent session"},
         ]
-        tabs = [{"tab_id": "w1:t1", "label": "leader-esim"}, {"tab_id": "w1:t2", "label": "fm-bc36-final-spec"}]
-        index = builder.pane_index("esim", panes, tabs)
-        self.assertEqual(index[A]["label"], "leader-esim")
-        self.assertEqual(index[B], {"label": "fm-bc36-final-spec", "title": "Bc36 spec", "herdr": "esim", "pane": "w1:p2"})
+        tabs = [{"tab_id": "w1:t1", "label": "leader-alpha"}, {"tab_id": "w1:t2", "label": "fm-x12-final-spec"}]
+        index = builder.pane_index("work", panes, tabs)
+        self.assertEqual(index[A]["label"], "leader-alpha")
+        self.assertEqual(index[B], {"label": "fm-x12-final-spec", "title": "X12 spec", "herdr": "work", "pane": "w1:p2"})
         self.assertEqual(index[C]["label"], "Review")
         self.assertEqual(len(index), 3)
 
@@ -75,7 +76,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(self.resolve(str(self.projects / "-Users-someone-home" / f"{B}.jsonl")), B)
 
     def test_exact_label_wins_over_partial(self):
-        self.assertEqual(self.resolve("LEADER-ESIM"), A)
+        self.assertEqual(self.resolve("LEADER-ALPHA"), A)
 
     def test_unique_part_of_label_or_title(self):
         self.assertEqual(self.resolve("final-spec"), B)
@@ -83,7 +84,7 @@ class ResolveTest(unittest.TestCase):
 
     def test_part_matching_several_panes_is_refused(self):
         with self.assertRaisesRegex(ValueError, "several panes"):
-            self.resolve("bc36")
+            self.resolve("x12")
 
     def test_no_match(self):
         with self.assertRaisesRegex(ValueError, "no session or Herdr pane"):
@@ -119,7 +120,7 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(reader.read_list(), [A, B])
 
     def test_refuses_anything_but_one_full_id_with_a_log(self):
-        for names in (["aaaaaaaa"], [C], ["leader-esim"], [A, A], []):
+        for names in (["aaaaaaaa"], [C], ["leader-alpha"], [A, A], []):
             self.assertEqual(reader.main(["follow", *names]), 2, names)
         self.assertEqual(reader.read_list(), [])
         self.assertEqual(self.rebuilds, [])
@@ -195,7 +196,7 @@ class ClosedPanesTest(unittest.TestCase):
 
     def test_reopen_and_close_take_one_full_id(self):
         for command in ("reopen", "close"):
-            for names in (["aaaaaaaa"], [A, B], [], ["leader-esim"]):
+            for names in (["aaaaaaaa"], [A, B], [], ["leader-alpha"]):
                 self.assertEqual(reader.main([command, *names]), 2, (command, names))
         self.assertEqual(reader.main(["reopen", "dddddddd-4444-4444-8444-444444444444"]), 2, "no log")
         self.assertEqual(reader.main(["close", C]), 1, "not listed")
@@ -237,7 +238,7 @@ class DocumentsTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name).resolve()
         self.repo = self.home / "copy" / "personal"
-        self.prd = self.repo / "02-Projects" / "esim" / "prds" / "bc49"
+        self.prd = self.repo / "02-Projects" / "alpha" / "prds" / "x49"
         self.prd.mkdir(parents=True)
         (self.prd / "requirements.md").write_text("# Requirements\n", encoding="utf-8")
         (self.repo / "notes.md").write_text("notes\n", encoding="utf-8")
@@ -250,24 +251,34 @@ class DocumentsTest(unittest.TestCase):
         return [(token, path.relative_to(self.home).as_posix()) for token, path in builder.named_documents(reply, str(cwd))]
 
     def test_a_path_from_the_repository_root_resolves_from_a_deeper_working_directory(self):
-        reply = "**Draft:** `02-Projects/esim/prds/bc49/requirements.md` and again 02-Projects/esim/prds/bc49/requirements.md"
-        self.assertEqual(self.names(reply, self.repo / "02-Projects" / "esim"),
-                         [("02-Projects/esim/prds/bc49/requirements.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md")])
+        reply = "**Draft:** `02-Projects/alpha/prds/x49/requirements.md` and again 02-Projects/alpha/prds/x49/requirements.md"
+        self.assertEqual(self.names(reply, self.repo / "02-Projects" / "alpha"),
+                         [("02-Projects/alpha/prds/x49/requirements.md", "copy/personal/02-Projects/alpha/prds/x49/requirements.md")])
 
     def test_a_bare_name_resolves_under_the_latest_cd_line_before_it(self):
         reply = f"```\ncd {self.home}/elsewhere\n```\n```\ncd {self.prd}\n```\n- `requirements.md`\n- `notes.md`"
-        self.assertEqual(self.names(reply, self.repo), [("requirements.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md"),
+        self.assertEqual(self.names(reply, self.repo), [("requirements.md", "copy/personal/02-Projects/alpha/prds/x49/requirements.md"),
                                                         ("notes.md", "copy/personal/notes.md")])
 
     def test_absolute_and_home_paths_are_taken_as_written(self):
         reply = f"See {self.prd}/requirements.md and ~/copy/personal/notes.md."
-        self.assertEqual([path for _, path in self.names(reply, "")], ["copy/personal/02-Projects/esim/prds/bc49/requirements.md", "copy/personal/notes.md"])
+        self.assertEqual([path for _, path in self.names(reply, "")], ["copy/personal/02-Projects/alpha/prds/x49/requirements.md", "copy/personal/notes.md"])
 
     def test_urls_missing_files_other_types_and_folders_above_home_are_left_out(self):
         (self.home.parent / "outside.md").write_text("x", encoding="utf-8")
         self.addCleanup((self.home.parent / "outside.md").unlink)
         reply = "https://example.com/x/notes.md, `gone.md`, `requirements.txt`, `outside.md`, ../outside.md"
         self.assertEqual(self.names(reply, self.repo), [])
+
+    def test_a_file_outside_the_home_and_temp_folders_is_left_out_even_through_a_link(self):
+        outside = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "secret.md").write_text("x", encoding="utf-8")
+        (self.repo / "link.md").symlink_to(outside / "secret.md")
+        reply = f"See {outside}/secret.md and `link.md`."
+        with mock.patch.object(builder, "TEMP_ROOTS", ()):
+            self.assertEqual(self.names(reply, self.repo), [])
+        self.assertEqual(len(builder.named_documents(reply, str(self.repo))), 1, "a temp folder is allowed; the link resolves into it")
 
     def test_a_file_over_the_size_cap_is_left_out(self):
         (self.repo / "big.md").write_text("x" * (builder.MAX_DOCUMENT_BYTES + 1), encoding="utf-8")
@@ -284,7 +295,7 @@ class DocumentsTest(unittest.TestCase):
         self.assertNotIn("cwd", first)
         doc = documents[first["documents"][0]]
         self.assertEqual((doc["name"], doc["text"], doc["mention"]), ("requirements.md", "# Requirements\n", "requirements.md"))
-        self.assertEqual(doc["dir"], "~/copy/personal/02-Projects/esim/prds/bc49")
+        self.assertEqual(doc["dir"], "~/copy/personal/02-Projects/alpha/prds/x49")
 
     def test_tool_calls_name_files_by_path_field_or_from_a_shell_commands_cd(self):
         read = {"file_path": f"{self.prd}/requirements.md"}
@@ -303,7 +314,7 @@ class DocumentsTest(unittest.TestCase):
         (other / "notes.md").write_text("other notes\n", encoding="utf-8")
         touched = [f"{self.repo}/notes.md", f"{other}/notes.md", f"{self.home}/gone/requirements.md"]
         self.assertEqual([path.relative_to(self.home).as_posix() for _, path in builder.named_documents("`notes.md:12`, `context/notes.md`, `requirements.md`", str(self.prd), touched)],
-                         ["worktree/context/notes.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md"])
+                         ["worktree/context/notes.md", "copy/personal/02-Projects/alpha/prds/x49/requirements.md"])
 
     def test_a_turn_matches_files_touched_in_its_own_and_earlier_turns_only(self):
         far = self.home / "worktree" / "design-baseline.md"
@@ -339,7 +350,7 @@ class DocumentsTest(unittest.TestCase):
     def test_a_file_url_names_its_path(self):
         reply = f"Open file://{self.prd}/requirements.md or [notes](file://{self.repo}/notes.md)."
         self.assertEqual([path for _, path in self.names(reply, "")],
-                         ["copy/personal/02-Projects/esim/prds/bc49/requirements.md", "copy/personal/notes.md"])
+                         ["copy/personal/02-Projects/alpha/prds/x49/requirements.md", "copy/personal/notes.md"])
 
 
 class WritePageTest(unittest.TestCase):
@@ -457,7 +468,7 @@ class ClearedSessionsTest(unittest.TestCase):
         log(f / "sonnet.jsonl", [prompt("the brief again", iso(T0 + 3135))], T0 + 4000)
         log(f / "much-later.jsonl", [prompt("another task", iso(T0 + 4800))], T0 + 5000)
         log(f / "next-door.jsonl", [prompt("a neighbour", iso(T0 + 3100))], T0 + 3900)
-        pane = {"herdr": "esim", "pane": "w1:p2", "label": "fm-task"}
+        pane = {"herdr": "work", "pane": "w1:p2", "label": "fm-task"}
         history = {"haiku": {**pane, "pane": ""}, "sonnet": pane, "much-later": pane,
                    "next-door": {**pane, "pane": "w1:p3", "label": "fm-other"}}
         with mock.patch.dict(builder._PANE_HISTORY, history, clear=True):

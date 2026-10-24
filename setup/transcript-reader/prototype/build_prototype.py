@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -961,6 +962,9 @@ MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
 FILE_URL = re.compile(r"\bfile://(?=/)")
 CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
+# Besides the home folder, the temp folders agents write reports and scratch notes to. Agents
+# quote paths from untrusted material, so a named file anywhere else is never embedded.
+TEMP_ROOTS = (Path("/tmp"), Path(tempfile.gettempdir()))
 
 
 def tool_documents(tool_input, cwd: str) -> list[str]:
@@ -999,8 +1003,10 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     then as the end of a path the session's own tool calls named so far (latest
     first, since agents name a file they just edited by its short name), then
     under the turn's working directory and each of its parents below the home
-    folder, since agents often name files from their repository's root.
+    folder, since agents often name files from their repository's root. The file
+    found must lie, once links are followed, under the home folder or a temp folder.
     """
+    roots = [root.resolve() for root in (Path.home(), *TEMP_ROOTS)]
     raw = Path(os.path.expanduser(token))
     if raw.is_absolute():
         candidates = [raw]
@@ -1013,7 +1019,9 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     for candidate in candidates:
         try:
             if candidate.is_file() and candidate.stat().st_size <= MAX_DOCUMENT_BYTES:
-                return candidate.resolve()
+                found = candidate.resolve()
+                if any(found.is_relative_to(root) for root in roots):
+                    return found
         except OSError:
             continue
     return None

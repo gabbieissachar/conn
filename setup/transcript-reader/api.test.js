@@ -44,12 +44,12 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   return { root, outDir, projectsDir, claudeSessionsDir, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
-// A fake Herdr: one running named session "esim" plus sessions that must never be read.
+// A fake Herdr: one running named session "work" plus sessions that must never be read.
 function fakeHerdr() {
   const herdr = {
     focused: 'w1:p1',
     panes: [
-      { pane_id: 'w1:p1', tab_id: 'w1:t1', label: 'leader-esim', agent_status: 'idle', agent_session: { value: A } },
+      { pane_id: 'w1:p1', tab_id: 'w1:t1', label: 'leader-alpha', agent_status: 'idle', agent_session: { value: A } },
       { pane_id: 'w1:p2', tab_id: 'w1:t2', label: null, agent_status: 'working', agent_session: { value: B } },
       { pane_id: 'w1:p3', tab_id: 'w1:t3', label: 'unlisted', agent_status: 'idle', agent_session: { value: C } },
       { pane_id: 'w1:p4', tab_id: 'w1:t1', terminal_title_stripped: 'zsh' },
@@ -69,7 +69,7 @@ function fakeHerdr() {
       return ok(JSON.stringify({ sessions: [
         { name: 'default', default: true, running: true },
         { name: '-h', default: false, running: true },
-        { name: 'esim', default: false, running: true },
+        { name: 'work', default: false, running: true },
         { name: 'stopped', default: false, running: false },
       ] }));
     }
@@ -278,13 +278,13 @@ test('state: names the focused pane and the live panes of listed sessions only; 
   try {
     const { json } = await t.state();
     assert.equal(json.focus.session_id, A);
-    assert.equal(json.focus.label, 'leader-esim');
+    assert.equal(json.focus.label, 'leader-alpha');
     assert.equal(json.focus.listed, true);
     assert.deepEqual(Object.keys(json.panes).sort(), [A, B]);
     assert.equal(json.panes[B].label, 'fm-task-tab', 'a pane without its own label takes its tab label');
     assert.equal(json.panes[B].status, 'working');
     const read = t.herdr.calls.filter((call) => call.args[0] === '--session').map((call) => call.args[1]);
-    assert.deepEqual([...new Set(read)], ['esim']);
+    assert.deepEqual([...new Set(read)], ['work']);
     assert.equal(t.herdr.readerRuns().length, 0, 'nothing was rebuilt');
   } finally { await t.close(); }
 });
@@ -426,7 +426,7 @@ test('send: the exact text goes to the one pane running the session, with no Her
     assert.equal(response.json.label, 'fm-task-tab');
     const prompts = t.herdr.prompts();
     assert.equal(prompts.length, 1);
-    assert.deepEqual(prompts[0].args, ['--session', 'esim', 'agent', 'prompt', 'w1:p2', text]);
+    assert.deepEqual(prompts[0].args, ['--session', 'work', 'agent', 'prompt', 'w1:p2', text]);
     assert.equal(prompts[0].env.HERDR_PANE_ID, undefined);
     assert.equal(prompts[0].env.HERDR_SESSION, undefined);
   } finally { await t.close(); }
@@ -500,9 +500,9 @@ test('send: the pane\'s input box is emptied, a few keys at a time, before the m
     const keys = t.herdr.keys();
     assert.equal(keys.length, 25);
     assert.deepEqual(agent.slice(0, keys.length), keys, 'every clearing call comes before the prompt');
-    assert.deepEqual(agent[agent.length - 1].args, ['--session', 'esim', 'agent', 'prompt', 'w1:p2', 'hi']);
+    assert.deepEqual(agent[agent.length - 1].args, ['--session', 'work', 'agent', 'prompt', 'w1:p2', 'hi']);
     for (const call of keys) {
-      assert.deepEqual(call.args.slice(0, 5), ['--session', 'esim', 'agent', 'send-keys', 'w1:p2']);
+      assert.deepEqual(call.args.slice(0, 5), ['--session', 'work', 'agent', 'send-keys', 'w1:p2']);
       // Only line-deleting keys: never ctrl+c or esc, which would stop a working agent.
       assert.deepEqual(call.args.slice(5), ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u']);
     }

@@ -35,7 +35,7 @@ CHECKPOINT = """**Checkpoint for group A**
 | Card | Submitted answer | Inferred decision | State |
 | --- | --- | --- | --- |
 | A1 | `later` | The note uses the later date. | resolved |
-| A2 | "finance, but ask Sam" | Finance signs off, Sam is asked. | resolved |
+| A2 | "finance, but ask legal" | Finance signs off, legal is asked. | resolved |
 | A3 | A question, not a keyed answer | You asked something. | open, answer below |
 
 **A3: is the date fixed?** A short answer that has no choices of its own.
@@ -90,7 +90,7 @@ SHAPES = """Some changes to the handoff.
 | G1 | Drop the window | Re-check at order creation | resolved |
 | G2 | Needs explanation | See below | Open |
 
-- **E1:** how checkout treats a targeted cashback the customer saw. I recommend `recheck-reshow`, or `honour-window`.
+- **E1:** how checkout treats a targeted discount the customer saw. I recommend `recheck-reshow`, or `honour-window`.
 - **F1:** whether dates show in GMT+8 too.
 
 Reply with keyed answers, for example `C1=accept; C2=leave; D1=a; D2=b; E1=recheck-reshow`. Use `needs explanation` for any card.
@@ -103,25 +103,25 @@ EXPLAINED = """I recorded G1; G2 is explained below.
 | G1 | Drop the window | Re-check at order creation | resolved |
 | G2 | Needs explanation | See below | Open |
 
-## G2 explained: which moment fixes the cashback
+## G2 explained: which moment fixes the discount
 
 Some background.
 
 | Option | That customer gets | What it means |
 | --- | --- | --- |
 | `order-creation` (recommended) | 15% | How every campaign works today. |
-| `completion` (Benoit) | 8% | A silent downgrade. |
+| `completion` (the other team's pick) | 8% | A silent downgrade. |
 
 Reply with keyed answers, for example `G1=recheck-reshow; G2=order-creation`. G1 only needs a reply if my reading is wrong.
 """
 
-LETTERED = """Nathan, the first draft is ready for review. There are 2 cards in one batch.
+LETTERED = """Captain, the first draft is ready for review. There are 2 cards in one batch.
 
 ### Cards
 
 | ID | Decision | Recommended default | Other options |
 |---|---|---|---|
-| A1 | What it covers | **a)** Both: rows in the plan details (allowance, 24-hour rule) | b) After purchase only; purchase disclosure becomes its own item |
+| A1 | What it covers | **a)** Both: rows in the details (limits, renewal rule) | b) After purchase only; purchase disclosure becomes its own item |
 | A2 | Reset time format | **a)** Clock time: "Resets today at 9:40 PM" | b) Countdown: "Resets in 5h 20m"; c) Both |
 
 Reply with keyed answers, for example: `A1=a; A2=b`. You can also answer `defer` or `explain` for any card.
@@ -195,7 +195,7 @@ class ExplainedCardTest(unittest.TestCase):
         q = parse_questionnaire(EXPLAINED)
         self.assertEqual([c["key"] for c in q["cards"]], ["G2"])
         card = q["cards"][0]
-        self.assertEqual(card["question"], "which moment fixes the cashback")
+        self.assertEqual(card["question"], "which moment fixes the discount")
         self.assertEqual([(o["value"], o["recommended"]) for o in card["options"]], [("order-creation", True), ("completion", False)])
         self.assertEqual(card["recommended"], "15% · How every campaign works today.")
         self.assertEqual([r["key"] for r in q["resolved"]], ["G1"])
@@ -213,7 +213,7 @@ class LetteredTableTest(unittest.TestCase):
         self.assertEqual([(o["value"], o["recommended"]) for o in a2["options"]], [("a", True), ("b", False), ("c", False), ("defer", False), ("explain", False)])
         self.assertEqual(a2["options"][2]["note"], "Both")
         self.assertEqual(a1["question"], "What it covers")
-        self.assertEqual(a1["recommended"], "Both: rows in the plan details (allowance, 24-hour rule)")
+        self.assertEqual(a1["recommended"], "Both: rows in the details (limits, renewal rule)")
         # A semicolon inside one choice's text does not split it.
         self.assertEqual(a1["options"][1]["note"], "After purchase only; purchase disclosure becomes its own item")
 
