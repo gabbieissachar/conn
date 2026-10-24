@@ -608,6 +608,13 @@ test('context view: a rail says when its last read failed, not an old update tim
   assert.match(loaders, /codex\.failedAt = '';/);
 });
 
+test('selected tabs panel: each mode states its effect in a visible line, not only in a tooltip', () => {
+  const panel = html.slice(html.indexOf('const MODE_LINES = '), html.indexOf('const detail = mode === \'batch\''));
+  for (const mode of ['move', 'archive', 'batch']) assert.match(panel, new RegExp(`${mode}: '[^']*closes`, 'i'), mode);
+  assert.match(panel, /archive: '[^']*stops their processes/, 'the destructive effect of Archive is spelled out');
+  assert.match(html, /<p class="mp-note" id="mode-effect">\$\{escapeHtml\(MODE_LINES\[mode\]\)\}<\/p>/, 'the line is in the panel, escaped');
+});
+
 test('context view: a chip is coloured by the percent it prints', () => {
   const start = html.indexOf('const PLAN_WARN = 70');
   const vm = require('node:vm');

@@ -444,6 +444,12 @@ created: 2026-09-10
         archive: 'Adds the tabs to an existing archive, then closes only their live tabs. Each live workspace keeps at least one tab.',
         batch: 'Captures the tabs into the archive group, then closes them and stops their processes. A workspace that already has an entry in the group merges into it. Copy the preview first.',
       };
+      // One visible line per mode, because a tooltip never shows on a phone and each of these closes real tabs.
+      const MODE_LINES = {
+        move: 'Closes the selected tabs here and rebuilds them in the workspace you pick.',
+        archive: 'Saves the selected tabs into the archive, then closes them and stops their processes.',
+        batch: 'Saves the selected tabs into the archive group, then closes them and stops their processes.',
+      };
       const detail = mode === 'batch' && newGroupSession ? 'This session has no archive group yet. The command starts it with these tabs, then closes them and stops their processes. Copy the preview first.' : MODE_TIPS[mode];
       const title = mode === 'archive' ? 'Archive selected tabs' : mode === 'batch' ? 'Add selected tabs to the archive group' : 'Move selected tabs';
       const label = mode === 'archive' ? 'Into archive' : mode === 'batch' ? 'Group' : 'To workspace';
@@ -458,6 +464,7 @@ created: 2026-09-10
         ? `<div class="panel-actions"><button type="button" id="copy-batch-preview" ${batchBase ? '' : 'disabled'} data-command="${escapeHtml(batchBase)}" title="Copies a read-only command. It shows which entry each workspace joins, or that it starts the group, and warns about duplicates. Nothing is closed.">Copy preview</button><button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="Copies a command that captures the selected tabs into the group, then closes them.">Copy add + close</button></div>`
         : `<button class="primary" type="button" id="copy-move-tabs" ${command ? '' : 'disabled'} data-command="${escapeHtml(command)}" title="${escapeHtml(detail)}">${mode === 'archive' ? 'Copy archive' : 'Copy move + resume'}</button>`;
       return `<div class="mp-head"><strong title="${escapeHtml(detail)}">${title}</strong><span class="count-pill">${selected.length} selected</span><div class="mode-row" role="group" aria-label="What to do with the selected tabs">${modes}</div><button class="mp-close" type="button" data-panel-close="tabs" aria-label="Dismiss and clear the selection" title="Dismiss and clear the selection (Esc)">&times;</button></div>
+        <p class="mp-note" id="mode-effect">${escapeHtml(MODE_LINES[mode])}</p>
         ${blockedGroup ? '<p class="mp-note">The archive group\'s last run did not finish, so it cannot take tabs yet. Run Archive all again to finish it.</p>' : ''}
         <div class="mp-body"><label class="mp-dest"><span>${label}</span><select id="move-destination" ${chosenBatch ? `title="${escapeHtml(chosenBatch.batch_id)}"` : ''} ${destinationChoices.length || newGroupSession ? '' : 'disabled'}>${newGroupSession ? '' : '<option value="">Choose destination</option>'}${options}</select></label>${buttons}</div>`;
     };
