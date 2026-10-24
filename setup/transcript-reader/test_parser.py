@@ -192,9 +192,18 @@ class SessionExchangesTest(unittest.TestCase):
             user(WAKE, 0, origin={"kind": "task-notification"}), say("Nothing new.", 1),
             user(WAKE, 2, origin={"kind": "task-notification"}), tool(3),
         ])
-        self.assertEqual((done["folded"], running["folded"]), (True, False))
-        [finished] = self.exchanges([user(WAKE, 0, origin={"kind": "task-notification"}), tool(1), say("Nothing new.", 2)])
-        self.assertTrue(finished["folded"])
+        self.assertEqual((done["folded"], running["folded"]), (False, False), "the newest reply and the running turn")
+        [finished, divider] = self.exchanges([user(WAKE, 0, origin={"kind": "task-notification"}), tool(1), say("Nothing new.", 2),
+                                              user("This session is being continued from a previous conversation", 3)])
+        self.assertFalse(finished["folded"], "the newest reply stays open, even before a later divider")
+
+    def test_the_newest_reply_stays_open_even_in_a_wake_up(self):
+        mine, quiet, report = self.exchanges([
+            user("Fix it", 0), say("Started.", 1),
+            user(WAKE, 2, origin={"kind": "task-notification"}), say("Still waiting.", 3),
+            user(WAKE, 4, origin={"kind": "task-notification"}), tool(5), say("Committed the fix on fm/login.", 6),
+        ])
+        self.assertEqual((quiet["folded"], report["folded"]), (True, False))
 
     def test_session_events_are_dividers(self):
         compacted, interrupted = self.exchanges([
@@ -231,8 +240,8 @@ class SessionExchangesTest(unittest.TestCase):
         mine, handback = self.exchanges([
             user("Check the docs", 0), say("Started a checker.", 1),
             user("<agent-message>All four links resolve.</agent-message>", 2, isMeta=True, origin=HANDBACK),
-            say("The checker found no broken links.", 3),
-        ])
+            say("The checker found no broken links.", 3), user("Thanks", 4), say("Welcome.", 5),
+        ])[:2]
         self.assertEqual(mine["reply"], "Started a checker.")
         self.assertEqual((handback["source"], handback["label"], handback["folded"]), ("wake", "Hand-back from doc-checker", True))
         [queued_handback] = self.exchanges([user("Check", 0), tool(1), queued("report", 2, HANDBACK), say("Done.", 3)])

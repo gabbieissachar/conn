@@ -387,10 +387,14 @@ def session_exchanges(records: list[dict]) -> list[dict]:
         later = exchanges[i + 1:]
         run = next((n for n, e in enumerate(later) if not e["absorbed"]), len(later))
         exchange["answered_below"] = not exchange["reply"] and any(e["reply"] for e in later[:run])
-    # The newest turn with no reply yet is still running, or ended without a word: it stays
-    # open so the reader shows what the session is doing now.
+    # The newest turn with no reply yet is still running, or ended without a word, and the
+    # newest reply is where the session stands (a worker often reports its finished task in
+    # a wake-up's turn): both stay open so the reader shows what the session is doing now.
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
         exchanges[-1]["folded"] = False
+    latest = next((e for e in reversed(exchanges) if e["reply"]), None)
+    if latest:
+        latest["folded"] = False
     return exchanges
 
 

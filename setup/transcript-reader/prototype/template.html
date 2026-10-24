@@ -78,6 +78,7 @@
   .input.peer { background: var(--wash); border: 1px solid var(--line); margin-right: 1.2rem; }
   .who { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
   .who > b, .who > span, .who > button { white-space: nowrap; }
+  .wake-who { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .who b { color: var(--ink); }
   .input.captain .who b { color: var(--you); }
   .input.firstmate .who b { color: var(--mate); }
@@ -482,7 +483,9 @@
     if (ex.source === "wake") {
       const box = $("div"); box.id = `ex-${index}`;
       if (!ex.folded) {
-        box.append($("div", "who", `Wake-up · ${ex.label} · ${fmtWhen(ex.at)}`));
+        // One line: a background command's label can run to several.
+        const head = $("div", "who wake-who", `Wake-up · ${fmtWhen(ex.at)} · ${ex.label}`); head.title = ex.label;
+        box.append(head);
         if (ex.reply || ex.tools) box.append(replyCard(ex, key, sid));
         frag.append(box); return frag;
       }
@@ -633,7 +636,7 @@
       if (hide) {
         if (!run) { run = $("div", "foldrun"); runCount = 0; run.dataset.key = `${sid}:${i}:run`; main.append(run); }
         runCount += 1; run.dataset.count = runCount;
-        if (ex.at) { if (!run.dataset.first) run.dataset.first = ex.at; run.dataset.last = ex.at; }
+        if (ex.at) { if (!run.dataset.first) run.dataset.first = ex.at; run.dataset.last = ex.reply_at || ex.at; }
         run.append(exchangeNode(ex, i, sid));
         return;
       }
