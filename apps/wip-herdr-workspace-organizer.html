@@ -1516,7 +1516,7 @@ created: 2026-09-10
     const memberTabCommand = (member, tab, session, destination) => (member.status === 'archived' && destination && ARCHIVE_ID_PATTERN.test(member.archive_id || '') && TAB_ID_PATTERN.test(tab.id || '') && WORKSPACE_ID_PATTERN.test(destination) && !(tab.unresumable_agent_count > 0)
       ? `herdr-organizer${session} restore-tab --archive ${member.archive_id} --tab ${tab.id} --to-workspace ${destination} --execute --confirm ${member.archive_id}` : '');
     // The tabs an archived workspace holds, by name, so the group shows what each workspace stores. A still-archived
-    // workspace also offers to resume just one of its tabs into an open workspace; the tab stays in the archive.
+    // workspace also offers to resume just one of its tabs into an open workspace; the tab leaves the archive, and the archived workspace leaves the group when its last tab does.
     // How full the session's context was when last recorded, from the context gauge (read by the Context tab's loader). A tab
     // with several agent sessions shows the fullest one; a tab the gauge has no record for shows nothing.
     // The gauge's own row wins; a session the gauge does not know is read from its transcript (archiveContext).
@@ -1751,7 +1751,7 @@ created: 2026-09-10
       return pickKey ? `<input type="checkbox" class="handoff-pick" data-pick="${escapeHtml(pickKey)}" aria-label="Send a handoff request to ${escapeHtml(pickName)}" ${context.picked.get(pickKey) ? 'checked' : ''}>` : '';
     };
     // Shows the session's tab in the attached Herdr window. View only: it types nothing and closes nothing.
-    const openTabButton = row => row.pane_id && row.herdr_session && row.id ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-id="${escapeHtml(row.id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It only switches the tab; nothing is typed or changed.">Open</button>` : '';
+    const openTabButton = row => row.pane_id && row.herdr_session && row.id ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-id="${escapeHtml(row.id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It switches the tab and marks the session seen, so a Done state reads idle afterwards; nothing is typed.">Open</button>` : '';
     // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
     const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${openTabButton(row)}</label>`;
     const contextRow = (row, thresholds) => {
