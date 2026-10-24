@@ -500,7 +500,36 @@
   const PANE_STATES = { working: "Working", blocked: "Waiting for you", done: "Done", idle: "Idle" };
   function sessionStatus(s) {
     const pane = link.panes && link.panes[s.id];
-    return pane ? (PANE_STATES[pane.status] || "Unknown") : "";
+    if (!pane) return "";
+    // Herdr keeps a finished session Done until you visit its pane there, and has no way to be
+    // told it was read elsewhere, so a Done session you have read here up to its last turn is Idle.
+    if (pane.status === "done" && readThrough(s)) return PANE_STATES.idle;
+    return PANE_STATES[pane.status] || "Unknown";
+  }
+  // The newest turn of each session read on this page, kept in this browser: session id -> time.
+  const lastTurnAt = s => s.exchanges.reduce((latest, ex) => Math.max(latest, ex.reply_at || 0, ex.at || 0), 0);
+  function readMarks() {
+    try { return JSON.parse(localStorage.getItem("tr-read") || "{}") || {}; } catch (e) { return {}; }
+  }
+  const readThrough = s => (readMarks()[s.id] || 0) >= lastTurnAt(s);
+  // Showing a conversation in a visible page reads it up to its newest turn.
+  function markRead() {
+    const session = state.view === "reader" && document.visibilityState === "visible" && data.sessions[state.session];
+    if (!session || readThrough(session)) return;
+    const marks = readMarks();
+    marks[session.id] = lastTurnAt(session);
+    // Keep the marks of sessions still on the reading list only, so the list never grows.
+    const listed = new Set(data.sessions.map(x => x.id));
+    for (const id of Object.keys(marks)) if (!listed.has(id)) delete marks[id];
+    try { localStorage.setItem("tr-read", JSON.stringify(marks)); } catch (e) { /* not kept */ }
+    labelSessions();
+  }
+  // Statuses change between rebuilds and reads, so the pickers' names follow them.
+  function labelSessions() {
+    document.querySelectorAll("select[name=session] option, #crumb-session option").forEach(opt => {
+      const session = /^\d+$/.test(opt.value) && data.sessions[Number(opt.value)];
+      if (session && opt.textContent !== sessionOption(session)) opt.textContent = sessionOption(session);
+    });
   }
   const sessionOption = s => [sessionStatus(s), sessionName(s) + (s.reopened ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
@@ -957,7 +986,7 @@
     count.classList.toggle("bad", over);
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${pane.status}${link.sending ? " · sending…" : ""}`;
+    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}`;
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -1278,11 +1307,8 @@
   live.poll(async () => {
     const s = await live.state(state.follow);
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
-    // Statuses change between rebuilds, so the open pickers' names follow every poll.
-    document.querySelectorAll("select[name=session] option, #crumb-session option").forEach(opt => {
-      const session = /^\d+$/.test(opt.value) && data.sessions[Number(opt.value)];
-      if (session && opt.textContent !== sessionOption(session)) opt.textContent = sessionOption(session);
-    });
+    markRead();
+    labelSessions();
     if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData();
     applyFocus();
     renderLive();
@@ -1297,6 +1323,7 @@
     document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
     if (state.view === "reader") renderReader(); else if (state.view === "doc") renderDocView(); else { renderFleet(); renderLive(); }
     paintBar();
+    markRead();
     renderDock();
   }
   // A collapsed bar keeps one line: where you are, the live badge and the way back to the controls.
