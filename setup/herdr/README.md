@@ -468,6 +468,40 @@ Commands that create, restore, move or delete archives, or close tabs, share one
 `cleanup-empty-tabs`, `add-tabs-to-batch`, `finish-tab-add`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
 `list-archives`, `list-batches` and `reorder-tab` do not lock. `delete-batch` and the group commands lock when they execute.
 
+### Firstmate worker records
+
+A worker that a firstmate or secondmate home spawned is bound to its Herdr pane by that home's `state/<task>.meta`
+(`window`, `herdr_workspace_id`, `herdr_tab_id`, `herdr_pane_id`). Archiving closes the pane and a restore, a move or a
+reboot rebuilds the tab under new ids, so the record goes stale: the home then reads the live worker as gone, cannot
+steer it and may start a duplicate. Every executing command that closes or rebuilds tabs therefore checks the records
+of its session in every home under `~/.treehouse/firstmate-*/*/firstmate/state` and `~/fm-homes/*/state`
+(`HERDR_ORGANIZER_OWNER_STATE_DIRS`, a path list, replaces those):
+
+- A record whose pane is gone and whose worker is found again is rewritten, all four fields together, to the new
+  pane. The worker is found by the pane the command itself rebuilt, or else by the one live tab labelled `fm-<task>`
+  (with one pane, or exactly one agent pane). The new tab's label must match `fm-<task>`, the bare task id or the label
+  the home recorded; otherwise nothing is written and a warning says why. The old record is kept beside it as
+  `<task>.meta.herdr-relink-<time>-<id>.bak`, the write is atomic and it is refused if the record changed meanwhile.
+  The home's `<task>.herdr-presentation` ids follow when they matched the old pane.
+- A record whose pane this command closed, with no live tab carrying the label, gets a `<task>.herdr-archived` marker
+  (task, old ids, tab label, time) so the home can tell an archived worker from a dead one. The marker is removed when
+  the worker comes back. The record itself keeps its ids.
+- A `fm-*` or `secondmate-*` tab that closed or was rebuilt without any home's record pointing at it, no home
+  directory found, or a record that could not be written is reported as a `WARNING` on stderr. The command's own result
+  does not change.
+
+`relink-owner-records` runs the same check on its own, for a reboot or a restore done before this existed. Without
+`--execute` it only lists what would change; the rewrite needs `--execute --confirm <session>`.
+
+```sh
+herdr-organizer --session esim relink-owner-records
+herdr-organizer --session esim relink-owner-records --execute --confirm esim
+```
+
+The marker is written for the homes to read; the firstmate scripts that would act on it (`fm-crew-state`, `fm-send`,
+`fm-control`) are separate work in that repository. Append-only logs, `*.control-relaunch` records and
+`home-summary.json` also mention pane ids and are left alone.
+
 Add selected live tabs to the session's archive group with `add-tabs-to-batch`
 (`--batch` defaults to the group of `--session`). A session with no group yet gets one from the first add; that run is confirmed with the session name, since the group id is only chosen when it executes. It captures
 the tabs, then closes them and stops their processes. Tabs from one live

@@ -7,7 +7,7 @@ socket calls, locking, interruption handling and every file write are the real c
 
 Run: python3 test-archive-all-cli.py
 """
-import json, os, shutil, signal, socket, subprocess, sys, tempfile, threading, time
+import json, os, re, shutil, signal, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 FAKE_HERDR = r'''#!/usr/bin/env python3
@@ -21,9 +21,10 @@ s = load()
 if args[:2] == ["api", "snapshot"]:
     grow = os.environ.get("FAKE_GROW_AFTER_EXPORT")
     if grow:
-        # The second snapshot of the run is the re-read right before a close: a tab appears in the workspace by then.
+        # The first snapshot of the run is the organizer's own look at the worker records, the second is the export and
+        # the third is the re-read right before a close: a tab appears in the workspace by then.
         s["snaps"] = s.get("snaps", 0) + 1
-        if s["snaps"] == 2:
+        if s["snaps"] == 3:
             s["snapshot"]["tabs"].append({"workspace_id": grow, "tab_id": f"{grow}:t9", "label": "new"})
             s["snapshot"]["panes"].append({"tab_id": f"{grow}:t9", "pane_id": f"{grow}:p9", "agent_status": "unknown"})
         save(s)
@@ -95,6 +96,13 @@ def handle(conn):
                 if (root / "slow-apply").exists(): time.sleep(8)
                 tab = p.get("tab_id") or f"{p['workspace_id']}:t9"
                 wid = tab.split(":")[0]
+                if str(p.get("tab_label") or "").startswith("fm-acc-"):
+                    # A worker tab: Herdr names the rebuilt tab and keeps it in the session, as the real one does.
+                    snap_state = json.loads((root / "state.json").read_text())
+                    for existing in snap_state["snapshot"]["tabs"]:
+                        if existing["tab_id"] == tab: existing["label"] = p["tab_label"]; break
+                    else: snap_state["snapshot"]["tabs"].append({"workspace_id": wid, "tab_id": tab, "label": p["tab_label"]})
+                    (root / "state.json").write_text(json.dumps(snap_state))
                 res = {"layout": {"tab_id": tab, "root": {"type": "pane", "pane_id": f"{wid}:p1", "cwd": "/tmp"}}}
             else:
                 res = {}
@@ -109,8 +117,9 @@ def serve():
         except OSError: return
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
 threading.Thread(target=serve, daemon=True).start()
-env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_STATE": str(state_path), "XDG_CONFIG_HOME": str(config)}
+env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_STATE": str(state_path), "XDG_CONFIG_HOME": str(config), "HERDR_ORGANIZER_OWNER_STATE_DIRS": ""}
 for k in [k for k in env if k.startswith("HERDR_")]: del env[k]
+env["HERDR_ORGANIZER_OWNER_STATE_DIRS"] = ""  # no real firstmate home is read or written by this test
 def run(*args, check=None, extra_env=None):
     r = subprocess.run([sys.executable, str(tool / "workspace-organizer.py"), "--session", "e2e", *args], env={**env, **(extra_env or {})}, capture_output=True, text=True)
     if check is not None: assert r.returncode == check, (args, r.returncode, r.stdout, r.stderr)
@@ -304,5 +313,27 @@ assert "already open, so nothing was rebuilt" in r.stdout; ok("the restore said 
 (snap_group,) = json.loads(run("list-batches", check=0).stdout); assert snap_group["members"] == [], snap_group; ok("both restored members left the group")
 r = run("restore-batch", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); assert "Nothing to restore" in r.stdout and len(state()["sent"]) == 1; ok("a second restore changes nothing")
 assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
+# ---- a worker spawned by a firstmate home: archive it, restore it, and its home's record follows it ----
+homes = root / "homes" / "state"; homes.mkdir(parents=True)
+owned = {"HERDR_ORGANIZER_OWNER_STATE_DIRS": str(homes)}
+st = state()
+st["snapshot"] = {"workspaces": [{"workspace_id": "w40", "label": "Worker", "focused": False}], "tabs": [{"workspace_id": "w40", "tab_id": "w40:t1", "label": "fm-acc-task"}], "panes": [{"tab_id": "w40:t1", "pane_id": "w40:p1", "agent_status": "idle"}]}
+st["created"] = []; st["sent"] = []; state_path.write_text(json.dumps(st))
+meta = homes / "acc-task.meta"
+meta.write_text("window=e2e:w40:p1\nendpoint_task_id=acc-task\nkind=scout\nbackend=herdr\nherdr_session=e2e\nherdr_workspace_id=w40\nherdr_tab_id=w40:t1\nherdr_pane_id=w40:p1\ndecision_keys=\n")
+original_meta = meta.read_text()
+r = run("archive", "--workspace", "w40", "--execute", "--confirm", "w40", check=0, extra_env=owned); print(r.stdout.strip())
+worker_archive = re.search(r"as (\S+)\.", r.stdout).group(1)
+assert "marked archived" in r.stdout and "acc-task" in r.stdout, r.stdout
+marker = homes / "acc-task.herdr-archived"
+assert marker.exists() and "pane_id=w40:p1" in marker.read_text() and meta.read_text() == original_meta; ok("archiving the worker marks its home's record archived and leaves the record itself alone")
+r = run("restore", "--archive", worker_archive, "--execute", "--confirm", worker_archive, check=0, extra_env=owned); print(r.stdout.strip())
+new_workspace = state()["created"][-1]
+assert f"pane w40:p1 -> {new_workspace}:p1" in r.stdout, r.stdout
+rewritten = dict(line.split("=", 1) for line in meta.read_text().splitlines())
+assert rewritten["window"] == f"e2e:{new_workspace}:p1" and rewritten["herdr_workspace_id"] == new_workspace and rewritten["herdr_tab_id"] == f"{new_workspace}:t1" and rewritten["herdr_pane_id"] == f"{new_workspace}:p1", rewritten
+assert rewritten["endpoint_task_id"] == "acc-task" and rewritten["kind"] == "scout" and not marker.exists(); ok("restoring it rewrites the record to the new ids, clears the marker and touches nothing else")
+assert len(list(homes.glob("acc-task.meta.herdr-relink-*.bak"))) == 1 and original_meta in next(homes.glob("*.bak")).read_text(); ok("the old record is kept beside it")
+r = run("relink-owner-records", check=0, extra_env=owned); assert "Every worker record of this session points at a live pane" in r.stdout, r.stdout; ok("a standalone check then finds nothing stale")
 server.close(); shutil.rmtree(root)
 print("ALL REAL-CLI CHECKS PASSED")

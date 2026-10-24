@@ -11,14 +11,17 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import glob
 import hashlib
 import json
 import os
 import re
 import shlex
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1565,6 +1568,289 @@ def batch_id_for() -> str:
         candidate = f"{base}-{sequence}"
         sequence += 1
     return candidate
+
+
+# ---- Owner records: the firstmate or secondmate home that spawned a worker ----
+#
+# A worker spawned by a firstmate home is bound to a Herdr pane by the home's `state/<task>.meta` (window,
+# herdr_workspace_id, herdr_tab_id, herdr_pane_id). Archiving closes that pane and a restore, a move or a reboot rebuilds
+# the tab under new ids, so the record goes stale: the home then reads the live worker as gone, cannot steer it and may
+# start a duplicate. After every command that closes or rebuilds tabs this section rewrites the record to the new ids, or
+# marks it archived, and says loudly what it could not do. The tab label (`fm-<task>`) is the handle that survives.
+
+OWNER_STATE_GLOBS = ("~/.treehouse/firstmate-*/*/firstmate/state", "~/fm-homes/*/state")
+OWNER_STATE_ENV = "HERDR_ORGANIZER_OWNER_STATE_DIRS"
+OWNER_META_FIELDS = ("window", "herdr_workspace_id", "herdr_tab_id", "herdr_pane_id")
+OWNER_PRESENTATION_FIELDS = ("workspace_id", "tab_id", "pane_id")
+NO_LIVE_TAB = "no live tab carries its label"
+OWNER_RECORD_COMMANDS = {
+    "archive", "archive-all", "restore-batch", "archive-tabs", "add-tabs-to-batch", "finish-tab-add",
+    "cleanup-empty-tabs", "restore", "restore-tab", "restore-tabs", "move-tabs", "resume-move",
+}
+# Old pane id -> new pane id for every pane the running command rebuilt or adopted. The restore paths fill it in.
+PANE_MOVES: dict[str, str] = {}
+
+
+def note_pane_moves(pane_map: dict[str, str]) -> None:
+    PANE_MOVES.update({str(old): str(new) for old, new in pane_map.items() if old and new and str(old) != str(new)})
+
+
+def parse_key_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and re.fullmatch(r"[A-Za-z0-9_]+", key) and key not in values:
+            values[key] = value
+    return values
+
+
+def rewrite_key_values(text: str, updates: dict[str, str]) -> str:
+    """Replace the first line of each updated key and keep every other line exactly as it was."""
+    pending = dict(updates)
+    lines = []
+    for line in text.splitlines(keepends=True):
+        key = line.partition("=")[0]
+        if "=" in line and key in pending:
+            ending = "\n" if line.endswith("\n") else ""
+            lines.append(f"{key}={pending.pop(key)}{ending}")
+        else:
+            lines.append(line)
+    return "".join(lines)
+
+
+def owner_state_dirs() -> list[Path]:
+    override = os.environ.get(OWNER_STATE_ENV)
+    if override is not None:
+        candidates = [Path(item) for item in override.split(os.pathsep) if item]
+    else:
+        candidates = [Path(item) for pattern in OWNER_STATE_GLOBS for item in sorted(glob.glob(os.path.expanduser(pattern)))]
+    found: dict[Path, Path] = {}
+    for candidate in candidates:
+        if candidate.is_dir():
+            found.setdefault(candidate.resolve(), candidate)
+    return list(found.values())
+
+
+def owner_records(session: str, state_dirs: list[Path]) -> list[dict[str, Any]]:
+    """Every herdr task record of this session, with its four endpoint fields, across the given homes."""
+    records: list[dict[str, Any]] = []
+    for state_dir in state_dirs:
+        for meta_path in sorted(state_dir.glob("*.meta")):
+            if meta_path.name.startswith("."):
+                continue
+            try:
+                text = meta_path.read_text()
+            except OSError:
+                continue
+            values = parse_key_values(text)
+            if values.get("backend") != "herdr" or values.get("herdr_session") != session:
+                continue
+            if not all(values.get(field) for field in OWNER_META_FIELDS):
+                continue
+            records.append({
+                "path": meta_path, "state_dir": state_dir, "key": meta_path.stem, "text": text, "values": values,
+                "task": values.get("endpoint_task_id") or meta_path.stem,
+            })
+    return records
+
+
+def owner_expected_labels(record: dict[str, Any]) -> set[str]:
+    """The tab labels a worker's tab may carry: `fm-<task>`, the bare task id (secondmates) and the label its home recorded."""
+    labels = {f"fm-{record['task']}", record["task"]}
+    presentation = record["state_dir"] / f"{record['key']}.herdr-presentation"
+    try:
+        recorded = parse_key_values(presentation.read_text()).get("task_label")
+    except OSError:
+        recorded = None
+    if recorded:
+        labels.add(recorded)
+    return labels
+
+
+def replace_file_atomically(path: Path, expected: str, text: str) -> Path:
+    """Keep a backup beside the file, then swap the new text in. Refuses when the file changed since it was read."""
+    if path.read_text() != expected:
+        raise OrganizerError(f"{path.name} changed while the organizer was working")
+    backup = path.with_name(f"{path.name}.herdr-relink-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}.bak")
+    backup.write_text(expected)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def owner_relink_target(record: dict[str, Any], panes: dict[str, dict[str, Any]], tabs: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
+    """The live pane this worker now runs in, or None with the reason. A pane the command itself rebuilt is exact; otherwise
+    the one live tab carrying the worker's label, with one pane or exactly one agent pane."""
+    expected = owner_expected_labels(record)
+    old_pane = record["values"]["herdr_pane_id"]
+    moved = PANE_MOVES.get(old_pane)
+    if moved and moved in panes:
+        tab = tabs.get(str(panes[moved].get("tab_id")), {})
+        if tab.get("label") not in expected:
+            return None, f"the rebuilt tab is labelled {tab.get('label')!r}, not {sorted(expected)[0]!r}"
+        return moved, "rebuilt by this command"
+    tab_ids = [tab_id for tab_id, tab in tabs.items() if tab.get("label") in expected]
+    if not tab_ids:
+        return None, NO_LIVE_TAB
+    if len(tab_ids) > 1:
+        return None, f"{len(tab_ids)} live tabs carry its label"
+    in_tab = [pane for pane in panes.values() if str(pane.get("tab_id")) == tab_ids[0]]
+    if len(in_tab) == 1:
+        return str(in_tab[0].get("pane_id")), "found by its tab label"
+    running = [pane for pane in in_tab if live_agent_running(pane)]
+    if len(running) == 1:
+        return str(running[0].get("pane_id")), "found by its tab label, the one pane running an agent"
+    return None, f"its tab has {len(in_tab)} panes and {len(running)} run an agent, so the pane is ambiguous"
+
+
+def reconcile_owner_records(session: str, before: dict[str, Any] | None, execute: bool) -> list[dict[str, Any]]:
+    """Point every stale owner record of this session at the worker's live pane, or mark it archived.
+
+    `before` is the snapshot taken before the command: a record whose pane was live then and is gone now was archived
+    by it. Without `before` (a standalone run) nothing is marked, only relinked.
+    """
+    snapshot = session_snapshot(session)
+    panes = {str(pane.get("pane_id")): pane for pane in snapshot.get("panes", [])}
+    tabs = {str(tab.get("tab_id")): tab for tab in snapshot.get("tabs", [])}
+    before_panes = {str(pane.get("pane_id")) for pane in before.get("panes", [])} if before else None
+    state_dirs = owner_state_dirs()
+    results: list[dict[str, Any]] = []
+    if not state_dirs:
+        results.append({"status": "flagged", "detail": "no firstmate home state directory was found, so no worker record can be updated"})
+    records = owner_records(session, state_dirs)
+    for record in records:
+        values = record["values"]
+        old_pane = values["herdr_pane_id"]
+        marker = record["state_dir"] / f"{record['key']}.herdr-archived"
+        result = {"task": record["task"], "path": str(record["path"])}
+        if old_pane in panes:
+            if marker.exists() and execute:
+                marker.unlink(missing_ok=True)
+                results.append({**result, "status": "cleared", "detail": "archived marker removed, the worker's pane is live"})
+            continue
+        target, why = owner_relink_target(record, panes, tabs)
+        if target is None and why != NO_LIVE_TAB:
+            results.append({**result, "status": "flagged", "detail": f"its pane is gone and the worker could not be found again: {why}"})
+            continue
+        elif target is None:
+            if before_panes is not None and old_pane in before_panes:
+                result.update({"status": "archived", "detail": "its pane was closed by this command"})
+                if execute:
+                    try:
+                        marker.write_text("\n".join([
+                            "version=1", f"task_id={record['task']}", f"session={session}",
+                            f"workspace_id={values['herdr_workspace_id']}", f"tab_id={values['herdr_tab_id']}", f"pane_id={old_pane}",
+                            f"tab_label=fm-{record['task']}", f"archived_at={now()}", "by=herdr-organizer", ""]))
+                    except OSError as error:
+                        result.update({"status": "flagged", "detail": f"its pane was closed but the archived marker could not be written: {error}"})
+                results.append(result)
+            elif before_panes is None:
+                results.append({**result, "status": "gone", "detail": why})
+            continue
+        pane = panes[target]
+        tab = tabs.get(str(pane.get("tab_id")), {})
+        updates = {
+            "window": f"{session}:{target}",
+            "herdr_workspace_id": str(tab.get("workspace_id") or ""),
+            "herdr_tab_id": str(pane.get("tab_id") or ""),
+            "herdr_pane_id": target,
+        }
+        if not updates["herdr_workspace_id"] or not updates["herdr_tab_id"]:
+            results.append({**result, "status": "flagged", "detail": f"pane {target} has no readable tab or workspace"})
+            continue
+        result.update({"status": "relinked" if execute else "would_relink", "old": old_pane, "new": target, "detail": why, "updates": updates})
+        if execute:
+            try:
+                backup = replace_file_atomically(record["path"], record["text"], rewrite_key_values(record["text"], updates))
+                result["backup"] = str(backup)
+                presentation = record["state_dir"] / f"{record['key']}.herdr-presentation"
+                if presentation.exists():
+                    text = presentation.read_text()
+                    if parse_key_values(text).get("pane_id") == old_pane:
+                        replace_file_atomically(presentation, text, rewrite_key_values(text, {
+                            "workspace_id": updates["herdr_workspace_id"], "tab_id": updates["herdr_tab_id"], "pane_id": target}))
+                marker.unlink(missing_ok=True)
+            except (OSError, OrganizerError) as error:
+                result.update({"status": "flagged", "detail": f"could not update {record['path'].name}: {error}"})
+        results.append(result)
+    if before_panes is not None:
+        owned = {record["values"]["herdr_pane_id"] for record in records}
+        before_tabs = {str(tab.get("tab_id")): str(tab.get("label") or "") for tab in (before or {}).get("tabs", [])}
+        for pane in (before or {}).get("panes", []):
+            pane_id = str(pane.get("pane_id"))
+            label = before_tabs.get(str(pane.get("tab_id")), "")
+            changed = pane_id not in panes or pane_id in PANE_MOVES
+            if changed and pane_id not in owned and label.startswith(("fm-", "secondmate-")):
+                results.append({"status": "flagged", "task": label, "detail": (
+                    f"tab {label!r} (pane {pane_id}) was closed or rebuilt, but no worker record in {len(state_dirs)} known home(s) "
+                    "points at that pane, so nothing was updated. If a home owns it, run relink-owner-records")})
+    return results
+
+
+def print_owner_results(results: list[dict[str, Any]], verbose: bool = True) -> None:
+    gone = [result for result in results if result["status"] == "gone"]
+    if gone and not verbose:
+        print(f"{len(gone)} worker record(s) point at a pane that no longer exists and no live tab carries their label (archived or ended). --verbose lists them.")
+        results = [result for result in results if result["status"] != "gone"]
+    for result in results:
+        task = result.get("task", "")
+        status = result["status"]
+        if status in {"relinked", "would_relink"}:
+            prefix = "Worker record updated" if status == "relinked" else "Would update worker record"
+            print(f"{prefix}: {task}: pane {result['old']} -> {result['new']} ({result['detail']}). {result['path']}")
+            if result.get("backup"):
+                print(f"  backup: {result['backup']}")
+        elif status == "archived":
+            print(f"Worker record marked archived: {task}: {result['detail']}.")
+        elif status == "cleared":
+            print(f"Worker record: {task}: {result['detail']}.")
+        elif status == "gone":
+            print(f"Worker record not updated: {task}: its pane is gone and {result['detail']}.")
+        else:
+            print(f"WARNING worker record not updated{': ' + task if task else ''}: {result['detail']}", file=sys.stderr)
+
+
+@contextmanager
+def owner_record_tracking(args: argparse.Namespace):
+    """Around a command that closes or rebuilds tabs: keep the owning homes' worker records true to the new panes."""
+    if getattr(args, "command", "") not in OWNER_RECORD_COMMANDS or not getattr(args, "execute", False):
+        yield
+        return
+    PANE_MOVES.clear()
+    session = args.session
+    try:
+        before = session_snapshot(session)
+    except OrganizerError as error:
+        print(f"WARNING worker records of the owning homes are not checked: {error}", file=sys.stderr)
+        before = None
+    try:
+        yield
+    finally:
+        if before is not None:
+            try:
+                print_owner_results(reconcile_owner_records(session, before, True))
+            except (OrganizerError, OSError) as error:
+                print(f"WARNING worker records of the owning homes may be stale: {error}. Run relink-owner-records.", file=sys.stderr)
+
+
+def relink_owner_records_command(args: argparse.Namespace) -> None:
+    """Preview or repair worker records whose pane no longer exists, by the tab label the worker still carries."""
+    PANE_MOVES.clear()
+    results = reconcile_owner_records(args.session, None, bool(args.execute))
+    if not results:
+        print("Every worker record of this session points at a live pane.")
+    print_owner_results(results, args.verbose)
+    if not args.execute and any(item["status"] == "would_relink" for item in results):
+        print(f"Preview only. Re-run with --execute --confirm {args.session!r} to rewrite them.")
 
 
 # ---- One archive group per Herdr session ----
@@ -3384,6 +3670,7 @@ def move_tabs_command(args: argparse.Namespace) -> None:
             if not isinstance(new_layout, dict):
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab['label']!r}.")
             pane_map.update(matching_pane_map(tab["layout"].get("root"), new_layout.get("root")))
+            note_pane_moves(pane_map)
             created_tabs.append({"source_tab_id": tab["source_tab_id"], "tab_id": new_layout.get("tab_id")})
             move_record["destination_tabs"] = created_tabs
             move_record["pane_map"] = pane_map
@@ -3574,6 +3861,7 @@ def restore_archived_tabs(args: argparse.Namespace) -> None:
                 if not isinstance(layout, dict):
                     raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
                 pane_map = matching_pane_map(tab.get("layout", {}).get("root"), layout.get("root"))
+            note_pane_moves(pane_map)
             outcomes = resume_captured_tabs([tab], pane_map, args.session, live_sessions) if args.resume_agents else []
             failures = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
             operation.update(
@@ -3842,6 +4130,7 @@ def restore_into_layout_copy(
     write_json(archive_path, archive)
     busy_sources = {old for old, new in copy["pane_map"].items() if new in copy["busy"]}
     pane_map = {old: new for old, new in copy["pane_map"].items() if old not in busy_sources}
+    note_pane_moves(copy["pane_map"])
     try:
         outcomes = resume_agents(archive, pane_map, args.session, live_sessions)
         for outcome in outcomes:
@@ -3910,6 +4199,7 @@ def restore_into_new_workspace(
             if not isinstance(new_layout, dict):
                 raise OrganizerError(f"Herdr did not return the rebuilt layout for {tab.get('label')!r}.")
             pane_map.update(matching_pane_map(layout.get("root"), new_layout.get("root")))
+            note_pane_moves(pane_map)
             record["tabs"].append(
                 {
                     "source_tab_id": tab.get("source_tab_id"),
@@ -6153,6 +6443,15 @@ def parser() -> argparse.ArgumentParser:
     reorder.set_defaults(func=reorder_command)
 
     commands.add_parser("list-archives", help="Print archive summaries.").set_defaults(func=list_archives_command)
+
+    relink = commands.add_parser(
+        "relink-owner-records",
+        help="Point firstmate worker records at the panes their workers now run in, after an archive, restore or reboot.",
+    )
+    relink.add_argument("--execute", action="store_true")
+    relink.add_argument("--confirm", help="Must equal the session name to rewrite records.")
+    relink.add_argument("--verbose", action="store_true", help="List every record whose pane is gone and that no live tab matches.")
+    relink.set_defaults(func=relink_owner_records_command)
     return program
 
 
@@ -6164,7 +6463,10 @@ def main() -> int:
             "reconcile-all", "rollback-reconcile", "list-batches", "delete-batch",
         }:
             arguments.session = resolve_session(arguments.session)
-        arguments.func(arguments)
+        if arguments.command == "relink-owner-records" and arguments.execute and arguments.confirm != arguments.session:
+            raise OrganizerError(f"Relinking requires --confirm {arguments.session!r}.")
+        with owner_record_tracking(arguments):
+            arguments.func(arguments)
         return 0
     except OrganizerError as error:
         if not error.suppress_message:

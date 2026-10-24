@@ -4952,5 +4952,182 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertEqual(len(self.herdr.applied), 1)
 
 
+class OwnerRecordTests(unittest.TestCase):
+    """A restore, move or archive keeps the owning homes' worker records true to the panes."""
+
+    TASK = "2026-10-19-esim-gigs-invoice-reconciliation"
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.home = self.root / "home" / "state"
+        self.other = self.root / "other" / "state"
+        self.home.mkdir(parents=True)
+        self.other.mkdir(parents=True)
+        patcher = patch.dict(os.environ, {ORGANIZER.OWNER_STATE_ENV: os.pathsep.join([str(self.home), str(self.other)])})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ORGANIZER.PANE_MOVES.clear()
+        self.addCleanup(ORGANIZER.PANE_MOVES.clear)
+
+    def meta(self, state=None, task=None, session="esim", pane="wAZ:p2", tab="wAZ:t2", workspace="wAZ", extra=""):
+        task = task or self.TASK
+        path = (state or self.home) / f"{task}.meta"
+        path.write_text(
+            f"window={session}:{pane}\nendpoint_task_id={task}\nkind=scout\nbackend=herdr\nherdr_session={session}\n"
+            f"herdr_workspace_id={workspace}\nherdr_tab_id={tab}\nherdr_pane_id={pane}\ndecision_keys=\n{extra}"
+        )
+        return path
+
+    def snapshot(self, tabs, panes):
+        return {
+            "tabs": [{"tab_id": tab, "workspace_id": tab.split(":")[0], "label": label} for tab, label in tabs],
+            "panes": [{"pane_id": pane, "tab_id": tab, "agent_status": status} for pane, tab, status in panes],
+        }
+
+    def reconcile(self, now, before=None, execute=True):
+        with patch.object(ORGANIZER, "session_snapshot", return_value=now):
+            return ORGANIZER.reconcile_owner_records("esim", before, execute)
+
+    def test_a_rebuilt_worker_gets_its_new_ids_and_nothing_else_changes(self):
+        path = self.meta(extra="busy_gen=g1\n")
+        presentation = self.home / f"{self.TASK}.herdr-presentation"
+        presentation.write_text(f"task_id={self.TASK}\nsession=esim\nworkspace_id=wAZ\ntab_id=wAZ:t2\npane_id=wAZ:p2\ntask_label=fm-{self.TASK}\n")
+        marker = self.home / f"{self.TASK}.herdr-archived"
+        marker.write_text("version=1\n")
+        ORGANIZER.note_pane_moves({"wAZ:p2": "wCM:p2"})
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle"), ("wCM:p3", "wCM:t2", "unknown")])
+        [result] = self.reconcile(now)
+        self.assertEqual((result["status"], result["old"], result["new"]), ("relinked", "wAZ:p2", "wCM:p2"))
+        values = ORGANIZER.parse_key_values(path.read_text())
+        self.assertEqual([values[k] for k in ORGANIZER.OWNER_META_FIELDS], ["esim:wCM:p2", "wCM", "wCM:t2", "wCM:p2"])
+        self.assertTrue(path.read_text().endswith("decision_keys=\nbusy_gen=g1\n"), "every other line is kept as it was")
+        self.assertIn("wAZ:p2", Path(result["backup"]).read_text(), "the old record is kept")
+        self.assertEqual(ORGANIZER.parse_key_values(presentation.read_text())["pane_id"], "wCM:p2")
+        self.assertEqual(ORGANIZER.parse_key_values(presentation.read_text())["workspace_id"], "wCM")
+        self.assertFalse(marker.exists(), "the archived marker is cleared")
+        self.assertEqual(list(self.home.glob("*.meta")), [path], "a backup never looks like a record")
+
+    def test_a_worker_is_found_by_its_label_when_the_command_did_not_report_the_move(self):
+        path = self.meta()
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "relinked")
+        self.assertEqual(ORGANIZER.parse_key_values(path.read_text())["herdr_pane_id"], "wCM:p2")
+
+    def test_a_tab_with_several_panes_is_resolved_only_by_its_one_agent_pane(self):
+        path = self.meta()
+        tabs = [("wCM:t2", f"fm-{self.TASK}")]
+        agent = self.snapshot(tabs, [("wCM:p2", "wCM:t2", "unknown"), ("wCM:p3", "wCM:t2", "idle")])
+        [result] = self.reconcile(agent)
+        self.assertEqual(result["new"], "wCM:p3")
+        path = self.meta()
+        none = self.snapshot(tabs, [("wCM:p2", "wCM:t2", "unknown"), ("wCM:p3", "wCM:t2", "unknown")])
+        [result] = self.reconcile(none)
+        self.assertEqual(result["status"], "flagged", "a live tab that cannot be resolved is said loudly, never guessed")
+        self.assertIn("ambiguous", result["detail"])
+        self.assertEqual(ORGANIZER.parse_key_values(path.read_text())["herdr_pane_id"], "wAZ:p2")
+
+    def test_a_label_that_does_not_match_is_flagged_and_nothing_is_written(self):
+        path = self.meta()
+        before = path.read_text()
+        ORGANIZER.note_pane_moves({"wAZ:p2": "wCM:p2"})
+        now = self.snapshot([("wCM:t2", "some-other-tab")], [("wCM:p2", "wCM:t2", "idle")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "flagged")
+        self.assertEqual(path.read_text(), before)
+
+    def test_an_archive_marks_the_record_instead_of_leaving_it_to_look_dead(self):
+        path = self.meta()
+        before = self.snapshot([("wAZ:t2", f"fm-{self.TASK}")], [("wAZ:p2", "wAZ:t2", "idle")])
+        now = self.snapshot([], [])
+        [result] = self.reconcile(now, before)
+        self.assertEqual(result["status"], "archived")
+        marker = self.home / f"{self.TASK}.herdr-archived"
+        values = ORGANIZER.parse_key_values(marker.read_text())
+        self.assertEqual((values["task_id"], values["pane_id"], values["tab_label"]), (self.TASK, "wAZ:p2", f"fm-{self.TASK}"))
+        self.assertEqual(ORGANIZER.parse_key_values(path.read_text())["herdr_pane_id"], "wAZ:p2", "the record itself keeps its ids")
+
+    def test_a_live_pane_is_left_alone_and_a_stale_marker_is_cleared(self):
+        path = self.meta(pane="wCM:p2", tab="wCM:t2", workspace="wCM")
+        marker = self.home / f"{self.TASK}.herdr-archived"
+        marker.write_text("version=1\n")
+        text = path.read_text()
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "cleared")
+        self.assertEqual(path.read_text(), text)
+        self.assertFalse(marker.exists())
+
+    def test_every_home_is_searched_and_other_sessions_are_not_touched(self):
+        mine = self.meta(state=self.other)
+        theirs = self.meta(task="elsewhere", session="other")
+        before = theirs.read_text()
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        results = self.reconcile(now)
+        self.assertEqual([item["status"] for item in results], ["relinked"])
+        self.assertEqual(ORGANIZER.parse_key_values(mine.read_text())["herdr_pane_id"], "wCM:p2")
+        self.assertEqual(theirs.read_text(), before)
+
+    def test_a_preview_changes_nothing(self):
+        path = self.meta()
+        text = path.read_text()
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        [result] = self.reconcile(now, execute=False)
+        self.assertEqual(result["status"], "would_relink")
+        self.assertEqual(path.read_text(), text)
+        self.assertEqual(list(self.home.iterdir()), [path])
+
+    def test_a_record_that_changed_while_reading_is_not_overwritten(self):
+        path = self.meta()
+        now = self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")])
+        original = ORGANIZER.replace_file_atomically
+
+        def changed(target, expected, text):
+            target.write_text(expected + "decision_keys=late\n")
+            return original(target, expected, text)
+
+        with patch.object(ORGANIZER, "replace_file_atomically", changed):
+            [result] = self.reconcile(now)
+        self.assertEqual(result["status"], "flagged")
+        self.assertIn("late", path.read_text())
+
+    def test_no_known_home_is_said_loudly(self):
+        with patch.dict(os.environ, {ORGANIZER.OWNER_STATE_ENV: ""}):
+            [result] = self.reconcile(self.snapshot([], []))
+        self.assertEqual(result["status"], "flagged")
+        self.assertIn("no firstmate home", result["detail"])
+
+    def test_a_worker_tab_no_home_owns_is_flagged_when_it_closes(self):
+        before = self.snapshot([("wAZ:t2", "fm-orphan-task")], [("wAZ:p2", "wAZ:t2", "idle")])
+        [result] = self.reconcile(self.snapshot([], []), before)
+        self.assertEqual(result["status"], "flagged")
+        self.assertIn("fm-orphan-task", result["task"])
+        plain = self.snapshot([("wAZ:t2", "scratch")], [("wAZ:p2", "wAZ:t2", "idle")])
+        self.assertEqual(self.reconcile(self.snapshot([], []), plain), [], "an ordinary tab is nobody's worker")
+
+    def test_the_tracker_reconciles_after_a_failing_command_and_does_nothing_for_a_preview(self):
+        path = self.meta()
+        calls = []
+        snaps = iter([
+            self.snapshot([("wAZ:t2", f"fm-{self.TASK}")], [("wAZ:p2", "wAZ:t2", "idle")]),
+            self.snapshot([("wCM:t2", f"fm-{self.TASK}")], [("wCM:p2", "wCM:t2", "idle")]),
+        ])
+        args = argparse.Namespace(command="restore-tabs", execute=True, session="esim")
+        output = io.StringIO()
+        with patch.object(ORGANIZER, "session_snapshot", lambda *_: next(snaps)), redirect_stdout(output):
+            with self.assertRaises(ORGANIZER.OrganizerError):
+                with ORGANIZER.owner_record_tracking(args):
+                    ORGANIZER.note_pane_moves({"wAZ:p2": "wCM:p2"})
+                    raise ORGANIZER.OrganizerError("half restored")
+        self.assertEqual(ORGANIZER.parse_key_values(path.read_text())["herdr_pane_id"], "wCM:p2")
+        self.assertIn("Worker record updated", output.getvalue())
+        preview = argparse.Namespace(command="restore-tabs", execute=False, session="esim")
+        with patch.object(ORGANIZER, "session_snapshot", lambda *_: calls.append(1)):
+            with ORGANIZER.owner_record_tracking(preview):
+                pass
+        self.assertEqual(calls, [], "a preview takes no snapshot")
+
+
 if __name__ == "__main__":
     unittest.main()
