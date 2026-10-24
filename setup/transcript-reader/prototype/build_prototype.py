@@ -29,6 +29,7 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import html
 import json
 import os
 import re
@@ -118,8 +119,21 @@ def signal_task(text: str) -> str | None:
     return None
 
 
+# The supervision host's own wake-ups, by the words their line starts with.
+SUPERVISION_LABELS = {
+    "cycle boundary": "Monitoring cycle restarted",
+    "branch-outcome": "Supervision recorded outcomes to pass on",
+}
+CHECK_SCRIPT = re.compile(r"^/\S+\.check\.sh:\s*")
+
+
 def wake_label(text: str) -> tuple[str, str]:
     """(kind, one-line label) for a background wake-up."""
+    kind, label = raw_wake_label(text)
+    return kind, html.unescape(label)  # a task notification's summary is escaped XML
+
+
+def raw_wake_label(text: str) -> tuple[str, str]:
     match = WAKE_LINE.search(text)
     if match:
         kind, detail = match.group(1), (match.group(2) or "").strip()
@@ -128,9 +142,14 @@ def wake_label(text: str) -> tuple[str, str]:
         if kind == "stale":
             return "quiet", "A worker has been quiet a while"
         if kind == "check":
+            # A home's own check script names itself first: say what it found.
+            detail = CHECK_SCRIPT.sub("", detail)
             return "check", f"Check: {detail}" if detail else "Check result"
         if kind == "heartbeat":
             return "heartbeat", "Routine fleet check"
+        if kind == "supervision-host":
+            head = re.split(r":| - ", detail, maxsplit=1)[0].strip()
+            return "supervision", SUPERVISION_LABELS.get(head, f"Supervision: {head}" if head else "Supervision wake-up")
         return "other", f"Wake-up: {kind}"
     if "auto-arm FAILED" in text:
         return "monitor", "Monitoring failed to restart"
@@ -356,6 +375,10 @@ def session_exchanges(records: list[dict]) -> list[dict]:
                     current.setdefault("touched", []).extend(tool_documents(block.get("input"), record.get("cwd") or ""))
     for exchange in exchanges:
         finish_exchange(exchange)
+    # The newest turn with no reply yet is still running, or ended without a word: it stays
+    # open so the reader shows what the session is doing now.
+    if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
+        exchanges[-1]["folded"] = False
     return exchanges
 
 

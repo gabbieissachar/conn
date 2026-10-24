@@ -81,6 +81,18 @@ class ClassifyInputTest(unittest.TestCase):
                          ("background", "Background task completed: npm test"))
         self.assertEqual(builder.wake_label("Stop hook feedback: run the tests"), ("hook", "Turn-end check"))
 
+    def test_wake_labels_say_what_happened_in_words(self):
+        wake = "firstmate watcher wake - one supervision event needs a handling turn now.\n"
+        self.assertEqual(builder.wake_label(wake + "supervision-host: cycle boundary - the host ended its park"),
+                         ("supervision", "Monitoring cycle restarted"))
+        self.assertEqual(builder.wake_label(wake + "supervision-host: branch-outcome: the session handled this wake"),
+                         ("supervision", "Supervision recorded outcomes to pass on"))
+        self.assertEqual(builder.wake_label(wake + "supervision-host: new-thing - details"), ("supervision", "Supervision: new-thing"))
+        self.assertEqual(builder.wake_label(wake + "check: /h/state/fleet-sweep.check.sh: fleet sweep due: last swept 120m ago"),
+                         ("check", "Check: fleet sweep due: last swept 120m ago"))
+        self.assertEqual(builder.wake_label('<summary>Background command "a &gt;/dev/null 2&gt;&amp;1" completed</summary>'),
+                         ("background", "Background task completed: a >/dev/null 2>&1"))
+
     def test_peer_origins(self):
         self.assertEqual(builder.peer_input(PEER), ("peer", "message", "From release-mate"))
         self.assertEqual(builder.peer_input(HANDBACK), ("wake", "handback", "Hand-back from doc-checker"))
@@ -174,6 +186,15 @@ class SessionExchangesTest(unittest.TestCase):
         ])
         self.assertEqual((quiet["source"], quiet["folded"], quiet["signal_task"]), ("wake", True, "fix-login"))
         self.assertEqual((asking["folded"], asking["verdict"]), (False, "needs-you"))
+
+    def test_the_newest_wake_up_stays_open_until_it_has_a_reply(self):
+        done, running = self.exchanges([
+            user(WAKE, 0, origin={"kind": "task-notification"}), say("Nothing new.", 1),
+            user(WAKE, 2, origin={"kind": "task-notification"}), tool(3),
+        ])
+        self.assertEqual((done["folded"], running["folded"]), (True, False))
+        [finished] = self.exchanges([user(WAKE, 0, origin={"kind": "task-notification"}), tool(1), say("Nothing new.", 2)])
+        self.assertTrue(finished["folded"])
 
     def test_session_events_are_dividers(self):
         compacted, interrupted = self.exchanges([
