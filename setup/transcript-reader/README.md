@@ -11,7 +11,7 @@ python3 setup/transcript-reader/reader.py          # rebuild every listed sessio
 ```
 
 `reader.py` also has `remove`, `list` and `panes` (live Herdr panes to pick from).
-Set `PMOS_SERVE_PORT` when the default port 8765 serves another copy of the repo.
+Set `PMOS_SERVE_PORT` when the default port 8765 serves another copy of the repo; `reader.py` checks which copy a port serves and says so.
 After changing `api.js` or `setup/serve.sh`, restart the server: `bash setup/serve.sh --restart`.
 
 Open the printed `http://localhost:…/setup/transcript-reader/out/prototype.html` link, in a browser or a VS Code browser tab.

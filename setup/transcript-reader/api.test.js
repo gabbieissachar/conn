@@ -11,7 +11,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { create, TOKEN_HEADER, TOKEN_META } = require('./api');
+const { create, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
 
 const A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const B = 'bbbbbbbb-2222-4222-8222-222222222222';
@@ -162,6 +162,17 @@ test('pages: opened in a tab, a page carries the token in its tag only; it refus
     assert.equal(page.headers['x-frame-options'], 'DENY');
     assert.equal(page.headers['cross-origin-opener-policy'], 'same-origin');
     assert.equal(tokenIn((await t.request({ path: '/setup/transcript-reader/out/prototype.html' })).raw), t.token, 'a request without Fetch-Metadata (curl) gets the page, as with the guard');
+  } finally { await t.close(); }
+});
+
+test('pages: a page names the copy of the repo it comes from, as reader.py computes it', async () => {
+  const t = await start();
+  try {
+    const page = await t.open();
+    const python = require('child_process').spawnSync('python3', ['-I', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import reader; from pathlib import Path; print(reader.copy_id(Path(sys.argv[2])))', __dirname, t.tree.root], { encoding: 'utf8' });
+    assert.equal(python.status, 0, python.stderr);
+    assert.match(page.headers[COPY_HEADER], /^[0-9a-f]{16}$/);
+    assert.equal(page.headers[COPY_HEADER], python.stdout.trim());
   } finally { await t.close(); }
 });
 

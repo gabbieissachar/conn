@@ -34,6 +34,7 @@
 // A prompt reaches a pane only through send, which the page calls on a click.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -43,6 +44,10 @@ const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer
 const API = '/api/transcript-reader/';
 const PAGES = new Set(['prototype.html', 'questionnaire.html']);
 const TOKEN_HEADER = 'x-transcript-reader-token';
+// Names the copy of the repo whose pages this server serves, so reader.py can tell its own
+// copy's server from another copy's on the same port (reader.py's copy_id computes the same).
+const COPY_HEADER = 'x-transcript-reader-copy';
+const copyId = (root) => crypto.createHash('sha256').update(fs.realpathSync(root)).digest('hex').slice(0, 16);
 // The templates carry this tag; the server fills it in at serve time, so the built
 // file never holds a token and the build-time script hash stays valid. The page's
 // payload escapes every "<", so the tag cannot occur in transcript text.
@@ -135,6 +140,7 @@ function create({
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const readerScript = path.join(root, 'setup', 'transcript-reader', 'reader.py');
+  const copy = copyId(root);
   const runEnv = () => childEnv(env);
   const logPaths = new Map();
   let scanned = null;
@@ -431,6 +437,7 @@ function create({
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
+        [COPY_HEADER]: copy,
       });
       res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
     });
@@ -519,4 +526,4 @@ function create({
   return { handle, guard, scan };
 }
 
-module.exports = { create, checkText, API, TOKEN_HEADER, TOKEN_META };
+module.exports = { create, checkText, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

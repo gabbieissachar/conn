@@ -39,6 +39,7 @@ repo. Only session logs and Herdr's pane list are read, and only out/ is written
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -164,6 +165,11 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
     return 0
 
 
+def copy_id(root: Path) -> str:
+    """The name api.js gives the copy of the repo it serves (its x-transcript-reader-copy header)."""
+    return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+
+
 def serve(focus: str | None) -> None:
     """Start setup/serve.sh if needed and print the page address."""
     port = os.environ.get("PMOS_SERVE_PORT", "8765")
@@ -171,8 +177,9 @@ def serve(focus: str | None) -> None:
     url = f"http://localhost:{port}/{PAGE.relative_to(REPO).as_posix()}"
     sheet = f"http://localhost:{port}/{(OUT / 'questionnaire.html').relative_to(REPO).as_posix()}"
     try:
+        # Any 200 is not enough: another copy of the repo may serve its own pages on this port.
         with urllib.request.urlopen(url, timeout=3) as response:
-            ok = response.status == 200
+            ok = response.status == 200 and response.headers.get("x-transcript-reader-copy") == copy_id(REPO)
     except OSError:
         ok = False
     anchor = f"#s={focus[:8]}" if focus else ""
@@ -181,7 +188,7 @@ def serve(focus: str | None) -> None:
         print(f"Reader:       {url}{anchor}")
         print(f"Answer sheet: {sheet}")
     else:
-        print(f"Port {port} does not serve this copy of the repo, so these read-only file links cannot send or follow:")
+        print(f"Port {port} does not serve this copy of the repo (set PMOS_SERVE_PORT to a free port or this copy's), so these read-only file links cannot send or follow:")
         print(f"Reader:       {PAGE.as_uri()}{anchor}")
         print(f"Answer sheet: {(OUT / 'questionnaire.html').as_uri()}")
 
