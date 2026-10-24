@@ -806,9 +806,11 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
 
 # ------------------------------------------------- files a reply names (documents)
 
-# A markdown file name or path as written in a reply: `requirements.md`, 02-Projects/x/work-log.md,
-# /abs/path.md, ~/notes.md. A URL is left out (it reads as //host/... once its scheme is cut off).
+# A markdown file name or path as written in a message: `requirements.md`, 02-Projects/x/work-log.md,
+# /abs/path.md, ~/notes.md. A web URL is left out (it reads as //host/... once its scheme is cut
+# off); a file:// URL is read as the path it names.
 MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
+FILE_URL = re.compile(r"\bfile://(?=/)")
 CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
 
@@ -869,11 +871,12 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     return None
 
 
-def reply_documents(reply: str, cwd: str, touched: list[str] = ()) -> list[tuple[str, Path]]:
-    """(as written, file) for each existing markdown file the reply names, in order, once each."""
-    cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(reply)]
+def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[str, Path]]:
+    """(as written, file) for each existing markdown file a message names, in order, once each."""
+    text = FILE_URL.sub("", text)
+    cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(text)]
     found: list[tuple[str, Path]] = []
-    for match in MD_MENTION.finditer(reply):
+    for match in MD_MENTION.finditer(text):
         token = match.group(0)
         if token.startswith("//"):
             continue
@@ -884,32 +887,50 @@ def reply_documents(reply: str, cwd: str, touched: list[str] = ()) -> list[tuple
     return found
 
 
+# Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
+# notice is the fleet's own record and folds away, and a session event has no author.
+DOCUMENT_INPUTS = ("captain", "firstmate", "peer")
+
+
 def attach_documents(sessions: list[dict]) -> dict[str, dict]:
-    """Give each exchange the ids of the documents its reply names; return the documents.
+    """Give each exchange the ids of the documents its reply names (`documents`) and its message
+    names (`input_documents`, for a message from you, Firstmate or another session); return
+    the documents.
 
     Each file is read once, as it is now on disk (the page says when it last changed).
     A short name can match a file the session's tool calls named in this turn or an earlier one.
     """
     documents: dict[str, dict] = {}
+
+    def ids_for(text: str, cwd: str, touched: list[str]) -> list[str]:
+        ids = []
+        for token, path in named_documents(text, cwd, touched):
+            key = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+            if key not in documents:
+                try:
+                    body = path.read_text(encoding="utf-8", errors="replace")
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                home = Path.home()
+                shown_dir = "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
+                documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir, "mention": token,
+                                  "mtime": mtime, "text": body}
+            ids.append(key)
+        return ids
+
     for session in sessions:
         touched: list[str] = []
         for exchange in session["exchanges"]:
             cwd = exchange.pop("cwd", "")
             touched += exchange.pop("touched", [])
-            ids = []
-            for token, path in reply_documents(exchange.get("reply") or "", cwd, touched):
-                key = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
-                if key not in documents:
-                    try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
-                        mtime = path.stat().st_mtime
-                    except OSError:
-                        continue
-                    home = Path.home()
-                    shown_dir = "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
-                    documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir, "mention": token,
-                                      "mtime": mtime, "text": text}
-                ids.append(key)
+            if exchange.get("source") in DOCUMENT_INPUTS:
+                # A doorbell names only an inbox; the messages it delivered are what was said.
+                said = "\n\n".join([exchange.get("input") or ""] + list(exchange.get("delivered") or []))
+                ids = ids_for(said, cwd, touched)
+                if ids:
+                    exchange["input_documents"] = ids
+            ids = ids_for(exchange.get("reply") or "", cwd, touched)
             if ids:
                 exchange["documents"] = ids
     return documents

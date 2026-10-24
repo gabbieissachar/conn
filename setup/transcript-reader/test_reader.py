@@ -242,7 +242,7 @@ class DocumentsTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def names(self, reply, cwd):
-        return [(token, path.relative_to(self.home).as_posix()) for token, path in builder.reply_documents(reply, str(cwd))]
+        return [(token, path.relative_to(self.home).as_posix()) for token, path in builder.named_documents(reply, str(cwd))]
 
     def test_a_path_from_the_repository_root_resolves_from_a_deeper_working_directory(self):
         reply = "**Draft:** `02-Projects/esim/prds/bc49/requirements.md` and again 02-Projects/esim/prds/bc49/requirements.md"
@@ -297,7 +297,7 @@ class DocumentsTest(unittest.TestCase):
         other.mkdir(parents=True)
         (other / "notes.md").write_text("other notes\n", encoding="utf-8")
         touched = [f"{self.repo}/notes.md", f"{other}/notes.md", f"{self.home}/gone/requirements.md"]
-        self.assertEqual([path.relative_to(self.home).as_posix() for _, path in builder.reply_documents("`notes.md:12`, `context/notes.md`, `requirements.md`", str(self.prd), touched)],
+        self.assertEqual([path.relative_to(self.home).as_posix() for _, path in builder.named_documents("`notes.md:12`, `context/notes.md`, `requirements.md`", str(self.prd), touched)],
                          ["worktree/context/notes.md", "copy/personal/02-Projects/esim/prds/bc49/requirements.md"])
 
     def test_a_turn_matches_files_touched_in_its_own_and_earlier_turns_only(self):
@@ -313,6 +313,28 @@ class DocumentsTest(unittest.TestCase):
         self.assertNotIn("documents", before)
         self.assertEqual(during["documents"], after["documents"])
         self.assertNotIn("touched", during)
+
+    def test_a_message_naming_a_file_gets_the_document_too(self):
+        # A pasted brief ends with the file's full path; the reply that read it never names it.
+        handoff = self.home / "fm" / "data" / "handoffs" / "archive-restore.md"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text("# Handoff\n", encoding="utf-8")
+        pasted = f'<pasted_content id="5d0f">\nFull description: {handoff}\n</pasted_content id="5d0f">\n'
+        wake = f"<task-notification>\nfirstmate watcher wake\nsignal: {self.prd}/requirements.md\n</task-notification>"
+        records = [prompt(pasted, iso(T0)), tool_use("Read", {"file_path": str(handoff)}, T0 + 1), reply("Read it. Starting now.", T0 + 2),
+                   prompt(wake, iso(T0 + 10)), reply("Nothing new.", T0 + 11)]
+        records[3]["origin"] = {"kind": "task-notification"}
+        sessions = [{"exchanges": builder.session_exchanges(records)}]
+        documents = builder.attach_documents(sessions)
+        mine, woke = sessions[0]["exchanges"]
+        self.assertEqual([documents[i]["path"] for i in mine["input_documents"]], [str(handoff)])
+        self.assertNotIn("documents", mine)
+        self.assertNotIn("input_documents", woke)
+
+    def test_a_file_url_names_its_path(self):
+        reply = f"Open file://{self.prd}/requirements.md or [notes](file://{self.repo}/notes.md)."
+        self.assertEqual([path for _, path in self.names(reply, "")],
+                         ["copy/personal/02-Projects/esim/prds/bc49/requirements.md", "copy/personal/notes.md"])
 
 
 class WritePageTest(unittest.TestCase):
