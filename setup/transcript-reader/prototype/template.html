@@ -496,10 +496,11 @@
     : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
   // What the session's agent is doing now, as Herdr reports it, ahead of its name in the picker,
   // so a glance down the list shows which ones still run. Empty without the live server or a pane.
-  const PANE_STATES = { working: "● Working", blocked: "▲ Waiting for you", done: "✓ Done", idle: "○ Idle" };
+  // Words only: the browser marks the chosen option with its own check, which a symbol here would echo.
+  const PANE_STATES = { working: "Working", blocked: "Waiting for you", done: "Done", idle: "Idle" };
   function sessionStatus(s) {
     const pane = link.panes && link.panes[s.id];
-    return pane ? (PANE_STATES[pane.status] || "? Unknown") : "";
+    return pane ? (PANE_STATES[pane.status] || "Unknown") : "";
   }
   const sessionOption = s => [sessionStatus(s), sessionName(s) + (s.reopened ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
