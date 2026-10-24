@@ -569,9 +569,22 @@ test('context view: the Codex credit chips read through codex-credits only and p
   assert.equal(/auth\.json|access_token|Bearer/.test(view), false, 'the page never touches a credential');
 });
 
+test('the snapshot command needs no preview of the command that closes everything', () => {
+  const start = html.indexOf('const snapshotExecuteCommand = ');
+  const vm = require('node:vm');
+  const { snapshotExecuteCommand } = vm.runInNewContext(`const SESSION_NAME_PATTERN = ${html.split('\n').find(row => row.trim().startsWith('const SESSION_NAME_PATTERN = ')).trim().replace(/^const SESSION_NAME_PATTERN = /, '').replace(/;$/, '')};${html.slice(start, html.indexOf('const archiveAllView = '))}; ({ snapshotExecuteCommand })`, {});
+  const command = 'herdr-organizer --session esim archive-all --snapshot --execute --confirm esim';
+  assert.equal(snapshotExecuteCommand(null, false, 'esim'), command, 'no preview run: built from the validated session');
+  assert.equal(snapshotExecuteCommand(null, false, 'bad name; rm'), '', 'an unvalidated session builds nothing');
+  assert.equal(snapshotExecuteCommand(null, false, ''), '');
+  assert.equal(snapshotExecuteCommand({ commands: { snapshot: command } }, false, 'esim'), command, 'a preview that offers it wins');
+  assert.equal(snapshotExecuteCommand({ commands: { snapshot: '' } }, false, 'esim'), '', 'a preview that found nothing to save offers nothing');
+  assert.equal(snapshotExecuteCommand({ commands: { snapshot: command } }, true, 'esim'), '', 'a stale preview offers nothing');
+});
+
 test('archive all offers a copy-only snapshot command and the group marks snapshot members', () => {
-  assert.match(html, /const canSnapshot = Boolean\(result\?\.commands\?\.snapshot\) && !stale;/, 'stale previews disable it like the execute copy');
-  assert.match(html, /data-aa-copy="\$\{escapeHtml\(canSnapshot \? result\.commands\.snapshot : ''\)\}"/, 'copy-only, built from the preview');
+  assert.match(html, /const canSnapshot = Boolean\(snapshotCommand\);/, 'the button is on whenever there is a command');
+  assert.match(html, /data-aa-copy="\$\{escapeHtml\(snapshotCommand\)\}"/, 'copy-only');
   assert.match(html, /Copy snapshot for restart/);
   assert.match(html, /data-aa-copy="\$\{escapeHtml\(snapshotPreviewCommand\)\}"/, 'the preview-only snapshot command is copied');
   assert.match(html, /result\?\.commands\?\.snapshot_preview/, 'it comes from the preview, with a fallback built from the session');

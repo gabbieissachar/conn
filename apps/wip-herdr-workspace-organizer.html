@@ -1344,6 +1344,12 @@ created: 2026-09-10
       const panes = item.unverified_panes.map(pane => archiveAllPaneView(session, pane)).join('');
       return `<div class="failure"><h4>${escapeHtml(item.label || item.workspace_id)} <span class="count-pill">${escapeHtml(item.workspace_id)}</span></h4><p>${escapeHtml(why)}</p>${panes}</div>`;
     };
+    // Saving a snapshot closes nothing, so it needs no preview of the command that closes everything. A preview that exists still decides
+    // (it offers nothing when there is nothing to save, and a stale one offers nothing); with no preview, the command is built from the validated session.
+    const snapshotExecuteCommand = (result, stale, session) => {
+      if (result) return stale ? '' : (result.commands?.snapshot || '');
+      return SESSION_NAME_PATTERN.test(session) ? `herdr-organizer --session ${session} archive-all --snapshot --execute --confirm ${session}` : '';
+    };
     const archiveAllView = data => {
       const aa = state.archiveAll;
       const result = aa.result;
@@ -1370,7 +1376,8 @@ created: 2026-09-10
       }
       const canPreview = Boolean(session) && !aa.loading;
       const canCopy = Boolean(result?.commands?.execute) && !stale;
-      const canSnapshot = Boolean(result?.commands?.snapshot) && !stale;
+      const snapshotCommand = snapshotExecuteCommand(result, stale, session);
+      const canSnapshot = Boolean(snapshotCommand);
       return `<article class="card cleanup-all"><div class="card-head"><h3>Archive all workspaces</h3><span class="pill">${result ? 'previewed' : 'preview only'}</span></div><div class="card-body">
         <p class="lede">Archives every live workspace that passes the safety checks and closes it, into the session's archive group, which you can restore together from the Archive group tab. A workspace with a working agent, or an agent without a registered session id, is skipped and listed with the reason. Previewing closes nothing.</p>
         <div class="btn-row"><button type="button" class="primary-btn" data-aa="preview" ${canPreview ? '' : 'disabled'} title="${session ? 'Runs the read-only preview for every workspace' : 'Select a running session first'}">${aa.loading ? 'Previewing…' : (result ? 'Preview again' : 'Preview archive all')}</button>
@@ -1381,7 +1388,7 @@ created: 2026-09-10
       <article class="card cleanup-all"><div class="card-head"><h3>Save a snapshot before a restart</h3></div><div class="card-body">
         <p class="lede">Saves every workspace into the archive group without closing anything, working agents included. Run it just before you restart the computer. Afterwards, restoring a member from the Archive group skips whatever Herdr brought back.</p>
         <div class="btn-row"><button type="button" data-aa-copy="${escapeHtml(snapshotPreviewCommand)}" ${snapshotPreviewCommand ? '' : 'disabled'} title="Copies the snapshot preview command to run in your terminal. It lists what would be saved and changes nothing">Copy snapshot preview</button>
-          <button type="button" data-aa-copy="${escapeHtml(canSnapshot ? result.commands.snapshot : '')}" ${canSnapshot ? '' : 'disabled'} title="${canSnapshot ? 'Copies the command that saves the workspaces without closing anything' : (result && !stale ? 'The preview offered no snapshot command. Either there is nothing to save, or the organizer server is older than this page: restart it with setup/serve.sh --restart' : 'Preview archive all first. The command is built from that preview')}">Copy snapshot for restart</button></div>
+          <button type="button" data-aa-copy="${escapeHtml(snapshotCommand)}" ${canSnapshot ? '' : 'disabled'} title="${canSnapshot ? (result ? 'Copies the command that saves the workspaces without closing anything' : 'Copies the command that saves the workspaces without closing anything. It saves what is open when you run it; copy the snapshot preview first to see the list') : (result && !stale ? 'The preview offered no snapshot command. Either there is nothing to save, or the organizer server is older than this page: restart it with setup/serve.sh --restart' : result ? 'The preview is out of date. Preview archive all again' : 'Select a running session first')}">Copy snapshot for restart</button></div>
       </div></article>`;
     };
     const renderArchiveAll = () => {
