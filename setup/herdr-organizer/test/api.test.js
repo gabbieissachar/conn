@@ -877,6 +877,7 @@ test('codex-credits: sums week to date (from Monday) and month to date, and neve
     assert.deepEqual(data.week, { since: '2026-10-19', credits: 3.5, usd: 0.14 }, 'Monday 19 October onward');
     assert.deepEqual(data.month, { since: '2026-10-01', credits: 15.25, usd: 0.61 }, 'the 1st onward, not September; 4 cents a credit');
     assert.equal(data.usd_per_credit, 0.04);
+    assert.equal(data.month_limit, 3000, 'the limit comes from the server, next to the rate');
     assert.deepEqual(data.models.map((item) => item.model), ['model-0', 'model-1']);
     assert.equal(data.data_through, '2026-10-21');
     const call = fake.calls.find((item) => item.file === 'curl');

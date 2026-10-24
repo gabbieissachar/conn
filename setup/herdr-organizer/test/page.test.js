@@ -556,7 +556,7 @@ test('context view: read-only, fetched through the organizer API, and escapes wh
 test('context view: the Claude plan rail reads through plan-usage only, prints escaped, and never states a run-out the window outlasts', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
   assert.match(view, /api\.run\('plan-usage', fresh \? \{ fresh: true \} : \{\}\)/);
-  for (const field of ['planName(item)', 'plan.error', 'plan.at', 'note.text', 'reset']) assert.ok(view.includes(`escapeHtml(${field}`), field);
+  for (const field of ['planName(item)', 'plan.error', 'readStamp(plan)', 'note.text', 'reset']) assert.ok(view.includes(`escapeHtml(${field}`), field);
   assert.match(view, /Date\.parse\(item\.projected_exhausted_at\) < Date\.parse\(item\.resets_at\)/, 'a run-out after the reset is not a run-out');
   assert.match(view, /plan-reload/);
 });
@@ -583,12 +583,42 @@ test('archive all offers a copy-only snapshot command and the group marks snapsh
   assert.match(html, /Snapshot: \$\{plural\(snapshotCount, 'workspace'\)\} · \$\{plural\(snapshotTabs, 'tab'\)\}/, 'the group line says how many workspaces and tabs the snapshot holds');
 });
 
-test('context view: the Codex month chip is a share of the 3,000 credit limit with the Claude amber and red lines', () => {
+test('context view: the Codex month chip reads against the limit the server sends, with the Claude amber and red lines', () => {
   const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
-  assert.match(view, /CODEX_MONTH_LIMIT = 3000/);
-  assert.match(view, /percent = item\.credits \/ CODEX_MONTH_LIMIT \* 100;\s*const level = percent >= PLAN_HIGH \? 'bad' : percent >= PLAN_WARN \? 'warn' : ''/);
-  assert.match(view, /codexMonthChip\(month,/, 'the month chip uses the limit view and the week chip stays plain');
-  assert.match(view, /Over the \$\{CODEX_MONTH_LIMIT\.toLocaleString\(\)\} limit by/, 'going over the limit is said in the tooltip');
+  assert.equal(/CODEX_MONTH_LIMIT/.test(html), false, 'the page holds no limit of its own');
+  assert.match(view, /usd_per_credit: rate, month_limit: limit \} = codex\.data/, 'the limit arrives with the rate');
+  assert.match(view, /const percent = item\.credits \/ limit \* 100;\s*const level = planLevel\(percent\)/);
+  assert.match(view, /codexMonthChip\(month, `[^`]*`, limit\)/, 'the month chip uses the limit view and the week chip stays plain');
+  assert.match(view, /Over the \$\{limit\.toLocaleString\(\)\} limit by/, 'going over the limit is said in the tooltip');
+  assert.match(view, /Number\.isFinite\(limit\) \? codexMonthChip/, 'a server that sends no limit shows no month chip instead of NaN');
+});
+
+test('context view: a rail says when its last read failed, not an old update time', () => {
+  const start = html.indexOf('const readStamp = ');
+  const vm = require('node:vm');
+  const { readStamp } = vm.runInNewContext(`${html.slice(start, html.indexOf('const planClock'))}; ({ readStamp })`, {});
+  assert.equal(readStamp({ at: '', failedAt: '' }), 'not read yet');
+  assert.equal(readStamp({ at: '10:15', failedAt: '' }), 'updated 10:15');
+  assert.equal(readStamp({ at: '', failedAt: '10:20' }), 'failed 10:20');
+  // The loaders clear the old time on a failure and clear the failure on a success.
+  const loaders = html.slice(html.indexOf('const loadPlan = '), html.indexOf('// Re-read while the Context tab is open'));
+  assert.equal((loaders.match(/plan\.at = ''; plan\.failedAt = planClock/g) || []).length, 1);
+  assert.equal((loaders.match(/codex\.at = ''; codex\.failedAt = planClock/g) || []).length, 1);
+  assert.match(loaders, /plan\.failedAt = '';/);
+  assert.match(loaders, /codex\.failedAt = '';/);
+});
+
+test('context view: a chip is coloured by the percent it prints', () => {
+  const start = html.indexOf('const PLAN_WARN = 70');
+  const vm = require('node:vm');
+  const { planLevel } = vm.runInNewContext(`${html.slice(start, html.indexOf('const planClock'))}; ({ planLevel })`, {});
+  assert.equal(planLevel(69.4), '', 'reads 69%, not amber');
+  assert.equal(planLevel(69.6), 'warn', 'reads 70%, amber');
+  assert.equal(planLevel(84.4), 'warn');
+  assert.equal(planLevel(84.6), 'bad', 'reads 85%, red');
+  assert.equal(planLevel(102), 'bad');
+  assert.equal(planLevel(0), '');
+  assert.match(html, /const level = planLevel\(item\.percent_used\);/, 'the Claude chips use the same rule');
 });
 
 test('workspaces view: the compact toggle shows names and tick boxes only, escaped, and is remembered safely', () => {

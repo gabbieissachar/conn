@@ -1083,6 +1083,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // its own, so a reading near midnight can be a day off.
   const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage/daily-workspace-user-credit-usage';
   const CODEX_USD_PER_CREDIT = 0.04;
+  // The monthly credit limit the Month chip reads against; it sits beside the rate so the page holds no number of its own.
+  const CODEX_MONTH_LIMIT = 3000;
   const CODEX_TIMEOUT_MS = 30000;
   const TOKEN_SHAPE = /^[A-Za-z0-9._-]{1,8192}$/;
   const localDay = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -1147,6 +1149,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         week: { since: since.week, credits: round2(sums.week), usd: round2(sums.week * CODEX_USD_PER_CREDIT) },
         month: { since: since.month, credits: round2(sums.month), usd: round2(sums.month * CODEX_USD_PER_CREDIT) },
         usd_per_credit: CODEX_USD_PER_CREDIT,
+        month_limit: CODEX_MONTH_LIMIT,
         models: [...models].map(([model, credits]) => ({ model, credits: round2(credits) })).filter((item) => item.model && item.credits > 0).sort((a, b) => b.credits - a.credits).slice(0, 6),
         data_through: through,
         read_at: today.toISOString(),

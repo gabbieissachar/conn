@@ -1641,14 +1641,16 @@ created: 2026-09-10
     const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
-    const plan = { loading: false, data: null, error: '', at: '' };
+    const plan = { loading: false, data: null, error: '', at: '', failedAt: '' };
     // Last-run context of archived sessions the gauge has no row for, read once per session id prefix from the transcripts.
     const archiveContext = { rows: new Map(), asked: new Set(), loading: false };
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
-    const codex = { loading: false, data: null, error: '', at: '' };
+    const codex = { loading: false, data: null, error: '', at: '', failedAt: '' };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
-    // The user's monthly Codex credit limit; the Month chip reads as a share of it, amber and red on the same lines as the Claude windows.
-    const CODEX_MONTH_LIMIT = 3000;
+    // The colour follows the number printed: 69.6 reads "70%", so it is amber, and 84.6 reads "85%", so it is red.
+    const planLevel = percent => { const shown = Math.round(percent); return shown >= PLAN_HIGH ? 'bad' : shown >= PLAN_WARN ? 'warn' : ''; };
+    // What a rail says about its last read: when it worked, when it failed (a failure clears the numbers, so an old time would mislead), or that none ran.
+    const readStamp = item => (item.failedAt ? `failed ${item.failedAt}` : item.at ? `updated ${item.at}` : 'not read yet');
     const planClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const planWhen = iso => {
       const ms = Date.parse(iso) - Date.now();
@@ -1670,7 +1672,7 @@ created: 2026-09-10
     const planName = item => PLAN_SHORT[item.id] || item.label;
     const planChip = item => {
       if (item.percent_used === null) return `<span class="plan-chip none" title="Claude did not report this window"><span class="plan-dot"></span>${escapeHtml(planName(item))} <b>-</b></span>`;
-      const level = item.percent_used >= PLAN_HIGH ? 'bad' : item.percent_used >= PLAN_WARN ? 'warn' : '';
+      const level = planLevel(item.percent_used);
       const note = planNote(item);
       const reset = item.resets_at ? planWhen(item.resets_at) : '';
       return `<span class="plan-chip ${level}" title="${escapeHtml(note.text)}"><span class="plan-dot"></span>${escapeHtml(planName(item))} <b>${Math.round(item.percent_used)}%</b>${reset ? `<span class="plan-reset">${escapeHtml(reset)}</span>` : ''}${item.pace === 'ahead' ? '<span class="plan-ahead">ahead</span>' : ''}</span>`;
@@ -1682,32 +1684,33 @@ created: 2026-09-10
       else if (!plan.data) chips = '<span class="plan-chip none"><span class="plan-dot"></span>Claude plan reading…</span>';
       else chips = plan.data.windows.map(planChip).join('');
       const error = plan.error ? `<div class="scope-note error plan-error">${escapeHtml(plan.error)}</div>` : '';
-      return `<div class="plan-chips" id="plan-card">${chips}<span class="updated">${plan.at ? `updated ${escapeHtml(plan.at)}` : 'not read yet'}</span>${button}${error}</div>`;
+      return `<div class="plan-chips" id="plan-card">${chips}<span class="updated">${escapeHtml(readStamp(plan))}</span>${button}${error}</div>`;
     };
     // Credits read like 3,023 (a fraction only below 100); the dollar value is the server's credits x rate, written 121$.
     const creditText = value => (value >= 100 ? Math.round(value).toLocaleString() : value >= 10 ? value.toFixed(1) : value.toFixed(2)).toString();
     const usdText = value => `${value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(value >= 10 ? 1 : 2)}$`;
     const codexChip = (name, item, title) => `<span class="plan-chip" title="${escapeHtml(title)}"><span class="plan-dot"></span>${escapeHtml(name)} <b>${creditText(item.credits)}</b><span class="plan-reset">credits (${usdText(item.usd)})</span></span>`;
-    const codexMonthChip = (item, title) => {
-      const percent = item.credits / CODEX_MONTH_LIMIT * 100;
-      const level = percent >= PLAN_HIGH ? 'bad' : percent >= PLAN_WARN ? 'warn' : '';
-      const left = CODEX_MONTH_LIMIT - item.credits;
-      const note = left >= 0 ? `${creditText(left)} credits left of the ${CODEX_MONTH_LIMIT.toLocaleString()} limit.` : `Over the ${CODEX_MONTH_LIMIT.toLocaleString()} limit by ${creditText(-left)} credits.`;
-      return `<span class="plan-chip ${level}" title="${escapeHtml(`${title} ${note} Amber from ${PLAN_WARN}%, red from ${PLAN_HIGH}%.`)}"><span class="plan-dot"></span>Month to date <b>${Math.round(percent)}%</b><span class="plan-reset">${creditText(item.credits)} of ${CODEX_MONTH_LIMIT.toLocaleString()} credits (${usdText(item.usd)})</span></span>`;
+    // The month limit is the server's (codex-credits sends it with the rate); the chip reads as a share of it.
+    const codexMonthChip = (item, title, limit) => {
+      const percent = item.credits / limit * 100;
+      const level = planLevel(percent);
+      const left = limit - item.credits;
+      const note = left >= 0 ? `${creditText(left)} credits left of the ${limit.toLocaleString()} limit.` : `Over the ${limit.toLocaleString()} limit by ${creditText(-left)} credits.`;
+      return `<span class="plan-chip ${level}" title="${escapeHtml(`${title} ${note} Amber from ${PLAN_WARN}%, red from ${PLAN_HIGH}%.`)}"><span class="plan-dot"></span>Month to date <b>${Math.round(percent)}%</b><span class="plan-reset">${creditText(item.credits)} of ${limit.toLocaleString()} credits (${usdText(item.usd)})</span></span>`;
     };
     const codexRail = () => {
       let chips;
       if (codex.error) chips = `<span class="plan-chip warn"><span class="plan-dot"></span>Codex credits unavailable</span>`;
       else if (!codex.data) chips = '<span class="plan-chip none"><span class="plan-dot"></span>Codex credits reading…</span>';
       else {
-        const { week, month, models, data_through: through, usd_per_credit: rate } = codex.data;
+        const { week, month, models, data_through: through, usd_per_credit: rate, month_limit: limit } = codex.data;
         const cost = ` Cost is credits x $${rate} per credit.`;
         const split = models.length ? ` Month by model: ${models.map(item => `${item.model} ${creditText(item.credits)}`).join(', ')}.` : '';
-        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${codexMonthChip(month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`)}`;
+        chips = `<span class="plan-chip none"><span class="plan-dot"></span>Codex</span>${codexChip('Week to date', week, `Credits used since Monday ${week.since}. Data through ${through || 'unknown'}.${cost}`)}${Number.isFinite(limit) ? codexMonthChip(month, `Credits used since ${month.since}. Data through ${through || 'unknown'}.${cost}${split}`, limit) : ''}`;
       }
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       const button = `<button id="codex-reload" type="button" title="Read Codex credits again" ${codex.loading ? 'disabled' : ''}>${codex.loading ? 'Reading…' : 'Refresh credits'}</button>`;
-      return `<div class="plan-chips" id="codex-card">${chips}<span class="updated">${codex.at ? `updated ${escapeHtml(codex.at)}` : 'not read yet'}</span>${button}${error}</div>`;
+      return `<div class="plan-chips" id="codex-card">${chips}<span class="updated">${escapeHtml(readStamp(codex))}</span>${button}${error}</div>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1916,10 +1919,10 @@ created: 2026-09-10
       if (state.view === 'context') renderContext();
       try {
         const result = await api.run('plan-usage', fresh ? { fresh: true } : {});
-        plan.data = result; plan.error = '';
+        plan.data = result; plan.error = ''; plan.failedAt = '';
         plan.at = planClock(result.read_at || new Date().toISOString());
       } catch (error) {
-        plan.data = null; plan.error = error.message;
+        plan.data = null; plan.error = error.message; plan.at = ''; plan.failedAt = planClock(new Date().toISOString());
       } finally {
         plan.loading = false;
         if (state.view === 'context') renderContext();
@@ -1930,10 +1933,10 @@ created: 2026-09-10
       codex.loading = true;
       try {
         codex.data = await api.run('codex-credits');
-        codex.error = '';
+        codex.error = ''; codex.failedAt = '';
         codex.at = planClock(new Date().toISOString());
       } catch (error) {
-        codex.data = null; codex.error = error.message;
+        codex.data = null; codex.error = error.message; codex.at = ''; codex.failedAt = planClock(new Date().toISOString());
       } finally {
         codex.loading = false;
         if (state.view === 'context') renderContext();
