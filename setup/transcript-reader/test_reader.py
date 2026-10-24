@@ -113,6 +113,11 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(reader.read_list(), [A])
         self.assertEqual(self.rebuilds, [([A], False), ([A], False)])
 
+    def test_the_list_reads_full_ids_only(self):
+        reader.OUT.mkdir(parents=True)
+        reader.LIST.write_text(f"# note\n{A}\n/Users/someone/.zsh_history\naaaaaaaa\n  {B}  \n", encoding="utf-8")
+        self.assertEqual(reader.read_list(), [A, B])
+
     def test_refuses_anything_but_one_full_id_with_a_log(self):
         for names in (["aaaaaaaa"], [C], ["leader-esim"], [A, A], []):
             self.assertEqual(reader.main(["follow", *names]), 2, names)

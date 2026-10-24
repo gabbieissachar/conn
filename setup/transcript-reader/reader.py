@@ -62,11 +62,13 @@ PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
 
 
 def read_list() -> list[str]:
+    """The listed session ids. `add` writes full ids only, so any other line (a path a
+    website planted through the shared server, say) is never read as a session log."""
     try:
         lines = LIST.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
-    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    return [line.strip() for line in lines if UUID.match(line.strip())]
 
 
 def write_list(ids: list[str]) -> None:
