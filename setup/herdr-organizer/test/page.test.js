@@ -344,12 +344,13 @@ test('a tab shows a copy button for each verified agent session id, and copying 
   assert.equal(agentSessionsView({ pane_count: 1 }), '');
 });
 
-function memberTabHelpers(context = { data: null }, archiveContext = { rows: new Map() }) {
+function memberTabHelpers(context = { data: null }, archiveContext = { rows: new Map() }, stateExtra = {}) {
   const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
   const view = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const batchMemberView'));
+  const leaderRules = html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = '));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), line('percentLevel'), view, 'return { memberPickKeys, memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {}, selectedGroupTabs: new Set() }, context, archiveContext);
+  return new Function('escapeHtml', 'plural', 'state', 'context', 'archiveContext', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), line('percentLevel'), leaderRules, view, 'return { memberPickKeys, memberTabsView, memberTabCommand, groupDestinations, groupTabDestination, groupLeaderDestination, archivedContextPill };'].join('\n'))(escapeHtml, plural, { groupTabDestinations: {}, selectedGroupTabs: new Set(), ...stateExtra }, context, archiveContext);
 }
 
 test('the archive group lists each archived workspace\'s tabs by name, with their pane counts', () => {
@@ -400,13 +401,14 @@ test('tabs picked inside the archive group restore into one workspace, one comma
   const key = (archive, tab) => `${archive}::${tab}`;
   const archiveA = '20261014-101500-esim';
   const archiveB = '20261014-101600-ops';
-  const state = { groupTabDestinations: {}, selectedGroupTabs: new Set([key(archiveA, 'w9J:t2'), key(archiveA, 'w9J:t4'), key(archiveB, 'w8K:t2')]), selectedGroupBatch: 'batch-20261014-101500' };
+  const state = { groupTabDestinations: {}, groupPanelDestinations: {}, selectedGroupTabs: new Set([key(archiveA, 'w9J:t2'), key(archiveA, 'w9J:t4'), key(archiveB, 'w8K:t2')]), selectedGroupBatch: 'batch-20261014-101500' };
   const helpers = (stateValue = state) => {
     const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
     const view = html.slice(html.indexOf('const groupPanelView'), html.indexOf('const archivedTabView'));
     const groupView = html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const memberTabsView'));
+    const leaderRules = html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = '));
     const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    return new Function('escapeHtml', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), groupView, view, 'return { groupPanelView };'].join('\n'))(escapeHtml, stateValue);
+    return new Function('escapeHtml', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), leaderRules, groupView, view, 'return { groupPanelView };'].join('\n'))(escapeHtml, stateValue);
   };
   const tab = (id, unresumable = 0) => ({ id, label: id, pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: unresumable });
   const batch = { batch_id: 'batch-20261014-101500', herdr_session: 'esim', members: [
@@ -429,6 +431,52 @@ test('tabs picked inside the archive group restore into one workspace, one comma
   assert.equal(helpers({ ...state, selectedGroupTabs: new Set() }).groupPanelView(data), '');
   assert.match(helpers({ ...state, groupTabDestinations: {} }).groupPanelView({ ...data, herdr_session: 'other' }), /data-command=""/);
   assert.match(html, /document\.querySelector\('#move-panel'\)\.innerHTML = state\.view === 'archives' \? restorePanelView\(data\) : state\.view === 'group' \? groupPanelView\(data\)/);
+});
+
+test('the group panel never defaults an ordinary tab into leader-space and sends leader tabs only there', () => {
+  const key = (archive, tab) => `${archive}::${tab}`;
+  const archiveId = '20261014-101500-esim';
+  const panel = (labels, workspaces) => {
+    const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const tabs = labels.map((label, index) => ({ id: `w9J:t${index + 2}`, label, pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 }));
+    const state = { groupTabDestinations: {}, groupPanelDestinations: {}, selectedGroupBatch: 'batch-20261014-101500', selectedGroupTabs: new Set(tabs.map(tab => key(archiveId, tab.id))) };
+    const view = new Function('escapeHtml', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = ')), html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const memberTabsView')), html.slice(html.indexOf('const groupPanelView'), html.indexOf('const archivedTabView')), 'return { groupPanelView };'].join('\n'))(escapeHtml, state);
+    const data = { herdr_session: 'esim', workspaces, batches: [{ batch_id: 'batch-20261014-101500', herdr_session: 'esim', members: [{ archive_id: archiveId, status: 'archived', workspace_label: 'esim (selected tabs)', tabs }] }] };
+    return view.groupPanelView(data);
+  };
+  // leader-space is the first open workspace on the operator's machine.
+  const workspaces = [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }, { id: 'wB1', label: 'nip' }];
+  const ordinary = panel(['shell', 'claude'], workspaces);
+  assert.match(ordinary, /--to-workspace wA8 /, 'the open workspace named like the archive is the default');
+  assert.equal(ordinary.includes('wBK'), false, 'leader-space is not even listed for ordinary tabs');
+  assert.match(panel(['shell'], [workspaces[0], workspaces[2]]), /--to-workspace wB1 /, 'without a name match, the first workspace that is not leader-space');
+  const leaders = panel(['leader-esim', 'big-boss'], workspaces);
+  assert.match(leaders, /--to-workspace wBK /);
+  assert.equal(leaders.includes('wA8'), false, 'leader tabs are offered only leader-space');
+  const mixed = panel(['leader-esim', 'shell'], workspaces);
+  assert.match(mixed, /data-command=""/, 'a mixed selection builds no command');
+  assert.match(mixed, /Leader tabs and other tabs cannot go into one workspace/);
+  assert.match(panel(['leader-esim'], [workspaces[1]]), /no leader-space workspace is open/);
+});
+
+test('a leader tab in the group has its own resume button aimed at leader-space, an ordinary tab follows the picker', () => {
+  const batch = { batch_id: 'batch-20261014-101500', herdr_session: 'esim' };
+  const data = { herdr_session: 'esim', batches: [batch], workspaces: [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }] };
+  const { memberTabsView, groupLeaderDestination } = memberTabHelpers({ data: null }, { rows: new Map() }, { data });
+  assert.equal(groupLeaderDestination(batch.batch_id), 'wBK');
+  assert.equal(groupLeaderDestination('unknown-batch'), '');
+  const member = { archive_id: '20261014-101500-esim', status: 'archived', workspace_label: 'esim', tabs: [
+    { id: 'w9J:t2', label: 'leader-esim', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 },
+    { id: 'w9J:t3', label: 'shell', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 },
+  ] };
+  const out = memberTabsView(member, ' --session esim', 'wA8', batch.batch_id);
+  assert.match(out, /--tab w9J:t2 --to-workspace wBK /, 'the leader tab goes to leader-space');
+  assert.match(out, /--tab w9J:t3 --to-workspace wA8 /, 'the other tab goes where the picker says');
+  const noLeaderSpace = memberTabHelpers({ data: null }, { rows: new Map() }, { data: { ...data, workspaces: [data.workspaces[1]] } });
+  const blocked = noLeaderSpace.memberTabsView(member, ' --session esim', 'wA8', batch.batch_id);
+  assert.equal(blocked.includes('--tab w9J:t2'), false, 'no leader-space open: the leader tab gets no command');
+  assert.match(blocked, /no leader-space workspace is open/);
 });
 
 test('the archive group can select every tab of one archived workspace at once, and a stacked mark reads once', () => {
@@ -455,7 +503,7 @@ test('an archived workspace in the group offers to resume one tab into an open w
   const { memberTabsView, memberTabCommand, groupDestinations, groupTabDestination } = memberTabHelpers();
   const archiveId = '20261014-101500-esim';
   const member = { archive_id: archiveId, status: 'archived', workspace_label: 'esim', tabs: [
-    { id: 'w9J:t2', label: 'leader-esim', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 },
+    { id: 'w9J:t2', label: 'esim-shell', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 },
     { id: 'w9J:t3', label: 'unverified', pane_count: 1, resumable_agent_count: 0, unresumable_agent_count: 1 },
   ] };
   assert.equal(memberTabCommand(member, member.tabs[0], ' --session esim', 'w9Z'),
@@ -567,6 +615,45 @@ test('context view: a tick is keyed by session, pane and session id, and a reloa
   prunePicks(picked, [row('dddddddd', 'wC1:p3'), row('cccccccc', 'wC1:p4'), { ...row('', 'wK:p2'), leader: { label: 'leader-esim' } }]);
   assert.deepEqual([...picked.keys()].sort(), ['leader-esim', 'project-a|wC1:p4|cccccccc'], 'the pane that now runs another session is not ticked');
   assert.equal(picked.get(pickKeyOf(row('dddddddd', 'wC1:p3'))), undefined, 'the new session in the reused pane starts unticked');
+});
+
+// Runs the page's own destination rules on plain data, so the check is of the shipped code and not of a copy.
+function destinationFunctions() {
+  const start = html.indexOf('const LEADER_WORKSPACE_LABEL = ');
+  const end = html.indexOf('const archiveTabKey = ');
+  const vm = require('node:vm');
+  return vm.runInNewContext(`${html.slice(start, end)}; ({ isLeaderTabLabel, restoreDestinations, defaultDestination, keepOrDefaultDestination })`, {});
+}
+
+test('restore destinations: leader-space is offered only for leader tabs, and the default is the workspace with the archive\'s own name', () => {
+  const { isLeaderTabLabel, restoreDestinations, defaultDestination, keepOrDefaultDestination } = destinationFunctions();
+  // leader-space is first in the list, as it is on the operator's machine.
+  const workspaces = [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }, { id: 'wB1', label: 'nip' }];
+  const tab = label => ({ label });
+  assert.deepEqual(['big-boss', 'leader-esim', 'leader-x'].map(isLeaderTabLabel), [true, true, true]);
+  assert.deepEqual(['leader-', 'esim', '', undefined, 'my-leader-tab'].map(isLeaderTabLabel), [false, false, false, false, false]);
+  assert.deepEqual(restoreDestinations(workspaces, [tab('shell'), tab('claude')]).map(item => item.id), ['wA8', 'wB1'], 'ordinary tabs never see leader-space');
+  assert.deepEqual(restoreDestinations(workspaces, [tab('leader-esim'), tab('big-boss')]).map(item => item.id), ['wBK'], 'leader tabs see only leader-space');
+  assert.equal(restoreDestinations(workspaces, [tab('leader-esim'), tab('shell')]).length, 0, 'a mix has no destination');
+  // The first open workspace is leader-space, yet an ordinary selection defaults to the workspace named like its archive.
+  const offered = restoreDestinations(workspaces, [tab('shell')]);
+  assert.equal(defaultDestination(offered, ['nip (selected tabs)']), 'wB1');
+  assert.equal(defaultDestination(offered, ['no such workspace']), 'wA8', 'without a match, the first offered one, never leader-space');
+  assert.equal(defaultDestination([], ['esim']), '');
+  const chosen = {};
+  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8');
+  chosen.k = 'wB1';
+  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wB1', 'a destination the user picked stays while it is offered');
+  chosen.k = 'wBK';
+  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8', 'a stale choice of leader-space is replaced');
+});
+
+test('restore destinations: every restore panel and per-tab button follows the leader convention', () => {
+  assert.match(html, /restoreDestinations\(data\.workspaces \|\| \[\], selected\.map/, 'the single-archive panel');
+  assert.match(html, /restoreDestinations\(groupDestinations\(batch, data\), pickedTabs\)/, 'the group panel');
+  assert.match(html, /groupDestinations\(batch, state\.data\)\.filter\(workspace => workspace\.label !== LEADER_WORKSPACE_LABEL\)/, 'the group picker offers no leader-space');
+  assert.match(html, /const target = leader \? groupLeaderDestination\(batchId\) : destination;/, 'a leader tab targets leader-space on its own');
+  assert.equal(/groupTabDestination\(batch, [A-Za-z]*\)[^;]*\[0\]/.test(html), false, 'no destination falls back to the first workspace of the list');
 });
 
 test('context view: the compact toggle keeps the tick box, puts the percent next to the name, and is remembered safely', () => {
