@@ -531,7 +531,14 @@
       if (session && opt.textContent !== sessionOption(session)) opt.textContent = sessionOption(session);
     });
   }
-  const sessionOption = s => [sessionStatus(s), sessionName(s) + (s.reopened ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  // The picker names a session by its Herdr tab or pane label alone; the session's own title
+  // comes back only to tell apart two listed sessions with the same label.
+  function pickerName(s) {
+    if (!s.pane) return sessionName(s);
+    const twins = data.sessions.filter(x => x.pane && x.pane.label === s.pane.label && Boolean(x.reopened) === Boolean(s.reopened));
+    return twins.length > 1 ? sessionName(s) : s.pane.label;
+  }
+  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
   // which open again for reading (with their documents) until closed.
   function fillSessions(select) {
@@ -542,7 +549,7 @@
     if (!live.served || !(data.closed || []).length) return;
     const group = $("optgroup"); group.label = "Closed panes · open to read again";
     group.append(...data.closed.map(c => {
-      const opt = $("option", null, `${c.label}${c.title && c.title !== c.label ? " · " + c.title : ""} · ${fmtShortDay(c.at)}`);
+      const opt = $("option", null, `${c.label} · ${fmtShortDay(c.at)}`);
       opt.value = "c:" + c.id; return opt;
     }));
     select.append(group);
