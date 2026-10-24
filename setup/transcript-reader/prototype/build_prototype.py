@@ -106,6 +106,9 @@ DOORBELL = re.compile(
 INBOX_PATH = re.compile(r"(?:list|read)\s+'?(/[^'\s]+?\.(?:inbox|msg))'?(?:/|\s|$)")
 # Firstmate's current doorbell names the inbox only, shell-quoted: list "$FM_TASK_INBOX"/*.msg
 # in your '<task>.inbox' steering inbox. It lives in the state/ folder of the home that steers.
+# Task instructions arrive as a pointer to one operational-input file.
+OPERATIONAL = re.compile(r"operational input waiting: read '(/[^']+?\.msg)'")
+OP_PREFIX = re.compile(r"^[\s\u2063]*FIRSTMATE_OP:\s*v\d+\s+[\w-]+:\s*")
 INBOX_NAME = re.compile(r"in your '((?:[^']|'\\'')+)' steering inbox")
 WAKE_LINE = re.compile(r"firstmate watcher wake[^\n]*\n\s*([a-z-]+)(?::\s*([^\n]*))?")
 BACKGROUND = re.compile(r'Background (?:command|shell command) "([^"]*)"\s*(completed|failed|was stopped)?')
@@ -378,6 +381,12 @@ def session_exchanges(records: list[dict]) -> list[dict]:
                     current.setdefault("touched", []).extend(tool_documents(block.get("input"), record.get("cwd") or ""))
     for exchange in exchanges:
         finish_exchange(exchange)
+    # A message sent while the agent was busy takes the rest of the turn, which usually
+    # answers the message before it too: that one is answered below, not unanswered.
+    for i, exchange in enumerate(exchanges):
+        later = exchanges[i + 1:]
+        run = next((n for n, e in enumerate(later) if not e["absorbed"]), len(later))
+        exchange["answered_below"] = not exchange["reply"] and any(e["reply"] for e in later[:run])
     # The newest turn with no reply yet is still running, or ended without a word: it stays
     # open so the reader shows what the session is doing now.
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
@@ -511,12 +520,32 @@ def doorbell_inbox(text: str, homes: list[Path]) -> Path | None:
     return None
 
 
+def attach_operational_input(exchange: dict) -> None:
+    """Show the task instructions an operational-input pointer names, in its place."""
+    match = OPERATIONAL.search(exchange["input"])
+    if not match:
+        return  # the instructions came inline
+    path = Path(match.group(1))
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.stat().st_size <= MAX_DOCUMENT_BYTES else ""
+    except OSError:
+        text = ""
+    text = OP_PREFIX.sub("", text).strip()
+    # A worker's brief opens with the standing role contract; the task is what is new.
+    task = text.find("\n# Task\n")
+    text = text[task + 1:] if task >= 0 else text
+    exchange["delivered"] = [text] if text else []
+    exchange["undelivered"] = not text
+
+
 def attach_inbox_bodies(exchanges: list[dict], homes: list[Path]) -> None:
     """A doorbell only names an inbox. Show the messages it delivered, and say so when
     none is found, rather than leave the pointer line looking like the instruction."""
     seen: set[tuple[str, str]] = set()
     cache: dict[str, list[dict]] = {}
     for exchange in exchanges:
+        if exchange["source"] == "firstmate" and exchange["kind"] == "brief":
+            attach_operational_input(exchange)
         if exchange["source"] != "firstmate" or exchange["kind"] != "steer":
             continue
         directory = doorbell_inbox(exchange["input"], homes)

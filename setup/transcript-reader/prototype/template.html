@@ -386,6 +386,7 @@
   function verdictChip(ex) {
     if (ex.verdict === "needs-you") return $("span", "chip needs", "Needs you");
     if (ex.verdict === "no-action") return $("span", "chip none", "No action");
+    if (ex.answered_below) return $("span", "chip reminder", "Answered below");
     return $("span", "chip reminder", "No reply");
   }
   // key names the turn for state.open; sid, when given, makes the reply answerable from here.

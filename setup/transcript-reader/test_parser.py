@@ -214,6 +214,15 @@ class SessionExchangesTest(unittest.TestCase):
         self.assertEqual((theirs["source"], theirs["label"], theirs["input"]), ("peer", "From release-mate", PEER["body"]))
         self.assertEqual(theirs["reply"], "Yes, on fm/login.")
 
+    def test_a_message_answered_after_one_sent_while_busy_is_answered_below(self):
+        first, second, third = self.exchanges([
+            user("Fix the login page", 0), tool(1), queued("Also the footer", 2), say("Both fixed.", 3),
+            user("Thanks", 4), tool(5),
+        ])
+        self.assertEqual((first["reply"], first["answered_below"]), ("", True))
+        self.assertEqual((second["reply"], second["answered_below"]), ("Both fixed.", False))
+        self.assertFalse(third["answered_below"])
+
     def test_a_peer_message_sent_while_busy_is_not_shown_as_the_captains(self):
         _, theirs = self.exchanges([user("Fix it", 0), tool(1), queued("<agent-message>wrapped</agent-message>", 2, PEER), say("Yes.", 3)])
         self.assertEqual((theirs["source"], theirs["label"], theirs["absorbed"]), ("peer", "From release-mate", True))
@@ -258,6 +267,18 @@ class DoorbellTest(unittest.TestCase):
         builder.attach_inbox_bodies([first, again], [self.home, self.parent])
         self.assertEqual((first["delivered"], first["repeat"]), (["Rebase onto main first."], False))
         self.assertEqual((again["delivered"], again["repeat"], again["undelivered"]), ([], True, False))
+
+    def test_task_instructions_show_in_place_of_their_pointer(self):
+        brief = self.parent / "state" / "operational-inbox" / "1-abc.msg"
+        brief.parent.mkdir(parents=True)
+        brief.write_text("\u2063FIRSTMATE_OP: v1 launch-brief: # Role\nYou are a worker.\n# Task\nFix the login page.", encoding="utf-8")
+        pointer = f": Firstmate operational input waiting: read '{brief}' and handle its contents as Firstmate operational input."
+        [turn] = builder.session_exchanges([user(pointer, 0), say("On it.", 1)])
+        builder.attach_inbox_bodies([turn], [self.home])
+        self.assertEqual((turn["kind"], turn["delivered"], turn["undelivered"]), ("brief", ["# Task\nFix the login page."], False))
+        brief.unlink()
+        builder.attach_inbox_bodies([turn], [self.home])
+        self.assertEqual((turn["delivered"], turn["undelivered"]), ([], True))
 
     def test_absolute_path_format(self):
         turn = self.steer(f"Firstmate instruction waiting: read '{self.parent}/state/fix-login.inbox'")
