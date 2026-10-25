@@ -268,6 +268,7 @@ test('a request refused for its time is on the laptop\'s record too, so it is no
   const later = () => Date.now() + 2 * 3600 * 1000;
   assert.deepEqual(await lab.drain({ now: later }), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
   assert.equal(lab.herdr.calls.length, 0);
+  assert.equal((await lab.receipt(Q1)).code, 'handled');
   assert.deepEqual(lab.queued(), []);
   // The record is kept until the request could no longer be fresh, not just for two days.
   const ledgerFile = path.join(lab.base, '.drain-handled-v2-bucket.json');
@@ -288,6 +289,7 @@ test('deleting a receipt does not make a copied request run again: the laptop ke
   assert.deepEqual(await lab.drain(), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
   assert.equal(lab.herdr.prompts().length, 1);
   assert.deepEqual(lab.queued(), [], 'the copy is dropped');
+  assert.equal((await lab.receipt(Q1)).code, 'handled', 'and the page is told');
   assert.ok(fs.existsSync(path.join(lab.base, '.drain-handled-v2-bucket.json')), 'the record is beside the bucket, not in it');
   assert.equal(fs.existsSync(path.join(lab.folder, '.drain-handled-v2-bucket.json')), false);
 });

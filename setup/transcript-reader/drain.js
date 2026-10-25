@@ -126,6 +126,8 @@ async function drain({ folder, sealed, passphrase = '', root = path.join(__dirna
         // A receipt exists, or the laptop has this id on record: this request was handled, or stopped
         // midway. It is never sent again.
         if (before && before.state === 'sending') { result.interrupted += 1; await write({ ...before, state: 'refused', code: 'interrupted', reason: 'The laptop stopped while sending this. It may or may not have reached the pane: check it before sending again.', at: Math.floor(now() / 1000) }); }
+        // With no receipt (deleted, or the run stopped before writing one) the page still gets an answer.
+        if (!before) await write({ id, session_id: null, state: 'refused', code: 'handled', reason: 'The laptop had already handled this request, so it was not sent again. If it never arrived, send it again.', at: Math.floor(now() / 1000) });
         fs.unlinkSync(file);
         continue;
       }
