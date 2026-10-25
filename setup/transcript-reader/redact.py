@@ -15,7 +15,8 @@ import re
 # block first, so a token inside it is not counted twice.
 PATTERNS = [
     # A whole key block first, headers (Proc-Type, DEK-Info) and blank lines inside it included.
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"), 0),
+    # Its body never crosses another BEGIN or END line, so a text of many BEGINs reads once.
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:(?!-----(?:BEGIN|END) )[\s\S])*-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"), 0),
     # Then one cut off before its END line (the head of a key file, a truncated tool output): its
     # BEGIN line and every following line of key material (base64, a header, a blank line).
     ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\n(?:[A-Za-z0-9+/=]*|[A-Za-z-]+:[^\n]*)(?=\n|\Z))*"), 0),
