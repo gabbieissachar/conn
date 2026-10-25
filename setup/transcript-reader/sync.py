@@ -117,10 +117,14 @@ def stamp_of(data: bytes) -> str:
 
 
 def replace(path: Path, data: bytes) -> None:
-    """Write <path> in one rename, so a reader never sees half an object."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write <path> in one rename, so a reader never sees half an object. It carries the same text
+    as Claude's logs, so the file is the owner's alone (0600 in 0700 folders), as the reader's own."""
+    builder.private_folder(path.parent)
     partial = path.with_name(f".{path.name}.{os.getpid()}.partial")
-    partial.write_bytes(data)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
     os.replace(partial, path)
 
 
@@ -278,8 +282,7 @@ class Build:
                 merged.update(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, json.JSONDecodeError):
                 continue
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(merged, indent=1, sort_keys=True), encoding="utf-8")
+        builder.write_private(cache, json.dumps(merged, indent=1, sort_keys=True))
         builder.pane_labels([], cache, live)
         return live
 
@@ -431,7 +434,7 @@ class Build:
         return records
 
     def run(self) -> int:
-        self.out.mkdir(parents=True, exist_ok=True)
+        builder.private_folder(self.out)
         live = self.panes()
         seeds = self.seeds()
         since = self.since(seeds)
@@ -700,13 +703,19 @@ def main(argv: list[str]) -> int:
         return 0
     target = Path(args.dry_run or args.wipe or BUCKET).expanduser()
     secret = passphrase(target) if args.dry_run else ""
-    out.mkdir(parents=True, exist_ok=True)
-    with open(out / ".lock", "w") as lock:
+    builder.private_folder(out)
+    with builder.private_open(out / ".lock", truncate=False) as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             print("Another build of this copy is running; this one stops.")
             return 1
+        # What an earlier run left with the default modes, in the reader's own out/ folder only
+        # (never a folder the caller named elsewhere: it may hold other things).
+        own = (HERE / "out").resolve()
+        for folder in (out, target):
+            if folder.is_dir() and own in [folder.resolve(), *folder.resolve().parents]:
+                builder.make_private(folder)
         if args.wipe:
             return wipe(target, out)
         code = Build(args).run()

@@ -26,10 +26,12 @@ const seal = require('./prototype/seal.js');
 // The paths sync.py writes: the index, and conversation, document, week and answer-sheet objects.
 const OBJECT_RE = /^(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json$/;
 
+// The owner's alone (0600 in 0700 folders), like Claude's logs and the reader's own files.
 function replace(file, bytes) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const partial = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.partial`);
-  fs.writeFileSync(partial, bytes);
+  fs.writeFileSync(partial, bytes, { mode: 0o600 });
+  fs.chmodSync(partial, 0o600);
   fs.renameSync(partial, file);
 }
 

@@ -400,6 +400,25 @@ class IncrementalTest(unittest.TestCase):
         self.assertEqual(len({call.args[0] for call in builds.call_args_list}), 3)
 
 
+class PrivateTest(unittest.TestCase):
+    """The copy carries the logs' text, so every folder and file of it is the owner's alone, whatever the umask."""
+
+    def test_the_build_and_the_sealed_bucket_are_owner_only(self):
+        lab = Lab(self)
+        target = lab.root / "out" / "bucket"
+        before = os.umask(0o022)
+        self.addCleanup(os.umask, before)
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            self.assertEqual(lab.build_only_args("--dry-run", str(target)), 0)
+        seen = 0
+        for top in (lab.out, target):
+            for path in [top, *top.rglob("*")]:
+                mode = path.stat().st_mode & 0o777
+                self.assertEqual(mode, 0o700 if path.is_dir() else 0o600, f"{path.relative_to(lab.root)} is {oct(mode)}")
+                seen += 1
+        self.assertGreater(seen, 20)
+
+
 class CommandTest(unittest.TestCase):
     def test_build_only_is_the_only_mode(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as stop:
