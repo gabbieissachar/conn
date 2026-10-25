@@ -6,7 +6,13 @@
 // by the page with the passphrase's key, to q/<uuid>.json.enc (a sealed bucket); the sync agent
 // (sync.py, once a minute while the laptop is awake) runs this on the folder.
 //
-//   node setup/transcript-reader/drain.js <folder>          (a sealed bucket: HOSTED_READER_PASSPHRASE)
+//   node setup/transcript-reader/drain.js <folder> --plain
+//   HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js <folder> --sealed
+//
+// The caller says which kind of copy the folder is, and the folder never decides: a sealed bucket
+// takes only requests sealed under its key (a missing k/params.json stops the run, it does not
+// turn the bucket into a plain copy that takes unsealed requests), and a plain copy takes only
+// plain ones.
 //
 // Each request is checked again here, now, by the local reader's own send (api.js sendPrompt, so the
 // conditions are the same code): the session is a conversation of this copy; one live Herdr pane
@@ -16,8 +22,13 @@
 // request leaves q/. Written before the send as "sending" and then replaced, so a run that stops
 // midway never sends the same text twice: the next run turns that receipt into "refused:
 // interrupted" and the owner checks the pane. A refusal is final (nothing retries by itself): the
-// page says why and the owner sends again. A request that waited over 12 hours is refused as
-// expired, so an old message never lands in a conversation that moved on. Receipts go after 7 days.
+// page says why and the owner sends again. A request is also refused as expired once its own time
+// (inside the sealed bytes, so a copied request cannot be given a new one) or its time in the folder is
+// over 12 hours old, so an old message never lands in a conversation that moved on, and one whose
+// time is more than 10 minutes ahead of the laptop's clock (the page's clock is wrong) is refused.
+// Receipts go after 7 days. The ids handled are also kept on the laptop only (beside the folder, in
+// .drain-handled-<folder>.json, for 2 days), so deleting a receipt in the bucket cannot make a copied
+// request run again.
 //
 // HOSTED_READER_HERDR names the Herdr binary (default `herdr`); tests give it a fake. With no
 // request in q/, nothing is read, unlocked or sent.
@@ -35,7 +46,9 @@ const { create, checkText } = require('./api');
 const ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const SESSION_ID_RE = new RegExp('^' + ID + '$');
 const TTL_MS = 12 * 3600 * 1000;
+const FUTURE_MS = 10 * 60 * 1000;
 const RECEIPT_KEEP_MS = 7 * 86400 * 1000;
+const HANDLED_KEEP_MS = 2 * 86400 * 1000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
 
 const listing = (folder, re) => { try { return fs.readdirSync(folder).filter((name) => re.test(name)); } catch { return []; } };
@@ -52,14 +65,25 @@ async function listedIds(folder, key) {
   } catch { return []; }
 }
 
-async function drain({ folder, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
+// The ids already handled, on this laptop only: beside the folder, never in it.
+function ledger(folder, at) {
+  const file = path.join(path.dirname(folder), `.drain-handled-${path.basename(folder)}.json`);
+  let handled = {};
+  try { handled = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { handled = {}; }
+  for (const id of Object.keys(handled)) if (!(at - handled[id] <= HANDLED_KEEP_MS)) delete handled[id];
+  const save = () => replace(file, Buffer.from(JSON.stringify(handled), 'utf8'));
+  return { has: (id) => Object.prototype.hasOwnProperty.call(handled, id), add: (id) => { handled[id] = at; save(); } };
+}
+
+async function drain({ folder, sealed, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
+  if (typeof sealed !== 'boolean') throw new Error('Say whether the folder is a sealed bucket or a plain copy.');
   const queue = path.join(folder, 'q');
-  const sealed = exists(path.join(folder, 'k', 'params.json'));
   const entries = listing(queue, new RegExp('^' + ID + (sealed ? '\\.json\\.enc$' : '\\.json$')));
   const result = { sent: 0, refused: 0, interrupted: 0, expired: 0 };
   if (!entries.length) { prune(folder, sealed, now()); return result; }
   let key = null;
   if (sealed) {
+    if (!exists(path.join(folder, 'k', 'params.json'))) return { ...result, error: 'no-params' };
     if (!passphrase) throw new Error('Set HOSTED_READER_PASSPHRASE: the sealed bucket has requests waiting.');
     try { key = await seal.unlock(passphrase, JSON.parse(fs.readFileSync(path.join(folder, 'k', 'params.json'), 'utf8'))); } catch { key = null; }
     if (!key) return { ...result, error: 'wrong-passphrase' };
@@ -71,6 +95,7 @@ async function drain({ folder, passphrase = '', root = path.join(__dirname, '..'
   } catch { return { ...result, error: 'busy' }; }
   try {
     const ids = await listedIds(folder, key);
+    const handled = ledger(folder, now());
     const api = create({ root, port: 1, token: crypto.randomBytes(32).toString('hex'), ...(runner ? { runner } : {}), herdrBin, ...(env ? { env } : {}),
       ...(claudeSessionsDir ? { claudeSessionsDir } : {}), ...(pause ? { pause } : {}), outDir: path.join(folder, '.unused'), sendable: () => ids });
     const receiptPath = (id) => path.join(folder, 'r', id + (sealed ? '.json.enc' : '.json'));
@@ -95,9 +120,10 @@ async function drain({ folder, passphrase = '', root = path.join(__dirname, '..'
         result[state] += 1;
       };
       const before = exists(receiptPath(id)) ? await readReceipt(id) : null;
-      if (before) {
-        // A receipt exists: this request was handled, or stopped midway. It is never sent again.
-        if (before.state === 'sending') { result.interrupted += 1; await write({ ...before, state: 'refused', code: 'interrupted', reason: 'The laptop stopped while sending this. It may or may not have reached the pane: check it before sending again.', at: Math.floor(now() / 1000) }); }
+      if (before || handled.has(id)) {
+        // A receipt exists, or the laptop has this id on record: this request was handled, or stopped
+        // midway. It is never sent again.
+        if (before && before.state === 'sending') { result.interrupted += 1; await write({ ...before, state: 'refused', code: 'interrupted', reason: 'The laptop stopped while sending this. It may or may not have reached the pane: check it before sending again.', at: Math.floor(now() / 1000) }); }
         fs.unlinkSync(file);
         continue;
       }
@@ -110,7 +136,9 @@ async function drain({ folder, passphrase = '', root = path.join(__dirname, '..'
       } catch { request = null; }
       if (!request) { await done('refused', { code: 'invalid', reason: 'The request could not be read, so nothing was sent.' }); continue; }
       const fields = { session_id: request.session_id, queued_at: request.at };
-      if (waited > TTL_MS) { result.expired += 1; await done('refused', { ...fields, code: 'expired', reason: 'This waited more than 12 hours for the laptop, so it was not sent. Send it again if it still matters.' }); continue; }
+      if (request.at * 1000 > now() + FUTURE_MS) { await done('refused', { ...fields, code: 'invalid', reason: 'The request is dated in the future, so nothing was sent. Check the clock of the device that wrote it.' }); continue; }
+      if (Math.max(waited, now() - request.at * 1000) > TTL_MS) { result.expired += 1; await done('refused', { ...fields, code: 'expired', reason: 'This waited more than 12 hours for the laptop, so it was not sent. Send it again if it still matters.' }); continue; }
+      handled.add(id);
       await write({ id, ...fields, state: 'sending', at: Math.floor(now() / 1000) });
       try {
         const sent = await api.sendPrompt({ session_id: request.session_id, text: request.text });
@@ -135,17 +163,18 @@ function prune(folder, sealed, at) {
 
 function summary(result) {
   if (result.error === 'wrong-passphrase') return 'Drain: that passphrase does not open this bucket; its waiting requests were left.';
+  if (result.error === 'no-params') return 'Drain: this sealed bucket has no k/params.json, so its waiting requests were left.';
   if (result.error === 'busy') return 'Drain: another drain is running on this folder.';
   const total = result.sent + result.refused + result.interrupted;
   return total ? `Drain: ${result.sent} sent, ${result.refused + result.interrupted} refused (${result.expired} expired)` : 'Drain: nothing queued';
 }
 
 if (require.main === module) {
-  const [folder] = process.argv.slice(2);
-  if (!folder) { process.stderr.write('usage: drain.js <folder>\n'); process.exit(2); }
-  drain({ folder: path.resolve(folder), passphrase: process.env.HOSTED_READER_PASSPHRASE || '', herdrBin: process.env.HOSTED_READER_HERDR || 'herdr' })
+  const [folder, kind, ...rest] = process.argv.slice(2);
+  if (!folder || !['--sealed', '--plain'].includes(kind) || rest.length) { process.stderr.write('usage: drain.js <folder> --plain | --sealed\n'); process.exit(2); }
+  drain({ folder: path.resolve(folder), sealed: kind === '--sealed', passphrase: process.env.HOSTED_READER_PASSPHRASE || '', herdrBin: process.env.HOSTED_READER_HERDR || 'herdr' })
     .then((result) => { process.stdout.write(summary(result) + '\n'); process.exitCode = result.error ? 1 : 0; },
       (error) => { process.stderr.write(error.message + '\n'); process.exit(1); });
 }
 
-module.exports = { drain, summary, TTL_MS, RECEIPT_KEEP_MS };
+module.exports = { drain, summary, TTL_MS, FUTURE_MS, RECEIPT_KEEP_MS, HANDLED_KEEP_MS };

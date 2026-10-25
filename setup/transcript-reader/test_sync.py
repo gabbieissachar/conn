@@ -12,6 +12,7 @@ import io
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -629,5 +630,124 @@ class DryRunTest(unittest.TestCase):
         self.assertIn("<key>StartInterval</key><integer>60</integer>", plist)
         self.assertIn(f"security find-generic-password -w -s {sync.KEYCHAIN_SERVICE}", plist)
         self.assertIn(f'--dry-run "{self.target.resolve()}"', plist)
+        # launchd's own PATH holds none of the tools a run uses, so the agent carries the folders of node and python3.
+        self.assertIn("<key>EnvironmentVariables</key>", plist)
+        path = plist.split("<key>PATH</key><string>")[1].split("</string>")[0].split(":")
+        for tool in ("node", "python3"):
+            self.assertIn(str(Path(shutil.which(tool)).resolve().parent), path)
         self.assertNotIn(PASS, plist)
         self.assertFalse(self.target.exists())
+
+
+# What the page does for a sealed bucket: gzip the request and seal it under the passphrase's key.
+SEAL_REQUEST_JS = r"""
+const fs = require('fs'), path = require('path'), zlib = require('zlib');
+const seal = require(process.argv[1]);
+(async () => {
+  const [folder, id, json] = process.argv.slice(2);
+  const key = await seal.unlock(process.env.HOSTED_READER_PASSPHRASE, JSON.parse(fs.readFileSync(path.join(folder, 'k/params.json'))));
+  fs.mkdirSync(path.join(folder, 'q'), { recursive: true });
+  fs.writeFileSync(path.join(folder, 'q', id + '.json.enc'), await seal.close(key, 'q/' + id + '.json', zlib.gzipSync(Buffer.from(json))));
+})();
+"""
+# A Herdr that is not Herdr: it answers the reads a send makes for one pane running session A, logs every call
+# to STUB_LOG and changes nothing.
+STUB_HERDR = f'''#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+pane = {{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "alpha", "agent": "claude", "agent_status": os.environ.get("STUB_STATUS", "idle"), "agent_session": {{"value": "{A}"}}}}
+if args[:3] == ["session", "list", "--json"]:
+    print(json.dumps({{"sessions": [{{"name": "lab", "running": True, "default": False}}]}}))
+elif args[2:4] == ["api", "snapshot"]:
+    print(json.dumps({{"result": {{"snapshot": {{"focused_pane_id": "w1:p1", "tabs": [], "panes": [pane]}}}}}}))
+elif args[2:4] == ["pane", "process-info"]:
+    print(json.dumps({{"result": {{"process_info": {{"foreground_processes": [{{"pid": 1, "argv0": "claude"}}]}}}}}}))
+elif args[2:4] in (["agent", "send-keys"], ["agent", "prompt"]):
+    print("{{}}")
+else:
+    sys.exit(1)
+'''
+Q1 = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+Q2 = "22222222-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
+
+
+class SendTest(unittest.TestCase):
+    """Every run sends what the page queued, before it builds, through the fake Herdr above."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        self.target = self.lab.root / "out" / "bucket"
+        stub = self.lab.root / "stub" / "herdr"
+        stub.parent.mkdir()
+        stub.write_text(STUB_HERDR, encoding="utf-8")
+        stub.chmod(0o755)
+        self.log = self.lab.root / "stub" / "calls.log"
+        home = self.lab.root / "stub" / "home"
+        home.mkdir()
+        env = mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS, "HOSTED_READER_HERDR": str(stub), "STUB_LOG": str(self.log), "HOME": str(home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.assertEqual(self.lab.build(), 0)  # the index the requests are checked against
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()] if self.log.exists() else []
+
+    def prompts(self):
+        return [call[5] for call in self.calls() if call[2:4] == ["agent", "prompt"]]
+
+    def test_a_queued_request_is_sent_before_the_build_and_its_receipt_is_written(self):
+        queue = self.lab.out / "q"
+        queue.mkdir()
+        (queue / f"{Q1}.json").write_text(json.dumps({"id": Q1, "session_id": A, "text": "A1=keep;A2=short", "at": time.time()}), encoding="utf-8")
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+            self.assertEqual(sync.main(["--build-only", "--out", str(self.lab.out), "--main-home", str(self.lab.main)]), 0)
+        self.assertIn("Drain: 1 sent, 0 refused", printed.getvalue())
+        self.assertEqual(self.prompts(), ["A1=keep;A2=short"])
+        receipt = json.loads((self.lab.out / "r" / f"{Q1}.json").read_text(encoding="utf-8"))
+        self.assertEqual((receipt["state"], receipt["label"], receipt["session_id"]), ("sent", "alpha", A))
+        self.assertEqual(list(queue.iterdir()), [])
+        self.assertEqual(self.lab.build(), 0)
+        self.assertEqual(self.prompts(), ["A1=keep;A2=short"], "the next run sends nothing again")
+
+    def test_a_pane_that_is_not_ready_refuses_with_a_reason_and_the_build_goes_on(self):
+        queue = self.lab.out / "q"
+        queue.mkdir()
+        (queue / f"{Q1}.json").write_text(json.dumps({"id": Q1, "session_id": A, "text": "hello", "at": time.time()}), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"STUB_STATUS": "blocked"}):
+            self.assertEqual(self.lab.build(), 0)
+        receipt = json.loads((self.lab.out / "r" / f"{Q1}.json").read_text(encoding="utf-8"))
+        self.assertEqual((receipt["state"], receipt["code"]), ("refused", "agent_blocked"))
+        self.assertEqual(self.prompts(), [])
+
+    def test_a_dry_run_sends_what_the_sealed_page_queued_and_seals_the_receipt(self):
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        request = json.dumps({"id": Q2, "session_id": A, "text": "A1=keep", "at": time.time()})
+        subprocess.run(["node", "-e", SEAL_REQUEST_JS, str(SEAL), str(self.target), Q2, request], check=True, env=os.environ)
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.prompts(), ["A1=keep"])
+        done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), f"r/{Q2}.json"], capture_output=True, text=True, check=True, env=os.environ)
+        self.assertEqual(json.loads(done.stdout)[f"r/{Q2}.json"]["state"], "sent")
+        self.assertEqual(list((self.target / "q").iterdir()), [])
+        # The receipt and the queue are not objects of the bucket: the next run neither prunes nor reseals them.
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertTrue((self.target / "r" / f"{Q2}.json.enc").is_file())
+        self.assertEqual(self.prompts(), ["A1=keep"])
+
+    def test_a_run_with_nothing_queued_starts_no_node_and_asks_no_herdr(self):
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        before = len(self.calls())
+        with mock.patch.object(sync.subprocess, "run", wraps=sync.subprocess.run) as ran:
+            self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(ran.call_count, 0)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_wipe_takes_the_sealed_queue_and_receipts_with_the_rest(self):
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        for folder, name in (("q", f"{Q1}.json.enc"), ("r", f"{Q2}.json.enc")):
+            (self.target / folder).mkdir(exist_ok=True)
+            (self.target / folder / name).write_bytes(b"HRC1" + b"x" * 40)
+        with mock.patch("sys.stdout"):
+            self.assertEqual(sync.main(["--wipe", str(self.target), "--out", str(self.lab.out)]), 0)
+        self.assertEqual([p for p in self.target.rglob("*") if p.is_file()], [])

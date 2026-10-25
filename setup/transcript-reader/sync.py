@@ -10,7 +10,7 @@ Usage (from the repo root):
   python3 setup/transcript-reader/sync.py --build-only --session ID    exactly these sessions (repeatable; id, 8-char prefix or log path)
   python3 setup/transcript-reader/sync.py --dry-run [FOLDER]           build, then redact, encrypt and write the bucket (default out/bucket/);
                                                                        --new-passphrase seals it all again under another passphrase
-  python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote
+  python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote (receipts and waiting sends too)
   python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs the dry run every minute
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
 
@@ -59,6 +59,12 @@ so the shell shows what the local page shows and a log either build parsed is no
 It takes its own lock, not the local page's rebuild lock, so a long first build never holds
 up the local page's refresh.
 
+Send (plan section 8): the page writes a request to q/<uuid>.json (plain copy) or q/<uuid>.json.enc
+(sealed bucket), and every run, before it builds, sends what waits there (drain.js: the local
+reader's own send, with all its pane checks) and writes a receipt to r/<uuid>.json(.enc) for the page.
+--build-only drains out/hosted/; --dry-run drains it and the bucket. Herdr is the one on PATH,
+or HOSTED_READER_HERDR's. Nothing is started when q/ is empty.
+
 The reader's own server serves it beside the local page, at
 http://localhost:<port>/setup/transcript-reader/out/hosted/index.html (start it with
 bash setup/transcript-reader/serve.sh; PMOS_READER_PORT, default 8768). Only session logs,
@@ -73,6 +79,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -613,11 +620,22 @@ class DryRun:
         replace(self.out / "redactions.json", encode({"totals": totals, "objects": per_object, "index": self.state.get("index_redacted") or {}}))
 
 
+def drain(folder: Path, sealed: bool, secret: str = "") -> None:
+    """Send what the page queued in <folder>/q (drain.js, which checks each pane again and writes the
+    receipts). Nothing starts when nothing waits. A drain that fails never stops the sync: it says so
+    and the requests wait for the next run."""
+    if not any(not path.name.startswith(".") for path in (folder / "q").glob("*")):
+        return
+    done = subprocess.run(["node", str(HERE / "drain.js"), str(folder), "--sealed" if sealed else "--plain"], capture_output=True, text=True,
+                          env={**os.environ, **({PASSPHRASE_ENV: secret} if secret else {})})
+    print((done.stdout.strip() or done.stderr.strip() or f"Drain of {folder} stopped.").splitlines()[-1])
+
+
 def wipe(target: Path, out: Path) -> int:
     """Empty <target> of what the dry run writes there (and forget what was sealed); nothing else is touched."""
     removed = 0
     for pattern in ("index.html", "sheet.html", "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
-                    "*/.*.partial", ".*.partial"):
+                    "r/*.json.enc", "q/*.json.enc", "q/.drain.lock", "*/.*.partial", ".*.partial"):
         for path in target.glob(pattern):
             if path.is_file():
                 path.unlink()
@@ -652,6 +670,10 @@ def launch_agent(target: Path) -> str:
                f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --dry-run "{target.resolve()}"')
     log = HERE / "out" / "sync-agent.log"
     from xml.sax.saxutils import escape
+    # launchd's own PATH holds none of the tools a run uses (node seals and sends, python3 builds,
+    # herdr is the pane a send reaches), so the agent gets the folders they are in now.
+    found = [str(Path(shutil.which(tool)).resolve().parent) for tool in ("node", "python3", "herdr") if shutil.which(tool)]
+    path = ":".join(dict.fromkeys([*found, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -660,6 +682,8 @@ def launch_agent(target: Path) -> str:
   <key>ProgramArguments</key>
   <array><string>/bin/sh</string><string>-c</string><string>{escape(command)}</string></array>
   <key>WorkingDirectory</key><string>{escape(str(reader.REPO.resolve()))}</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>{escape(path)}</string></dict>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>{escape(str(log))}</string>
@@ -718,6 +742,9 @@ def main(argv: list[str]) -> int:
                 builder.make_private(folder)
         if args.wipe:
             return wipe(target, out)
+        drain(out, False)
+        if args.dry_run:
+            drain(target, True, secret)
         code = Build(args).run()
         if args.dry_run and not code:
             code = DryRun(out, target, secret, args.new_passphrase).run()

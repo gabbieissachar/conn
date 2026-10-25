@@ -53,7 +53,10 @@ const CONVERSATIONS = { conversations: [{ id: A }, { id: B }, { id: E }] };
 
 // A plain copy's folder (out/hosted) or a sealed bucket's, holding the index and no queue yet.
 async function copy({ sealed = false } = {}) {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'hosted-drain-'));
+  // The folder sits in a folder of its own: the drain keeps its ledger of handled ids beside the folder, not in it.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'hosted-drain-'));
+  const folder = path.join(base, sealed ? 'bucket' : 'hosted');
+  fs.mkdirSync(folder);
   let key = null;
   if (sealed) {
     let params;
@@ -65,7 +68,7 @@ async function copy({ sealed = false } = {}) {
   const herdr = fakeHerdr();
   const claudeSessionsDir = path.join(folder, 'no-claude-sessions');
   const api = {
-    folder, key, herdr, sealed,
+    folder, base, key, herdr, sealed,
     async queue(id, request, { age = 0 } = {}) {
       fs.mkdirSync(path.join(folder, 'q'), { recursive: true });
       const text = Buffer.from(typeof request === 'string' ? request : JSON.stringify({ id, at: Date.now() / 1000, ...request }));
@@ -80,8 +83,8 @@ async function copy({ sealed = false } = {}) {
       return JSON.parse(sealed ? zlib.gunzipSync(Buffer.from(await seal.open(key, `r/${id}.json`, bytes))).toString('utf8') : bytes.toString('utf8'));
     },
     queued: () => (fs.existsSync(path.join(folder, 'q')) ? fs.readdirSync(path.join(folder, 'q')) : []),
-    drain: (options = {}) => drain({ folder, passphrase: PASS, runner: herdr.runner, claudeSessionsDir, pause: async () => {}, ...options }),
-    cleanup: () => fs.rmSync(folder, { recursive: true, force: true }),
+    drain: (options = {}) => drain({ folder, sealed, passphrase: PASS, runner: herdr.runner, claudeSessionsDir, pause: async () => {}, ...options }),
+    cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
   };
   return api;
 }
@@ -211,6 +214,61 @@ for (const sealed of [false, true]) {
     assert.equal((await lab.receipt(Q2)).state, 'sent');
   });
 }
+
+test('the caller says whether the folder is sealed; a bucket that lost its params is not read as a plain copy', async (t) => {
+  const lab = await copy({ sealed: true });
+  t.after(lab.cleanup);
+  // Someone with write access to the bucket deletes k/params.json and plants a plain request.
+  fs.unlinkSync(path.join(lab.folder, 'k', 'params.json'));
+  fs.mkdirSync(path.join(lab.folder, 'q'));
+  fs.writeFileSync(path.join(lab.folder, 'q', Q1 + '.json'), JSON.stringify({ id: Q1, session_id: A, text: 'planted', at: Date.now() / 1000 }));
+  fs.writeFileSync(path.join(lab.folder, 'index.json'), JSON.stringify(CONVERSATIONS));
+  assert.deepEqual(await lab.drain(), { sent: 0, refused: 0, interrupted: 0, expired: 0 }, 'a plain request in a sealed bucket is never read');
+  fs.writeFileSync(path.join(lab.folder, 'q', Q2 + '.json.enc'), Buffer.from('HRC1' + 'x'.repeat(40)));
+  assert.equal((await lab.drain()).error, 'no-params');
+  assert.match(summary({ sent: 0, refused: 0, interrupted: 0, expired: 0, error: 'no-params' }), /no k\/params\.json/);
+  assert.equal(lab.herdr.calls.length, 0);
+  assert.deepEqual(lab.queued().sort(), [Q1 + '.json', Q2 + '.json.enc']);
+  await assert.rejects(drain({ folder: lab.folder, runner: lab.herdr.runner }), /sealed bucket or a plain copy/);
+  // And a folder that is plain is read as plain whatever else it holds.
+  const plain = await copy();
+  t.after(plain.cleanup);
+  fs.mkdirSync(path.join(plain.folder, 'k'));
+  fs.writeFileSync(path.join(plain.folder, 'k', 'params.json'), '{}');
+  await plain.queue(Q1, { session_id: A, text: 'hello' });
+  assert.equal((await plain.drain()).sent, 1);
+});
+
+test('a request is as old as the time sealed inside it, so a copy put back with a new file time is expired', async (t) => {
+  const lab = await copy({ sealed: true });
+  t.after(lab.cleanup);
+  const day = 24 * 3600;
+  await lab.queue(Q1, { session_id: A, text: 'an old request, replayed', at: Date.now() / 1000 - day });  // the file itself is brand new
+  await lab.queue(Q2, { session_id: A, text: 'from a clock that is wrong', at: Date.now() / 1000 + 3600 });
+  const result = await lab.drain();
+  assert.equal(result.expired, 1);
+  assert.equal((await lab.receipt(Q1)).code, 'expired');
+  assert.equal((await lab.receipt(Q2)).code, 'invalid');
+  assert.match((await lab.receipt(Q2)).reason, /clock/);
+  assert.equal(lab.herdr.calls.length, 0);
+});
+
+test('deleting a receipt does not make a copied request run again: the laptop keeps the ids it handled', async (t) => {
+  const lab = await copy({ sealed: true });
+  t.after(lab.cleanup);
+  const sealedRequest = { session_id: A, text: 'once only' };
+  await lab.queue(Q1, sealedRequest);
+  const copyOf = fs.readFileSync(path.join(lab.folder, 'q', Q1 + '.json.enc'));
+  assert.equal((await lab.drain()).sent, 1);
+  // Someone with write access to the bucket removes the receipt and puts the same sealed bytes back.
+  fs.unlinkSync(path.join(lab.folder, 'r', Q1 + '.json.enc'));
+  fs.writeFileSync(path.join(lab.folder, 'q', Q1 + '.json.enc'), copyOf);
+  assert.deepEqual(await lab.drain(), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
+  assert.equal(lab.herdr.prompts().length, 1);
+  assert.deepEqual(lab.queued(), [], 'the copy is dropped');
+  assert.ok(fs.existsSync(path.join(lab.base, '.drain-handled-bucket.json')), 'the record is beside the bucket, not in it');
+  assert.equal(fs.existsSync(path.join(lab.folder, '.drain-handled-bucket.json')), false);
+});
 
 test('sealed: a plaintext request in a sealed bucket is never read, nor a sealed one in a plain copy', async (t) => {
   const lab = await copy({ sealed: true });
