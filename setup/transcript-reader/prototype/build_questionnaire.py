@@ -352,7 +352,7 @@ def collect(session_names: list[str]) -> list[dict]:
             if member in seen:
                 continue
             seen.add(member)
-            exchanges = builder.session_exchanges(builder.read_jsonl(member))
+            exchanges = builder.parsed_log(member, OUT / "parsed")["exchanges"]
             if member.stem == head:
                 builder.mark_compacted_away(exchanges)
             for index, exchange in enumerate(exchanges):

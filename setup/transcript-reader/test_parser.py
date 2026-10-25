@@ -6,9 +6,14 @@ Run from the repo root: python3 -m unittest setup/transcript-reader/test_parser.
 Fixtures are synthetic records shaped like Claude Code's session logs.
 """
 
+import json
+import os
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reader import builder  # noqa: E402
@@ -319,6 +324,77 @@ class CaptainEventsTest(unittest.TestCase):
         ])
         events = builder.captain_events({"id": "main"}, exchanges, 0)
         self.assertEqual([(e["kind"], e["ref"]) for e in events], [("captain", 0), ("reply", 0)])
+
+
+class ParsedLogTest(unittest.TestCase):
+    """A rebuild parses only the logs that changed; the rest come from out/parsed/."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cache = Path(tmp.name) / "parsed"
+        self.log = Path(tmp.name) / "s1.jsonl"
+        self.write([user("Fix the login page", 0), say("Fixed. Want me to merge?", 4)])
+
+    def write(self, records):
+        self.log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    def parse(self):
+        real = builder.session_exchanges
+        with mock.patch.object(builder, "session_exchanges", side_effect=real) as parsing:
+            log = builder.parsed_log(self.log, self.cache)
+        return log, parsing.call_count
+
+    def test_an_unchanged_log_is_read_back_as_it_was_parsed(self):
+        first, parsed = self.parse()
+        self.assertEqual(parsed, 1)
+        fresh = json.loads(json.dumps(builder.session_exchanges(builder.read_jsonl(self.log))))
+        self.assertEqual(first, {"exchanges": fresh, "first_time": builder.iso_to_epoch(stamp(0)), "cwd": "/repo"})
+        again, parsed = self.parse()
+        self.assertEqual((again, parsed), (first, 0))
+
+    def test_each_read_gives_new_turns_to_change(self):
+        first, _ = self.parse()
+        first["exchanges"][0]["from_session"] = "older"
+        again, _ = self.parse()
+        self.assertNotIn("from_session", again["exchanges"][0])
+
+    def test_a_log_that_grew_is_parsed_again(self):
+        self.parse()
+        self.write([user("Fix the login page", 0), say("Fixed. Want me to merge?", 4), user("Yes", 5), say("Merged.", 6)])
+        log, parsed = self.parse()
+        self.assertEqual((parsed, [e["reply"] for e in log["exchanges"]]), (1, ["Fixed. Want me to merge?", "Merged."]))
+
+    def test_new_parsing_rules_parse_every_log_again(self):
+        self.parse()
+        with mock.patch.object(builder, "PARSE_RULES", "changed"):
+            self.assertEqual(self.parse()[1], 1)
+
+    def test_parsed_logs_no_build_used_for_a_week_are_removed(self):
+        self.parse()
+        saved = self.cache / "s1.json"
+        old = time.time() - 8 * 86400
+        os.utime(saved, (old, old))
+        self.parse()  # used again, so kept
+        builder.prune_parsed(self.cache)
+        self.assertTrue(saved.exists())
+        os.utime(saved, (old, old))
+        builder.prune_parsed(self.cache)
+        self.assertFalse(saved.exists())
+
+
+class HeadFieldsTest(unittest.TestCase):
+    def test_a_cut_down_head_answers_as_the_whole_records_do(self):
+        clear = "<command-name>/clear</command-name>"
+        records = [{"type": "bridge-session", "bridgeSessionId": "b1", "timestamp": stamp(0)},
+                   tool_result(1), user("<local-command-caveat>x</local-command-caveat>", 2, isMeta=True),
+                   user([{"type": "text", "text": clear}, {"type": "image", "source": "x" * 1000}], 3), say("ok", 4)]
+        slim = [builder.head_fields(r) for r in records]
+        for read in (builder.cleared_at, builder.bridge_id, builder.first_time):
+            self.assertEqual(read(slim), read(records), read.__name__)
+        self.assertEqual(builder.cleared_at(slim), builder.iso_to_epoch(stamp(3)))
+        self.assertNotIn("content", slim[1]["message"]["content"][0])
+        self.assertNotIn("message", slim[4])
 
 
 if __name__ == "__main__":

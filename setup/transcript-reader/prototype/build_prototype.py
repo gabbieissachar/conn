@@ -5,7 +5,8 @@ Throwaway prototype for the design checkpoint in ../DESIGN.md. It only reads:
 Claude Code session logs under ~/.claude/projects, the Firstmate fleet
 records under each home's state/ folder, and Herdr's live pane list (for the
 pane labels). It writes only the page and, beside it, a cache of pane labels
-so a closed pane keeps its name.
+so a closed pane keeps its name and a cache of each log's parsed turns (parsed/)
+so a rebuild parses only the logs that changed.
 
 Usage (from the repo root):
   python3 setup/transcript-reader/prototype/build_prototype.py \
@@ -52,7 +53,11 @@ MAIN_HOME = Path.home() / "fm-homes" / "pmos"
 
 def read_jsonl(path: Path) -> list[dict]:
     """Every parseable line. A live log can end mid-line, so bad lines are skipped."""
-    records = []
+    return list(iter_jsonl(path))
+
+
+def iter_jsonl(path: Path):
+    """The records of read_jsonl, one at a time, so a large log is never held whole."""
     with path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
             line = line.strip()
@@ -63,8 +68,7 @@ def read_jsonl(path: Path) -> list[dict]:
             except json.JSONDecodeError:
                 continue
             if isinstance(value, dict):
-                records.append(value)
-    return records
+                yield value
 
 
 def iso_to_epoch(value: str | None) -> float | None:
@@ -485,8 +489,7 @@ def find_session_file(session: str) -> Path | None:
     candidate = Path(session).expanduser()
     if candidate.is_file():
         return candidate
-    matches = [path for path in all_logs() if path.stem == session]
-    return matches[0] if matches else None
+    return log_index()[1].get(session)
 
 
 def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
@@ -635,8 +638,9 @@ def captain_events(home: dict, exchanges: list[dict], since: float) -> list[dict
 
 # ----------------------------------------------------------------- page build
 
-def chain_exchanges(chain: list[Path], loaded: dict[Path, list[dict]]) -> list[dict]:
-    """The turns of a pane's sessions, oldest first, with a divider at each session change.
+def chain_exchanges(chain: list[Path], loaded: dict[Path, dict]) -> list[dict]:
+    """The turns of a pane's sessions (each a parsed_log), oldest first, with a divider at
+    each session change.
 
     The pane's newest session no longer holds a reply from an earlier session (marked
     from_session) or from before its own last compaction (marked compacted_away), so a
@@ -645,14 +649,14 @@ def chain_exchanges(chain: list[Path], loaded: dict[Path, list[dict]]) -> list[d
     path = chain[-1]
     exchanges = []
     for member in chain:
-        part = session_exchanges(loaded[member])
+        part = loaded[member]["exchanges"]
         if len(chain) > 1:
             ended = member != path
             after = chain[chain.index(member) + 1] if ended else None
             how = "cleared later" if after and cleared_at(head_records(after)) is not None else "until Claude restarted"
             label = f"Session {member.stem[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
             divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
-            divider["at"] = first_time(loaded[member])
+            divider["at"] = loaded[member]["first_time"]
             finish_exchange(divider)
             part.insert(0, divider)
             if ended:
@@ -683,44 +687,45 @@ def build(args) -> dict:
         homes += registered_secondmates(homes[0]["home"])
     parent_of = {mate["id"]: homes[0]["home"] for mate in homes[1:]}
 
-    # (home, session file, records) for every session to show.
+    # (home, session file, parsed log) for every session to show.
+    out_dir = Path(args.out).expanduser().parent
+    cache = out_dir / "parsed"
     chosen = []
     if args.session:
         for name in args.session:
             path = find_session_file(name)
             if not path:
                 raise SystemExit(f"session not found: {name}")
-            records = read_jsonl(path)
-            chosen.append((session_home(homes, records), path, records))
-        starts = [t for _, _, records in chosen for t in [first_time(records)] if t is not None]
+            log = parsed_log(path, cache)
+            chosen.append((session_home(homes, log["cwd"]), path, log))
+        starts = [log["first_time"] for _, _, log in chosen if log["first_time"] is not None]
         since = min(starts) if args.since_hours is None and starts else time.time() - (args.since_hours or 72) * 3600
     else:
         since = time.time() - (args.since_hours or 72) * 3600
-        chosen = [(home, path, read_jsonl(path)) for home in homes for path in home_sessions(home["home"], since)]
+        chosen = [(home, path, parsed_log(path, cache)) for home in homes for path in home_sessions(home["home"], since)]
 
     # A pane cleared with /clear, or with Claude restarted in it, goes on in a new session
     # log: read the sessions it ran as one conversation, newest last, under the newest id.
     # The pane each session ran in comes from Herdr now and the pane-label cache before.
-    out_dir = Path(args.out).expanduser().parent
     live = herdr_panes()
     pane_labels([], out_dir / "pane-labels.json", live)
-    threads: list[tuple[dict, list[Path], dict[Path, list[dict]]]] = []
-    for home, path, records in chosen:
+    threads: list[tuple[dict, list[Path], dict[Path, dict]]] = []
+    for home, path, log in chosen:
         if any(path in chain for _, chain, _ in threads):
             continue
         chain = session_chain(path)
-        loaded = {member: (records if member == path else read_jsonl(member)) for member in chain}
+        loaded = {member: (log if member == path else parsed_log(member, cache)) for member in chain}
         threads.append((home, chain, loaded))
+    prune_parsed(cache)
 
     sessions = []
     fleet = collect_fleet(homes, since)
     for home, chain, loaded in threads:
         path = chain[-1]
-        records = loaded[path]
         exchanges = chain_exchanges(chain, loaded)
         attach_inbox_bodies(exchanges, [h for h in (home["home"], parent_of.get(home["id"])) if h])
         session_id = path.stem
-        cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
+        cwd = loaded[path]["cwd"]
         where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
         if where.startswith("state/.treehouse/"):
             where = "worker copy"  # a worker's isolated copy, not the home's own clone
@@ -919,9 +924,8 @@ def closed_panes(cache_path: Path, live: dict[str, dict], shown: set[str], days:
     return offered[:limit]
 
 
-def session_home(homes: list[dict], records: list[dict]) -> dict:
+def session_home(homes: list[dict], cwd: str) -> dict:
     """The home whose folder holds the session's working directory (longest match), else main."""
-    cwd = next((r["cwd"] for r in records if r.get("cwd")), "")
     inside = [h for h in homes if cwd == str(h["home"]) or cwd.startswith(str(h["home"]) + "/")]
     return max(inside, key=lambda h: len(str(h["home"])), default=homes[0])
 
@@ -1130,6 +1134,68 @@ def file_version(path: Path) -> tuple[int, int] | None:
     return stat.st_mtime_ns, stat.st_size
 
 
+# A rebuild reads every listed log, but between two rebuilds most logs have not changed.
+# Each log's turns are kept parsed on disk, under the version of the log and of this file
+# (its rules decide the turns), and a log is parsed again only once either changes.
+PARSE_RULES = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+PARSED_KEEP_DAYS = 7  # a parsed log no build has used for this long is removed
+
+
+def parsed_log(path: Path, cache: Path | None) -> dict:
+    """A log's turns (session_exchanges), first timestamp and first working directory.
+
+    With <cache>, a folder, the result is read from <cache>/<log name>.json while the log and
+    the rules are unchanged, and saved there after a parse. Each call returns new objects, so
+    a caller may change the turns it gets.
+    """
+    version = file_version(path)
+    saved = cache / f"{path.stem}.json" if cache else None
+    if saved and version:
+        try:
+            entry = json.loads(saved.read_text(encoding="utf-8"))
+            # A copy of a log in another folder has the same name, so the path must match too.
+            if (entry.get("rules"), entry.get("path"), entry.get("version")) == (PARSE_RULES, str(path), list(version)):
+                os.utime(saved)  # used by this build, so kept (see prune_parsed)
+                return entry["log"]
+        except (OSError, json.JSONDecodeError, AttributeError, KeyError):
+            pass
+    seen = {"first_time": None, "cwd": ""}
+
+    def records():
+        for record in iter_jsonl(path):
+            if seen["first_time"] is None:
+                seen["first_time"] = iso_to_epoch(record.get("timestamp"))
+            if not seen["cwd"] and record.get("cwd"):
+                seen["cwd"] = record["cwd"]
+            yield record
+
+    try:
+        log = {"exchanges": session_exchanges(records()), **seen}
+    except OSError:
+        log = {"exchanges": [], "first_time": None, "cwd": ""}
+    # The version was taken before the read: a log that grew meanwhile is parsed again next time.
+    if saved and version:
+        text = json.dumps({"rules": PARSE_RULES, "path": str(path), "version": list(version), "log": log}, ensure_ascii=False, separators=(",", ":"))
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        partial = saved.with_name(f".{saved.name}.{os.getpid()}.partial")
+        partial.write_text(text, encoding="utf-8")
+        os.replace(partial, saved)  # whole or not at all, even with two builds at once
+        log = json.loads(text)["log"]  # as a saved parse reads back (lists, not tuples)
+    return log
+
+
+def prune_parsed(cache: Path, days: float = PARSED_KEEP_DAYS) -> None:
+    """Remove the parsed logs no build has used for <days>, and partial files a crash left."""
+    now = time.time()
+    for pattern, age in (("*.json", days * 86400), (".*.partial", 3600)):
+        for entry in cache.glob(pattern):
+            try:
+                if entry.stat().st_mtime < now - age:
+                    entry.unlink()
+            except OSError:
+                pass
+
+
 def listing(folder: Path, pattern: str) -> list[Path]:
     """The entries of <folder> matching <pattern>, listed again only once the folder changes."""
     try:
@@ -1150,11 +1216,48 @@ def logs_in(folder: Path) -> list[Path]:
 
 def all_logs() -> list[Path]:
     """Every session log, in every project folder."""
-    return [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
+    return log_index()[0]
+
+
+# A build walks the chains of every listed session, asking for every log thousands of times
+# within a few seconds; even unchanged, listing the folders again each time took seconds.
+LOG_LIST_REUSE = 1.0  # seconds a list of every log is reused for
+_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float]]] = {}
+
+
+def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
+    """Every session log, each by its session id (the first one, if a copy exists), and
+    each one's last write."""
+    cached = _LOG_INDEX.get(PROJECTS)
+    if cached and time.monotonic() - cached[0] < LOG_LIST_REUSE:
+        return cached[1:]
+    logs = [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
+    by_id: dict[str, Path] = {}
+    written: dict[Path, float] = {}
+    for log in logs:
+        by_id.setdefault(log.stem, log)
+        try:
+            written[log] = log.stat().st_mtime
+        except OSError:
+            pass
+    _LOG_INDEX[PROJECTS] = (time.monotonic(), logs, by_id, written)
+    return logs, by_id, written
+
+
+def log_mtime(path: Path) -> float | None:
+    """When a log was last written, from the list of every log while it is reused."""
+    known = log_index()[2].get(path)
+    if known is not None:
+        return known
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
 
 def head_records(path: Path, limit: int = HEAD_RECORDS) -> list[dict]:
-    """The first parseable records of a log, without reading the whole file."""
+    """The first parseable records of a log, without reading the whole file, cut down to
+    what cleared_at, bridge_id and first_time read (see head_fields)."""
     version = file_version(path) if limit == HEAD_RECORDS else None
     cached = _HEADS.get(path)
     if version and cached and cached[0] == version:
@@ -1175,12 +1278,25 @@ def read_head(path: Path, limit: int) -> list[dict]:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(value, dict):
-                    records.append(value)
+                    records.append(head_fields(value))
                 if len(records) >= limit:
                     break
     except OSError:
         pass
     return records
+
+
+def head_fields(record: dict) -> dict:
+    """A record without its bulk (tool output, replies, snapshots). A build keeps the head of
+    every log in every project folder, which held whole would take hundreds of megabytes."""
+    kept = {key: record[key] for key in ("type", "timestamp", "isMeta", "bridgeSessionId") if key in record}
+    if record.get("type") == "user":
+        content = (record.get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = [{"type": "tool_result"} if isinstance(block, dict) and block.get("type") == "tool_result" else block
+                       for block in content if not isinstance(block, dict) or block.get("type") in ("text", "tool_result")]
+        kept["message"] = {"content": content}
+    return kept
 
 
 def cleared_at(records: list[dict]) -> float | None:
@@ -1255,10 +1371,10 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
         for other in candidates:
             if other == path:
                 continue
-            try:
-                gap = clear_time - other.stat().st_mtime
-            except OSError:
+            written = log_mtime(other)
+            if written is None:
                 continue
+            gap = clear_time - written
             if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
                 best = (abs(gap), other)
         return best[1] if best else None
@@ -1331,19 +1447,16 @@ def restarted_into(chain: list[Path]) -> Path | None:
 
 def cleared_into(chain: list[Path]) -> Path | None:
     """The log a /clear in the pane started after the chain's last log, if any."""
-    try:
-        written = chain[-1].stat().st_mtime
-    except OSError:
+    written = log_mtime(chain[-1])
+    if written is None:
         return None
-    # The next log may sit in another project folder (see cleared_from).
-    for other in sorted({*logs_in(chain[-1].parent), *all_logs()}):
+    # The next log may sit in another project folder (see cleared_from), and was written
+    # to since; only those few are sorted and read.
+    recent = (other for other in {*logs_in(chain[-1].parent), *all_logs()} if (log_mtime(other) or 0) >= written - 5)
+    for other in sorted(recent):
         if other in chain:
             continue
-        try:
-            recent = other.stat().st_mtime >= written - 5
-        except OSError:
-            continue
-        at = cleared_at(head_records(other)) if recent else None
+        at = cleared_at(head_records(other))
         if at is not None and -30 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
             return other
     return None

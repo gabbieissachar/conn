@@ -44,6 +44,7 @@ repo. Only session logs and Herdr's pane list are read, and only out/ is written
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -210,13 +211,18 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
         present += added
         write_list(ids)
     argv = ["--out", str(PAGE)] + [arg for sid in present for arg in ("--session", sid)]
-    sys.stdout.flush()  # keep this script's lines ahead of the builders' in a pipe
-    if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
-        return 1
     # The answer-sheet prototype reads the same list: replies that ask for keyed answers.
     questions = [arg for sid in present for arg in ("--session", sid)]
-    if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *questions]).returncode:
-        return 1
+    sys.stdout.flush()  # keep this script's lines ahead of the builders' in a pipe
+    # A rebuild started by hand while the server runs its own waits for it, so two builds
+    # never share the machine; the later one reads what the earlier one parsed.
+    OUT.mkdir(parents=True, exist_ok=True)
+    with open(OUT / ".rebuild.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
+            return 1
+        if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *questions]).returncode:
+            return 1
     if serve_page:
         serve(focus)
     return 0

@@ -5,6 +5,7 @@ Run from the repo root: python3 -m unittest setup/transcript-reader/test_reader.
 Fixtures are synthetic; no real session log or Herdr call is used.
 """
 
+import fcntl
 import json
 import os
 import shutil
@@ -269,6 +270,23 @@ class ClosedPanesTest(unittest.TestCase):
             self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 0)
         self.assertEqual(reader.read_list(), [A])
         self.assertEqual(run.call_args_list[0].args[0][-2:], ["--session", A])
+
+    def test_the_builders_run_one_rebuild_at_a_time(self):
+        self.live = {A: PANES[A]}
+        held = []
+
+        def build(argv, **kwargs):
+            with open(reader.OUT / ".rebuild.lock", "w") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held.append(False)
+                except BlockingIOError:
+                    held.append(True)  # another rebuild started now would wait here
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(reader.subprocess, "run", side_effect=build):
+            self.assertEqual(reader.rebuild([A], serve_page=False), 0)
+        self.assertEqual(held, [True, True], "the page and the answer sheet both build under the lock")
 
     def test_a_reopened_session_stays_until_it_is_closed_with_its_whole_pane(self):
         self.seen(A, B, C)
