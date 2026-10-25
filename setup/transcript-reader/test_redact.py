@@ -78,6 +78,17 @@ class RedactTextTest(unittest.TestCase):
                          kept=("The rest of the reply.",))
         self.assertNotIn(fake("MIIE", 40), cut)
 
+    def test_a_cut_off_key_in_any_line_form(self):
+        # The security review's cases: CRLF lines, a key quoted in a JSON string (written-out \\n), indented lines.
+        body1, body2 = fake("MIIE", 40), fake("", 40)
+        for text in ("-----BEGIN RSA PRIVATE KEY-----\r\nProc-Type: 4,ENCRYPTED\r\n\r\n" + body1 + "\r\n" + body2 + "\r\n\r\nThat is all.",
+                     '{"key": "-----BEGIN PRIVATE KEY-----\\n' + body1 + "\\n" + body2 + '\\n", "after": 1}',
+                     "  -----BEGIN PRIVATE KEY-----\n    " + body1 + "\n    " + body2 + "\n\nThat is all."):
+            out = self.check(text, "private-key", kept=("That is all." if "That" in text else '"after": 1',))
+            self.assertNotIn(body1, out)
+            self.assertNotIn(body2, out)
+            self.assertEqual(out.count("\n"), text.count("\n"))
+
     def test_long_runs_of_name_characters_are_quick(self):
         import time
         for text in ("a-" * 60000, "_" * 120000, "x." * 60000 + "password=" + fake("", 9), "A" * 120000, "-----BEGIN PRIVATE KEY-----" * 2000):
