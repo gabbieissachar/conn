@@ -16,7 +16,12 @@ The reader has its own server, in its own process, apart from `setup/serve.sh` a
 Start and stop it by hand with `bash setup/transcript-reader/serve.sh [start|stop|restart|status] [--port <port>]`. `stop` only stops this copy's own reader server, never another copy's or another app's.
 After changing `api.js` or `server.js`, restart it: `bash setup/transcript-reader/serve.sh restart`.
 
-Open the printed `http://localhost:…/setup/transcript-reader/out/prototype.html` link, in a browser or a VS Code browser tab.
+Open the printed `http://localhost:8768/setup/transcript-reader/out/prototype.html` link in one of the supported browsers:
+
+- **Chrome** (checked in Chrome 155 at `http://localhost:8768`): the page, the live badge, Send disabled and enabled (empty box, a working, idle or Done agent, an agent at a permission prompt or in an unknown state, a closed pane), a single message and a batch sent to the right pane, the Documents tab and a message about a file, and phone width (390 px) all work.
+- **VS Code Integrated Browser**, the browser tab in VS Code's editor area.
+
+Not supported: the **VS Code Simple Browser**. It shows a page inside a frame, and the page refuses to be framed on purpose (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), so that no other page can embed it. Use the Integrated Browser or Chrome instead. Safari and Firefox were not tried.
 Opened that way, the page:
 
 - **Refreshes itself.** When a listed session writes a new turn, the server rebuilds the pages (at most every 3 seconds, only while a page is open) and the page swaps in the new turns where you are reading. When the page's own code changes it reloads, keeping the replies you expanded and your place.
