@@ -5,6 +5,9 @@
 // Nothing here holds transcript content or a real credential; every secret is made up per run.
 
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const http = require('http');
 const { createHandler } = require('./app');
 const { loadConfig } = require('./config');
@@ -87,14 +90,15 @@ async function startApp({ allowed = 'owner@example.com', env = {}, now } = {}) {
   const server = http.createServer((req, res) => handler(req, res));
   const port = await listen(server);
   const base = `http://127.0.0.1:${port}`;
+  const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-shell-'));  // where the owner deploys the shell pages
   const config = loadConfig({
-    APP_URL: base, OIDC_ISSUER: idp.issuer, OIDC_CLIENT_ID: idp.clientId, OIDC_CLIENT_SECRET: idp.clientSecret,
+    SHELL_DIR: shellDir, APP_URL: base, OIDC_ISSUER: idp.issuer, OIDC_CLIENT_ID: idp.clientId, OIDC_CLIENT_SECRET: idp.clientSecret,
     SESSION_SECRET: 'test-session-signing-value-0123456789abcdef', ALLOWED_EMAILS: allowed, ...env,
   });
   const clock = now ? { now } : {};
   const oidc = new OidcClient({ issuer: config.issuer, clientId: config.clientId, clientSecret: config.clientSecret, redirectUri: config.redirectUri, ...clock });
   handler = createHandler({ config, store, oidc, log: (line) => logs.push(line), ...clock });
-  const app = { base, config, store, idp, logs, port, oidc };
+  const app = { base, config, store, idp, logs, port, oidc, shellDir };
   app.close = async () => { open.delete(app); await close(server); await idp.close(); };
   open.add(app);
   app.newKey = async (label) => (await keys.create(store, label)).key;

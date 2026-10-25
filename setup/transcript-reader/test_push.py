@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -29,7 +30,7 @@ import push  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 KEY = "hrk_" + "k" * 43
-NAME = re.compile(r"^/api/objects/((?:index\.html|sheet\.html|k/params\.json|index\.json\.enc|[sdfaqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
+NAME = re.compile(r"^/api/objects/((?:k/params\.json|index\.json\.enc|[sdfaqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
 
 
 def sealed(tag: str) -> bytes:
@@ -132,8 +133,8 @@ class PushTest(unittest.TestCase):
 
     def test_a_first_push_sends_the_key_parameters_then_objects_then_index_then_shell(self):
         sent, removed, same = self.run_push()
-        self.assertEqual((sent, removed, same), (9, 0, 0))
-        self.assertEqual(self.stand.puts(), ["k/params.json", "a/aaa.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "index.json.enc", "index.html", "sheet.html"])
+        self.assertEqual((sent, removed, same), (7, 0, 0))
+        self.assertEqual(self.stand.puts(), ["k/params.json", "a/aaa.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "index.json.enc"], "the shell pages are code and never go up")
         for name, data in self.stand.store.items():
             self.assertEqual(data, (self.folder / name).read_bytes(), name)
         self.assertEqual(set(self.stand.auth_seen), {f"Bearer {KEY}"})
@@ -141,7 +142,7 @@ class PushTest(unittest.TestCase):
     def test_a_second_push_with_nothing_changed_sends_nothing(self):
         self.run_push()
         self.stand.log.clear()
-        self.assertEqual(self.run_push(), (0, 0, 9))
+        self.assertEqual(self.run_push(), (0, 0, 7))
         self.assertEqual(self.stand.log, [("GET", "/api/objects")])
 
     def test_only_a_changed_object_is_sent_again_and_a_pruned_one_is_removed(self):
@@ -178,7 +179,7 @@ class PushTest(unittest.TestCase):
         # Another address starts over: everything is sent.
         other = StandIn()
         self.addCleanup(other.close)
-        self.assertEqual(push.push_folder(self.folder, push.Remote(other.url, KEY, sleep=lambda s: None), self.state)[0], 9)
+        self.assertEqual(push.push_folder(self.folder, push.Remote(other.url, KEY, sleep=lambda s: None), self.state)[0], 7)
 
     def test_a_wrong_or_revoked_key_stops_the_run_with_nothing_sent_and_no_key_in_the_message(self):
         stand_key = "hrk_" + "z" * 43
@@ -201,7 +202,7 @@ class PushTest(unittest.TestCase):
 
     def test_a_busy_app_is_tried_again_and_a_dead_one_is_reported_without_the_address_path(self):
         self.stand.fail_puts = 2
-        self.assertEqual(self.run_push()[0], 9)
+        self.assertEqual(self.run_push()[0], 7)
         self.stand.fail_puts = 10
         (self.folder / "s/aaa.json.enc").write_bytes(sealed("A"))
         with self.assertRaises(push.PushError) as caught:
@@ -235,10 +236,62 @@ class PushTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"{}")
         self.run_push()
-        self.assertEqual(sorted(self.stand.store), sorted(["k/params.json", "index.json.enc", "index.html", "sheet.html", "a/aaa.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc"]))
+        self.assertEqual(sorted(self.stand.store), sorted(["k/params.json", "index.json.enc", "a/aaa.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc"]))
 
 
 QID = ["00000000-0000-4000-8000-00000000000%d" % n for n in range(1, 6)]
+
+
+class ShellAndAgentTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.folder = make_folder(self.root)
+        self.state = self.root / "push.json"
+
+    def test_the_shell_pages_are_copied_out_by_hand_and_a_run_says_when_they_are_newer(self):
+        self.assertIn("--copy-shell", push.shell_notice(self.folder, self.state), "never copied")
+        dest = self.root / "for-app"
+        self.assertEqual(push.copy_shells(self.folder, dest, self.state), ["index.html", "sheet.html"])
+        self.assertEqual((dest / "index.html").read_bytes(), SHELL)
+        self.assertEqual(push.shell_notice(self.folder, self.state), "")
+        (self.folder / "index.html").write_bytes(SHELL + b"<!-- newer -->")
+        self.assertIn("changed since you last copied", push.shell_notice(self.folder, self.state))
+        # A push keeps the record of what was copied.
+        stand = StandIn()
+        self.addCleanup(stand.close)
+        push.copy_shells(self.folder, dest, self.state)
+        push.push_folder(self.folder, push.Remote(stand.url, KEY, sleep=lambda s: None), self.state)
+        self.assertEqual(push.shell_notice(self.folder, self.state), "")
+        self.assertFalse([n for n in stand.store if n.endswith(".html")], "no shell page was uploaded")
+        self.assertFalse([p for m, p in stand.log if p.endswith(".html")], "none was even tried")
+        empty = self.root / "empty"
+        empty.mkdir()
+        with self.assertRaises(push.PushError):
+            push.copy_shells(empty, self.root / "x", self.state)
+
+    def test_copy_shell_needs_neither_an_address_nor_a_key(self):
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=False), redirect_stdout(out):
+            os.environ.pop(push.KEY_ENV, None)
+            os.environ.pop(push.URL_ENV, None)
+            code = push.main(["--copy-shell", str(self.root / "for-app"), "--folder", str(self.folder), "--state", str(self.state)])
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "for-app" / "sheet.html").is_file())
+
+    def test_the_printed_launch_agent_carries_a_path_with_node_and_python(self):
+        plist = push.launch_agent("https://reader.example.test", self.folder)
+        self.assertIn("<key>EnvironmentVariables</key>", plist)
+        path = plist.split("<key>PATH</key><string>")[1].split("</string>")[0].split(":")
+        for tool in ("node", "python3"):
+            found = shutil.which(tool)
+            if found:
+                self.assertIn(str(Path(found).resolve().parent), path, tool)
+        for base in ("/usr/bin", "/bin"):
+            self.assertIn(base, path)
+        self.assertIn("security find-generic-password", plist)
+        self.assertNotIn(KEY, plist)
 
 
 class SendQueueTest(unittest.TestCase):
@@ -294,7 +347,7 @@ class SendQueueTest(unittest.TestCase):
         self.assertIn(f"q/{QID[2]}.json.enc", self.stand.store, "no receipt yet, so it stays queued")
         self.assertEqual(removed, 2)
         receipts_at = [i for i, p in enumerate(self.stand.puts()) if p.startswith("r/")]
-        self.assertTrue(all(i > self.stand.puts().index("sheet.html") for i in receipts_at), "receipts go last")
+        self.assertTrue(all(i > self.stand.puts().index("index.json.enc") for i in receipts_at), "receipts go last")
         # The drain drops an old receipt: it goes from the app too, and a queued message is never touched by that.
         (self.folder / "r" / f"{QID[0]}.json.enc").unlink()
         self.stand.log.clear()
@@ -415,10 +468,10 @@ class RealAppTest(unittest.TestCase):
         self.assertEqual(sealing.returncode, 0, sealing.stderr)
         (folder / "index.html").write_bytes(SHELL)
         sent, removed, same = push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")
-        self.assertEqual((sent, removed, same), (4, 0, 0))
-        for name in ("k/params.json", "index.json.enc", "s/aaa.json.enc", "index.html"):
+        self.assertEqual((sent, removed, same), (3, 0, 0))
+        for name in ("k/params.json", "index.json.enc", "s/aaa.json.enc"):
             self.assertEqual((self.store / name).read_bytes(), (folder / name).read_bytes(), name)
-        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json"), (0, 0, 4))
+        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json"), (0, 0, 3))
         # The sync pruned a conversation: it goes from the app too.
         (folder / "s/aaa.json.enc").unlink()
         self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")[1], 1)
@@ -426,7 +479,7 @@ class RealAppTest(unittest.TestCase):
 
     def test_a_revoked_key_is_refused_by_the_real_app_at_once(self):
         folder = make_folder(self.root)
-        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")[0], 9)
+        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")[0], 7)
         subprocess.run(["node", str(HERE / "replit" / "keys-cli.js"), "revoke", self.id], env=self.env, capture_output=True, text=True, check=True)
         (folder / "s/aaa.json.enc").write_bytes(sealed("A"))
         with self.assertRaises(push.PushError) as caught:

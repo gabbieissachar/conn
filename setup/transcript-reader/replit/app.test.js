@@ -5,6 +5,8 @@
 // Every secret and object body is made up per run; no transcript content is used.
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const test = require('node:test');
 const keys = require('./keys');
 const session = require('./session');
@@ -27,7 +29,11 @@ const bearer = (key, extra = {}) => ({ authorization: `Bearer ${key}`, ...extra 
 async function seeded(options) {
   const app = await startApp(options);
   const bodies = { 'index.html': SHELL, 'k/params.json': PARAMS, 'index.json.enc': sealedBytes(), 's/conv-1.json.enc': sealedBytes(), 'd/doc-1.json.enc': sealedBytes(), 'f/2026-W43.json.enc': sealedBytes(), 'a/conv-1.json.enc': sealedBytes(), 'sheet.html': Buffer.from('<!doctype html><title>sheet</title>') };
-  for (const [name, bytes] of Object.entries(bodies)) await app.store.put(name, bytes);
+  // The shell pages are deployed files, the rest is in the store.
+  for (const [name, bytes] of Object.entries(bodies)) {
+    if (name.endsWith('.html')) fs.writeFileSync(path.join(app.shellDir, name), bytes);
+    else await app.store.put(name, bytes);
+  }
   app.bodies = bodies;
   app.key = await app.newKey('laptop');
   return app;
@@ -304,8 +310,8 @@ test('the upload endpoint takes only sealed objects, the key parameters and the 
   assert.strictEqual((await put('f/2026-W44.json.enc', sealedBytes())).status, 201);
   assert.strictEqual((await put('index.json.enc', sealedBytes())).status, 201);
   assert.strictEqual((await put('k/params.json', PARAMS)).status, 201);
-  assert.strictEqual((await put('index.html', SHELL)).status, 201);
-  assert.strictEqual((await put('sheet.html', SHELL)).status, 201);
+  // The shell pages are code: no upload key replaces them, whatever the body.
+  for (const name of ['index.html', 'sheet.html']) assert.strictEqual((await put(name, SHELL)).status, 403, name);
   assert.strictEqual((await put('a/conv-1.json.enc', sealedBytes())).status, 201);
   assert.strictEqual((await put(`r/${uuid()}.json.enc`, sealedBytes())).status, 201);
   // Refused bodies: plain JSON, gzip, an empty body, a short "sealed" one, the wrong magic.
@@ -320,7 +326,9 @@ test('the upload endpoint takes only sealed objects, the key parameters and the 
   assert.strictEqual((await put('k/params.json', Buffer.from(JSON.stringify({ ...JSON.parse(PARAMS), kdf: 'scrypt' })))).status, 422);
   assert.strictEqual((await put('k/params.json', Buffer.from('not json'))).status, 422);
   assert.strictEqual((await put('k/params.json', Buffer.alloc(5000, 32))).status, 413);
-  assert.strictEqual((await put('index.html', Buffer.from('{"not":"a page"}'))).status, 422);
+  // The key derivation keeps its 600,000-round floor, and a page is not asked for an endless one.
+  for (const iterations of [1, 599999, 10000001, 1e30]) assert.strictEqual((await put('k/params.json', Buffer.from(JSON.stringify({ ...JSON.parse(PARAMS), iterations })))).status, 422, String(iterations));
+  assert.strictEqual((await put('k/params.json', Buffer.from(JSON.stringify({ ...JSON.parse(PARAMS), iterations: 1000000 })))).status, 201);
   // Names that are not part of the copy.
   for (const name of ['s/a.json', 'x/a.json.enc', 's/a.json.enc.bak', 'index.json', 'manifest.json', 'pane-labels.json', 'redactions.json', 'upload.json', 'k/check', 's/' + 'a'.repeat(65) + '.json.enc', 's/a%20b.json.enc', 'q/' + uuid() + '.json']) {
     assert.strictEqual((await put(name, sealedBytes())).status, 400, name);
@@ -329,18 +337,70 @@ test('the upload endpoint takes only sealed objects, the key parameters and the 
   await app.close();
 });
 
+test('a leaked upload key cannot change the page that asks for the passphrase', async () => {
+  const app = await seeded();
+  const { cookie } = await signIn(app, OWNER);
+  const evil = Buffer.from('<!doctype html><script>steal(passphrase)</script>');
+  for (const name of ['index.html', 'sheet.html']) {
+    for (const path of [`/api/objects/${name}`, `/${name}`]) {
+      for (const method of ['PUT', 'POST']) {
+        const { status } = await request(app, method, path, { headers: { ...bearer(app.key), ...JSON_POST }, body: evil });
+        assert.ok(status >= 400 && status < 500, `${method} ${path} answered ${status}`);
+      }
+    }
+    await app.store.put(name, evil);  // even bytes put straight into the store are not what is served
+  }
+  assert.deepStrictEqual((await request(app, 'GET', '/', { headers: { cookie } })).body, SHELL);
+  assert.ok(!(await request(app, 'GET', '/sheet.html', { headers: { cookie } })).body.includes('steal'));
+  assert.deepStrictEqual(await fs.promises.readFile(path.join(app.shellDir, 'index.html')), SHELL, 'the deployed file is untouched');
+  await app.close();
+});
+
+test('the shell pages come from the deployed files, as they are now', async () => {
+  const app = await seeded();
+  const { cookie } = await signIn(app, OWNER);
+  fs.writeFileSync(path.join(app.shellDir, 'index.html'), '<!doctype html><p>NEW-SHELL</p>');
+  assert.match((await request(app, 'GET', '/', { headers: { cookie } })).body.toString(), /NEW-SHELL/);
+  fs.unlinkSync(path.join(app.shellDir, 'sheet.html'));
+  const missing = await request(app, 'GET', '/sheet.html', { headers: { cookie } });
+  assert.strictEqual(missing.status, 404);
+  assert.match(missing.body.toString(), /not deployed with the app/);
+  await app.close();
+});
+
+test('an ID token whose email is not a plain string never signs anyone in', async () => {
+  const app = await seeded();
+  for (const email of [[OWNER], { toString: 'x' }, 5, true]) {
+    const { refused, cookie } = await signIn(app, OWNER, { claims: { email } });
+    assert.ok(!cookie, JSON.stringify(email));
+    assert.strictEqual(refused.status, 403, JSON.stringify(email));
+  }
+  await app.close();
+});
+
+test('the sign-in page names only its own messages', async () => {
+  const app = await seeded();
+  for (const code of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const body = (await request(app, 'GET', `/login?e=${code}`)).body.toString();
+    assert.ok(!/function|\[native code\]|\[object/.test(body), code);
+    assert.match(body, /A private page/);
+  }
+  assert.match((await request(app, 'GET', '/login?e=denied')).body.toString(), /not allowed/);
+  await app.close();
+});
+
 test('the laptop lists names and deletes what the sync pruned, never the shell or the key parameters', async () => {
   const app = await seeded();
   const names = (await request(app, 'GET', '/api/objects', { headers: bearer(app.key) }));
   const all = JSON.parse(names.body).objects.map((o) => o.name);
-  assert.deepStrictEqual(all, Object.keys(app.bodies).sort());
+  assert.deepStrictEqual(all, Object.keys(app.bodies).filter((name) => !name.endsWith('.html')).sort(), 'the shell pages are not in the store');
   assert.ok(!all.includes('_admin/keys.json'), 'the key store is never listed');
   assert.deepStrictEqual(JSON.parse((await request(app, 'GET', '/api/objects?prefix=s/', { headers: bearer(app.key) })).body).objects.map((o) => o.name), ['s/conv-1.json.enc']);
   assert.strictEqual((await request(app, 'DELETE', '/api/objects/s/conv-1.json.enc', { headers: bearer(app.key) })).status, 200);
   assert.strictEqual(await app.store.get('s/conv-1.json.enc'), null);
   for (const name of ['index.html', 'k/params.json', 'index.json.enc']) {
     assert.strictEqual((await request(app, 'DELETE', '/api/objects/' + name, { headers: bearer(app.key) })).status, 403, name);
-    assert.ok(await app.store.get(name), name);
+    if (!name.endsWith('.html')) assert.ok(await app.store.get(name), name);
   }
   await app.close();
 });

@@ -35,9 +35,9 @@ test('names: bodies are checked by kind and size', () => {
   assert.strictEqual(maxBytes('queue'), 64 * 1024, 'the reader\'s own limit');
   assert.ok(checkBody('params', Buffer.from(JSON.stringify(params))));
   for (const bad of [{ ...params, extra: 1 }, { ...params, iterations: 1.5 }, { ...params, hash: 'SHA-1' }, [params], 'text', null]) assert.ok(!checkBody('params', Buffer.from(JSON.stringify(bad))), JSON.stringify(bad));
-  assert.ok(checkBody('shell', Buffer.from('  <!DOCTYPE html><p>x')));
-  assert.ok(!checkBody('shell', Buffer.from('<p>no doctype</p>')));
-  assert.ok(!checkBody('shell', Buffer.concat([Buffer.from('<!doctype html>'), Buffer.alloc(maxBytes('shell'))])), 'a shell over 4 MiB');
+  assert.ok(!checkBody('shell', Buffer.from('<!doctype html><p>x')), 'the shell pages are code, never an upload');
+  assert.ok(!checkBody('params', Buffer.from(JSON.stringify({ ...params, iterations: 1 }))), 'below the 600,000 rounds');
+  assert.ok(checkBody('params', Buffer.from(JSON.stringify({ ...params, iterations: 1000000 }))));
   assert.ok(!checkBody('nothing', sealedBytes()));
   assert.ok(!checkBody('object', 'not a buffer'));
 });
@@ -45,6 +45,8 @@ test('names: bodies are checked by kind and size', () => {
 test('config: refuses to start without an allow-list, a long session secret and an https address', () => {
   const config = loadConfig({ ...GOOD_ENV, ALLOWED_EMAILS: ' A@x.com, b@x.com ,' });
   assert.deepStrictEqual([...config.allowedEmails], ['a@x.com', 'b@x.com']);
+  assert.ok(path.isAbsolute(config.shellDir) && config.shellDir.endsWith(path.join('replit', 'shell')), 'next to the app by default');
+  assert.strictEqual(loadConfig({ ...GOOD_ENV, SHELL_DIR: '/srv/shells' }).shellDir, '/srv/shells');
   assert.strictEqual(config.issuer, 'https://oauth.id.jumpcloud.com/');
   assert.strictEqual(config.redirectUri, 'https://reader.example.test/auth/callback');
   assert.strictEqual(config.secureCookies, true);
@@ -77,6 +79,38 @@ test('keys: a key is shown once, stored as a hash, verified, revoked', async () 
   assert.strictEqual(await keys.verify(store, key), null);
   assert.strictEqual((await keys.list(store))[0].revoked, 2000);
   assert.strictEqual(await keys.verify(memoryStore(), key), null, 'no key store yet');
+});
+
+test('keys: changes made at the same moment are none of them lost', async () => {
+  const store = memoryStore();
+  const made = await Promise.all(Array.from({ length: 6 }, (_, i) => keys.create(store, 'k' + i)));
+  assert.strictEqual((await keys.list(store)).length, 6);
+  const [first, second] = made;
+  const [a, b, c] = await Promise.all([keys.revoke(store, first.id), keys.create(store, 'late'), keys.revoke(store, second.id)]);
+  assert.deepStrictEqual([a, c], [true, true]);
+  assert.ok(b.key);
+  const after = await keys.list(store);
+  assert.strictEqual(after.length, 7);
+  assert.deepStrictEqual(after.filter((k) => k.revoked).map((k) => k.id).sort(), [first.id, second.id].sort());
+  for (const { key } of made.slice(2)) assert.ok(await keys.verify(store, key));
+  // Another process changing the file between this one's read and its check is noticed, and the change made again
+  // (a narrow window remains between the check and the write: the store has no compare-and-set).
+  const raced = memoryStore();
+  await keys.create(raced, 'one');
+  const get = raced.get;
+  let reads = 0;
+  raced.get = async (name) => {
+    reads += 1;
+    if (reads === 2) {
+      const value = JSON.parse((await get(name)).toString());
+      value.rev += 1;
+      value.keys.push({ id: 'other0000000', hash: 'ab', label: 'other', created: 1 });
+      await raced.put(name, Buffer.from(JSON.stringify(value)));
+    }
+    return get(name);
+  };
+  await keys.create(raced, 'two');
+  assert.deepStrictEqual((await keys.list(raced)).map((k) => k.label).sort(), ['one', 'other', 'two']);
 });
 
 test('keys-cli: create prints the key once, list never does, revoke works', async () => {
@@ -114,6 +148,10 @@ test('stores: memory and file stores agree, and the file store stays inside its 
     await assert.rejects(() => files.get(name), /outside the store/);
   }
   assert.ok(!fs.existsSync(path.join(dir, '..', 'x')));
+  // What the store writes is owner-only: the key hashes are among it.
+  await files.put('_admin/keys.json', Buffer.from('{}'));
+  assert.strictEqual(fs.statSync(path.join(dir, '_admin', 'keys.json')).mode & 0o777, 0o600);
+  assert.strictEqual(fs.statSync(path.join(dir, '_admin')).mode & 0o777, 0o700);
 });
 
 test('replit store: maps the client\'s { ok, value, error } results, with a stand-in client', async () => {

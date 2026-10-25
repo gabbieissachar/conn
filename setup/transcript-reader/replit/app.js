@@ -5,10 +5,15 @@
 // Who can do what (README.md has the same table for the owner):
 //   nobody signed in     the login page (also at "/"), the sign-in routes; every other route answers 401
 //   the owner's session  read the shell and every sealed object; queue a sealed message (POST /api/transcript-reader/queue)
-//   the laptop's key     list names; write the shell, the key parameters, sealed objects and receipts;
+//   the laptop's key     list names; write the key parameters, sealed objects and receipts;
 //                        delete objects; read and delete queued messages (a bearer key, /api/objects)
-// The app never decrypts anything: it stores and serves the sealed bytes it is given.
+// The app never decrypts anything: it stores and serves the sealed bytes it is given. The shell pages
+// (index.html, sheet.html) are code, read from the files deployed with the app (config.shellDir): no
+// key can replace the page that asks for the passphrase.
 
+
+const fs = require('fs');
+const path = require('path');
 const { classify, checkBody, maxBytes, contentType } = require('./names');
 const keys = require('./keys');
 const session = require('./session');
@@ -80,7 +85,7 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
   const json = (res, status, value, headers = {}) => send(res, status, JSON.stringify(value), { 'content-type': 'application/json', ...headers });
   const html = (res, status, body, headers = {}) => send(res, status, body, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': PAGE_CSP, ...headers });
   const redirect = (res, to, headers = {}) => send(res, 302, '', { location: to, ...headers });
-  const showLogin = (res, code, status = 200, headers = {}) => html(res, status, loginPage(MESSAGES[code]), headers);
+  const showLogin = (res, code, status = 200, headers = {}) => html(res, status, loginPage(Object.hasOwn(MESSAGES, code) ? MESSAGES[code] : undefined), headers);
 
   const clearCookie = (name) => session.cookie(name, '', { seconds: 0, secure: config.secureCookies });
   const owner = (req) => {
@@ -147,7 +152,7 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
 
   // ----------------------------------------------------------------- the laptop's routes
 
-  const WRITES = new Set(['shell', 'params', 'index', 'object', 'receipt']);
+  const WRITES = new Set(['params', 'index', 'object', 'receipt']);
   const DELETES = new Set(['object', 'queue', 'receipt']);
 
   async function api(req, res, method, rawPath, url) {
@@ -208,7 +213,7 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
       log('sign-in failed: ' + error.message);
       return showLogin(res, 'failed', 502, gone);
     }
-    const email = String(claims.email || '').trim().toLowerCase();
+    const email = typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : '';
     // The provider must say the address is verified. A provider that never sends the claim (a
     // company directory where addresses are assigned, not claimed) needs OIDC_EMAIL_VERIFIED_OPTIONAL=1;
     // an explicit "not verified" is always refused.
@@ -226,13 +231,16 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
 
   // ----------------------------------------------------------------- the owner's routes
 
+  const readShell = (name) => fs.promises.readFile(path.join(config.shellDir, name)).catch(() => null);
+
   async function viewer(req, res, method, rawPath) {
     const name = rawPath === '/' ? 'index.html' : nameOf(rawPath.slice(1));
     const kind = name && classify(name);
     if (!kind) return json(res, 404, { error: 'not found' });
     if (method === 'GET') {
-      const bytes = await store.get(name);
-      if (!bytes) return kind === 'shell' ? html(res, 404, '<!doctype html><meta charset="utf-8"><title>Transcript reader</title><p>Nothing has been uploaded yet. Run the sync agent from the laptop.</p>') : json(res, 404, { error: 'not found' });
+      // The shell pages come from the deployed files, never from the store.
+      const bytes = kind === 'shell' ? await readShell(name) : await store.get(name);
+      if (!bytes) return kind === 'shell' ? html(res, 404, '<!doctype html><meta charset="utf-8"><title>Transcript reader</title><p>Nothing has been uploaded yet, or the shell pages are not deployed with the app (see README.md). Run the sync agent from the laptop.</p>') : json(res, 404, { error: 'not found' });
       return send(res, 200, bytes, { 'content-type': contentType(kind), ...(kind === 'shell' ? { 'content-security-policy': SHELL_CSP } : {}) });
     }
     return json(res, 405, { error: 'method not allowed' });

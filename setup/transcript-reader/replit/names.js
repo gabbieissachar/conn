@@ -5,7 +5,9 @@
 // storage, which is what refuses traversal ("..", encoded dots, backslashes, a leading slash).
 //
 // The layout is the bucket sync.py --dry-run writes (README.md "The sealed copy"):
-//   index.html           the shell page (no transcript in it); sheet.html, the answer sheet's shell
+//   index.html           the shell page (no transcript in it); sheet.html, the answer sheet's shell.
+//                        These two are code: they are served from files deployed with the app (config.shellDir)
+//                        and never accepted as an upload, so an upload key cannot change the page that asks for the passphrase.
 //   k/params.json        the salt and iteration count of the key derivation (no secret), and a sealed check word
 //   index.json.enc       the sealed index
 //   s|d|f|a/<id>.json.enc  a sealed conversation, document, week of fleet records or answer sheet
@@ -25,6 +27,9 @@ const KINDS = {
 
 const MAGIC = Buffer.from('HRC1');  // prototype/seal.js: "HRC1", a 12-byte nonce, then the ciphertext and its tag
 const SEALED_MIN = 32;
+// prototype/seal.js derives keys with 600,000 rounds; a lower count would make a stored copy cheaper to guess at.
+const MIN_ITERATIONS = 600000;
+const MAX_ITERATIONS = 10000000;  // a page would hang deriving a key past this
 const PARAMS_KEYS = ['version', 'kdf', 'hash', 'iterations', 'salt', 'check'];
 
 // The kind of a name, or null when the app serves no such name.
@@ -47,10 +52,10 @@ function checkBody(kind, bytes) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const keys = Object.keys(value).sort();
     if (keys.join() !== [...PARAMS_KEYS].sort().join()) return false;
-    return value.kdf === 'PBKDF2' && value.hash === 'SHA-256' && Number.isInteger(value.iterations) && value.iterations > 0
-      && typeof value.salt === 'string' && typeof value.check === 'string' && Number.isInteger(value.version);
+    return value.kdf === 'PBKDF2' && value.hash === 'SHA-256' && Number.isInteger(value.iterations)
+      && typeof value.salt === 'string' && typeof value.check === 'string' && Number.isInteger(value.version)
+      && value.iterations >= MIN_ITERATIONS && value.iterations <= MAX_ITERATIONS;
   }
-  if (kind === 'shell') return /^\s*<!doctype html/i.test(bytes.subarray(0, 64).toString('utf8'));
   return false;
 }
 

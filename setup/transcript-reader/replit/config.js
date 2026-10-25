@@ -4,6 +4,8 @@
 // lets a stranger in: with no allow-list, no session secret or no OIDC client the app refuses to
 // start, and the message names the variables, never their values.
 
+const path = require('path');
+
 const JUMPCLOUD = 'https://oauth.id.jumpcloud.com/';
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -38,6 +40,8 @@ function loadConfig(env = process.env) {
     emailVerifiedOptional: env.OIDC_EMAIL_VERIFIED_OPTIONAL === '1',
     trustProxy: env.TRUST_PROXY === '1',
     queueLimit: 50,
+    // The shell pages are code the owner deploys with the app; the upload key cannot replace them.
+    shellDir: (env.SHELL_DIR || '').trim() || path.join(__dirname, 'shell'),
   };
 }
 

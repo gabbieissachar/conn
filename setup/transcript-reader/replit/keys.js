@@ -14,32 +14,50 @@ const hash = (key) => crypto.createHash('sha256').update(key, 'utf8').digest('he
 
 async function load(store) {
   const bytes = await store.get(FILE);
-  if (!bytes) return { keys: [] };
+  if (!bytes) return { keys: [], rev: 0 };
   const value = JSON.parse(bytes.toString('utf8'));
-  return { keys: Array.isArray(value.keys) ? value.keys : [] };
+  return { keys: Array.isArray(value.keys) ? value.keys : [], rev: Number(value.rev) || 0 };
 }
 
-const save = (store, value) => store.put(FILE, Buffer.from(JSON.stringify(value)));
+// Changes to the key file one at a time here, and checked against another process's change (the
+// shell command and the app share it): a change made on an older copy is made again on the new one.
+let turn = Promise.resolve();
+function change(store, apply) {
+  const run = async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const value = await load(store);
+      const rev = value.rev || 0;
+      const result = apply(value);
+      if (result === false) return false;
+      if (((await load(store)).rev || 0) !== rev) continue;
+      value.rev = rev + 1;
+      await store.put(FILE, Buffer.from(JSON.stringify(value)));
+      return result;
+    }
+    throw new Error('The key file kept changing under this command; try again.');
+  };
+  const next = turn.then(run, run);
+  turn = next.catch(() => {});
+  return next;
+}
 
 // A new key: { key, id, label }. The key is not kept anywhere; only its hash is.
 async function create(store, label, now = Date.now()) {
   const key = PREFIX + crypto.randomBytes(32).toString('base64url');
   const digest = hash(key);
   const entry = { id: digest.slice(0, 12), hash: digest, label: String(label || 'laptop').slice(0, 60), created: Math.floor(now / 1000) };
-  const value = await load(store);
-  value.keys.push(entry);
-  await save(store, value);
+  await change(store, (value) => { value.keys.push(entry); return true; });
   return { key, id: entry.id, label: entry.label };
 }
 
 // Revokes by id (the first 12 characters of the hash, which list() shows); false when there is none.
 async function revoke(store, id, now = Date.now()) {
-  const value = await load(store);
-  const entry = value.keys.find((item) => item.id === id && !item.revoked);
-  if (!entry) return false;
-  entry.revoked = Math.floor(now / 1000);
-  await save(store, value);
-  return true;
+  return change(store, (value) => {
+    const entry = value.keys.find((item) => item.id === id && !item.revoked);
+    if (!entry) return false;
+    entry.revoked = Math.floor(now / 1000);
+    return true;
+  });
 }
 
 async function list(store) {

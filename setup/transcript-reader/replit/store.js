@@ -46,9 +46,10 @@ function fileStore(root) {
     },
     async put(name, bytes) {
       const file = locate(name);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
+      // Owner-only, like everything else this work writes (the key hashes are in here too).
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
       const partial = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.partial`);
-      fs.writeFileSync(partial, bytes);
+      fs.writeFileSync(partial, bytes, { mode: 0o600 });
       fs.renameSync(partial, file);
     },
     async delete(name) {

@@ -4,12 +4,15 @@
 sync.py --dry-run seals the hosted copy into a local folder. This runs that, then sends what changed in
 the folder to the app's upload endpoint, so the folder stays the one source of truth and the app is
 a copy of it. Only sealed bytes leave this laptop: the objects, the index and the key parameters
-the app's endpoint accepts, and the shell page (no transcript in it).
+the app's endpoint accepts. The shell pages (index.html, sheet.html) are code, and the endpoint
+takes no code: they are deployed with the app by hand (--copy-shell, below), so a leaked upload key
+cannot swap the page that asks for the passphrase.
 
 Usage (from the repo root):
   python3 setup/transcript-reader/push.py URL                 build and seal (sync.py --dry-run), then upload what changed
   python3 setup/transcript-reader/push.py URL --push-only     upload what changed in the folder as it is
   python3 setup/transcript-reader/push.py URL --launch-agent  print a LaunchAgent that runs this every minute
+  python3 setup/transcript-reader/push.py URL --copy-shell DIR  copy the shell pages from the folder into DIR, to put in the app's shell/ folder
   Options: --folder DIR (the sealed folder; default out/bucket-hosted/), --state FILE (what was sent; default out/push.json)
 
 URL is the app's address (https, or http to this machine for a stand-in); HOSTED_READER_URL
@@ -18,7 +21,7 @@ keychain (service pmos-hosted-reader-upload-key), else asked for in a terminal. 
 never written to a file, a log or a message here, and is not passed to sync.py. The passphrase
 sync.py needs is its own business (HOSTED_READER_PASSPHRASE or its prompt).
 
-A run sends the key parameters, then each changed object, then the index, then the shells, so a
+A run sends the key parameters, then each changed object, then the index, so a
 phone never reads an index that names an object not there yet; it removes objects the sync
 pruned (conversations older than 90 days) afterwards. What was sent is remembered by content hash in the
 state file; an object missing from the app is sent again. A redirect from the app is
@@ -39,6 +42,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -59,7 +63,8 @@ OBJECT = re.compile(r"^[sdfa]/[A-Za-z0-9_-]{1,64}\.json\.enc$")
 UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 QUEUED = re.compile(rf"^q/({UUID})\.json\.enc$")
 RECEIPT = re.compile(rf"^r/({UUID})\.json\.enc$")
-FIXED = ("k/params.json", "index.json.enc", "index.html", "sheet.html")
+FIXED = ("k/params.json", "index.json.enc")
+SHELLS = ("index.html", "sheet.html")  # code: copied by hand into the app's shell/ folder, never uploaded
 PRUNED_PREFIXES = ("s/", "d/", "f/", "a/")
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 ATTEMPTS = 3
@@ -164,10 +169,10 @@ def digest(path: Path) -> str:
 
 
 def send_order(names) -> list[str]:
-    """Key parameters, then objects, then the index, then the shells, then receipts."""
+    """Key parameters, then objects, then the index, then receipts."""
     names = set(names)
     return ([n for n in ("k/params.json",) if n in names] + sorted(n for n in names if OBJECT.match(n))
-            + [n for n in ("index.json.enc", "index.html", "sheet.html") if n in names] + sorted(n for n in names if RECEIPT.match(n)))
+            + [n for n in ("index.json.enc",) if n in names] + sorted(n for n in names if RECEIPT.match(n)))
 
 
 def push_folder(folder: Path, remote: Remote, state_file: Path = STATE, say=print) -> tuple[int, int, int]:
@@ -199,7 +204,7 @@ def push_folder(folder: Path, remote: Remote, state_file: Path = STATE, say=prin
     finally:
         state_file.parent.mkdir(parents=True, exist_ok=True)
         partial = state_file.with_name(f".{state_file.name}.{os.getpid()}.partial")
-        partial.write_text(json.dumps({"url": remote.base, "files": {n: h for n, h in sent.items() if n in files}}), encoding="utf-8")
+        partial.write_text(json.dumps({"url": remote.base, "files": {n: h for n, h in sent.items() if n in files}, "shells": state.get("shells", {})}), encoding="utf-8")
         os.chmod(partial, 0o600)
         os.replace(partial, state_file)
     return uploaded, len(stale) + len(handled), len(files) - len(todo)
@@ -225,6 +230,48 @@ def pull_queue(folder: Path, remote: Remote) -> int:
     return fetched
 
 
+def shell_hashes(folder: Path) -> dict[str, str]:
+    return {name: digest(folder / name) for name in SHELLS if (folder / name).is_file()}
+
+
+def copy_shells(folder: Path, dest: Path, state_file: Path = STATE) -> list[str]:
+    """Copy the shell pages out of the sealed folder into <dest> (no transcript in them) and remember
+    which ones, so a run can say when the folder's pages are newer than the deployed ones."""
+    found = shell_hashes(folder)
+    if not found:
+        raise PushError(f"{folder} holds no shell pages yet. Run without --push-only to build them.")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in found:
+        (dest / name).write_bytes((folder / name).read_bytes())
+    update_state(state_file, shells=found)
+    return sorted(found)
+
+
+def update_state(state_file: Path, **fields) -> None:
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    state.update(fields)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    partial = state_file.with_name(f".{state_file.name}.{os.getpid()}.partial")
+    partial.write_text(json.dumps(state), encoding="utf-8")
+    os.chmod(partial, 0o600)
+    os.replace(partial, state_file)
+
+
+def shell_notice(folder: Path, state_file: Path = STATE) -> str:
+    """What to tell the owner when the folder's shell pages are not the ones last copied out for the app."""
+    try:
+        copied = json.loads(state_file.read_text(encoding="utf-8")).get("shells", {})
+    except (OSError, ValueError):
+        copied = {}
+    now = shell_hashes(folder)
+    if now and now != copied:
+        return "The shell pages changed since you last copied them for the app: run this with --copy-shell DIR, put the files in the app's shell/ folder and redeploy (README.md)."
+    return ""
+
+
 def launch_agent(url: str, folder: Path) -> str:
     """A LaunchAgent that runs the sync and the upload every minute. Only printed: install it yourself.
     The passphrase comes from the login keychain here; push.py finds the upload key there itself."""
@@ -233,6 +280,10 @@ def launch_agent(url: str, folder: Path) -> str:
     command = (f'{sync.PASSPHRASE_ENV}="$(/usr/bin/security find-generic-password -w -s {sync.KEYCHAIN_SERVICE})" '
                f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" "{url}" --folder "{folder.resolve()}"')
     log = OUT / "push-agent.log"
+    # launchd's own PATH holds none of the tools a run uses (node seals and sends, python3 builds, herdr
+    # is the pane a send reaches), so the agent gets the folders they are in now, as sync.py's does.
+    found = [str(Path(shutil.which(tool)).resolve().parent) for tool in ("node", "python3", "herdr") if shutil.which(tool)]
+    path = ":".join(dict.fromkeys([*found, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -241,6 +292,8 @@ def launch_agent(url: str, folder: Path) -> str:
   <key>ProgramArguments</key>
   <array><string>/bin/sh</string><string>-c</string><string>{escape(command)}</string></array>
   <key>WorkingDirectory</key><string>{escape(str(sync.reader.REPO.resolve()))}</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>{escape(path)}</string></dict>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>{escape(str(log))}</string>
@@ -257,9 +310,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--state", default=str(STATE))
     parser.add_argument("--push-only", action="store_true", help="upload the folder as it is, without sealing again first")
     parser.add_argument("--launch-agent", action="store_true", help="print a LaunchAgent that runs this every minute")
+    parser.add_argument("--copy-shell", metavar="DIR", help="copy the shell pages from the folder into DIR, for the app's shell/ folder (nothing is uploaded)")
     args = parser.parse_args(argv)
     folder = Path(args.folder).expanduser()
     try:
+        if args.copy_shell:
+            names = copy_shells(folder, Path(args.copy_shell).expanduser(), Path(args.state).expanduser())
+            print(f"Copied {', '.join(names)} to {args.copy_shell}. Put them in the app's shell/ folder and redeploy (README.md).")
+            return 0
         url = check_url(args.url)
         if args.launch_agent:
             print(launch_agent(url, folder), end="")
@@ -277,6 +335,9 @@ def main(argv: list[str]) -> int:
         print(f"Not uploaded: {error}", file=sys.stderr)
         return 1
     print(f"Uploaded {sent} objects to {urllib.parse.urlsplit(url).hostname}, removed {removed}, {same} already there.")
+    notice = shell_notice(folder, Path(args.state).expanduser())
+    if notice:
+        print(notice)
     return 0
 
 

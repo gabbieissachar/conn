@@ -1,6 +1,6 @@
 # The hosted transcript reader on Replit (part 3)
 
-A small Node app for ShopBack's Replit workspace. It lets the owner read the transcript reader from a phone while the laptop is off. The laptop keeps sealing the copy as it does today (`sync.py`) and `push.py` sends the sealed files here. The app stores them in Replit Object Storage and serves them, with the same shell page, to one signed-in person.
+A small Node app for ShopBack's Replit workspace. It lets the owner read the transcript reader from a phone while the laptop is off. The laptop keeps sealing the copy as it does today (`sync.py`) and `push.py` sends the sealed files here. The app stores them in Replit Object Storage and serves them to one signed-in person, with the same shell page, which you deploy with the app (below).
 
 Nothing here was deployed or run against Replit or any sign-in provider from the build machine. Every check ran against local stand-ins (`app.test.js`, `units.test.js`, `../test_push.py`). "What was not verified" at the end lists what only the first deploy can confirm.
 
@@ -19,10 +19,10 @@ laptop: sync.py (build, redact, seal)  ->  push.py  --upload key-->  the app (Re
 | Caller | May do | Refused |
 |---|---|---|
 | Not signed in | `GET /`, `/login` (the sign-in page), `/auth/start`, `/auth/callback` | everything else: 401 |
-| Signed-in, allow-listed owner | `GET` the shell and every sealed object, receipt and queued message; `POST /api/transcript-reader/queue` (the Send queue, the same route and body as the reader's own server: `{copy: "bucket", id, data}` with the sealed request in base64; from the page only, never overwrites, at most 50 waiting) | any other write or delete |
-| Laptop upload key (`Authorization: Bearer hrk_...`) | `GET /api/objects[?prefix=s/]` (names and sizes), `PUT` the shell, `k/params.json`, sealed objects and receipts, `DELETE` objects, queued messages and receipts, `GET` queued messages | reading sealed objects back, writing `q/`, deleting the shell or key parameters, plain content |
+| Signed-in, allow-listed owner | `GET` the shell pages and every sealed object, receipt and queued message; `POST /api/transcript-reader/queue` (the Send queue, the same route and body as the reader's own server: `{copy: "bucket", id, data}` with the sealed request in base64; from the page only, never overwrites, at most 50 waiting) | any other write or delete |
+| Laptop upload key (`Authorization: Bearer hrk_...`) | `GET /api/objects[?prefix=s/]` (names and sizes), `PUT` `k/params.json`, sealed objects and receipts, `DELETE` objects, queued messages and receipts, `GET` queued messages | reading sealed objects back, writing `q/`, deleting the key parameters, plain content, and the shell pages: they are code, so the app serves them only from the files you deploy with it |
 
-The upload accepts only bytes that look like what `sync.py` produces: sealed objects (`HRC1` magic, at least 32 bytes), `k/params.json` with exactly its six fields, and a shell page starting with `<!doctype html`. Names are matched against a fixed list (`names.js`: `index.html`, `sheet.html`, `k/params.json`, `index.json.enc`, `s|d|f|a/<id>.json.enc`, `q/` and `r/<uuid>.json.enc`), so a path with `..`, an encoded dot, a backslash or any other name never reaches storage. Size limits: 32 MiB per object, 4 MiB shell, 4 KiB parameters, 64 KiB per queued message (the reader's own limit).
+The upload accepts only bytes that look like what `sync.py` produces: sealed objects (`HRC1` magic, at least 32 bytes), `k/params.json` with exactly its six fields, and nothing else. The shell pages (`index.html`, `sheet.html`) are never accepted as an upload: they are read from the app's own `shell/` folder, so a leaked upload key cannot swap the page that asks for your passphrase. The key derivation keeps its floor (`k/params.json` needs 600,000 to 10,000,000 rounds). Names are matched against a fixed list (`names.js`: `index.html`, `sheet.html`, `k/params.json`, `index.json.enc`, `s|d|f|a/<id>.json.enc`, `q/` and `r/<uuid>.json.enc`), so a path with `..`, an encoded dot, a backslash or any other name never reaches storage. Size limits: 32 MiB per object, 4 KiB parameters, 64 KiB per queued message (the reader's own limit).
 
 Upload keys are 256-bit random values shown once; only their SHA-256 hash is stored (`_admin/keys.json` in the same storage, never served). Revoking one takes effect on the next request.
 
@@ -40,7 +40,7 @@ Can see:
 - The project's files and code, its deployment logs, and the app's request metadata (times, paths, sizes, addresses). The app logs no email addresses and no key.
 - The secrets. Whoever can open the project's Secrets can read `SESSION_SECRET` and forge an owner session, and can read the OIDC client secret. A forged session reads only ciphertext (the passphrase is the second lock).
 - Object Storage: the sealed objects, their count, sizes and update times. That is metadata about your activity: how many conversations, how big, how often you work.
-- Who can edit the deployed app. Someone with edit access could redeploy a changed shell page that records the passphrase when you type it. Encryption protects what is stored and what a reader of storage sees. It does not protect against a host that changes the page you open. Keep the project private to you, and use a passphrase you use nowhere else.
+- Who can edit the deployed app. Someone with edit access could redeploy a changed shell page that records the passphrase when you type it. Encryption protects what is stored and what a reader of storage sees. It does not protect against a host that changes the page you open. Keep the project private to you, and use a passphrase you use nowhere else. A leaked upload key is not enough for this: the key writes sealed objects only, never the page.
 
 Cannot see:
 
@@ -54,6 +54,7 @@ Cannot see:
 | `oidc.js`, `session.js`, `config.js` | sign-in (code flow with PKCE, RS256 ID-token check), signed cookies, settings from the environment |
 | `names.js`, `store.js`, `keys.js` | the names and bodies accepted, the object stores (Replit, folder, memory), upload keys |
 | `keys-cli.js` | make, list and revoke upload keys from the Replit shell |
+| `shell/` (you add it) | the two shell pages, `index.html` and `sheet.html`, copied out of the sealed folder with `push.py --copy-shell` |
 | `../push.py` | the laptop's sync target: fetches queued messages into the sealed folder, runs `sync.py` (which drains them), then uploads what changed and the receipts |
 
 ## Deploy steps (you run these)
@@ -95,14 +96,23 @@ You need a ShopBack Replit workspace, and an OpenID Connect client for the app. 
    ```
 
    It asks for the passphrase (twice, the first time) or reads `HOSTED_READER_PASSPHRASE`, seals the copy, then uploads. Each run also carries the Send queue: it copies messages queued on the app into the sealed folder's `q/` before the sync (whose drain sends them and writes receipts to `r/`), then uploads the receipts and removes the answered messages from the app. The first run sends every conversation of the last 90 days (about 15 MB on the current reading list), so allow some minutes. Later runs send only what changed.
-7. **Open it on the phone.** Visit the app address, sign in with your ShopBack account, enter the passphrase once ("Remember on this device" keeps the derived key in that browser).
-8. **Keep it fresh** (optional): `python3 setup/transcript-reader/push.py https://YOUR_APP_NAME_HERE.replit.app --launch-agent` prints a LaunchAgent that runs it every minute while the Mac is awake. It is printed only; installing it is yours to do.
+7. **Deploy the shell pages.** The first push ends by saying the shell pages are not deployed yet. Copy them out and put them in the app:
+
+   ```bash
+   python3 setup/transcript-reader/push.py --copy-shell setup/transcript-reader/out/shell-for-replit
+   ```
+
+   Upload `index.html` and `sheet.html` from that folder into a `shell/` folder in the Replit project, then redeploy. They hold no transcript. The upload key cannot do this for you, on purpose. Do it again whenever a push says the shell pages changed (when the reader's page code changes, not on every sync).
+8. **Open it on the phone.** Visit the app address, sign in with your ShopBack account, enter the passphrase once ("Remember on this device" keeps the derived key in that browser).
+9. **Keep it fresh** (optional): `python3 setup/transcript-reader/push.py https://YOUR_APP_NAME_HERE.replit.app --launch-agent` prints a LaunchAgent that runs it every minute while the Mac is awake. It is printed only; installing it is yours to do.
 
 Things to know:
 
 - `push.py` seals into its own folder (`out/bucket-hosted/`), apart from the local review bucket (`out/bucket/`). `sync.py` remembers what it sealed for one folder at a time, so running `sync.py --dry-run` into another folder between two pushes makes the next push seal and send everything again.
 - Changing the passphrase (`sync.py --dry-run FOLDER --new-passphrase`, with the folder `push.py` uses) seals everything again under it, and the next push sends the lot. Devices that remember the old key must open the page again and enter the new passphrase.
-- The shell page is the one `sync.py` copies into the sealed folder, so a new shell reaches the app on the next push.
+- The shell pages are the ones `sync.py` puts in the sealed folder, but they reach the app only by your hand (step 7). `push.py` says so after a run whenever the folder's pages differ from the ones you last copied out. A page not yet updated keeps working against the sealed objects it can read; a new page needs the new copy.
+- If the app's `shell/` folder is empty, the owner sees a note that nothing is deployed instead of the page.
+- A page left open past the end of its session (7 days, or a changed `SESSION_SECRET`) shows its old content and fails requests with 401 until reloaded; the page is `sync.py`'s, so that warning belongs to it.
 
 To undo things: `node keys-cli.js revoke <id>` stops a laptop key at once (`node keys-cli.js list` shows ids). Changing `SESSION_SECRET` signs everyone out. Removing an address from `ALLOWED_EMAILS` and redeploying locks that person out.
 
