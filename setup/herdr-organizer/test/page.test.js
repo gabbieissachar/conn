@@ -281,6 +281,51 @@ test('the selected-tabs panel has a dismiss button that clears the selection, an
   assert.match(html, /addEventListener\('click', dismissSelection\)/);
 });
 
+// Runs the page's own Move panel on plain data.
+function movePanel(selectedLabels, { chosen = '' } = {}) {
+  const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const source = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
+  const workspaces = [
+    { id: 'wBK', label: 'leader-space', tab_count: 2, tabs: [{ id: 'wBK:t1', label: 'leader-esim' }, { id: 'wBK:t2', label: 'big-boss' }] },
+    { id: 'wA8', label: 'esim', tab_count: 3, tabs: [{ id: 'wA8:t1', label: 'shell' }, { id: 'wA8:t2', label: 'claude' }, { id: 'wA8:t3', label: 'leader-nip' }] },
+    { id: 'wB1', label: 'nip', tab_count: 0, tabs: [] },
+  ];
+  const ids = { 'leader-esim': 'wBK:t1', 'big-boss': 'wBK:t2', shell: 'wA8:t1', claude: 'wA8:t2', 'leader-nip': 'wA8:t3' };
+  const state = { selectedTabs: new Set(selectedLabels.map(label => ids[label])), selectedTabsAction: 'move', destinationWorkspace: chosen, selectedTabsArchive: '', selectedTabsBatch: '' };
+  const { movePanelView } = new Function('escapeHtml', 'state', [line('TAB_ID_PATTERN'), line('SESSION_NAME_PATTERN'), 'const BATCH_ID_PATTERN = /^batch-[0-9]{8}-[0-9]{6}(-[0-9]+)?$/;', source, 'return { movePanelView };'].join('\n'))(escapeHtml, state);
+  const out = movePanelView({ workspaces, archives: [], batches: [], herdr_session: 'esim' });
+  const options = [...out.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
+  return { out, options, state, command: (out.match(/id="copy-move-tabs"[^>]*data-command="([^"]*)"/) || [])[1] };
+}
+
+test('the Move panel follows the leader rule and starts with nothing chosen', () => {
+  // leader-space is the first workspace on the operator's machine, which used to make it the default for any tab.
+  const ordinary = movePanel(['shell']);
+  assert.deepEqual(ordinary.options, ['', 'wB1'], 'an ordinary tab is offered no leader-space, and not its own workspace');
+  assert.equal(ordinary.command, '', 'no destination is chosen, so there is no command to copy');
+  assert.equal(ordinary.state.destinationWorkspace, '', 'a computed default is never stored');
+  const leader = movePanel(['leader-nip']);
+  assert.deepEqual(leader.options, ['', 'wBK'], 'a leader tab is offered only leader-space');
+  assert.equal(leader.command, '', 'and still has to be picked');
+  assert.deepEqual(movePanel(['big-boss']).options, [''], 'a leader tab already in leader-space has no other place to go');
+  const mixed = movePanel(['leader-esim', 'shell']);
+  assert.deepEqual(mixed.options, [''], 'a mix has no destination');
+  assert.match(mixed.out, /Leader tabs and other tabs cannot go into one workspace/);
+  // A pick the user made counts while it is offered, and not otherwise.
+  const picked = movePanel(['shell'], { chosen: 'wB1' });
+  assert.match(picked.command, /move-tabs --tab wA8:t1 --to-workspace wB1 --execute --confirm wB1/);
+  assert.equal(movePanel(['shell'], { chosen: 'wBK' }).command, '', 'a stale choice of leader-space is not used');
+  assert.equal(/<option value="[^"]+" selected/.test(ordinary.out), false, 'no workspace is marked selected');
+});
+
+test('a leader selection in a move is offered only leader-space', () => {
+  const { restoreDestinations } = require('node:vm').runInNewContext(`${html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = '))}; ({ restoreDestinations })`, {});
+  const workspaces = [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }];
+  assert.deepEqual(restoreDestinations(workspaces, [{ label: 'big-boss' }]).map(item => item.id), ['wBK']);
+  assert.match(html, /restoreDestinations\(data\.workspaces\.filter\(workspace => !sourceWorkspaces\.has\(workspace\.id\)\), selected\)/, 'the Move panel uses the same rule as the restore panels');
+});
+
 test('the archive group has its own tab, and the Archives tab no longer holds the group card', () => {
   assert.match(html, /data-view="group"[^>]*>Archive group</);
   const group = html.slice(html.indexOf('<section id="group-section"'), html.indexOf('<section id="archives-section"'));
