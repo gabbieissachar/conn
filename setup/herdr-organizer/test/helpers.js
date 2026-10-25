@@ -116,13 +116,32 @@ async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHo
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   const adapter = createAdapter({ toolRoot, runner: active, env, fmHome, gaugeScript, ...(now ? { now } : {}) });
-  api = create({ root: '/fixture/root', port, adapter, env, toolRoot, ...(rollover ? { rollover } : {}), ...(switches ? { switches } : {}), ...(preview ? { preview } : {}) });
+  // No test server may register the real ~/fm-homes/pmos or write to the real tool state: the rollover side gets a fixture home,
+  // a scratch HOME and a scratch tool root of its own unless the test brings its own.
+  const scratch = tempTree('herdr-organizer-api-');
+  const fixtureHome = scratch.mkdir('fixture-home');
+  for (const name of ['state', 'data', 'config']) scratch.mkdir(`fixture-home/${name}`);
+  scratch.write('fixture-home/state/.lock-session', 'fixture\n');
+  const scratchTools = scratch.abs('tools');
+  const { createRollover } = require('../rollover');
+  const { createSwitches } = require('../rollover-switches');
+  const rolloverView = rollover || createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `fixture=${path.join(scratch.real, 'fixture-home')}` }, homedir: scratch.abs('nohome'), ledgerPath: path.join(scratchTools, 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json') });
+  const switchesView = switches || createSwitches({ rollover: rolloverView, toolRoot: scratchTools });
+  api = create({ root: '/fixture/root', port, adapter, env, toolRoot, rollover: rolloverView, switches: switchesView, ...(preview ? { preview } : {}) });
   return {
     port,
     api,
     calls: fake.calls,
     origin: 'http://localhost:' + port,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    scratch: { home: path.join(scratch.real, 'fixture-home'), tools: path.join(scratch.real, 'tools'), tree: scratch },
+    rollover: rolloverView,
+    close: () => new Promise((resolve) => server.close(() => {
+      // what a request wrote into the scratch tree is unlinked one file at a time; nothing outside it is ever touched
+      for (const rel of ['fixture-home/config', 'tools/state/workspace-organizer/rollover-switches']) { scratch.sweep(rel); }
+      for (const rel of ['tools', 'tools/state', 'tools/state/workspace-organizer', 'tools/state/workspace-organizer/rollover-switches']) scratch.trackDir(rel);
+      scratch.cleanup();
+      resolve();
+    })),
   };
 }
 

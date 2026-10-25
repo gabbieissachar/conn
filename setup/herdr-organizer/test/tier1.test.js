@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const path = require('path');
 const { startServer, client, fakeRunner, fixture, tempTree } = require('./helpers');
 const { findLeaks } = require('../text');
 
@@ -354,14 +355,17 @@ test('tier 1 actions still need every cross-site protection', async () => {
   try {
     const { token } = await client(server);
     const { request } = require('./helpers');
+    // A request that gets past the guard would really write: the id names the fixture home this server registered, never a real one.
+    const fixtureId = server.rollover.state().homes[0].id;
+    assert.equal(server.rollover.state().homes[0].label, 'fixture');
     const bodies = [
       { action: 'verify-apply', params: { session: 'project-a', confirm: 'apply:project-a' } },
       { action: 'save-manual-identity', params: manual() },
       { action: 'seal-bundle', params: { sessions: ['project-a'], confirm: 'seal:project-a' } },
       { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w1:p1', id: '11111111' } },
-      { action: 'rollover-arm', params: { home: 'h00000000', kind: 'crew', ids: ['x'], confirm: 'rollover-arm:h00000000:crew:x' } },
+      { action: 'rollover-arm', params: { home: fixtureId, kind: 'crew', ids: ['x'], confirm: `rollover-arm:${fixtureId}:crew:x` } },
       { action: 'rollover-stop', params: {} },
-      { action: 'rollover-undo', params: { home: 'h00000000', file: 'rollover-live' } },
+      { action: 'rollover-undo', params: { home: fixtureId, file: 'rollover-live' } },
     ];
     // Every action the server runs at tier 1 or above is covered, so a new one cannot be added without a body here.
     const covered = bodies.map((body) => body.action);
@@ -381,7 +385,12 @@ test('tier 1 actions still need every cross-site protection', async () => {
     assert.equal(server.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
     assert.equal(server.calls.filter((call) => call.args.includes('--apply')).length, 0, 'no identity was applied');
     assert.equal(registerCalls(server.calls).length, 0, 'no manual identity was registered');
-    assert.equal(fs.existsSync('/fixture/tools/state'), false, 'no rollover record or audit line was started for a refused request');
+    assert.deepEqual(fs.readdirSync(path.join(server.scratch.home, 'config')), [], 'no switch file was written in the fixture home');
+    assert.equal(fs.existsSync(path.join(server.scratch.tools, 'state')), false, 'no rollover record or audit line was started for a refused request');
+    // the same bodies from the page itself would have written, so the checks above prove the guard and not an unreachable path
+    const { post } = await client(server);
+    assert.equal((await post('rollover-stop', {})).status, 200);
+    assert.deepEqual(fs.readdirSync(path.join(server.scratch.home, 'config')), ['rollover-off'], 'a request that passes the guard does write, here');
     assert.equal(server.calls.some((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py')), false, 'the manual identity check did not start');
   } finally { await server.close(); }
 });
