@@ -350,9 +350,9 @@ function rolloverHarness(overrides = {}) {
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
   const source = html.slice(html.indexOf('// ---- Context rollover'), html.indexOf('// ---- Context view')).replace(/^    const rollover = \{.*$/m, '');
-  const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null, ...overrides };
+  const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, stopping: false, result: null, primary: new Map(), phrase: new Map(), ...overrides };
   const api = { run: async () => { throw new Error('no network in this test'); } };
-  const functions = new Function('escapeHtml', 'plural', 'rollover', 'contextAge', 'api', 'planClock', 'state', 'renderContext', `${source}; return { rolloverCard, rolloverToken, rolloverArmBlock, rolloverPicked, rolloverVerdictText };`)(escapeHtml, plural, rollover, seconds => `${seconds} s ago`, api, () => '09:05', { view: 'context' }, () => {});
+  const functions = new Function('escapeHtml', 'plural', 'rollover', 'contextAge', 'api', 'planClock', 'state', 'renderContext', `${source}; return { rolloverCard, rolloverToken, rolloverArmBlock, rolloverPicked, rolloverVerdictText, rolloverBanner, rolloverPrimaryPanel, PRIMARY_PHRASE };`)(escapeHtml, plural, rollover, seconds => `${seconds} s ago`, api, () => '09:05', { view: 'context' }, () => {});
   return { ...functions, rollover };
 }
 
@@ -485,13 +485,81 @@ test('rollover card: the preview names who would roll for the ticked ids, in pla
   assert.match(rolloverCard(), /The ids were not checked against the roller's rules\./);
 });
 
+test('primary panel: apart from the other rows, hidden for a second-mate home, copy-only wiring check, and a typed phrase before the button works', () => {
+  const home = rolloverHome({ primary_registered: true });
+  const { rolloverCard, rolloverPrimaryPanel, PRIMARY_PHRASE, rollover } = rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true } });
+  const idle = rolloverCard();
+  assert.match(idle, /<strong>Your own session<\/strong>/);
+  assert.match(idle, /pill good">registered/);
+  assert.match(idle, /data-ro-pcheck[^>]*>Check before arming/);
+  assert.match(idle, /data-ro-pstop[^>]*>Stop the primary/);
+  assert.equal(/data-ro-pstop[^>]*disabled/.test(idle), false, 'the primary Stop is never greyed out');
+  assert.match(idle, /data-ro-copy="bin\/fm-primary-control\.sh wiring"/);
+  assert.match(idle, /data-ro-copy="bin\/fm-rollover\.sh check --primary"/);
+  assert.match(idle, /reads no settings file/, 'the page says it does not read the settings');
+  assert.equal(/data-ro-parm/.test(idle), false, 'no arm button before a check passed');
+  assert.equal(rolloverPrimaryPanel({ ...home, is_secondmate_home: true }), '', 'a second-mate home has no primary panel');
+  // a failing check names each failing item and offers no arm step
+  rollover.primary.set(home.id, { loading: false, error: '', at: '09:10', data: { ok: false, challenge: null, checklist: [{ key: 'config_ok', ok: true }, { key: 'primary_registered', ok: false, reason: 'The primary has not registered itself.' }] } });
+  const failed = rolloverCard();
+  assert.match(failed, /<span class="ro-tick">✗<\/span> the primary has registered itself<div class="ro-why">The primary has not registered itself\./);
+  assert.match(failed, /Arming is not offered until every item passes/);
+  assert.equal(/data-ro-parm/.test(failed), false);
+  // a passing check shows the warning and the phrase box; the button follows the exact phrase
+  rollover.primary.set(home.id, { loading: false, error: '', at: '09:10', data: { ok: true, challenge: 'a'.repeat(32), checklist: [{ key: 'config_ok', ok: true }, { key: 'watcher_running', ok: true }] } });
+  const passed = rolloverCard();
+  assert.match(passed, /This lets firstmate restart your own working session when it is eligible\. It will ask your session to save its work, then type \/clear into your pane\. It stays on until you remove it\. A restart cannot be undone\./);
+  assert.match(passed, /Type <code>arm primary fm-homes\/pmos<\/code> to confirm/);
+  assert.match(passed, /data-ro-parm[^>]*disabled>Arm primary rollover/, 'disabled until the phrase is typed');
+  assert.match(passed, /good for 2 minutes and for one use/);
+  rollover.phrase.set(home.id, 'arm primary fm-homes/pmos ');
+  assert.match(rolloverCard(), /data-ro-parm[^>]*disabled>/, 'a trailing space is not the phrase');
+  rollover.phrase.set(home.id, PRIMARY_PHRASE(home));
+  assert.equal(/data-ro-parm[^>]*disabled/.test(rolloverCard()), false, 'the exact phrase turns the button on');
+  rollover.busy = true;
+  assert.match(rolloverCard(), /data-ro-parm[^>]*disabled>/, 'one change at a time');
+  rollover.busy = false;
+  assert.match(rolloverCard(), /value="arm primary fm-homes\/pmos"/, 'the typed text survives a redraw');
+});
+
+test('primary banner: shown while any primary live file exists, page-made or not, with Undo only for the page\'s own', () => {
+  const live = origin => rolloverHome({ files: ROLLOVER_FILES.map(name => (name === 'rollover-primary-live' ? { name, state: 'regular', capability: 'read', origin } : { name, state: 'absent', capability: 'read' })) });
+  const none = rolloverHarness({ data: { homes: [rolloverHome()], unregistered_homes: 0, platform_supported: true } });
+  assert.equal(none.rolloverBanner(), '', 'no banner without a live primary file');
+  assert.equal(rolloverHarness({}).rolloverBanner(), '', 'and none before the first read');
+  const link = rolloverHarness({ data: { homes: [rolloverHome({ files: ROLLOVER_FILES.map(name => ({ name, state: name === 'rollover-primary-live' ? 'symlink' : 'absent', capability: 'read' })) })], unregistered_homes: 0, platform_supported: true } });
+  assert.equal(link.rolloverBanner(), '', 'firstmate treats a link as absent, so no banner');
+  const byPage = rolloverHarness({ data: { homes: [live('page')], unregistered_homes: 0, platform_supported: true } }).rolloverBanner();
+  assert.match(byPage, /Primary rollover is live in <strong>fm-homes\/pmos<\/strong>: your own session can be restarted\./);
+  assert.match(byPage, /data-ro-pstop[^>]*>Stop<\/button>/);
+  assert.match(byPage, /data-ro-undo="rollover-primary-live"[^>]*>Undo<\/button>/);
+  const byHand = rolloverHarness({ data: { homes: [live('other')], unregistered_homes: 0, platform_supported: true } }).rolloverBanner();
+  assert.match(byHand, /Primary rollover is live/);
+  assert.equal(/data-ro-undo/.test(byHand), false, 'a file made by hand is not removable from the page');
+  assert.match(html, /section\.innerHTML = `\$\{rolloverBanner\(\)\}\$\{head\}/, 'the banner is at the top of the Context tab');
+});
+
+test('primary switch in the page: the token and phrase are built from the server\'s challenge, and the files table lets the page-made primary files go', () => {
+  assert.match(html, /confirm: `rollover-primary-arm:\$\{home\.id\}:\$\{challenge\}`/);
+  assert.match(html, /\(rollover\.phrase\.get\(home\.id\) \|\| ''\) !== PRIMARY_PHRASE\(home\)\) return;/, 'the click is ignored unless the phrase is exact');
+  assert.match(html, /rollover\.primary\.delete\(home\.id\);\s*rollover\.phrase\.delete\(home\.id\);/, 'a challenge is dropped from the page when it is used');
+  assert.match(html, /confirm: ask\.file === 'rollover-primary-off' \? `rollover-resume:\$\{home\.id\}:primary`/);
+  assert.match(html, /api\.run\('rollover-stop', scope === 'primary' \? \{ scope: 'primary', homes \} : \{\}\)/);
+  const harness = rolloverHarness({ data: { homes: [rolloverHome({ files: ROLLOVER_FILES.map(name => (name.startsWith('rollover-primary') ? { name, state: 'regular', capability: 'read', origin: 'page' } : { name, state: 'absent', capability: 'read' })) })], unregistered_homes: 0, platform_supported: true } });
+  const card = harness.rolloverCard();
+  assert.match(card, /data-ro-undo="rollover-primary-live"[^>]*>Remove<\/button>/);
+  assert.match(card, /data-ro-undo="rollover-primary-off"[^>]*>Resume<\/button>/);
+  harness.rollover.confirm = { kind: 'undo', home: 'ha02f1cb9', file: 'rollover-primary-off' };
+  assert.match(harness.rolloverCard(), /Turn the primary rollover back on in fm-homes\/pmos\?[^]*primary off file this page made/);
+});
+
 test('rollover card: the page names only the rollover actions of this slice and builds every token itself', () => {
   const names = [...new Set((html.match(/api\.run\('rollover-[a-z-]+'|runRollover\('rollover-[a-z-]+'/g) || []).map(item => item.replace(/.*'(rollover-[a-z-]+)'/, '$1')))].sort();
-  assert.deepEqual(names, ['rollover-arm', 'rollover-preview', 'rollover-state', 'rollover-stop', 'rollover-undo']);
-  assert.equal(/rollover-primary|handoff-restart/.test(html), false, 'no primary action and no handoff-restart in the page yet');
-  assert.match(html, /api\.run\('rollover-stop', \{\}\)/, 'Stop sends nothing but itself: no confirm, no typed text');
-  assert.match(html, /const runStop = async \(\) => \{\s*if \(rollover\.stopping\) return;/, 'Stop does not wait for another request, and a second click while one Stop runs is ignored');
-  assert.match(html, /confirm: `rollover-resume:\$\{home\.id\}`/, 'removing the off file carries the resume token');
+  assert.deepEqual(names, ['rollover-arm', 'rollover-preview', 'rollover-primary-arm', 'rollover-primary-prepare', 'rollover-state', 'rollover-stop', 'rollover-undo']);
+  assert.equal(/handoff-restart/.test(html), false, 'no handoff-restart in the page yet (B2)');
+  assert.match(html, /api\.run\('rollover-stop', scope === 'primary' \? \{ scope: 'primary', homes \} : \{\}\)/, 'Stop sends only its scope and homes: no confirm, no typed text');
+  assert.match(html, /const runStop = async \(scope, homes\) => \{\s*if \(rollover\.stopping\) return;/, 'Stop does not wait for another request, and a second click while one Stop runs is ignored');
+  assert.match(html, /: `rollover-resume:\$\{home\.id\}` \}/, 'removing the off file carries the resume token');
   assert.match(html, /confirm: rolloverToken\(home\.id, ask\.which, ids\)/);
   assert.match(html, /\$\{body\}\$\{rolloverCard\(\)\}/, 'the card sits under the sessions table');
   assert.match(html, /if \(!rollover\.data && !rollover\.error && !rollover\.loading\) loadRollover\(\)/);
