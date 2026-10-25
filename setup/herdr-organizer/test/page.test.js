@@ -891,6 +891,20 @@ test('selected tabs panel: each mode states its effect in a visible line, not on
   assert.match(html, /<p class="mp-note" id="mode-effect">\$\{escapeHtml\(MODE_LINES\[mode\]\)\}<\/p>/, 'the line is in the panel, escaped');
 });
 
+test('context view: compact mode shows each row\'s state as a badge, in the table\'s own values, and full mode is unchanged', () => {
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const start = html.indexOf('const STATE_TIPS');
+  const { contextStateBadge } = new Function('escapeHtml', `${html.slice(start, html.indexOf('// Compact rows keep the same tick box'))}; return { contextStateBadge };`)(escapeHtml);
+  assert.match(contextStateBadge({ busy: 'idle' }), /^<span class="status idle" title="Waiting at its prompt\.">idle<\/span>$/);
+  assert.match(contextStateBadge({ busy: 'busy' }), /^<span class="status working" title="In the middle of a turn\.">busy<\/span>$/, 'busy uses the page\'s amber working colour');
+  assert.match(contextStateBadge({ busy: 'unknown' }), /^<span class="status " title="The pane&#39;s state could not be read\.">unknown<\/span>$/, 'unknown stays neutral');
+  assert.match(contextStateBadge({ busy: '<b>' }), /&lt;b&gt;/, 'a value outside the three is escaped');
+  // the compact row has the badge between the percent and Open, on every row, and the table still prints the plain value
+  assert.match(html, /contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}<\/label>`;/);
+  assert.match(html, /<td>\$\{escapeHtml\(row\.busy\)\}<\/td><td>\$\{escapeHtml\(contextAge\(row\.age_s\)\)\}<\/td>/, 'full mode is unchanged');
+  assert.match(html, /\.ctx-compact \.compact-tab \.status \{ flex: none;/);
+});
+
 test('context view: a chip is coloured by the percent it prints', () => {
   const start = html.indexOf('const PLAN_WARN = 70');
   const vm = require('node:vm');
@@ -1011,7 +1025,7 @@ test('context view: the compact toggle keeps the tick box, puts the percent next
 test('context table: every session row has an Open button that sends only a session name, pane id and the row\'s 8-character session id', () => {
   assert.match(html, /const openTabButton = row => row\.pane_id && row\.herdr_session && row\.id/);
   assert.match(html, /\$\{openTabButton\(row\)\}<\/td><\/tr>/, 'the table row carries it');
-  assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{openTabButton\(row\)\}<\/label>/, 'and so does the compact row');
+  assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}<\/label>/, 'and so does the compact row');
   const handler = html.slice(html.indexOf('const openTab = async'), html.indexOf('const copyHandoff'));
   assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane, id: button\.dataset\.id \}\)/);
   assert.equal(/tab_id|command|args/.test(handler), false, 'the page names no tab and builds no command');

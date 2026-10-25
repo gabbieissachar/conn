@@ -196,6 +196,7 @@ created: 2026-09-10
     .ctx-compact .compact-tab input { margin-top: 3px; }
     .ctx-compact .compact-tab .tab-name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 13px; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
     .ctx-compact .compact-tab .pill { flex: none; margin-top: 1px; }
+    .ctx-compact .compact-tab .status { flex: none; margin: 1px 0 0; padding: 3px 6px; line-height: 1.2; }
     .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
     .ro-home { padding: 12px 0; border-top: 1px solid #eef1f6; }
     .ro-home:first-of-type { padding-top: 0; border-top: 0; }
@@ -2083,8 +2084,11 @@ created: 2026-09-10
     };
     // Shows the session's tab in the attached Herdr window. View only: it types nothing and closes nothing.
     const openTabButton = row => row.pane_id && row.herdr_session && row.id ? `<button type="button" class="open-tab" data-session="${escapeHtml(row.herdr_session)}" data-pane="${escapeHtml(row.pane_id)}" data-id="${escapeHtml(row.id)}" data-name="${escapeHtml(sessionName(row))}" title="Show this session's tab in your Herdr window. It switches the tab and marks the session seen, so a Done state reads idle afterwards; nothing is typed.">Open</button>` : '';
-    // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent sits right after the name.
-    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${openTabButton(row)}</label>`;
+    // The table's State column as a badge, with the same values (idle, busy, unknown). It reuses the page's status colours: green at the prompt, amber mid-turn, neutral when unknown.
+    const STATE_TIPS = { idle: 'Waiting at its prompt.', busy: 'In the middle of a turn.', unknown: 'The pane\'s state could not be read.' };
+    const contextStateBadge = row => `<span class="status ${row.busy === 'busy' ? 'working' : row.busy === 'idle' ? 'idle' : ''}" title="${escapeHtml(STATE_TIPS[row.busy] || STATE_TIPS.unknown)}">${escapeHtml(row.busy)}</span>`;
+    // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent and the state sit right after the name.
+    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${contextStateBadge(row)}${openTabButton(row)}</label>`;
     const contextRow = (row, thresholds) => {
       const level = contextLevel(row, thresholds);
       const percent = contextPercent(row, level);
