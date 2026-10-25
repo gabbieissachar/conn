@@ -408,10 +408,13 @@ test('rollover card: Arm needs a ticked id and says why it is not offered', () =
   assert.match(refused, /class="scope-note error" id="rollover-result"/);
   assert.match(refused, /&lt;i&gt;x&lt;\/i&gt;: no worktree/, 'a reason row is escaped');
   rollover.busy = true;
-  assert.match(rolloverCard(), /id="rollover-stop"[^>]*disabled/, 'one change at a time in the page too');
+  assert.equal(/id="rollover-stop"[^>]*disabled/.test(rolloverCard()), false, 'Stop is never greyed out, even while another change runs (R7-2)');
   assert.match(rolloverCard(), /data-ro-arm="crew"[^>]*disabled/);
   assert.match(rolloverHarness({}).rolloverCard(), /class="skeleton"/);
-  assert.match(rolloverHarness({ error: 'Not found.' }).rolloverCard(), /Not found\./);
+  const failed = rolloverHarness({ error: 'Not found.' }).rolloverCard();
+  assert.match(failed, /Not found\./);
+  assert.match(failed, /id="rollover-stop"/, 'Stop stays on the card when the state read fails (R7-2)');
+  assert.match(rolloverHarness({}).rolloverCard(), /id="rollover-stop"/, 'and while the first read is still running');
   assert.match(rolloverHarness({ data: { homes: [], unregistered_homes: 0, platform_supported: false } }).rolloverCard(), /needs macOS/);
   assert.match(rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true }, open: new Set(['ha02f1cb9:Crewmates and scouts']) }).rolloverCard(), /data-ro-open="ha02f1cb9:Crewmates and scouts" open/, 'an opened list stays open across a redraw');
 });
@@ -457,7 +460,8 @@ test('rollover card: the page names only the rollover actions of this slice and 
   const names = [...new Set((html.match(/api\.run\('rollover-[a-z-]+'|runRollover\('rollover-[a-z-]+'/g) || []).map(item => item.replace(/.*'(rollover-[a-z-]+)'/, '$1')))].sort();
   assert.deepEqual(names, ['rollover-arm', 'rollover-preview', 'rollover-state', 'rollover-stop', 'rollover-undo']);
   assert.equal(/rollover-primary|handoff-restart/.test(html), false, 'no primary action and no handoff-restart in the page yet');
-  assert.match(html, /runRollover\('rollover-stop', \{\}/, 'Stop sends nothing but itself: no confirm, no typed text');
+  assert.match(html, /api\.run\('rollover-stop', \{\}\)/, 'Stop sends nothing but itself: no confirm, no typed text');
+  assert.match(html, /const runStop = async \(\) => \{\s*if \(rollover\.stopping\) return;/, 'Stop does not wait for another request, and a second click while one Stop runs is ignored');
   assert.match(html, /confirm: `rollover-resume:\$\{home\.id\}`/, 'removing the off file carries the resume token');
   assert.match(html, /confirm: rolloverToken\(home\.id, ask\.which, ids\)/);
   assert.match(html, /\$\{body\}\$\{rolloverCard\(\)\}/, 'the card sits under the sessions table');

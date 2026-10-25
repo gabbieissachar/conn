@@ -57,7 +57,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
 
   // ---- the private folder ----
   function ensureDir() {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { throw refuse(500, 'state_unsafe', 'The private folder for the rollover record is not usable. Nothing was written.'); }
     const info = lstatOrNull(dir);
     if (!info || !info.isDirectory() || (process.getuid && info.uid !== process.getuid())) throw refuse(500, 'state_unsafe', 'The private folder for the rollover record is not usable. Nothing was written.');
     return dir;
@@ -71,6 +71,14 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
       fs.writeSync(fd, JSON.stringify({ at: now().toISOString(), ...entry }) + '\n');
       fs.fsyncSync(fd);
     } finally { fs.closeSync(fd); }
+  }
+
+  // Stop must work when the record folder does not, so its lines are best effort. A refusal that happens before any home is read
+  // is audited the same way: one result line with the code, no ids, and the home only as a short alphanumeric stub.
+  function auditSafe(entry) { try { audit(entry); } catch { /* the record folder is not usable: never block on it */ } }
+  function earlyRefusal(base, status, code, message) {
+    auditSafe({ phase: 'result', request: 'r' + hex(6), ...base, home: typeof base.home === 'string' ? base.home.replace(/[^A-Za-z0-9]/g, '').slice(0, 12) : '', outcome: code });
+    return refuse(status, code, message);
   }
 
   // ---- ledger: which files this page made ----
@@ -279,11 +287,12 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
 
   // ---- arm ----
   async function arm({ home: homeId, kind, ids, confirm }, ctx = {}) {
-    if (!Object.prototype.hasOwnProperty.call(LIVE_FILE, kind)) throw refuse(400, 'bad_kind', 'The kind must be second-mates or crew.');
-    if (!Array.isArray(ids) || !ids.length) throw refuse(400, 'ids_required', 'Name at least one id. Arming every eligible session is not offered.');
-    if (ids.length > MAX_IDS || ids.some((id) => typeof id !== 'string' || !ID_RE.test(id))) throw refuse(400, 'bad_ids', 'Those ids are not valid.');
+    const base = { action: 'rollover-arm', home: homeId, file: LIVE_FILE[kind] || '', origin: ctx.origin || '' };
+    if (!Object.prototype.hasOwnProperty.call(LIVE_FILE, kind)) throw earlyRefusal(base, 400, 'bad_kind', 'The kind must be second-mates or crew.');
+    if (!Array.isArray(ids) || !ids.length) throw earlyRefusal(base, 400, 'ids_required', 'Name at least one id. Arming every eligible session is not offered.');
+    if (ids.length > MAX_IDS || ids.some((id) => typeof id !== 'string' || !ID_RE.test(id))) throw earlyRefusal({ ...base, ids: ids.length }, 400, 'bad_ids', 'Those ids are not valid.');
     const wanted = [...new Set(ids)].sort();
-    if (confirm !== `rollover-arm:${homeId}:${kind}:${wanted.join(',')}`) throw refuse(400, 'confirm_required', 'This change needs an explicit confirmation.');
+    if (confirm !== `rollover-arm:${homeId}:${kind}:${wanted.join(',')}`) throw earlyRefusal({ ...base, ids: wanted.length }, 400, 'confirm_required', 'This change needs an explicit confirmation.');
     const file = LIVE_FILE[kind];
     return operate({ action: 'rollover-arm', home: homeId, file, ids: wanted.length, origin: ctx.origin || '' }, async ({ request }) => {
       const home = homeFor(homeId);
@@ -309,56 +318,73 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
   }
 
   // ---- stop ----
+  // Stopping must always be possible, so it gives up nothing to bookkeeping: the folder lock is taken once for the whole request and
+  // waited for once, the audit lines are best effort, a home that fails is reported and the next one still gets its file, and a
+  // record folder that cannot be used only means the file has no record.
+  async function stopHome(homeId, request, lockBusy) {
+    const home = rollover.inspect(homeId);
+    if (home.status !== 'ok' || home.config === 'unsafe') return { value: 'unsafe', audit: 'unsafe' };
+    if (home.config === 'missing') return { value: 'no_config', audit: 'no_config' };
+    if (home.watcher === 'running' && (!home.capability || home.capability[OFF_FILE] !== 'read')) return { value: 'not_read', audit: 'not_read' };
+    const text = () => `${PAGE_HEADER}, request ${request}, ${now().toISOString()}\n`;
+    const note = (made) => { if (made && !lockBusy) { try { record(readLedger(), home, OFF_FILE, request, made); } catch { /* the file stays, without a record */ } } };
+    let outcome = null;
+    let made = null;
+    if (home.switches[OFF_FILE].state === 'absent') {
+      made = createSwitchFile(home, OFF_FILE, text());
+      outcome = made ? (home.watcher === 'running' ? 'created' : 'created_no_watcher') : 'present_other';
+      note(made);
+    }
+    if (outcome === null) {
+      let entry = null;
+      try { entry = ledgerEntry(readLedger(), home.id, OFF_FILE); } catch { /* no record */ }
+      const info = lstatOrNull(path.join(home.configDir, OFF_FILE));
+      outcome = entry && info && info.isFile() && info.ino === entry.ino && info.dev === entry.dev ? 'present_by_page' : 'present_other';
+    }
+    // Close the Stop-then-Resume interleaving: look once more and put the file back if it vanished.
+    if (outcome === 'created' || outcome === 'created_no_watcher' || outcome === 'present_by_page') {
+      for (let again = 0; again < 2 && !lstatOrNull(path.join(home.configDir, OFF_FILE)); again += 1) note(createSwitchFile(home, OFF_FILE, text()));
+    }
+    return { value: outcome, audit: outcome, extra: made ? { sha256: made.sha256 } : {} };
+  }
+
   async function stop({ homes: requested } = {}, ctx = {}) {
     const all = rollover.homes.map((item) => item.id);
     const targets = requested === undefined ? all : requested;
-    if (!Array.isArray(targets) || !targets.length || targets.some((id) => typeof id !== 'string' || !all.includes(id))) throw refuse(400, 'bad_homes', 'Those homes are not registered with this page.');
-    const results = [];
-    for (const homeId of [...new Set(targets)]) {
-      const label = rollover.homes.find((item) => item.id === homeId).label;
-      let result;
+    const base = { action: 'rollover-stop', file: OFF_FILE, origin: ctx.origin || '' };
+    if (!Array.isArray(targets) || !targets.length || targets.some((id) => typeof id !== 'string' || !all.includes(id))) throw earlyRefusal({ ...base, home: '' }, 400, 'bad_homes', 'Those homes are not registered with this page.');
+    return withMutex(async () => {
+      let release = null;
+      try { release = await takeFolderLock(); } catch { /* the record folder is not usable */ }
+      const lockBusy = !release;
+      const results = [];
       try {
-        result = await operate({ action: 'rollover-stop', home: homeId, file: OFF_FILE, origin: ctx.origin || '' }, async ({ request, lockBusy }) => {
-          const home = rollover.inspect(homeId);
-          if (home.status !== 'ok' || home.config === 'unsafe') return { value: 'unsafe', audit: 'unsafe' };
-          if (home.config === 'missing') return { value: 'no_config', audit: 'no_config' };
-          if (home.watcher === 'running' && (!home.capability || home.capability[OFF_FILE] !== 'read')) return { value: 'not_read', audit: 'not_read' };
-          const present = home.switches[OFF_FILE].state !== 'absent';
-          let outcome;
-          let made = null;
-          if (!present) {
-            made = createSwitchFile(home, OFF_FILE, `${PAGE_HEADER}, request ${request}, ${now().toISOString()}\n`);
-            outcome = made ? (home.watcher === 'running' ? 'created' : 'created_no_watcher') : 'present_other';
-          } else outcome = null;
-          const ledger = readLedger();
-          if (made && !lockBusy) record(ledger, home, OFF_FILE, request, made);
-          if (outcome === null) {
-            const entry = ledgerEntry(ledger, home.id, OFF_FILE);
-            const info = lstatOrNull(path.join(home.configDir, OFF_FILE));
-            outcome = entry && info && info.isFile() && info.ino === entry.ino && info.dev === entry.dev ? 'present_by_page' : 'present_other';
+        for (const homeId of [...new Set(targets)]) {
+          const request = 'r' + hex(6);
+          const label = rollover.homes.find((item) => item.id === homeId).label;
+          auditSafe({ phase: 'intent', request, ...base, home: homeId });
+          let result;
+          let extra = {};
+          try {
+            const outcome = await stopHome(homeId, request, lockBusy);
+            result = outcome.value;
+            extra = outcome.extra || {};
+          } catch (error) {
+            result = error.code === 'parent_changed' ? 'unsafe' : 'error';
           }
-          // Close the Stop-then-Resume interleaving: look once more and put the file back if it vanished.
-          if (outcome === 'created' || outcome === 'created_no_watcher' || outcome === 'present_by_page') {
-            for (let again = 0; again < 2 && !lstatOrNull(path.join(home.configDir, OFF_FILE)); again += 1) {
-              const redone = createSwitchFile(home, OFF_FILE, `${PAGE_HEADER}, request ${request}, ${now().toISOString()}\n`);
-              if (redone && !lockBusy) record(readLedger(), home, OFF_FILE, request, redone);
-            }
-          }
-          return { value: outcome, audit: outcome, extra: made ? { sha256: made.sha256 } : {} };
-        }, { stop: true });
-      } catch (error) {
-        if (error.code === 'parent_changed') result = 'unsafe';
-        else throw error;
-      }
-      results.push({ id: homeId, label, result });
-    }
-    return { homes: results, unregistered_homes: rollover.unregisteredCount() };
+          auditSafe({ phase: 'result', request, ...base, home: homeId, outcome: result, ...extra, ...(lockBusy ? { ledger: 'skipped (lock busy)' } : {}) });
+          results.push({ id: homeId, label, result });
+        }
+      } finally { if (release) release(); }
+      return { homes: results, unregistered_homes: rollover.unregisteredCount() };
+    });
   }
 
   // ---- undo ----
   async function undo({ home: homeId, file, confirm }, ctx = {}) {
-    if (!UNDO_FILES.has(file)) throw refuse(400, 'bad_file', 'That file cannot be removed from here.');
-    if (file === OFF_FILE && confirm !== `rollover-resume:${homeId}`) throw refuse(400, 'confirm_required', 'Removing the off file turns every live switch in that home back on and needs an explicit confirmation.');
+    const early = { action: 'rollover-undo', home: homeId, file: UNDO_FILES.has(file) ? file : '', origin: ctx.origin || '' };
+    if (!UNDO_FILES.has(file)) throw earlyRefusal(early, 400, 'bad_file', 'That file cannot be removed from here.');
+    if (file === OFF_FILE && confirm !== `rollover-resume:${homeId}`) throw earlyRefusal(early, 400, 'confirm_required', 'Removing the off file turns every live switch in that home back on and needs an explicit confirmation.');
     return operate({ action: 'rollover-undo', home: homeId, file, origin: ctx.origin || '' }, async () => {
       const home = homeFor(homeId);
       const ledger = readLedger();

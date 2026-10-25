@@ -288,6 +288,76 @@ test('stop covers every registered home, never waits for a missing watcher, and 
   } finally { tree.cleanup(); }
 });
 
+test('Stop is never blocked: one failing home does not stop the next, and an unusable record folder does not stop the file (R7-2)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['one', 'two', 'three'], { lockWaitMs: 300 });
+    if (process.getuid && process.getuid() !== 0) {
+      // probe C: the first home's config/ cannot be written
+      fs.chmodSync(configOf(env, 0), 0o500);
+      try {
+        const result = await env.switches.stop();
+        assert.deepEqual(result.homes.map((item) => [item.label, item.result]), [['one', 'error'], ['two', 'created'], ['three', 'created']]);
+        assert.equal(fs.existsSync(path.join(configOf(env, 1), 'rollover-off')), true, 'the next home still got its file');
+        assert.deepEqual(fs.readdirSync(configOf(env, 0)), [], 'and the failing home has no half-made file');
+      } finally { fs.chmodSync(configOf(env, 0), 0o700); }
+      await env.switches.undo({ home: env.ids.two, file: 'rollover-off', confirm: `rollover-resume:${env.ids.two}` });
+      await env.switches.undo({ home: env.ids.three, file: 'rollover-off', confirm: `rollover-resume:${env.ids.three}` });
+    }
+    // probe D: the private folder for the record cannot be made (a plain file sits where its parent should be)
+    const blocked = tempTree();
+    try {
+      blocked.write('tools/state', 'in the way\n');
+      const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `one=${env.homes[0].home}${path.delimiter}two=${env.homes[1].home}` }, homedir: '/h', now: () => NOW, identityOf, pidAlive: () => true, platform: 'darwin' });
+      const switches = createSwitches({ rollover, toolRoot: path.join(blocked.real, 'tools'), now: () => NOW, pidAlive: () => true, identityOf, platform: 'darwin' });
+      const result = await switches.stop();
+      assert.deepEqual(result.homes.map((item) => item.result), ['created', 'created'], 'the files are made although nothing can be recorded');
+      assert.equal(fs.existsSync(path.join(configOf(env, 0), 'rollover-off')), true);
+      assert.equal(env.rollover.state().homes[0].files.find((item) => item.name === 'rollover-off').origin, 'page_header_only', 'and show as having the page\'s header and no record');
+      // arm, by contrast, refuses without the record: it never writes a live file nobody can undo
+      assert.equal(await code(switches.arm({ home: env.ids.two, kind: 'crew', ids: ['x'], confirm: armToken(env.ids.two, 'crew', ['x']) })), 'state_unsafe');
+    } finally { blocked.cleanup(); }
+  } finally { tree.cleanup(); }
+});
+
+test('Stop takes the folder lock once for all homes and waits for it once (R7-2)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['one', 'two', 'three'], { lockWaitMs: 250 });
+    fs.mkdirSync(env.dir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(env.dir, 'op.lock'));
+    fs.writeFileSync(path.join(env.dir, 'op.lock', 'holder'), JSON.stringify({ pid: process.pid, identity_sha256: idHash(IDENTITY), nonce: 'busy' }));
+    const started = Date.now();
+    const result = await env.switches.stop();
+    const took = Date.now() - started;
+    assert.deepEqual(result.homes.map((item) => item.result), ['created', 'created', 'created']);
+    assert.ok(took < 650, `three homes waited about one lock wait, not three (took ${took} ms)`);
+    assert.equal(fs.existsSync(env.ledgerPath), false, 'no record while the lock is held by someone else');
+  } finally { tree.cleanup(); }
+});
+
+test('refusals that happen before any home is read are audited too, with a code and no ids (R7-6)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['a']);
+    addRecords(tree, 'a');
+    const id = env.ids.a;
+    assert.equal(await code(env.switches.arm({ home: id, kind: 'crew', ids: ['crew-a'], confirm: 'a stale token' }, { origin: 'http://localhost:1' })), 'confirm_required');
+    assert.equal(await code(env.switches.arm({ home: id, kind: 'primary', ids: ['crew-a'], confirm: 'x' })), 'bad_kind');
+    assert.equal(await code(env.switches.arm({ home: id, kind: 'crew', ids: [], confirm: 'x' })), 'ids_required');
+    assert.equal(await code(env.switches.arm({ home: id, kind: 'crew', ids: ['bad id'], confirm: 'x' })), 'bad_ids');
+    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-primary-live' })), 'bad_file');
+    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-off', confirm: 'no' })), 'confirm_required');
+    assert.equal(await code(env.switches.stop({ homes: ['hnothere'] })), 'bad_homes');
+    const lines = auditLines(env);
+    assert.deepEqual(lines.map((line) => line.outcome), ['confirm_required', 'bad_kind', 'ids_required', 'bad_ids', 'bad_file', 'confirm_required', 'bad_homes']);
+    assert.equal(lines.every((line) => line.phase === 'result' && /^r[0-9a-f]{12}$/.test(line.request)), true);
+    assert.equal(lines[0].origin, 'http://localhost:1');
+    assert.equal(JSON.stringify(lines).includes('crew-a'), false, 'no ids');
+    assert.deepEqual(listConfig(env), []);
+  } finally { tree.cleanup(); }
+});
+
 test('Stop and Resume interleaved leave the file and the record telling the same story', async () => {
   const tree = tempTree();
   try {

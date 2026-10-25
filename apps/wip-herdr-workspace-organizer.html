@@ -1803,6 +1803,7 @@ created: 2026-09-10
       present_other: 'already stopped by a file of your own, left alone',
       no_config: 'no config folder, nothing written',
       unsafe: 'not safe to write, nothing written',
+      error: 'the file could not be written, nothing was left behind',
       not_read: 'this home\'s firstmate does not read the off file, nothing written',
     };
     const rolloverResultBox = () => {
@@ -1826,18 +1827,19 @@ created: 2026-09-10
     const rolloverCard = () => {
       const button = `<button id="rollover-reload" type="button" title="Read the rollover switches again" ${rollover.loading ? 'disabled' : ''}>${rollover.loading ? 'Reading…' : 'Refresh'}</button>`;
       let body;
-      if (rollover.error) body = `<div class="scope-note error">${escapeHtml(rollover.error)}</div>`;
-      else if (!rollover.data) body = '<div class="skeleton"></div>';
+      // Stop needs no state: it creates the off file in every registered home, so it stays on the card whatever the read said.
+      const stop = `<div class="ro-stop"><button type="button" id="rollover-stop" class="danger" title="Creates the off file in every home listed here. It stops rolls that have not started, and it does not undo a restart already done.">${rollover.stopping ? 'Stopping…' : 'Stop every listed home'}</button><span class="tab-meta" style="margin:0">One click. Creates the off file in each registered home and removes nothing.</span></div>`;
+      if (rollover.error) body = `${rolloverResultBox()}${stop}<div class="scope-note error">${escapeHtml(rollover.error)}</div>`;
+      else if (!rollover.data) body = `${stop}<div class="skeleton"></div>`;
       else {
         const { homes, unregistered_homes: others, platform_supported: supported } = rollover.data;
         const note = `<div class="tab-meta" style="margin:0 0 12px">Firstmate rolls a session only when a switch file in its own home allows it. Arm and Stop only create a file in that home's config folder; firstmate's own roller does the rest, at its next pass, and a restart cannot be undone.${supported ? '' : ' The watcher check needs macOS, so no watcher counts as running here.'}</div>`;
-        const stop = `<div class="ro-stop"><button type="button" id="rollover-stop" class="danger" ${rollover.busy ? 'disabled' : ''} title="Creates the off file in every home listed here. It stops rolls that have not started, and it does not undo a restart already done.">Stop every listed home</button><span class="tab-meta" style="margin:0">One click. Creates the off file in each home below and removes nothing.</span></div>`;
         const extra = others > 0 ? `<div class="tab-meta" style="margin-top:12px">${plural(others, 'other firstmate home')} on this computer ${others === 1 ? 'is' : 'are'} not listed here, and Stop does not cover ${others === 1 ? 'it' : 'them'}.</div>` : '';
         body = `${note}${rolloverResultBox()}${rolloverConfirmBox()}${stop}${homes.map(rolloverHome).join('')}${extra}`;
       }
       return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill warn">changes files</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
     };
-    const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null, preview: null };
+    const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, stopping: false, result: null, preview: null };
     const ROLLOVER_REFUSAL = { exists: 'That file already exists, so nothing was written.', off_present: 'The off file is present, so nothing was written.', no_watcher: 'No watcher runs in that home, so nothing was written.' };
     // One change at a time: the server says what it did or why it refused, and the card is read again either way.
     const runRollover = async (action, params, success) => {
@@ -1853,6 +1855,25 @@ created: 2026-09-10
       } finally {
         rollover.busy = false;
         rollover.at = '';
+        await loadRolloverQuietly();
+      }
+    };
+    // Stop never waits for another request and is never greyed out; a second click while one Stop runs is simply ignored.
+    const runStop = async () => {
+      if (rollover.stopping) return;
+      rollover.stopping = true; rollover.confirm = null; rollover.result = null;
+      renderContext();
+      try {
+        const result = await api.run('rollover-stop', {});
+        rollover.result = {
+          tone: result.homes.every(item => ['created', 'present_by_page', 'present_other', 'created_no_watcher'].includes(item.result)) ? 'good' : 'bad',
+          text: `Stop covered ${plural(result.homes.length, 'home')}.${result.unregistered_homes ? ` ${plural(result.unregistered_homes, 'other firstmate home')} on this computer ${result.unregistered_homes === 1 ? 'is' : 'are'} not covered.` : ''}`,
+          rows: result.homes.map(item => `${item.label}: ${ROLLOVER_STOP_RESULT[item.result] || item.result}`),
+        };
+      } catch (error) {
+        rollover.result = { tone: 'bad', text: error.message };
+      } finally {
+        rollover.stopping = false;
         await loadRolloverQuietly();
       }
     };
@@ -1907,11 +1928,7 @@ created: 2026-09-10
           runRollover('rollover-arm', { home: home.id, kind: ask.which, ids, confirm: rolloverToken(home.id, ask.which, ids) }, () => ({ tone: 'good', text: `Created ${spec.file} in ${home.label} for ${plural(ids.length, 'id')}. Firstmate acts on it at that home's next watcher pass.` }));
         } else runRollover('rollover-undo', { home: home.id, file: 'rollover-off', confirm: `rollover-resume:${home.id}` }, () => ({ tone: 'good', text: `Removed rollover-off from ${home.label}. Its live switches take effect again at the next watcher pass.` }));
       });
-      section.querySelector('#rollover-stop')?.addEventListener('click', () => runRollover('rollover-stop', {}, result => ({
-        tone: result.homes.every(item => ['created', 'present_by_page', 'present_other', 'created_no_watcher'].includes(item.result)) ? 'good' : 'bad',
-        text: `Stop covered ${plural(result.homes.length, 'home')}.${result.unregistered_homes ? ` ${plural(result.unregistered_homes, 'other firstmate home')} on this computer ${result.unregistered_homes === 1 ? 'is' : 'are'} not covered.` : ''}`,
-        rows: result.homes.map(item => `${item.label}: ${ROLLOVER_STOP_RESULT[item.result] || item.result}`),
-      })));
+      section.querySelector('#rollover-stop')?.addEventListener('click', runStop);
     };
     const loadRollover = async () => {
       if (rollover.loading) return;
