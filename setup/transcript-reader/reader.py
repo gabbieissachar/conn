@@ -29,8 +29,8 @@ session lives; one deleted and made again under the same name has new panes). A 
 Herdr still lists stays, agent or not: after a restart the panes come back before
 their agents do. A session never seen in a Herdr pane stays, and nothing is dropped
 while Herdr shows no pane at all or a Herdr session cannot be read. A dropped session
-that runs in a pane again (`claude --resume` in a new pane, say) is listed again,
-unless `remove` or `close` named it. `add` of a session whose pane has closed lists it as
+that runs in a pane again (`claude --resume` in a new pane, say) within two weeks of its
+last turn is listed again, unless `remove` or `close` named it. `add` of a session whose pane has closed lists it as
 reopened, so the rebuild after it does not drop it again. A session reopened to read again (`reopen`, or
 "Closed panes" in the page's session picker) stays until it is closed (`close`, or
 the page's "Close" button).
@@ -53,6 +53,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -67,6 +68,7 @@ PAGE = OUT / "prototype.html"
 PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in; the builder writes it
 REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pane does not drop
 DROPPED = OUT / "dropped.txt"  # sessions a closed pane took off the list, listed again if they run in a pane again
+DROPPED_KEEP_DAYS = 14  # a dropped session whose log has not changed for this long is forgotten (as Closed panes does)
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 DEFAULT_PORT = "8768"  # the reader's own server (serve.sh in this folder); 8765 and 8766 are other pages
@@ -181,11 +183,20 @@ def drop_closed(ids: list[str]) -> list[str]:
             kept.append(sid)
     # A session dropped before that runs in a pane again (Herdr's agents came back after the pane
     # list shrank, or `claude --resume` in a new pane) is listed again.
+    # The few live sessions' chains are walked, not every dropped one's: a chain is the same from
+    # any of its sessions, and the record only grows.
     dropped = builder.read_ids(DROPPED)
-    back = [sid for sid in dropped if sid not in kept and builder.find_session_file(sid) and any(member in view.live for member in view.members(sid))]
+    running = {member for sid in view.live for member in view.members(sid)} if dropped else set()
+    back = [sid for sid in dropped if sid not in kept and sid in running and builder.find_session_file(sid)]
     for sid in back:
         print(f"Listing {sid[:8]} again: it runs in a Herdr pane again")
-    still = [sid for sid in dict.fromkeys([*dropped, *gone]) if sid not in kept and sid not in back and builder.find_session_file(sid)]
+    since = time.time() - DROPPED_KEEP_DAYS * 86400
+
+    def recent(sid: str) -> bool:
+        path = builder.find_session_file(sid)
+        return bool(path) and (builder.log_mtime(path) or 0) >= since
+
+    still = [sid for sid in dict.fromkeys([*dropped, *gone]) if sid not in kept and sid not in back and recent(sid)]
     if still != dropped:
         write_ids(DROPPED, still)
     return kept + back

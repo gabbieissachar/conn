@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -304,6 +305,21 @@ class ClosedPanesTest(unittest.TestCase):
         self.live = {B: PANES[B], A: {**PANES[A], "pane": "w1:p9"}}  # claude --resume in a new pane
         self.assertEqual(reader.drop_closed([B]), [B, A])
         self.assertEqual(builder.read_ids(reader.DROPPED), [])
+
+    def test_the_dropped_record_walks_only_live_chains_and_forgets_old_logs(self):
+        self.seen(A, B, C)
+        self.live = {C: PANES[C]}
+        self.assertEqual(reader.drop_closed([A, B, C]), [C])
+        self.assertEqual(builder.read_ids(reader.DROPPED), [A, B])
+        walked = []
+        chain = builder.session_chain
+        builder.session_chain = lambda path: walked.append(path.stem) or chain(path)
+        old = time.time() - (reader.DROPPED_KEEP_DAYS + 1) * 86400
+        os.utime(builder.find_session_file(A), (old, old))
+        with mock.patch.object(builder, "LOG_LIST_REUSE", 0):
+            self.assertEqual(reader.drop_closed([C]), [C])
+        self.assertEqual(set(walked), {C}, "the live session's chain (also the listed one), not each dropped one's")
+        self.assertEqual(builder.read_ids(reader.DROPPED), [B], "A's log is older than the record keeps")
 
     def test_naming_a_session_to_remove_or_close_it_keeps_it_from_coming_back(self):
         self.seen(A, B)
