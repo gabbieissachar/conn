@@ -17,7 +17,11 @@ const { psIdentity } = require('./rollover');
 
 const LIVE_FILE = { 'second-mates': 'rollover-live', crew: 'rollover-crew-live' };
 const OFF_FILE = 'rollover-off';
-const UNDO_FILES = new Set(['rollover-live', 'rollover-crew-live', 'rollover-off']);
+const PRIMARY_LIVE = 'rollover-primary-live';
+const PRIMARY_OFF = 'rollover-primary-off';
+const UNDO_FILES = new Set(['rollover-live', 'rollover-crew-live', OFF_FILE, PRIMARY_LIVE, PRIMARY_OFF]);
+const CHALLENGE_TTL_MS = 120 * 1000;
+const MAX_CHALLENGES = 32;
 const MAX_IDS = 64;
 const HOLDER_MAX = 4 * 1024;
 const LOCK_WAIT_MS = 3000;
@@ -335,37 +339,41 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
   // Stopping must always be possible, so it gives up nothing to bookkeeping: the folder lock is taken once for the whole request and
   // waited for once, the audit lines are best effort, a home that fails is reported and the next one still gets its file, and a
   // record folder that cannot be used only means the file has no record.
-  async function stopHome(homeId, request, lockBusy) {
+  async function stopHome(homeId, request, lockBusy, file) {
     const home = rollover.inspect(homeId);
     if (home.status !== 'ok' || home.config === 'unsafe') return { value: 'unsafe', audit: 'unsafe' };
     if (home.config === 'missing') return { value: 'no_config', audit: 'no_config' };
-    if (home.watcher === 'running' && (!home.capability || home.capability[OFF_FILE] !== 'read')) return { value: 'not_read', audit: 'not_read' };
+    if (file === PRIMARY_OFF && home.isSecondmateHome) return { value: 'not_applicable', audit: 'not_applicable' };
+    if (home.watcher === 'running' && (!home.capability || home.capability[file] !== 'read')) return { value: 'not_read', audit: 'not_read' };
     const text = () => `${PAGE_HEADER}, request ${request}, ${now().toISOString()}\n`;
-    const note = (made) => { if (made && !lockBusy) { try { record(readLedger(), home, OFF_FILE, request, made); } catch { /* the file stays, without a record */ } } };
+    const note = (made) => { if (made && !lockBusy) { try { record(readLedger(), home, file, request, made); } catch { /* the file stays, without a record */ } } };
     let outcome = null;
     let made = null;
-    if (home.switches[OFF_FILE].state === 'absent') {
-      made = createSwitchFile(home, OFF_FILE, text());
+    if (home.switches[file].state === 'absent') {
+      made = createSwitchFile(home, file, text());
       outcome = made ? (home.watcher === 'running' ? 'created' : 'created_no_watcher') : 'present_other';
       note(made);
     }
     if (outcome === null) {
       let entry = null;
-      try { entry = ledgerEntry(readLedger(), home.id, OFF_FILE); } catch { /* no record */ }
-      const info = lstatOrNull(path.join(home.configDir, OFF_FILE));
+      try { entry = ledgerEntry(readLedger(), home.id, file); } catch { /* no record */ }
+      const info = lstatOrNull(path.join(home.configDir, file));
       outcome = entry && info && info.isFile() && info.ino === entry.ino && info.dev === entry.dev ? 'present_by_page' : 'present_other';
     }
     // Close the Stop-then-Resume interleaving: look once more and put the file back if it vanished.
     if (outcome === 'created' || outcome === 'created_no_watcher' || outcome === 'present_by_page') {
-      for (let again = 0; again < 2 && !lstatOrNull(path.join(home.configDir, OFF_FILE)); again += 1) note(createSwitchFile(home, OFF_FILE, text()));
+      for (let again = 0; again < 2 && !lstatOrNull(path.join(home.configDir, file)); again += 1) note(createSwitchFile(home, file, text()));
     }
     return { value: outcome, audit: outcome, extra: made ? { sha256: made.sha256 } : {} };
   }
 
-  async function stop({ homes: requested } = {}, ctx = {}) {
+  async function stop({ homes: requested, scope } = {}, ctx = {}) {
     const all = rollover.homes.map((item) => item.id);
     const targets = requested === undefined ? all : requested;
-    const base = { action: 'rollover-stop', file: OFF_FILE, origin: ctx.origin || '' };
+    // `all` creates the off file, which covers the primary too; `primary` creates only the primary's own off file.
+    const file = scope === 'primary' ? PRIMARY_OFF : OFF_FILE;
+    const base = { action: 'rollover-stop', file, origin: ctx.origin || '' };
+    if (scope !== undefined && scope !== 'all' && scope !== 'primary') throw earlyRefusal({ ...base, home: '' }, 400, 'bad_scope', 'The scope must be all or primary.');
     if (!Array.isArray(targets) || !targets.length || targets.some((id) => typeof id !== 'string' || !all.includes(id))) throw earlyRefusal({ ...base, home: '' }, 400, 'bad_homes', 'Those homes are not registered with this page.');
     return withMutex(async () => {
       let release = null;
@@ -380,7 +388,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
           let result;
           let extra = {};
           try {
-            const outcome = await stopHome(homeId, request, lockBusy);
+            const outcome = await stopHome(homeId, request, lockBusy, file);
             result = outcome.value;
             extra = outcome.extra || {};
           } catch (error) {
@@ -399,6 +407,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     const early = { action: 'rollover-undo', home: homeId, file: UNDO_FILES.has(file) ? file : '', origin: ctx.origin || '' };
     if (!UNDO_FILES.has(file)) throw earlyRefusal(early, 400, 'bad_file', 'That file cannot be removed from here.');
     if (file === OFF_FILE && confirm !== `rollover-resume:${homeId}`) throw earlyRefusal(early, 400, 'confirm_required', 'Removing the off file turns every live switch in that home back on and needs an explicit confirmation.');
+    if (file === PRIMARY_OFF && confirm !== `rollover-resume:${homeId}:primary`) throw earlyRefusal(early, 400, 'confirm_required', 'Removing the primary off file can turn the primary rollover back on and needs an explicit confirmation.');
     return operate({ action: 'rollover-undo', home: homeId, file, origin: ctx.origin || '' }, async () => {
       const home = homeFor(homeId);
       const ledger = readLedger();
@@ -433,7 +442,68 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     });
   }
 
-  return { arm, stop, undo, dir, internals: { tryAcquire, staleNonce, reclaim, releaseFolderLock, lockPath } };
+  // ---- the primary switch (tier 1p): two steps, shown apart ----
+  const challenges = new Map();
+  const switchSignature = (home) => sha256(JSON.stringify(['rollover-live', 'rollover-crew-live', OFF_FILE, PRIMARY_LIVE, PRIMARY_OFF].map((name) => [name, (home.switches[name] || { state: 'absent' }).state])));
+  // The preconditions, computed by the server both when the operator checks and again inside the arm request.
+  function primaryChecklist(home) {
+    const absent = (name) => !home.switches[name] || home.switches[name].state === 'absent';
+    return [
+      { key: 'not_secondmate_home', code: 'secondmate_home', ok: !home.isSecondmateHome, reason: 'This is a second-mate home: its own session is rolled by its parent, not by a switch here.' },
+      { key: 'primary_registered', code: 'not_registered', ok: home.primaryRegistered === true, reason: 'The primary has not registered itself. Run fm-primary-control.sh register from its own session first.' },
+      { key: 'watcher_running', code: 'no_watcher', ok: home.watcher === 'running', reason: 'No watcher runs in this home right now, so nothing would read the file.' },
+      { key: 'file_read', code: 'unsupported', ok: Boolean(home.capability) && home.capability[PRIMARY_LIVE] === 'read', reason: "This home's firstmate does not read the primary switch." },
+      { key: 'off_absent', code: 'off_present', ok: absent(OFF_FILE), reason: 'The off file is present, so a live file would do nothing.' },
+      { key: 'primary_off_absent', code: 'primary_off_present', ok: absent(PRIMARY_OFF), reason: 'The primary off file is present, so a live file would do nothing.' },
+      { key: 'primary_live_absent', code: 'exists', ok: absent(PRIMARY_LIVE), reason: 'The primary live file already exists. The page never changes an existing file.' },
+    ];
+  }
+
+  // Step 1: writes no switch file. It writes only its own audit line and keeps a one-use challenge in memory.
+  async function primaryPrepare({ home: homeId }, ctx = {}) {
+    const base = { action: 'rollover-primary-prepare', home: homeId, file: PRIMARY_LIVE, origin: ctx.origin || '' };
+    const known = typeof homeId === 'string' ? rollover.inspect(homeId) : null;
+    if (!known) throw earlyRefusal(base, 404, 'unknown_home', 'That home is not registered with this page.');
+    if (known.status !== 'ok') throw earlyRefusal(base, 409, 'home_unavailable', 'That home cannot be used right now (' + known.status.replace(/_/g, ' ') + ').');
+    const configItem = { key: 'config_ok', code: known.config === 'missing' ? 'no_config' : 'unsafe', ok: known.config === 'ok', reason: known.config === 'missing' ? 'That home has no config folder. The page does not create one.' : 'The config folder of that home is a link.' };
+    const checklist = [configItem, ...(known.config === 'ok' ? primaryChecklist(known) : [])].map(({ key, ok, reason }) => ({ key, ok, ...(ok ? {} : { reason }) }));
+    const ok = checklist.every((item) => item.ok);
+    let challenge = null;
+    if (ok) {
+      for (const [key, held] of challenges) if (held.expires <= now().getTime()) challenges.delete(key);
+      while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value);
+      challenge = crypto.randomBytes(16).toString('hex');
+      challenges.set(challenge, { home: homeId, signature: switchSignature(known), expires: now().getTime() + CHALLENGE_TTL_MS });
+    }
+    auditSafe({ phase: 'result', request: 'r' + hex(6), ...base, outcome: ok ? 'prepared' : 'not_ready' });
+    return { home: known.id, label: known.label, ok, checklist, challenge, expires_in_s: ok ? CHALLENGE_TTL_MS / 1000 : 0 };
+  }
+
+  // Step 2: the typed phrase, the token that names the challenge, the challenge itself, and every precondition again.
+  async function primaryArm({ home: homeId, challenge, phrase, confirm }, ctx = {}) {
+    const base = { action: 'rollover-primary-arm', home: homeId, file: PRIMARY_LIVE, origin: ctx.origin || '' };
+    const entry = rollover.homes.find((item) => item.id === homeId);
+    if (!entry) throw earlyRefusal(base, 404, 'unknown_home', 'That home is not registered with this page.');
+    if (phrase !== `arm primary ${entry.label}`) throw earlyRefusal(base, 400, 'phrase_required', 'Type the phrase exactly as shown to arm the primary.');
+    if (confirm !== `rollover-primary-arm:${homeId}:${challenge}`) throw earlyRefusal(base, 400, 'confirm_required', 'This change needs an explicit confirmation.');
+    // A challenge is good for one attempt that got this far, whatever its outcome, so a stale or replayed one cannot be reused.
+    const held = challenges.get(challenge);
+    challenges.delete(challenge);
+    if (!held || held.home !== homeId || held.expires <= now().getTime()) throw earlyRefusal(base, 409, 'challenge_invalid', 'The check has expired or was already used. Check again before arming.');
+    return operate(base, async ({ request }) => {
+      const home = homeFor(homeId);
+      if (switchSignature(home) !== held.signature) throw refuse(409, 'state_changed', 'The switch files in that home changed since the check. Check again. Nothing was written.');
+      const failed = primaryChecklist(home).find((item) => !item.ok);
+      if (failed) throw refuse(409, failed.code, failed.reason + ' Nothing was written.');
+      const content = `${PAGE_HEADER}, request ${request}, ${now().toISOString()}\n# primary rollover is live: this home's own session is rolled when eligible\n`;
+      const made = createSwitchFile(home, PRIMARY_LIVE, content);
+      if (!made) throw refuse(409, 'exists', PRIMARY_LIVE + ' already exists in that home. The page never changes an existing file. Nothing was written.');
+      record(readLedger(), home, PRIMARY_LIVE, request, made);
+      return { value: { home: home.id, label: home.label, file: PRIMARY_LIVE, created: true }, audit: 'created', extra: { sha256: made.sha256 } };
+    });
+  }
+
+  return { arm, stop, undo, primaryPrepare, primaryArm, dir, internals: { tryAcquire, staleNonce, reclaim, releaseFolderLock, lockPath } };
 }
 
-module.exports = { createSwitches, LIVE_FILE, OFF_FILE };
+module.exports = { createSwitches, LIVE_FILE, OFF_FILE, PRIMARY_LIVE, PRIMARY_OFF };

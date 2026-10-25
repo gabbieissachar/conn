@@ -365,6 +365,8 @@ test('tier 1 actions still need every cross-site protection', async () => {
       { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w1:p1', id: '11111111' } },
       { action: 'rollover-arm', params: { home: fixtureId, kind: 'crew', ids: ['x'], confirm: `rollover-arm:${fixtureId}:crew:x` } },
       { action: 'rollover-stop', params: {} },
+      { action: 'rollover-primary-prepare', params: { home: fixtureId } },
+      { action: 'rollover-primary-arm', params: { home: fixtureId, challenge: 'c'.repeat(32), phrase: 'arm primary fixture', confirm: `rollover-primary-arm:${fixtureId}:${'c'.repeat(32)}` } },
       { action: 'rollover-undo', params: { home: fixtureId, file: 'rollover-live' } },
     ];
     // Every action the server runs at tier 1 or above is covered, so a new one cannot be added without a body here.

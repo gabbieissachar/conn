@@ -121,7 +121,10 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     // tier 1: create or remove one firstmate switch file in one registered home. The browser names a home id and ids, never a path.
     // `rollover-stop` never waits behind another change: stopping must always be possible.
     'rollover-arm': { tier: 1, params: { home: { type: 'string' }, kind: { type: 'string' }, ids: { type: 'array' }, confirm: { type: 'string' } }, run: (p, ctx) => rolloverSwitches.arm(p, ctx) },
-    'rollover-stop': { tier: 1, lock: false, params: { homes: { type: 'array', optional: true } }, run: (p, ctx) => rolloverSwitches.stop(p, ctx) },
+    'rollover-stop': { tier: 1, lock: false, params: { homes: { type: 'array', optional: true }, scope: { type: 'string', optional: true } }, run: (p, ctx) => rolloverSwitches.stop(p, ctx) },
+    // The primary switch (tier 1p, the operator's own session): step 1 writes no switch file and takes no lock, step 2 needs the typed phrase, the challenge and its token.
+    'rollover-primary-prepare': { tier: 1, lock: false, params: { home: { type: 'string' } }, run: (p, ctx) => rolloverSwitches.primaryPrepare(p, ctx) },
+    'rollover-primary-arm': { tier: 1, params: { home: { type: 'string' }, challenge: { type: 'string' }, phrase: { type: 'string' }, confirm: { type: 'string' } }, run: (p, ctx) => rolloverSwitches.primaryArm(p, ctx) },
     'rollover-undo': { tier: 1, params: { home: { type: 'string' }, file: { type: 'string' }, confirm: { type: 'string', optional: true } }, run: (p, ctx) => rolloverSwitches.undo(p, ctx) },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },

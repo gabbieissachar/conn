@@ -13,14 +13,14 @@ const { NOW, IDENTITY, identityOf, ROLLER_ALL, makeHome } = require('./rollover-
 
 // A registry of fixture homes and a write side wired to one private tool root. `server()` makes a second write side on the
 // same tool root, the way a scratch server on another port would be.
-function setup(tree, names, { roller, hooks, lockWaitMs = 300, pidAlive = () => true, config = {} } = {}) {
+function setup(tree, names, { roller, hooks, lockWaitMs = 300, pidAlive = () => true, config = {}, clock = { now: NOW } } = {}) {
   const homes = names.map((name) => makeHome(tree, name, { ...(roller ? { roller } : {}), ...(config[name] || {}) }));
   const toolRoot = tree.mkdir('tools');
   const env = { HERDR_ORGANIZER_ROLLOVER_HOMES: homes.map((home, index) => `${names[index]}=${home.home}`).join(path.delimiter) };
   const ledgerPath = path.join(tree.real, 'tools', 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json');
   const make = (extra = {}) => {
-    const rollover = createRollover({ env, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf, pidAlive: extra.pidAlive || pidAlive, platform: 'darwin', ledgerPath });
-    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => NOW, pidAlive, identityOf, platform: 'darwin', lockWaitMs, hooks, ...extra });
+    const rollover = createRollover({ env, homedir: path.join(tree.real, 'nohome'), now: () => clock.now, identityOf, pidAlive: extra.pidAlive || pidAlive, platform: 'darwin', ledgerPath });
+    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => clock.now, pidAlive, identityOf, platform: 'darwin', lockWaitMs, hooks, ...extra });
     return { rollover, switches };
   };
   const first = make();
@@ -261,7 +261,7 @@ test('undo: removes only a file the page made and left unchanged', async () => {
     assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-live' })), 'gone');
     assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-live' })), 'not_created_by_page', 'the stale record was cleared');
     // only the three files of this slice, and only by name
-    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-primary-live' })), 'bad_file');
+    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-primary-handoff-dir' })), 'bad_file');
     assert.equal(await code(env.switches.undo({ home: id, file: '../state/.lock-session' })), 'bad_file');
   } finally { tree.cleanup(); }
 });
@@ -374,7 +374,7 @@ test('refusals that happen before any home is read are audited too, with a code 
     assert.equal(await code(env.switches.arm({ home: id, kind: 'primary', ids: ['crew-a'], confirm: 'x' })), 'bad_kind');
     assert.equal(await code(env.switches.arm({ home: id, kind: 'crew', ids: [], confirm: 'x' })), 'ids_required');
     assert.equal(await code(env.switches.arm({ home: id, kind: 'crew', ids: ['bad id'], confirm: 'x' })), 'bad_ids');
-    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-primary-live' })), 'bad_file');
+    assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-primary-handoff-dir' })), 'bad_file');
     assert.equal(await code(env.switches.undo({ home: id, file: 'rollover-off', confirm: 'no' })), 'confirm_required');
     assert.equal(await code(env.switches.stop({ homes: ['hnothere'] })), 'bad_homes');
     const lines = auditLines(env);
@@ -636,5 +636,150 @@ test('rollover actions over HTTP: the same guard as every tier 1 action, Stop ou
       release();
       assert.equal((await slow).status, 200);
     } finally { release(); await server.close(); }
+  } finally { tree.cleanup(); }
+});
+
+// ---- the primary switch (tier 1p) ----
+const registerPrimary = (tree, name) => tree.write(`${name}/home/state/.primary-control`, 'registered\n');
+const phraseOf = (label) => `arm primary ${label}`;
+const primaryArmParams = (env, name, challenge, extra = {}) => ({ home: env.ids[name], challenge, phrase: phraseOf(name), confirm: `rollover-primary-arm:${env.ids[name]}:${challenge}`, ...extra });
+const checkOf = (result, key) => result.checklist.find((item) => item.key === key);
+
+test('primary prepare: writes no switch file, lists every precondition, and gives a one-use challenge only when all hold (R3-5)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['ok', 'unreg', 'second', 'offed', 'poff', 'live', 'noread'], { config: { second: { secondmate: true } } });
+    for (const name of ['ok', 'second', 'offed', 'poff', 'live', 'noread']) registerPrimary(tree, name);
+    fs.writeFileSync(path.join(tree.real, 'noread/code/bin/fm-rollover.sh'), ROLLER_ALL.split('\n').filter((line) => !line.includes('rollover-primary-live')).join('\n') + '\n');
+    fs.writeFileSync(path.join(configOf(env, 3), 'rollover-off'), '');
+    fs.writeFileSync(path.join(configOf(env, 4), 'rollover-primary-off'), '');
+    fs.writeFileSync(path.join(configOf(env, 5), 'rollover-primary-live'), '');
+    const ok = await env.switches.primaryPrepare({ home: env.ids.ok }, { origin: 'http://localhost:1' });
+    assert.equal(ok.ok, true);
+    assert.match(ok.challenge, /^[0-9a-f]{32}$/);
+    assert.equal(ok.expires_in_s, 120);
+    assert.deepEqual(ok.checklist.map((item) => item.key), ['config_ok', 'not_secondmate_home', 'primary_registered', 'watcher_running', 'file_read', 'off_absent', 'primary_off_absent', 'primary_live_absent']);
+    assert.deepEqual(listConfig(env, 0), [], 'step 1 writes no switch file');
+    const failing = async (name, key) => { const result = await env.switches.primaryPrepare({ home: env.ids[name] }); assert.equal(result.ok, false, name); assert.equal(result.challenge, null, `${name}: no challenge when anything fails`); assert.equal(checkOf(result, key).ok, false, `${name} fails ${key}`); assert.ok(checkOf(result, key).reason.length > 10); };
+    await failing('unreg', 'primary_registered');
+    await failing('second', 'not_secondmate_home');
+    await failing('offed', 'off_absent');
+    await failing('poff', 'primary_off_absent');
+    await failing('live', 'primary_live_absent');
+    await failing('noread', 'file_read');
+    const dead = env.server({ pidAlive: () => false });
+    assert.equal(checkOf(await dead.switches.primaryPrepare({ home: env.ids.ok }), 'watcher_running').ok, false);
+    assert.equal(await code(env.switches.primaryPrepare({ home: 'hdeadbeef' })), 'unknown_home');
+    const lines = auditLines(env);
+    assert.equal(lines.filter((line) => line.action === 'rollover-primary-prepare').length >= 8, true, 'every check, even an abandoned one, leaves an audit line');
+    assert.equal(lines.some((line) => JSON.stringify(line).includes(ok.challenge)), false, 'the challenge is never written to disk');
+  } finally { tree.cleanup(); }
+});
+
+test('primary arm: the phrase, the token and a fresh challenge create one live file with its own header, once (tier 1p)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['p']);
+    registerPrimary(tree, 'p');
+    const { challenge } = await env.switches.primaryPrepare({ home: env.ids.p });
+    const result = await env.switches.primaryArm(primaryArmParams(env, 'p', challenge));
+    assert.deepEqual(result, { home: env.ids.p, label: 'p', file: 'rollover-primary-live', created: true });
+    const file = path.join(configOf(env), 'rollover-primary-live');
+    assert.match(fs.readFileSync(file, 'utf8'), /^# created by the Herdr organizer page, request r[0-9a-f]{12}, 2026-10-26T12:00:00\.000Z\n# primary rollover is live: this home's own session is rolled when eligible\n$/);
+    assert.deepEqual(listConfig(env), ['rollover-primary-live']);
+    const state = env.rollover.state().homes[0];
+    assert.equal(state.files.find((item) => item.name === 'rollover-primary-live').origin, 'page');
+    assert.match(state.effective.primary, /live once it has registered/);
+    assert.equal(auditLines(env).at(-1).outcome, 'created');
+    // the challenge was used: replaying it is refused and writes nothing
+    fs.unlinkSync(file);
+    assert.equal(await code(env.switches.primaryArm(primaryArmParams(env, 'p', challenge))), 'challenge_invalid');
+    assert.deepEqual(listConfig(env), []);
+  } finally { tree.cleanup(); }
+});
+
+test('primary arm: a wrong phrase or token is refused without using the challenge; a stale, foreign or unknown one is refused', async () => {
+  const tree = tempTree();
+  try {
+    const clock = { now: NOW };
+    const env = setup(tree, ['p', 'q'], { clock });
+    registerPrimary(tree, 'p');
+    registerPrimary(tree, 'q');
+    const { challenge } = await env.switches.primaryPrepare({ home: env.ids.p });
+    const attempt = (extra, name = 'p', value = challenge) => code(env.switches.primaryArm(primaryArmParams(env, name, value, extra)));
+    assert.equal(await attempt({ phrase: 'arm primary' }), 'phrase_required');
+    assert.equal(await attempt({ phrase: 'ARM PRIMARY p' }), 'phrase_required');
+    assert.equal(await attempt({ phrase: 'arm primary q' }), 'phrase_required', 'the phrase names this home');
+    assert.equal(await attempt({ confirm: `rollover-primary-arm:${env.ids.p}:other` }), 'confirm_required');
+    assert.equal(await attempt({ confirm: `rollover-primary-arm:${env.ids.q}:${challenge}` }), 'confirm_required', 'the token names this home');
+    assert.equal(await attempt({ confirm: '' }), 'confirm_required');
+    assert.deepEqual(listConfig(env), []);
+    // a typo did not burn the challenge: the right phrase still works at once
+    assert.equal(await attempt({}), 'ok');
+    await env.switches.undo({ home: env.ids.p, file: 'rollover-primary-live' });
+    // a challenge is bound to the home it was made for, and a presentation that got this far uses it up, so the owner prepares again
+    const foreign = (await env.switches.primaryPrepare({ home: env.ids.p })).challenge;
+    assert.equal(await attempt({}, 'q', foreign), 'challenge_invalid');
+    assert.equal(await attempt({}, 'p', foreign), 'challenge_invalid', 'used up by the foreign attempt');
+    // expired
+    const second = (await env.switches.primaryPrepare({ home: env.ids.p })).challenge;
+    clock.now = new Date(NOW.getTime() + 121 * 1000);
+    assert.equal(await attempt({}, 'p', second), 'challenge_invalid');
+    assert.equal(await attempt({}, 'p', 'f'.repeat(32)), 'challenge_invalid', 'an invented challenge');
+    assert.deepEqual(listConfig(env), []);
+  } finally { tree.cleanup(); }
+});
+
+test('primary arm: the preconditions are checked again inside the request, and a changed state means prepare again', async () => {
+  const tree = tempTree();
+  try {
+    const alive = { value: true };
+    const env = setup(tree, ['p'], { pidAlive: () => alive.value });
+    registerPrimary(tree, 'p');
+    const attemptAfter = async (change) => {
+      const { challenge } = await env.switches.primaryPrepare({ home: env.ids.p });
+      change();
+      return code(env.switches.primaryArm(primaryArmParams(env, 'p', challenge)));
+    };
+    const off = path.join(configOf(env), 'rollover-off');
+    assert.equal(await attemptAfter(() => fs.writeFileSync(off, '')), 'state_changed', 'a switch file appeared after the check');
+    fs.unlinkSync(off);
+    const live = path.join(configOf(env), 'rollover-primary-live');
+    assert.equal(await attemptAfter(() => fs.writeFileSync(live, 'by hand\n')), 'state_changed', 'the operator made the file by hand');
+    assert.equal(fs.readFileSync(live, 'utf8'), 'by hand\n', 'and it is left alone');
+    fs.unlinkSync(live);
+    // the watcher is gone by the time of the click: the state files are the same, the precondition is not
+    assert.equal(await attemptAfter(() => { alive.value = false; }), 'no_watcher');
+    alive.value = true;
+    assert.deepEqual(listConfig(env), [], 'nothing was written by any refused attempt');
+    assert.deepEqual(auditLines(env).filter((line) => line.action === 'rollover-primary-arm' && line.phase === 'result').map((line) => line.outcome), ['state_changed', 'state_changed', 'no_watcher']);
+  } finally { tree.cleanup(); }
+});
+
+test('Stop scope primary makes only the primary\'s own off file, and undo handles both primary files (tier 1p)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['p', 'sm'], { config: { sm: { secondmate: true } } });
+    registerPrimary(tree, 'p');
+    const result = await env.switches.stop({ scope: 'primary' });
+    assert.deepEqual(result.homes.map((item) => [item.label, item.result]), [['p', 'created'], ['sm', 'not_applicable']]);
+    assert.deepEqual(listConfig(env, 0), ['rollover-primary-off'], 'only the primary off file, not the off file that stops every roll');
+    assert.deepEqual(listConfig(env, 1), [], 'a second-mate home has no primary of its own');
+    assert.equal((await env.switches.stop({ scope: 'primary', homes: [env.ids.p] })).homes[0].result, 'present_by_page');
+    assert.equal(await code(env.switches.stop({ scope: 'everything' })), 'bad_scope');
+    assert.equal(env.rollover.state().homes[0].files.find((item) => item.name === 'rollover-primary-off').origin, 'page');
+    // removing the primary off file needs its own resume token
+    assert.equal(await code(env.switches.undo({ home: env.ids.p, file: 'rollover-primary-off' })), 'confirm_required');
+    assert.equal(await code(env.switches.undo({ home: env.ids.p, file: 'rollover-primary-off', confirm: `rollover-resume:${env.ids.p}` })), 'confirm_required', 'the plain resume token is not enough');
+    await env.switches.undo({ home: env.ids.p, file: 'rollover-primary-off', confirm: `rollover-resume:${env.ids.p}:primary` });
+    assert.deepEqual(listConfig(env, 0), []);
+    // the live primary file goes without a typed confirm, under the same ledger rules
+    const { challenge } = await env.switches.primaryPrepare({ home: env.ids.p });
+    await env.switches.primaryArm(primaryArmParams(env, 'p', challenge));
+    fs.appendFileSync(path.join(configOf(env), 'rollover-primary-live'), '# edited\n');
+    assert.equal(await code(env.switches.undo({ home: env.ids.p, file: 'rollover-primary-live' })), 'changed_since_created', 'an edited file is the operator\'s');
+    // Stop all still covers the primary through the off file
+    assert.equal((await env.switches.stop({ homes: [env.ids.p] })).homes[0].result, 'created');
+    assert.deepEqual(listConfig(env, 0), ['rollover-off', 'rollover-primary-live']);
   } finally { tree.cleanup(); }
 });
