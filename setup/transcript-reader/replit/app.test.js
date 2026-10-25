@@ -165,7 +165,7 @@ test('forged, expired and wrong-kind cookies, and a broken sign-in, are refused'
   assert.strictEqual((await request(app, 'GET', path, { headers: { cookie: 'hr_session=' + good } })).status, 401, 'expired');
 
   // The provider's side: another nonce, another audience, a bad signature, a spent code.
-  for (const [what, extra] of Object.entries({ nonce: { claims: { nonce: 'other' } }, audience: { claims: { aud: 'someone-else' } }, expired: { claims: { exp: Math.floor(clock / 1000) - 3600 } }, signature: { badKey: true }, issuer: { claims: { iss: 'https://other.example' } } })) {
+  for (const [what, extra] of Object.entries({ nonce: { claims: { nonce: 'other' } }, audience: { claims: { aud: 'someone-else' } }, expired: { claims: { exp: Math.floor(clock / 1000) - 3600 } }, signature: { badKey: true }, algNone: { alg: 'none' }, algHmac: { alg: 'HS256' }, issuer: { claims: { iss: 'https://other.example' } } })) {
     const { refused, cookie } = await signIn(app, OWNER, extra);
     assert.ok(!cookie, what);
     assert.strictEqual(refused.status, 502, what);

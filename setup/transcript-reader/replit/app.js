@@ -17,7 +17,9 @@ const BEARER = /^Bearer (\S+)$/i;
 const FAILURE_LIMIT = 10;       // wrong keys per address per minute before a wrong key is answered 429
 const LOGIN_SECONDS = 600;
 
-const SHELL_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+// The shell page carries a stricter policy of its own (a meta tag: its script by hash); this adds the
+// framing ban a meta tag cannot, and the same limits, so a changed shell cannot widen them here.
+const SHELL_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 const MESSAGES = {

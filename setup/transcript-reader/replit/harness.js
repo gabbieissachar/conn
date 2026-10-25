@@ -35,6 +35,13 @@ async function startIdp(clientSecret) {
       return reply(200, { issuer: base, authorization_endpoint: base + '/authorize', token_endpoint: base + '/token', jwks_uri: base + '/jwks', token_endpoint_auth_methods_supported: ['client_secret_post'] });
     }
     if (req.url === '/jwks') return reply(200, { keys: [jwk] });
+    // For a browser rehearsal: with idp.autoEmail set, /authorize signs that person in without asking.
+    if (req.url.startsWith('/authorize') && idp.autoEmail) {
+      const query = new URL(req.url, base).searchParams;
+      const handle = idp.issue(base + req.url, idp.autoEmail);
+      res.writeHead(302, { location: `${query.get('redirect_uri')}?code=${handle}&state=${query.get('state')}` });
+      return res.end();
+    }
     if (req.url === '/token' && req.method === 'POST') {
       let raw = '';
       req.on('data', (chunk) => { raw += chunk; });
@@ -47,9 +54,12 @@ async function startIdp(clientSecret) {
         if (!grant || form.get('client_secret') !== clientSecret || form.get('client_id') !== idp.clientId || challenge !== grant.challenge) return reply(400, { error: 'invalid_grant' });
         const now = Math.floor(Date.now() / 1000);
         const claims = { iss: base, aud: idp.clientId, sub: 'user-1', iat: now, exp: now + 300, nonce: grant.nonce, email: grant.email, email_verified: true, ...grant.claims };
-        const signing = `${b64({ alg: 'RS256', kid: 'k1' })}.${b64(claims)}`;
+        const alg = grant.alg || 'RS256';
+        const signing = `${b64({ alg, kid: 'k1' })}.${b64(claims)}`;
         const key = grant.badKey ? other.privateKey : pair.privateKey;
-        reply(200, { id_token: `${signing}.${crypto.sign('RSA-SHA256', Buffer.from(signing), key).toString('base64url')}`, token_type: 'Bearer' });
+        // "none" and an HMAC keyed with the public key's bytes are the classic ways to forge a token.
+        const tag = alg === 'none' ? '' : alg === 'HS256' ? crypto.createHmac('sha256', jwk.n).update(signing).digest().toString('base64url') : crypto.sign('RSA-SHA256', Buffer.from(signing), key).toString('base64url');
+        reply(200, { id_token: `${signing}.${tag}`, token_type: 'Bearer' });
       });
       return;
     }
