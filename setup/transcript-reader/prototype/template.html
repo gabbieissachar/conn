@@ -208,6 +208,7 @@
   .dock-passage { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); border-left: 3px solid var(--ask-line); padding-left: 7px; margin-top: 5px; }
   .dock-passage span { flex: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .dock-label { font-size: 11px; color: var(--faint); margin-top: 4px; }
+  .dock-fold { display: inline; font: inherit; color: var(--you); background: none; border: 0; padding: 0; margin: 0 4px 0 0; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .dock-line { font: 12px/1.4 var(--mono); background: var(--paper); border-radius: 6px; padding: 4px 7px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 4.2em; overflow-y: auto; }
   .dock-acts { display: flex; gap: 8px; align-items: baseline; min-height: 20px; }
   .dock-acts .why { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -836,7 +837,7 @@
   function openDock(target) {
     const typed = dockTyped();
     const queued = Boolean(link.target && typed && !typed.startsWith("/")) && addToBatch();
-    link.target = target;
+    link.target = target; link.foldOpen = false;
     link.result = queued ? { ok: true, text: `The last comment went into the batch (${batchOf(target.sid).length}).` } : null;
     markTarget(); saveDraft();
     document.getElementById("float-comment").hidden = true;
@@ -958,7 +959,7 @@
     list.replaceChildren(...items.map((item, i) => {
       const li = $("li"), what = $("div", "what");
       // The pointer as it will be sent names the reply or file better than the pane's name.
-      what.append($("small", null, item.pointer ? item.pointer.replace(/:\s*$/, "") : "Plain message"), $("span", null, item.typed));
+      what.append($("small", null, item.pointer ? item.pointer.replace(/^\[From [^\]]*\]\s*/, "").replace(/:\s*$/, "") : "Plain message"), $("span", null, item.typed));
       what.title = itemText(item);
       const edit = $("button", null, "Edit"); edit.type = "button"; edit.title = "Put this comment back in the box";
       edit.addEventListener("click", () => editItem(i));
@@ -973,6 +974,19 @@
     const box = dock("text");
     box.style.height = "auto";
     box.style.height = Math.min(box.scrollHeight + 2, parseFloat(getComputedStyle(box).lineHeight) * 6 + 14) + "px";
+  }
+  // "Sends exactly" for a long pointer (a reply the session no longer holds adds a log path and
+  // up to 400 characters of the reply): the pointer shows as one line that opens on a tap, so
+  // the words you wrote stay in view after it. The text is the same either way.
+  const FOLD_AT = 90;
+  function fillLine(pointer, typed, command, text) {
+    const line = dock("line");
+    if (!typed || command || pointer.length <= FOLD_AT) { line.replaceChildren(text || pointer + "…"); return; }
+    const fold = $("button", "dock-fold", link.foldOpen ? pointer : pointer.slice(0, 60).trimEnd() + "… ▸");
+    fold.type = "button"; fold.setAttribute("aria-expanded", String(Boolean(link.foldOpen)));
+    fold.title = link.foldOpen ? "Fold the pointer" : "Show the whole pointer";
+    fold.addEventListener("click", () => { link.foldOpen = !link.foldOpen; renderDock(); });
+    line.replaceChildren(fold, typed);
   }
   function renderDock() {
     const bar = document.getElementById("dock"), main = document.getElementById("main");
@@ -1007,7 +1021,7 @@
       const command = dockTyped().startsWith("/");
       const queued = batchOf(session.id).length;
       dock("label").textContent = command ? "Sends exactly (a command goes alone, without the pointer):" : queued ? `Comment ${boxPlace(session.id, queued) + 1} reads:` : "Sends exactly:";
-      dock("line").textContent = text || dockPointer() + "…";
+      fillLine(dockPointer(), dockTyped(), command, text);
     }
     const pane = link.panes ? link.panes[session.id] : null;
     let reason = "";
