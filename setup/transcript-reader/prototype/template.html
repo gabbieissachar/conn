@@ -1462,7 +1462,7 @@
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
     const badge = document.getElementById("live");
-    badge.textContent = !canLive ? "read-only" : link.panes === undefined ? "connecting" : "live";
+    badge.textContent = HOSTED ? "hosted" : !canLive ? "read-only" : link.panes === undefined ? "connecting" : "live";
     badge.className = "live" + (canLive && link.panes !== undefined ? " on" : "");
     badge.title = canLive ? "Refreshes itself, follows Herdr and can send replies"
       : HOSTED ? "The hosted copy: it takes the laptop's newer builds every 30 seconds and cannot follow; Send queues a message for the laptop" : "Opened as a file: no refresh, follow or send";

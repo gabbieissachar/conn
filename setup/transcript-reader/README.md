@@ -60,11 +60,29 @@ It writes `out/hosted/`: the shell page `index.html`, `index.json` (the conversa
 
 The shell is the same page as the local reader, loading `index.json` and then one conversation, document or week at a time, so it shows the same conversations, turns, replies, steering messages, documents and fleet timeline. It differs only where a copy without the laptop must:
 
-- **Reads only.** There is no message bar, Follow Herdr, Reopen or Close. Reply, "Comment on this" and "Message about this file" become "Copy pointer": they copy the start of the message a Send would type, to paste into the pane later. The answer sheet (`sheet.html`, opened from "Answer sheet →" and each "Answer these questions →") is the local one: the same cards from a grill-me reply, the same one-line keyed answer (`A1=accept;A2=inline`) with Copy, and no Send.
+- **No Follow, Reopen or Close; Send goes through a queue.** Nothing here changes the reading list. The message bar, Reply, "Comment on this", "Message about this file" and the batch are the local page's own, but Send does not reach Herdr: it queues the message for the laptop (see "Send" below). The answer sheet (`sheet.html`, opened from "Answer sheet →" and each "Answer these questions →") is the local one: the same cards from a grill-me reply, the same one-line keyed answer (`A1=accept;A2=inline`), with Copy and a Send that queues the same line.
 - **Says how old it is.** A line under the title says "As of 14:02", the time the laptop built it, and turns into "Laptop asleep or not syncing since 14:02" once that is over 10 minutes old.
 - **Herdr as of the build.** The picker shows each agent's state as Herdr reported it at the build, and drops it once the build is old; the line under the controls keeps it, with its time ("Working at 14:02").
 - **Every conversation, by home.** The picker groups the conversations by home, newest first, each starting with the replies that need you since your last message ("2 since your last message") and its last activity. That count is only for a conversation a live Herdr pane runs: one whose pane has closed says "· closed pane" instead, as on the local page. The page opens on the newest conversation with such a reply. The line under the controls keeps the local page's own count of every reply that needs you.
 - **Slower refresh.** Every 30 seconds while the page is visible it reads `index.json` again and swaps in a conversation whose stamp changed, where you are reading. New page code reloads it.
+
+### Send, through a queue (local only)
+
+The hosted page cannot reach Herdr, so Send is a request the laptop carries out when it is awake (plan section 8). All of it is local: no network, and every test and lab run uses a fake Herdr.
+
+1. **The page queues it.** Send writes a request, `{id, session_id, text, at}`, through the reader's own server (`POST /api/transcript-reader/queue`, behind the same guard and token as Send) into `q/<uuid>.json` in the copy's folder. A sealed copy's page gzips and seals the request itself, under the key it holds and with its own path bound in, so the server stores `q/<uuid>.json.enc` bytes it cannot read. Nothing is sent to Herdr, and the bar says "Queued for <pane> at 14:05. The laptop sends it when it is awake." The faded message in the conversation reads "Queued … waiting for the laptop to send it".
+2. **The sync sends it.** Every `sync.py` run (`--build-only`, which drains `out/hosted/`, or `--dry-run`, which drains that and the bucket) first runs `drain.js` on each folder that has a request waiting. For each one it asks the local reader's own send (`api.js` `sendPrompt`, the same code as the local Send) whether the session is a conversation of this copy, whether one live Herdr pane runs it, whether that pane's agent is Claude running that very session in the foreground (not suspended to a shell) and not at a permission prompt or question; then it empties the pane's input box and sends the text as one message. Nothing starts when no request waits.
+3. **A receipt comes back.** `r/<uuid>.json` (sealed: `.json.enc`) says `sent` with the pane's name, or `refused` with the reason in the same words the local Send uses. The page asks for it every 4 seconds while one is waiting, and shows "Sent by the laptop at 14:06 · waiting for <pane>" or "Not sent · <reason>" with Dismiss. A reload keeps the queued messages of that tab.
+
+Rules the drain keeps: a refusal is final (nothing retries by itself; you send again); a request whose own time, sealed inside it, is over 12 hours old is refused as expired, and one dated more than 10 minutes ahead (a wrong clock on the device) is refused; a request is never sent twice (a "sending" receipt is written first, a run that stopped midway turns it into "refused: interrupted", and the ids handled are also kept on the laptop only, beside the folder, for as long as a copy could still be fresh); a sealed bucket takes only requests sealed under its key and a plain copy only plain ones, as the caller says and never as the folder looks; receipts older than a week go; at most 50 requests wait. Wipe takes `q/` and `r/` with the rest.
+
+```bash
+python3 setup/transcript-reader/sync.py --build-only      # drains out/hosted/q
+HOSTED_READER_PASSPHRASE=... python3 setup/transcript-reader/sync.py --dry-run   # drains it and out/bucket/q
+HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js out/bucket --sealed   # or just the drain
+```
+
+`HOSTED_READER_HERDR` names the Herdr binary (default `herdr` on PATH); the printed LaunchAgent carries the folders of `node`, `python3` and `herdr`. To try it without touching a real pane, point that variable at a script that records its arguments (the tests do).
 
 ### The sealed copy (a dry run of the sync)
 
@@ -89,7 +107,7 @@ To review it locally, start the reader's server and open the sealed copy beside 
 
 - Reads Claude Code session logs and its running-process records, the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name.
 - Writes only `out/` (gitignored: the pages embed private transcripts). Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
-- Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
+- Sends a prompt to one Herdr pane, only on a Send click (or, for the hosted copy's Send, when `drain.js` carries out a queued request), and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
 The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` and `out/bucket/` too) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
 The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
@@ -101,5 +119,5 @@ A path that the file system resolves into `out/` (another letter case, Unicode f
 
 ```bash
 python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_redact.py
-node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js setup/transcript-reader/seal.test.js
+node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js setup/transcript-reader/seal.test.js setup/transcript-reader/drain.test.js
 ```
