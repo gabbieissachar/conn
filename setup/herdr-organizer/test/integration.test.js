@@ -10,6 +10,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { create } = require('../api');
+const { createRollover } = require('../rollover');
+const { createSwitches } = require('../rollover-switches');
 const { createAdapter, defaultRunner } = require('../adapter');
 const { client, tempTree } = require('./helpers');
 const http = require('http');
@@ -57,7 +59,13 @@ async function setup() {
   const server = http.createServer((req, res) => { if (!api.handle(req, res)) { res.writeHead(404); res.end(); } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  api = create({ root: tree.root, port, adapter: createAdapter({ toolRoot, runner, env }), env });
+  // The rollover side gets a fixture home inside this temporary tree: no server in these tests may register or write the real home.
+  tree.mkdir('rollover-home/state');
+  tree.mkdir('rollover-home/data');
+  tree.mkdir('rollover-home/config');
+  tree.write('rollover-home/state/.lock-session', 'fixture\n');
+  const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `fixture=${path.join(realBase, 'rollover-home')}` }, homedir: tree.abs('nohome') });
+  api = create({ root: tree.root, port, adapter: createAdapter({ toolRoot, runner, env }), env, toolRoot, rollover, switches: createSwitches({ rollover, toolRoot }) });
   return {
     base: tree.root, toolRoot, port, origin: 'http://localhost:' + port, work,
     close: async () => {

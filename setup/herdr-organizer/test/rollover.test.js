@@ -113,6 +113,22 @@ test('rollover watcher: the process must run the script the lock names (R7-5)', 
   } finally { tree.cleanup(); }
 });
 
+test('rollover watcher: a path with a space in it still reads as running when its process runs that script (R8-3)', () => {
+  const tree = tempTree();
+  try {
+    const spaced = makeHome(tree, 'with space');
+    assert.match(spaced.home, / /);
+    const home = view(tree, spaced.home).homes[0];
+    assert.equal(home.watcher, 'running');
+    assert.ok(home.files.every((file) => file.capability === 'read'));
+    // a process that runs another script, or a longer path ending the same way, still does not
+    const other = makeHome(tree, 'other space', { identity: 'Mon Oct 26 09:00:00 2026     bash /somewhere/else/bin/fm-watch.sh' });
+    assert.equal(view(tree, other.home).homes[0].watcher, 'identity_mismatch');
+    const longer = makeHome(tree, 'longer space', { identity: `Mon Oct 26 09:00:00 2026     bash /prefix${path.join(tree.real, 'longer space/code/bin/fm-watch.sh')}` });
+    assert.equal(view(tree, longer.home).homes[0].watcher, 'identity_mismatch');
+  } finally { tree.cleanup(); }
+});
+
 test('rollover watcher: an unsafe lock is named, never followed out of state/', () => {
   const tree = tempTree();
   try {
@@ -333,4 +349,18 @@ test('rollover-state: a tier 0 action with no params, served to the page with th
       assert.equal((await post('rollover-state', undefined, { Origin: 'http://evil.example' })).status, 403, 'a foreign origin is refused');
     } finally { await server.close(); }
   } finally { tree.cleanup(); }
+});
+
+test('no test server may register the real home: every test that builds an API passes a fixture rollover (R7-8, R8-4)', () => {
+  const dir = __dirname;
+  let checked = 0;
+  for (const name of fs.readdirSync(dir).filter((item) => item.endsWith('.js'))) {
+    const source = fs.readFileSync(path.join(dir, name), 'utf8');
+    if (!/require\('\.\.\/api'\)/.test(source)) continue;
+    checked += 1;
+    const calls = source.match(/\bcreate\(\{[^;]*;/g) || [];
+    assert.ok(calls.length > 0, `${name} requires the API but builds none`);
+    for (const call of calls) assert.match(call, /\brollover\b/, `${name} builds an API without a fixture rollover registry`);
+  }
+  assert.ok(checked >= 2, 'helpers.js and integration.test.js are both checked');
 });
