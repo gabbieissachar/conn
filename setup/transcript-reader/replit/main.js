@@ -16,7 +16,7 @@ function main(env = process.env) {
   const oidc = new OidcClient({ issuer: config.issuer, clientId: config.clientId, clientSecret: config.clientSecret, redirectUri: config.redirectUri });
   const server = http.createServer(createHandler({ config, store, oidc, log: (line) => console.log(line) }));
   const port = Number(env.PORT) || 3000;
-  server.listen(port, '0.0.0.0', () => console.log(`Transcript reader listening on port ${port}`));
+  server.listen(port, env.HOST || '0.0.0.0', () => console.log(`Transcript reader listening on port ${port}`));
   return server;
 }
 

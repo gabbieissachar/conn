@@ -192,8 +192,15 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
       return showLogin(res, 'failed', 502, gone);
     }
     const email = String(claims.email || '').trim().toLowerCase();
-    if (!email || claims.email_verified === false || !config.allowedEmails.has(email)) {
-      log('sign-in refused: not on the allow-list');
+    // The provider must say the address is verified. A provider that never sends the claim (a
+    // company directory where addresses are assigned, not claimed) needs OIDC_EMAIL_VERIFIED_OPTIONAL=1;
+    // an explicit "not verified" is always refused.
+    const verified = claims.email_verified === true || claims.email_verified === 'true'
+      || (config.emailVerifiedOptional && claims.email_verified === undefined);
+    if (!email || !verified || !config.allowedEmails.has(email)) {
+      log(email && !verified && config.allowedEmails.has(email)
+        ? 'sign-in refused: the provider did not say the email is verified (see OIDC_EMAIL_VERIFIED_OPTIONAL)'
+        : 'sign-in refused: not on the allow-list');
       return showLogin(res, 'denied', 403, gone);
     }
     const token = session.sign(config.sessionSecret, 'session', { e: email }, config.sessionSeconds, now());

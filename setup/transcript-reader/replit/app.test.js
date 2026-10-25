@@ -118,6 +118,22 @@ test('an account off the allow-list is refused, with no session', async () => {
   await app.close();
 });
 
+test('the provider must say the email is verified, unless the owner opted in for a directory that never says', async () => {
+  const strict = await seeded();
+  const none = { claims: { email_verified: undefined } };
+  for (const extra of [none, { claims: { email_verified: false } }, { claims: { email_verified: 'false' } }, { claims: { email_verified: 0 } }]) {
+    const { refused, cookie } = await signIn(strict, OWNER, extra);
+    assert.ok(!cookie, JSON.stringify(extra));
+    assert.strictEqual(refused.status, 403);
+  }
+  assert.ok(strict.logs.some((line) => /did not say the email is verified/.test(line)), 'the log says why, without the address');
+  assert.ok((await signIn(strict, OWNER, { claims: { email_verified: 'true' } })).cookie, 'a string true counts');
+  const loose = await seeded({ env: { OIDC_EMAIL_VERIFIED_OPTIONAL: '1' } });
+  assert.ok((await signIn(loose, OWNER, none)).cookie, 'no claim at all is accepted once opted in');
+  for (const claim of [false, 'false', 0]) assert.ok(!(await signIn(loose, OWNER, { claims: { email_verified: claim } })).cookie, 'an explicit no is never accepted');
+  assert.ok(!(await signIn(loose, 'stranger@example.com', none)).cookie, 'still only the allow-list');
+});
+
 test('the allow-list matches case-insensitively, and removing someone ends their session at once', async () => {
   const app = await seeded({ allowed: ' Owner@Example.com , second@example.com ' });
   const { cookie } = await signIn(app, 'OWNER@example.COM');
