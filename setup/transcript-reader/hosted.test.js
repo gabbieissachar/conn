@@ -1,0 +1,199 @@
+'use strict';
+
+// Tests for the hosted shell's loader (prototype/hosted.js). Run from the repo root:
+//   node --test setup/transcript-reader/hosted.test.js
+// The file runs in a sandbox with a fake fetch, page and clock, as the shell's script would run it.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'hosted.js'), 'utf8');
+const TOKEN = 'a'.repeat(64);
+
+// A sandboxed hosted.js. objects: path -> JSON value (or a status number); token: the page's meta tag.
+function load({ objects = {}, token = TOKEN, hidden = false } = {}) {
+  const calls = [];
+  const timers = [];
+  const listeners = {};
+  const storage = new Map();
+  let reloads = 0;
+  const page = {
+    hidden,
+    querySelector: (selector) => (selector === 'meta[name="reader-token"]' ? { content: token } : null),
+    addEventListener: (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); },
+  };
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    const value = objects[url];
+    if (value === undefined) return { ok: false, status: 404, json: async () => ({}) };
+    if (typeof value === 'number') return { ok: value < 400, status: value, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(value)) };
+  };
+  const sandbox = {
+    document: page, fetch, Date, JSON, Map, Promise, Object, Number, String, Error,
+    setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    sessionStorage: { getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+    location: { reload: () => { reloads += 1; } },
+  };
+  vm.createContext(sandbox);
+  const hosted = vm.runInContext(SOURCE + '\nhosted;', sandbox);
+  return { hosted, calls, timers, listeners, page, reloads: () => reloads };
+}
+
+const INDEX = {
+  as_of: 1000, since: 500, homes: ['main'], template: 'abc', summaries: [],
+  conversations: [
+    { id: 'a', ids: ['a'], home: 'main', object: 's/a.json', stamp: 's1', last: 900, needs: 1 },
+    { id: 'b', ids: ['b'], home: 'main', object: 's/b.json', stamp: 's2', last: 800, needs: 0 },
+  ],
+  documents: { d1: { id: 'd1', name: 'notes.md', dir: '~/x', mtime: 1, object: 'd/d1.json', stamp: 'd1s' } },
+  weeks: {
+    '2026-W40': { object: 'f/2026-W40.json', stamp: 'w40', from: 100, to: 400, events: 1, open: 1 },
+    '2026-W41': { object: 'f/2026-W41.json', stamp: 'w41', from: 410, to: 480, events: 1, open: 0 },
+    '2026-W42': { object: 'f/2026-W42.json', stamp: 'w42', from: 490, to: 990, events: 2, open: 0 },
+  },
+};
+
+const OBJECTS = {
+  'index.json': INDEX,
+  's/a.json': { id: 'a', exchanges: [{ at: 900, input: 'hi' }] },
+  's/b.json': { id: 'b', exchanges: [] },
+  'd/d1.json': { id: 'd1', text: '# Notes' },
+  'f/2026-W40.json': { events: [{ at: 100, open: true }] },
+  'f/2026-W41.json': { events: [{ at: 410 }] },
+  'f/2026-W42.json': { events: [{ at: 490 }, { at: 990 }] },
+};
+
+test('the index and every object are fetched with the token the server wrote into the shell', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS });
+  const data = hosted.data(await hosted.index(), null);
+  await hosted.conversation(data.sessions[0]);
+  assert.deepEqual(calls.map((c) => c.url), ['index.json', 's/a.json']);
+  for (const call of calls) {
+    assert.equal(call.options.cache, 'no-store');
+    assert.equal(call.options.headers['x-transcript-reader-token'], TOKEN);
+  }
+});
+
+test('a shell on a static host, with the token tag unfilled, sends no token', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS, token: '__READER_TOKEN__' });
+  await hosted.index();
+  assert.deepEqual(Object.keys(calls[0].options.headers), []);
+});
+
+test('the list comes from the index with no turns, which load one conversation at a time', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS });
+  const data = hosted.data(INDEX, null);
+  assert.equal(data.generated, 1000);
+  assert.equal(data.since, 500);
+  assert.deepEqual(data.sessions.map((s) => [s.id, s.exchanges]), [['a', null], ['b', null]]);
+  assert.equal(data.documents.d1.text, null);
+  assert.equal(data.fleet, null);
+  const session = await hosted.conversation(data.sessions[1]);
+  assert.deepEqual(session.exchanges, []);
+  assert.equal(data.sessions[0].exchanges, null);
+  assert.deepEqual(calls.map((c) => c.url), ['s/b.json']);
+});
+
+test('an object is fetched once per stamp, even when asked for twice at once', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS });
+  const one = hosted.data(INDEX, null), two = hosted.data(INDEX, null);
+  await Promise.all([hosted.conversation(one.sessions[0]), hosted.conversation(two.sessions[0])]);
+  assert.equal(calls.filter((c) => c.url === 's/a.json').length, 1);
+  assert.deepEqual(two.sessions[0].exchanges, [{ at: 900, input: 'hi' }]);
+});
+
+test('a newer index keeps what is loaded while its stamp is the same, and drops what changed', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS });
+  const first = hosted.data(INDEX, null);
+  await hosted.conversation(first.sessions[0]);
+  await hosted.conversation(first.sessions[1]);
+  await hosted.documentText(first.documents.d1);
+  await hosted.fleet(first);
+  const newer = { ...INDEX, as_of: 1060, conversations: [{ ...INDEX.conversations[0], stamp: 's1b' }, INDEX.conversations[1]] };
+  const next = hosted.data(newer, first);
+  assert.equal(next.sessions[0].exchanges, null, 'its stamp changed');
+  assert.deepEqual(next.sessions[1].exchanges, []);
+  assert.equal(next.documents.d1.text, '# Notes');
+  assert.equal(next.fleet, first.fleet, 'no week changed');
+  calls.length = 0;
+  await hosted.conversation(next.sessions[0]);
+  assert.deepEqual(calls.map((c) => c.url), ['s/a.json']);
+  const weekChanged = hosted.data({ ...newer, weeks: { ...INDEX.weeks, '2026-W42': { ...INDEX.weeks['2026-W42'], stamp: 'w42b' } } }, next);
+  assert.equal(weekChanged.fleet, null);
+});
+
+test('the timeline loads the weeks reaching into its window and older weeks with open items, in order', async () => {
+  const { hosted, calls } = load({ objects: OBJECTS });
+  const data = hosted.data(INDEX, null);
+  assert.deepEqual(hosted.weeks(data), ['2026-W40', '2026-W42']);
+  const events = await hosted.fleet(data);
+  assert.deepEqual(events.map((e) => e.at), [100, 490, 990]);
+  assert.deepEqual(calls.map((c) => c.url).sort(), ['f/2026-W40.json', 'f/2026-W42.json']);
+  await hosted.fleet(data);
+  assert.equal(calls.length, 2, 'loaded once');
+});
+
+test('a document loads its text on demand', async () => {
+  const { hosted } = load({ objects: OBJECTS });
+  const data = hosted.data(INDEX, null);
+  await hosted.documentText(data.documents.d1);
+  assert.equal(data.documents.d1.text, '# Notes');
+});
+
+test('an object that is not built says so, and is tried again next time', async () => {
+  const objects = { ...OBJECTS };
+  delete objects['s/b.json'];
+  const { hosted, calls } = load({ objects });
+  const data = hosted.data(INDEX, null);
+  await assert.rejects(hosted.conversation(data.sessions[1]), /s\/b\.json is not built yet/);
+  await assert.rejects(hosted.conversation(data.sessions[1]));
+  assert.equal(calls.filter((c) => c.url === 's/b.json').length, 2);
+});
+
+test('a refused token reloads the shell once, at most once a minute', async () => {
+  const { hosted, reloads } = load({ objects: { 'index.json': 403 } });
+  await assert.rejects(hosted.index(), /Reconnecting/);
+  await assert.rejects(hosted.index(), /reload the page/);
+  assert.equal(reloads(), 1);
+});
+
+test('an index older than the heartbeat is stale', () => {
+  const { hosted } = load();
+  assert.equal(hosted.HEARTBEAT, 600);
+  assert.equal(hosted.stale(1000, 1000 + 600), false);
+  assert.equal(hosted.stale(1000, 1000 + 601), true);
+});
+
+test('the poll runs every 30 seconds while the page is visible, and when it is shown again', async () => {
+  const { hosted, timers, listeners, page } = load();
+  let runs = 0;
+  hosted.poll(async () => { runs += 1; });
+  assert.equal(runs, 0, 'not at once: the shell has just loaded the index');
+  assert.equal(timers[0].ms, 30000);
+  await timers[0].fn();
+  assert.equal(runs, 1);
+  page.hidden = true;
+  await timers[0].fn();
+  assert.equal(runs, 1, 'not while hidden');
+  page.hidden = false;
+  await listeners.visibilitychange[0]();
+  assert.equal(runs, 2);
+});
+
+test('a tick still running holds back the next one', async () => {
+  const { hosted, timers } = load();
+  let release;
+  let runs = 0;
+  hosted.poll(() => { runs += 1; return runs === 1 ? new Promise((resolve) => { release = resolve; }) : null; });
+  const first = timers[0].fn();
+  await timers[0].fn();
+  assert.equal(runs, 1);
+  release();
+  await first;
+  await timers[0].fn();
+  assert.equal(runs, 2);
+});

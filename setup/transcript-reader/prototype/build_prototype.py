@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import fcntl
 import hashlib
 import html
@@ -45,6 +46,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
+HOSTED_SCRIPT = HERE / "hosted.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 PROJECTS = Path.home() / ".claude" / "projects"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
@@ -677,16 +679,48 @@ def mark_compacted_away(exchanges: list[dict]) -> None:
             exchange["compacted_away"] = True
 
 
+def fleet_homes(main_home: str | Path, extra: list[str] | None = None) -> tuple[list[dict], dict[str, Path]]:
+    """The homes to read: the main home, then <extra> or every second mate its registry lists;
+    and each second mate's parent home, whose state folder may hold the inbox a doorbell names."""
+    homes = [{"id": "main", "home": Path(main_home).expanduser()}]
+    if extra:
+        homes += [{"id": Path(h).expanduser().name if Path(h).name != "firstmate" else Path(h).parent.name, "home": Path(h).expanduser()} for h in extra]
+    else:
+        homes += registered_secondmates(homes[0]["home"])
+    return homes, {mate["id"]: homes[0]["home"] for mate in homes[1:]}
+
+
+def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], parent: Path | None) -> dict:
+    """One conversation as the page shows it: the turns of a pane's sessions (each a parsed_log,
+    oldest first), with the steering messages and task instructions they delivered, under the
+    newest session's id."""
+    path = chain[-1]
+    exchanges = chain_exchanges(chain, loaded)
+    attach_inbox_bodies(exchanges, [h for h in (home["home"], parent) if h])
+    cwd = loaded[path]["cwd"]
+    where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
+    if where.startswith("state/.treehouse/"):
+        where = "worker copy"  # a worker's isolated copy, not the home's own clone
+    return {"home": home["id"], "id": path.stem, "ids": [member.stem for member in chain], "file": str(path), "where": where,
+            "exchanges": exchanges}
+
+
+def mark_sheets(sessions: list[dict]) -> None:
+    """A reply that asks for keyed answers links to the answer sheet, which opens on it."""
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+    from build_questionnaire import parse_questionnaire  # it imports this module, so only here
+    for session in sessions:
+        for exchange in session["exchanges"]:
+            if exchange["reply"] and parse_questionnaire(exchange["reply"]):
+                exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
+
+
 def build(args) -> dict:
     # The build time is taken before any log is read, so a turn written while this build runs
     # leaves its log newer than the stamp and the server rebuilds again.
     started = time.time()
-    homes = [{"id": "main", "home": Path(args.main_home).expanduser()}]
-    if args.home:
-        homes += [{"id": Path(h).expanduser().name if Path(h).name != "firstmate" else Path(h).parent.name, "home": Path(h).expanduser()} for h in args.home]
-    else:
-        homes += registered_secondmates(homes[0]["home"])
-    parent_of = {mate["id"]: homes[0]["home"] for mate in homes[1:]}
+    homes, parent_of = fleet_homes(args.main_home, args.home)
 
     # (home, session file, parsed log) for every session to show.
     out_dir = Path(args.out).expanduser().parent
@@ -723,29 +757,14 @@ def build(args) -> dict:
     sessions = []
     fleet = collect_fleet(homes, since)
     for home, chain, loaded in threads:
-        path = chain[-1]
-        exchanges = chain_exchanges(chain, loaded)
-        attach_inbox_bodies(exchanges, [h for h in (home["home"], parent_of.get(home["id"])) if h])
-        session_id = path.stem
-        cwd = loaded[path]["cwd"]
-        where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
-        if where.startswith("state/.treehouse/"):
-            where = "worker copy"  # a worker's isolated copy, not the home's own clone
-        sessions.append({"home": home["id"], "id": session_id, "ids": [member.stem for member in chain], "file": str(path), "where": where,
-                         "exchanges": exchanges})
-        for event in captain_events(home, exchanges, since):
-            event["session"] = session_id
+        session = thread_session(home, chain, loaded, parent_of.get(home["id"]))
+        sessions.append(session)
+        for event in captain_events(home, session["exchanges"], since):
+            event["session"] = session["id"]
             fleet.append(event)
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
-    if str(HERE) not in sys.path:
-        sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
-    from build_questionnaire import parse_questionnaire  # it imports this module, so only here
-    for session in sessions:
-        for exchange in session["exchanges"]:
-            # A reply that asks for keyed answers links to the answer sheet, which opens on it.
-            if exchange["reply"] and parse_questionnaire(exchange["reply"]):
-                exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
+    mark_sheets(sessions)
     documents = attach_documents(sessions)
     labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
     reopened = set(read_ids(out_dir / "reopened.txt"))
@@ -861,10 +880,12 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
 
 
 def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict], life: str = "") -> dict[str, dict]:
-    """Session id -> {label, title, herdr, pane, life} for the agent panes of one Herdr session.
+    """Session id -> {label, title, herdr, pane, life, status} for the agent panes of one Herdr session.
 
     label is the name Herdr shows for the pane: its own label, else its tab's
     label. title is the terminal title the agent set ("Bc36 spec handoff rule 3").
+    status is the agent's state as Herdr reported it then (the hosted copy shows it as of
+    its build; the served local page asks Herdr again every few seconds).
     """
     tab_labels = {tab.get("tab_id"): tab.get("label") or "" for tab in tabs}
     found = {}
@@ -874,7 +895,8 @@ def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict], life: st
             continue
         title = pane.get("terminal_title_stripped") or ""
         label = pane.get("label") or tab_labels.get(pane.get("tab_id")) or title
-        found[session] = {"label": label, "title": title, "herdr": herdr_session, "pane": pane.get("pane_id") or ""}
+        found[session] = {"label": label, "title": title, "herdr": herdr_session, "pane": pane.get("pane_id") or "",
+                          "status": pane.get("agent_status") or ""}
         if life:
             found[session]["life"] = life
     return found
@@ -970,27 +992,31 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
 
     A status line wakes its parent home with a signal naming the status file; a
     steer reaches a secondmate as a firstmate doorbell shortly after it is written.
+    The earliest matching turn within <window> seconds after the event wins (on a tie, the first
+    session, then the first turn). Turns are indexed by home and start time, so each event looks
+    only at its home's turns inside the window: the hosted copy links every fleet session at once.
     """
+    turns: dict[str, list[tuple]] = {}
+    for order, session in enumerate(sessions):
+        for index, exchange in enumerate(session["exchanges"]):
+            if exchange["at"] is None:
+                continue
+            tasks = [exchange.get("signal_task")] + [notice["signal_task"] for notice in exchange["notices"]]
+            turns.setdefault(session["home"], []).append((exchange["at"], order, index, session["id"], tasks, exchange["source"] == "firstmate"))
+    for found in turns.values():
+        found.sort(key=lambda turn: turn[:3])
+    starts = {home: [turn[0] for turn in found] for home, found in turns.items()}
     for event in fleet:
         if event["kind"] not in ("status", "inbox") or "session" in event:
             continue
         home = event["home"] if event["kind"] == "status" else event["to"]
-        best = None
-        for session in sessions:
-            if session["home"] != home:
-                continue
-            for index, exchange in enumerate(session["exchanges"]):
-                if exchange["at"] is None or not 0 <= exchange["at"] - event["at"] <= window:
-                    continue
-                if event["kind"] == "status":
-                    tasks = [exchange.get("signal_task")] + [notice["signal_task"] for notice in exchange["notices"]]
-                    matches = event["task"] in tasks
-                else:
-                    matches = exchange["source"] == "firstmate"
-                if matches and (best is None or exchange["at"] < best[0]):
-                    best = (exchange["at"], session["id"], index)
-        if best:
-            event["session"], event["ref"] = best[1], best[2]
+        found = turns.get(home, [])
+        for at, _, index, session_id, tasks, firstmate in found[bisect.bisect_left(starts.get(home, []), event["at"]):]:
+            if at - event["at"] > window:
+                break
+            if (event["task"] in tasks) if event["kind"] == "status" else firstmate:
+                event["session"], event["ref"] = session_id, index
+                break
 
 
 # ------------------------------------------------- files a reply names (documents)
@@ -1523,16 +1549,21 @@ def cleared_into(chain: list[Path]) -> Path | None:
     return None
 
 
-def write_page(template: Path, payload: dict, out: Path) -> None:
-    """Fill a template with the payload and the shared live.js, then write the page and its stamp.
-
-    The page is replaced in one rename, so the server never serves half a page. The
-    stamp beside it (<page>.stamp) holds the payload's build time; the served page
-    compares it with its own to know a newer build exists.
-    """
+def payload_json(payload) -> str:
+    """The payload as JSON that cannot close the script element it sits in."""
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, str]:
+    """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
+
+    The shared live.js goes into the page's script; mode "hosted" (the hosted copy's shell,
+    sync.py) also pastes hosted.js there, and the script reads the mode from __MODE__.
+    """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__HOSTED__*/", HOSTED_SCRIPT.read_text(encoding="utf-8") if mode == "hosted" else "const hosted = null;")
+    page = page.replace("__MODE__", mode)
     if page.count("__PAYLOAD__") != 1:
         # A second mention (a comment, say) would carry the whole payload into the page again.
         raise ValueError(f"{template.name} must name __PAYLOAD__ exactly once, in its payload slot")
@@ -1542,6 +1573,17 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     # The template hash lets a served page tell a new build (swap the data) from new code (reload).
     template_hash = hashlib.sha256(page.encode("utf-8")).hexdigest()[:16]
     page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__TEMPLATE_HASH__", template_hash).replace("__PAYLOAD__", data)
+    return page, template_hash
+
+
+def write_page(template: Path, payload: dict, out: Path) -> None:
+    """Fill a template with the payload and the shared live.js, then write the page and its stamp.
+
+    The page is replaced in one rename, so the server never serves half a page. The
+    stamp beside it (<page>.stamp) holds the payload's build time; the served page
+    compares it with its own to know a newer build exists.
+    """
+    page, _ = fill_template(template, payload_json(payload))
     private_folder(out.parent)
     stamp = out.with_suffix(".stamp")
     # A rebuild started by hand can overlap the server's own. Each writes its own file, and the

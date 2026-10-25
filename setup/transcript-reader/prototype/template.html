@@ -5,6 +5,8 @@
   page lives in the gitignored out/ folder. No remote requests or fonts; served by the
   reader's own server (setup/transcript-reader/serve.sh), it calls only that local server
   (live.js) to refresh, follow Herdr's focus and send a reply to a pane.
+  The hosted copy's shell (sync.py --build-only) is this page with no payload: it loads its
+  own folder's index.json, then one conversation or document at a time (hosted.js), and only reads.
 -->
 <html lang="en">
 <head>
@@ -42,6 +44,7 @@
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .to-sheet[hidden] + .bar-toggle { margin-left: auto; }
   .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
   /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
   .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
@@ -66,6 +69,9 @@
   .btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  /* The hosted copy says when the laptop built it, and says so louder once that is old. */
+  .asof { font-size: 12px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .asof.stale { color: var(--ask); font-weight: 600; }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
   .wide main { max-width: 44rem; }
 
@@ -247,6 +253,7 @@
 <header class="bar" id="bar">
   <div class="bar-inner">
     <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="asof" id="asof" aria-live="polite" hidden></div>
     <div id="bar-more">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
@@ -281,8 +288,15 @@
 <script>
 (() => {
   "use strict";
+  // The hosted copy's shell has no payload: it loads index.json, then what the view needs, and only
+  // reads (no message bar, Follow, Reopen or Close). Its Reply and "Comment on this" copy the pointer.
+  const HOSTED = "__MODE__" === "hosted";
 /*__LIVE__*/
-  let data = JSON.parse(document.getElementById("payload").textContent);
+/*__HOSTED__*/
+  // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
+  const canLive = live.served && !HOSTED;
+  // The hosted shell starts empty until its index.json arrives.
+  let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
@@ -294,6 +308,8 @@
   const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
   const fmtShortDay = s => new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(s * 1000));
   const fmtWhen = s => s ? `${fmtDay(s)} ${fmtTime(s)}` : "";
+  // When the hosted copy was built: the time alone today, with the day before that.
+  const builtAt = s => fmtShortDay(s) === fmtShortDay(Date.now() / 1000) ? fmtTime(s) : fmtWhen(s);
 
   // ---------------------------------------------------------------- tiny safe markdown
   // Transcripts and documents carry text from outside (pages, Slack, tool output), so every
@@ -406,8 +422,10 @@
     if (sid && ex.reply) {
       const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
-      const to = $("button", "reply-to", "Reply"); to.type = "button"; to.title = "Reply to this in its session. Select a passage first to comment on it.";
-      to.addEventListener("click", () => openDock(target(selectedPassage(card))));
+      const to = $("button", "reply-to", HOSTED ? "Copy pointer" : "Reply"); to.type = "button";
+      to.title = HOSTED ? "Copy the start of a reply to this, to paste into its pane later. Select a passage first to point at it."
+        : "Reply to this in its session. Select a passage first to comment on it.";
+      to.addEventListener("click", () => useTarget(target(selectedPassage(card)), to));
       who.append(to);
     }
     card.append(who);
@@ -423,7 +441,8 @@
     if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply", key + ":reply"));
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);
-    if (ex.sheet) {
+    // The hosted copy has no answer sheet yet.
+    if (ex.sheet && !HOSTED) {
       const go = $("a", "btn sheet", "Answer these questions →"); go.href = "questionnaire.html#q=" + encodeURIComponent(ex.sheet);
       card.append(go);
     }
@@ -517,18 +536,24 @@
   // so a glance down the list shows which ones still run. Empty without the live server or a pane.
   // Words only: the browser marks the chosen option with its own check, which a symbol here would echo.
   const PANE_STATES = { working: "Working", blocked: "Waiting for you", done: "Done", idle: "Idle" };
-  function sessionStatus(s) {
-    const pane = link.panes && link.panes[s.id];
-    if (!pane) return "";
+  // The hosted copy has each pane's state as of its build, which the picker drops once that
+  // build is old (anyAge keeps it, for the line that says when it was).
+  function sessionStatus(s, anyAge = false) {
+    const pane = HOSTED ? (s.pane && s.pane.live && s.pane.status ? s.pane : null) : link.panes && link.panes[s.id];
+    if (!pane || (HOSTED && !anyAge && hosted.stale(data.generated))) return "";
     // Herdr keeps a finished session Done until you visit its pane there, and has no way to be
     // told it was read elsewhere, so a Done session you have read here up to its last turn is Idle.
     if (pane.status === "done" && readThrough(s)) return PANE_STATES.idle;
     return PANE_STATES[pane.status] || "Unknown";
   }
   // The newest turn of each session read on this page, kept in this browser: session id -> time.
-  const lastTurnAt = s => s.exchanges.reduce((latest, ex) => Math.max(latest, ex.reply_at || 0, ex.at || 0), 0);
+  // The hosted index carries it for the conversations not loaded yet.
+  const lastTurnAt = s => s.exchanges ? s.exchanges.reduce((latest, ex) => Math.max(latest, ex.reply_at || 0, ex.at || 0), 0) : s.last || 0;
+  // Kept apart from the local page's marks: on one server both pages share this browser's storage,
+  // and each keeps only the marks of the conversations it lists.
+  const READ_KEY = HOSTED ? "tr-hosted-read" : "tr-read";
   function readMarks() {
-    try { return JSON.parse(localStorage.getItem("tr-read") || "{}") || {}; } catch (e) { return {}; }
+    try { return JSON.parse(localStorage.getItem(READ_KEY) || "{}") || {}; } catch (e) { return {}; }
   }
   const readThrough = s => (readMarks()[s.id] || 0) >= lastTurnAt(s);
   // A conversation counts as read once its newest turn has been on screen: the last turn shown
@@ -547,14 +572,14 @@
     // Keep the marks of sessions still on the reading list only, so the list never grows.
     const listed = new Set(data.sessions.map(x => x.id));
     for (const id of Object.keys(marks)) if (!listed.has(id)) delete marks[id];
-    try { localStorage.setItem("tr-read", JSON.stringify(marks)); } catch (e) { /* not kept */ }
+    try { localStorage.setItem(READ_KEY, JSON.stringify(marks)); } catch (e) { /* not kept */ }
     labelSessions();
   }
   // Statuses change between rebuilds and reads, so the pickers' names follow them.
   function labelSessions() {
     document.querySelectorAll("select[name=session] option, #crumb-session option").forEach(opt => {
       const session = /^\d+$/.test(opt.value) && data.sessions[Number(opt.value)];
-      if (session && opt.textContent !== sessionOption(session)) opt.textContent = sessionOption(session);
+      if (session && opt.textContent !== optionText(session)) opt.textContent = optionText(session);
     });
   }
   // The picker names a session by its Herdr tab or pane label alone; the session's own title
@@ -565,15 +590,32 @@
     return twins.length > 1 ? sessionName(s) : s.pane.label;
   }
   const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  // The hosted list starts each name with the asks waiting on you (replies that need you since
+  // your last message) and the last activity, so a phone shows them before the name is cut off.
+  const lastSeen = at => !at ? "" : fmtShortDay(at) === fmtShortDay(Date.now() / 1000) ? fmtTime(at) : fmtShortDay(at);
+  const optionText = s => !HOSTED ? sessionOption(s)
+    : [s.needs ? `Needs you${s.needs > 1 ? ` (${s.needs})` : ""}` : "", lastSeen(lastTurnAt(s)), sessionOption(s)].filter(Boolean).join(" · ");
+  // The hosted copy lists every conversation it holds, grouped by home, newest first in each.
+  function fillHostedSessions(select) {
+    const homes = [...new Set([...(data.homes || []), ...data.sessions.map(s => s.home)])];
+    select.replaceChildren(...homes.map(home => {
+      const mine = data.sessions.map((s, i) => [s, i]).filter(([s]) => s.home === home);
+      if (!mine.length) return null;
+      const group = $("optgroup"); group.label = `${homeName(home)} · ${mine.length}`;
+      group.append(...mine.map(([s, i]) => { const opt = $("option", null, optionText(s)); opt.value = i; opt.selected = i === state.session; return opt; }));
+      return group;
+    }).filter(Boolean));
+  }
   // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
   // which open again for reading (with their documents) until closed.
   function fillSessions(select) {
+    if (HOSTED) { fillHostedSessions(select); return; }
     select.replaceChildren(...data.sessions.map((s, i) => {
       const opt = $("option", null, sessionOption(s));
       opt.value = i; opt.selected = i === state.session; return opt;
     }));
     const offered = (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id)));
-    if (!live.served || !offered.length) return;
+    if (!canLive || !offered.length) return;
     const group = $("optgroup"); group.label = "Closed panes · open to read again";
     group.append(...offered.map(c => {
       const opt = $("option", null, `${c.label} · ${fmtShortDay(c.at)}`);
@@ -586,7 +628,7 @@
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
     state.session = Number(value);
     setAddress();
-    render(); showLatest();
+    whenReady(() => { render(); showLatest(); });
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
   async function changeList(command, sid, stay = false) {
@@ -638,11 +680,11 @@
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
     const wakes = $("button", "btn", "Wake-ups"); wakes.setAttribute("aria-pressed", String(state.showWakes)); wakes.title = "Show or fold wake-ups (w)";
     const shut = $("button", "btn", "Close"); shut.title = "Take this closed pane's session off the reader; it stays under Closed panes in the picker";
-    shut.hidden = !(session && session.reopened && live.served);
+    shut.hidden = !(session && session.reopened && canLive);
     shut.addEventListener("click", () => changeList("close", session.id));
     const follow = $("button", "btn", "Follow Herdr"); follow.setAttribute("aria-pressed", String(state.follow));
     follow.title = "Show the session of the pane Herdr has focused, adding it to the reading list when needed";
-    follow.hidden = !live.served;
+    follow.hidden = !canLive;
     follow.addEventListener("click", () => {
       state.follow = !state.follow; link.seenSeq = null;
       try { localStorage.setItem("tr-follow", state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
@@ -659,12 +701,15 @@
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
     const where = session ? `${homeName(session.home)} home${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
-    const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr} · ${where}` : `No Herdr pane found · ${where}`);
+    // The hosted copy has the agent's state as Herdr reported it when the laptop built the copy.
+    const stated = HOSTED && pane && pane.live && session ? sessionStatus(session, true) : "";
+    const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
+    const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
     const note = $("div", "follow-note"); note.id = "follow-note";
     controls.append(row, origin, summary, note);
     if (session && session.kept) {
       const closed = $("div", "kept-note", `Its Herdr pane has closed. Shown as it was at ${fmtTime(session.kept)}; Send is off. `);
-      const keepIt = $("button", "btn", "Keep it on the reader"); keepIt.hidden = !live.served;
+      const keepIt = $("button", "btn", "Keep it on the reader"); keepIt.hidden = !canLive;
       keepIt.title = "List this closed pane's session again, until you press Close. Picking another session instead takes it off the reader; it stays under Closed panes.";
       keepIt.addEventListener("click", () => changeList("reopen", session.id, true));
       closed.append(keepIt);
@@ -809,11 +854,16 @@
       if (detail.childElementCount) { detail.replaceChildren(); text.classList.add("collapsed"); return; }
       text.classList.remove("collapsed");
       if (ev.kind === "status" || ev.kind === "inbox") detail.append(renderMarkdown(ev.text));
-      const turn = findTurn(ev);
-      if (turn) {
+      // The hosted copy loads the conversation that holds the turn when it is asked for.
+      const owner = turnSession(ev);
+      if (findTurn(ev) || (HOSTED && owner)) {
         const btn = $("button", "more", ev.kind === "status" ? "Show how the home handled it" : ev.kind === "inbox" ? "Show the turn that received it" : "Show the whole turn");
         const slot = $("div");
-        btn.addEventListener("click", () => { btn.remove(); slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`, null)); });
+        const show = () => { const turn = findTurn(ev); if (turn) slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`, null)); };
+        btn.addEventListener("click", () => {
+          btn.remove();
+          if (owner.exchanges) show(); else hosted.conversation(owner).then(show, e => slot.append($("div", "notes", e.message)));
+        });
         detail.append(btn, slot);
       } else if (ev.kind === "status") {
         detail.append($("div", "notes", "No handling turn found in the loaded sessions; routine updates often do not wake anyone."));
@@ -823,10 +873,10 @@
     row.append(body);
     return row;
   }
+  const turnSession = ev => ev.session == null || ev.ref == null ? null : data.sessions.find(x => x.id === ev.session) || null;
   function findTurn(ev) {
-    if (ev.session == null || ev.ref == null) return null;
-    const s = data.sessions.find(x => x.id === ev.session);
-    return s ? s.exchanges[ev.ref] : null;
+    const s = turnSession(ev);
+    return s && s.exchanges ? s.exchanges[ev.ref] : null;
   }
 
   // ---------------------------------------------------------------- replying to a reply
@@ -877,6 +927,16 @@
     renderDock();
     dock("text").focus();
   }
+  // The hosted copy cannot send, so Reply, "Comment on this" and "Message about this file" copy the
+  // pointer a Send would start with (a selected passage included), to paste into the pane later.
+  async function copyPointer(target, button) {
+    const ok = await copyText(target.pointer(target.passage));
+    if (!button) return;
+    const label = button.textContent;
+    button.textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { button.textContent = label; }, 1500);
+  }
+  const useTarget = (target, button) => HOSTED ? copyPointer(target, button) : openDock(target);
   function dropTarget() { link.target = null; markTarget(); saveDraft(); renderDock(); }
   function markTarget() {
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
@@ -1026,8 +1086,8 @@
   function renderDock() {
     const bar = document.getElementById("dock"), main = document.getElementById("main");
     const session = link.opening ? null : dockSession();  // no bar until the conversation being opened again is back
-    bar.hidden = !session;
-    if (!session) { main.style.paddingBottom = ""; placeNewReply(); return; }
+    bar.hidden = !session || HOSTED;
+    if (bar.hidden) { main.style.paddingBottom = ""; placeNewReply(); return; }
     adopt(session);
     if (link.dockSid !== session.id) {
       link.dockSid = session.id; link.result = null;
@@ -1060,7 +1120,7 @@
     }
     const pane = link.panes ? link.panes[session.id] : null;
     let reason = "";
-    if (!live.served) reason = "Read-only copy: open the served page to send.";
+    if (!canLive) reason = "Read-only copy: open the served page to send.";
     else if (link.panes === undefined) reason = "Connecting to the local server…";
     else if (session.kept) reason = "Its Herdr pane has closed, so Send is off.";
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
@@ -1222,10 +1282,11 @@
   document.addEventListener("mouseup", () => setTimeout(placeFloat, 0));
   document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });
   document.addEventListener("selectionchange", () => { const sel = window.getSelection(); if (!sel || sel.isCollapsed) floatButton.hidden = true; else if (matchMedia("(pointer: coarse)").matches) placeFloat(); });
+  if (HOSTED) floatButton.textContent = "Copy pointer";
   floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
   floatButton.addEventListener("click", () => {
     const card = floatButton.card;
-    if (card && replyTargets.has(card)) openDock(replyTargets.get(card)(selectedPassage(card)));
+    if (card && replyTargets.has(card)) useTarget(replyTargets.get(card)(selectedPassage(card)), floatButton);
   });
 
   // ---------------------------------------------------------------- documents: a named file beside its contents
@@ -1241,12 +1302,18 @@
     const note = (ids, at, index) => (ids || []).forEach(id => {
       if (data.documents && data.documents[id]) { seen.delete(id); seen.set(id, { id, at, index }); }
     });
-    (session ? session.exchanges : []).forEach((ex, index) => { note(ex.input_documents, ex.at, index); note(ex.documents, ex.reply_at || ex.at, index); });
+    ((session && session.exchanges) || []).forEach((ex, index) => { note(ex.input_documents, ex.at, index); note(ex.documents, ex.reply_at || ex.at, index); });
     return [...seen.values()];
+  }
+  // The document the Documents view shows: the one picked, else the last one the session names.
+  function pickDoc(session) {
+    const docs = sessionDocuments(session);
+    if (!docs.some(d => d.id === state.doc)) { state.doc = docs.length ? docs[docs.length - 1].id : null; state.docFrom = null; }
+    return state.doc;
   }
   function openDocument(id, index) {
     state.view = "doc"; state.doc = id; state.docFrom = index;
-    setAddress(); render(); window.scrollTo(0, 0);
+    setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   const wideDoc = () => matchMedia("(min-width: 820px)").matches;
   function docPointer(d, section, passage) {
@@ -1258,7 +1325,7 @@
   function renderDocView() {
     const session = data.sessions[state.session];
     const docs = sessionDocuments(session);
-    if (!docs.some(d => d.id === state.doc)) { state.doc = docs.length ? docs[docs.length - 1].id : null; state.docFrom = null; }
+    pickDoc(session);
     const entry = docs.find(d => d.id === state.doc);
     const controls = document.getElementById("controls"); controls.replaceChildren();
     const main = document.getElementById("main"); main.replaceChildren();
@@ -1275,7 +1342,7 @@
       const opt = $("option", null, `${doc.name} · ${doc.dir.split("/").slice(-2).join("/")} · ${fmtWhen(x.at)}`);
       opt.value = x.id; if (x.id === entry.id) opt.selected = true; select.append(opt);
     });
-    select.addEventListener("change", () => { state.doc = select.value; state.docFrom = null; setAddress(); render(); window.scrollTo(0, 0); });
+    select.addEventListener("change", () => { state.doc = select.value; state.docFrom = null; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); });
     const back = $("button", "btn", "← Back to the turn"); back.title = "The turn whose reply named this file";
     back.addEventListener("click", () => {
       const index = state.docFrom != null ? state.docFrom : entry.index;
@@ -1283,7 +1350,9 @@
       const el = document.getElementById(`ex-${index}`) || [...document.querySelectorAll("#main [id^='ex-']")].find(n => Number(n.id.slice(3)) >= index);
       if (el) el.scrollIntoView({ block: "start" });
     });
-    const message = $("button", "btn", "Message about this file"); message.title = "Write to the session about the whole file. Select a passage to comment on it.";
+    const message = $("button", "btn", HOSTED ? "Copy pointer" : "Message about this file");
+    message.title = HOSTED ? "Copy the start of a message about this file, to paste into the pane later. Select a passage first to point at it."
+      : "Write to the session about the whole file. Select a passage to comment on it.";
     row.append(select, back, message);
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk at the last rebuild`;
@@ -1296,7 +1365,7 @@
     const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
       pointer: p => docPointer(d, section, p) });
     replyTargets.set(body, passage => target(passage, sectionAt(md.headings)));
-    message.addEventListener("click", () => openDock(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : "")));
+    message.addEventListener("click", () => useTarget(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : ""), message));
     const toc = $("details", "toc");
     toc.append($("summary", null, `Contents (${md.headings.length})`));
     const list = $("nav"); list.setAttribute("aria-label", "Contents");
@@ -1348,9 +1417,10 @@
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
     const badge = document.getElementById("live");
-    badge.textContent = !live.served ? "read-only" : link.panes === undefined ? "connecting" : "live";
-    badge.className = "live" + (live.served && link.panes !== undefined ? " on" : "");
-    badge.title = live.served ? "Refreshes itself, follows Herdr and can send replies" : "Opened as a file: no refresh, follow or send";
+    badge.textContent = !canLive ? "read-only" : link.panes === undefined ? "connecting" : "live";
+    badge.className = "live" + (canLive && link.panes !== undefined ? " on" : "");
+    badge.title = canLive ? "Refreshes itself, follows Herdr and can send replies"
+      : HOSTED ? "The hosted copy: it takes the laptop's newer builds every 30 seconds, and cannot follow or send" : "Opened as a file: no refresh, follow or send";
     const note = document.getElementById("follow-note");
     if (note) {
       const f = link.focus, b = link.build || {};
@@ -1381,7 +1451,7 @@
   // divider shares its time) shows how far they moved, so what was open and the place read
   // can follow them to the conversation's newest id.
   const isDivider = e => e.source === "session" && (e.kind === "cleared" || e.kind === "current");
-  const firstTurn = session => { const i = session.exchanges.findIndex(e => !isDivider(e)); return i < 0 ? null : { i, at: session.exchanges[i].at }; };
+  const firstTurn = session => { const i = session.exchanges ? session.exchanges.findIndex(e => !isDivider(e)) : -1; return i < 0 ? null : { i, at: session.exchanges[i].at }; };
   function moveTurns(first, fromSid, session, open, anchor) {
     const j = first ? session.exchanges.findIndex(e => !isDivider(e) && e.at === first.at) : -1;
     const shift = j < 0 ? 0 : j - first.i;
@@ -1400,6 +1470,10 @@
     if (template(next) !== template(document)) { location.reload(); return; }
     const payload = JSON.parse(next.getElementById("payload").textContent);
     if (payload.generated <= data.generated) return;
+    applyPayload(payload);
+  }
+  // A newer build in place of the one on screen, keeping the conversation read, what was open and the place.
+  function applyPayload(payload) {
     const sid = data.sessions[state.session] && data.sessions[state.session].id;
     const mark = s => s ? `${s.exchanges.length}:${(s.exchanges[s.exchanges.length - 1] || {}).reply_words || 0}` : "";
     const before = mark(data.sessions[state.session]);
@@ -1454,7 +1528,7 @@
     showLatest();
   }
   const writing = () => document.activeElement === dock("text") && Boolean(dockTyped());
-  live.poll(async () => {
+  if (!HOSTED) live.poll(async () => {
     const s = await live.state(state.follow);
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
     markRead();
@@ -1463,6 +1537,62 @@
     applyFocus();
     renderLive();
   });
+
+  // ---------------------------------------------------------------- hosted copy: load what the view needs
+  // Whether the view on screen needs an object not loaded yet: the conversation, its document or
+  // the fleet records. Never on the local page, whose payload holds everything.
+  function missing() {
+    if (!HOSTED) return false;
+    if (state.view === "fleet") return !data.fleet;
+    const session = data.sessions[state.session];
+    if (!session) return false;
+    if (!session.exchanges) return true;
+    const id = state.view === "doc" ? pickDoc(session) : null;
+    return Boolean(id && data.documents[id].text == null);
+  }
+  async function ensure() {
+    if (state.view === "fleet") { await hosted.fleet(data); return; }
+    const session = data.sessions[state.session];
+    if (!session) return;
+    await hosted.conversation(session);
+    const id = state.view === "doc" ? pickDoc(session) : null;
+    if (id) await hosted.documentText(data.documents[id]);
+  }
+  // Runs show once the view has what it needs: at once when it has (always on the local page).
+  function whenReady(show) {
+    if (!missing()) { show(); return; }
+    document.getElementById("main").replaceChildren($("div", "empty", "Loading…"));
+    ensure().then(show, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load this: ${e.message}`)));
+  }
+  // When the laptop built the copy on screen; an older build than the sync's heartbeat means it is not syncing.
+  function paintAsOf() {
+    const line = document.getElementById("asof");
+    line.hidden = !HOSTED || !data.generated;
+    if (line.hidden) return;
+    const when = data.generated, old = hosted.stale(when), at = builtAt(when);
+    line.classList.toggle("stale", old);
+    line.textContent = old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`;
+    line.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then.`;
+  }
+  // Every 30 seconds while visible: a newer index brings the new list, and the conversation on
+  // screen again when its stamp changed, swapped in where you are reading. New page code reloads.
+  async function refreshHosted() {
+    const sel = window.getSelection();
+    const next = sel && !sel.isCollapsed ? null : await hosted.index();  // a passage is being picked: later
+    if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.reload(); return; }
+    if (next && next.as_of > data.generated) {
+      const fresh = hosted.data(next, data);
+      const sid = data.sessions[state.session] && data.sessions[state.session].id;
+      const reading = fresh.sessions.find(s => (s.ids || [s.id]).includes(sid));
+      if (reading) await hosted.conversation(reading);
+      const doc = state.view === "doc" && fresh.documents[state.doc];
+      if (doc) await hosted.documentText(doc);
+      if (state.view === "fleet") await hosted.fleet(fresh);
+      applyPayload(fresh);
+    }
+    paintAsOf();
+    labelSessions();
+  }
 
   // ---------------------------------------------------------------- shell
   // A conversation kept on screen after its pane closed leaves the list once another one is shown.
@@ -1474,13 +1604,15 @@
     state.session = Math.max(0, rest.indexOf(current));
   }
   function render() {
+    if (missing()) { whenReady(render); return; }  // the hosted copy loads first
     pruneKept();
     document.body.classList.toggle("wide", state.view === "fleet");
     document.body.classList.toggle("docmode", state.view === "doc");
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
     const docCount = sessionDocuments(data.sessions[state.session]).length;
     document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
-    if (state.view === "reader") renderReader(); else if (state.view === "doc") renderDocView(); else { renderFleet(); renderLive(); }
+    // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
+    if (state.view === "reader") renderReader(); else { if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
     markRead();
     renderDock();
@@ -1514,11 +1646,11 @@
   document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
   document.getElementById("tab-reader").addEventListener("click", () => {
     const opening = state.view !== "reader";
-    state.view = "reader"; render();
-    if (opening) showLatest();
+    state.view = "reader";
+    whenReady(() => { render(); if (opening) showLatest(); });
   });
-  document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; render(); });
-  document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); render(); window.scrollTo(0, 0); });
+  document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; whenReady(render); });
+  document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); });
   document.addEventListener("keydown", e => {
     if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);
@@ -1526,44 +1658,64 @@
     if (e.key === "n") jump("needs", 1);
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
   });
-  const biggest = data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
-  const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];
-  const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
-  // A reload (new page code, a restarted server, or the browser's own) keeps what was
-  // expanded and the place being read, in this tab only.
-  let saved = null;
-  try { saved = JSON.parse(sessionStorage.getItem("tr-reading") || "null"); } catch (e) { saved = null; }
-  // With no address (the answer sheet's "← Reader", or a link without #s=), this tab's
-  // last conversation wins over the list's order, which changes whenever a session writes.
-  const fromSaved = !wanted && saved && saved.session ? data.sessions.findIndex(s => (s.ids || [s.id]).includes(saved.session)) : -1;
-  // A conversation kept on screen after its pane closed is not on the list, so a reload (new page
-  // code, a restarted server) or its address would land on another one, with the bar aimed at that
-  // pane. A closed pane's conversation is opened again instead, as "Keep it on the reader" does.
-  const lost = wanted && fromHash < 0 ? wanted : !wanted && saved && saved.session && fromSaved < 0 ? saved.session : null;
-  const closedHere = lost && handClosed.some(id => id.startsWith(lost));
-  link.opening = lost && live.served && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
-  if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
-  state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : data.chosen ? 0 : biggest;
-  if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
-  // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
-  // Decided here, before the page writes its own address below.
-  link.keepOpening = fromHash >= 0 || fromSaved >= 0;
-  const opened = data.sessions[state.session];
-  const same = saved && opened && (opened.ids || [opened.id]).includes(saved.session);
-  if (same) {
-    state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
-    state.showWakes = !!saved.showWakes;
-    if (state.view === "reader" && saved.view === "fleet") state.view = "fleet";
+  const biggest = () => data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
+  // The hosted copy opens on the newest conversation with a reply that needs you since your last
+  // message, else the newest one (it cannot follow Herdr).
+  const waitingFirst = () => Math.max(0, data.sessions.findIndex(s => s.needs > 0));
+  // The conversation and view the page opens on; returns what this tab saved before a reload.
+  function chooseOpening() {
+    const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];
+    const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
+    // A reload (new page code, a restarted server, or the browser's own) keeps what was
+    // expanded and the place being read, in this tab only.
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem("tr-reading") || "null"); } catch (e) { saved = null; }
+    // With no address (the answer sheet's "← Reader", or a link without #s=), this tab's
+    // last conversation wins over the list's order, which changes whenever a session writes.
+    const fromSaved = !wanted && saved && saved.session ? data.sessions.findIndex(s => (s.ids || [s.id]).includes(saved.session)) : -1;
+    // A conversation kept on screen after its pane closed is not on the list, so a reload (new page
+    // code, a restarted server) or its address would land on another one, with the bar aimed at that
+    // pane. A closed pane's conversation is opened again instead, as "Keep it on the reader" does.
+    const lost = wanted && fromHash < 0 ? wanted : !wanted && saved && saved.session && fromSaved < 0 ? saved.session : null;
+    const closedHere = lost && handClosed.some(id => id.startsWith(lost));
+    link.opening = lost && live.served && !HOSTED && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
+    if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
+    state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : HOSTED ? waitingFirst() : data.chosen ? 0 : biggest();
+    if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
+    // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
+    // Decided here, before the page writes its own address below.
+    link.keepOpening = fromHash >= 0 || fromSaved >= 0;
+    return saved;
+  }
+  function openReading(saved) {
+    if (link.opening) { render(); reopenLost(link.opening, saved); return; }
+    const opened = data.sessions[state.session];
+    const same = saved && opened && (opened.ids || [opened.id]).includes(saved.session);
+    if (same) {
+      state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
+      state.showWakes = !!saved.showWakes;
+      if (state.view === "reader" && saved.view === "fleet") state.view = "fleet";
+    }
+    setAddress();
+    render();
+    if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
   }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   window.addEventListener("pagehide", () => {
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
-  if (link.opening) { render(); reopenLost(link.opening, saved); return; }
-  setAddress();
-  render();
-  if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
+  if (!HOSTED) openReading(chooseOpening());
+  else {
+    // The shell holds no transcript: the list comes from index.json, then the conversation opened on.
+    document.querySelector(".to-sheet").hidden = true;  // no answer sheet in the hosted copy yet
+    hosted.index().then(index => {
+      data = hosted.data(index, null);
+      paintAsOf();
+      const saved = chooseOpening();
+      whenReady(() => { openReading(saved); hosted.poll(refreshHosted); });
+    }, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load the transcripts: ${e.message}`)));
+  }
 
   async function reopenLost(closed, saved) {
     try {

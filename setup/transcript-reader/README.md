@@ -45,13 +45,32 @@ In any copy of the page:
 - **Collapsible header.** The chevron at the top right folds the tabs and controls into one line naming the session, document or view. On a conversation that line is a session picker, so you can switch sessions without opening the controls. Tap the line (elsewhere) or the chevron to bring them back. The choice is kept in this browser.
 - **Cleared sessions.** `/clear` starts a new session log in the same pane. The reader joins the sessions a pane ran into one conversation, under the newest one, with a divider at each clear: the log it cleared is the one written within two minutes before the `/clear` that names the same remote-control link, in any project folder (a session resumed from another directory keeps its old folder), else the one written then in the same folder. Naming any of them (`#s=…`, `reader.py add`) opens the whole conversation, and `reader.py` adds the newest one to the reading list. Replying to a turn from before a clear goes to the pane's current session, and the message names the earlier log, since that session never saw the turn. Claude started again in the same pane (Firstmate swaps a worker's model that way) joins the same way, when the new session starts within ten minutes of the old log's last write. Herdr keeps the first session id it was told after such a restart, so for a Claude pane whose id no running Claude holds, the reader asks Herdr for the pane's foreground process and reads that process's session from Claude Code's own record (`~/.claude/sessions`); a pane back at its shell runs no session.
 
+## The hosted copy
+
+The first step towards reading the transcripts from a phone while the laptop is off (the hosted reader plan, ship 1). Nothing leaves the laptop yet: there is no redaction, encryption or upload.
+
+```bash
+python3 setup/transcript-reader/sync.py --build-only                 # every fleet session
+python3 setup/transcript-reader/sync.py --build-only --reading-list  # the local reader's list, to compare the two pages
+```
+
+It writes `out/hosted/`: the shell page `index.html`, `index.json` (the conversation list), one object per conversation, per named document and per week of fleet records, and a manifest. A run builds again only the conversations whose logs changed, and rewrites an object only when its content changed; `--full` builds everything again. Its help (`--help`) lists the files and the scope. The reader's server serves the shell beside the local page: `http://localhost:8768/setup/transcript-reader/out/hosted/index.html`.
+
+The shell is the same page as the local reader, loading `index.json` and then one conversation, document or week at a time, so it shows the same conversations, turns, replies, steering messages, documents and fleet timeline. It differs only where a copy without the laptop must:
+
+- **Reads only.** There is no message bar, Follow Herdr, Reopen or Close. Reply, "Comment on this" and "Message about this file" become "Copy pointer": they copy the start of the message a Send would type, to paste into the pane later. There is no answer sheet yet.
+- **Says how old it is.** A line under the title says "As of 14:02", the time the laptop built it, and turns into "Laptop asleep or not syncing since 14:02" once that is over 10 minutes old.
+- **Herdr as of the build.** The picker shows each agent's state as Herdr reported it at the build, and drops it once the build is old; the line under the controls keeps it, with its time ("Working at 14:02").
+- **Every conversation, by home.** The picker groups the conversations by home, newest first, each starting with the replies that need you since your last message ("Needs you (2)") and its last activity. The page opens on the newest conversation with such a reply.
+- **Slower refresh.** Every 30 seconds while the page is visible it reads `index.json` again and swaps in a conversation whose stamp changed, where you are reading. New page code reloads it.
+
 ## What it touches
 
 - Reads Claude Code session logs and its running-process records, the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name.
 - Writes only `out/` (gitignored: the pages embed private transcripts). Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
-The server routes are in `api.js`: the pages under `out/` and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
+The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` too) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
 The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
 The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it.
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
@@ -60,6 +79,6 @@ A path that the file system resolves into `out/` (another letter case, Unicode f
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py
-node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py
+node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js
 ```

@@ -270,6 +270,77 @@ test('pages: a spelling the file system folds (Unicode form and case) or a symli
   } finally { await t.close(); }
 });
 
+// The hosted copy sync.py writes into out/hosted/: its shell, an index, objects, and the manifest beside them.
+function writeHosted(outDir) {
+  const hosted = path.join(outDir, 'hosted');
+  for (const folder of ['s', 'd', 'f']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
+  fs.writeFileSync(path.join(hosted, 'index.html'), builtPage('hosted shell'));
+  fs.writeFileSync(path.join(hosted, 'index.json'), JSON.stringify({ as_of: 1, conversations: [{ id: A, object: `s/${A}.json` }] }));
+  fs.writeFileSync(path.join(hosted, 's', A + '.json'), JSON.stringify({ id: A, exchanges: [] }));
+  fs.writeFileSync(path.join(hosted, 'd', 'abc123.json'), JSON.stringify({ id: 'abc123', text: '# Notes' }));
+  fs.writeFileSync(path.join(hosted, 'f', '2026-W43.json'), JSON.stringify({ events: [] }));
+  fs.writeFileSync(path.join(hosted, 'manifest.json'), JSON.stringify({ conversations: { [A]: { members: ['/x/' + A + '.jsonl'] } } }));
+  fs.writeFileSync(path.join(hosted, 'pane-labels.json'), JSON.stringify({ [A]: { label: 'alpha' } }));
+}
+
+test('hosted: the shell opens in a tab like a page, with the token in its tag, and never in a frame', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.open('/setup/transcript-reader/out/hosted/index.html')).status, 404, 'not built yet');
+    writeHosted(t.tree.outDir);
+    const shell = await t.open('/setup/transcript-reader/out/hosted/index.html');
+    assert.equal(shell.status, 200);
+    assert.equal(tokenIn(shell.raw), t.token);
+    assert.equal(shell.headers['content-security-policy'], "frame-ancestors 'none'");
+    assert.equal(shell.headers['x-frame-options'], 'DENY');
+    assert.equal(Object.keys(shell.headers).some((name) => name.startsWith('access-control')), false);
+    const framed = await t.request({ path: '/setup/transcript-reader/out/hosted/index.html', headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' } });
+    assert.equal(framed.status, 403);
+  } finally { await t.close(); }
+});
+
+test('hosted: the shell\'s own token-bearing fetch gets each object; without the token, or cross-site, nothing', async () => {
+  const t = await start();
+  try {
+    writeHosted(t.tree.outDir);
+    const fetchHeaders = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
+    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json']) {
+      const urlPath = '/setup/transcript-reader/out/hosted/' + name;
+      const got = await t.request({ path: urlPath, headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
+      assert.equal(got.status, 200, name);
+      assert.equal(got.raw, fs.readFileSync(path.join(t.tree.outDir, 'hosted', name), 'utf8'), name);
+      assert.equal(got.headers['content-type'], 'application/json; charset=utf-8');
+      assert.equal(got.headers['cache-control'], 'no-store');
+      assert.equal(Object.keys(got.headers).some((header) => header.startsWith('access-control')), false);
+      for (const headers of [fetchHeaders, { ...fetchHeaders, [TOKEN_HEADER]: 'b'.repeat(64) }, { 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' },
+        { 'Sec-Fetch-Site': 'cross-site', [TOKEN_HEADER]: t.token }, { Origin: 'http://evil.example', [TOKEN_HEADER]: t.token }]) {
+        const refused = await t.request({ path: urlPath, headers });
+        assert.equal(refused.status, 403, name + ' ' + JSON.stringify(headers));
+        assert.doesNotMatch(refused.raw, /exchanges|Notes|events|as_of/);
+      }
+    }
+    const missing = await t.request({ path: '/setup/transcript-reader/out/hosted/s/' + B + '.json', headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
+    assert.equal(missing.status, 404);
+  } finally { await t.close(); }
+});
+
+test('hosted: the manifest, the pane cache and any other name or spelling are never served, nor handed to the static handler', async () => {
+  const t = await start();
+  try {
+    writeHosted(t.tree.outDir);
+    const headers = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty', [TOKEN_HEADER]: t.token };
+    for (const name of ['manifest.json', 'pane-labels.json', `s/../manifest.json`, 's/', 'x/a.json', `s/${A}.jsonl`, 'index.json.partial', `s%2F${A}.json`, 's/sub/a.json']) {
+      const response = await t.request({ path: '/setup/transcript-reader/out/hosted/' + name, headers });
+      assert.equal(response.headers['x-static'], undefined, name);
+      if (name !== `s%2F${A}.json`) assert.equal(response.status, 404, name);
+      assert.doesNotMatch(response.raw, /members|alpha/, name);
+    }
+    const plain = await t.request({ path: '/setup/transcript-reader/out/hosted/manifest.json' });
+    assert.equal(plain.headers['x-static'], undefined);
+    assert.doesNotMatch(plain.raw, /members/);
+  } finally { await t.close(); }
+});
+
 test('api: every call needs the token; there is no endpoint that hands it out', async () => {
   const t = await start();
   try {

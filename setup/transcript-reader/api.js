@@ -5,6 +5,11 @@
 //
 //   GET  /setup/transcript-reader/out/<page>.html  the built pages, opened in a browser tab
 //                                                   only; each carries the per-start token
+//   GET  /setup/transcript-reader/out/hosted/index.html
+//                                                   the hosted copy's shell (sync.py), the same way
+//   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*}
+//                                                   the objects that shell loads, to its own
+//                                                   token-bearing fetches only
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
@@ -42,7 +47,10 @@ const { createGuard } = require('../herdr-organizer/guard');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html']);
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html']);
+// The hosted copy's objects, by their path under out/hosted/ (sync.py names them). The manifest
+// and the pane cache beside them are never served.
+const HOSTED_OBJECT_RE = /^(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json$/;
 const TOKEN_HEADER = 'x-transcript-reader-token';
 // Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell
 // their own copy's server from another copy's on the same port (reader.py's copy_id computes the same).
@@ -480,13 +488,27 @@ function create({
     }
     if (!PAGES.has(name)) { text(404, 'Not found'); return; }
     fs.readFile(path.join(outDir, name), 'utf8', (error, html) => {
-      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/reader.py'); return; }
+      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/' + (name.startsWith('hosted/') ? 'sync.py --build-only' : 'reader.py')); return; }
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
         [COPY_HEADER]: copy,
       });
       res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
+    });
+  }
+
+  // An object the hosted shell loads. Like the API it needs the token, which only the shell
+  // opened in a tab holds, so another page on this origin cannot read the transcripts here either.
+  function serveObject(req, res, name) {
+    const verdict = guard.check(req);
+    if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
+    if (!HOSTED_OBJECT_RE.test(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
+    fs.readFile(path.join(outDir, 'hosted', name), (error, body) => {
+      if (error) { fail(res, 404, 'not_built', 'Not built yet.'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.end(body);
     });
   }
 
@@ -531,7 +553,11 @@ function create({
       return true;
     }
     const page = insideOut(req, url);
-    if (page.inside) { servePage(req, res, page.name); return true; }
+    if (page.inside) {
+      if (page.name.startsWith('hosted' + path.sep) && !PAGES.has(page.name)) serveObject(req, res, page.name.slice('hosted/'.length));
+      else servePage(req, res, page.name);
+      return true;
+    }
     if (!url.pathname.startsWith(API)) return false;
     dispatch(req, res, url.pathname, url.searchParams).catch((error) => {
       if (res.headersSent) { res.end(); return; }

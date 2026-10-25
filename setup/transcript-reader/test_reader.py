@@ -36,15 +36,17 @@ class PaneIndexTest(unittest.TestCase):
     def test_pane_label_then_tab_label_then_title(self):
         panes = [
             {"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "leader-alpha", "terminal_title_stripped": "Handoff", "agent_session": {"value": A}},
-            {"pane_id": "w1:p2", "tab_id": "w1:t2", "label": None, "terminal_title_stripped": "X12 spec", "agent_session": {"value": B}},
+            {"pane_id": "w1:p2", "tab_id": "w1:t2", "label": None, "terminal_title_stripped": "X12 spec", "agent_session": {"value": B},
+             "agent_status": "working"},
             {"pane_id": "w1:p3", "tab_id": "w1:t9", "terminal_title_stripped": "Review", "agent_session": {"value": C}},
             {"pane_id": "w1:p4", "tab_id": "w1:t1", "terminal_title_stripped": "a shell, no agent session"},
         ]
         tabs = [{"tab_id": "w1:t1", "label": "leader-alpha"}, {"tab_id": "w1:t2", "label": "fm-x12-final-spec"}]
         index = builder.pane_index("work", panes, tabs)
         self.assertEqual(index[A]["label"], "leader-alpha")
-        self.assertEqual(index[B], {"label": "fm-x12-final-spec", "title": "X12 spec", "herdr": "work", "pane": "w1:p2"})
+        self.assertEqual(index[B], {"label": "fm-x12-final-spec", "title": "X12 spec", "herdr": "work", "pane": "w1:p2", "status": "working"})
         self.assertEqual(index[C]["label"], "Review")
+        self.assertEqual(index[C]["status"], "")  # Herdr said nothing about the agent's state
         self.assertEqual(len(index), 3)
 
 
