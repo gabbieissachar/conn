@@ -529,10 +529,17 @@
     try { return JSON.parse(localStorage.getItem("tr-read") || "{}") || {}; } catch (e) { return {}; }
   }
   const readThrough = s => (readMarks()[s.id] || 0) >= lastTurnAt(s);
-  // Showing a conversation in a visible page reads it up to its newest turn.
+  // A conversation counts as read once its newest turn has been on screen: the last turn shown
+  // starts above the bottom of the window (or the message bar over it).
+  function newestShown() {
+    const turns = [...document.querySelectorAll("#main [id^='ex-']")].filter(el => el.offsetParent !== null);
+    const last = turns[turns.length - 1];
+    const bar = document.getElementById("dock");
+    return !last || last.getBoundingClientRect().top < window.innerHeight - (bar.hidden ? 0 : bar.offsetHeight);
+  }
   function markRead() {
     const session = state.view === "reader" && document.visibilityState === "visible" && data.sessions[state.session];
-    if (!session || readThrough(session)) return;
+    if (!session || readThrough(session) || !newestShown()) return;
     const marks = readMarks();
     marks[session.id] = lastTurnAt(session);
     // Keep the marks of sessions still on the reading list only, so the list never grows.
@@ -1117,7 +1124,7 @@
     newReply.style.bottom = (bar.hidden ? 0 : bar.offsetHeight + parseFloat(bar.style.bottom || 0)) + 12 + "px";
   }
   newReply.addEventListener("click", () => { link.newer = false; showLatest(); placeNewReply(); });
-  window.addEventListener("scroll", () => { if (link.newer && atBottom()) placeNewReply(); }, { passive: true });
+  window.addEventListener("scroll", () => { if (link.newer && atBottom()) placeNewReply(); markRead(); }, { passive: true });
   // A phone keyboard shrinks the visual viewport; the bar rides above it.
   if (window.visualViewport) {
     const lift = () => { document.getElementById("dock").style.bottom = Math.max(0, window.innerHeight - visualViewport.height - visualViewport.offsetTop) + "px"; placeNewReply(); };
