@@ -37,7 +37,7 @@ function loadConfig(env = process.env) {
     sessionSeconds: Math.max(3600, (Number(env.SESSION_HOURS) || 168) * 3600),
     emailVerifiedOptional: env.OIDC_EMAIL_VERIFIED_OPTIONAL === '1',
     trustProxy: env.TRUST_PROXY === '1',
-    queueLimit: 200,
+    queueLimit: 50,
   };
 }
 

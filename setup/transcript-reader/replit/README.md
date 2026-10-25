@@ -19,18 +19,18 @@ laptop: sync.py (build, redact, seal)  ->  push.py  --upload key-->  the app (Re
 | Caller | May do | Refused |
 |---|---|---|
 | Not signed in | `GET /`, `/login` (the sign-in page), `/auth/start`, `/auth/callback` | everything else: 401 |
-| Signed-in, allow-listed owner | `GET` the shell and every sealed object, receipt and queued message; `PUT /q/<uuid>.json.enc` (the Send queue; same-site only, never overwrites, at most 200 waiting) | any other write or delete |
+| Signed-in, allow-listed owner | `GET` the shell and every sealed object, receipt and queued message; `POST /api/transcript-reader/queue` (the Send queue, the same route and body as the reader's own server: `{copy: "bucket", id, data}` with the sealed request in base64; from the page only, never overwrites, at most 50 waiting) | any other write or delete |
 | Laptop upload key (`Authorization: Bearer hrk_...`) | `GET /api/objects[?prefix=s/]` (names and sizes), `PUT` the shell, `k/params.json`, sealed objects and receipts, `DELETE` objects, queued messages and receipts, `GET` queued messages | reading sealed objects back, writing `q/`, deleting the shell or key parameters, plain content |
 
-The upload accepts only bytes that look like what `sync.py` produces: sealed objects (`HRC1` magic, at least 32 bytes), `k/params.json` with exactly its six fields, and a shell page starting with `<!doctype html`. Names are matched against a fixed list (`names.js`), so a path with `..`, an encoded dot, a backslash or any other name never reaches storage. Size limits: 32 MiB per object, 4 MiB shell, 4 KiB parameters, 256 KiB per queued message.
+The upload accepts only bytes that look like what `sync.py` produces: sealed objects (`HRC1` magic, at least 32 bytes), `k/params.json` with exactly its six fields, and a shell page starting with `<!doctype html`. Names are matched against a fixed list (`names.js`: `index.html`, `sheet.html`, `k/params.json`, `index.json.enc`, `s|d|f|a/<id>.json.enc`, `q/` and `r/<uuid>.json.enc`), so a path with `..`, an encoded dot, a backslash or any other name never reaches storage. Size limits: 32 MiB per object, 4 MiB shell, 4 KiB parameters, 64 KiB per queued message (the reader's own limit).
 
 Upload keys are 256-bit random values shown once; only their SHA-256 hash is stored (`_admin/keys.json` in the same storage, never served). Revoking one takes effect on the next request.
 
 Decisions you may want to change:
 
-- A session lasts 7 days (`SESSION_HOURS`). You accepted the stolen-session risk for the Send queue, so queue writes use the same session check and a same-site header, with no extra write token.
+- A session lasts 7 days (`SESSION_HOURS`). You accepted the stolen-session risk for the Send queue, so queue writes use the same session check, with no extra write token. The route also needs the page's own JSON type (or the `X-Requested-With: transcript-reader` header) and, when the browser sends them, a matching `Origin` and a same-origin `Sec-Fetch-Site`, so another site cannot post for you.
 - Wrong upload keys from one address are answered 429 after 10 a minute; a right key is never turned away.
-- Queue objects are `q/<uuid>.json.enc` and receipts `r/<uuid>.json.enc`. That layout is my reading of the plan for the Send queue; the page and the laptop's drain must use the same names.
+- Queue objects are `q/<uuid>.json.enc` and receipts `r/<uuid>.json.enc`, the names `drain.js` reads and writes. The page's Send must post to `/api/transcript-reader/queue` as above and read its receipt from `r/<uuid>.json.enc` (a plain `GET`).
 - When the session ends (7 days, or the allow-list changes), the open page's next load fails with 401 until you reload it, which shows the sign-in page.
 
 ## What the workspace admins can and cannot see
@@ -54,7 +54,7 @@ Cannot see:
 | `oidc.js`, `session.js`, `config.js` | sign-in (code flow with PKCE, RS256 ID-token check), signed cookies, settings from the environment |
 | `names.js`, `store.js`, `keys.js` | the names and bodies accepted, the object stores (Replit, folder, memory), upload keys |
 | `keys-cli.js` | make, list and revoke upload keys from the Replit shell |
-| `../push.py` | the laptop's sync target (runs `sync.py`, then uploads what changed) |
+| `../push.py` | the laptop's sync target: fetches queued messages into the sealed folder, runs `sync.py` (which drains them), then uploads what changed and the receipts |
 
 ## Deploy steps (you run these)
 
@@ -94,7 +94,7 @@ You need a ShopBack Replit workspace, and an OpenID Connect client for the app. 
    python3 setup/transcript-reader/push.py https://YOUR_APP_NAME_HERE.replit.app
    ```
 
-   It asks for the passphrase (twice, the first time) or reads `HOSTED_READER_PASSPHRASE`, seals the copy, then uploads. The first run sends every conversation of the last 90 days (about 15 MB on the current reading list), so allow some minutes. Later runs send only what changed.
+   It asks for the passphrase (twice, the first time) or reads `HOSTED_READER_PASSPHRASE`, seals the copy, then uploads. Each run also carries the Send queue: it copies messages queued on the app into the sealed folder's `q/` before the sync (whose drain sends them and writes receipts to `r/`), then uploads the receipts and removes the answered messages from the app. The first run sends every conversation of the last 90 days (about 15 MB on the current reading list), so allow some minutes. Later runs send only what changed.
 7. **Open it on the phone.** Visit the app address, sign in with your ShopBack account, enter the passphrase once ("Remember on this device" keeps the derived key in that browser).
 8. **Keep it fresh** (optional): `python3 setup/transcript-reader/push.py https://YOUR_APP_NAME_HERE.replit.app --launch-agent` prints a LaunchAgent that runs it every minute while the Mac is awake. It is printed only; installing it is yours to do.
 

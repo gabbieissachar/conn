@@ -29,7 +29,7 @@ import push  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 KEY = "hrk_" + "k" * 43
-NAME = re.compile(r"^/api/objects/((?:index\.html|k/params\.json|index\.json\.enc|[sdfqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
+NAME = re.compile(r"^/api/objects/((?:index\.html|sheet\.html|k/params\.json|index\.json\.enc|[sdfaqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
 
 
 def sealed(tag: str) -> bytes:
@@ -68,8 +68,9 @@ class StandIn:
                     return self.reply(302, headers={"Location": stand.redirect_to})
                 if self.headers.get("Authorization") != f"Bearer {stand.key}":
                     return self.reply(401, b'{"error":"a valid upload key is required"}')
-                if self.path == "/api/objects" and self.command == "GET":
-                    return self.reply(200, json.dumps({"objects": [{"name": n, "size": len(b)} for n, b in sorted(stand.store.items())]}).encode())
+                if self.path.split("?")[0] == "/api/objects" and self.command == "GET":
+                    prefix = self.path.partition("?prefix=")[2]
+                    return self.reply(200, json.dumps({"objects": [{"name": n, "size": len(b)} for n, b in sorted(stand.store.items()) if n.startswith(prefix)]}).encode())
                 match = NAME.match(self.path)
                 if not match:
                     return self.reply(400, b'{"error":"not an object name"}')
@@ -82,6 +83,8 @@ class StandIn:
                         return self.reply(422, b'{"error":"not a sealed object"}')
                     stand.store[name] = body
                     return self.reply(201)
+                if self.command == "GET":
+                    return self.reply(200, stand.store[name]) if name in stand.store else self.reply(404)
                 if self.command == "DELETE":
                     return self.reply(200, json.dumps({"deleted": stand.store.pop(name, None) is not None}).encode())
                 return self.reply(405)
@@ -102,7 +105,7 @@ class StandIn:
 
 def make_folder(root: Path, objects: dict[str, bytes] | None = None) -> Path:
     folder = root / "sealed"
-    files = {"k/params.json": PARAMS, "index.json.enc": sealed("i"), "index.html": SHELL, "s/aaa.json.enc": sealed("a"), "s/bbb.json.enc": sealed("b"), "d/ddd.json.enc": sealed("d"), "f/2026-W43.json.enc": sealed("f")}
+    files = {"k/params.json": PARAMS, "index.json.enc": sealed("i"), "index.html": SHELL, "sheet.html": SHELL, "a/aaa.json.enc": sealed("z"), "s/aaa.json.enc": sealed("a"), "s/bbb.json.enc": sealed("b"), "d/ddd.json.enc": sealed("d"), "f/2026-W43.json.enc": sealed("f")}
     files.update(objects or {})
     for name, data in files.items():
         path = folder / name
@@ -129,8 +132,8 @@ class PushTest(unittest.TestCase):
 
     def test_a_first_push_sends_the_key_parameters_then_objects_then_index_then_shell(self):
         sent, removed, same = self.run_push()
-        self.assertEqual((sent, removed, same), (7, 0, 0))
-        self.assertEqual(self.stand.puts(), ["k/params.json", "d/ddd.json.enc", "f/2026-W43.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "index.json.enc", "index.html"])
+        self.assertEqual((sent, removed, same), (9, 0, 0))
+        self.assertEqual(self.stand.puts(), ["k/params.json", "a/aaa.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "index.json.enc", "index.html", "sheet.html"])
         for name, data in self.stand.store.items():
             self.assertEqual(data, (self.folder / name).read_bytes(), name)
         self.assertEqual(set(self.stand.auth_seen), {f"Bearer {KEY}"})
@@ -138,7 +141,7 @@ class PushTest(unittest.TestCase):
     def test_a_second_push_with_nothing_changed_sends_nothing(self):
         self.run_push()
         self.stand.log.clear()
-        self.assertEqual(self.run_push(), (0, 0, 7))
+        self.assertEqual(self.run_push(), (0, 0, 9))
         self.assertEqual(self.stand.log, [("GET", "/api/objects")])
 
     def test_only_a_changed_object_is_sent_again_and_a_pruned_one_is_removed(self):
@@ -150,12 +153,12 @@ class PushTest(unittest.TestCase):
         self.stand.store["r/00000000-0000-4000-8000-000000000002.json.enc"] = sealed("r")
         self.stand.log.clear()
         sent, removed, _ = self.run_push()
-        self.assertEqual((sent, removed), (2, 1))
+        self.assertEqual((sent, removed), (2, 2), "the pruned object and the receipt the drain dropped")
         self.assertEqual(self.stand.puts(), ["s/aaa.json.enc", "index.json.enc"], "the index goes after the object it names")
         self.assertNotIn("d/ddd.json.enc", self.stand.store)
         self.assertEqual(self.stand.store["s/aaa.json.enc"], sealed("A"))
         self.assertIn(("DELETE", "/api/objects/d/ddd.json.enc"), self.stand.log)
-        self.assertEqual([n for n in self.stand.store if n[0] in "qr"].__len__(), 2, "queued messages and receipts are never touched")
+        self.assertEqual(sorted(n[0] for n in self.stand.store if n[0] in "qr"), ["q"], "a queued message without a receipt is never touched; a receipt the drain dropped goes")
 
     def test_an_object_missing_from_the_app_is_sent_again(self):
         self.run_push()
@@ -175,7 +178,7 @@ class PushTest(unittest.TestCase):
         # Another address starts over: everything is sent.
         other = StandIn()
         self.addCleanup(other.close)
-        self.assertEqual(push.push_folder(self.folder, push.Remote(other.url, KEY, sleep=lambda s: None), self.state)[0], 7)
+        self.assertEqual(push.push_folder(self.folder, push.Remote(other.url, KEY, sleep=lambda s: None), self.state)[0], 9)
 
     def test_a_wrong_or_revoked_key_stops_the_run_with_nothing_sent_and_no_key_in_the_message(self):
         stand_key = "hrk_" + "z" * 43
@@ -198,7 +201,7 @@ class PushTest(unittest.TestCase):
 
     def test_a_busy_app_is_tried_again_and_a_dead_one_is_reported_without_the_address_path(self):
         self.stand.fail_puts = 2
-        self.assertEqual(self.run_push()[0], 7)
+        self.assertEqual(self.run_push()[0], 9)
         self.stand.fail_puts = 10
         (self.folder / "s/aaa.json.enc").write_bytes(sealed("A"))
         with self.assertRaises(push.PushError) as caught:
@@ -232,7 +235,90 @@ class PushTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"{}")
         self.run_push()
-        self.assertEqual(sorted(self.stand.store), sorted(["k/params.json", "index.json.enc", "index.html", "s/aaa.json.enc", "s/bbb.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc"]))
+        self.assertEqual(sorted(self.stand.store), sorted(["k/params.json", "index.json.enc", "index.html", "sheet.html", "a/aaa.json.enc", "s/aaa.json.enc", "s/bbb.json.enc", "d/ddd.json.enc", "f/2026-W43.json.enc"]))
+
+
+QID = ["00000000-0000-4000-8000-00000000000%d" % n for n in range(1, 6)]
+
+
+class SendQueueTest(unittest.TestCase):
+    """The Send queue's two legs: queued messages down into the folder for the drain, receipts back up."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.stand = StandIn()
+        self.addCleanup(self.stand.close)
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = make_folder(self.root)
+        self.remote = push.Remote(self.stand.url, KEY, sleep=lambda seconds: None)
+        self.state = self.root / "push.json"
+
+    def drain(self, *ids):
+        """What sync.py's drain does to the folder: the request leaves q/ and a receipt appears in r/."""
+        for qid in ids:
+            (self.folder / "q" / f"{qid}.json.enc").unlink()
+            (self.folder / "r").mkdir(exist_ok=True)
+            (self.folder / "r" / f"{qid}.json.enc").write_bytes(sealed("r" + qid[-1]))
+
+    def test_queued_messages_come_down_once_and_only_by_their_own_names(self):
+        for qid in QID[:2]:
+            self.stand.store[f"q/{qid}.json.enc"] = sealed("q" + qid[-1])
+        self.stand.store["q/evil.json.enc"] = sealed("e")  # a name the app never makes; never made a path
+        self.assertEqual(push.pull_queue(self.folder, self.remote), 2)
+        for qid in QID[:2]:
+            path = self.folder / "q" / f"{qid}.json.enc"
+            self.assertEqual(path.read_bytes(), sealed("q" + qid[-1]))
+            self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(sorted(p.name for p in (self.folder / "q").iterdir()), sorted(f"{q}.json.enc" for q in QID[:2]))
+        self.assertEqual(push.pull_queue(self.folder, self.remote), 0, "nothing new the second time")
+
+    def test_a_message_already_answered_is_not_fetched_again(self):
+        self.stand.store[f"q/{QID[0]}.json.enc"] = sealed("q")
+        push.pull_queue(self.folder, self.remote)
+        self.drain(QID[0])
+        self.assertEqual(push.pull_queue(self.folder, self.remote), 0, "the app still lists it until the receipt is up")
+        self.assertFalse((self.folder / "q" / f"{QID[0]}.json.enc").exists())
+
+    def test_receipts_go_up_and_only_then_is_the_queued_message_removed(self):
+        for qid in QID[:3]:
+            self.stand.store[f"q/{qid}.json.enc"] = sealed("q" + qid[-1])
+        push.pull_queue(self.folder, self.remote)
+        self.drain(QID[0], QID[1])  # the third has no receipt yet
+        sent, removed, _ = push.push_folder(self.folder, self.remote, self.state)
+        self.assertIn(f"r/{QID[0]}.json.enc", self.stand.store)
+        self.assertIn(f"r/{QID[1]}.json.enc", self.stand.store)
+        self.assertEqual(self.stand.store[f"r/{QID[0]}.json.enc"], sealed("r" + QID[0][-1]))
+        self.assertNotIn(f"q/{QID[0]}.json.enc", self.stand.store)
+        self.assertNotIn(f"q/{QID[1]}.json.enc", self.stand.store)
+        self.assertIn(f"q/{QID[2]}.json.enc", self.stand.store, "no receipt yet, so it stays queued")
+        self.assertEqual(removed, 2)
+        receipts_at = [i for i, p in enumerate(self.stand.puts()) if p.startswith("r/")]
+        self.assertTrue(all(i > self.stand.puts().index("sheet.html") for i in receipts_at), "receipts go last")
+        # The drain drops an old receipt: it goes from the app too, and a queued message is never touched by that.
+        (self.folder / "r" / f"{QID[0]}.json.enc").unlink()
+        self.stand.log.clear()
+        sent, removed, _ = push.push_folder(self.folder, self.remote, self.state)
+        self.assertNotIn(f"r/{QID[0]}.json.enc", self.stand.store)
+        self.assertIn(f"r/{QID[1]}.json.enc", self.stand.store)
+        self.assertEqual((sent, removed), (0, 1))
+
+    def test_main_pulls_before_the_sync_and_the_sync_sees_the_messages(self):
+        self.stand.store[f"q/{QID[0]}.json.enc"] = sealed("q")
+        seen = {}
+
+        def fake_sync(argv, env=None, **kwargs):
+            seen["queued"] = sorted(p.name for p in (self.folder / "q").iterdir())
+            self.drain(QID[0])
+            return subprocess.CompletedProcess(argv, 0)
+
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {push.KEY_ENV: KEY}), mock.patch.object(push.subprocess, "run", fake_sync), redirect_stdout(out):
+            self.assertEqual(push.main([self.stand.url, "--folder", str(self.folder), "--state", str(self.state)]), 0)
+        self.assertEqual(seen["queued"], [f"{QID[0]}.json.enc"])
+        self.assertIn(f"r/{QID[0]}.json.enc", self.stand.store)
+        self.assertNotIn(f"q/{QID[0]}.json.enc", self.stand.store)
+        self.assertNotIn(KEY, out.getvalue())
 
 
 class AddressAndKeyTest(unittest.TestCase):
@@ -281,8 +367,10 @@ class AddressAndKeyTest(unittest.TestCase):
             seen["env"] = env
             return subprocess.CompletedProcess(argv, 2)
 
+        friendly = StandIn()
+        self.addCleanup(friendly.close)
         with mock.patch.dict(os.environ, {push.KEY_ENV: KEY}), mock.patch.object(push.subprocess, "run", fake_run), redirect_stderr(io.StringIO()):
-            self.assertEqual(push.main([stand.url, "--folder", "/nonexistent"]), 2)
+            self.assertEqual(push.main([friendly.url, "--folder", "/nonexistent"]), 2)
         self.assertNotIn(push.KEY_ENV, seen["env"])
 
 
@@ -338,13 +426,28 @@ class RealAppTest(unittest.TestCase):
 
     def test_a_revoked_key_is_refused_by_the_real_app_at_once(self):
         folder = make_folder(self.root)
-        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")[0], 7)
+        self.assertEqual(push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")[0], 9)
         subprocess.run(["node", str(HERE / "replit" / "keys-cli.js"), "revoke", self.id], env=self.env, capture_output=True, text=True, check=True)
         (folder / "s/aaa.json.enc").write_bytes(sealed("A"))
         with self.assertRaises(push.PushError) as caught:
             push.push_folder(folder, push.Remote(self.url, self.key), self.root / "state.json")
         self.assertIn("refused the upload key", str(caught.exception))
         self.assertEqual((self.store / "s/aaa.json.enc").read_bytes(), sealed("a"))
+
+    def test_a_queued_message_reaches_the_folder_and_its_receipt_reaches_the_app(self):
+        folder = make_folder(self.root)
+        qid = QID[0]
+        (self.store / "q").mkdir(parents=True, exist_ok=True)
+        (self.store / "q" / f"{qid}.json.enc").write_bytes(sealed("q"))  # what the page's POST leaves in the app's storage
+        remote = push.Remote(self.url, self.key)
+        self.assertEqual(push.pull_queue(folder, remote), 1)
+        self.assertEqual((folder / "q" / f"{qid}.json.enc").read_bytes(), sealed("q"))
+        (folder / "q" / f"{qid}.json.enc").unlink()
+        (folder / "r").mkdir()
+        (folder / "r" / f"{qid}.json.enc").write_bytes(sealed("r"))
+        push.push_folder(folder, remote, self.root / "state.json")
+        self.assertEqual((self.store / "r" / f"{qid}.json.enc").read_bytes(), sealed("r"))
+        self.assertFalse((self.store / "q" / f"{qid}.json.enc").exists())
 
     def test_plain_content_is_refused_by_the_real_app(self):
         folder = make_folder(self.root, {"s/plain.json.enc": b'{"exchanges":[{"text":"plain"}]}'})

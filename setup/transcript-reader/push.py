@@ -18,12 +18,17 @@ keychain (service pmos-hosted-reader-upload-key), else asked for in a terminal. 
 never written to a file, a log or a message here, and is not passed to sync.py. The passphrase
 sync.py needs is its own business (HOSTED_READER_PASSPHRASE or its prompt).
 
-A run sends the key parameters, then each changed object, then the index, then the shell, so a
+A run sends the key parameters, then each changed object, then the index, then the shells, so a
 phone never reads an index that names an object not there yet; it removes objects the sync
-pruned (conversations older than 90 days) afterwards. It never touches the app's q/ and r/
-folders (queued messages and receipts). What was sent is remembered by content hash in the
+pruned (conversations older than 90 days) afterwards. What was sent is remembered by content hash in the
 state file; an object missing from the app is sent again. A redirect from the app is
 refused, so the key is never forwarded anywhere else.
+
+The Send queue (the page queues sealed messages in the app's q/ folder; sync.py drains a q/ folder
+beside the sealed copy and writes receipts to r/): before the sync, a run copies the app's queued
+messages into <folder>/q/ (never one already handled); after it, a run sends the receipts the
+drain wrote to the app's r/ folder, then removes from the app the queued messages that now have a
+receipt, and the receipts the drain has since dropped. A message with no receipt yet stays queued.
 """
 
 from __future__ import annotations
@@ -50,9 +55,12 @@ KEY_ENV = "HOSTED_READER_UPLOAD_KEY"
 URL_ENV = "HOSTED_READER_URL"
 KEYCHAIN_SERVICE = "pmos-hosted-reader-upload-key"
 # What the app accepts (replit/names.js), as far as this side builds it.
-OBJECT = re.compile(r"^[sdf]/[A-Za-z0-9_-]{1,64}\.json\.enc$")
-FIXED = ("k/params.json", "index.json.enc", "index.html")
-PRUNED_PREFIXES = ("s/", "d/", "f/")
+OBJECT = re.compile(r"^[sdfa]/[A-Za-z0-9_-]{1,64}\.json\.enc$")
+UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+QUEUED = re.compile(rf"^q/({UUID})\.json\.enc$")
+RECEIPT = re.compile(rf"^r/({UUID})\.json\.enc$")
+FIXED = ("k/params.json", "index.json.enc", "index.html", "sheet.html")
+PRUNED_PREFIXES = ("s/", "d/", "f/", "a/")
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 ATTEMPTS = 3
 
@@ -122,8 +130,12 @@ class Remote:
             self.sleep(2 ** (attempt - 1))
         raise PushError("unreachable")
 
-    def names(self) -> set[str]:
-        return {item["name"] for item in json.loads(self.call("GET", "/api/objects"))["objects"]}
+    def names(self, prefix: str = "") -> set[str]:
+        query = f"?prefix={prefix}" if prefix else ""
+        return {item["name"] for item in json.loads(self.call("GET", "/api/objects" + query))["objects"]}
+
+    def get(self, name: str) -> bytes:
+        return self.call("GET", "/api/objects/" + name)
 
     def put(self, name: str, data: bytes) -> None:
         self.call("PUT", "/api/objects/" + name, data)
@@ -140,6 +152,10 @@ def local_files(folder: Path) -> dict[str, Path]:
             name = f"{prefix}{path.name}"
             if OBJECT.match(name) and path.is_file():
                 found[name] = path
+    receipts = folder / "r"
+    for path in sorted(receipts.glob("*.json.enc")) if receipts.is_dir() else []:
+        if RECEIPT.match(f"r/{path.name}") and path.is_file():
+            found[f"r/{path.name}"] = path
     return found
 
 
@@ -148,9 +164,10 @@ def digest(path: Path) -> str:
 
 
 def send_order(names) -> list[str]:
-    """Key parameters, then objects, then the index, then the shell."""
+    """Key parameters, then objects, then the index, then the shells, then receipts."""
     names = set(names)
-    return [n for n in ("k/params.json",) if n in names] + sorted(n for n in names if OBJECT.match(n)) + [n for n in ("index.json.enc", "index.html") if n in names]
+    return ([n for n in ("k/params.json",) if n in names] + sorted(n for n in names if OBJECT.match(n))
+            + [n for n in ("index.json.enc", "index.html", "sheet.html") if n in names] + sorted(n for n in names if RECEIPT.match(n)))
 
 
 def push_folder(folder: Path, remote: Remote, state_file: Path = STATE, say=print) -> tuple[int, int, int]:
@@ -165,7 +182,9 @@ def push_folder(folder: Path, remote: Remote, state_file: Path = STATE, say=prin
     sent = state.get("files", {}) if state.get("url") == remote.base else {}
     there = remote.names()
     todo = [name for name in send_order(files) if sent.get(name) != digest(files[name]) or name not in there]
-    stale = sorted(name for name in there if name.startswith(PRUNED_PREFIXES) and name not in files)
+    stale = sorted(name for name in there if (name.startswith(PRUNED_PREFIXES) or RECEIPT.match(name)) and name not in files)
+    # A queued message is done once its receipt is on the app.
+    handled = sorted(name for name in there if (m := QUEUED.match(name)) and f"r/{m.group(1)}.json.enc" in files)
     uploaded = 0
     try:
         for name in todo:
@@ -175,13 +194,35 @@ def push_folder(folder: Path, remote: Remote, state_file: Path = STATE, say=prin
         for name in stale:
             remote.delete(name)
             sent.pop(name, None)
+        for name in handled:
+            remote.delete(name)
     finally:
         state_file.parent.mkdir(parents=True, exist_ok=True)
         partial = state_file.with_name(f".{state_file.name}.{os.getpid()}.partial")
         partial.write_text(json.dumps({"url": remote.base, "files": {n: h for n, h in sent.items() if n in files}}), encoding="utf-8")
         os.chmod(partial, 0o600)
         os.replace(partial, state_file)
-    return uploaded, len(stale), len(files) - len(todo)
+    return uploaded, len(stale) + len(handled), len(files) - len(todo)
+
+
+def pull_queue(folder: Path, remote: Remote) -> int:
+    """Copy the app's queued messages into <folder>/q/ for the sync's drain; returns how many are new.
+    A message already there, or already answered (its receipt is in <folder>/r/), is not copied again."""
+    fetched = 0
+    for name in sorted(remote.names("q/")):
+        match = QUEUED.match(name)  # the app's names are checked here too, before any is made a path
+        if not match:
+            continue
+        target = folder / name
+        if target.exists() or (folder / "r" / f"{match.group(1)}.json.enc").exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+        partial.write_bytes(remote.get(name))
+        os.chmod(partial, 0o600)
+        os.replace(partial, target)
+        fetched += 1
+    return fetched
 
 
 def launch_agent(url: str, folder: Path) -> str:
@@ -224,12 +265,14 @@ def main(argv: list[str]) -> int:
             print(launch_agent(url, folder), end="")
             return 0
         key = find_key()
+        remote = Remote(url, key)
         if not args.push_only:
+            pull_queue(folder, remote)
             code = subprocess.run([sys.executable, str(HERE / "sync.py"), "--dry-run", str(folder)], env={k: v for k, v in os.environ.items() if k != KEY_ENV}).returncode
             if code:
                 print("The sync stopped, so nothing was uploaded.", file=sys.stderr)
                 return code
-        sent, removed, same = push_folder(folder, Remote(url, key), Path(args.state).expanduser())
+        sent, removed, same = push_folder(folder, remote, Path(args.state).expanduser())
     except PushError as error:
         print(f"Not uploaded: {error}", file=sys.stderr)
         return 1

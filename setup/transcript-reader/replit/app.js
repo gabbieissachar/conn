@@ -4,7 +4,7 @@
 //
 // Who can do what (README.md has the same table for the owner):
 //   nobody signed in     the login page (also at "/"), the sign-in routes; every other route answers 401
-//   the owner's session  read the shell and every sealed object; write a queued message (q/<uuid>.json.enc)
+//   the owner's session  read the shell and every sealed object; queue a sealed message (POST /api/transcript-reader/queue)
 //   the laptop's key     list names; write the shell, the key parameters, sealed objects and receipts;
 //                        delete objects; read and delete queued messages (a bearer key, /api/objects)
 // The app never decrypts anything: it stores and serves the sealed bytes it is given.
@@ -16,6 +16,10 @@ const session = require('./session');
 const BEARER = /^Bearer (\S+)$/i;
 const FAILURE_LIMIT = 10;       // wrong keys per address per minute before a wrong key is answered 429
 const LOGIN_SECONDS = 600;
+const OVERSHOOT = 1024 * 1024;  // how far over a limit a body is still read (and dropped) before the connection is cut
+const QUEUE_ROUTE = '/api/transcript-reader/queue';
+const QUEUE_BODY_MAX = 64 * 1024;  // the reader's own limit for the route
+const QUEUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // The shell page carries a stricter policy of its own (a meta tag: its script by hash); this adds the
 // framing ban a meta tag cannot, and the same limits, so a changed shell cannot widen them here.
@@ -68,7 +72,9 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
 
   function send(res, status, body, headers = {}) {
     const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
-    res.writeHead(status, { ...baseHeaders(), 'content-length': bytes.length, ...headers });
+    // An answer sent before the request's body was read ends that connection, so a client never reuses a socket the server is dropping.
+    const unread = res.req && !res.req.readableEnded && res.req.method !== 'GET' && res.req.method !== 'HEAD';
+    res.writeHead(status, { ...baseHeaders(), 'content-length': bytes.length, ...(unread ? { connection: 'close' } : {}), ...headers });
     res.end(bytes);
   }
   const json = (res, status, value, headers = {}) => send(res, status, JSON.stringify(value), { 'content-type': 'application/json', ...headers });
@@ -82,10 +88,15 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
     return data && config.allowedEmails.has(data.e) ? data.e : null;  // the allow-list is read on every request
   };
 
-  // A browser write must come from this site's own page: a custom header (a cross-site page cannot
-  // send one without a preflight this app never answers) and, when the browser says, our own origin.
-  const sameSite = (req) => req.headers['x-requested-with'] === 'transcript-reader'
-    && (req.headers.origin === undefined || req.headers.origin === origin);
+  // A browser write must come from this site's own page. A cross-site page cannot send a JSON body
+  // or a custom header without a preflight this app never answers, a form post carries no session
+  // cookie (SameSite=Lax), and the browser's own Origin and Fetch-Metadata headers must agree when sent.
+  const sameSite = (req) => {
+    const isJson = /^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '');
+    return (isJson || req.headers['x-requested-with'] === 'transcript-reader')
+      && (req.headers.origin === undefined || req.headers.origin === origin)
+      && [undefined, 'same-origin', 'none'].includes(req.headers['sec-fetch-site']);
+  };
 
   // The path as sent, decoded once; null for anything that could climb out ("..", a backslash, an
   // empty segment, a NUL) before names.classify gets to see it.
@@ -96,15 +107,19 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
     return decoded;
   }
 
+  // The body, or Refused(413) when it is over the limit. A body only a little over is read and thrown
+  // away so the client gets its answer rather than a reset; a far larger one is cut off.
   async function readBody(req, limit) {
-    if (Number(req.headers['content-length']) > limit) throw new Refused(413, 'too large');
+    const cutoff = limit + OVERSHOOT;
+    if (Number(req.headers['content-length']) > cutoff) throw new Refused(413, 'too large');
     const chunks = [];
     let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > limit) throw new Refused(413, 'too large');
-      chunks.push(chunk);
+      if (size > cutoff) { req.destroy(); throw new Refused(413, 'too large'); }
+      if (size <= limit) chunks.push(chunk);
     }
+    if (size > limit) throw new Refused(413, 'too large');
     return Buffer.concat(chunks);
   }
 
@@ -140,7 +155,7 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
     if (rawPath === '/api/objects') {
       if (method !== 'GET') return json(res, 405, { error: 'method not allowed' });
       const prefix = url.searchParams.get('prefix') || '';
-      if (!['', 's/', 'd/', 'f/', 'k/', 'q/', 'r/'].includes(prefix)) return json(res, 400, { error: 'unknown prefix' });
+      if (!['', 's/', 'd/', 'f/', 'a/', 'k/', 'q/', 'r/'].includes(prefix)) return json(res, 400, { error: 'unknown prefix' });
       const objects = (await store.list(prefix)).filter(({ name }) => classify(name));
       return json(res, 200, { objects });
     }
@@ -220,16 +235,35 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
       if (!bytes) return kind === 'shell' ? html(res, 404, '<!doctype html><meta charset="utf-8"><title>Transcript reader</title><p>Nothing has been uploaded yet. Run the sync agent from the laptop.</p>') : json(res, 404, { error: 'not found' });
       return send(res, 200, bytes, { 'content-type': contentType(kind), ...(kind === 'shell' ? { 'content-security-policy': SHELL_CSP } : {}) });
     }
-    if (method === 'PUT' && kind === 'queue') {
-      if (!sameSite(req)) return json(res, 403, { error: 'not from this site' });
-      if ((await store.list('q/')).length >= config.queueLimit) return json(res, 429, { error: 'too many messages are waiting for the laptop' });
-      if (await store.get(name)) return json(res, 409, { error: 'already queued' });
-      const bytes = await readBody(req, maxBytes(kind));
-      if (!checkBody(kind, bytes)) return json(res, 422, { error: 'not a sealed message' });
-      await store.put(name, bytes);
-      return json(res, 201, { name });
+    return json(res, 405, { error: 'method not allowed' });
+  }
+
+  // ----------------------------------------------------------------- the owner's Send queue
+
+  // The same route and shapes as the reader's own server (api.js queueWrite, copy "bucket"): the page
+  // seals the request with the passphrase's key and posts it as base64, so this app never sees the
+  // text. It is written once to q/<id>.json.enc for the laptop to fetch, send and answer with a receipt.
+  async function queueWrite(req, res) {
+    const fail = (status, code, message) => json(res, status, { status: 'error', code, message }, status === 413 ? { connection: 'close' } : {});
+    if (!sameSite(req)) return fail(403, 'refused', 'This request did not come from the page.');
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, QUEUE_BODY_MAX)).toString('utf8') || '{}');
+    } catch (error) {
+      return error instanceof Refused ? fail(413, 'error', 'Message too long.') : fail(400, 'error', 'Invalid JSON body.');
     }
-    return json(res, method === 'PUT' ? 403 : 405, { error: 'not allowed' });
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !['copy', 'id', 'data'].includes(key))) return fail(400, 'error', 'Invalid request.');
+    if (body.copy !== 'bucket') return fail(400, 'error', 'Unknown copy.');
+    if (typeof body.id !== 'string' || !QUEUE_ID.test(body.id)) return fail(400, 'error', 'Invalid request id.');
+    if (typeof body.data !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) return fail(400, 'error', 'Invalid request.');
+    const bytes = Buffer.from(body.data, 'base64');
+    const name = `q/${body.id}.json.enc`;
+    if (!checkBody('queue', bytes)) return fail(400, 'error', 'That is not a sealed request.');
+    const waiting = (await store.list('q/')).length;
+    if (waiting >= config.queueLimit) return fail(429, 'queue_full', 'Too many messages are waiting for the laptop. Wait for them to be sent.');
+    if (await store.get(name)) return fail(409, 'exists', 'That request is already queued.');
+    await store.put(name, bytes);
+    return json(res, 200, { status: 'ok', id: body.id, queued: waiting + 1 });
   }
 
   // ----------------------------------------------------------------- routing
@@ -244,6 +278,10 @@ function createHandler({ config, store, oidc, now = Date.now, log = () => {} }) 
     if (rawPath === '/logout' && method === 'POST') {
       if (!sameSite(req)) return json(res, 403, { error: 'not from this site' });
       return redirect(res, '/', { 'set-cookie': clearCookie(sessionName) });
+    }
+    if (rawPath === QUEUE_ROUTE) {
+      if (!owner(req)) return json(res, 401, { error: 'sign in first' });
+      return method === 'POST' ? queueWrite(req, res) : json(res, 405, { error: 'method not allowed' });
     }
     if (rawPath === '/api/objects' || rawPath.startsWith('/api/objects/')) return api(req, res, method, rawPath, url);
     if (rawPath.startsWith('/api/')) return (await bearer(req, res)) && json(res, 404, { error: 'not found' });

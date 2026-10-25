@@ -18,12 +18,15 @@ const OWNER = 'owner@example.com';
 const SHELL = Buffer.from('<!doctype html><title>shell</title><p>SHELL-MARKER</p>');
 const PARAMS = Buffer.from(JSON.stringify({ version: 1, kdf: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt: 'c2FsdA==', check: 'Y2hlY2s=' }));
 const SAME_SITE = { 'x-requested-with': 'transcript-reader' };
+const QUEUE = '/api/transcript-reader/queue';
+const JSON_POST = { 'content-type': 'application/json' };
+const asBody = (id, bytes, extra = {}) => Buffer.from(JSON.stringify({ copy: 'bucket', id, data: bytes.toString('base64'), ...extra }));
 const bearer = (key, extra = {}) => ({ authorization: `Bearer ${key}`, ...extra });
 
 // An app with a shell, key parameters and a few sealed objects already stored, and an upload key.
 async function seeded(options) {
   const app = await startApp(options);
-  const bodies = { 'index.html': SHELL, 'k/params.json': PARAMS, 'index.json.enc': sealedBytes(), 's/conv-1.json.enc': sealedBytes(), 'd/doc-1.json.enc': sealedBytes(), 'f/2026-W43.json.enc': sealedBytes() };
+  const bodies = { 'index.html': SHELL, 'k/params.json': PARAMS, 'index.json.enc': sealedBytes(), 's/conv-1.json.enc': sealedBytes(), 'd/doc-1.json.enc': sealedBytes(), 'f/2026-W43.json.enc': sealedBytes(), 'a/conv-1.json.enc': sealedBytes(), 'sheet.html': Buffer.from('<!doctype html><title>sheet</title>') };
   for (const [name, bytes] of Object.entries(bodies)) await app.store.put(name, bytes);
   app.bodies = bodies;
   app.key = await app.newKey('laptop');
@@ -40,7 +43,7 @@ test('every route refuses an unauthenticated request, and none leaks a stored bo
   const routes = [];
   for (const name of names) for (const method of ['GET', 'HEAD', 'PUT', 'DELETE', 'POST']) routes.push([method, '/' + name]);
   for (const name of names) for (const method of ['GET', 'PUT', 'DELETE']) routes.push([method, '/api/objects/' + name]);
-  routes.push(['GET', '/api/objects'], ['GET', '/api/objects?prefix=s/'], ['GET', '/api'], ['GET', '/api/x'], ['POST', '/api/objects'], ['OPTIONS', '/'], ['GET', '/index.html'], ['PUT', '/'], ['DELETE', '/'], ['POST', '/'], ['GET', '/favicon.ico']);
+  routes.push(['POST', QUEUE], ['GET', QUEUE], ['PUT', QUEUE], ['GET', '/sheet.html'], ['GET', '/a/x.json.enc'], ['GET', '/api/objects'], ['GET', '/api/objects?prefix=s/'], ['GET', '/api'], ['GET', '/api/x'], ['POST', '/api/objects'], ['OPTIONS', '/'], ['GET', '/index.html'], ['PUT', '/'], ['DELETE', '/'], ['POST', '/'], ['GET', '/favicon.ico']);
   for (const [method, path] of routes) {
     const { status, body, headers } = await request(app, method, path, { body: method === 'PUT' || method === 'POST' ? sealedBytes() : undefined });
     const page = (method === 'GET' || method === 'HEAD') && (path === '/' || path === '/index.html');  // the login page answers there
@@ -187,24 +190,43 @@ test('the owner can queue a sealed message for the laptop, only through their ow
   const app = await seeded();
   const { cookie } = await signIn(app, OWNER);
   const id = uuid();
-  const path = `/q/${id}.json.enc`;
   const bytes = sealedBytes(100);
-  const put = (headers, body = bytes, where = path) => request(app, 'PUT', where, { headers: { cookie, ...headers }, body });
-  assert.strictEqual((await put({})).status, 403, 'no same-site header');
-  assert.strictEqual((await put({ ...SAME_SITE, origin: 'https://evil.example' })).status, 403, 'another origin');
-  assert.strictEqual((await put({ ...SAME_SITE }, Buffer.from('{"plain":"text"}'))).status, 422, 'not sealed');
-  assert.strictEqual((await put({ ...SAME_SITE }, sealedBytes(300 * 1024))).status, 413, 'too big');
-  assert.strictEqual((await put({ ...SAME_SITE }, bytes, '/q/not-a-uuid.json.enc')).status, 404);
-  assert.strictEqual((await put({ ...SAME_SITE, origin: app.base })).status, 201);
-  assert.strictEqual((await put({ ...SAME_SITE })).status, 409, 'a queued message is never overwritten');
-  assert.deepStrictEqual(await app.store.get(`q/${id}.json.enc`), bytes);
-  assert.strictEqual((await request(app, 'PUT', path, { headers: SAME_SITE, body: bytes })).status, 401, 'no session');
-  // The page can read what it queued, but write nothing else.
-  assert.deepStrictEqual((await request(app, 'GET', path, { headers: { cookie } })).body, bytes);
-  for (const name of ['index.html', 'k/params.json', 'index.json.enc', 's/x.json.enc', `r/${uuid()}.json.enc`]) {
-    assert.strictEqual((await request(app, 'PUT', '/' + name, { headers: { cookie, ...SAME_SITE }, body: name === 'index.html' ? SHELL : sealedBytes() })).status, 403, name);
+  const post = (headers, body = asBody(id, bytes)) => request(app, 'POST', QUEUE, { headers: { cookie, ...headers }, body });
+  const reply = (response) => JSON.parse(response.body);
+  // Not from the page: no JSON type or custom header, another origin, a cross-site fetch.
+  assert.strictEqual((await post({ 'content-type': 'text/plain' })).status, 403, 'a plain form post');
+  assert.strictEqual((await post({ ...JSON_POST, origin: 'https://evil.example' })).status, 403, 'another origin');
+  assert.strictEqual((await post({ ...JSON_POST, 'sec-fetch-site': 'cross-site' })).status, 403, 'a cross-site fetch');
+  // Bodies the reader's own route also refuses.
+  const refused = [
+    ['not JSON', Buffer.from('nope'), 400], ['an array', Buffer.from('[]'), 400], ['plain copy', asBody(id, bytes, { copy: 'hosted' }), 400], ['an extra field', asBody(id, bytes, { x: 1 }), 400],
+    ['a bad id', asBody('not-a-uuid', bytes), 400], ['not base64', Buffer.from(JSON.stringify({ copy: 'bucket', id, data: '***' })), 400], ['an object', Buffer.from(JSON.stringify({ copy: 'bucket', id, object: {} })), 400],
+    ['not sealed', asBody(id, Buffer.from('{"plain":"text"}')), 400], ['too short', asBody(id, Buffer.from('HRC1abc')), 400], ['too big', asBody(id, sealedBytes(70 * 1024)), 413],
+  ];
+  for (const [what, body, status] of refused) {
+    const got = await post(JSON_POST, body);
+    assert.strictEqual(got.status, status, what);
+    assert.strictEqual(reply(got).status, 'error', what);
   }
-  assert.strictEqual((await request(app, 'DELETE', path, { headers: { cookie, ...SAME_SITE } })).status, 405);
+  assert.strictEqual(await app.store.get(`q/${id}.json.enc`), null, 'nothing was queued by a refused request');
+  const ok = await post({ ...JSON_POST, origin: app.base, 'sec-fetch-site': 'same-origin' });
+  assert.strictEqual(ok.status, 200);
+  assert.deepStrictEqual(reply(ok), { status: 'ok', id, queued: 1 });
+  assert.deepStrictEqual(await app.store.get(`q/${id}.json.enc`), bytes);
+  const again = await post(JSON_POST);
+  assert.strictEqual(again.status, 409, 'a queued message is never overwritten');
+  assert.strictEqual(reply(again).code, 'exists');
+  // A custom header works as well as a JSON type.
+  assert.strictEqual((await post({ ...SAME_SITE, 'content-type': 'text/plain' }, asBody(uuid(), bytes))).status, 200);
+  // Not without the owner's session.
+  assert.strictEqual((await request(app, 'POST', QUEUE, { headers: JSON_POST, body: asBody(uuid(), bytes) })).status, 401);
+  assert.strictEqual((await request(app, 'POST', QUEUE, { headers: { ...JSON_POST, ...bearer(app.key) }, body: asBody(uuid(), bytes) })).status, 401, 'an upload key is not a session');
+  assert.strictEqual((await request(app, 'GET', QUEUE, { headers: { cookie } })).status, 405);
+  // The page can read what it queued, but write nothing by any other route.
+  assert.deepStrictEqual((await request(app, 'GET', `/q/${id}.json.enc`, { headers: { cookie } })).body, bytes);
+  for (const name of ['index.html', 'k/params.json', 'index.json.enc', 's/x.json.enc', `q/${uuid()}.json.enc`, `r/${uuid()}.json.enc`]) {
+    for (const method of ['PUT', 'POST', 'DELETE']) assert.strictEqual((await request(app, method, '/' + name, { headers: { cookie, ...SAME_SITE, ...JSON_POST }, body: sealedBytes() })).status, 405, `${method} ${name}`);
+  }
   await app.close();
 });
 
@@ -213,8 +235,8 @@ test('the queue holds a limited number of messages', async () => {
   app.config.queueLimit = 3;
   const { cookie } = await signIn(app, OWNER);
   const status = [];
-  for (let i = 0; i < 4; i += 1) status.push((await request(app, 'PUT', `/q/${uuid()}.json.enc`, { headers: { cookie, ...SAME_SITE }, body: sealedBytes() })).status);
-  assert.deepStrictEqual(status, [201, 201, 201, 429]);
+  for (let i = 0; i < 4; i += 1) status.push((await request(app, 'POST', QUEUE, { headers: { cookie, ...JSON_POST }, body: asBody(uuid(), sealedBytes()) })).status);
+  assert.deepStrictEqual(status, [200, 200, 200, 429]);
   await app.close();
 });
 
@@ -223,7 +245,7 @@ test('the laptop key drains the queue, and its receipts reach only the signed-in
   const { cookie } = await signIn(app, OWNER);
   const id = uuid();
   const queued = sealedBytes(50);
-  await request(app, 'PUT', `/q/${id}.json.enc`, { headers: { cookie, ...SAME_SITE }, body: queued });
+  assert.strictEqual((await request(app, 'POST', QUEUE, { headers: { cookie, ...JSON_POST }, body: asBody(id, queued) })).status, 200);
   const listed = JSON.parse((await request(app, 'GET', '/api/objects?prefix=q/', { headers: bearer(app.key) })).body);
   assert.deepStrictEqual(listed.objects.map((o) => o.name), [`q/${id}.json.enc`]);
   const taken = await request(app, 'GET', `/api/objects/q/${id}.json.enc`, { headers: bearer(app.key) });
@@ -283,6 +305,8 @@ test('the upload endpoint takes only sealed objects, the key parameters and the 
   assert.strictEqual((await put('index.json.enc', sealedBytes())).status, 201);
   assert.strictEqual((await put('k/params.json', PARAMS)).status, 201);
   assert.strictEqual((await put('index.html', SHELL)).status, 201);
+  assert.strictEqual((await put('sheet.html', SHELL)).status, 201);
+  assert.strictEqual((await put('a/conv-1.json.enc', sealedBytes())).status, 201);
   assert.strictEqual((await put(`r/${uuid()}.json.enc`, sealedBytes())).status, 201);
   // Refused bodies: plain JSON, gzip, an empty body, a short "sealed" one, the wrong magic.
   for (const [what, body] of Object.entries({ plain: plainJson, gzip: zlib.gzipSync(plainJson), empty: Buffer.alloc(0), short: Buffer.from('HRC1abc'), magic: Buffer.concat([Buffer.from('HRC2'), Buffer.alloc(60, 9)]) })) {

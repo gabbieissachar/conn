@@ -19,7 +19,7 @@ const GOOD_ENV = { APP_URL: 'https://reader.example.test', OIDC_CLIENT_ID: 'clie
 
 test('names: only the copy\'s own names are classified', () => {
   const id = uuid();
-  const kinds = { 'index.html': 'shell', 'k/params.json': 'params', 'index.json.enc': 'index', 's/abc-1_2.json.enc': 'object', 'd/x.json.enc': 'object', 'f/2026-W43.json.enc': 'object', [`q/${id}.json.enc`]: 'queue', [`r/${id}.json.enc`]: 'receipt' };
+  const kinds = { 'index.html': 'shell', 'k/params.json': 'params', 'index.json.enc': 'index', 's/abc-1_2.json.enc': 'object', 'd/x.json.enc': 'object', 'a/x.json.enc': 'object', 'sheet.html': 'shell', 'f/2026-W43.json.enc': 'object', [`q/${id}.json.enc`]: 'queue', [`r/${id}.json.enc`]: 'receipt' };
   for (const [name, kind] of Object.entries(kinds)) assert.strictEqual(classify(name), kind, name);
   for (const name of ['', 'index.json', 'k/params.json.enc', 's/.json.enc', 's/a.b.json.enc', 'S/a.json.enc', '_admin/keys.json', 'manifest.json', 'q/x.json.enc', 'x/y.json.enc', 's/' + 'a'.repeat(200) + '.json.enc', null, undefined, 5]) {
     assert.strictEqual(classify(name), null, String(name));
@@ -32,6 +32,7 @@ test('names: bodies are checked by kind and size', () => {
   assert.ok(!checkBody('object', Buffer.from('HRC1')), 'a bare magic is too short');
   assert.ok(!checkBody('object', Buffer.alloc(maxBytes('object') + 1, 1)), 'over the size limit');
   assert.ok(!checkBody('queue', sealedBytes(maxBytes('queue'))));
+  assert.strictEqual(maxBytes('queue'), 64 * 1024, 'the reader\'s own limit');
   assert.ok(checkBody('params', Buffer.from(JSON.stringify(params))));
   for (const bad of [{ ...params, extra: 1 }, { ...params, iterations: 1.5 }, { ...params, hash: 'SHA-1' }, [params], 'text', null]) assert.ok(!checkBody('params', Buffer.from(JSON.stringify(bad))), JSON.stringify(bad));
   assert.ok(checkBody('shell', Buffer.from('  <!DOCTYPE html><p>x')));
@@ -47,6 +48,7 @@ test('config: refuses to start without an allow-list, a long session secret and 
   assert.strictEqual(config.issuer, 'https://oauth.id.jumpcloud.com/');
   assert.strictEqual(config.redirectUri, 'https://reader.example.test/auth/callback');
   assert.strictEqual(config.secureCookies, true);
+  assert.strictEqual(config.queueLimit, 50, 'the reader\'s own limit');
   assert.strictEqual(loadConfig({ ...GOOD_ENV, SESSION_HOURS: 'junk' }).sessionSeconds, 168 * 3600);
   for (const name of Object.keys(GOOD_ENV)) {
     assert.throws(() => loadConfig({ ...GOOD_ENV, [name]: '' }), new RegExp(`${name} is not set`), name);
