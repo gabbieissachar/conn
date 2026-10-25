@@ -119,6 +119,34 @@ test('arm: the file appears complete or not at all (R7-1)', async () => {
   } finally { tree.cleanup(); }
 });
 
+test('a short write is detected: no switch file is made from part of its content (R8-1)', async () => {
+  const tree = tempTree();
+  try {
+    let mode = 'short';
+    const env = setup(tree, ['a'], { hooks: { write: (fd, text) => {
+      if (mode === 'short') fs.writeSync(fd, Buffer.from(text).subarray(0, 20)); // stores 20 bytes and says nothing
+      else if (mode === 'chunks') { const bytes = Buffer.from(text); for (let at = 0; at < bytes.length; at += 7) fs.writeSync(fd, bytes, at, Math.min(7, bytes.length - at)); }
+      else fs.writeSync(fd, text);
+    } } });
+    addRecords(tree, 'a');
+    assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'write_failed');
+    assert.deepEqual(listConfig(env), [], 'nothing under the real name and no temp file left');
+    assert.equal(fs.existsSync(env.ledgerPath), false);
+    assert.equal((await env.switches.stop({ homes: [env.ids.a] })).homes[0].result, 'error', 'the same for the off file');
+    assert.deepEqual(listConfig(env), []);
+    // a writer that stores the content in several pieces is fine
+    mode = 'chunks';
+    await arm(env, 'a', 'second-mates', ['sm-a']);
+    assert.match(fs.readFileSync(path.join(configOf(env), 'rollover-live'), 'utf8'), /\nsm-a\n$/);
+  } finally { tree.cleanup(); }
+});
+
+test('the default writer goes on until every byte is stored', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'rollover-switches.js'), 'utf8');
+  assert.match(source, /function writeAll\(fd, text\) \{[^}]*while \(done < bytes\.length\)/s);
+  assert.match(source, /made\.size !== Buffer\.byteLength\(content\)/);
+});
+
 test('arm: the confirm token, the ids and the kind are checked before anything is read or written', async () => {
   const tree = tempTree();
   try {

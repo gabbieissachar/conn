@@ -45,6 +45,17 @@ function removeFolder(dir) {
   } catch { /* gone or not empty: left for the stale rule */ }
 }
 
+// Writes every byte: a single write may store fewer than asked, so it goes on from where the last one stopped.
+function writeAll(fd, text) {
+  const bytes = Buffer.from(text);
+  let done = 0;
+  while (done < bytes.length) {
+    const wrote = fs.writeSync(fd, bytes, done, bytes.length - done);
+    if (!(wrote > 0)) throw new Error('write stored nothing');
+    done += wrote;
+  }
+}
+
 function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, identityOf = psIdentity, platform = process.platform, lockWaitMs = LOCK_WAIT_MS, hooks = {} } = {}) {
   const dir = path.join(toolRoot, 'state', 'workspace-organizer', 'rollover-switches');
   const ledgerFile = path.join(dir, 'ledger.json');
@@ -226,9 +237,12 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     try {
       const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW, 0o644);
       try {
-        (hooks.write || ((descriptor, text) => fs.writeSync(descriptor, text)))(fd, content);
+        (hooks.write || writeAll)(fd, content);
         fs.fsyncSync(fd);
         made = fs.fstatSync(fd);
+        // A write may store fewer bytes than asked without any error. A file that is short of its ids would read as live for fewer
+        // (or, with no ids at all, for every eligible session), so it never gets its real name.
+        if (made.size !== Buffer.byteLength(content)) throw refuse(500, 'write_failed', 'The file could not be written in full. Nothing was left behind.');
       } finally { fs.closeSync(fd); }
       if (hooks.beforeLink) hooks.beforeLink(home, name, temp);
       try {
