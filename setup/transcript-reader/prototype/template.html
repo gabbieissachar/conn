@@ -195,6 +195,8 @@
   .live { font-size: 11px; font-weight: 600; color: var(--muted); }
   .live.on { color: var(--ok); }
   .follow-note { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .kept-note { font-size: 12px; margin-top: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .kept-note .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
   .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
   .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
   .dock-inner { max-width: 27rem; margin: 0 auto; padding: 6px 12px 8px; }
@@ -552,7 +554,7 @@
     const twins = data.sessions.filter(x => x.pane && x.pane.label === s.pane.label && Boolean(x.reopened) === Boolean(s.reopened));
     return twins.length > 1 ? sessionName(s) : s.pane.label;
   }
-  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
   // which open again for reading (with their documents) until closed.
   function fillSessions(select) {
@@ -560,9 +562,10 @@
       const opt = $("option", null, sessionOption(s));
       opt.value = i; opt.selected = i === state.session; return opt;
     }));
-    if (!live.served || !(data.closed || []).length) return;
+    const offered = (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id)));
+    if (!live.served || !offered.length) return;
     const group = $("optgroup"); group.label = "Closed panes · open to read again";
-    group.append(...data.closed.map(c => {
+    group.append(...offered.map(c => {
       const opt = $("option", null, `${c.label} · ${fmtShortDay(c.at)}`);
       opt.value = "c:" + c.id; return opt;
     }));
@@ -575,7 +578,7 @@
     render(); showLatest();
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
-  async function changeList(command, sid) {
+  async function changeList(command, sid, stay = false) {
     const closed = (data.closed || []).find(c => c.id === sid), session = data.sessions.find(s => s.id === sid);
     const name = closed ? closed.label : session ? sessionName(session) : sid.slice(0, 8);
     link.listing = { text: command === "reopen" ? `Opening ${name}…` : `Closing ${name}…` }; renderLive();
@@ -584,7 +587,7 @@
       link.listing = null;
       await refreshData(true);
       const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
-      if (command === "reopen" && index >= 0) { state.session = index; state.view = "reader"; setAddress(); render(); showLatest(); }
+      if (command === "reopen" && index >= 0 && !stay) { state.session = index; state.view = "reader"; setAddress(); render(); showLatest(); }
       else { setAddress(); render(); }
     } catch (e) { link.listing = { text: `Could not ${command === "reopen" ? "open" : "close"} ${name}: ${e.message}` }; renderLive(); }
   }
@@ -625,6 +628,14 @@
     const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr} · ${where}` : `No Herdr pane found · ${where}`);
     const note = $("div", "follow-note"); note.id = "follow-note";
     controls.append(row, origin, summary, note);
+    if (session && session.kept) {
+      const closed = $("div", "kept-note", `Its Herdr pane has closed. Shown as it was at ${fmtTime(session.kept)}; Send is off. `);
+      const keepIt = $("button", "btn", "Keep it on the reader"); keepIt.hidden = !live.served;
+      keepIt.title = "List this closed pane's session again, until you press Close. Picking another session instead takes it off the reader; it stays under Closed panes.";
+      keepIt.addEventListener("click", () => changeList("reopen", session.id, true));
+      closed.append(keepIt);
+      controls.append(closed);
+    }
     renderLive();
 
     const main = document.getElementById("main"); main.replaceChildren();
@@ -1002,6 +1013,7 @@
     let reason = "";
     if (!live.served) reason = "Read-only copy: open the served page to send.";
     else if (link.panes === undefined) reason = "Connecting to the local server…";
+    else if (session.kept) reason = "Its Herdr pane has closed, so Send is off.";
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
     else if (pane.status === "blocked") reason = `${pane.label} is at a permission prompt or question. Answer it in Herdr first.`;
     else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
@@ -1339,15 +1351,26 @@
     const mark = s => s ? `${s.exchanges.length}:${(s.exchanges[s.exchanges.length - 1] || {}).reply_words || 0}` : "";
     const before = mark(data.sessions[state.session]);
     const anchor = readingAnchor();
+    const barHeight = document.getElementById("bar").offsetHeight;
     const first = data.sessions[state.session] ? firstTurn(data.sessions[state.session]) : null;
+    const reading = data.sessions[state.session];
+    const builtAt = data.generated;
     data = payload;
-    const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
+    let index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
+    if (index < 0 && reading) {
+      // The conversation on screen is no longer on the reading list (its Herdr pane closed).
+      // It stays on screen, as it was, with a notice and Send off, rather than moving the page to
+      // another conversation and the bar to another pane; it leaves when another one is picked.
+      index = Math.min(state.session, data.sessions.length);
+      data.sessions.splice(index, 0, { ...reading, kept: reading.kept || builtAt, reopened: false, pane: reading.pane && { ...reading.pane, live: false } });
+    }
     state.session = index >= 0 ? index : 0;
     if (index >= 0 && data.sessions[index].id !== sid) {  // a /clear gave the conversation a newer session
       state.open = moveTurns(first, sid, data.sessions[index], state.open, anchor);
       setAddress();
     }
     render();
+    if (anchor.top != null) anchor.top += document.getElementById("bar").offsetHeight - barHeight;  // a taller header must not cover the turn being read
     restoreAnchor(anchor);
     if (state.view === "reader" && !anchor.bottom && index >= 0 && mark(data.sessions[state.session]) !== before) { link.newer = true; placeNewReply(); }
   }
@@ -1388,7 +1411,16 @@
   });
 
   // ---------------------------------------------------------------- shell
+  // A conversation kept on screen after its pane closed leaves the list once another one is shown.
+  function pruneKept() {
+    const current = data.sessions[state.session];
+    const rest = data.sessions.filter(s => !s.kept || s === current);
+    if (rest.length === data.sessions.length) return;
+    data.sessions = rest;
+    state.session = Math.max(0, rest.indexOf(current));
+  }
   function render() {
+    pruneKept();
     document.body.classList.toggle("wide", state.view === "fleet");
     document.body.classList.toggle("docmode", state.view === "doc");
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
