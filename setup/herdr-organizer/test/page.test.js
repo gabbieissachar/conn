@@ -354,9 +354,10 @@ test('rollover card: one block per home, the reasons Arm is not offered, and wha
   const out = rolloverCard();
   assert.match(out, /watcher running/);
   assert.match(out, /watcher stopped/);
+  assert.match(out, /no watcher right now/, 'a home with no lock is not called broken: a Claude-run firstmate starts its watcher between turns (R7-4)');
   assert.match(out, /made by this page/);
   assert.match(out, /has this page&#39;s header, no record: remove it by hand/);
-  assert.match(out, /No running watcher reads these files, so they do nothing now/);
+  assert.match(out, /No watcher is running in this home right now, so nothing reads these files at this moment\. A firstmate run by Claude starts one at the end of each turn/);
   assert.match(out, /This home folder is not there/);
   assert.match(out, /does not create one/);
   assert.match(out, /8 other firstmate homes on this computer are not listed here, and Stop does not cover them/);
@@ -387,7 +388,7 @@ test('rollover card: Arm needs a ticked id and says why it is not offered', () =
   assert.equal(rolloverToken('ha02f1cb9', 'crew', ['crew-b', 'crew-a']), 'rollover-arm:ha02f1cb9:crew:crew-a,crew-b', 'the token the server expects');
   // each condition that blocks Arm
   const block = (changes, kind = 'crew') => rolloverArmBlock({ ...home, ...changes }, kind);
-  assert.match(block({ watcher: 'beat_old' }), /No watcher runs/);
+  assert.match(block({ watcher: 'beat_old' }), /No watcher runs in this home right now\. A firstmate run by Claude starts one at the end of each turn/);
   assert.match(block({ config: 'missing' }), /cannot be written to/);
   assert.match(block({ files: home.files.map(file => (file.name === 'rollover-crew-live' ? { ...file, capability: 'not_read' } : file)) }), /does not read this file/);
   assert.match(block({ files: home.files.map(file => (file.name === 'rollover-off' ? { ...file, state: 'symlink' } : file)) }), /off file is present/);

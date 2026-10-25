@@ -1684,9 +1684,11 @@ created: 2026-09-10
     }, true);
 
     // ---- Context rollover: firstmate's rollover switches in each registered home (shown on the Context tab) ----
+    // A firstmate run from Claude keeps its watcher only between turns, so a moment with no watcher is normal there.
+    const ROLLOVER_NO_WATCHER = 'No watcher runs in this home right now. A firstmate run by Claude starts one at the end of each turn, so try again shortly.';
     const ROLLOVER_WATCHER = {
       running: ['watcher running', 'good'],
-      no_lock: ['no watcher', 'warn'],
+      no_lock: ['no watcher right now', 'warn'],
       stale_pid: ['watcher stopped', 'warn'],
       other_home: ['lock names another home', 'bad'],
       identity_mismatch: ['lock names another process', 'bad'],
@@ -1722,7 +1724,7 @@ created: 2026-09-10
     const rolloverArmBlock = (home, kind) => {
       const { file } = ROLLOVER_KINDS[kind];
       if (home.status !== 'ok' || home.config !== 'ok') return 'This home cannot be written to.';
-      if (home.watcher !== 'running') return 'No watcher runs in this home, so nothing would read the file.';
+      if (home.watcher !== 'running') return ROLLOVER_NO_WATCHER;
       if (rolloverFile(home, file).capability !== 'read') return 'This home\'s firstmate does not read this file.';
       if (rolloverFile(home, 'rollover-off').state !== 'absent') return 'The off file is present, so a live file would do nothing. Remove the off file first.';
       if (rolloverFile(home, file).state !== 'absent') return `${file} already exists. The page never changes an existing file.`;
@@ -1774,7 +1776,7 @@ created: 2026-09-10
         : `<li class="ro-no">${escapeHtml(item.id)} - ${escapeHtml(ROLLOVER_REASON[item.reason] || item.reason)}</li>`)).join('');
       const block = rolloverArmBlock(home, kind);
       const asking = rollover.preview && rollover.preview.loading;
-      const checkBlock = home.watcher !== 'running' ? 'No watcher runs in this home, so there is no firstmate code to ask.' : !picked.size ? 'Tick at least one id.' : '';
+      const checkBlock = home.watcher !== 'running' ? ROLLOVER_NO_WATCHER : !picked.size ? 'Tick at least one id.' : '';
       const check = `<button type="button" data-ro-preview="${kind}" data-home="${escapeHtml(home.id)}" ${checkBlock || asking ? 'disabled' : ''} title="${escapeHtml(checkBlock || 'Asks this home\'s own firstmate who would roll for the ticked ids. Read only.')}">Check who would roll</button>`;
       const arm = `<div class="ro-arm">${check}<button type="button" class="primary-btn" data-ro-arm="${kind}" data-home="${escapeHtml(home.id)}" ${block || rollover.busy ? 'disabled' : ''} title="${escapeHtml(block || `Asks to create ${ROLLOVER_KINDS[kind].file} listing the ticked ids.`)}">Arm ${escapeHtml(ROLLOVER_KINDS[kind].noun)}${picked.size ? ` (${picked.size})` : ''}</button>${block ? `<span class="ro-why">${escapeHtml(block)}</span>` : ''}</div>${rolloverPreviewBox(home, kind)}`;
       return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${rows}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}${arm}</details>`;
@@ -1798,7 +1800,7 @@ created: 2026-09-10
     };
     const ROLLOVER_STOP_RESULT = {
       created: 'stopped: the off file was created',
-      created_no_watcher: 'the off file was created; no watcher runs there now, so it protects only once one starts',
+      created_no_watcher: 'the off file was created; no watcher runs there right now, and the next one to start will read it',
       present_by_page: 'already stopped by this page',
       present_other: 'already stopped by a file of your own, left alone',
       no_config: 'no config folder, nothing written',
@@ -1820,7 +1822,7 @@ created: 2026-09-10
       const effective = home.effective;
       const sentences = effective
         ? `<ul class="ro-sentences">${[effective.second_mates, effective.crew, effective.primary].map(text => (text ? `<li>${escapeHtml(text)}</li>` : '<li class="none">not read by this home\'s firstmate</li>')).join('')}</ul>`
-        : `<div class="tab-meta">No running watcher reads these files, so they do nothing now.</div>`;
+        : `<div class="tab-meta">No watcher is running in this home right now, so nothing reads these files at this moment. A firstmate run by Claude starts one at the end of each turn.</div>`;
       const log = Number.isFinite(home.roller_log_age_seconds) ? `<div class="tab-meta">Roller log last changed ${escapeHtml(contextAge(home.roller_log_age_seconds))}. It changes only when a verdict changes.</div>` : '';
       return `<div class="ro-home">${head}${sentences}${rolloverFilesTable(home)}${rolloverIdList(home, 'second-mates')}${rolloverIdList(home, 'crew')}${log}</div>`;
     };
@@ -1840,7 +1842,7 @@ created: 2026-09-10
       return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill warn">changes files</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
     };
     const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, stopping: false, result: null, preview: null };
-    const ROLLOVER_REFUSAL = { exists: 'That file already exists, so nothing was written.', off_present: 'The off file is present, so nothing was written.', no_watcher: 'No watcher runs in that home, so nothing was written.' };
+    const ROLLOVER_REFUSAL = { exists: 'That file already exists, so nothing was written.', off_present: 'The off file is present, so nothing was written.', no_watcher: ROLLOVER_NO_WATCHER };
     // One change at a time: the server says what it did or why it refused, and the card is read again either way.
     const runRollover = async (action, params, success) => {
       if (rollover.busy) return;
