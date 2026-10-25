@@ -582,6 +582,7 @@
     select.append(group);
   }
   function pickSession(value) {
+    link.listing = null;  // a notice about the conversation before (see the load code) goes with it
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
     state.session = Number(value);
     setAddress();
@@ -602,6 +603,12 @@
     } catch (e) { link.listing = { text: `Could not ${command === "reopen" ? "open" : "close"} ${name}: ${e.message}` }; renderLive(); }
   }
   function renderReader() {
+    if (link.opening) {  // a reload is listing the closed pane's conversation it was on again (see the load code)
+      document.getElementById("controls").replaceChildren($("div", "kept-note", `Its Herdr pane has closed. Opening ${link.opening.label} again…`));
+      document.getElementById("main").replaceChildren();
+      renderLive();
+      return;
+    }
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
     const controls = document.getElementById("controls"); controls.replaceChildren();
@@ -999,7 +1006,7 @@
   }
   function renderDock() {
     const bar = document.getElementById("dock"), main = document.getElementById("main");
-    const session = dockSession();
+    const session = link.opening ? null : dockSession();  // no bar until the conversation being opened again is back
     bar.hidden = !session;
     if (!session) { main.style.paddingBottom = ""; placeNewReply(); return; }
     adopt(session);
@@ -1509,6 +1516,12 @@
   // With no address (the answer sheet's "← Reader", or a link without #s=), this tab's
   // last conversation wins over the list's order, which changes whenever a session writes.
   const fromSaved = !wanted && saved && saved.session ? data.sessions.findIndex(s => (s.ids || [s.id]).includes(saved.session)) : -1;
+  // A conversation kept on screen after its pane closed is not on the list, so a reload (new page
+  // code, a restarted server) or its address would land on another one, with the bar aimed at that
+  // pane. A closed pane's conversation is opened again instead, as "Keep it on the reader" does.
+  const lost = wanted && fromHash < 0 ? wanted : !wanted && saved && saved.session && fromSaved < 0 ? saved.session : null;
+  link.opening = lost && live.served ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
+  if (lost && !link.opening) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
   state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : data.chosen ? 0 : biggest;
   if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
   // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
@@ -1526,9 +1539,28 @@
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
+  if (link.opening) { render(); reopenLost(link.opening, saved); return; }
   setAddress();
   render();
   if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
+
+  async function reopenLost(closed, saved) {
+    try {
+      await live.changeList("reopen", closed.id);
+      await refreshData(true);
+    } catch (e) {
+      link.listing = { text: `Could not open ${closed.label} again: ${e.message}. This is another conversation.` };
+    }
+    link.opening = null;
+    const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(closed.id));
+    if (index >= 0) state.session = index;
+    const opened = data.sessions[state.session];
+    const same = index >= 0 && saved && (opened.ids || [opened.id]).includes(saved.session);
+    if (same) state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
+    setAddress();
+    render();
+    if (same && saved.anchor) restoreAnchor(saved.anchor); else showLatest();
+  }
 })();
 </script>
 </body>
