@@ -27,7 +27,7 @@
 // over 12 hours old, so an old message never lands in a conversation that moved on, and one whose
 // time is more than 10 minutes ahead of the laptop's clock (the page's clock is wrong) is refused.
 // Receipts go after 7 days. The ids handled are also kept on the laptop only (beside the folder, in
-// .drain-handled-<folder>.json, for 2 days), so deleting a receipt in the bucket cannot make a copied
+// .drain-handled-v2-<folder>.json: each id until it can no longer be fresh, at least 2 days), so deleting a receipt in the bucket cannot make a copied
 // request run again.
 //
 // HOSTED_READER_HERDR names the Herdr binary (default `herdr`); tests give it a fake. With no
@@ -65,9 +65,10 @@ async function listedIds(folder, key) {
   } catch { return []; }
 }
 
-// The ids already handled, on this laptop only: beside the folder, never in it.
+// The ids already handled, on this laptop only: beside the folder, never in it. The v2 in the name is the
+// format (an id maps to the time it is kept until); an earlier format never meant that, so it is not read.
 function ledger(folder, at) {
-  const file = path.join(path.dirname(folder), `.drain-handled-${path.basename(folder)}.json`);
+  const file = path.join(path.dirname(folder), `.drain-handled-v2-${path.basename(folder)}.json`);
   let handled = {};
   try { handled = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { handled = {}; }
   // Each id is kept until the time it was recorded for (see add), then forgotten.

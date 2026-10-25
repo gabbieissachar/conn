@@ -545,7 +545,9 @@ class DryRun:
         index_counts: dict[str, int] = {}
         index_text = json.dumps(redact.redact(bucket_index, index_counts), ensure_ascii=False, separators=(",", ":"))
         content = stamp_of(encode({**bucket_index, "as_of": 0, "since": 0}))
-        heartbeat = bool(todo) or self.new_key or self.state.get("index") != content \
+        # A shell page that changed (new page code) goes to the bucket now, with the index sealed again, not at the next heartbeat.
+        shell_moved = any(not (self.target / name).is_file() or (self.target / name).read_bytes() != (self.out / name).read_bytes() for name in ("index.html", "sheet.html"))
+        heartbeat = bool(todo) or self.new_key or self.state.get("index") != content or shell_moved \
             or time.time() - (self.state.get("index_at") or 0) >= HEARTBEAT or not (self.target / "index.json.enc").is_file()
         if not heartbeat:
             removed = self.prune(set(objects))

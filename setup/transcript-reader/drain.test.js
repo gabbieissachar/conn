@@ -270,7 +270,7 @@ test('a request refused for its time is on the laptop\'s record too, so it is no
   assert.equal(lab.herdr.calls.length, 0);
   assert.deepEqual(lab.queued(), []);
   // The record is kept until the request could no longer be fresh, not just for two days.
-  const ledgerFile = path.join(lab.base, '.drain-handled-bucket.json');
+  const ledgerFile = path.join(lab.base, '.drain-handled-v2-bucket.json');
   const until = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'))[Q1];
   assert.ok(until >= Date.now() + 3600 * 1000 + TTL_MS, 'at least until its own time plus 12 hours');
 });
@@ -288,8 +288,8 @@ test('deleting a receipt does not make a copied request run again: the laptop ke
   assert.deepEqual(await lab.drain(), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
   assert.equal(lab.herdr.prompts().length, 1);
   assert.deepEqual(lab.queued(), [], 'the copy is dropped');
-  assert.ok(fs.existsSync(path.join(lab.base, '.drain-handled-bucket.json')), 'the record is beside the bucket, not in it');
-  assert.equal(fs.existsSync(path.join(lab.folder, '.drain-handled-bucket.json')), false);
+  assert.ok(fs.existsSync(path.join(lab.base, '.drain-handled-v2-bucket.json')), 'the record is beside the bucket, not in it');
+  assert.equal(fs.existsSync(path.join(lab.folder, '.drain-handled-v2-bucket.json')), false);
 });
 
 test('sealed: a plaintext request in a sealed bucket is never read, nor a sealed one in a plain copy', async (t) => {

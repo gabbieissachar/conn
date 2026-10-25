@@ -551,6 +551,13 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(started.call_count, 0)
         self.assertEqual(self.sealed_times(), before)
 
+    def test_a_changed_shell_page_reaches_the_bucket_at_once(self):
+        self.dry_run()
+        page = self.lab.out / "index.html"
+        page.write_bytes(page.read_bytes() + b"<!-- new page code -->")
+        self.dry_run()
+        self.assertEqual((self.target / "index.html").read_bytes(), page.read_bytes())
+
     def test_a_change_seals_its_object_and_the_index_alone(self):
         self.dry_run()
         before = self.sealed_times()
