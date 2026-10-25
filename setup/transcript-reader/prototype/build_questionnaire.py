@@ -334,6 +334,35 @@ def sent_answers(text: str) -> dict[str, str]:
     return {key: value.strip() for key, value in KEYED_ANSWER.findall(text)}
 
 
+def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = None) -> list[dict]:
+    """The questionnaires of one pane's sessions (a /clear chain), oldest log first, each with the
+    keyed answers you sent after it. A pane cleared with /clear answers in its newest session, as in
+    the reader. The hosted copy (sync.py) builds each conversation's sheet with this too."""
+    seen = set() if seen is None else seen
+    head = chain[-1].stem
+    found = []
+    for member in chain:
+        if member in seen:
+            continue
+        seen.add(member)
+        exchanges = builder.parsed_log(member, parsed)["exchanges"]
+        if member.stem == head:
+            builder.mark_compacted_away(exchanges)
+        for index, exchange in enumerate(exchanges):
+            questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
+            if not questionnaire:
+                continue
+            answer = next((later for later in exchanges[index + 1:] if later["source"] == "captain"), None)
+            sent = sent_answers(answer["input"]) if answer else {}
+            found.append({
+                **questionnaire, "session": head, "at": exchange["reply_at"] or exchange["at"],
+                "reply": exchange["reply"], "sent": sent, "sent_at": answer["at"] if answer and sent else None,
+                **({"from_session": member.stem, "log": str(member)} if member.stem != head else {}),
+                **({"compacted_away": True, "log": str(member)} if exchange.get("compacted_away") else {}),
+            })
+    return found
+
+
 def collect(session_names: list[str]) -> list[dict]:
     labels = builder.pane_labels([], OUT / "pane-labels.json")  # refreshes the cache; read below
     try:
@@ -343,30 +372,8 @@ def collect(session_names: list[str]) -> list[dict]:
     found, seen = [], set()
     for name in session_names:
         path = builder.find_session_file(name)
-        if not path:
-            continue
-        # A pane cleared with /clear answers in its newest session, as in the reader.
-        chain = builder.session_chain(path)
-        head = chain[-1].stem
-        for member in chain:
-            if member in seen:
-                continue
-            seen.add(member)
-            exchanges = builder.parsed_log(member, OUT / "parsed")["exchanges"]
-            if member.stem == head:
-                builder.mark_compacted_away(exchanges)
-            for index, exchange in enumerate(exchanges):
-                questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
-                if not questionnaire:
-                    continue
-                answer = next((later for later in exchanges[index + 1:] if later["source"] == "captain"), None)
-                sent = sent_answers(answer["input"]) if answer else {}
-                found.append({
-                    **questionnaire, "session": head, "pane": cache.get(head), "at": exchange["reply_at"] or exchange["at"],
-                    "reply": exchange["reply"], "sent": sent, "sent_at": answer["at"] if answer and sent else None,
-                    **({"from_session": member.stem, "log": str(member)} if member.stem != head else {}),
-                    **({"compacted_away": True, "log": str(member)} if exchange.get("compacted_away") else {}),
-                })
+        if path:
+            found += [{**q, "pane": cache.get(q["session"])} for q in chain_questionnaires(builder.session_chain(path), OUT / "parsed", seen)]
     found.sort(key=lambda q: q["at"] or 0, reverse=True)
     return found
 

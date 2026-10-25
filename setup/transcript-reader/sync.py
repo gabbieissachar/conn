@@ -21,8 +21,8 @@ last 90 days: redacts every text (redact.py; the counts go to out/hosted/redacti
 the text), gzips and seals each changed object with AES-256-GCM under a key derived from the
 passphrase (upload.js, prototype/seal.js), deletes what fell out of the 90 days, and seals the
 index at least every 5 minutes, so the shell's "As of" stays fresh while the laptop is awake.
-The bucket holds index.html (the shell, no transcript), k/params.json (the salt, no secret),
-and index.json.enc, s/*.enc, d/*.enc, f/*.enc. A passphrase that does not open the bucket stops
+The bucket holds index.html and sheet.html (the shells, no transcript), k/params.json (the
+salt, no secret), and index.json.enc, s/*.enc, d/*.enc, f/*.enc, a/*.enc. A passphrase that does not open the bucket stops
 the run, unless --new-passphrase says to seal everything again under it.
 
 Scope: by default every Claude Code session log whose working directory lies inside a
@@ -32,12 +32,15 @@ the timeline starts at the earliest of those sessions, as on the local page.
 
 Output, in out/hosted/ (gitignored with the rest of out/; it embeds private transcripts):
   index.html           the shell: the reader page with no transcript in it, which loads the rest
+  sheet.html           the answer sheet's shell, the same way (the local answer sheet's page)
   index.json           when it was built (as_of), the conversations (home, ids, the Herdr pane and
                        its state as of this build, last activity, asks waiting on you since your
                        last message, object, stamp), the documents and the fleet weeks
   s/<id>.json          one conversation (a pane's sessions across /clear) under its newest id,
                        exactly as the local page's payload holds it
   d/<id>.json          one markdown document a message or reply names, as on disk at the build
+  a/<id>.json          the questionnaires of one conversation (replies asking for keyed answers),
+                       as the local answer sheet reads them; only for a conversation that has one
   f/<yyyy>-W<ww>.json  one week (UTC) of fleet records: status lines, steering messages, your
                        messages and the replies to you, linked to the turns that handled them
   manifest.json        what each object was built from (never served)
@@ -81,6 +84,7 @@ sys.path.insert(0, str(HERE / "prototype"))
 import build_prototype as builder  # noqa: E402
 
 sys.path.insert(0, str(HERE))
+import build_questionnaire as questionnaires  # noqa: E402
 import reader  # noqa: E402
 import redact  # noqa: E402
 
@@ -340,6 +344,14 @@ class Build:
             events.append(event)
         turns = [[e["at"], e["source"], [e.get("signal_task")] + [notice["signal_task"] for notice in e["notices"]]] for e in exchanges]
         builder.mark_sheets([session])
+        # The answer sheet's questionnaires, as the local sheet collects them (it re-reads the parsed logs).
+        found_sheets = questionnaires.chain_questionnaires(chain, self.parsed)
+        sheet = None
+        if found_sheets:
+            sheet_rel = f"a/{cid}.json"
+            before_sheet = (((self.old.get("conversations") or {}).get(cid) or {}).get("sheet") or {}).get("stamp")
+            sheet = {"object": sheet_rel, "stamp": self.put(sheet_rel, {"questionnaires": found_sheets}, before_sheet),
+                     "list": [{"at": q["at"], "open": len(q["cards"]), "title": q["title"]} for q in found_sheets]}
         documents = builder.attach_documents([session])
         rel = f"s/{cid}.json"
         before = ((self.old.get("conversations") or {}).get(cid) or {}).get("stamp")
@@ -354,7 +366,7 @@ class Build:
             needs=sum(1 for e in exchanges[mine:] if e["verdict"] == "needs-you"),
         )
         return {"members": list(versions), "versions": versions, "rules": self.rules, "sources": found, "inputs": inputs,
-                "object": rel, "stamp": stamp, "entry": entry,
+                "object": rel, "stamp": stamp, "entry": entry, "sheet": sheet,
                 "events": events, "turns": turns, "documents": sorted(documents), "found": documents}
 
     def documents(self, conversations: list[tuple[str, dict]]) -> dict[str, dict]:
@@ -428,6 +440,8 @@ class Build:
         weeks = self.fleet(conversations, since)
         page, template = builder.fill_template(builder.TEMPLATE, "null", "hosted")
         shell_stamp = self.put_page(page, self.old.get("shell"))
+        sheet_page, sheet_template = builder.fill_template(questionnaires.TEMPLATE, "null", "hosted")
+        sheet_stamp = self.put_page(sheet_page, self.old.get("sheet_shell"), "sheet.html")
         ids = [cid for cid, _ in conversations]
         labels = builder.pane_labels(ids, self.out / "pane-labels.json", live)
         reopened = set(builder.read_ids(REOPENED))
@@ -439,37 +453,39 @@ class Build:
         # Newest activity first, as the local page lists its chosen sessions.
         entries.sort(key=lambda entry: entry["order"], reverse=True)
         index = {
-            "version": VERSION, "as_of": self.started, "since": since, "template": template,
+            "version": VERSION, "as_of": self.started, "since": since, "template": template, "sheet_template": sheet_template,
             "homes": [home["id"] for home in self.homes],
             "summaries": [summary for summary in (builder.home_summary(home) for home in self.homes) if summary],
             "conversations": entries,
             "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp")}
                           for doc_id, record in documents.items() if not record.get("gone")},
             "weeks": weeks,
+            "sheets": {cid: record["sheet"] for cid, record in conversations if record.get("sheet")},
         }
         replace(self.out / "index.json", encode(index))
         kept = {record["object"] for _, record in conversations} | {record["object"] for record in weeks.values()} \
+            | {record["sheet"]["object"] for _, record in conversations if record.get("sheet")} \
             | {record["object"] for record in documents.values() if not record.get("gone")}
         removed = self.sweep(kept)
-        manifest = {"version": VERSION, "built": self.started, "shell": shell_stamp,
+        manifest = {"version": VERSION, "built": self.started, "shell": shell_stamp, "sheet_shell": sheet_stamp,
                     "conversations": dict(conversations), "documents": documents, "weeks": weeks}
         replace(self.out / "manifest.json", encode(manifest))
         print(f"Built {len(conversations)} conversations ({len(self.rebuilt)} parsed again), {len(documents)} documents, "
               f"{len(weeks)} fleet weeks in {time.time() - self.started:.1f}s; wrote {len(self.wrote)} objects, removed {removed}")
         return 0
 
-    def put_page(self, page: str, before: str | None) -> str:
+    def put_page(self, page: str, before: str | None, name: str = "index.html") -> str:
         data = page.encode("utf-8")
         stamp = stamp_of(data)
-        if stamp != before or not (self.out / "index.html").is_file():
-            replace(self.out / "index.html", data)
-            self.wrote.append("index.html")
+        if stamp != before or not (self.out / name).is_file():
+            replace(self.out / name, data)
+            self.wrote.append(name)
         return stamp
 
     def sweep(self, kept: set[str]) -> int:
         """Delete objects no conversation, document or week uses any more, and what a stopped build left half written."""
         removed = 0
-        for folder in ("s", "d", "f"):
+        for folder in ("s", "d", "f", "a"):
             for path in (self.out / folder).glob("*"):
                 if f"{folder}/{path.name}" not in kept and path.is_file():
                     path.unlink()
@@ -504,8 +520,9 @@ class DryRun:
         named = {doc for entry in conversations for doc in (manifest["conversations"].get(entry["id"]) or {}).get("documents", [])}
         documents = {doc_id: meta for doc_id, meta in index["documents"].items() if doc_id in named}
         weeks = {key: meta for key, meta in index["weeks"].items() if meta["to"] >= cutoff}
-        objects = {item["object"]: item["stamp"] for item in [*conversations, *documents.values(), *weeks.values()]}
-        return {**index, "conversations": conversations, "documents": documents, "weeks": weeks}, objects
+        sheets = {cid: meta for cid, meta in (index.get("sheets") or {}).items() if any(entry["id"] == cid for entry in conversations)}
+        objects = {item["object"]: item["stamp"] for item in [*conversations, *documents.values(), *weeks.values(), *sheets.values()]}
+        return {**index, "conversations": conversations, "documents": documents, "weeks": weeks, "sheets": sheets}, objects
 
     def run(self) -> int:
         index = json.loads((self.out / "index.json").read_text(encoding="utf-8"))
@@ -568,7 +585,7 @@ class DryRun:
     def prune(self, kept: set[str]) -> int:
         """Delete sealed objects the bucket no longer names, and what a stopped run left half written."""
         removed = 0
-        for folder in ("s", "d", "f"):
+        for folder in ("s", "d", "f", "a"):
             for path in (self.target / folder).glob("*"):
                 rel = f"{folder}/{path.name}"
                 if path.is_file() and (rel.endswith(".partial") or (rel.endswith(".json.enc") and rel[:-4] not in kept)):
@@ -577,10 +594,11 @@ class DryRun:
         return removed
 
     def copy_shell(self) -> None:
-        page = (self.out / "index.html").read_bytes()
-        shell = self.target / "index.html"
-        if not shell.is_file() or shell.read_bytes() != page:
-            replace(shell, page)
+        for name in ("index.html", "sheet.html"):
+            page = (self.out / name).read_bytes()
+            shell = self.target / name
+            if not shell.is_file() or shell.read_bytes() != page:
+                replace(shell, page)
 
     def log_redactions(self) -> None:
         """What the redaction took out of the objects now in the bucket: counts by kind, never the text."""
@@ -595,7 +613,8 @@ class DryRun:
 def wipe(target: Path, out: Path) -> int:
     """Empty <target> of what the dry run writes there (and forget what was sealed); nothing else is touched."""
     removed = 0
-    for pattern in ("index.html", "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "*/.*.partial", ".*.partial"):
+    for pattern in ("index.html", "sheet.html", "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
+                    "*/.*.partial", ".*.partial"):
         for path in target.glob(pattern):
             if path.is_file():
                 path.unlink()

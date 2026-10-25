@@ -50,12 +50,12 @@ const { createGuard } = require('../herdr-organizer/guard');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html', 'bucket/index.html']);
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {
-  hosted: { re: /^(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
-  bucket: { re: /^(?:(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
+  hosted: { re: /^(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
+  bucket: { re: /^(?:(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };
 const TOKEN_HEADER = 'x-transcript-reader-token';
 // Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell

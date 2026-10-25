@@ -273,8 +273,10 @@ test('pages: a spelling the file system folds (Unicode form and case) or a symli
 // The hosted copy sync.py writes into out/hosted/: its shell, an index, objects, and the manifest beside them.
 function writeHosted(outDir) {
   const hosted = path.join(outDir, 'hosted');
-  for (const folder of ['s', 'd', 'f']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
+  for (const folder of ['s', 'd', 'f', 'a']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
   fs.writeFileSync(path.join(hosted, 'index.html'), builtPage('hosted shell'));
+  fs.writeFileSync(path.join(hosted, 'sheet.html'), builtPage('hosted sheet'));
+  fs.writeFileSync(path.join(hosted, 'a', A + '.json'), JSON.stringify({ questionnaires: [] }));
   fs.writeFileSync(path.join(hosted, 'index.json'), JSON.stringify({ as_of: 1, conversations: [{ id: A, object: `s/${A}.json` }] }));
   fs.writeFileSync(path.join(hosted, 's', A + '.json'), JSON.stringify({ id: A, exchanges: [] }));
   fs.writeFileSync(path.join(hosted, 'd', 'abc123.json'), JSON.stringify({ id: 'abc123', text: '# Notes' }));
@@ -291,6 +293,9 @@ test('hosted: the shell opens in a tab like a page, with the token in its tag, a
     const shell = await t.open('/setup/transcript-reader/out/hosted/index.html');
     assert.equal(shell.status, 200);
     assert.equal(tokenIn(shell.raw), t.token);
+    const sheet = await t.open('/setup/transcript-reader/out/hosted/sheet.html');
+    assert.equal(sheet.status, 200);
+    assert.equal(tokenIn(sheet.raw), t.token);
     assert.equal(shell.headers['content-security-policy'], "frame-ancestors 'none'");
     assert.equal(shell.headers['x-frame-options'], 'DENY');
     assert.equal(Object.keys(shell.headers).some((name) => name.startsWith('access-control')), false);
@@ -304,7 +309,7 @@ test('hosted: the shell\'s own token-bearing fetch gets each object; without the
   try {
     writeHosted(t.tree.outDir);
     const fetchHeaders = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
-    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json']) {
+    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json', `a/${A}.json`]) {
       const urlPath = '/setup/transcript-reader/out/hosted/' + name;
       const got = await t.request({ path: urlPath, headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
       assert.equal(got.status, 200, name);
@@ -316,7 +321,7 @@ test('hosted: the shell\'s own token-bearing fetch gets each object; without the
         { 'Sec-Fetch-Site': 'cross-site', [TOKEN_HEADER]: t.token }, { Origin: 'http://evil.example', [TOKEN_HEADER]: t.token }]) {
         const refused = await t.request({ path: urlPath, headers });
         assert.equal(refused.status, 403, name + ' ' + JSON.stringify(headers));
-        assert.doesNotMatch(refused.raw, /exchanges|Notes|events|as_of/);
+        assert.doesNotMatch(refused.raw, /exchanges|Notes|events|as_of|questionnaires/);
       }
     }
     const missing = await t.request({ path: '/setup/transcript-reader/out/hosted/s/' + B + '.json', headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });

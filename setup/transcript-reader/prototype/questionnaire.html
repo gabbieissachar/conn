@@ -5,6 +5,8 @@
   page lives in the gitignored out/ folder. No remote requests or fonts; served by the
   reader's own server (setup/transcript-reader/serve.sh), it calls only that local server
   (live.js) to send the answers.
+  The hosted copy's sheet (sheet.html, sync.py) is this page with no payload: it loads its folder's
+  index.json and then one conversation's questionnaires at a time (hosted.js), and only copies.
 -->
 <html lang="en">
 <head>
@@ -89,6 +91,9 @@
   .dock button:disabled { opacity: .45; cursor: default; }
   .dock button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; }
+  [hidden] { display: none !important; }
+  /* A sealed copy asks for its passphrase first; the picker and the answer line wait for it. */
+  .locked .pick, .locked .meta, .locked .dock { display: none; }
 </style>
 </head>
 <body>
@@ -113,8 +118,12 @@
 <script>
 (() => {
   "use strict";
+  // The hosted copy's sheet: no payload; the list comes from index.json and each conversation's
+  // questionnaires load when one is picked. It copies the answer line and cannot send it.
+  const HOSTED = "__MODE__" === "hosted";
 /*__LIVE__*/
-  let data = JSON.parse(document.getElementById("payload").textContent);
+/*__HOSTED__*/
+  let data = HOSTED ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
   function inline(text) {
@@ -270,6 +279,7 @@
     const q = qs[state.q], button = document.getElementById("send"), why = document.getElementById("why");
     const pane = q && link.pane ? link.pane[q.session] : null;
     let reason = "";
+    if (HOSTED) { button.hidden = true; why.textContent = link.result ? link.result.text : "Copy the line, then paste it into the session's Herdr pane."; return; }
     if (!live.served) reason = "Read-only copy: open the served page to send.";
     else if (link.pane === undefined) reason = "Connecting to the local server…";
     else if (!pane) reason = "No live Herdr pane runs this session, so Send is off. Copy still works.";
@@ -291,6 +301,7 @@
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
     if (!q) { main.append($("div", "empty", "No questionnaire found in the listed sessions.")); return; }
+    if (!q.cards) { main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
     const meta = document.getElementById("meta");
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
     meta.textContent = `${where} · asked ${fmtWhen(q.at)}`;
@@ -317,8 +328,31 @@
 
   const pick = document.getElementById("pick");
   function fillPick() {
-    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards.length} open`, i)));
+    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards ? q.cards.length : q.open} open`, i)));
     pick.value = String(state.q);
+  }
+  // ---------------------------------------------------------------- hosted copy
+  // The list from the index: one entry per questionnaire, its cards loaded with its conversation's sheet.
+  function hostedList(index, before = []) {
+    const panes = new Map((index.conversations || []).map(c => [c.id, c.pane || null]));
+    const kept = new Map(before.filter(q => q.cards).map(q => [storeKey(q), q]));
+    const list = [];
+    for (const [session, sheet] of Object.entries(index.sheets || {})) {
+      for (const item of sheet.list) {
+        const old = kept.get(`tr-q:${session}:${Math.round(item.at || 0)}`);
+        list.push(old && old.sheet.stamp === sheet.stamp ? { ...old, pane: panes.get(session) } : { session, at: item.at, open: item.open, title: item.title, pane: panes.get(session), cards: null, sheet });
+      }
+    }
+    return list.sort((a, b) => (b.at || 0) - (a.at || 0));
+  }
+  async function openSheet(q) {
+    const found = ((await hosted.object(q.sheet)).questionnaires || []).find(x => Math.round(x.at || 0) === Math.round(q.at || 0));
+    if (!found) throw new Error("this questionnaire is not in its conversation's sheet any more");
+    Object.assign(q, found, { pane: q.pane, sheet: q.sheet });
+  }
+  if (HOSTED) {
+    document.querySelector(".title a").href = "index.html";
+    document.getElementById("send").hidden = true;
   }
   fillPick();
   pick.addEventListener("change", () => {
@@ -337,9 +371,34 @@
   });
   // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
   const wanted = decodeURIComponent((location.hash.match(/^#q=(.+)$/) || [])[1] || "");
-  const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
-  if (linked >= 0) { state.q = linked; pick.value = String(linked); }
-  render();
+  function openLinked() {
+    const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
+    if (linked >= 0) { state.q = linked; pick.value = String(linked); }
+    render();
+  }
+  if (!HOSTED) openLinked();
+  else {
+    // A sealed copy is opened first (the reader's shell may have remembered the key on this device).
+    hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
+      data = { generated: index.as_of || 0, index }; qs = hostedList(index);
+      fillPick(); openLinked();
+      // Every 30 seconds while visible: a newer index brings the new list, and the open questionnaire
+      // again when its sheet changed. New page code reloads it.
+      hosted.poll(async () => {
+        const next = await hosted.index();
+        if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.reload(); return; }
+        if ((next.as_of || 0) <= data.generated) return;
+        const shown = qs[state.q], before = JSON.stringify(shown);
+        data = { generated: next.as_of || 0, index: next }; qs = hostedList(next, qs);
+        Object.keys(answers).forEach(k => delete answers[k]);
+        const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
+        state.q = index >= 0 ? index : 0;
+        fillPick();
+        if (qs[state.q] && !qs[state.q].cards) await openSheet(qs[state.q]);
+        if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); } else renderDock();
+      });
+    }, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load the answer sheets: ${e.message}`)));
+  }
   // Served, the sheet takes in a rebuild where it is: the open questionnaire is redrawn
   // only when it changed, at the same scroll position, and never while a text box is
   // being typed in. Only new page code reloads it.
@@ -358,7 +417,7 @@
     if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); }
     else renderDock();
   }
-  live.poll(async () => {
+  if (!HOSTED) live.poll(async () => {
     const s = await live.state(false);
     link.pane = s.panes || {}; renderSend();
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";

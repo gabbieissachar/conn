@@ -23,8 +23,8 @@ const readline = require('readline');
 const zlib = require('zlib');
 const seal = require('./prototype/seal.js');
 
-// The paths sync.py writes: the index, and conversation, document and week objects.
-const OBJECT_RE = /^(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json$/;
+// The paths sync.py writes: the index, and conversation, document, week and answer-sheet objects.
+const OBJECT_RE = /^(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json$/;
 
 function replace(file, bytes) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

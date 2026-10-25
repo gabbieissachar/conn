@@ -107,7 +107,10 @@ class Lab:
         ], T0 + 700)
         pointer = f": Firstmate operational input waiting: read '{self.brief}' and handle its contents as Firstmate operational input."
         write_log(self.logs[W], [user(pointer, T0 + 50, str(self.worker)), say("Done: the page logs in.", T0 + 90, str(self.worker))], T0 + 100)
-        write_log(self.logs[M], [user("Check the release notes.", T0 + 30, mate), say("They read well. No action needed.", T0 + 40, mate)], T0 + 50)
+        sheet = ("Two choices for the notes:\n\n| ID | Question | Answer |\n| --- | --- | --- |\n| A1 | Keep the intro? | `keep` / `drop` |\n"
+                 "| A2 | Length | `short` / `long` |\n\nReply with: A1=...; A2=...")
+        write_log(self.logs[M], [user("Check the release notes.", T0 + 30, mate), say("They read well. No action needed.", T0 + 40, mate),
+                                 user("Any choices for me?", T0 + 42, mate), say(sheet, T0 + 44, mate)], T0 + 50)
         write_log(self.logs[X], [user("Unrelated work.", T0 + 5, str(root / "elsewhere")), say("Fine.", T0 + 6, str(root / "elsewhere"))], T0 + 10)
         self.panes = {A: {"label": "alpha", "title": "Alpha work", "herdr": "lab", "pane": "w1:p1", "status": "working"}}
         for patch in (mock.patch.object(builder, "PROJECTS", self.projects), mock.patch.object(builder, "herdr_panes", lambda: dict(self.panes)),
@@ -232,6 +235,28 @@ class ParityTest(unittest.TestCase):
         self.assertEqual(index["summaries"], payload["summaries"])
 
 
+class AnswerSheetTest(unittest.TestCase):
+    """The hosted copy's answer sheet holds what the local answer sheet holds for the same sessions."""
+
+    def test_the_questionnaires_match_the_local_sheet(self):
+        lab = Lab(self)
+        lab.build()
+        index = lab.index()
+        self.assertEqual(list(index["sheets"]), [M])
+        sheet = index["sheets"][M]
+        self.assertEqual(sheet["object"], f"a/{M}.json")
+        self.assertEqual([(item["open"], item["title"]) for item in sheet["list"]], [(2, "Two choices for the notes:")])
+        with mock.patch.object(sync.questionnaires, "OUT", lab.root / "out"):
+            local = sync.questionnaires.collect([A, W, M])
+        self.assertEqual(lab.object(sheet["object"])["questionnaires"], json.loads(json.dumps([{k: v for k, v in q.items() if k != "pane"} for q in local])))
+        self.assertEqual([c["key"] for c in local[0]["cards"]], ["A1", "A2"])
+        page = (lab.out / "sheet.html").read_text(encoding="utf-8")
+        self.assertIn('const HOSTED = "hosted" === "hosted";', page)
+        self.assertIn(f'<meta name="template" content="{index["sheet_template"]}">', page)
+        reply = next(t for t in lab.object(f"s/{M}.json")["exchanges"] if t.get("sheet"))
+        self.assertEqual(reply["sheet"], f"{M[:8]}:{round(sheet['list'][0]['at'])}", "the conversation's button opens this questionnaire")
+
+
 class IncrementalTest(unittest.TestCase):
     def setUp(self):
         self.lab = Lab(self)
@@ -255,13 +280,13 @@ class IncrementalTest(unittest.TestCase):
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds, \
                 mock.patch.object(builder, "iter_jsonl", wraps=builder.iter_jsonl) as parses:
             self.lab.build()
-        self.assertEqual([call.args[0] for call in builds.call_args_list], [self.lab.logs[M]])
+        self.assertEqual({call.args[0] for call in builds.call_args_list}, {self.lab.logs[M]})
         self.assertEqual([call.args[0] for call in parses.call_args_list], [self.lab.logs[M]])
         self.assertIn(f"s/{M}.json", self.changed())
         self.assertNotIn(f"s/{A}.json", self.changed())
         conversations = self.lab.index()["conversations"]
         entry = next(e for e in conversations if e["id"] == M)
-        self.assertEqual((entry["turns"], entry["last"], conversations[0]["id"]), (2, T0 + 910, M))
+        self.assertEqual((entry["turns"], entry["last"], conversations[0]["id"]), (3, T0 + 910, M))
         self.assertEqual(next(e for e in conversations if e["id"] == A)["stamp"], stamp)
 
     def test_a_clear_moves_the_conversation_to_the_panes_newest_session(self):
@@ -314,7 +339,7 @@ class IncrementalTest(unittest.TestCase):
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds, \
                 mock.patch.object(builder, "iter_jsonl", wraps=builder.iter_jsonl) as parses:
             self.lab.build("--full")
-        self.assertEqual(builds.call_count, 3)
+        self.assertEqual({call.args[0] for call in builds.call_args_list}, set(self.lab.logs.values()) - {self.lab.logs[X]})
         self.assertEqual(parses.call_count, 0, "unchanged logs come from the parsed-log cache")
         self.assertEqual(self.changed(), [])
 
@@ -342,14 +367,14 @@ class IncrementalTest(unittest.TestCase):
         (inbox / "2.msg").write_text(f"at={iso(T0 + 295)}\n--\n[fm-from-firstmate] Then run the tests.", encoding="utf-8")
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds:
             self.lab.build()
-        self.assertEqual([call.args[0] for call in builds.call_args_list], [self.lab.logs[A]])
+        self.assertEqual({call.args[0] for call in builds.call_args_list}, {self.lab.logs[A]})
         steer = next(t for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["kind"] == "steer")
         self.assertEqual(steer["delivered"], ["Then run the tests.", "Rebase onto main first."])
         # Moved to handled/ once read: built again, in the order the local page now shows (handled ones by name).
         (inbox / "2.msg").rename(inbox / "handled" / "2.msg")
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds:
             self.lab.build()
-        self.assertEqual([call.args[0] for call in builds.call_args_list], [self.lab.logs[A]])
+        self.assertEqual({call.args[0] for call in builds.call_args_list}, {self.lab.logs[A]})
         steer = next(t for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["kind"] == "steer")
         self.assertEqual(steer["delivered"], ["Rebase onto main first.", "Then run the tests."])
         self.assertEqual(json.loads(json.dumps(self.lab.local_payload([A])["sessions"][0]["exchanges"])), self.lab.object(f"s/{A}.json")["exchanges"])
@@ -372,7 +397,7 @@ class IncrementalTest(unittest.TestCase):
         (self.lab.out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds:
             self.lab.build()
-        self.assertEqual(builds.call_count, 3)
+        self.assertEqual(len({call.args[0] for call in builds.call_args_list}), 3)
 
 
 class CommandTest(unittest.TestCase):
@@ -470,8 +495,9 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(self.dry_run(), 0)
         index = self.lab.index()
         names = ["index.json"] + [e["object"] for e in index["conversations"]] + [m["object"] for m in index["documents"].values()] \
-            + [m["object"] for m in index["weeks"].values()]
-        self.assertEqual(sorted(self.sealed_times()), sorted(["index.html", "k/params.json"] + [n + ".enc" for n in names]))
+            + [m["object"] for m in index["weeks"].values()] + [m["object"] for m in index["sheets"].values()]
+        self.assertEqual(sorted(self.sealed_times()), sorted(["index.html", "sheet.html", "k/params.json"] + [n + ".enc" for n in names]))
+        self.assertIn(f"a/{M}.json", names)
         opened = self.opened(*names)
         self.assertEqual([e["id"] for e in opened["index.json"]["conversations"]], [e["id"] for e in index["conversations"]])
         for name in names[1:]:

@@ -44,7 +44,6 @@
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
-  .to-sheet[hidden] + .bar-toggle { margin-left: auto; }
   .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
   /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
   .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
@@ -76,17 +75,6 @@
   .asof button { flex: none; border: 0; background: none; padding: 0; font-size: 12px; color: var(--muted); text-decoration: underline; }
   /* A sealed copy asks for its passphrase before anything else; the tabs wait until it opens. */
   .locked #bar-more, .locked .bar-toggle { display: none; }
-  .unlock { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 18px; }
-  .unlock h2 { font-size: 17px; margin: 0 0 4px; }
-  .unlock p { font-size: 14px; color: var(--muted); margin: 0 0 12px; }
-  .unlock input[type=password] { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--paper); color: var(--ink); font: 16px/1.4 var(--sans); }
-  .unlock input[type=password]:focus { outline: 2px solid var(--you); outline-offset: -1px; }
-  .unlock label { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 10px 0 12px; }
-  .unlock .row { display: flex; gap: 10px; align-items: center; }
-  .unlock .row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 16px; font-size: 14px; }
-  .unlock .row button:disabled { opacity: .6; cursor: default; }
-  .unlock .why { font-size: 13px; color: var(--muted); }
-  .unlock .why.bad { color: var(--open); }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
   .wide main { max-width: 44rem; }
 
@@ -456,9 +444,9 @@
     if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply", key + ":reply"));
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);
-    // The hosted copy has no answer sheet yet.
-    if (ex.sheet && !HOSTED) {
-      const go = $("a", "btn sheet", "Answer these questions →"); go.href = "questionnaire.html#q=" + encodeURIComponent(ex.sheet);
+    // The hosted copy's answer sheet is sheet.html beside it.
+    if (ex.sheet) {
+      const go = $("a", "btn sheet", "Answer these questions →"); go.href = (HOSTED ? "sheet.html" : "questionnaire.html") + "#q=" + encodeURIComponent(ex.sheet);
       card.append(go);
     }
     if (ex.narration && ex.narration.length || ex.tools) {
@@ -1721,41 +1709,13 @@
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
-  // A sealed copy's passphrase: resolves once it opens the copy. The key, not the passphrase, may stay on this device.
-  function askPassphrase() {
-    document.body.classList.add("locked");
-    const card = $("div", "unlock"), input = $("input"), remember = $("input"), open = $("button", null, "Open"), why = $("div", "why");
-    input.type = "password"; input.autocomplete = "current-password"; input.setAttribute("aria-label", "Passphrase"); input.placeholder = "Passphrase";
-    remember.type = "checkbox"; remember.checked = true;
-    const label = $("label"); label.append(remember, document.createTextNode("Remember on this device"));
-    const row = $("div", "row"); open.type = "button"; row.append(open, why);
-    card.append($("h2", null, "This copy is encrypted"), $("p", null, "Enter the passphrase the laptop's sync uses. It opens the copy here and is never sent anywhere."), input, label, row);
-    document.getElementById("main").replaceChildren(card);
-    input.focus();
-    return new Promise(resolve => {
-      const tryIt = async () => {
-        if (!input.value || open.disabled) return;
-        open.disabled = true; why.className = "why"; why.textContent = "Opening…";
-        let ok = false;
-        try { ok = await hosted.unlock(input.value, remember.checked); } catch (e) { ok = false; }
-        open.disabled = false;
-        if (!ok) { why.className = "why bad"; why.textContent = "That passphrase does not open this copy."; input.select(); return; }
-        input.value = "";
-        document.body.classList.remove("locked");
-        document.getElementById("main").replaceChildren($("div", "empty", "Loading…"));
-        resolve();
-      };
-      open.addEventListener("click", tryIt);
-      input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); tryIt(); } });
-    });
-  }
   if (!HOSTED) openReading(chooseOpening());
   else {
     // The shell holds no transcript: a sealed copy is opened first, then the list comes from
     // index.json, then the conversation opened on.
-    document.querySelector(".to-sheet").hidden = true;  // no answer sheet in the hosted copy yet
+    document.querySelector(".to-sheet").href = "sheet.html";  // the hosted copy's answer sheet
     document.getElementById("forget").addEventListener("click", () => hosted.forget().then(() => location.reload()));
-    hosted.prepare().then(state => state === "locked" ? askPassphrase() : null).then(() => hosted.index()).then(index => {
+    hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
       paintAsOf();
       const saved = chooseOpening();

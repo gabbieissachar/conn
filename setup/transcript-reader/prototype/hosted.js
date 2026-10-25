@@ -73,6 +73,45 @@
       return true;
     }
     const forget = () => keys("readwrite", store => store.clear());
+    // The passphrase card, for the reader's shell and the answer sheet's alike (in #main; body.locked
+    // lets each page hide what waits for it). Its look is added once, with the pages' own colours.
+    const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
+    function style() {
+      if (document.getElementById("unlock-style")) return;
+      const css = el("style"); css.id = "unlock-style";
+      css.textContent = ".unlock { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 18px; }  .unlock h2 { font-size: 17px; margin: 0 0 4px; }  .unlock p { font-size: 14px; color: var(--muted); margin: 0 0 12px; }  .unlock input[type=password] { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--paper); color: var(--ink); font: 16px/1.4 var(--sans); }  .unlock input[type=password]:focus { outline: 2px solid var(--you); outline-offset: -1px; }  .unlock label { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 10px 0 12px; }  .unlock .row { display: flex; gap: 10px; align-items: center; }  .unlock .row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 16px; font-size: 14px; }  .unlock .row button:disabled { opacity: .6; cursor: default; }  .unlock .why { font-size: 13px; color: var(--muted); }  .unlock .why.bad { color: var(--open); }";
+      document.head.append(css);
+    }
+    // A sealed copy's passphrase: resolves once it opens the copy. The key, not the passphrase, may stay on this device.
+      function askPassphrase() {
+        style();
+      document.body.classList.add("locked");
+      const card = el("div", "unlock"), input = el("input"), remember = el("input"), open = el("button", null, "Open"), why = el("div", "why");
+      input.type = "password"; input.autocomplete = "current-password"; input.setAttribute("aria-label", "Passphrase"); input.placeholder = "Passphrase";
+      remember.type = "checkbox"; remember.checked = true;
+      const label = el("label"); label.append(remember, document.createTextNode("Remember on this device"));
+      const row = el("div", "row"); open.type = "button"; row.append(open, why);
+      card.append(el("h2", null, "This copy is encrypted"), el("p", null, "Enter the passphrase the laptop's sync uses. It opens the copy here and is never sent anywhere."), input, label, row);
+      document.getElementById("main").replaceChildren(card);
+      input.focus();
+      return new Promise(resolve => {
+        const tryIt = async () => {
+          if (!input.value || open.disabled) return;
+          open.disabled = true; why.className = "why"; why.textContent = "Opening…";
+          let ok = false;
+          try { ok = await unlock(input.value, remember.checked); } catch (e) { ok = false; }
+          open.disabled = false;
+          if (!ok) { why.className = "why bad"; why.textContent = "That passphrase does not open this copy."; input.select(); return; }
+          input.value = "";
+          document.body.classList.remove("locked");
+          document.getElementById("main").replaceChildren(el("div", "empty", "Loading…"));
+          resolve();
+        };
+        open.addEventListener("click", tryIt);
+        input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); tryIt(); } });
+      });
+    }
+
     const index = () => get("index.json");
     // One object by its index entry ({ object, stamp }), fetched once per stamp; a failed load is tried again next time.
     const kept = new Map();
@@ -102,7 +141,7 @@
       const sig = weeksSig(idx);
       return {
         generated: idx.as_of || 0, since: idx.since || 0, homes: idx.homes || [], summaries: idx.summaries || [],
-        template: idx.template, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
+        template: idx.template, sheetTemplate: idx.sheet_template, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
         fleet: previous && previous.weeksSig === sig ? previous.fleet : null,
       };
     }
@@ -139,6 +178,6 @@
       setInterval(run, REFRESH_MS);
       document.addEventListener("visibilitychange", run);
     }
-    return { index, data, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget,
+    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget, askPassphrase,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();
