@@ -15,6 +15,7 @@ const path = require('path');
 const { createGuard } = require('./guard');
 const { createAdapter, AdapterError } = require('./adapter');
 const { buildShareReport } = require('./redact');
+const { createRollover } = require('./rollover');
 
 const PREFIX = '/api/herdr-organizer/';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -76,13 +77,14 @@ function validateParams(spec, params) {
   return input;
 }
 
-function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env } = {}) {
+function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover } = {}) {
   const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
   const guard = createGuard({ port, token });
   // The firstmate home and code root the context gauge reads, as serve.sh names them.
   const fmHome = env.HERDR_ORGANIZER_FM_HOME || path.join(os.homedir(), 'fm-homes', 'pmos');
   const gaugeScript = env.HERDR_ORGANIZER_GAUGE_SCRIPT || path.join(os.homedir(), 'workspace', 'firstmate', 'bin', 'fm-ctx-gauge.sh');
   const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env, fmHome, gaugeScript });
+  const rolloverView = rollover || createRollover({ env, now });
   let tier1Busy = false;
 
   async function shareReport(params) {
@@ -108,6 +110,8 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'archive-context': { tier: 0, params: { prefixes: { type: 'array' } }, run: (p) => tools.archiveContext(p.prefixes) },
     'plan-usage': { tier: 0, params: { fresh: { type: 'boolean', optional: true } }, run: (p) => tools.planUsage(p.fresh === true) },
     'codex-credits': { tier: 0, params: {}, run: () => tools.codexCredits() },
+    // Read only: what firstmate's rollover switches say in each registered home, and whether that home's watcher runs.
+    'rollover-state': { tier: 0, params: {}, run: () => rolloverView.state() },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },
     // View only (no confirm, no input into any pane): shows a session's tab in the attached Herdr window. It takes
