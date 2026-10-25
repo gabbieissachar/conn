@@ -66,6 +66,25 @@ class RedactTextTest(unittest.TestCase):
         self.assertEqual(out.count("\n"), text.count("\n"))
         self.check("-----BEGIN PRIVATE KEY-----\n" + fake("", 40), "private-key")
 
+    def test_an_encrypted_key_with_headers_and_a_blank_line_is_redacted_whole(self):
+        # The security review's case: RFC 1421 headers, then a blank line, then the body, then END.
+        body = fake("MIIE", 40) + "\n" + fake("", 40)
+        text = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC," + fake("", 16) + "\n\n"
+                + body + "\n-----END RSA PRIVATE KEY-----\nafter")
+        out = self.check(text, "private-key", kept=("after",))
+        self.assertNotIn(fake("MIIE", 40), out)
+        self.assertEqual(out.count("\n"), text.count("\n"))
+        cut = self.check("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n\n" + body + "\n\nThe rest of the reply.", "private-key",
+                         kept=("The rest of the reply.",))
+        self.assertNotIn(fake("MIIE", 40), cut)
+
+    def test_long_runs_of_name_characters_are_quick(self):
+        import time
+        for text in ("a-" * 60000, "_" * 120000, "x." * 60000 + "password=" + fake("", 9), "A" * 120000, "-----BEGIN PRIVATE KEY-----" * 2000):
+            started = time.monotonic()
+            redact.redact_text(text, {})
+            self.assertLess(time.monotonic() - started, 1.0, text[:20])
+
     def test_a_private_key_keeps_its_line_breaks(self):
         block = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + fake("", 40) + "\n" + fake("", 40) + "\n-----END OPENSSH PRIVATE KEY-----"
         text = "Line 1\n" + block + "\nLast line asks: ok?"

@@ -14,9 +14,11 @@ import re
 # (kind, pattern, group to replace or 0 for the whole match). Order matters: a private key
 # block first, so a token inside it is not counted twice.
 PATTERNS = [
-    # A whole key block, or one cut off before its END line (the head of a key file, a truncated
-    # tool output): then to the next blank line or the end of the text.
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|(?=\n[ \t]*\n)|\Z)"), 0),
+    # A whole key block first, headers (Proc-Type, DEK-Info) and blank lines inside it included.
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"), 0),
+    # Then one cut off before its END line (the head of a key file, a truncated tool output): its
+    # BEGIN line and every following line of key material (base64, a header, a blank line).
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\n(?:[A-Za-z0-9+/=]*|[A-Za-z-]+:[^\n]*)(?=\n|\Z))*"), 0),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"), 0),
     ("api-key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}"), 0),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"), 0),
@@ -33,7 +35,8 @@ PATTERNS = [
     # ini, YAML or JSON key (db_password = ..., "token": "..."), a status line (old token=... is
     # dead). The name must end in the secret word, so TOKEN_HEADER = ... is a header's name, and
     # a $reference or a placeholder is no secret. A value's floor is in assigned() below.
-    ("assigned-secret", re.compile(r"(?i)(?<![A-Za-z0-9_])((?:[A-Za-z0-9_.-]*[_.-])?(password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key))"
+    # It starts only where a run of name characters starts, so a long run backtracks once (linear).
+    ("assigned-secret", re.compile(r"(?i)(?<![A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]*[_.-])?(password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key))"
                                    r"[\"']?[ \t]*[:=][ \t]*([\"']?)([^\s\"'$<>{}()\[\],;`]+)\3"), 4),
     # The fleet's own per-start tokens (64 lowercase hex characters); sha256 digests go too.
     ("hex64-token", re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])"), 0),
