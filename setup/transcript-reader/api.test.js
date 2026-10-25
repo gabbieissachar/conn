@@ -400,6 +400,22 @@ test('state: a listed session whose pane closes starts one rebuild; Herdr not an
   } finally { await t.close(); }
 });
 
+test('state: a dropped session that runs in a pane again starts one rebuild, even when nothing is listed', async () => {
+  const t = await start();
+  try {
+    fs.writeFileSync(path.join(t.tree.outDir, 'sessions.txt'), '');
+    fs.writeFileSync(path.join(t.tree.outDir, 'dropped.txt'), `${C}\n`);  // C's pane is listed by the fake Herdr
+    await t.state();
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+    fs.writeFileSync(path.join(t.tree.outDir, 'dropped.txt'), '');  // reader.py listed it again
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.equal(t.herdr.readerRuns().length, 1, 'once it is listed again, nothing more to rebuild');
+  } finally { await t.close(); }
+});
+
 test('reopen and close: one click runs reader.py with that session and answers once it has rebuilt', async () => {
   const t = await start();
   try {

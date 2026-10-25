@@ -193,11 +193,14 @@ function create({
 
   // ------------------------------------------------------------- local records
 
-  function listed() {
+  function idsIn(name) {
     let text = '';
-    try { text = fs.readFileSync(path.join(outDir, 'sessions.txt'), 'utf8'); } catch { return []; }
+    try { text = fs.readFileSync(path.join(outDir, name), 'utf8'); } catch { return []; }
     return text.split('\n').map((line) => line.trim()).filter((line) => SESSION_ID_RE.test(line));
   }
+  const listed = () => idsIn('sessions.txt');
+  // Sessions reader.py dropped because their pane closed, and lists again if one runs in a pane.
+  const dropped = () => idsIn('dropped.txt');
 
   function stamp(name) {
     try {
@@ -347,7 +350,7 @@ function create({
     if (build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS) return;
     const built = stamp('prototype.stamp');
     const newest = Math.max(0, ...ids.map((id) => { const file = logPath(id); return file ? mtimeMs(file) : 0; }));
-    if (ids.length && (build.paneClosed || built === null || newest > built * 1000)) { build.paneClosed = false; runReader(['rebuild']); }
+    if ((ids.length || build.paneClosed) && (build.paneClosed || built === null || newest > built * 1000)) { build.paneClosed = false; runReader(['rebuild']); }
   }
 
   function notePaneChanges(ids, sessions) {
@@ -359,6 +362,8 @@ function create({
       if (ids.includes(id)) build.paneClosed = true;
     }
     for (const id of ids) if (live.has(id)) seenLive.add(id);
+    // A dropped session that runs in a pane again is listed again by the next rebuild.
+    if (dropped().some((id) => live.has(id))) build.paneClosed = true;
   }
 
   async function state(follow) {
