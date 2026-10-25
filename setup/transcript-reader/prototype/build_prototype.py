@@ -47,6 +47,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
 HOSTED_SCRIPT = HERE / "hosted.js"
+SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 PROJECTS = Path.home() / ".claude" / "projects"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
@@ -1578,10 +1579,11 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
     The shared live.js goes into the page's script; mode "hosted" (the hosted copy's shell,
-    sync.py) also pastes hosted.js there, and the script reads the mode from __MODE__.
+    sync.py) also pastes seal.js and hosted.js there, and the script reads the mode from __MODE__.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
-    page = page.replace("/*__HOSTED__*/", HOSTED_SCRIPT.read_text(encoding="utf-8") if mode == "hosted" else "const hosted = null;")
+    hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
+    page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)
     if page.count("__PAYLOAD__") != 1:
         # A second mention (a comment, say) would carry the whole payload into the page again.

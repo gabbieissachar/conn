@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
-"""Build the hosted copy of the transcript reader: one small object per conversation.
+"""Build the hosted copy of the transcript reader, and seal it into a local bucket folder.
 
-Ship 1 of the hosted reader plan. It builds on this laptop only: nothing is redacted,
-encrypted or uploaded yet (ship 2), so --build-only is the one mode there is.
+Ships 1 and 2 of the hosted reader plan, on this laptop only. Nothing is hosted and nothing
+is uploaded anywhere: the sync agent's one target is a local folder (a dry run).
 
 Usage (from the repo root):
   python3 setup/transcript-reader/sync.py --build-only                 every fleet session (see Scope)
   python3 setup/transcript-reader/sync.py --build-only --reading-list  the local reader's list, to set the two pages side by side
   python3 setup/transcript-reader/sync.py --build-only --session ID    exactly these sessions (repeatable; id, 8-char prefix or log path)
+  python3 setup/transcript-reader/sync.py --dry-run [FOLDER]           build, then redact, encrypt and write the bucket (default out/bucket/);
+                                                                       --new-passphrase seals it all again under another passphrase
+  python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote
+  python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs the dry run every minute
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
+
+The dry run takes the passphrase from HOSTED_READER_PASSPHRASE, or asks for it in a terminal;
+it is never written or printed. Each run builds incrementally (below), then, for the
+conversations active in the last 90 days, the documents they name and the fleet weeks of the
+last 90 days: redacts every text (redact.py; the counts go to out/hosted/redactions.json, never
+the text), gzips and seals each changed object with AES-256-GCM under a key derived from the
+passphrase (upload.js, prototype/seal.js), deletes what fell out of the 90 days, and seals the
+index at least every 5 minutes, so the shell's "As of" stays fresh while the laptop is awake.
+The bucket holds index.html (the shell, no transcript), k/params.json (the salt, no secret),
+and index.json.enc, s/*.enc, d/*.enc, f/*.enc. A passphrase that does not open the bucket stops
+the run, unless --new-passphrase says to seal everything again under it.
 
 Scope: by default every Claude Code session log whose working directory lies inside a
 fleet home (the main home ~/fm-homes/pmos and each second mate its registry lists), workers'
@@ -55,6 +70,7 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -66,12 +82,19 @@ import build_prototype as builder  # noqa: E402
 
 sys.path.insert(0, str(HERE))
 import reader  # noqa: E402
+import redact  # noqa: E402
 
 OUT = HERE / "out" / "hosted"
+BUCKET = HERE / "out" / "bucket"
 LOCAL_PANES = HERE / "out" / "pane-labels.json"
 REOPENED = HERE / "out" / "reopened.txt"
 VERSION = 1
 FLEET_DAYS = 14
+RETENTION_DAYS = 90  # plan B3: the bucket keeps 90 days; the laptop keeps everything
+HEARTBEAT = 300  # seconds: the index is sealed again at least this often (the shell calls 10 minutes asleep)
+PASSPHRASE_ENV = "HOSTED_READER_PASSPHRASE"
+KEYCHAIN_SERVICE = "pmos-hosted-reader"
+
 
 
 # ------------------------------------------------------------------ small parts
@@ -188,7 +211,6 @@ class Build:
         # The builder reuses its list of every log for a second; a run starts from the logs as they are now.
         builder._LOG_INDEX.clear()
         self.homes, self.parent_of = builder.fleet_homes(args.main_home)
-        self.home_by_id = {home["id"]: home for home in self.homes}
         try:
             old = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -457,19 +479,192 @@ class Build:
         return removed
 
 
-def shell_link(out: Path) -> str:
+# ------------------------------------------------------- the dry run (ship 2)
+
+class DryRun:
+    """The sync agent, writing to a local bucket folder only: redact, seal, prune, heartbeat.
+
+    What it sealed is recorded in out/hosted/upload.json (each object's build stamp, its
+    redaction counts, the bucket it went to), so a run seals only what changed."""
+
+    def __init__(self, out: Path, target: Path, passphrase: str, new_key: bool = False) -> None:
+        self.out, self.target, self.passphrase, self.new_key = out, target, passphrase, new_key
+        self.state_file = out / "upload.json"
+        try:
+            state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        self.state = state if state.get("target") == str(target.resolve()) else {}
+
+    def retained(self, index: dict, manifest: dict) -> tuple[dict, dict[str, str]]:
+        """The index the bucket gets (90 days of conversations, their documents, 90 days of weeks),
+        and every object it names, by path, with its build stamp."""
+        cutoff = time.time() - RETENTION_DAYS * 86400
+        conversations = [entry for entry in index["conversations"] if entry["last"] >= cutoff]
+        named = {doc for entry in conversations for doc in (manifest["conversations"].get(entry["id"]) or {}).get("documents", [])}
+        documents = {doc_id: meta for doc_id, meta in index["documents"].items() if doc_id in named}
+        weeks = {key: meta for key, meta in index["weeks"].items() if meta["to"] >= cutoff}
+        objects = {item["object"]: item["stamp"] for item in [*conversations, *documents.values(), *weeks.values()]}
+        return {**index, "conversations": conversations, "documents": documents, "weeks": weeks}, objects
+
+    def run(self) -> int:
+        index = json.loads((self.out / "index.json").read_text(encoding="utf-8"))
+        manifest = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        bucket_index, objects = self.retained(index, manifest)
+        sealed = self.state.get("objects") or {}
+        todo = [rel for rel, stamp in objects.items() if (sealed.get(rel) or {}).get("stamp") != stamp or not (self.target / f"{rel}.enc").is_file()]
+        # The index's content without the build's time and the fleet window's start (both move every
+        # run): sealed again when the rest changes, and for the heartbeat.
+        index_counts: dict[str, int] = {}
+        index_text = json.dumps(redact.redact(bucket_index, index_counts), ensure_ascii=False, separators=(",", ":"))
+        content = stamp_of(encode({**bucket_index, "as_of": 0, "since": 0}))
+        heartbeat = bool(todo) or self.new_key or self.state.get("index") != content \
+            or time.time() - (self.state.get("index_at") or 0) >= HEARTBEAT or not (self.target / "index.json.enc").is_file()
+        if not heartbeat:
+            removed = self.prune(set(objects))
+            print(f"Dry run into {self.target}: nothing changed, the index was sealed under {HEARTBEAT // 60} minutes ago; removed {removed}")
+            return 0
+        child = subprocess.Popen(["node", str(HERE / "upload.js"), str(self.target), *(["--new-key"] if self.new_key else [])],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, PASSPHRASE_ENV: self.passphrase})
+        ready = json.loads(child.stdout.readline() or "{}")
+        if not ready.get("ready"):
+            child.stdin.close()
+            child.wait()
+            if ready.get("error") == "wrong-passphrase":
+                raise SystemExit("That passphrase does not open this bucket; nothing was sealed. To seal everything under it, add --new-passphrase.")
+            raise SystemExit("upload.js did not start; nothing was sealed")
+        if ready["rekeyed"]:
+            todo, sealed = list(objects), {}  # a new passphrase or a new bucket: every object again
+        counts: dict[str, dict] = {}
+        try:
+            for rel in todo:
+                found: dict[str, int] = {}
+                value = redact.redact(json.loads((self.out / rel).read_text(encoding="utf-8")), found)
+                counts[rel] = found
+                child.stdin.write(json.dumps({"path": rel, "text": json.dumps(value, ensure_ascii=False, separators=(",", ":"))}, ensure_ascii=False) + "\n")
+            if heartbeat:
+                child.stdin.write(json.dumps({"path": "index.json", "text": index_text}, ensure_ascii=False) + "\n")
+            child.stdin.close()
+        except BrokenPipeError:
+            pass
+        done = json.loads(child.stdout.readline() or "{}")
+        if child.wait() or "written" not in done:
+            raise SystemExit("upload.js stopped before sealing every object; the bucket keeps what it had")
+        for rel in todo:
+            sealed[rel] = {"stamp": objects[rel], "redacted": counts[rel]}
+        removed = self.prune(set(objects))
+        self.copy_shell()
+        now = time.time()
+        self.state = {"target": str(self.target.resolve()), "objects": {rel: sealed[rel] for rel in objects if rel in sealed},
+                      "index": content if heartbeat else self.state.get("index"), "index_at": now if heartbeat else self.state.get("index_at"),
+                      "index_redacted": index_counts}
+        replace(self.state_file, encode(self.state))
+        self.log_redactions()
+        print(f"Dry run into {self.target}: sealed {len(todo)} objects{' and the index' if heartbeat else ''}, removed {removed}; "
+              f"{len(objects)} objects for {len(bucket_index['conversations'])} conversations of the last {RETENTION_DAYS} days"
+              f"{'; a new passphrase or bucket, so every object was sealed again' if ready['rekeyed'] else ''}")
+        return 0
+
+    def prune(self, kept: set[str]) -> int:
+        """Delete sealed objects the bucket no longer names, and what a stopped run left half written."""
+        removed = 0
+        for folder in ("s", "d", "f"):
+            for path in (self.target / folder).glob("*"):
+                rel = f"{folder}/{path.name}"
+                if path.is_file() and (rel.endswith(".partial") or (rel.endswith(".json.enc") and rel[:-4] not in kept)):
+                    path.unlink()
+                    removed += rel.endswith(".enc")
+        return removed
+
+    def copy_shell(self) -> None:
+        page = (self.out / "index.html").read_bytes()
+        shell = self.target / "index.html"
+        if not shell.is_file() or shell.read_bytes() != page:
+            replace(shell, page)
+
+    def log_redactions(self) -> None:
+        """What the redaction took out of the objects now in the bucket: counts by kind, never the text."""
+        totals: dict[str, int] = {}
+        per_object = {rel: found for rel, item in self.state["objects"].items() if (found := item.get("redacted"))}
+        for found in [*per_object.values(), self.state.get("index_redacted") or {}]:
+            for kind, count in found.items():
+                totals[kind] = totals.get(kind, 0) + count
+        replace(self.out / "redactions.json", encode({"totals": totals, "objects": per_object, "index": self.state.get("index_redacted") or {}}))
+
+
+def wipe(target: Path, out: Path) -> int:
+    """Empty <target> of what the dry run writes there (and forget what was sealed); nothing else is touched."""
+    removed = 0
+    for pattern in ("index.html", "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "*/.*.partial", ".*.partial"):
+        for path in target.glob(pattern):
+            if path.is_file():
+                path.unlink()
+                removed += 1
+    for state in (out / "upload.json", out / "redactions.json"):
+        if state.is_file():
+            state.unlink()
+    print(f"Wiped {target}: {removed} files removed")
+    return 0
+
+
+def passphrase(target: Path) -> str:
+    """The passphrase: from the environment, else asked in the terminal (twice for a new bucket)."""
+    found = os.environ.get(PASSPHRASE_ENV, "")
+    if found:
+        return found
+    if not sys.stdin.isatty():
+        raise SystemExit(f"Set {PASSPHRASE_ENV}, or run this in a terminal to be asked for the passphrase.")
+    import getpass
+    first = getpass.getpass("Passphrase for the hosted copy: ")
+    if not (target / "k" / "params.json").is_file() and getpass.getpass("Again, to be sure: ") != first:
+        raise SystemExit("The two passphrases differ; nothing was sealed.")
+    if not first:
+        raise SystemExit("An empty passphrase seals nothing.")
+    return first
+
+
+def launch_agent(target: Path) -> str:
+    """A LaunchAgent (plan 4.2) that runs the dry run every minute while the Mac is awake. It is only
+    printed: install it yourself. The passphrase comes from the login keychain at each run."""
+    command = (f'{PASSPHRASE_ENV}="$(/usr/bin/security find-generic-password -w -s {KEYCHAIN_SERVICE})" '
+               f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --dry-run "{target.resolve()}"')
+    log = HERE / "out" / "sync-agent.log"
+    from xml.sax.saxutils import escape
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pmos.transcript-reader-sync</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/sh</string><string>-c</string><string>{escape(command)}</string></array>
+  <key>WorkingDirectory</key><string>{escape(str(reader.REPO.resolve()))}</string>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>{escape(str(log))}</string>
+  <key>StandardErrorPath</key><string>{escape(str(log))}</string>
+</dict>
+</plist>
+"""
+
+
+def shell_link(out: Path, default: Path = OUT) -> str:
     """The shell's address on the reader's own server, and what to do when that port does not serve this copy."""
     port = os.environ.get("PMOS_READER_PORT", reader.DEFAULT_PORT)
-    if out.resolve() != OUT.resolve():
-        return f"{(out / 'index.html').as_uri()} (the reader's server serves only out/hosted/)"
-    url = f"http://localhost:{port}/{OUT.relative_to(reader.REPO).as_posix()}/index.html"
+    if out.resolve() != default.resolve():
+        return f"{(out / 'index.html').as_uri()} (the reader's server serves only out/hosted/ and out/bucket/)"
+    url = f"http://localhost:{port}/{default.relative_to(reader.REPO).as_posix()}/index.html"
     ok, said = reader.serving(port)
     return url if ok else f"{url} ({said} Start it: bash setup/transcript-reader/serve.sh start --port {port})"
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--build-only", action="store_true", help="build the hosted copy in the output folder (the only mode in ship 1)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--build-only", action="store_true", help="build the hosted copy in the output folder")
+    mode.add_argument("--dry-run", nargs="?", const=str(BUCKET), metavar="FOLDER", help="build, then redact, seal and write the local bucket (default out/bucket/)")
+    mode.add_argument("--wipe", nargs="?", const=str(BUCKET), metavar="FOLDER", help="empty the local bucket of what the dry run wrote")
+    mode.add_argument("--launch-agent", nargs="?", const=str(BUCKET), metavar="FOLDER", help="print a LaunchAgent that runs the dry run every minute")
+    parser.add_argument("--new-passphrase", action="store_true", help="with --dry-run: seal everything again under a passphrase the bucket does not know yet")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--reading-list", action="store_true", help="build the local reader's list (out/sessions.txt)")
     scope.add_argument("--session", action="append", help="session id, 8-char prefix or log path (repeatable)")
@@ -478,9 +673,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out", default=str(OUT))
     parser.add_argument("--main-home", default=str(builder.MAIN_HOME))
     args = parser.parse_args(argv)
-    if not args.build_only:
-        parser.error("only --build-only exists yet: redaction, encryption and the upload come with ship 2")
+    if not (args.build_only or args.dry_run or args.wipe or args.launch_agent):
+        parser.error("say what to do: --build-only, --dry-run, --wipe or --launch-agent (nothing is ever uploaded: ship 3 is not built)")
     out = Path(args.out).expanduser()
+    if args.launch_agent:
+        print(launch_agent(Path(args.launch_agent).expanduser()), end="")
+        return 0
+    target = Path(args.dry_run or args.wipe or BUCKET).expanduser()
+    secret = passphrase(target) if args.dry_run else ""
     out.mkdir(parents=True, exist_ok=True)
     with open(out / ".lock", "w") as lock:
         try:
@@ -488,8 +688,14 @@ def main(argv: list[str]) -> int:
         except OSError:
             print("Another build of this copy is running; this one stops.")
             return 1
+        if args.wipe:
+            return wipe(target, out)
         code = Build(args).run()
+        if args.dry_run and not code:
+            code = DryRun(out, target, secret, args.new_passphrase).run()
     print(f"Hosted shell: {shell_link(out)}")
+    if args.dry_run:
+        print(f"Sealed copy:  {shell_link(target, BUCKET)}")
     return code
 
 

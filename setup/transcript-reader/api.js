@@ -10,6 +10,9 @@
 //   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*}
 //                                                   the objects that shell loads, to its own
 //                                                   token-bearing fetches only
+//   GET  /setup/transcript-reader/out/bucket/...    the sealed copy a dry run writes (sync.py
+//                                                   --dry-run): its shell, k/params.json and the
+//                                                   *.enc objects, the same ways
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
@@ -47,10 +50,13 @@ const { createGuard } = require('../herdr-organizer/guard');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html']);
-// The hosted copy's objects, by their path under out/hosted/ (sync.py names them). The manifest
-// and the pane cache beside them are never served.
-const HOSTED_OBJECT_RE = /^(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json$/;
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html', 'bucket/index.html']);
+// The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
+// copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
+const OBJECTS = {
+  hosted: { re: /^(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
+  bucket: { re: /^(?:(?:index|[sdf]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
+};
 const TOKEN_HEADER = 'x-transcript-reader-token';
 // Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell
 // their own copy's server from another copy's on the same port (reader.py's copy_id computes the same).
@@ -488,7 +494,7 @@ function create({
     }
     if (!PAGES.has(name)) { text(404, 'Not found'); return; }
     fs.readFile(path.join(outDir, name), 'utf8', (error, html) => {
-      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/' + (name.startsWith('hosted/') ? 'sync.py --build-only' : 'reader.py')); return; }
+      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/' + (name.startsWith('hosted/') ? 'sync.py --build-only' : name.startsWith('bucket/') ? 'sync.py --dry-run' : 'reader.py')); return; }
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
@@ -498,16 +504,18 @@ function create({
     });
   }
 
-  // An object the hosted shell loads. Like the API it needs the token, which only the shell
-  // opened in a tab holds, so another page on this origin cannot read the transcripts here either.
-  function serveObject(req, res, name) {
+  // An object a hosted shell loads (plain under out/hosted/, sealed under out/bucket/). Like the API
+  // it needs the token, which only the shell opened in a tab holds, so another page on this origin
+  // cannot read the transcripts here either.
+  function serveObject(req, res, folder, name) {
     const verdict = guard.check(req);
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
     if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
-    if (!HOSTED_OBJECT_RE.test(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
-    fs.readFile(path.join(outDir, 'hosted', name), (error, body) => {
+    const kind = OBJECTS[folder];
+    if (!kind.re.test(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
+    fs.readFile(path.join(outDir, folder, name), (error, body) => {
       if (error) { fail(res, 404, 'not_built', 'Not built yet.'); return; }
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': name.endsWith('.json') ? 'application/json; charset=utf-8' : kind.type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(body);
     });
   }
@@ -554,7 +562,8 @@ function create({
     }
     const page = insideOut(req, url);
     if (page.inside) {
-      if (page.name.startsWith('hosted' + path.sep) && !PAGES.has(page.name)) serveObject(req, res, page.name.slice('hosted/'.length));
+      const folder = Object.keys(OBJECTS).find((name) => page.name.startsWith(name + path.sep));
+      if (folder && !PAGES.has(page.name)) serveObject(req, res, folder, page.name.slice(folder.length + 1));
       else servePage(req, res, page.name);
       return true;
     }

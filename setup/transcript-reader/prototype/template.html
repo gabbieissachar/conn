@@ -70,8 +70,23 @@
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy says when the laptop built it, and says so louder once that is old. */
-  .asof { font-size: 12px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .asof.stale { color: var(--ask); font-weight: 600; }
+  .asof { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .asof span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .asof.stale span { color: var(--ask); font-weight: 600; }
+  .asof button { flex: none; border: 0; background: none; padding: 0; font-size: 12px; color: var(--muted); text-decoration: underline; }
+  /* A sealed copy asks for its passphrase before anything else; the tabs wait until it opens. */
+  .locked #bar-more, .locked .bar-toggle { display: none; }
+  .unlock { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 18px; }
+  .unlock h2 { font-size: 17px; margin: 0 0 4px; }
+  .unlock p { font-size: 14px; color: var(--muted); margin: 0 0 12px; }
+  .unlock input[type=password] { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--paper); color: var(--ink); font: 16px/1.4 var(--sans); }
+  .unlock input[type=password]:focus { outline: 2px solid var(--you); outline-offset: -1px; }
+  .unlock label { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 10px 0 12px; }
+  .unlock .row { display: flex; gap: 10px; align-items: center; }
+  .unlock .row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 16px; font-size: 14px; }
+  .unlock .row button:disabled { opacity: .6; cursor: default; }
+  .unlock .why { font-size: 13px; color: var(--muted); }
+  .unlock .why.bad { color: var(--open); }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
   .wide main { max-width: 44rem; }
 
@@ -253,7 +268,7 @@
 <header class="bar" id="bar">
   <div class="bar-inner">
     <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
-    <div class="asof" id="asof" aria-live="polite" hidden></div>
+    <div class="asof" id="asof" hidden><span id="asof-text" aria-live="polite"></span><button id="forget" type="button" hidden title="Forget the key this device keeps for this copy; the passphrase is asked again">Forget this device</button></div>
     <div id="bar-more">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
@@ -1569,10 +1584,11 @@
     const line = document.getElementById("asof");
     line.hidden = !HOSTED || !data.generated;
     if (line.hidden) return;
-    const when = data.generated, old = hosted.stale(when), at = builtAt(when);
+    const when = data.generated, old = hosted.stale(when), at = builtAt(when), text = document.getElementById("asof-text");
     line.classList.toggle("stale", old);
-    line.textContent = old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`;
-    line.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then.`;
+    text.textContent = old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`;
+    text.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then.`;
+    document.getElementById("forget").hidden = !hosted.isSealed();
   }
   // Every 30 seconds while visible: a newer index brings the new list, and the conversation on
   // screen again when its stamp changed, swapped in where you are reading. New page code reloads.
@@ -1705,11 +1721,41 @@
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
+  // A sealed copy's passphrase: resolves once it opens the copy. The key, not the passphrase, may stay on this device.
+  function askPassphrase() {
+    document.body.classList.add("locked");
+    const card = $("div", "unlock"), input = $("input"), remember = $("input"), open = $("button", null, "Open"), why = $("div", "why");
+    input.type = "password"; input.autocomplete = "current-password"; input.setAttribute("aria-label", "Passphrase"); input.placeholder = "Passphrase";
+    remember.type = "checkbox"; remember.checked = true;
+    const label = $("label"); label.append(remember, document.createTextNode("Remember on this device"));
+    const row = $("div", "row"); open.type = "button"; row.append(open, why);
+    card.append($("h2", null, "This copy is encrypted"), $("p", null, "Enter the passphrase the laptop's sync uses. It opens the copy here and is never sent anywhere."), input, label, row);
+    document.getElementById("main").replaceChildren(card);
+    input.focus();
+    return new Promise(resolve => {
+      const tryIt = async () => {
+        if (!input.value || open.disabled) return;
+        open.disabled = true; why.className = "why"; why.textContent = "Opening…";
+        let ok = false;
+        try { ok = await hosted.unlock(input.value, remember.checked); } catch (e) { ok = false; }
+        open.disabled = false;
+        if (!ok) { why.className = "why bad"; why.textContent = "That passphrase does not open this copy."; input.select(); return; }
+        input.value = "";
+        document.body.classList.remove("locked");
+        document.getElementById("main").replaceChildren($("div", "empty", "Loading…"));
+        resolve();
+      };
+      open.addEventListener("click", tryIt);
+      input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); tryIt(); } });
+    });
+  }
   if (!HOSTED) openReading(chooseOpening());
   else {
-    // The shell holds no transcript: the list comes from index.json, then the conversation opened on.
+    // The shell holds no transcript: a sealed copy is opened first, then the list comes from
+    // index.json, then the conversation opened on.
     document.querySelector(".to-sheet").hidden = true;  // no answer sheet in the hosted copy yet
-    hosted.index().then(index => {
+    document.getElementById("forget").addEventListener("click", () => hosted.forget().then(() => location.reload()));
+    hosted.prepare().then(state => state === "locked" ? askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
       paintAsOf();
       const saved = chooseOpening();

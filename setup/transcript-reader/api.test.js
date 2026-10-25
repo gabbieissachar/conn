@@ -341,6 +341,41 @@ test('hosted: the manifest, the pane cache and any other name or spelling are ne
   } finally { await t.close(); }
 });
 
+test('bucket: the sealed copy of a dry run is served like the hosted copy: its shell to a tab, its params and sealed objects to the shell', async () => {
+  const t = await start();
+  try {
+    const bucket = path.join(t.tree.outDir, 'bucket');
+    for (const folder of ['k', 's', 'd', 'f']) fs.mkdirSync(path.join(bucket, folder), { recursive: true });
+    fs.writeFileSync(path.join(bucket, 'index.html'), builtPage('sealed shell'));
+    fs.writeFileSync(path.join(bucket, 'k', 'params.json'), '{"kdf":"PBKDF2"}');
+    fs.writeFileSync(path.join(bucket, 'index.json.enc'), Buffer.from([0x48, 0x52, 0x43, 0x31, 1, 2, 3]));
+    fs.writeFileSync(path.join(bucket, 's', A + '.json.enc'), Buffer.from([0x48, 0x52, 0x43, 0x31, 4]));
+    fs.writeFileSync(path.join(bucket, 'notes.txt'), 'not served');
+    const shell = await t.open('/setup/transcript-reader/out/bucket/index.html');
+    assert.equal(shell.status, 200);
+    assert.equal(tokenIn(shell.raw), t.token);
+    const fetchHeaders = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty', [TOKEN_HEADER]: t.token };
+    const params = await t.request({ path: '/setup/transcript-reader/out/bucket/k/params.json', headers: fetchHeaders });
+    assert.equal(params.status, 200);
+    assert.equal(params.headers['content-type'], 'application/json; charset=utf-8');
+    for (const name of ['index.json.enc', `s/${A}.json.enc`]) {
+      const got = await t.request({ path: '/setup/transcript-reader/out/bucket/' + name, headers: fetchHeaders });
+      assert.equal(got.status, 200, name);
+      assert.equal(got.headers['content-type'], 'application/octet-stream');
+      assert.equal(Object.keys(got.headers).some((header) => header.startsWith('access-control')), false);
+      const refused = await t.request({ path: '/setup/transcript-reader/out/bucket/' + name, headers: { 'Sec-Fetch-Site': 'same-origin' } });
+      assert.equal(refused.status, 403, name);
+    }
+    for (const name of ['notes.txt', 'index.json', `s/${A}.json`, 'k/other.json', 'upload.json']) {
+      const response = await t.request({ path: '/setup/transcript-reader/out/bucket/' + name, headers: fetchHeaders });
+      assert.equal(response.status, 404, name);
+      assert.equal(response.headers['x-static'], undefined, name);
+    }
+    const plainParams = await t.request({ path: '/setup/transcript-reader/out/hosted/k/params.json', headers: fetchHeaders });
+    assert.equal(plainParams.status, 404, 'the plain copy has no params, so its shell reads it as plain');
+  } finally { await t.close(); }
+});
+
 test('api: every call needs the token; there is no endpoint that hands it out', async () => {
   const t = await start();
   try {

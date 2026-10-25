@@ -1,8 +1,10 @@
   // ---------------------------------------------------------------- hosted copy (hosted.js, the shell only)
-  // build_prototype.fill_template pastes this file into the hosted shell's script. The shell holds
-  // no transcript: it loads index.json from its own folder, then one conversation (s/), document
-  // (d/) or week of fleet records (f/) when the view needs it, and loads one again only once its
-  // stamp in a newer index.json has changed (sync.py writes them; see its help).
+  // build_prototype.fill_template pastes this file (after seal.js) into the hosted shell's script.
+  // The shell holds no transcript: it loads index.json from its own folder, then one conversation
+  // (s/), document (d/) or week of fleet records (f/) when the view needs it, and loads one again
+  // only once its stamp in a newer index.json has changed (sync.py writes them; see its help).
+  // A folder with k/params.json is a sealed bucket (sync.py --dry-run): every object is <name>.enc,
+  // opened with the passphrase's key (seal.js), which this device may remember.
   const hosted = (() => {
     // Served by the reader's own server (serve.sh), the objects answer only with the per-start token api.js writes
     // into the shell as it serves it. On a static host the tag stays unfilled and none is sent.
@@ -21,14 +23,56 @@
       location.reload();
       return true;
     }
-    async function get(path) {
-      const r = await fetch(path, { cache: "no-store", headers });
+    function checked(r, path) {
       if (r.status === 403 && headers["x-transcript-reader-token"]) {
         throw new Error(reload() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
       }
       if (!r.ok) throw new Error(r.status === 404 ? `${path} is not built yet.` : `Loading ${path} failed (${r.status}).`);
-      return r.json();
+      return r;
     }
+    const fetched = async path => checked(await fetch(path, { cache: "no-store", headers }), path);
+    // The bucket's params and key once it is opened; both stay null for a plain copy.
+    const sealed = { params: null, key: null };
+    async function get(path) {
+      if (!sealed.params) return (await fetched(path)).json();
+      return seal.openJson(sealed.key, path, await (await fetched(path + ".enc")).arrayBuffer());
+    }
+    // The key remembered on this device (plan decision 4), under its bucket's salt, until "Forget
+    // this device". A browser without IndexedDB (or a private window) keeps it for this page only.
+    function keys(mode, run) {
+      return new Promise((resolve) => {
+        try {
+          const opening = indexedDB.open("hosted-reader", 1);
+          opening.onupgradeneeded = () => opening.result.createObjectStore("keys");
+          opening.onerror = () => resolve(null);
+          opening.onsuccess = () => {
+            const request = run(opening.result.transaction("keys", mode).objectStore("keys"));
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => resolve(null);
+          };
+        } catch (e) { resolve(null); }
+      });
+    }
+    // "plain" for a plain copy; "open" for a sealed one this device has the key of; else "locked".
+    async function prepare() {
+      const r = await fetch("k/params.json", { cache: "no-store", headers });
+      if (r.status === 404) return "plain";
+      sealed.params = await checked(r, "k/params.json").json();
+      const kept = await keys("readonly", store => store.get(sealed.params.salt));
+      if (kept) {
+        try { await seal.open(kept, "k/check", seal.fromBase64(sealed.params.check)); sealed.key = kept; return "open"; } catch (e) { /* not this bucket's key any more */ }
+      }
+      return "locked";
+    }
+    // Whether the passphrase opens the bucket; with remember, this device keeps the key (never the passphrase).
+    async function unlock(passphrase, remember) {
+      const key = await seal.unlock(passphrase, sealed.params);
+      if (!key) return false;
+      sealed.key = key;
+      if (remember) await keys("readwrite", store => store.put(key, sealed.params.salt));
+      return true;
+    }
+    const forget = () => keys("readwrite", store => store.clear());
     const index = () => get("index.json");
     // One object by its index entry ({ object, stamp }), fetched once per stamp; a failed load is tried again next time.
     const kept = new Map();
@@ -95,5 +139,6 @@
       setInterval(run, REFRESH_MS);
       document.addEventListener("visibilitychange", run);
     }
-    return { index, data, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, HEARTBEAT, REFRESH_MS };
+    return { index, data, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget,
+      isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();

@@ -1,15 +1,18 @@
-"""Tests for sync.py --build-only, the hosted copy's incremental build: its objects, its
-manifest (what a run builds again and what it leaves), and that the objects hold what
-the local page's payload holds.
+"""Tests for sync.py: --build-only, the hosted copy's incremental build (its objects, its
+manifest: what a run builds again and what it leaves, and that the objects hold what the
+local page's payload holds), and --dry-run, the sync agent sealing a local bucket folder.
 
 Run from the repo root: python3 -m unittest setup/transcript-reader/test_sync.py
-Fixtures are synthetic logs and fleet records in a temporary folder; Herdr is faked.
+Fixtures are synthetic logs and fleet records in a temporary folder; Herdr is faked. The
+dry run needs Node (upload.js); the passphrase is made up.
 """
 
 import argparse
+import io
 import json
 import os
 import random
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,7 +32,7 @@ X = "dddddddd-4444-4444-8444-444444444444"  # outside every fleet home
 N = "eeeeeeee-5555-4555-8555-555555555555"  # A's pane after a /clear
 
 NOW = time.time()
-T0 = NOW - 2 * 86400
+T0 = float(int(NOW - 2 * 86400))  # whole seconds, so times read back from the logs compare equal
 CLEAR = "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"
 
 
@@ -114,9 +117,11 @@ class Lab:
             test.addCleanup(patch.stop)
 
     def build(self, *extra):
-        args = ["--build-only", "--out", str(self.out), "--main-home", str(self.main), *extra]
+        return self.build_only_args("--build-only", *extra)
+
+    def build_only_args(self, *args):
         with mock.patch("sys.stdout"):
-            return sync.main(args)
+            return sync.main([*args, "--out", str(self.out), "--main-home", str(self.main)])
 
     def index(self):
         return json.loads((self.out / "index.json").read_text(encoding="utf-8"))
@@ -424,3 +429,160 @@ class LinkTurnsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PASS = "a made-up lab passphrase"
+SEAL = Path(__file__).resolve().parent / "prototype" / "seal.js"
+# Opens sealed objects of a bucket with the passphrase in the environment, as the shell does.
+OPEN_JS = r"""
+const fs = require('fs'), path = require('path');
+const seal = require(process.argv[1]);
+(async () => {
+  const [folder, ...names] = process.argv.slice(2);
+  const key = await seal.unlock(process.env.HOSTED_READER_PASSPHRASE, JSON.parse(fs.readFileSync(path.join(folder, 'k/params.json'))));
+  const out = {};
+  for (const name of names) out[name] = key && await seal.openJson(key, name, fs.readFileSync(path.join(folder, name + '.enc')));
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+class DryRunTest(unittest.TestCase):
+    def setUp(self):
+        self.lab = Lab(self)
+        self.target = self.lab.root / "out" / "bucket"
+        env = mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def dry_run(self, *extra):
+        return self.lab.build_only_args("--dry-run", str(self.target), *extra)
+
+    def opened(self, *names, passphrase=PASS):
+        done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), *names], capture_output=True, text=True,
+                              env={**os.environ, sync.PASSPHRASE_ENV: passphrase}, check=True)
+        return json.loads(done.stdout)
+
+    def sealed_times(self):
+        return {str(p.relative_to(self.target)): p.stat().st_mtime_ns for p in self.target.rglob("*") if p.is_file()}
+
+    def test_every_object_is_sealed_into_the_folder_with_the_shell_and_the_params(self):
+        self.assertEqual(self.dry_run(), 0)
+        index = self.lab.index()
+        names = ["index.json"] + [e["object"] for e in index["conversations"]] + [m["object"] for m in index["documents"].values()] \
+            + [m["object"] for m in index["weeks"].values()]
+        self.assertEqual(sorted(self.sealed_times()), sorted(["index.html", "k/params.json"] + [n + ".enc" for n in names]))
+        opened = self.opened(*names)
+        self.assertEqual([e["id"] for e in opened["index.json"]["conversations"]], [e["id"] for e in index["conversations"]])
+        for name in names[1:]:
+            self.assertEqual(opened[name], self.lab.object(name), name)
+        self.assertEqual((self.target / "index.html").read_bytes(), (self.lab.out / "index.html").read_bytes())
+        self.assertEqual(self.opened("index.json", passphrase="not it"), {"index.json": None})
+        # Nothing is written outside the bucket and out/, and the passphrase nowhere at all.
+        self.assertEqual(sorted(p.name for p in self.lab.root.iterdir()), ["elsewhere", "homes", "out", "projects"])
+        for path in (self.lab.root / "out").rglob("*"):
+            if path.is_file():
+                self.assertNotIn(PASS.encode(), path.read_bytes(), path)
+
+    def test_a_secret_is_redacted_before_it_is_sealed_and_only_counted(self):
+        secret = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        append_log(self.lab.logs[M], [user("The deploy key?", T0 + 900, str(self.lab.mate)), say(f"It is {secret} for now.", T0 + 910, str(self.lab.mate))])
+        self.dry_run()
+        sealed = json.dumps(self.opened(f"s/{M}.json", "index.json"))
+        self.assertIn("It is [redacted:github-token] for now.", sealed)
+        self.assertNotIn(secret, sealed)
+        self.assertIn(secret, json.dumps(self.lab.object(f"s/{M}.json")), "the laptop keeps the original")
+        log = json.loads((self.lab.out / "redactions.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(log["totals"]["github-token"], 2)  # the reply, and its first line in the fleet week
+        self.assertEqual(log["objects"][f"s/{M}.json"], {"github-token": 1})
+        self.assertNotIn(secret, (self.lab.out / "redactions.json").read_text(encoding="utf-8"))
+
+    def test_a_run_with_nothing_new_seals_nothing_and_starts_no_node(self):
+        self.dry_run()
+        before = self.sealed_times()
+        with mock.patch.object(sync.subprocess, "Popen", wraps=sync.subprocess.Popen) as started:
+            self.dry_run()
+        self.assertEqual(started.call_count, 0)
+        self.assertEqual(self.sealed_times(), before)
+
+    def test_a_change_seals_its_object_and_the_index_alone(self):
+        self.dry_run()
+        before = self.sealed_times()
+        wait_a_tick()
+        append_log(self.lab.logs[M], [user("And the changelog?", T0 + 900, str(self.lab.mate)), say("Updated.", T0 + 910, str(self.lab.mate))])
+        self.dry_run()
+        after = self.sealed_times()
+        changed = sorted(name for name in after if after[name] != before.get(name))
+        week = [m["object"] + ".enc" for m in self.lab.index()["weeks"].values()]
+        self.assertEqual(changed, sorted([f"s/{M}.json.enc", "index.json.enc", *week]))
+
+    def test_the_index_is_sealed_again_for_the_heartbeat(self):
+        self.dry_run()
+        state = json.loads((self.lab.out / "upload.json").read_text(encoding="utf-8"))
+        state["index_at"] -= sync.HEARTBEAT + 1
+        (self.lab.out / "upload.json").write_text(json.dumps(state), encoding="utf-8")
+        before = self.sealed_times()
+        wait_a_tick()
+        self.dry_run()
+        after = self.sealed_times()
+        self.assertEqual(sorted(name for name in after if after[name] != before[name]), ["index.json.enc"])
+
+    def test_the_bucket_keeps_90_days_and_the_laptop_keeps_everything(self):
+        old, main = "ffffffff-6666-4666-8666-666666666666", str(self.lab.main)
+        (self.lab.main / "old-plan.md").write_text("# Old plan\n", encoding="utf-8")
+        long_ago = NOW - 100 * 86400
+        write_log(self.lab.projects / "main" / f"{old}.jsonl", [user("An old task.", long_ago, main), say("See `old-plan.md`.", long_ago + 5, main)], long_ago + 10)
+        self.dry_run()
+        local = self.lab.index()
+        self.assertIn(old, [e["id"] for e in local["conversations"]])
+        sealed = self.opened("index.json")["index.json"]
+        self.assertNotIn(old, [e["id"] for e in sealed["conversations"]])
+        self.assertNotIn("old-plan.md", [m["name"] for m in sealed["documents"].values()])
+        self.assertIn("old-plan.md", [m["name"] for m in local["documents"].values()])
+        self.assertFalse((self.target / f"s/{old}.json.enc").exists())
+
+    def test_a_conversation_that_ages_out_is_deleted_from_the_bucket(self):
+        self.dry_run()
+        self.assertTrue((self.target / f"s/{W}.json.enc").is_file())
+        with mock.patch.object(sync, "RETENTION_DAYS", 0.0001):
+            self.dry_run()
+        self.assertFalse((self.target / f"s/{W}.json.enc").exists())
+        self.assertEqual(self.opened("index.json")["index.json"]["conversations"], [])
+
+    def test_a_wrong_passphrase_stops_and_a_new_one_seals_everything_again(self):
+        self.dry_run()
+        before = self.sealed_times()
+        append_log(self.lab.logs[M], [user("More?", T0 + 900, str(self.lab.mate))])
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "not it"}), self.assertRaises(SystemExit) as stop:
+            self.dry_run()
+        self.assertIn("does not open this bucket", str(stop.exception))
+        self.assertEqual(self.sealed_times(), before)
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "a new one"}):
+            self.dry_run("--new-passphrase")
+        self.assertEqual(self.opened("index.json")["index.json"], None)
+        self.assertEqual(len(self.opened("index.json", passphrase="a new one")["index.json"]["conversations"]), 3)
+
+    def test_wipe_empties_what_the_dry_run_wrote_and_nothing_else(self):
+        self.dry_run()
+        (self.target / "notes.txt").write_text("not the dry run's", encoding="utf-8")
+        self.lab.build_only_args("--wipe", str(self.target))
+        self.assertEqual([str(p.relative_to(self.target)) for p in self.target.rglob("*") if p.is_file()], ["notes.txt"])
+        self.assertFalse((self.lab.out / "upload.json").exists())
+        self.assertTrue((self.lab.out / "index.json").is_file(), "the laptop's copy stays")
+
+    def test_without_a_passphrase_or_a_terminal_it_stops_before_building(self):
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: ""}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
+                self.assertRaises(SystemExit) as stop:
+            self.dry_run()
+        self.assertIn(sync.PASSPHRASE_ENV, str(stop.exception))
+        self.assertFalse(self.lab.out.exists())
+
+    def test_the_launch_agent_reads_the_passphrase_from_the_keychain_and_is_only_printed(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+            self.assertEqual(sync.main(["--launch-agent", str(self.target)]), 0)
+        plist = printed.getvalue()
+        self.assertIn("<key>StartInterval</key><integer>60</integer>", plist)
+        self.assertIn(f"security find-generic-password -w -s {sync.KEYCHAIN_SERVICE}", plist)
+        self.assertIn(f'--dry-run "{self.target.resolve()}"', plist)
+        self.assertNotIn(PASS, plist)
+        self.assertFalse(self.target.exists())

@@ -47,7 +47,9 @@ In any copy of the page:
 
 ## The hosted copy
 
-The first step towards reading the transcripts from a phone while the laptop is off (the hosted reader plan, ship 1). Nothing leaves the laptop yet: there is no redaction, encryption or upload.
+The way towards reading the transcripts from a phone while the laptop is off (the hosted reader plan, ships 1 and 2).
+
+**Nothing is hosted.** Everything below runs on this laptop and writes only to `out/`: no cloud account, bucket, domain or upload exists, and no code here talks to one. Hosting it (ship 3) waits for a written ShopBack security or IT exemption for keeping these transcripts on a personal Cloudflare account, or else for the in-policy alternative, an app in ShopBack's Replit workspace (plan sections 5 and 6).
 
 ```bash
 python3 setup/transcript-reader/sync.py --build-only                 # every fleet session
@@ -64,13 +66,32 @@ The shell is the same page as the local reader, loading `index.json` and then on
 - **Every conversation, by home.** The picker groups the conversations by home, newest first, each starting with the replies that need you since your last message ("2 since your last message") and its last activity. That count is only for a conversation a live Herdr pane runs: one whose pane has closed says "· closed pane" instead, as on the local page. The page opens on the newest conversation with such a reply. The line under the controls keeps the local page's own count of every reply that needs you.
 - **Slower refresh.** Every 30 seconds while the page is visible it reads `index.json` again and swaps in a conversation whose stamp changed, where you are reading. New page code reloads it.
 
+### The sealed copy (a dry run of the sync)
+
+`--dry-run` is the sync agent of ship 2 with its one target, a local folder (`out/bucket/` by default) laid out as the bucket would be. Each run builds as above, then takes the conversations active in the last 90 days, the documents they name and the fleet weeks of the last 90 days, and:
+
+- **Redacts.** Every text in every object goes through `redact.py`: AWS keys, `sk-` API keys, GitHub, GitLab and Slack tokens, JWTs, bearer tokens, private keys, passwords and secrets in URLs and in env lines, and 64-hex tokens become `[redacted:<kind>]`. It looks for secrets, not personal data. The counts, never the text, go to `out/hosted/redactions.json`. The laptop's own copy keeps the original.
+- **Encrypts.** Each object is gzipped and sealed with AES-256-GCM under a key derived from your passphrase (PBKDF2-SHA256, 600,000 rounds; the salt is in `k/params.json`, which holds no secret), its own path bound in, so the host could neither read one nor pass one off as another. The page opens them in the browser.
+- **Writes only what changed**, deletes what fell out of the 90 days, and seals the index again at least every 5 minutes, so the "As of" line stays fresh while the laptop is awake.
+
+```bash
+export HOSTED_READER_PASSPHRASE='YOUR_PASSPHRASE_HERE'   # or leave it unset to be asked in the terminal
+python3 setup/transcript-reader/sync.py --dry-run
+python3 setup/transcript-reader/sync.py --wipe                  # empty out/bucket/ of what the dry run wrote
+python3 setup/transcript-reader/sync.py --launch-agent          # print a LaunchAgent that runs the dry run every minute
+```
+
+The passphrase is read from the environment or the terminal only, and never written or printed. A passphrase the bucket does not know stops the run; `--new-passphrase` seals everything again under it (losing the passphrase loses nothing). The LaunchAgent is only printed, to install yourself if you want it: it reads the passphrase from your login keychain at each run (`security add-generic-password -s pmos-hosted-reader -a "$USER" -w` stores it, asking for it), and it runs while the Mac is awake.
+
+To review it locally, start the reader's server and open the sealed copy beside the local page: `bash setup/transcript-reader/serve.sh start`, then `http://localhost:8768/setup/transcript-reader/out/bucket/index.html`. It asks for the passphrase once; "Remember on this device" (on by default) keeps the derived key, never the passphrase, in this browser until "Forget this device".
+
 ## What it touches
 
 - Reads Claude Code session logs and its running-process records, the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name.
 - Writes only `out/` (gitignored: the pages embed private transcripts). Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
-The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` too) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
+The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` and `out/bucket/` too) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
 The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
 The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it.
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
@@ -79,6 +100,6 @@ A path that the file system resolves into `out/` (another letter case, Unicode f
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py
-node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_redact.py
+node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js setup/transcript-reader/seal.test.js
 ```
