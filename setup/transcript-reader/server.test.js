@@ -96,11 +96,27 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
   for (const url of ['/notes.md', '/setup/transcript-reader/README.md', '/setup/serve.sh', '/']) assert.strictEqual(namesReaderOut(root, req(url)), false, url);
 });
 
+// A copy of the reader's server files in a fresh repo-shaped folder, so serve.sh writes its
+// out/ folder and log there rather than in this repo copy.
+function serverCopy() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-serve-')));
+  const organizer = path.join(__dirname, '..', 'herdr-organizer');
+  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js']],
+    [organizer, 'herdr-organizer', fs.readdirSync(organizer).filter((name) => name.endsWith('.js'))]];
+  for (const [from, folder, names] of files) {
+    fs.mkdirSync(path.join(root, 'setup', folder), { recursive: true });
+    for (const name of names) fs.copyFileSync(path.join(from, name), path.join(root, 'setup', folder, name));
+  }
+  return root;
+}
+
 // serve.sh end to end, on a free port: started with its output piped (as a caller capturing it
 // would), it must return, serve this copy, refuse a second start on another copy's port, and stop.
 test('serve.sh starts, reports, restarts and stops this copy\'s server without hanging a piped caller', { timeout: 60000 }, async () => {
   const { execFile } = require('child_process');
-  const script = path.join(__dirname, 'serve.sh');
+  const root = serverCopy();
+  const here = path.join(root, 'setup', 'transcript-reader');
+  const script = path.join(here, 'serve.sh');
   const umask = process.umask(0o022);  // the usual default, which would leave new files readable by all
   const run = (...args) => new Promise((resolve) => execFile('bash', [script, ...args], { timeout: 20000, env: { ...process.env, PMOS_READER_PORT: '' } }, (error, stdout) => resolve({ code: error ? error.code : 0, stdout })));
   const port = String(await freePort());
@@ -110,12 +126,12 @@ test('serve.sh starts, reports, restarts and stops this copy\'s server without h
     assert.match(started.stdout, /Reader server started/);
     // out/ holds private transcript text: owner-only, like Claude's logs, whatever the umask.
     const mode = (file) => fs.statSync(file).mode & 0o777;
-    assert.strictEqual(mode(path.join(__dirname, 'out')), 0o700);
-    assert.strictEqual(mode(path.join(__dirname, 'out', `server-${port}.log`)), 0o600);
+    assert.strictEqual(mode(path.join(here, 'out')), 0o700);
+    assert.strictEqual(mode(path.join(here, 'out', `server-${port}.log`)), 0o600);
     assert.match((await run('status', '--port', port)).stdout, /serves this copy of the repo/);
     assert.match((await run('start', '--port', port)).stdout, /already running/);
     const answer = await get(Number(port), '/');
-    assert.strictEqual(answer.headers[COPY_HEADER], copyId(path.join(__dirname, '..', '..')));
+    assert.strictEqual(answer.headers[COPY_HEADER], copyId(root));
     assert.match((await run('restart', '--port', port)).stdout, /Stopped[\s\S]*started/);
   } finally {
     assert.match((await run('stop', '--port', port)).stdout, /Stopped the reader server/);
@@ -123,5 +139,6 @@ test('serve.sh starts, reports, restarts and stops this copy\'s server without h
   assert.match((await run('status', '--port', port)).stdout, /Nothing listens/);
   const refused = await run('start', '--port', '8765');
   assert.strictEqual(refused.code, 2);
+  assert.ok(!fs.existsSync(path.join(__dirname, 'out', `server-${port}.log`)), 'nothing written in this repo copy');
   process.umask(umask);
 });

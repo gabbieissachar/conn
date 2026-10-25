@@ -11,7 +11,7 @@ python3 setup/transcript-reader/reader.py          # rebuild every listed sessio
 ```
 
 `reader.py` also has `remove`, `list` and `panes` (live Herdr panes to pick from).
-The reader has its own server, in its own process, apart from `setup/serve.sh` and the pages that one serves. `reader.py` starts it when needed, on port **8768** (8765 and 8766 belong to other pages). Set `PMOS_READER_PORT` or pass `--port` to `serve.sh` for another port.
+The reader has its own server, in its own process, apart from `setup/serve.sh` and the pages that one serves. `reader.py` starts it when needed, on port **8768** (8765 and 8766 belong to other pages). For another port, set `PMOS_READER_PORT`, which `reader.py` and `serve.sh` both read. `serve.sh --port` changes only that one command: `reader.py` still looks on 8768 and starts its own server there.
 `reader.py` checks which copy of the repo answers on the port and says so, with where that other copy runs (`Port 8768 serves another copy of the repo (/path)`).
 Start and stop it by hand with `bash setup/transcript-reader/serve.sh [start|stop|restart|status] [--port <port>]`. `stop` only stops this copy's own reader server, never another copy's or another app's.
 After changing `api.js` or `server.js`, restart it: `bash setup/transcript-reader/serve.sh restart`.
@@ -22,7 +22,8 @@ Open the printed `http://localhost:8768/setup/transcript-reader/out/prototype.ht
 - **VS Code Integrated Browser**, the browser tab in VS Code's editor area.
 
 Not supported: the **VS Code Simple Browser**. It shows a page inside a frame, and the page refuses to be framed on purpose (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), so that no other page can embed it. Use the Integrated Browser or Chrome instead. Safari and Firefox were not tried.
-Opened that way, the page:
+
+Opened in a supported browser, the page:
 
 - **Refreshes itself.** When a listed session writes a new turn, the server rebuilds the pages (at most every 3 seconds, only while a page is open) and the page swaps in the new turns where you are reading. When the page's own code changes it reloads, keeping the replies you expanded and your place.
 - **Follows Herdr.** With "Follow Herdr" on, the reader shows the session of the pane Herdr has focused. A session not on the reading list is added. While you write in the message bar, the switch waits until you send or leave the box, and the bar says where Herdr is. The session the page opens on wins over the first focus when the address names it (`#s=…`, which the page keeps up to date) or when this tab read it last (a reload, or the answer sheet's "← Reader").
