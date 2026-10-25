@@ -30,6 +30,7 @@ test('preview: asks the home\'s own roller, from its own code root, against its 
     const result = await env.preview.preview({ home: env.id, kind: 'crew', ids: ['crew-ok', 'crew-covered', 'crew-low'] });
     assert.deepEqual(result.results.map((item) => [item.id, item.verdict, item.covered]), [['crew-covered', 'eligible', true], ['crew-low', 'ineligible', undefined], ['crew-ok', 'eligible', false]]);
     assert.equal(result.eligible, 2);
+    assert.equal(result.results.find((item) => item.id === 'crew-ok').detail.includes('dry-run'), false, 'the not-covered note is in `covered`, not repeated in the text');
     assert.equal(result.label, 'p');
     const calls = fs.readFileSync(env.calls, 'utf8').trim().split('\n').map((line) => line.split('|'));
     assert.equal(calls.length, 3, 'one check per id and nothing else was run');

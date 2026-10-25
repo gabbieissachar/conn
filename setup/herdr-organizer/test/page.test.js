@@ -333,7 +333,7 @@ function rolloverHarness(overrides = {}) {
   const source = html.slice(html.indexOf('// ---- Context rollover'), html.indexOf('// ---- Context view')).replace(/^    const rollover = \{.*$/m, '');
   const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null, ...overrides };
   const api = { run: async () => { throw new Error('no network in this test'); } };
-  const functions = new Function('escapeHtml', 'plural', 'rollover', 'contextAge', 'api', 'planClock', 'state', 'renderContext', `${source}; return { rolloverCard, rolloverToken, rolloverArmBlock, rolloverPicked };`)(escapeHtml, plural, rollover, seconds => `${seconds} s ago`, api, () => '09:05', { view: 'context' }, () => {});
+  const functions = new Function('escapeHtml', 'plural', 'rollover', 'contextAge', 'api', 'planClock', 'state', 'renderContext', `${source}; return { rolloverCard, rolloverToken, rolloverArmBlock, rolloverPicked, rolloverVerdictText };`)(escapeHtml, plural, rollover, seconds => `${seconds} s ago`, api, () => '09:05', { view: 'context' }, () => {});
   return { ...functions, rollover };
 }
 
@@ -416,9 +416,46 @@ test('rollover card: Arm needs a ticked id and says why it is not offered', () =
   assert.match(rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true }, open: new Set(['ha02f1cb9:Crewmates and scouts']) }).rolloverCard(), /data-ro-open="ha02f1cb9:Crewmates and scouts" open/, 'an opened list stays open across a redraw');
 });
 
+test('rollover card: the preview names who would roll for the ticked ids, in plain words, escaped, and only for those ids', () => {
+  const home = rolloverHome();
+  const results = [
+    { id: 'crew-a', verdict: 'eligible', covered: false, detail: 'context 41% (90000 of 200000 tokens), idle' },
+    { id: 'crew-b', verdict: 'ineligible', detail: 'context 12% of its 200000 window is below the 30% threshold' },
+    { id: '<b>x</b>', verdict: 'skip', detail: 'only Claude sessions roll for now' },
+  ];
+  const { rolloverCard, rollover, rolloverVerdictText } = rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true } });
+  rollover.pick.set('ha02f1cb9|crew', new Set(['crew-a', 'crew-b']));
+  assert.match(rolloverCard(), /data-ro-preview="crew"[^>]*>Check who would roll/);
+  assert.equal(/data-ro-preview="crew"[^>]*disabled/.test(rolloverCard()), false);
+  assert.match(rolloverCard(), /data-ro-preview="second-mates"[^>]*disabled/, 'nothing ticked for second mates');
+  rollover.preview = { home: 'ha02f1cb9', kind: 'crew', ids: ['crew-a', 'crew-b'], loading: true, error: '', data: null, at: '' };
+  assert.match(rolloverCard(), /Asking this home's firstmate/);
+  assert.match(rolloverCard(), /data-ro-preview="crew"[^>]*disabled/, 'one question at a time');
+  rollover.preview = { home: 'ha02f1cb9', kind: 'crew', ids: ['crew-a', 'crew-b'], loading: false, error: '', data: { results, eligible: 1 }, at: '09:07' };
+  const out = rolloverCard();
+  assert.match(out, /Asked this home's firstmate at 09:07\. 1 of 3 would roll\. This is a read-only check; nothing was changed\./);
+  assert.match(out, /pill good">would roll once armed<\/span> crew-a/);
+  assert.match(out, /pill warn">would not roll now<\/span> crew-b/);
+  assert.match(out, /&lt;b&gt;x&lt;\/b&gt;/, 'an id is escaped');
+  assert.match(out, /below the 30% threshold/);
+  assert.deepEqual(rolloverVerdictText({ verdict: 'eligible', covered: true }), ['would roll at the next pass', 'good']);
+  // ticking another id makes the earlier answer stale, so it is not shown for the new selection
+  rollover.pick.set('ha02f1cb9|crew', new Set(['crew-a']));
+  assert.equal(rolloverCard().includes('would roll once armed'), false);
+  rollover.pick.set('ha02f1cb9|crew', new Set(['crew-a', 'crew-b']));
+  rollover.preview = { ...rollover.preview, error: 'No watcher runs in that home.', data: null };
+  assert.match(rolloverCard(), /ro-preview scope-note error">No watcher runs in that home\./);
+  // the confirmation says whether the ids were checked
+  rollover.preview = { home: 'ha02f1cb9', kind: 'crew', ids: ['crew-a', 'crew-b'], loading: false, error: '', data: { results, eligible: 1 }, at: '09:07' };
+  rollover.confirm = { kind: 'arm', home: 'ha02f1cb9', which: 'crew', ids: ['crew-a', 'crew-b'] };
+  assert.match(rolloverCard(), /Checked at 09:07: 1 of 3 would roll\./);
+  rollover.preview = null;
+  assert.match(rolloverCard(), /The ids were not checked against the roller's rules\./);
+});
+
 test('rollover card: the page names only the rollover actions of this slice and builds every token itself', () => {
   const names = [...new Set((html.match(/api\.run\('rollover-[a-z-]+'|runRollover\('rollover-[a-z-]+'/g) || []).map(item => item.replace(/.*'(rollover-[a-z-]+)'/, '$1')))].sort();
-  assert.deepEqual(names, ['rollover-arm', 'rollover-state', 'rollover-stop', 'rollover-undo']);
+  assert.deepEqual(names, ['rollover-arm', 'rollover-preview', 'rollover-state', 'rollover-stop', 'rollover-undo']);
   assert.equal(/rollover-primary|handoff-restart/.test(html), false, 'no primary action and no handoff-restart in the page yet');
   assert.match(html, /runRollover\('rollover-stop', \{\}/, 'Stop sends nothing but itself: no confirm, no typed text');
   assert.match(html, /confirm: `rollover-resume:\$\{home\.id\}`/, 'removing the off file carries the resume token');

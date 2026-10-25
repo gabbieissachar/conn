@@ -38,7 +38,8 @@ function createPreview({ rollover, runner = defaultRunner, env = process.env, ti
     const line = String(result.stdout || '').split('\n').find((item) => item.trim()) || '';
     const match = VERDICT_LINE.exec(line.trim());
     if (!match) return { id, verdict: 'unreadable', detail: scrub(result.stderr || result.stdout || 'The check printed nothing.', 160) };
-    const detail = scrub(match[2], 240);
+    // "(dry-run: ... does not cover it)" is carried by `covered`, so the card words it once.
+    const detail = scrub(match[2].replace(NOT_COVERED, ''), 240);
     return { id, verdict: match[1], detail, ...(match[1] === 'eligible' ? { covered: !NOT_COVERED.test(match[2]) } : {}) };
   }
 

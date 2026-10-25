@@ -213,6 +213,10 @@ created: 2026-09-10
     .ro-origin { margin-top: 2px; color: var(--muted); font: 400 10px "DM Sans", sans-serif; }
     .ro-arm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 4px; }
     .ro-why { color: var(--muted); font-size: 11px; }
+    .ro-preview { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid #e3e8f1; border-radius: 8px; background: #fafbfe; }
+    .ro-pv { margin: 0; padding: 0; list-style: none; }
+    .ro-pv li { margin: 4px 0; }
+    .ro-detail { color: var(--muted); }
     .ro-ids label { cursor: pointer; }
     .ro-ids input { accent-color: var(--purple); }
     .ro-ids { margin-top: 8px; font-size: 11px; color: var(--muted); }
@@ -1731,6 +1735,32 @@ created: 2026-09-10
       const undo = mine ? `<button type="button" class="small-btn" data-ro-undo="${escapeHtml(file.name)}" data-home="${escapeHtml(home.id)}" ${rollover.busy ? 'disabled' : ''} title="${file.name === 'rollover-off' ? 'Removes the off file this page made. Every live switch still present in this home turns back on.' : 'Removes the file this page made, if nobody changed it. The watcher may then roll less.'}">${file.name === 'rollover-off' ? 'Resume' : 'Remove'}</button>` : '';
       return `<tr><td>${escapeHtml(file.name)}${made}</td><td>${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td>${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td>${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td><td>${undo}</td></tr>`;
     }).join('')}</tbody></table>`;
+    // The roller's own verdict for each ticked id, in plain words. `covered` is false when the live file does not list the id yet.
+    const ROLLOVER_VERDICT = {
+      ineligible: ['would not roll now', 'warn'],
+      skip: ['would be skipped', 'warn'],
+      off: ['stopped by the off file', 'warn'],
+      'config-error': ['the home\'s rollover settings have an error', 'bad'],
+      timeout: ['the check did not finish in time', 'warn'],
+      unreadable: ['the check gave no answer', 'warn'],
+      unknown: ['no task record has this id', 'warn'],
+    };
+    const rolloverVerdictText = item => (item.verdict === 'eligible' ? [item.covered === false ? 'would roll once armed' : 'would roll at the next pass', 'good'] : (ROLLOVER_VERDICT[item.verdict] || [item.verdict, '']));
+    const rolloverPreviewFor = (home, kind) => {
+      const preview = rollover.preview;
+      return preview && preview.home === home.id && preview.kind === kind && preview.ids.join(',') === rolloverPicked(home, kind).join(',') ? preview : null;
+    };
+    const rolloverPreviewBox = (home, kind) => {
+      const preview = rolloverPreviewFor(home, kind);
+      if (!preview) return '';
+      if (preview.loading) return '<div class="ro-preview tab-meta">Asking this home\'s firstmate…</div>';
+      if (preview.error) return `<div class="ro-preview scope-note error">${escapeHtml(preview.error)}</div>`;
+      const rows = preview.data.results.map(item => {
+        const [text, tone] = rolloverVerdictText(item);
+        return `<li><span class="pill ${tone}">${escapeHtml(text)}</span> ${escapeHtml(item.id)}${item.detail ? `<span class="ro-detail"> - ${escapeHtml(item.detail)}</span>` : ''}</li>`;
+      }).join('');
+      return `<div class="ro-preview"><div class="tab-meta" style="margin:0 0 4px">Asked this home's firstmate at ${escapeHtml(preview.at)}. ${preview.data.eligible} of ${preview.data.results.length} would roll. This is a read-only check; nothing was changed.</div><ul class="ro-pv">${rows}</ul></div>`;
+    };
     const rolloverIdList = (home, kind) => {
       const { title, group: groupName } = ROLLOVER_KINDS[kind];
       const group = home.ids && home.ids[groupName];
@@ -1743,8 +1773,16 @@ created: 2026-09-10
         ? `<li><label><input type="checkbox" data-ro-pick="${escapeHtml(rolloverPickKey(home.id, kind))}" value="${escapeHtml(item.id)}" ${picked.has(item.id) ? 'checked' : ''}> ${escapeHtml(item.id)}</label></li>`
         : `<li class="ro-no">${escapeHtml(item.id)} - ${escapeHtml(ROLLOVER_REASON[item.reason] || item.reason)}</li>`)).join('');
       const block = rolloverArmBlock(home, kind);
-      const arm = `<div class="ro-arm"><button type="button" class="primary-btn" data-ro-arm="${kind}" data-home="${escapeHtml(home.id)}" ${block || rollover.busy ? 'disabled' : ''} title="${escapeHtml(block || `Asks to create ${ROLLOVER_KINDS[kind].file} listing the ticked ids.`)}">Arm ${escapeHtml(ROLLOVER_KINDS[kind].noun)}${picked.size ? ` (${picked.size})` : ''}</button>${block ? `<span class="ro-why">${escapeHtml(block)}</span>` : ''}</div>`;
+      const asking = rollover.preview && rollover.preview.loading;
+      const checkBlock = home.watcher !== 'running' ? 'No watcher runs in this home, so there is no firstmate code to ask.' : !picked.size ? 'Tick at least one id.' : '';
+      const check = `<button type="button" data-ro-preview="${kind}" data-home="${escapeHtml(home.id)}" ${checkBlock || asking ? 'disabled' : ''} title="${escapeHtml(checkBlock || 'Asks this home\'s own firstmate who would roll for the ticked ids. Read only.')}">Check who would roll</button>`;
+      const arm = `<div class="ro-arm">${check}<button type="button" class="primary-btn" data-ro-arm="${kind}" data-home="${escapeHtml(home.id)}" ${block || rollover.busy ? 'disabled' : ''} title="${escapeHtml(block || `Asks to create ${ROLLOVER_KINDS[kind].file} listing the ticked ids.`)}">Arm ${escapeHtml(ROLLOVER_KINDS[kind].noun)}${picked.size ? ` (${picked.size})` : ''}</button>${block ? `<span class="ro-why">${escapeHtml(block)}</span>` : ''}</div>${rolloverPreviewBox(home, kind)}`;
       return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${rows}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}${arm}</details>`;
+    };
+    const rolloverPreviewLine = (home, kind) => {
+      const preview = rolloverPreviewFor(home, kind);
+      if (!preview || preview.loading || preview.error) return 'The ids were not checked against the roller\'s rules.';
+      return `Checked at ${escapeHtml(preview.at)}: ${preview.data.eligible} of ${preview.data.results.length} would roll.`;
     };
     // The confirmation for the one change being asked for: the exact home, file and ids, and what follows from it.
     const rolloverConfirmBox = () => {
@@ -1754,7 +1792,7 @@ created: 2026-09-10
       if (!home) return '';
       if (ask.kind === 'arm') {
         const spec = ROLLOVER_KINDS[ask.which];
-        return `<div class="confirm-box" id="rollover-confirm"><strong>Arm ${escapeHtml(spec.noun)} in ${escapeHtml(home.label)}?</strong>This creates ${escapeHtml(spec.file)} in that home's config folder, listing ${plural(ask.ids.length, 'id')}: ${escapeHtml(ask.ids.join(', '))}. From the home's next watcher pass, firstmate may ask each of them for a handoff and restart it. A restart cannot be undone. Nothing else is written.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="arm">Create ${escapeHtml(spec.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
+        return `<div class="confirm-box" id="rollover-confirm"><strong>Arm ${escapeHtml(spec.noun)} in ${escapeHtml(home.label)}?</strong>This creates ${escapeHtml(spec.file)} in that home's config folder, listing ${plural(ask.ids.length, 'id')}: ${escapeHtml(ask.ids.join(', '))}. ${rolloverPreviewLine(home, ask.which)} From the home's next watcher pass, firstmate may ask each of them for a handoff and restart it. A restart cannot be undone. Nothing else is written.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="arm">Create ${escapeHtml(spec.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
       }
       return `<div class="confirm-box" id="rollover-confirm"><strong>Turn rolling back on in ${escapeHtml(home.label)}?</strong>This removes the off file this page made. Every live switch still present in that home takes effect again at its next watcher pass.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="undo">Remove ${escapeHtml(ask.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
     };
@@ -1799,7 +1837,7 @@ created: 2026-09-10
       }
       return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill warn">changes files</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
     };
-    const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null };
+    const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null, preview: null };
     const ROLLOVER_REFUSAL = { exists: 'That file already exists, so nothing was written.', off_present: 'The off file is present, so nothing was written.', no_watcher: 'No watcher runs in that home, so nothing was written.' };
     // One change at a time: the server says what it did or why it refused, and the card is read again either way.
     const runRollover = async (action, params, success) => {
@@ -1837,6 +1875,19 @@ created: 2026-09-10
         rollover.result = null;
         renderContext();
         document.querySelector('#rollover-confirm')?.scrollIntoView({ block: 'nearest' });
+      }));
+      section.querySelectorAll('[data-ro-preview]').forEach(button => button.addEventListener('click', async () => {
+        const home = homeOf(button.dataset.home);
+        const kind = button.dataset.roPreview;
+        if (!home || (rollover.preview && rollover.preview.loading)) return;
+        const ids = rolloverPicked(home, kind);
+        if (!ids.length) return;
+        rollover.preview = { home: home.id, kind, ids, loading: true, error: '', data: null, at: '' };
+        renderContext();
+        const mine = rollover.preview;
+        try { mine.data = await api.run('rollover-preview', { home: home.id, kind, ids }); mine.at = planClock(new Date().toISOString()); } catch (error) { mine.error = error.message; }
+        mine.loading = false;
+        if (state.view === 'context') renderContext();
       }));
       section.querySelectorAll('[data-ro-undo]').forEach(button => button.addEventListener('click', () => {
         const home = homeOf(button.dataset.home);
