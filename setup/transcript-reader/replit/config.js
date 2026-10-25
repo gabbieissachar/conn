@@ -26,6 +26,7 @@ function loadConfig(env = process.env) {
   if (appUrl && !secure(appUrl)) problems.push('APP_URL must be an https address');
   if (!secure(issuer)) problems.push('OIDC_ISSUER must be an https address');
   if (sessionSecret && sessionSecret.length < 32) problems.push('SESSION_SECRET must be at least 32 characters');
+  if (env.ALLOWED_EMAILS && !allowed.length) problems.push('ALLOWED_EMAILS has no email address');
   if (allowed.some((email) => !/^[^@\s]+@[^@\s]+$/.test(email))) problems.push('ALLOWED_EMAILS must be a comma-separated list of email addresses');
   if (problems.length) throw new Error('Not started: ' + problems.join('; ') + '.');
   return {
