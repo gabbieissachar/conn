@@ -248,6 +248,19 @@ class ClosedPanesTest(unittest.TestCase):
         self.assertEqual(builder.read_ids(reader.DROPPED), [])
         self.assertEqual(reader.drop_closed([B]), [B])
 
+    def test_adding_a_session_whose_pane_has_closed_lists_it_as_reopened_so_the_rebuild_keeps_it(self):
+        self.seen(A, B)
+        self.live = {A: PANES[A]}
+        with mock.patch.object(reader, "rebuild", lambda ids, focus=None, serve_page=True: 0), mock.patch.object(reader, "resolve", lambda name, panes: name):
+            self.assertEqual(reader.main(["add", A]), 0)
+            self.assertEqual(builder.read_ids(reader.REOPENED), [], "A's pane is live: nothing to reopen")
+            with mock.patch("builtins.print") as shown:
+                self.assertEqual(reader.main(["add", B]), 0)
+        self.assertEqual(reader.read_list(), [A, B])
+        self.assertEqual(builder.read_ids(reader.REOPENED), [B])
+        self.assertIn("pane has closed", " ".join(str(call.args[0]) for call in shown.call_args_list))
+        self.assertEqual(reader.drop_closed([A, B]), [A, B], "the same run's rebuild no longer undoes the add")
+
     def test_a_rebuild_writes_the_shorter_list(self):
         self.seen(A, B)
         self.live = {A: PANES[A]}
