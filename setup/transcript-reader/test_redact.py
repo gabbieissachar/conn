@@ -83,7 +83,8 @@ class RedactTextTest(unittest.TestCase):
         body1, body2 = fake("MIIE", 40), fake("", 40)
         for text in ("-----BEGIN RSA PRIVATE KEY-----\r\nProc-Type: 4,ENCRYPTED\r\n\r\n" + body1 + "\r\n" + body2 + "\r\n\r\nThat is all.",
                      '{"key": "-----BEGIN PRIVATE KEY-----\\n' + body1 + "\\n" + body2 + '\\n", "after": 1}',
-                     "  -----BEGIN PRIVATE KEY-----\n    " + body1 + "\n    " + body2 + "\n\nThat is all."):
+                     "  -----BEGIN PRIVATE KEY-----\n    " + body1 + "\n    " + body2 + "\n\nThat is all.",
+                     '{"key": "-----BEGIN PRIVATE KEY-----\\r\\n' + body1[:20] + "\\/" + body1[20:] + "\\r\\n" + body2 + '", "after": 1}'):
             out = self.check(text, "private-key", kept=("That is all." if "That" in text else '"after": 1',))
             self.assertNotIn(body1, out)
             self.assertNotIn(body2, out)
@@ -91,7 +92,8 @@ class RedactTextTest(unittest.TestCase):
 
     def test_long_runs_of_name_characters_are_quick(self):
         import time
-        for text in ("a-" * 60000, "_" * 120000, "x." * 60000 + "password=" + fake("", 9), "A" * 120000, "-----BEGIN PRIVATE KEY-----" * 2000):
+        for text in ("a-" * 60000, "_" * 120000, "x." * 60000 + "password=" + fake("", 9), "A" * 120000, "-----BEGIN PRIVATE KEY-----" * 2000,
+                     "-----BEGIN PRIVATE KEY-----\n" + " \t" * 60000 + "!", ("-----BEGIN PRIVATE KEY-----\n" + " " * 300 + "\n") * 300):
             started = time.monotonic()
             redact.redact_text(text, {})
             self.assertLess(time.monotonic() - started, 1.0, text[:20])

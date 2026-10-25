@@ -20,7 +20,11 @@ PATTERNS = [
     # Then one cut off before its END line (the head of a key file, a truncated tool output): its
     # BEGIN line and every following line of key material (base64, a header, a blank line), lines
     # ending in \n, \r\n or a written-out \n (a key quoted inside a JSON string), indented or not.
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:(?:\r?\n|\\n)[ \t]*(?:[A-Za-z0-9+/=]*|[A-Za-z-]+:[^\r\n\\]*)[ \t]*\r?(?=\r?\n|\\n|\Z))*"), 0),
+    # Each line has one way to match (blanks lead, a body takes its own trailing blanks), so a long
+    # run of blanks does not backtrack. A written-out \r\n or \/ (JSON escapes) counts too, and a
+    # quoted key's last line ends at its quote.
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:(?:\r?\n|(?:\\r)?\\n)[ \t]*(?:(?:[A-Za-z0-9+/=]|\\/)+[ \t]*|[A-Za-z-]+:[^\r\n\\]*)?\r?"
+                               r"(?=\r?\n|(?:\\r)?\\n|\Z|[\"',\]}]))*"), 0),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"), 0),
     ("api-key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}"), 0),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"), 0),
