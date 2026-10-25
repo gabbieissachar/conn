@@ -70,9 +70,10 @@ function ledger(folder, at) {
   const file = path.join(path.dirname(folder), `.drain-handled-${path.basename(folder)}.json`);
   let handled = {};
   try { handled = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { handled = {}; }
-  for (const id of Object.keys(handled)) if (!(at - handled[id] <= HANDLED_KEEP_MS)) delete handled[id];
+  // Each id is kept until the time it was recorded for (see add), then forgotten.
+  for (const id of Object.keys(handled)) if (!(handled[id] >= at)) delete handled[id];
   const save = () => replace(file, Buffer.from(JSON.stringify(handled), 'utf8'));
-  return { has: (id) => Object.prototype.hasOwnProperty.call(handled, id), add: (id) => { handled[id] = at; save(); } };
+  return { has: (id) => Object.prototype.hasOwnProperty.call(handled, id), add: (id, until) => { handled[id] = until; save(); } };
 }
 
 async function drain({ folder, sealed, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
@@ -136,9 +137,13 @@ async function drain({ folder, sealed, passphrase = '', root = path.join(__dirna
       } catch { request = null; }
       if (!request) { await done('refused', { code: 'invalid', reason: 'The request could not be read, so nothing was sent.' }); continue; }
       const fields = { session_id: request.session_id, queued_at: request.at };
+      // From here the request is the page's own (it opened, and has its shape): whatever is decided about
+      // it, refusals included, its id is on this laptop's record until it can no longer be fresh (its own
+      // time plus the 12 hours and the clock allowance, and at least 2 days), so a copy put back later,
+      // after its receipt was deleted, is never sent.
+      handled.add(id, Math.max(now() + HANDLED_KEEP_MS, request.at * 1000 + TTL_MS + FUTURE_MS));
       if (request.at * 1000 > now() + FUTURE_MS) { await done('refused', { ...fields, code: 'invalid', reason: 'The request is dated in the future, so nothing was sent. Check the clock of the device that wrote it.' }); continue; }
       if (Math.max(waited, now() - request.at * 1000) > TTL_MS) { result.expired += 1; await done('refused', { ...fields, code: 'expired', reason: 'This waited more than 12 hours for the laptop, so it was not sent. Send it again if it still matters.' }); continue; }
-      handled.add(id);
       await write({ id, ...fields, state: 'sending', at: Math.floor(now() / 1000) });
       try {
         const sent = await api.sendPrompt({ session_id: request.session_id, text: request.text });

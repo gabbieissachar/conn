@@ -253,6 +253,28 @@ test('a request is as old as the time sealed inside it, so a copy put back with 
   assert.equal(lab.herdr.calls.length, 0);
 });
 
+test('a request refused for its time is on the laptop\'s record too, so it is not sent when its time comes', async (t) => {
+  const lab = await copy({ sealed: true });
+  t.after(lab.cleanup);
+  // Dated an hour ahead (the page's clock is wrong): refused now. Its receipt is deleted and the same bytes put back
+  // two hours later, when the time inside is the past and fresh.
+  await lab.queue(Q1, { session_id: A, text: 'from a clock that is wrong', at: Date.now() / 1000 + 3600 });
+  const copyOf = fs.readFileSync(path.join(lab.folder, 'q', Q1 + '.json.enc'));
+  assert.equal((await lab.receipt(Q1)), null);
+  assert.equal((await lab.drain()).refused, 1);
+  assert.equal((await lab.receipt(Q1)).code, 'invalid');
+  fs.unlinkSync(path.join(lab.folder, 'r', Q1 + '.json.enc'));
+  fs.writeFileSync(path.join(lab.folder, 'q', Q1 + '.json.enc'), copyOf);
+  const later = () => Date.now() + 2 * 3600 * 1000;
+  assert.deepEqual(await lab.drain({ now: later }), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
+  assert.equal(lab.herdr.calls.length, 0);
+  assert.deepEqual(lab.queued(), []);
+  // The record is kept until the request could no longer be fresh, not just for two days.
+  const ledgerFile = path.join(lab.base, '.drain-handled-bucket.json');
+  const until = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'))[Q1];
+  assert.ok(until >= Date.now() + 3600 * 1000 + TTL_MS, 'at least until its own time plus 12 hours');
+});
+
 test('deleting a receipt does not make a copied request run again: the laptop keeps the ids it handled', async (t) => {
   const lab = await copy({ sealed: true });
   t.after(lab.cleanup);
