@@ -17,6 +17,7 @@ const { createAdapter, AdapterError } = require('./adapter');
 const { buildShareReport } = require('./redact');
 const { createRollover } = require('./rollover');
 const { createSwitches } = require('./rollover-switches');
+const { createPreview } = require('./rollover-preview');
 
 const PREFIX = '/api/herdr-organizer/';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -78,7 +79,7 @@ function validateParams(spec, params) {
   return input;
 }
 
-function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches } = {}) {
+function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches, preview } = {}) {
   const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
   const guard = createGuard({ port, token });
   // The firstmate home and code root the context gauge reads, as serve.sh names them.
@@ -87,6 +88,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
   const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env, fmHome, gaugeScript });
   const rolloverView = rollover || createRollover({ env, now, ledgerPath: path.join(resolvedToolRoot, 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json') });
   const rolloverSwitches = switches || createSwitches({ rollover: rolloverView, toolRoot: resolvedToolRoot, now });
+  const rolloverPreview = preview || createPreview({ rollover: rolloverView, env });
   let tier1Busy = false;
 
   async function shareReport(params) {
@@ -114,6 +116,8 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'codex-credits': { tier: 0, params: {}, run: () => tools.codexCredits() },
     // Read only: what firstmate's rollover switches say in each registered home, and whether that home's watcher runs.
     'rollover-state': { tier: 0, params: {}, run: () => rolloverView.state() },
+    // Read only: asks the home's own firstmate who would roll for these ids (`fm-rollover.sh check`, run from that home's watcher code).
+    'rollover-preview': { tier: 0, params: { home: { type: 'string' }, kind: { type: 'string' }, ids: { type: 'array' } }, run: (p) => rolloverPreview.preview(p) },
     // tier 1: create or remove one firstmate switch file in one registered home. The browser names a home id and ids, never a path.
     // `rollover-stop` never waits behind another change: stopping must always be possible.
     'rollover-arm': { tier: 1, params: { home: { type: 'string' }, kind: { type: 'string' }, ids: { type: 'array' }, confirm: { type: 'string' } }, run: (p, ctx) => rolloverSwitches.arm(p, ctx) },

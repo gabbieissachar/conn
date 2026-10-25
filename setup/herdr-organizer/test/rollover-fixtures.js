@@ -36,4 +36,25 @@ function makeHome(tree, name, { lock = true, roller = ROLLER_ALL, beatAge = 20, 
   return { home: path.join(tree.real, name, 'home'), code, owner: lock ? tree.abs(`${name}/home/state/.watch.lock.owner.AbC123`) : null };
 }
 
-module.exports = { NOW, IDENTITY, ROLLER_ALL, touch, makeHome };
+// A stand-in for firstmate's `fm-rollover.sh`: it names the switch files on code lines (so the capability text check passes),
+// has a `check)` branch, logs how it was called, and answers by the end of the id.
+const ROLLER_STUB = `#!/bin/bash
+: rollover-live rollover-crew-live rollover-off rollover-primary-live rollover-primary-off
+printf '%s|%s|%s|%s|%s|%s\\n' "$PWD" "$FM_HOME" "\${FM_STATE_OVERRIDE-unset}" "\${FM_ROOT_OVERRIDE-unset}" "\${GIT_OPTIONAL_LOCKS-}" "$*" >> "$FM_HOME/../calls.log"
+id=$2
+case "$1" in
+  check)
+    case "$id" in
+      *-ok) echo "eligible: context 41% (90000 of 200000 tokens), idle, nothing in flight (dry-run: config/rollover-crew-live does not cover it)"; exit 0 ;;
+      *-covered) echo "eligible: context 41% (90000 of 200000 tokens), idle, nothing in flight"; exit 0 ;;
+      *-low) echo "ineligible: context 12% of its 200000 window is below the 30% threshold"; exit 1 ;;
+      *-uuid) echo "ineligible: no gauge record for session 0f1e2d3c-4b5a-4968-8777-665544332211 under /Users/someone/private, so its context is unknown"; exit 1 ;;
+      *-skip) echo "skip: only Claude sessions roll for now; 'codex' is deferred"; exit 1 ;;
+      *-off) echo "off: config/rollover-off is present"; exit 1 ;;
+      *-slow) exec sleep 5 ;;
+      *-junk) echo "something unexpected"; exit 2 ;;
+    esac ;;
+esac
+`;
+
+module.exports = { NOW, IDENTITY, ROLLER_ALL, ROLLER_STUB, touch, makeHome };

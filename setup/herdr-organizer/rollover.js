@@ -366,6 +366,7 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     result.configDir = path.join(home.real, 'config');
     const watcher = watcherOf(home);
     result.watcher = watcher.state;
+    if (watcher.state === 'running') result.codeRoot = watcher.code_root;
     result.capability = watcher.state === 'running' && watcher.code_root ? capabilityOf(watcher.code_root) : null;
     result.ids = idsOf(home);
     result.switches = result.config === 'ok' ? Object.fromEntries(SWITCHES.map((name) => [name, switchState(result.configDir, name, home.id)])) : {};
