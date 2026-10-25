@@ -279,6 +279,17 @@ class ClosedPanesTest(unittest.TestCase):
         with mock.patch.dict(builder.HERDR_LIVES, {"work": "same"}, clear=True):
             self.assertEqual(reader.drop_closed([A, B]), [A, B], "a restart keeps the session's life, and its panes")
 
+    def test_closing_a_dropped_session_keeps_it_from_being_listed_again(self):
+        self.seen(A, B)
+        self.live = {B: PANES[B]}
+        self.assertEqual(reader.drop_closed([A, B]), [B])
+        self.assertEqual(builder.read_ids(reader.DROPPED), [A])
+        reader.write_list([B])
+        self.assertEqual(reader.main(["close", A]), 0)
+        self.assertEqual(builder.read_ids(reader.DROPPED), [])
+        self.live = {A: {**PANES[A], "pane": "w1:p9"}, B: PANES[B]}  # A resumed in a new pane
+        self.assertEqual(reader.drop_closed([B]), [B])
+
     def test_a_cache_entry_without_a_pane_id_closes_with_its_session(self):
         reader.PANE_CACHE.write_text(json.dumps({A: {k: v for k, v in PANES[A].items() if k != "pane"}, B: PANES[B]}), encoding="utf-8")
         self.live = {B: PANES[B]}

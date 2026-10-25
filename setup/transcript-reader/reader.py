@@ -322,12 +322,16 @@ def close(ids: list[str], names: list[str]) -> int:
     marked = builder.read_ids(REOPENED)
     if pane & set(marked):
         write_ids(REOPENED, [i for i in marked if i not in pane])
+    dropped = bool(pane & set(builder.read_ids(DROPPED)))
+    forget_dropped(pane)  # closed by hand, it is not listed again when it next runs in a pane
     if not pane & set(ids):
+        if dropped:
+            print(f"{names[0][:8]} was dropped when its pane closed; it will not be listed again when it runs")
+            return 0
         print(f"{names[0][:8]} is not on the reading list")
         return 1
     ids = [i for i in ids if i not in pane]
     write_list(ids)
-    forget_dropped(pane)
     return rebuild(ids, serve_page=False)
 
 
