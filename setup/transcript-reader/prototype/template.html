@@ -210,6 +210,7 @@
   .dock-label { font-size: 11px; color: var(--faint); margin-top: 4px; }
   .dock-fold { display: inline; font: inherit; color: var(--you); background: none; border: 0; padding: 0; margin: 0 4px 0 0; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
   .dock-line { font: 12px/1.4 var(--mono); background: var(--paper); border-radius: 6px; padding: 4px 7px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 4.2em; overflow-y: auto; }
+  .dock-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .dock-acts { display: flex; gap: 8px; align-items: baseline; min-height: 20px; }
   .dock-acts .why { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dock-acts .why.bad { color: var(--open); white-space: normal; }
@@ -271,6 +272,7 @@
     <div class="dock-label" id="dock-label">Sends exactly:</div>
     <div class="dock-line" id="dock-line" aria-live="polite"></div>
   </div>
+  <div class="dock-note" id="dock-note" hidden></div>
   <div class="dock-acts"><span class="why" id="dock-status" aria-live="polite"></span><span class="count" id="dock-count" hidden></span><button id="dock-preview-toggle" type="button" aria-controls="dock-preview" hidden>Exact text</button><button id="dock-copy" type="button" title="Copy the message">Copy</button></div>
   <div class="dock-worker" id="dock-worker" hidden>This is a worker. Firstmate only sees direct messages at its next review.</div>
   <div class="dock-row"><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button class="alt" id="dock-add" type="button" title="Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)">Add</button><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
@@ -1043,6 +1045,9 @@
     const over = out.length > MAX_SEND;
     dock("send").disabled = Boolean(reason) || link.sending || !out || over;
     const total = batch.length + (dockTyped() ? 1 : 0);
+    // A batch sends one numbered message that the box and the pointer do not show whole, so say where it is.
+    dock("note").hidden = !batch.length || link.preview;
+    dock("note").textContent = `${total} comment${total === 1 ? "" : "s"} - Exact text shows what Send types`;
     dock("send").textContent = batch.length ? `Send ${total}` : "Send";
     dock("add").disabled = !dockTyped() || command;
     dock("copy").disabled = !out;

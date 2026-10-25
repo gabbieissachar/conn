@@ -59,9 +59,11 @@ Viewing beside a Herdr tab in VS Code: `workbench.browser.newTabPlacement: "side
 Like Lavish's "comment and send back to the agent", without an agent blocking on a poll: the served page sends a reply or a passage comment straight into the session's Herdr pane (`herdr agent prompt`, no model involved), and follows the pane Herdr has focused. The captain chose:
 
 1. A focused session that is not on the reading list is added automatically.
-2. Send goes straight to the pane, with the exact text visible before sending. No confirm step.
+2. Send goes straight to the pane, with the exact text visible before sending. No confirm step. (For one comment, "Sends exactly" shows it; for a batch, see below.)
 
 The message points at the reply instead of copying it (its time and first words, plus a quote of at most 100 characters for a passage), because the session already holds the text. Sending, following and refreshing need the page served over http by the reader's own server (`setup/transcript-reader/serve.sh`), so `reader.py` now prints the served links first; the server rebuilds the pages when a listed log changes, which replaces the `file://` auto-reload. The pages under `out/` are now served only through the guarded routes in `api.js`, so the shared static handler's wildcard CORS header no longer exposes them. How it works and what it touches: `README.md`.
+
+**Batches and the exact text (owner's decision, 2026-10-26).** Several comments can be collected and sent as one numbered message, with what is in the box last. That message is longer than the box and the pointer line, so it is not shown in full by default: "Exact text" shows it on a click. To keep the preview from going unnoticed, the bar shows a one-line note while the batch is not empty ("3 comments - Exact text shows what Send types"). No confirm step is added, and Send's routing is unchanged. In "Sends exactly", a pointer longer than 90 characters (a reply the session no longer holds adds a log path and part of the reply) shows as one line that opens on a tap, followed by the words as written; the text sent is the same. This matches README.md.
 
 Not verified end to end: no message was sent to a real pane while building this (the tests fake Herdr), and the VS Code shortcut above was not tried in the captain's window.
 
