@@ -250,3 +250,19 @@ test('a receipt is read from r/, and is none while the laptop has not written it
   assert.equal(await hosted.receipt('22222222-aaaa-4aaa-8aaa-aaaaaaaaaaa2'), null);
   assert.equal(calls[0].options.headers['x-transcript-reader-token'], TOKEN);
 });
+
+test('new page code reloads the page once per stamp, and an older deployed shell is said so rather than reloaded every minute', () => {
+  const { hosted, reloads } = load();
+  assert.equal(hosted.outdated(), '');
+  hosted.pageChanged('stamp-a');             // the index names newer page code: load the page again
+  assert.equal(reloads(), 1);
+  assert.equal(hosted.outdated(), '');
+  hosted.pageChanged('stamp-a');             // the reloaded page still differs: the host's shell is older
+  assert.equal(reloads(), 1, 'no second reload');
+  assert.match(hosted.outdated(), /older than the laptop's: deploy the new shell pages/);
+  const again = load();
+  again.hosted.pageChanged('stamp-a');
+  again.hosted.pageChanged('stamp-b');       // a still newer stamp is a new reason to reload
+  assert.equal(again.reloads(), 2);
+  assert.equal(again.hosted.outdated(), '');
+});

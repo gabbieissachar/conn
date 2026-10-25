@@ -1616,8 +1616,8 @@
     line.hidden = !HOSTED || !data.generated;
     if (line.hidden) return;
     const when = data.generated, old = hosted.stale(when), at = builtAt(when), text = document.getElementById("asof-text");
-    line.classList.toggle("stale", old);
-    text.textContent = old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`;
+    line.classList.toggle("stale", old || Boolean(hosted.outdated()));
+    text.textContent = hosted.outdated() || (old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`);
     text.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then.`;
     document.getElementById("forget").hidden = !hosted.isSealed();
   }
@@ -1626,7 +1626,7 @@
   async function refreshHosted() {
     const sel = window.getSelection();
     const next = sel && !sel.isCollapsed ? null : await hosted.index();  // a passage is being picked: later
-    if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.reload(); return; }
+    if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.template); if (!hosted.outdated()) return; }
     if (next && next.as_of > data.generated) {
       const fresh = hosted.data(next, data);
       const sid = data.sessions[state.session] && data.sessions[state.session].id;

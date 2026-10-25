@@ -23,6 +23,18 @@
       location.reload();
       return true;
     }
+    // New page code (a stamp in the index that this page's own differs from): load the page again once per
+    // stamp. When the reloaded page still differs, the host serves older page code (the Replit app's shell
+    // pages are deployed by hand), so say so and keep going rather than reloading every minute.
+    let outdated = "";
+    function pageChanged(stamp) {
+      let before = null;
+      let kept = true;
+      try { before = sessionStorage.getItem("hosted-reload-for"); sessionStorage.setItem("hosted-reload-for", String(stamp)); } catch (e) { kept = false; }
+      if (before === String(stamp)) outdated = "The app's page is older than the laptop's: deploy the new shell pages (the app's README).";
+      else if (kept) location.reload();
+      else reload();
+    }
     function checked(r, path) {
       if (r.status === 403 && headers["x-transcript-reader-token"]) {
         throw new Error(reload() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
@@ -218,6 +230,6 @@
       setInterval(run, REFRESH_MS);
       document.addEventListener("visibilitychange", run);
     }
-    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget, askPassphrase, enqueue, receipt,
+    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, pageChanged, outdated: () => outdated, prepare, unlock, forget, askPassphrase, enqueue, receipt,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();
