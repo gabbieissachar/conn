@@ -160,6 +160,46 @@
       d.fleet = parts.flatMap(part => part.events || []);
       return d.fleet;
     }
+    // ------------------------------------------------------------ Send, through the queue (plan section 8)
+    // The page cannot reach Herdr; it writes a request, {id, session_id, text, at}, for the laptop's sync to send
+    // when it is awake. A plain copy writes it as it is; a sealed one gzips and seals it here, under the key this
+    // page holds and with its own path as the additional data, so the server that stores it cannot read it.
+    // Either way the server it posts to is the reader's own (api.js queue); a static host has no such route yet.
+    const API = "/api/transcript-reader/";
+    const uuid = () => {
+      if (globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID();
+      const b = globalThis.crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+      const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    };
+    async function post(route, body) {
+      const r = await fetch(API + route, { method: "POST", cache: "no-store", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      let j = null; try { j = await r.json(); } catch (e) { j = null; }
+      if (r.status === 403 && j && /token/i.test(j.message || "")) throw new Error(reload() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
+      if (r.status === 404 && !j) throw new Error("This host cannot take a message yet: open the copy from the laptop's own server.");
+      if (!r.ok) throw new Error((j && j.message) || `The server answered ${r.status}.`);
+      return j;
+    }
+    // Queue one message for a conversation (its newest session id); resolves { id, at } once it is stored.
+    async function enqueue(sessionId, text) {
+      const id = uuid(), at = Date.now() / 1000;
+      if (sealed.params) {
+        if (!sealed.key) throw new Error("Open the copy with its passphrase first.");
+        const path = `q/${id}.json`;
+        const bytes = await seal.close(sealed.key, path, await seal.gzip(new TextEncoder().encode(JSON.stringify({ id, session_id: sessionId, text, at }))));
+        await post("queue", { copy: "bucket", id, data: seal.toBase64(bytes) });
+      } else await post("queue", { copy: "hosted", id, object: { session_id: sessionId, text, at } });
+      return { id, at };
+    }
+    // What the laptop did with a queued message: { state: "sending" | "sent" | "refused", reason, label, at, ... },
+    // or null while no receipt is written yet.
+    async function receipt(id) {
+      const path = `r/${id}.json`;
+      const r = await fetch(sealed.params ? path + ".enc" : path, { cache: "no-store", headers });
+      if (r.status === 404) return null;
+      checked(r, path);
+      return sealed.params ? seal.openJson(sealed.key, path, await r.arrayBuffer()) : r.json();
+    }
     const stale = (asOf, now = Date.now() / 1000) => now - asOf > HEARTBEAT;
     // A pane Herdr ran the conversation in, closed by the build: its old asks wait on no one.
     const closedPane = s => Boolean(s.pane && !s.pane.live);
@@ -178,6 +218,6 @@
       setInterval(run, REFRESH_MS);
       document.addEventListener("visibilitychange", run);
     }
-    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget, askPassphrase,
+    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, prepare, unlock, forget, askPassphrase, enqueue, receipt,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();

@@ -119,7 +119,8 @@
 (() => {
   "use strict";
   // The hosted copy's sheet: no payload; the list comes from index.json and each conversation's
-  // questionnaires load when one is picked. It copies the answer line and cannot send it.
+  // questionnaires load when one is picked. Copy copies the answer line; Send queues it for the laptop, which
+  // sends it to the session's pane when it is awake and writes a receipt this page then shows.
   const HOSTED = "__MODE__" === "hosted";
 /*__LIVE__*/
 /*__HOSTED__*/
@@ -279,7 +280,16 @@
     const q = qs[state.q], button = document.getElementById("send"), why = document.getElementById("why");
     const pane = q && link.pane ? link.pane[q.session] : null;
     let reason = "";
-    if (HOSTED) { button.hidden = true; why.textContent = link.result ? link.result.text : "Copy the line, then paste it into the session's Herdr pane."; return; }
+    if (HOSTED) {
+      // The pane as of the laptop's last build; the laptop checks it again when it sends.
+      const seen = q && q.pane;
+      reason = !seen ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
+        : !seen.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
+      button.disabled = Boolean(reason) || link.sending || !q || !message(q);
+      why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
+      why.textContent = link.result ? link.result.text : reason || `Send queues this line for ${seen.label}; the laptop sends it when it is awake.`;
+      return;
+    }
     if (!live.served) reason = "Read-only copy: open the served page to send.";
     else if (link.pane === undefined) reason = "Connecting to the local server…";
     else if (!pane) reason = "No live Herdr pane runs this session, so Send is off. Copy still works.";
@@ -291,12 +301,36 @@
   async function sendAnswers() {
     const q = qs[state.q], text = message(q); if (!text) return;
     link.sending = true; link.result = null; renderSend();
+    const clock = at => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(at));
     try {
+      if (HOSTED) {
+        const queued = await hosted.enqueue(q.session, text);
+        const label = (q.pane && q.pane.label) || q.session.slice(0, 8);
+        link.result = { ok: true, text: `Queued for ${label} at ${clock(queued.at * 1000)}. The laptop sends it when it is awake.` };
+        link.sending = false; renderSend();
+        await watchReceipt(queued.id, label, clock);
+        return;
+      }
       const sent = await live.send(q.session, text);
-      link.result = { ok: true, text: `Sent to ${sent.label} at ${new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date())}.` };
+      link.result = { ok: true, text: `Sent to ${sent.label} at ${clock(Date.now())}.` };
     } catch (e) { link.result = { ok: false, text: e.message }; }
     link.sending = false; renderSend();
     setTimeout(() => { link.result = null; renderSend(); }, 6000);
+  }
+  // The hosted copy: the laptop's receipt for a queued line, asked about every 4 seconds (up to a day) and shown in place.
+  async function watchReceipt(id, label, clock) {
+    link.watching = id;
+    for (let tries = 0; tries < 21600 && link.watching === id; tries += 1) {
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      if (document.hidden) continue;
+      const receipt = await hosted.receipt(id).catch(() => null);
+      if (!receipt || receipt.state === "sending" || link.watching !== id) continue;
+      link.result = receipt.state === "sent" ? { ok: true, text: `Sent by the laptop to ${receipt.label || label} at ${clock(receipt.at * 1000)}.` }
+        : { ok: false, text: `Not sent: ${receipt.reason || "the laptop refused it."}` };
+      renderSend();
+      setTimeout(() => { if (link.watching === id) { link.result = null; link.watching = null; renderSend(); } }, 30000);
+      return;
+    }
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
@@ -352,7 +386,6 @@
   }
   if (HOSTED) {
     document.querySelector(".title a").href = "index.html";
-    document.getElementById("send").hidden = true;
   }
   fillPick();
   pick.addEventListener("change", () => {

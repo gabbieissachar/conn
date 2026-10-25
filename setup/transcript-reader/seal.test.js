@@ -113,21 +113,23 @@ test('upload.js takes the passphrase from the environment only, and writes only 
 // The shell's loader in a sandbox, fetching a sealed bucket from memory (no IndexedDB here).
 function shell(files) {
   const calls = [];
+  const posts = [];
   const sandbox = {
     document: { querySelector: () => ({ content: '__READER_TOKEN__' }), addEventListener() {}, hidden: false },
-    fetch: async (url) => {
+    fetch: async (url, options = {}) => {
+      if (options.method === 'POST') { posts.push({ url, body: JSON.parse(options.body) }); return { ok: true, status: 200, json: async () => ({ status: 'ok' }) }; }
       calls.push(url);
       const body = files[url];
       if (body === undefined) return { ok: false, status: 404, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
       return { ok: true, status: 200, json: async () => JSON.parse(Buffer.from(body).toString()), arrayBuffer: async () => Uint8Array.from(body).buffer };
     },
-    crypto: globalThis.crypto, TextEncoder, TextDecoder, Blob, Response, DecompressionStream, atob, btoa, Uint8Array, ArrayBuffer,
+    crypto: globalThis.crypto, TextEncoder, TextDecoder, Blob, Response, DecompressionStream, CompressionStream, atob, btoa, Uint8Array, ArrayBuffer,
     JSON, Map, Promise, Object, Number, String, Error, Date, Boolean, Array, setInterval: () => 0,
     sessionStorage: { getItem: () => null, setItem() {} }, location: { reload() {} },
   };
   vm.createContext(sandbox);
   const source = fs.readFileSync(path.join(__dirname, 'prototype', 'seal.js'), 'utf8') + fs.readFileSync(path.join(__dirname, 'prototype', 'hosted.js'), 'utf8');
-  return { hosted: vm.runInContext(source + '\nhosted;', sandbox), calls };
+  return { hosted: vm.runInContext(source + '\nhosted;', sandbox), calls, posts };
 }
 
 test('the shell opens a sealed bucket with the passphrase, and a plain copy without one', async () => {
@@ -162,4 +164,44 @@ test('the shell refuses an object the host swapped for another', async () => {
   await hosted.prepare();
   await hosted.unlock(PASS, false);
   await assert.rejects(hosted.index(), /index\.json does not open/);
+});
+
+test('a sealed page queues a send as bytes only its key opens, bound to its own path', async () => {
+  const { params, key } = await seal.newParams(PASS);
+  const files = { 'k/params.json': Buffer.from(JSON.stringify(params)) };
+  const { hosted, posts } = shell(files);
+  await hosted.prepare();
+  await assert.rejects(hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'before the passphrase'), /passphrase first/);
+  await hosted.unlock(PASS, false);
+  const queued = await hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'A1=accept;A2=inline');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/api/transcript-reader/queue');
+  assert.deepEqual(Object.keys(posts[0].body).sort(), ['copy', 'data', 'id']);
+  assert.equal(posts[0].body.copy, 'bucket');
+  assert.equal(posts[0].body.id, queued.id);
+  assert.match(queued.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const bytes = Buffer.from(posts[0].body.data, 'base64');
+  assert.equal(bytes.includes('accept'), false, 'the text is not in the posted bytes');
+  assert.deepEqual([...bytes.subarray(0, 4)], [0x48, 0x52, 0x43, 0x31]);
+  const opened = await seal.openJson(key, `q/${queued.id}.json`, bytes);
+  assert.deepEqual(opened, { id: queued.id, session_id: 'aaaaaaaa-1111-4111-8111-111111111111', text: 'A1=accept;A2=inline', at: queued.at });
+  await assert.rejects(seal.openJson(key, 'q/another.json', bytes), /does not open/);
+  // The same bytes the drain opens: gzip around JSON, sealed with the path.
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(Buffer.from(await seal.open(key, `q/${queued.id}.json`, bytes))).toString('utf8')).text, 'A1=accept;A2=inline');
+});
+
+test('a sealed page reads a receipt the laptop sealed, and none while there is none', async () => {
+  const { params, key } = await seal.newParams(PASS);
+  const id = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const receipt = { id, state: 'refused', code: 'agent_blocked', reason: 'at a permission prompt', at: 5 };
+  const files = { 'k/params.json': Buffer.from(JSON.stringify(params)) };
+  const { hosted, calls } = shell(files);
+  await hosted.prepare();
+  await hosted.unlock(PASS, false);
+  assert.equal(await hosted.receipt(id), null);
+  files[`r/${id}.json.enc`] = await seal.close(key, `r/${id}.json`, gz(receipt));
+  assert.deepEqual(await hosted.receipt(id), receipt);
+  assert.deepEqual(calls.slice(-2), [`r/${id}.json.enc`, `r/${id}.json.enc`]);
+  files[`r/${id}.json.enc`] = await seal.close(key, 'r/another.json', gz(receipt));
+  await assert.rejects(hosted.receipt(id), /does not open/, 'a receipt passed off from another request');
 });

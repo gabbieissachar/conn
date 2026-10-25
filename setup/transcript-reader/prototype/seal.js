@@ -54,8 +54,9 @@
       try { await open(key, "k/check", fromBase64(params.check)); return key; } catch (e) { return null; }
     }
     const gunzip = async bytes => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+    const gzip = async bytes => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
     // A sealed object back to its JSON value.
     const openJson = async (key, path, bytes) => JSON.parse(new TextDecoder().decode(await gunzip(await open(key, path, bytes))));
-    return { deriveKey, close, open, openJson, newParams, unlock, gunzip, toBase64, fromBase64, ITERATIONS };
+    return { deriveKey, close, open, openJson, newParams, unlock, gunzip, gzip, toBase64, fromBase64, ITERATIONS };
   })();
   if (typeof module !== "undefined") module.exports = seal;

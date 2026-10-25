@@ -14,8 +14,9 @@ const SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'hosted.js'), '
 const TOKEN = 'a'.repeat(64);
 
 // A sandboxed hosted.js. objects: path -> JSON value (or a status number); token: the page's meta tag.
-function load({ objects = {}, token = TOKEN, hidden = false } = {}) {
+function load({ objects = {}, token = TOKEN, hidden = false, posted = { status: 200, body: { status: 'ok' } } } = {}) {
   const calls = [];
+  const posts = [];
   const timers = [];
   const listeners = {};
   const storage = new Map();
@@ -26,6 +27,10 @@ function load({ objects = {}, token = TOKEN, hidden = false } = {}) {
     addEventListener: (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); },
   };
   const fetch = async (url, options) => {
+    if (options && options.method === 'POST') {
+      posts.push({ url, options, body: JSON.parse(options.body) });
+      return { ok: posted.status < 400, status: posted.status, json: async () => { if (posted.body === undefined) throw new Error('no body'); return posted.body; } };
+    }
     calls.push({ url, options });
     const value = objects[url];
     if (value === undefined) return { ok: false, status: 404, json: async () => ({}) };
@@ -33,14 +38,14 @@ function load({ objects = {}, token = TOKEN, hidden = false } = {}) {
     return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(value)) };
   };
   const sandbox = {
-    document: page, fetch, Date, JSON, Map, Promise, Object, Number, String, Error,
+    document: page, fetch, Date, JSON, Map, Promise, Object, Number, String, Error, crypto: globalThis.crypto, TextEncoder,
     setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     sessionStorage: { getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     location: { reload: () => { reloads += 1; } },
   };
   vm.createContext(sandbox);
   const hosted = vm.runInContext(SOURCE + '\nhosted;', sandbox);
-  return { hosted, calls, timers, listeners, page, reloads: () => reloads };
+  return { hosted, calls, posts, timers, listeners, page, reloads: () => reloads };
 }
 
 const INDEX = {
@@ -212,4 +217,36 @@ test('the list counts asks only for a live pane, and names its count apart from 
   assert.equal(hosted.closedPane(live), false);
   assert.equal(hosted.closedPane(unseen), false, 'no pane seen is not a closed pane');
   assert.doesNotMatch(hosted.asks(live), /need/i);
+});
+
+test('a plain page queues a send with the token, as plain JSON, under an id of its own', async () => {
+  const { hosted, posts } = load();
+  const first = await hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'A1=accept;A2=inline');
+  const second = await hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'again');
+  assert.notEqual(first.id, second.id);
+  assert.match(first.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].url, '/api/transcript-reader/queue');
+  assert.equal(posts[0].options.headers['x-transcript-reader-token'], TOKEN);
+  assert.equal(posts[0].options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(posts[0].body, { copy: 'hosted', id: first.id, object: { session_id: 'aaaaaaaa-1111-4111-8111-111111111111', text: 'A1=accept;A2=inline', at: first.at } });
+  assert.ok(Math.abs(first.at - Date.now() / 1000) < 5);
+});
+
+test('a refused or unreachable queue says why, and a restarted server reloads the page once', async () => {
+  const refused = load({ posted: { status: 429, body: { status: 'error', code: 'queue_full', message: 'Too many messages are waiting for the laptop.' } } });
+  await assert.rejects(refused.hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'x'), /Too many messages/);
+  const stat = load({ posted: { status: 404, body: undefined } });
+  await assert.rejects(stat.hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'x'), /cannot take a message yet/);
+  const restarted = load({ posted: { status: 403, body: { status: 'error', message: 'Missing or invalid token' } } });
+  await assert.rejects(restarted.hosted.enqueue('aaaaaaaa-1111-4111-8111-111111111111', 'x'), /Reconnecting/);
+  assert.equal(restarted.reloads(), 1);
+});
+
+test('a receipt is read from r/, and is none while the laptop has not written it', async () => {
+  const id = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const { hosted, calls } = load({ objects: { [`r/${id}.json`]: { id, state: 'sent', label: 'alpha', at: 5 } } });
+  assert.deepEqual(await hosted.receipt(id), { id, state: 'sent', label: 'alpha', at: 5 });
+  assert.equal(await hosted.receipt('22222222-aaaa-4aaa-8aaa-aaaaaaaaaaa2'), null);
+  assert.equal(calls[0].options.headers['x-transcript-reader-token'], TOKEN);
 });

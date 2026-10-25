@@ -249,6 +249,7 @@
   @media (max-width: 440px) { .dock-batch ol { max-height: 18vh; } }
   .dock button:disabled { opacity: .45; cursor: default; }
   .input.pending { opacity: .6; border-style: dashed; }
+  .input.pending.refused { opacity: 1; border-color: var(--open); }
   .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
 </style>
 </head>
@@ -291,8 +292,9 @@
 <script>
 (() => {
   "use strict";
-  // The hosted copy's shell has no payload: it loads index.json, then what the view needs, and only
-  // reads (no message bar, Follow, Reopen or Close). Its Reply and "Comment on this" copy the pointer.
+  // The hosted copy's shell has no payload: it loads index.json, then what the view needs. It has no
+  // Follow, Reopen or Close; its message bar queues a send (hosted.enqueue) for the laptop's sync to
+  // deliver when it is awake, and shows what the laptop answered.
   const HOSTED = "__MODE__" === "hosted";
 /*__LIVE__*/
 /*__HOSTED__*/
@@ -425,9 +427,8 @@
     if (sid && ex.reply) {
       const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
-      const to = $("button", "reply-to", HOSTED ? "Copy pointer" : "Reply"); to.type = "button";
-      to.title = HOSTED ? "Copy the start of a reply to this, to paste into its pane later. Select a passage first to point at it."
-        : "Reply to this in its session. Select a passage first to comment on it.";
+      const to = $("button", "reply-to", "Reply"); to.type = "button";
+      to.title = "Reply to this in its session. Select a passage first to comment on it.";
       to.addEventListener("click", () => useTarget(target(selectedPassage(card)), to));
       who.append(to);
     }
@@ -930,16 +931,7 @@
     renderDock();
     dock("text").focus();
   }
-  // The hosted copy cannot send, so Reply, "Comment on this" and "Message about this file" copy the
-  // pointer a Send would start with (a selected passage included), to paste into the pane later.
-  async function copyPointer(target, button) {
-    const ok = await copyText(target.pointer(target.passage));
-    if (!button) return;
-    const label = button.textContent;
-    button.textContent = ok ? "Copied" : "Copy failed";
-    setTimeout(() => { button.textContent = label; }, 1500);
-  }
-  const useTarget = (target, button) => HOSTED ? copyPointer(target, button) : openDock(target);
+  const useTarget = (target, button) => openDock(target);
   function dropTarget() { link.target = null; markTarget(); saveDraft(); renderDock(); }
   function markTarget() {
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
@@ -1089,7 +1081,7 @@
   function renderDock() {
     const bar = document.getElementById("dock"), main = document.getElementById("main");
     const session = link.opening ? null : dockSession();  // no bar until the conversation being opened again is back
-    bar.hidden = !session || HOSTED;
+    bar.hidden = !session;
     if (bar.hidden) { main.style.paddingBottom = ""; placeNewReply(); return; }
     adopt(session);
     if (link.dockSid !== session.id) {
@@ -1121,9 +1113,12 @@
       dock("label").textContent = command ? "Sends exactly (a command goes alone, without the pointer):" : queued ? `Comment ${boxPlace(session.id, queued) + 1} reads:` : "Sends exactly:";
       fillLine(dockPointer(), dockTyped(), command, text);
     }
-    const pane = link.panes ? link.panes[session.id] : null;
+    // The hosted copy knows the pane as of its build; the laptop checks the pane again when it sends.
+    const pane = HOSTED ? (session.pane && session.pane.live ? session.pane : null) : link.panes ? link.panes[session.id] : null;
     let reason = "";
-    if (!canLive) reason = "Read-only copy: open the served page to send.";
+    if (HOSTED) reason = !session.pane ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
+      : !session.pane.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
+    else if (!canLive) reason = "Read-only copy: open the served page to send.";
     else if (link.panes === undefined) reason = "Connecting to the local server…";
     else if (session.kept) reason = "Its Herdr pane has closed, so Send is off.";
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
@@ -1146,7 +1141,9 @@
     count.classList.toggle("bad", over);
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once this box is sent or left`) : ""}`;
+    status.textContent = link.result ? link.result.text : reason || (HOSTED
+      ? `To ${pane.label} through the laptop · ${sessionStatus(session, true).toLowerCase() || "state unknown"} as of ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
+      : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once this box is sent or left`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -1171,9 +1168,12 @@
     const at = Date.now() / 1000;
     link.sending = true; link.result = null; renderDock();
     try {
-      const sent = await live.send(sid, text);
-      link.result = { ok: true, text: `Sent to ${sent.label} at ${fmtTime(at)}.` };
-      link.pending.push({ sid, text, at, label: sent.label });
+      // The hosted copy queues it: the laptop sends it when it is awake and the pane is ready.
+      const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
+      const sent = HOSTED ? { label: (session.pane && session.pane.label) || paneName(sid) } : await live.send(sid, text);
+      link.result = { ok: true, text: HOSTED ? `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.` : `Sent to ${sent.label} at ${fmtTime(at)}.` };
+      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: "queued" } } : {}) });
+      keepQueued();
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
       const onScreen = dockSession();
       if (onScreen && (onScreen.ids || [onScreen.id]).includes(sid) && dock("text").value === sentBox) {
@@ -1182,7 +1182,7 @@
       } else if (draftOf(sid) && draftOf(sid).text === sentBox) {
         delete drafts[sid]; keep("tr-drafts", drafts);
       }
-      setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 4000);
+      setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, HOSTED ? 8000 : 4000);
       // A plain message shows at the end, where its reply will come. A reply to an older turn
       // keeps your place there; the faded message waits at the end.
       if (state.view === "reader") {
@@ -1196,17 +1196,61 @@
   // A sent message shows at once, faded, until the session's log has it: one of your messages
   // from after the send that starts with the same words (a command, by its time alone).
   const opening = text => text.replace(/\s+/g, " ").trim().slice(0, 80);
+  // The hosted copy's queued sends keep their place in this tab across a reload (keepQueued), and
+  // show what the laptop did with them: waiting for it, sent, or not sent and why.
+  const keptQueue = (() => { try { return JSON.parse(sessionStorage.getItem("tr-queued") || "[]") || []; } catch (e) { return []; } })();
+  if (HOSTED) link.pending.push(...keptQueue.filter(p => p && p.queue && p.queue.id && Date.now() / 1000 - p.at < 2 * 86400));
+  function keepQueued() {
+    if (!HOSTED) return;
+    keep("tr-queued", link.pending.filter(p => p.queue));
+  }
   function pendingNodes(session) {
     const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2
       && (p.text.startsWith("/") || opening(e.input || "") === opening(p.text)));
+    const before = link.pending.length;
     link.pending = link.pending.filter(p => p.sid !== session.id || !landed(p));
+    if (link.pending.length !== before) keepQueued();
     return link.pending.filter(p => p.sid === session.id).map(p => {
       const block = $("div", "input captain pending"), who = $("div", "who");
-      const late = Date.now() / 1000 - p.at > 60;
-      who.append($("b", null, "You"), $("span", null, late ? `Sent ${fmtTime(p.at)} · not in the log yet; check the pane` : `Sent ${fmtTime(p.at)} · waiting for ${p.label}`));
+      const queue = p.queue, receipt = queue && queue.receipt;
+      const late = (queue ? (receipt && receipt.state === "sent" ? Date.now() / 1000 - receipt.at : 0) : Date.now() / 1000 - p.at) > 60;
+      let said;
+      if (!queue) said = late ? `Sent ${fmtTime(p.at)} · not in the log yet; check the pane` : `Sent ${fmtTime(p.at)} · waiting for ${p.label}`;
+      else if (queue.state === "refused") said = `Not sent · ${receipt.reason || "The laptop refused it."}`;
+      else if (queue.state === "sent") said = late ? `Sent by the laptop at ${fmtTime(receipt.at)} · not in the log yet; check the pane` : `Sent by the laptop at ${fmtTime(receipt.at)} · waiting for ${p.label}`;
+      else if (queue.state === "sending") said = `Queued ${fmtTime(p.at)} · the laptop is sending it now`;
+      else said = `Queued ${fmtTime(p.at)} · waiting for the laptop to send it to ${p.label}`;
+      who.append($("b", null, "You"), $("span", null, said));
+      if (queue && queue.state === "refused") {
+        block.classList.add("refused");
+        const dismiss = $("button", "reply-to", "Dismiss"); dismiss.type = "button";
+        dismiss.addEventListener("click", () => { link.pending = link.pending.filter(x => x !== p); keepQueued(); render(); });
+        who.append(dismiss);
+      }
       block.append(who, $("div", null, p.text));
       return block;
     });
+  }
+  // The laptop's receipts for the queued sends not yet answered, asked about every few seconds while
+  // one waits (and with each 30-second refresh). A sent or refused one stops being asked about.
+  let asking = false;
+  async function checkReceipts() {
+    const open = link.pending.filter(p => p.queue && p.queue.state !== "sent" && p.queue.state !== "refused");
+    if (asking || !open.length) return;
+    asking = true;
+    let changed = false;
+    try {
+      for (const p of open) {
+        const receipt = await hosted.receipt(p.queue.id).catch(() => null);
+        if (receipt && receipt.state !== p.queue.state) { p.queue.state = receipt.state; p.queue.receipt = receipt; changed = true; }
+        // A request the laptop never picked up in a day is not coming: say so rather than wait for ever.
+        else if (!receipt && Date.now() / 1000 - p.at > 12 * 3600 + 600) { p.queue.state = "refused"; p.queue.receipt = { state: "refused", reason: "The laptop did not pick this up within 12 hours, so it will not send it. Send it again if it still matters.", at: Date.now() / 1000 }; changed = true; }
+      }
+    } finally { asking = false; }
+    if (changed) {
+      keepQueued();
+      if (state.view === "reader") { const anchor = readingAnchor(); render(); if (anchor.bottom) window.scrollTo(0, document.documentElement.scrollHeight); else restoreAnchor(anchor); } else renderDock();
+    }
   }
   // "New reply ↓" sits above the bar while new turns arrive below where you are reading.
   const newReply = document.getElementById("new-reply");
@@ -1285,7 +1329,6 @@
   document.addEventListener("mouseup", () => setTimeout(placeFloat, 0));
   document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });
   document.addEventListener("selectionchange", () => { const sel = window.getSelection(); if (!sel || sel.isCollapsed) floatButton.hidden = true; else if (matchMedia("(pointer: coarse)").matches) placeFloat(); });
-  if (HOSTED) floatButton.textContent = "Copy pointer";
   floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
   floatButton.addEventListener("click", () => {
     const card = floatButton.card;
@@ -1353,9 +1396,8 @@
       const el = document.getElementById(`ex-${index}`) || [...document.querySelectorAll("#main [id^='ex-']")].find(n => Number(n.id.slice(3)) >= index);
       if (el) el.scrollIntoView({ block: "start" });
     });
-    const message = $("button", "btn", HOSTED ? "Copy pointer" : "Message about this file");
-    message.title = HOSTED ? "Copy the start of a message about this file, to paste into the pane later. Select a passage first to point at it."
-      : "Write to the session about the whole file. Select a passage to comment on it.";
+    const message = $("button", "btn", "Message about this file");
+    message.title = "Write to the session about the whole file. Select a passage to comment on it.";
     row.append(select, back, message);
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk at the last rebuild`;
@@ -1423,7 +1465,7 @@
     badge.textContent = !canLive ? "read-only" : link.panes === undefined ? "connecting" : "live";
     badge.className = "live" + (canLive && link.panes !== undefined ? " on" : "");
     badge.title = canLive ? "Refreshes itself, follows Herdr and can send replies"
-      : HOSTED ? "The hosted copy: it takes the laptop's newer builds every 30 seconds, and cannot follow or send" : "Opened as a file: no refresh, follow or send";
+      : HOSTED ? "The hosted copy: it takes the laptop's newer builds every 30 seconds and cannot follow; Send queues a message for the laptop" : "Opened as a file: no refresh, follow or send";
     const note = document.getElementById("follow-note");
     if (note) {
       const f = link.focus, b = link.build || {};
@@ -1714,12 +1756,17 @@
     // The shell holds no transcript: a sealed copy is opened first, then the list comes from
     // index.json, then the conversation opened on.
     document.querySelector(".to-sheet").href = "sheet.html";  // the hosted copy's answer sheet
+    dock("send").title = "Queue this for the laptop, which sends it to the session's Herdr pane when it is awake and the agent is ready (Enter; Shift+Enter for a new line)";
     document.getElementById("forget").addEventListener("click", () => hosted.forget().then(() => location.reload()));
     hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
       paintAsOf();
       const saved = chooseOpening();
-      whenReady(() => { openReading(saved); hosted.poll(refreshHosted); });
+      whenReady(() => {
+        openReading(saved); hosted.poll(async () => { await refreshHosted(); await checkReceipts(); });
+        setInterval(() => { if (!document.hidden) checkReceipts(); }, 4000);
+        checkReceipts();
+      });
     }, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load the transcripts: ${e.message}`)));
   }
 
