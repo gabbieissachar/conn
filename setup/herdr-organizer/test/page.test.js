@@ -381,7 +381,12 @@ test('rollover card: one block per home, the reasons Arm is not offered, and wha
   assert.match(out, /does not create one/);
   assert.match(out, /8 other firstmate homes on this computer are not listed here, and Stop does not cover them/);
   assert.match(out, /&lt;b&gt;x&lt;\/b&gt; - not a Claude session/, 'ids are escaped and carry their reason');
-  assert.match(out, /Second mates: 1 of 2 could roll now/);
+  assert.match(out, /Second mates: 1 of 2 can be armed/);
+  assert.equal(out.includes('could roll now'), false, 'the count is of ids that can be armed; the roller\'s own answer is the preview (R7-9)');
+  assert.match(out, /<li class="none">crewmates and scouts: not read by this home's firstmate<\/li>|crewmates and scouts: dry-run/, 'every sentence names its kind');
+  assert.match(out, /data-label="State"/, 'the cells carry labels for the stacked phone layout');
+  assert.match(html, /\.ro-files \{ table-layout: fixed; \}/, 'the same column widths in every home');
+  assert.match(html, /@media \(max-width: 600px\) \{\s*\.ro-files, \.ro-files tbody, \.ro-files tr, \.ro-files td \{ display: block;/, 'each file stacks below 600 px');
   assert.match(out, /read 09:05/);
   assert.match(out, /Stop every listed home/);
   assert.equal(/data-command/.test(out), false, 'nothing here copies a command');
@@ -410,7 +415,7 @@ test('rollover card: Arm needs a ticked id and says why it is not offered', () =
   assert.match(block({ watcher: 'beat_old' }), /No watcher runs in this home right now\. A firstmate run by Claude starts one at the end of each turn/);
   assert.match(block({ config: 'missing' }), /cannot be written to/);
   assert.match(block({ files: home.files.map(file => (file.name === 'rollover-crew-live' ? { ...file, capability: 'not_read' } : file)) }), /does not read this file/);
-  assert.match(block({ files: home.files.map(file => (file.name === 'rollover-off' ? { ...file, state: 'symlink' } : file)) }), /off file is present/);
+  assert.match(block({ files: home.files.map(file => (file.name === 'rollover-off' ? { ...file, state: 'symlink' } : file)) }), /off file is present[^]*Resume first/, 'the hint uses the verb on the button');
   assert.match(block({ files: home.files.map(file => (file.name === 'rollover-crew-live' ? { ...file, state: 'regular' } : file)) }), /already exists/);
   // the confirmation names the home, the file and the ids, and says a restart cannot be undone
   rollover.confirm = { kind: 'arm', home: 'ha02f1cb9', which: 'crew', ids: ['crew-a', 'crew-b'] };
@@ -418,6 +423,10 @@ test('rollover card: Arm needs a ticked id and says why it is not offered', () =
   assert.match(confirm, /Arm crewmates and scouts in fm-homes\/pmos\?/);
   assert.match(confirm, /creates rollover-crew-live[^]*crew-a, crew-b/);
   assert.match(confirm, /A restart cannot be undone/);
+  assert.match(confirm, /firstmate may ask each of those sessions for a handoff and restart each one/, 'the plural is worded for two ids');
+  rollover.confirm = { kind: 'arm', home: 'ha02f1cb9', which: 'crew', ids: ['crew-a'] };
+  assert.match(rolloverCard(), /firstmate may ask that session for a handoff and restart it\./, 'and for one');
+  rollover.confirm = { kind: 'arm', home: 'ha02f1cb9', which: 'crew', ids: ['crew-a', 'crew-b'] };
   assert.match(confirm, /data-ro-go="arm"/);
   assert.match(confirm, /data-ro-cancel/);
   rollover.confirm = { kind: 'undo', home: 'ha02f1cb9', file: 'rollover-off' };

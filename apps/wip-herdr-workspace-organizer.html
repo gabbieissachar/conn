@@ -207,6 +207,18 @@ created: 2026-09-10
     .ro-files th, .ro-files td { padding: 4px 8px 4px 0; text-align: left; border-top: 1px solid #eef1f6; font-weight: 500; vertical-align: top; }
     .ro-files th { color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .03em; border-top: 0; }
     .ro-files td:first-child { font-family: "DM Mono", monospace; overflow-wrap: anywhere; }
+    /* The same column widths in every home. Below 600 px each file becomes a short stacked block instead of a squeezed table. */
+    .ro-files { table-layout: fixed; }
+    .ro-files .c-file { width: 31%; } .ro-files .c-state { width: 14%; } .ro-files .c-ids { width: 15%; } .ro-files .c-read { width: 28%; } .ro-files .c-act { width: 12%; }
+    @media (max-width: 600px) {
+      .ro-files, .ro-files tbody, .ro-files tr, .ro-files td { display: block; width: auto; }
+      .ro-files thead { display: none; }
+      .ro-files tr { padding: 6px 0; border-top: 1px solid #eef1f6; }
+      .ro-files td { padding: 1px 0; border-top: 0; }
+      .ro-files td:empty { display: none; }
+      .ro-files td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); }
+      .ro-files td:last-child { margin-top: 4px; }
+    }
     .ro-stop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
     .ro-stop button.danger { color: #a9273b; background: #ffe6ea; }
     .ro-stop button.danger:hover { background: #ffd7dd; }
@@ -1727,16 +1739,16 @@ created: 2026-09-10
       if (home.status !== 'ok' || home.config !== 'ok') return 'This home cannot be written to.';
       if (home.watcher !== 'running') return ROLLOVER_NO_WATCHER;
       if (rolloverFile(home, file).capability !== 'read') return 'This home\'s firstmate does not read this file.';
-      if (rolloverFile(home, 'rollover-off').state !== 'absent') return 'The off file is present, so a live file would do nothing. Remove the off file first.';
+      if (rolloverFile(home, 'rollover-off').state !== 'absent') return 'The off file is present, so a live file would do nothing. Resume first, which removes the off file this page made, or remove your own off file.';
       if (rolloverFile(home, file).state !== 'absent') return `${file} already exists. The page never changes an existing file.`;
       if (!rolloverPicked(home, kind).length) return 'Tick at least one id.';
       return '';
     };
-    const rolloverFilesTable = home => `<table class="ro-files"><thead><tr><th>Switch file</th><th>State</th><th>Ids listed</th><th>Read by this home</th><th></th></tr></thead><tbody>${home.files.map(file => {
+    const rolloverFilesTable = home => `<table class="ro-files"><thead><tr><th class="c-file">Switch file</th><th class="c-state">State</th><th class="c-ids">Ids listed</th><th class="c-read">Read by this home</th><th class="c-act"></th></tr></thead><tbody>${home.files.map(file => {
       const mine = file.origin === 'page' && ['rollover-live', 'rollover-crew-live', 'rollover-off'].includes(file.name);
       const made = file.state === 'regular' && file.origin ? `<div class="ro-origin">${escapeHtml(ROLLOVER_ORIGIN[file.origin] || '')}</div>` : '';
       const undo = mine ? `<button type="button" class="small-btn" data-ro-undo="${escapeHtml(file.name)}" data-home="${escapeHtml(home.id)}" ${rollover.busy ? 'disabled' : ''} title="${file.name === 'rollover-off' ? 'Removes the off file this page made. Every live switch still present in this home turns back on.' : 'Removes the file this page made, if nobody changed it. The watcher may then roll less.'}">${file.name === 'rollover-off' ? 'Resume' : 'Remove'}</button>` : '';
-      return `<tr><td>${escapeHtml(file.name)}${made}</td><td>${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td>${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td>${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td><td>${undo}</td></tr>`;
+      return `<tr><td>${escapeHtml(file.name)}${made}</td><td data-label="State">${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td data-label="Ids listed">${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td data-label="Read by this home">${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td><td>${undo}</td></tr>`;
     }).join('')}</tbody></table>`;
     // The roller's own verdict for each ticked id, in plain words. `covered` is false when the live file does not list the id yet.
     const ROLLOVER_VERDICT = {
@@ -1780,7 +1792,7 @@ created: 2026-09-10
       const checkBlock = home.watcher !== 'running' ? ROLLOVER_NO_WATCHER : !picked.size ? 'Tick at least one id.' : '';
       const check = `<button type="button" data-ro-preview="${kind}" data-home="${escapeHtml(home.id)}" ${checkBlock || asking ? 'disabled' : ''} title="${escapeHtml(checkBlock || 'Asks this home\'s own firstmate who would roll for the ticked ids. Read only.')}">Check who would roll</button>`;
       const arm = `<div class="ro-arm">${check}<button type="button" class="primary-btn" data-ro-arm="${kind}" data-home="${escapeHtml(home.id)}" ${block || rollover.busy ? 'disabled' : ''} title="${escapeHtml(block || `Asks to create ${ROLLOVER_KINDS[kind].file} listing the ticked ids.`)}">Arm ${escapeHtml(ROLLOVER_KINDS[kind].noun)}${picked.size ? ` (${picked.size})` : ''}</button>${block ? `<span class="ro-why">${escapeHtml(block)}</span>` : ''}</div>${rolloverPreviewBox(home, kind)}`;
-      return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${rows}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}${arm}</details>`;
+      return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} can be armed</summary><ul>${rows}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}${arm}</details>`;
     };
     const rolloverPreviewLine = (home, kind) => {
       const preview = rolloverPreviewFor(home, kind);
@@ -1795,7 +1807,7 @@ created: 2026-09-10
       if (!home) return '';
       if (ask.kind === 'arm') {
         const spec = ROLLOVER_KINDS[ask.which];
-        return `<div class="confirm-box" id="rollover-confirm"><strong>Arm ${escapeHtml(spec.noun)} in ${escapeHtml(home.label)}?</strong>This creates ${escapeHtml(spec.file)} in that home's config folder, listing ${plural(ask.ids.length, 'id')}: ${escapeHtml(ask.ids.join(', '))}. ${rolloverPreviewLine(home, ask.which)} From the home's next watcher pass, firstmate may ask each of them for a handoff and restart it. A restart cannot be undone. Nothing else is written.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="arm">Create ${escapeHtml(spec.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
+        return `<div class="confirm-box" id="rollover-confirm"><strong>Arm ${escapeHtml(spec.noun)} in ${escapeHtml(home.label)}?</strong>This creates ${escapeHtml(spec.file)} in that home's config folder, listing ${plural(ask.ids.length, 'id')}: ${escapeHtml(ask.ids.join(', '))}. ${rolloverPreviewLine(home, ask.which)} From the home's next watcher pass, firstmate may ask ${ask.ids.length === 1 ? 'that session' : 'each of those sessions'} for a handoff and restart ${ask.ids.length === 1 ? 'it' : 'each one'}. A restart cannot be undone. Nothing else is written.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="arm">Create ${escapeHtml(spec.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
       }
       return `<div class="confirm-box" id="rollover-confirm"><strong>Turn rolling back on in ${escapeHtml(home.label)}?</strong>This removes the off file this page made. Every live switch still present in that home takes effect again at its next watcher pass.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="undo">Remove ${escapeHtml(ask.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
     };
@@ -1822,7 +1834,7 @@ created: 2026-09-10
       if (home.config !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${home.config === 'missing' ? 'This home has no config folder, so no switch can exist. The page does not create one.' : 'The config folder is a link, so nothing was read.'}</div></div>`;
       const effective = home.effective;
       const sentences = effective
-        ? `<ul class="ro-sentences">${[effective.second_mates, effective.crew, effective.primary].map(text => (text ? `<li>${escapeHtml(text)}</li>` : '<li class="none">not read by this home\'s firstmate</li>')).join('')}</ul>`
+        ? `<ul class="ro-sentences">${[[effective.second_mates, 'second mates'], [effective.crew, 'crewmates and scouts'], [effective.primary, 'the primary']].map(([text, kind]) => (text ? `<li>${escapeHtml(text)}</li>` : `<li class="none">${kind}: not read by this home\'s firstmate</li>`)).join('')}</ul>`
         : `<div class="tab-meta">No watcher is running in this home right now, so nothing reads these files at this moment. A firstmate run by Claude starts one at the end of each turn.</div>`;
       const log = Number.isFinite(home.roller_log_age_seconds) ? `<div class="tab-meta">Roller log last changed ${escapeHtml(contextAge(home.roller_log_age_seconds))}. It changes only when a verdict changes.</div>` : '';
       return `<div class="ro-home">${head}${sentences}${rolloverFilesTable(home)}${rolloverIdList(home, 'second-mates')}${rolloverIdList(home, 'crew')}${log}</div>`;
