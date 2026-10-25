@@ -104,7 +104,7 @@ function fakeRunner(overrides = {}) {
 
 // Starts a real HTTP server on an ephemeral loopback port wired to the API
 // module, the way serve.sh wires it.
-async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHome = '/fixture/fm-home', gaugeScript = '/fixture/bin/fm-ctx-gauge.sh', now, rollover } = {}) {
+async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHome = '/fixture/fm-home', gaugeScript = '/fixture/bin/fm-ctx-gauge.sh', now, rollover, switches } = {}) {
   const fake = runner ? { runner, calls: [] } : fakeRunner();
   const active = runner || fake.runner;
   let api;
@@ -116,7 +116,7 @@ async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHo
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   const adapter = createAdapter({ toolRoot, runner: active, env, fmHome, gaugeScript, ...(now ? { now } : {}) });
-  api = create({ root: '/fixture/root', port, adapter, env, ...(rollover ? { rollover } : {}) });
+  api = create({ root: '/fixture/root', port, adapter, env, toolRoot, ...(rollover ? { rollover } : {}), ...(switches ? { switches } : {}) });
   return {
     port,
     api,

@@ -16,6 +16,7 @@ const { createGuard } = require('./guard');
 const { createAdapter, AdapterError } = require('./adapter');
 const { buildShareReport } = require('./redact');
 const { createRollover } = require('./rollover');
+const { createSwitches } = require('./rollover-switches');
 
 const PREFIX = '/api/herdr-organizer/';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -27,8 +28,8 @@ function send(res, status, body) {
   res.end(payload);
 }
 
-function fail(res, status, code, message) {
-  send(res, status, { status: 'error', code, message });
+function fail(res, status, code, message, details) {
+  send(res, status, { status: 'error', code, message, ...(details ? { details } : {}) });
 }
 
 function readJsonBody(req) {
@@ -77,14 +78,15 @@ function validateParams(spec, params) {
   return input;
 }
 
-function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover } = {}) {
+function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches } = {}) {
   const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
   const guard = createGuard({ port, token });
   // The firstmate home and code root the context gauge reads, as serve.sh names them.
   const fmHome = env.HERDR_ORGANIZER_FM_HOME || path.join(os.homedir(), 'fm-homes', 'pmos');
   const gaugeScript = env.HERDR_ORGANIZER_GAUGE_SCRIPT || path.join(os.homedir(), 'workspace', 'firstmate', 'bin', 'fm-ctx-gauge.sh');
   const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env, fmHome, gaugeScript });
-  const rolloverView = rollover || createRollover({ env, now });
+  const rolloverView = rollover || createRollover({ env, now, ledgerPath: path.join(resolvedToolRoot, 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json') });
+  const rolloverSwitches = switches || createSwitches({ rollover: rolloverView, toolRoot: resolvedToolRoot, now });
   let tier1Busy = false;
 
   async function shareReport(params) {
@@ -112,6 +114,11 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'codex-credits': { tier: 0, params: {}, run: () => tools.codexCredits() },
     // Read only: what firstmate's rollover switches say in each registered home, and whether that home's watcher runs.
     'rollover-state': { tier: 0, params: {}, run: () => rolloverView.state() },
+    // tier 1: create or remove one firstmate switch file in one registered home. The browser names a home id and ids, never a path.
+    // `rollover-stop` never waits behind another change: stopping must always be possible.
+    'rollover-arm': { tier: 1, params: { home: { type: 'string' }, kind: { type: 'string' }, ids: { type: 'array' }, confirm: { type: 'string' } }, run: (p, ctx) => rolloverSwitches.arm(p, ctx) },
+    'rollover-stop': { tier: 1, lock: false, params: { homes: { type: 'array', optional: true } }, run: (p, ctx) => rolloverSwitches.stop(p, ctx) },
+    'rollover-undo': { tier: 1, params: { home: { type: 'string' }, file: { type: 'string' }, confirm: { type: 'string', optional: true } }, run: (p, ctx) => rolloverSwitches.undo(p, ctx) },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },
     // View only (no confirm, no input into any pane): shows a session's tab in the attached Herdr window. It takes
@@ -160,7 +167,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
       tier1Busy = true;
     }
     try {
-      const data = await action.run(params);
+      const data = await action.run(params, { origin: String(req.headers.origin || '').slice(0, 200) });
       send(res, 200, { status: 'ok', action: body.action, data });
     } finally {
       if (locks) tier1Busy = false;
@@ -194,7 +201,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     if (!pathname.startsWith(PREFIX)) return false;
     dispatch(req, res, pathname).catch((error) => {
       if (res.headersSent) { res.end(); return; }
-      if (error instanceof AdapterError || (error && error.status && error.code)) fail(res, error.status || 400, error.code || 'error', error.message);
+      if (error instanceof AdapterError || (error && error.status && error.code)) fail(res, error.status || 400, error.code || 'error', error.message, error.reasons);
       else fail(res, 500, 'internal', 'Unexpected error.');
     });
     return true;

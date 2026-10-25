@@ -116,7 +116,20 @@ function parseRegistry(env, homedir) {
   return registered;
 }
 
-function createRollover({ env = process.env, homedir = os.homedir(), now = () => new Date(), identityOf = psIdentity, pidAlive = pidIsAlive, platform = process.platform } = {}) {
+const PAGE_HEADER = '# created by the Herdr organizer page';
+
+// The ledger the write side keeps (rollover-switches.js): which switch files this page created, by inode and content hash.
+function readLedger(ledgerPath) {
+  if (!ledgerPath) return { entries: [] };
+  const text = readRegular(ledgerPath, 1024 * 1024);
+  if (text === null) return { entries: [] };
+  try {
+    const value = JSON.parse(text);
+    return value && Array.isArray(value.entries) ? value : { entries: [] };
+  } catch { return { entries: [] }; }
+}
+
+function createRollover({ env = process.env, homedir = os.homedir(), now = () => new Date(), identityOf = psIdentity, pidAlive = pidIsAlive, platform = process.platform, ledgerPath = '' } = {}) {
   const homes = parseRegistry(env, homedir);
 
   function ageSeconds(info) {
@@ -193,13 +206,23 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     return result;
   }
 
-  function switchState(configDir, name) {
+  // Who made a regular switch file: the page (the ledger names its inode and content hash), a file that carries the
+  // page's header with no matching record, or someone else.
+  function originOf(homeId, name, info, text) {
+    const recorded = readLedger(ledgerPath).entries.find((item) => item.home === homeId && item.file === name);
+    if (recorded && recorded.ino === info.ino && recorded.dev === info.dev && text !== null && recorded.sha256 === crypto.createHash('sha256').update(text).digest('hex')) return 'page';
+    if (text !== null && text.startsWith(PAGE_HEADER)) return 'page_header_only';
+    return 'other';
+  }
+
+  function switchState(configDir, name, homeId) {
     const file = path.join(configDir, name);
     const info = lstatOrNull(file);
     if (!info) return { name, state: 'absent' };
     if (info.isSymbolicLink()) return { name, state: 'symlink', age_seconds: ageSeconds(info) };
     if (!info.isFile()) return { name, state: 'not_regular' };
     const entry = { name, state: 'regular', age_seconds: ageSeconds(info) };
+    entry.origin = originOf(homeId, name, info, readRegular(file, SWITCH_MAX));
     if (LIVE_SWITCHES.has(name) && name !== 'rollover-primary-live') {
       const text = readRegular(file, SWITCH_MAX);
       if (text === null) return { ...entry, state: 'unreadable' };
@@ -301,7 +324,7 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     const capability = watcher.state === 'running' && watcher.code_root ? capabilityOf(watcher.code_root) : null;
     if (view.config === 'ok') {
       view.files = SWITCHES.map((name) => {
-        const entry = switchState(configDir, name);
+        const entry = switchState(configDir, name, home.id);
         if (capability) entry.capability = capability[name];
         return entry;
       });
@@ -331,6 +354,24 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     return found.size;
   }
 
+  // Everything a write needs to decide about one registered home, read fresh. Null for an id that is not registered.
+  function inspect(homeId) {
+    const home = homes.find((item) => item.id === homeId);
+    if (!home) return null;
+    const status = homeStatus(home);
+    const result = { id: home.id, label: home.label, real: home.real, status };
+    if (status !== 'ok') return result;
+    const configInfo = lstatOrNull(path.join(home.real, 'config'));
+    result.config = !configInfo ? 'missing' : (configInfo.isDirectory() ? 'ok' : 'unsafe');
+    result.configDir = path.join(home.real, 'config');
+    const watcher = watcherOf(home);
+    result.watcher = watcher.state;
+    result.capability = watcher.state === 'running' && watcher.code_root ? capabilityOf(watcher.code_root) : null;
+    result.ids = idsOf(home);
+    result.switches = result.config === 'ok' ? Object.fromEntries(SWITCHES.map((name) => [name, switchState(result.configDir, name, home.id)])) : {};
+    return result;
+  }
+
   function state() {
     return {
       read_only: true,
@@ -340,7 +381,7 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     };
   }
 
-  return { state, homes: homes.map(({ id, label }) => ({ id, label })), SWITCHES };
+  return { state, inspect, unregisteredCount, homes: homes.map(({ id, label }) => ({ id, label })), SWITCHES };
 }
 
-module.exports = { createRollover, RolloverConfigError, psIdentity, defaultLabels, SWITCHES };
+module.exports = { createRollover, RolloverConfigError, psIdentity, defaultLabels, readRegular, SWITCHES, PAGE_HEADER, ID_RE };

@@ -359,6 +359,9 @@ test('tier 1 actions still need every cross-site protection', async () => {
       { action: 'save-manual-identity', params: manual() },
       { action: 'seal-bundle', params: { sessions: ['project-a'], confirm: 'seal:project-a' } },
       { action: 'focus-tab', params: { session: 'project-a', pane_id: 'w1:p1', id: '11111111' } },
+      { action: 'rollover-arm', params: { home: 'h00000000', kind: 'crew', ids: ['x'], confirm: 'rollover-arm:h00000000:crew:x' } },
+      { action: 'rollover-stop', params: {} },
+      { action: 'rollover-undo', params: { home: 'h00000000', file: 'rollover-live' } },
     ];
     // Every action the server runs at tier 1 or above is covered, so a new one cannot be added without a body here.
     const covered = bodies.map((body) => body.action);
@@ -378,6 +381,7 @@ test('tier 1 actions still need every cross-site protection', async () => {
     assert.equal(server.calls.filter((call) => call.args.includes('focus')).length, 0, 'nothing was focused');
     assert.equal(server.calls.filter((call) => call.args.includes('--apply')).length, 0, 'no identity was applied');
     assert.equal(registerCalls(server.calls).length, 0, 'no manual identity was registered');
+    assert.equal(fs.existsSync('/fixture/tools/state'), false, 'no rollover record or audit line was started for a refused request');
     assert.equal(server.calls.some((call) => typeof call.args[0] === 'string' && call.args[0].endsWith('store_check.py')), false, 'the manual identity check did not start');
   } finally { await server.close(); }
 });
