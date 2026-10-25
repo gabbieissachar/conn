@@ -24,7 +24,8 @@ under the newest), and that newest session is added to the list.
 
 Every rebuild drops a listed session whose Herdr pane has closed: one that ran in a
 pane before, while neither it nor a later session of its pane runs in one now and
-Herdr no longer lists the pane itself (a closed pane's id is never reused). A pane
+Herdr no longer lists the pane itself (a closed pane's id is never reused while its Herdr
+session lives; one deleted and made again under the same name has new panes). A pane
 Herdr still lists stays, agent or not: after a restart the panes come back before
 their agents do. A session never seen in a Herdr pane stays, and nothing is dropped
 while Herdr shows no pane at all or a Herdr session cannot be read. A dropped session
@@ -149,7 +150,10 @@ class PaneView:
         """Whether the pane this session was last seen in is gone from Herdr. A pane whose agent
         has not come back (a Herdr restart brings agents back one at a time) is still listed."""
         entry = self.seen[member]
-        return self.listed is not None and (entry.get("herdr"), entry.get("pane")) not in self.listed
+        if self.listed is None:
+            return False
+        # A session made again under the same name reuses pane ids for new panes (see HERDR_LIVES).
+        return (entry.get("herdr"), entry.get("pane")) not in self.listed or not builder.same_life(entry, builder.HERDR_LIVES.get(entry.get("herdr")))
 
     def closed(self, sid: str) -> bool:
         """Whether <sid> ran in a pane before and neither it nor a later session of its pane runs in one that Herdr still lists."""

@@ -67,6 +67,15 @@ class HerdrInventoryTest(unittest.TestCase):
         self.assertEqual(list(sessions), [A])
         self.assertEqual(listed, {("work", "w1:p1"), ("work", "w1:p2")})
 
+    def test_each_pane_carries_the_life_of_its_herdr_session(self):
+        with tempfile.TemporaryDirectory() as folder:
+            panes = [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "claude", "agent_session": {"value": A}}]
+            replies = {("session", "list"): {"sessions": [{"name": "work", "running": True, "session_dir": folder}]},
+                       ("pane", "list"): {"result": {"panes": panes}}, ("tab", "list"): {"result": {"tabs": []}}}
+            sessions, _ = self.run_with(replies)
+            life = str(os.stat(folder).st_ino)
+            self.assertEqual((sessions[A]["life"], builder.HERDR_LIVES), (life, {"work": life}))
+
     def test_a_herdr_session_that_cannot_be_read_leaves_the_list_unknown(self):
         replies = {("session", "list"): {"sessions": [{"name": "work", "running": True}]}}
         self.assertEqual(self.run_with(replies), ({}, None))
@@ -257,6 +266,18 @@ class ClosedPanesTest(unittest.TestCase):
         self.seen(A, B)
         self.listed = {("work", "w1:p1"), ("work", "w1:p2")}
         self.assertEqual(reader.drop_closed([A, B]), [A, B], "Herdr is back with shells only")
+
+    def test_a_pane_id_handed_out_again_by_a_herdr_session_made_anew_is_a_closed_pane(self):
+        # "work" was deleted and made again: its new w1:p1 is not the pane A ran in.
+        reader.PANE_CACHE.write_text(json.dumps({A: {**PANES[A], "life": "old"}, B: {**PANES[B], "life": "new"}}), encoding="utf-8")
+        self.live = {B: {**PANES[B], "life": "new"}}
+        self.listed = {("work", "w1:p1"), ("work", "w1:p2")}
+        with mock.patch.dict(builder.HERDR_LIVES, {"work": "new"}, clear=True):
+            self.assertEqual(reader.drop_closed([A, B]), [B])
+        reader.write_list([])
+        reader.PANE_CACHE.write_text(json.dumps({A: {**PANES[A], "life": "same"}, B: PANES[B]}), encoding="utf-8")
+        with mock.patch.dict(builder.HERDR_LIVES, {"work": "same"}, clear=True):
+            self.assertEqual(reader.drop_closed([A, B]), [A, B], "a restart keeps the session's life, and its panes")
 
     def test_a_cache_entry_without_a_pane_id_closes_with_its_session(self):
         reader.PANE_CACHE.write_text(json.dumps({A: {k: v for k, v in PANES[A].items() if k != "pane"}, B: PANES[B]}), encoding="utf-8")
@@ -709,6 +730,10 @@ class ClearedSessionsTest(unittest.TestCase):
             self.assertEqual(self.stems("much-later"), ["much-later"])
             self.assertEqual(self.stems("next-door"), ["next-door"])
         self.assertEqual(self.stems("sonnet"), ["sonnet"], "no pane history, no join")
+        # The same pane id in a Herdr session deleted and made again is another pane.
+        history = {"haiku": {**pane, "life": "old"}, "sonnet": {**pane, "life": "new"}}
+        with mock.patch.dict(builder._PANE_HISTORY, history, clear=True):
+            self.assertEqual(self.stems("sonnet"), ["sonnet"])
 
 
 class PaneSessionTest(unittest.TestCase):

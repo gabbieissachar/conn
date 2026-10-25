@@ -798,12 +798,26 @@ def herdr_panes() -> dict[str, dict]:
     return herdr_inventory()[0]
 
 
+# A pane id ("w1:p2") names one pane only within one life of a Herdr session: a session
+# deleted and made again under the same name hands out the same low ids to new panes. A
+# restart keeps the session's folder, and with it the panes and their ids, so the folder's
+# identity marks the life. Name -> life, for every running session the last inventory read.
+HERDR_LIVES: dict[str, str] = {}
+
+
+def herdr_life(herdr_session: dict) -> str:
+    try:
+        return str(os.stat(herdr_session.get("session_dir") or "").st_ino)
+    except (OSError, ValueError):
+        return ""
+
+
 def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     """Session id -> the Herdr pane running it, and every pane Herdr lists, from every running Herdr session.
 
     The second value holds (Herdr session, pane id) of every pane, with or without an agent
     in it, so a caller can tell a pane that has closed (its id is gone: Herdr never reuses
-    one) from a pane whose agent has not come back yet. It is None when a running Herdr
+    one within a session's life, see HERDR_LIVES) from a pane whose agent has not come back yet. It is None when a running Herdr
     session could not be read, since a pane missing from a partial list has not closed.
 
     Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for a
@@ -820,10 +834,12 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     running = running_claude_sessions()
     panes = {}
     pane_ids: set[tuple[str, str]] | None = set()
+    HERDR_LIVES.clear()
     for herdr_session in listing.get("sessions") or []:
         name = herdr_session.get("name") or ""
         if not herdr_session.get("running") or name.startswith("-"):
             continue
+        HERDR_LIVES[name] = life = herdr_life(herdr_session)
         panes_reply = call("--session", name, "pane", "list")
         if panes_reply is None:
             pane_ids = None
@@ -839,12 +855,12 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
                 info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
                 actual = pane_session(claimed, info, running)
                 pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
-        panes.update(pane_index(name, found, tabs_result.get("tabs") or []))
+        panes.update(pane_index(name, found, tabs_result.get("tabs") or [], life))
     return panes, pane_ids
 
 
-def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[str, dict]:
-    """Session id -> {label, title, herdr} for the agent panes of one Herdr session.
+def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict], life: str = "") -> dict[str, dict]:
+    """Session id -> {label, title, herdr, pane, life} for the agent panes of one Herdr session.
 
     label is the name Herdr shows for the pane: its own label, else its tab's
     label. title is the terminal title the agent set ("Bc36 spec handoff rule 3").
@@ -858,6 +874,8 @@ def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[
         title = pane.get("terminal_title_stripped") or ""
         label = pane.get("label") or tab_labels.get(pane.get("tab_id")) or title
         found[session] = {"label": label, "title": title, "herdr": herdr_session, "pane": pane.get("pane_id") or ""}
+        if life:
+            found[session]["life"] = life
     return found
 
 
@@ -1439,11 +1457,17 @@ def session_chain(path: Path, limit: int = 20) -> list[Path]:
 
 # Every pane a session was seen in (the pane-label cache), set by pane_labels.
 _PANE_HISTORY: dict[str, dict] = {}
+def same_life(entry: dict, life: str | None) -> bool:
+    """Whether a pane entry belongs to the Herdr session life <life>; unknown on either side
+    (an entry cached before lives were recorded, a folder that cannot be read) counts as the same."""
+    return not entry.get("life") or not life or entry["life"] == life
+
+
 RESTART_WINDOW = 600  # seconds from the old session's last write to the new one's first
 
 
 def same_pane(a: dict, b: dict) -> bool:
-    if a.get("herdr") != b.get("herdr"):
+    if a.get("herdr") != b.get("herdr") or not same_life(a, b.get("life")):
         return False
     if a.get("pane") and b.get("pane"):
         return a["pane"] == b["pane"]
