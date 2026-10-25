@@ -32,6 +32,11 @@ class RedactTextTest(unittest.TestCase):
     def test_each_kind_of_secret(self):
         self.check("key " + fake("AKIA", 16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") + " here", "aws-access-key", kept=("key ", " here"))
         self.check("use " + fake("sk-ant-", 40), "api-key", kept=("use ",))
+        self.check(fake("sk_" + "live_", 24), "api-key")
+        self.check(fake("rk_" + "test_", 24), "api-key")
+        self.check("key " + fake("AIza", 35), "api-key", kept=("key ",))
+        self.check(fake("npm_", 36), "api-key")
+        self.check(fake("hf_", 34), "api-key")
         self.check(fake("ghp_", 36), "github-token")
         self.check(fake("github_pat_", 40), "github-token")
         self.check("token " + fake("glpat-", 20), "gitlab-token")

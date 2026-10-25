@@ -420,6 +420,23 @@ class PrivateTest(unittest.TestCase):
         self.assertGreater(seen, 20)
 
 
+class HerdrEnvTest(unittest.TestCase):
+    def test_the_herdr_calls_of_a_build_do_not_carry_the_sync_passphrase(self):
+        seen = []
+
+        def fake(argv, **options):
+            seen.append((argv, options.get("env")))
+            return subprocess.CompletedProcess(argv, 1, "", "")  # no Herdr running: nothing is read
+
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS, "KEEP_ME": "1"}), mock.patch.object(builder.subprocess, "run", fake):
+            builder.herdr_panes()
+        self.assertTrue(seen)
+        for argv, env in seen:
+            self.assertEqual(argv[0], "herdr")
+            self.assertNotIn(sync.PASSPHRASE_ENV, env)
+            self.assertEqual(env["KEEP_ME"], "1")
+
+
 class CommandTest(unittest.TestCase):
     def test_build_only_is_the_only_mode(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as stop:

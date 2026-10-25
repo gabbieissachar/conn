@@ -98,7 +98,9 @@ async function drain({ folder, sealed, passphrase = '', root = path.join(__dirna
   try {
     const ids = await listedIds(folder, key);
     const handled = ledger(folder, now());
-    const api = create({ root, port: 1, token: crypto.randomBytes(32).toString('hex'), ...(runner ? { runner } : {}), herdrBin, ...(env ? { env } : {}),
+    // The passphrase opens the bucket here; the Herdr commands this runs never need it, so they do not inherit it.
+    const childSource = env || Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'HOSTED_READER_PASSPHRASE'));
+    const api = create({ root, port: 1, token: crypto.randomBytes(32).toString('hex'), ...(runner ? { runner } : {}), herdrBin, env: childSource,
       ...(claudeSessionsDir ? { claudeSessionsDir } : {}), ...(pause ? { pause } : {}), outDir: path.join(folder, '.unused'), sendable: () => ids });
     const receiptPath = (id) => path.join(folder, 'r', id + (sealed ? '.json.enc' : '.json'));
     const write = async (receipt) => {
@@ -125,7 +127,7 @@ async function drain({ folder, sealed, passphrase = '', root = path.join(__dirna
       if (before || handled.has(id)) {
         // A receipt exists, or the laptop has this id on record: this request was handled, or stopped
         // midway. It is never sent again.
-        if (before && before.state === 'sending') { result.interrupted += 1; await write({ ...before, state: 'refused', code: 'interrupted', reason: 'The laptop stopped while sending this. It may or may not have reached the pane: check it before sending again.', at: Math.floor(now() / 1000) }); }
+        if (before && before.state === 'sending') { result.interrupted += 1; await write({ ...before, id, state: 'refused', code: 'interrupted', reason: 'The laptop stopped while sending this. It may or may not have reached the pane: check it before sending again.', at: Math.floor(now() / 1000) }); }
         // With no receipt (deleted, or the run stopped before writing one) the page still gets an answer.
         if (!before) await write({ id, session_id: null, state: 'refused', code: 'handled', reason: 'The laptop had already handled this request, so it was not sent again. If it never arrived, send it again.', at: Math.floor(now() / 1000) });
         fs.unlinkSync(file);

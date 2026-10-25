@@ -27,6 +27,11 @@ PATTERNS = [
                                r"(?=\r?\n|(?:\\r)?\\n|\Z|[\"',\]}]))*"), 0),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"), 0),
     ("api-key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}"), 0),
+    # Other providers' keys, which all start with a fixed prefix (so each scans in one pass): Stripe secret and
+    # restricted keys, Google API keys, npm and Hugging Face tokens.
+    ("api-key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"), 0),
+    ("api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), 0),
+    ("api-key", re.compile(r"\b(?:npm|hf)_[A-Za-z0-9]{30,}\b"), 0),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"), 0),
     ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), 0),
     ("slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), 0),

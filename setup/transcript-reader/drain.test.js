@@ -353,6 +353,20 @@ test('a second drain on the same folder stops while the first runs, and takes ov
   assert.equal(fs.existsSync(lock), false, 'the lock goes with the run');
 });
 
+test('the Herdr commands a drain runs do not inherit the passphrase', async (t) => {
+  const lab = await copy({ sealed: true });
+  t.after(lab.cleanup);
+  const seen = [];
+  const before = process.env.HOSTED_READER_PASSPHRASE;
+  process.env.HOSTED_READER_PASSPHRASE = PASS;
+  t.after(() => { if (before === undefined) delete process.env.HOSTED_READER_PASSPHRASE; else process.env.HOSTED_READER_PASSPHRASE = before; });
+  await lab.queue(Q1, { session_id: A, text: 'hello' });
+  await lab.drain({ runner: async (file, args, options) => { seen.push(options.env); return lab.herdr.runner(file, args, options); } });
+  assert.ok(seen.length > 3);
+  for (const env of seen) assert.equal(Object.keys(env).some((name) => name.includes('PASSPHRASE')), false);
+  assert.equal((await lab.receipt(Q1)).state, 'sent');
+});
+
 test('the files a drain writes are the owner\'s alone', async (t) => {
   const lab = await copy({ sealed: true });
   t.after(lab.cleanup);
