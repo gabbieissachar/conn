@@ -197,3 +197,19 @@ test('a tick still running holds back the next one', async () => {
   await timers[0].fn();
   assert.equal(runs, 2);
 });
+
+test('the list counts asks only for a live pane, and names its count apart from "need you"', () => {
+  const { hosted } = load();
+  const live = { needs: 2, pane: { live: true, status: 'working' } };
+  const closed = { needs: 1, pane: { live: false, label: 'echo-old' } };  // the reviewer's closed-pane session E
+  const unseen = { needs: 3, pane: null };  // never seen in a Herdr pane
+  assert.equal(hosted.asks(live), '2 since your last message');
+  assert.equal(hosted.asks({ ...live, needs: 0 }), '');
+  assert.equal(hosted.waiting(closed), 0);
+  assert.equal(hosted.asks(closed), '');
+  assert.equal(hosted.asks(unseen), '');
+  assert.equal(hosted.closedPane(closed), true);
+  assert.equal(hosted.closedPane(live), false);
+  assert.equal(hosted.closedPane(unseen), false, 'no pane seen is not a closed pane');
+  assert.doesNotMatch(hosted.asks(live), /need/i);
+});

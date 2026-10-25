@@ -589,12 +589,12 @@
     const twins = data.sessions.filter(x => x.pane && x.pane.label === s.pane.label && Boolean(x.reopened) === Boolean(s.reopened));
     return twins.length > 1 ? sessionName(s) : s.pane.label;
   }
-  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept ? " · closed pane" : "")].filter(Boolean).join(" · ");
-  // The hosted list starts each name with the asks waiting on you (replies that need you since
-  // your last message) and the last activity, so a phone shows them before the name is cut off.
+  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  // The hosted list starts each name with the asks waiting on you (hosted.asks) and the last
+  // activity, so a phone shows them before the name is cut off.
   const lastSeen = at => !at ? "" : fmtShortDay(at) === fmtShortDay(Date.now() / 1000) ? fmtTime(at) : fmtShortDay(at);
   const optionText = s => !HOSTED ? sessionOption(s)
-    : [s.needs ? `Needs you${s.needs > 1 ? ` (${s.needs})` : ""}` : "", lastSeen(lastTurnAt(s)), sessionOption(s)].filter(Boolean).join(" · ");
+    : [hosted.asks(s), lastSeen(lastTurnAt(s)), sessionOption(s)].filter(Boolean).join(" · ");
   // The hosted copy lists every conversation it holds, grouped by home, newest first in each.
   function fillHostedSessions(select) {
     const homes = [...new Set([...(data.homes || []), ...data.sessions.map(s => s.home)])];
@@ -1659,9 +1659,9 @@
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
   });
   const biggest = () => data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
-  // The hosted copy opens on the newest conversation with a reply that needs you since your last
-  // message, else the newest one (it cannot follow Herdr).
-  const waitingFirst = () => Math.max(0, data.sessions.findIndex(s => s.needs > 0));
+  // The hosted copy opens on the newest conversation with a reply that waits on you (hosted.waiting),
+  // else the newest one (it cannot follow Herdr).
+  const waitingFirst = () => Math.max(0, data.sessions.findIndex(s => hosted.waiting(s) > 0));
   // The conversation and view the page opens on; returns what this tab saved before a reload.
   function chooseOpening() {
     const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];

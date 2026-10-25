@@ -28,8 +28,10 @@ Output, in out/hosted/ (gitignored with the rest of out/; it embeds private tran
   manifest.json        what each object was built from (never served)
   pane-labels.json     every Herdr pane a session was seen in, seeded from the local reader's
 
-A run compares each log's (mtime, size) with the manifest and builds again only the
-conversations with a new or changed log; a document is read again when its file changed,
+A run builds a conversation again when one of its logs has a new (mtime, size), when the
+rules that build it changed (build_prototype.py, build_questionnaire.py or this file), or when a
+steering inbox its doorbells name or a task-instruction file it quotes changed; a document is
+read again when its file changed,
 and the fleet weeks are put together again from the fleet records every run. An object is
 written only when its content changed, and its stamp in index.json changes with it, so the
 shell (which polls index.json every 30 seconds while it is visible) reloads only that.
@@ -127,6 +129,44 @@ def week_of(at: float) -> str:
     return f"{year}-W{week:02d}"
 
 
+def rules() -> str:
+    """The version of every rule that decides a conversation object: the builder's parsing and
+    threading (build_prototype.PARSE_RULES), the answer-sheet finder's and this file's. A
+    record built under other rules is not fresh, so a fix to either reaches every object."""
+    parts = [builder.PARSE_RULES] + [hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+                                     for path in (HERE / "prototype" / "build_questionnaire.py", Path(__file__).resolve())]
+    return stamp_of("|".join(parts).encode("utf-8"))
+
+
+def sources(exchanges: list[dict], homes: list[Path]) -> dict:
+    """What a conversation reads besides its logs: the steering inboxes its doorbells name, whose
+    messages it shows in their place (attach_inbox_bodies), and the task-instruction files its
+    pointers name (attach_operational_input)."""
+    doorbells, briefs = set(), set()
+    for exchange in exchanges:
+        if exchange["source"] != "firstmate":
+            continue
+        brief = builder.OPERATIONAL.search(exchange["input"]) if exchange["kind"] == "brief" else None
+        if brief:
+            briefs.add(brief.group(1))
+        elif exchange["kind"] == "steer" and builder.doorbell_inbox(exchange["input"], homes) is not None:
+            doorbells.add(exchange["input"])
+    return {"homes": [str(home) for home in homes], "doorbells": sorted(doorbells), "briefs": sorted(briefs)}
+
+
+def inputs_stamp(found: dict) -> str:
+    """A stamp of those files as they are now: each inbox a doorbell resolves to (as the builder
+    resolves it) with its messages' versions, and each instruction file's version."""
+    homes = [Path(home) for home in found["homes"]]
+    parts = []
+    for text in found["doorbells"]:
+        directory = builder.doorbell_inbox(text, homes)
+        messages = sorted(directory.glob("*.msg")) + sorted((directory / "handled").glob("*.msg")) if directory.is_dir() else []
+        parts.append([str(directory), [[str(path.relative_to(directory)), version(path)] for path in messages]])
+    parts += [[path, version(Path(path))] for path in found["briefs"]]
+    return stamp_of(encode(parts))
+
+
 def first_line(text: str) -> str:
     """A timeline row shows only the first line of your message or a reply (the whole turn
     opens from its conversation), so the weekly objects keep only that much of them."""
@@ -154,6 +194,7 @@ class Build:
         except (OSError, json.JSONDecodeError):
             old = {}
         self.old = old if old.get("version") == VERSION else {}
+        self.rules = rules()
         self.wrote: list[str] = []
         self.rebuilt: list[str] = []
 
@@ -218,13 +259,15 @@ class Build:
 
     def conversations(self, seeds: list[Path]) -> list[tuple[str, dict]]:
         """(id, manifest record) for every conversation the seeds bring, in seed order. A
-        conversation whose logs are unchanged keeps its record; the rest are parsed again."""
+        conversation whose logs, rules and other inputs are unchanged keeps its record; the rest
+        are built again."""
         seed_names = [str(path) for path in seeds]
         in_scope = set(seed_names)
         kept: dict[str, dict] = {}
         if not self.args.full:
             for cid, record in (self.old.get("conversations") or {}).items():
-                fresh = all(version(Path(member)) == record["versions"].get(member) for member in record["members"])
+                fresh = record.get("rules") == self.rules and all(version(Path(member)) == record["versions"].get(member) for member in record["members"]) \
+                    and record.get("inputs") == inputs_stamp(record["sources"])
                 if fresh and in_scope & set(record["members"]) and (self.out / record["object"]).is_file():
                     kept[cid] = record
         covered = {member for record in kept.values() for member in record["members"]}
@@ -260,6 +303,9 @@ class Build:
         """Parse one conversation and write its object; returns its manifest record."""
         versions = {str(member): version(member) for member in chain}  # before reading: a write during it shows next run
         loaded = {member: builder.parsed_log(member, self.parsed) for member in chain}
+        # The inboxes and instruction files too are stamped before thread_session reads them.
+        found = sources([e for member in chain for e in loaded[member]["exchanges"]], [h for h in (home["home"], self.parent_of.get(home["id"])) if h])
+        inputs = inputs_stamp(found)
         session = builder.thread_session(home, chain, loaded, self.parent_of.get(home["id"]))
         exchanges = session["exchanges"]
         # The fleet timeline's own rows from this conversation: your messages and the replies to
@@ -285,7 +331,8 @@ class Build:
             turns=len(exchanges),
             needs=sum(1 for e in exchanges[mine:] if e["verdict"] == "needs-you"),
         )
-        return {"members": list(versions), "versions": versions, "object": rel, "stamp": stamp, "entry": entry,
+        return {"members": list(versions), "versions": versions, "rules": self.rules, "sources": found, "inputs": inputs,
+                "object": rel, "stamp": stamp, "entry": entry,
                 "events": events, "turns": turns, "documents": sorted(documents), "found": documents}
 
     def documents(self, conversations: list[tuple[str, dict]]) -> dict[str, dict]:

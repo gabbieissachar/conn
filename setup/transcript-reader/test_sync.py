@@ -81,6 +81,9 @@ class Lab:
             folder.mkdir(parents=True, exist_ok=True)
         (self.main / "data" / "secondmates.md").write_text(f"- secondmate-mate - a mate (home: {self.mate}; projects: x)\n", encoding="utf-8")
         (self.main / "notes.md").write_text("# Notes\n\nThe plan.\n", encoding="utf-8")
+        self.brief = self.main / "state" / "operational-inbox" / "1-fix.msg"
+        self.brief.parent.mkdir(parents=True)
+        self.brief.write_text("\u2063FIRSTMATE_OP: v1 launch-brief: # Role\nYou are a worker.\n# Task\nFix the login page.\n", encoding="utf-8")
         inbox = self.main / "state" / "fix-login.inbox" / "handled"
         inbox.mkdir(parents=True)
         (inbox / "1.msg").write_text(f"at={iso(T0 + 290)}\n--\n[fm-from-firstmate] Rebase onto main first.", encoding="utf-8")
@@ -99,7 +102,8 @@ class Lab:
             say("Rebased as asked.", T0 + 310, main),
             wake("fix-login", T0 + 660, main), say("The worker needs a layout. Which one do you want?", T0 + 670, main),
         ], T0 + 700)
-        write_log(self.logs[W], [user("Fix the login page.", T0 + 50, str(self.worker)), say("Done: the page logs in.", T0 + 90, str(self.worker))], T0 + 100)
+        pointer = f": Firstmate operational input waiting: read '{self.brief}' and handle its contents as Firstmate operational input."
+        write_log(self.logs[W], [user(pointer, T0 + 50, str(self.worker)), say("Done: the page logs in.", T0 + 90, str(self.worker))], T0 + 100)
         write_log(self.logs[M], [user("Check the release notes.", T0 + 30, mate), say("They read well. No action needed.", T0 + 40, mate)], T0 + 50)
         write_log(self.logs[X], [user("Unrelated work.", T0 + 5, str(root / "elsewhere")), say("Fine.", T0 + 6, str(root / "elsewhere"))], T0 + 10)
         self.panes = {A: {"label": "alpha", "title": "Alpha work", "herdr": "lab", "pane": "w1:p1", "status": "working"}}
@@ -314,6 +318,43 @@ class IncrementalTest(unittest.TestCase):
         with mock.patch.object(builder, "iter_jsonl", wraps=builder.iter_jsonl) as parses:
             self.lab.local_payload([A, W, M])
         self.assertEqual(parses.call_count, 0)
+
+    def test_a_rules_change_reaches_every_object_without_full(self):
+        # The reviewer's repro: change a label rule; the local page follows, so must the hosted copy.
+        original = builder.wake_label
+
+        def relabel(text):
+            kind, label = original(text)
+            return kind, label + "!"
+        with mock.patch.object(builder, "PARSE_RULES", "another-version"), mock.patch.object(builder, "wake_label", relabel):
+            self.lab.build()
+        labels = [t["label"] for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["source"] == "wake"]
+        self.assertEqual(labels, ["New status from fix-login!"])
+        self.assertIn(f"s/{A}.json", self.changed())
+
+    def test_a_new_steering_message_reaches_its_conversation_alone(self):
+        inbox = self.lab.main / "state" / "fix-login.inbox"
+        (inbox / "2.msg").write_text(f"at={iso(T0 + 295)}\n--\n[fm-from-firstmate] Then run the tests.", encoding="utf-8")
+        with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds:
+            self.lab.build()
+        self.assertEqual([call.args[0] for call in builds.call_args_list], [self.lab.logs[A]])
+        steer = next(t for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["kind"] == "steer")
+        self.assertEqual(steer["delivered"], ["Then run the tests.", "Rebase onto main first."])
+        # Moved to handled/ once read: built again, in the order the local page now shows (handled ones by name).
+        (inbox / "2.msg").rename(inbox / "handled" / "2.msg")
+        with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as builds:
+            self.lab.build()
+        self.assertEqual([call.args[0] for call in builds.call_args_list], [self.lab.logs[A]])
+        steer = next(t for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["kind"] == "steer")
+        self.assertEqual(steer["delivered"], ["Rebase onto main first.", "Then run the tests."])
+        self.assertEqual(json.loads(json.dumps(self.lab.local_payload([A])["sessions"][0]["exchanges"])), self.lab.object(f"s/{A}.json")["exchanges"])
+
+    def test_edited_task_instructions_reach_the_worker_alone(self):
+        self.lab.brief.write_text("\u2063FIRSTMATE_OP: v1 launch-brief: # Role\nYou are a worker.\n# Task\nFix the login page and its test.\n", encoding="utf-8")
+        self.lab.build()
+        brief = self.lab.object(f"s/{W}.json")["exchanges"][0]
+        self.assertEqual((brief["kind"], brief["delivered"]), ("brief", ["# Task\nFix the login page and its test."]))
+        self.assertEqual(self.changed(), [f"s/{W}.json"])
 
     def test_a_deleted_object_is_written_again(self):
         (self.lab.out / f"s/{W}.json").unlink()

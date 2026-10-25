@@ -78,6 +78,12 @@
       return d.fleet;
     }
     const stale = (asOf, now = Date.now() / 1000) => now - asOf > HEARTBEAT;
+    // A pane Herdr ran the conversation in, closed by the build: its old asks wait on no one.
+    const closedPane = s => Boolean(s.pane && !s.pane.live);
+    // The replies that need you since your last message, while a live pane runs the conversation.
+    // The list says "since your last message", apart from the page's own "need you" count of every ask.
+    const waiting = s => s.pane && s.pane.live ? s.needs || 0 : 0;
+    const asks = s => waiting(s) ? `${waiting(s)} since your last message` : "";
     // tick runs every 30 seconds while the page is visible, and at once when it is shown again.
     function poll(tick) {
       let busy = false;
@@ -89,5 +95,5 @@
       setInterval(run, REFRESH_MS);
       document.addEventListener("visibilitychange", run);
     }
-    return { index, data, conversation, documentText, fleet, weeks, stale, poll, reload, HEARTBEAT, REFRESH_MS };
+    return { index, data, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, HEARTBEAT, REFRESH_MS };
   })();

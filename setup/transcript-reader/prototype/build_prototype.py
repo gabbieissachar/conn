@@ -1025,6 +1025,26 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
 # /abs/path.md, ~/notes.md. A web URL is left out (it reads as //host/... once its scheme is cut
 # off); a file:// URL is read as the path it names.
 MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
+NAME_RUN = re.compile(r"[\w.~/@+-]+")  # the characters MD_MENTION's names are made of
+NAME_END = re.compile(r"[\w-]\.md(?![\w/-])")
+
+
+def md_mentions(text: str):
+    """(start, name) for each match MD_MENTION.finditer gives, in the same order, in linear time.
+
+    A match cannot leave a run of name characters, and within one it runs from the run's
+    start to its last place where a name can end, so each run holds one match at most. The
+    regex itself backtracks over a long run with no .md in it, and a pasted log or blob
+    made one turn take minutes.
+    """
+    for run in NAME_RUN.finditer(text):
+        start, end = run.span()
+        at = text.rfind(".md", start, end)
+        while at > start:
+            if NAME_END.match(text, at - 1):
+                yield start, text[start:at + 3]
+                break
+            at = text.rfind(".md", start, at + 2)
 FILE_URL = re.compile(r"\bfile://(?=/)")
 CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
@@ -1049,7 +1069,7 @@ def tool_documents(tool_input, cwd: str) -> list[str]:
         if key.endswith("path") and MD_MENTION.fullmatch(value):
             tokens, cds = [(0, value)], []
         elif key == "command":
-            tokens = [(m.start(), m.group(0)) for m in MD_MENTION.finditer(value) if not m.group(0).startswith("//")]
+            tokens = [(at, token) for at, token in md_mentions(value) if not token.startswith("//")]
             cds = [(m.start(), os.path.expanduser(m.group(1).strip("\"'"))) for m in CD_LINE.finditer(value)]
         else:
             continue
@@ -1098,11 +1118,10 @@ def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[
     text = FILE_URL.sub("", text)
     cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(text)]
     found: list[tuple[str, Path]] = []
-    for match in MD_MENTION.finditer(text):
-        token = match.group(0)
+    for start, token in md_mentions(text):
         if token.startswith("//"):
             continue
-        cd_dirs = [d for at, d in reversed(cds) if at < match.start() and d.is_absolute()]
+        cd_dirs = [d for at, d in reversed(cds) if at < start and d.is_absolute()]
         path = resolve_mention(token, cd_dirs, cwd, touched)
         if path and all(path != known for _, known in found):
             found.append((token, path))

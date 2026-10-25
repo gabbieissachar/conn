@@ -550,6 +550,24 @@ class DocumentsTest(unittest.TestCase):
                          ["copy/personal/02-Projects/alpha/prds/x49/requirements.md", "copy/personal/notes.md"])
 
 
+class MarkdownNamesTest(unittest.TestCase):
+    """md_mentions finds what the MD_MENTION regex finds, without the regex's backtracking."""
+
+    def test_the_same_names_as_the_regex(self):
+        import random
+        rng = random.Random(3)
+        for _ in range(5000):
+            text = "".join(rng.choice("ab.md-_/~@+ \n:\u00e9`x1") for _ in range(rng.randrange(0, 40)))
+            self.assertEqual(list(builder.md_mentions(text)), [(m.start(), m.group(0)) for m in builder.MD_MENTION.finditer(text)], repr(text))
+
+    def test_a_long_run_of_name_characters_is_quick(self):
+        import time
+        started = time.monotonic()
+        found = list(builder.md_mentions("a" * 200_000 + " see notes.md"))
+        self.assertEqual(found, [(200_005, "notes.md")])
+        self.assertLess(time.monotonic() - started, 1.0)
+
+
 class WritePageTest(unittest.TestCase):
     """The page and its stamp are written together, and never by a build older than the one there."""
 

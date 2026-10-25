@@ -54,14 +54,14 @@ python3 setup/transcript-reader/sync.py --build-only                 # every fle
 python3 setup/transcript-reader/sync.py --build-only --reading-list  # the local reader's list, to compare the two pages
 ```
 
-It writes `out/hosted/`: the shell page `index.html`, `index.json` (the conversation list), one object per conversation, per named document and per week of fleet records, and a manifest. A run builds again only the conversations whose logs changed, and rewrites an object only when its content changed; `--full` builds everything again. Its help (`--help`) lists the files and the scope. The reader's server serves the shell beside the local page: `http://localhost:8768/setup/transcript-reader/out/hosted/index.html`.
+It writes `out/hosted/`: the shell page `index.html`, `index.json` (the conversation list), one object per conversation, per named document and per week of fleet records, and a manifest. A run builds a conversation again when one of its logs changed, when the reader's own rules changed (a fix to the parser, say), or when a steering inbox or task-instruction file it shows changed; it rewrites an object only when its content changed. `--full` builds everything again. Its help (`--help`) lists the files and the scope. The reader's server serves the shell beside the local page: `http://localhost:8768/setup/transcript-reader/out/hosted/index.html`.
 
 The shell is the same page as the local reader, loading `index.json` and then one conversation, document or week at a time, so it shows the same conversations, turns, replies, steering messages, documents and fleet timeline. It differs only where a copy without the laptop must:
 
 - **Reads only.** There is no message bar, Follow Herdr, Reopen or Close. Reply, "Comment on this" and "Message about this file" become "Copy pointer": they copy the start of the message a Send would type, to paste into the pane later. There is no answer sheet yet.
 - **Says how old it is.** A line under the title says "As of 14:02", the time the laptop built it, and turns into "Laptop asleep or not syncing since 14:02" once that is over 10 minutes old.
 - **Herdr as of the build.** The picker shows each agent's state as Herdr reported it at the build, and drops it once the build is old; the line under the controls keeps it, with its time ("Working at 14:02").
-- **Every conversation, by home.** The picker groups the conversations by home, newest first, each starting with the replies that need you since your last message ("Needs you (2)") and its last activity. The page opens on the newest conversation with such a reply.
+- **Every conversation, by home.** The picker groups the conversations by home, newest first, each starting with the replies that need you since your last message ("2 since your last message") and its last activity. That count is only for a conversation a live Herdr pane runs: one whose pane has closed says "· closed pane" instead, as on the local page. The page opens on the newest conversation with such a reply. The line under the controls keeps the local page's own count of every reply that needs you.
 - **Slower refresh.** Every 30 seconds while the page is visible it reads `index.json` again and swaps in a conversation whose stamp changed, where you are reading. New page code reloads it.
 
 ## What it touches
