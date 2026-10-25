@@ -69,9 +69,11 @@ start() {
     2|3) describe; echo "Pick another port with --port or PMOS_READER_PORT."; return 1 ;;
   esac
   if ! command -v node &>/dev/null; then echo "Node.js not found. Run: bash setup/check.sh"; return 1; fi
-  mkdir -p "$HERE/out"
+  # out/ holds private transcript text, so it and the server's log are the owner's alone, like Claude's logs.
+  mkdir -p "$HERE/out" && chmod 700 "$HERE/out"
+  [[ -f "$LOG_PATH" ]] && chmod 600 "$LOG_PATH"
   # node alone goes to the background (not a "cd && node" list, whose subshell would keep this script's output open).
-  ( cd "$REPO_ROOT" || exit 1; nohup node "$HERE/server.js" --port "$PORT" --root "$REPO_ROOT" >> "$LOG_PATH" 2>&1 < /dev/null & )
+  ( cd "$REPO_ROOT" || exit 1; umask 077; nohup node "$HERE/server.js" --port "$PORT" --root "$REPO_ROOT" >> "$LOG_PATH" 2>&1 < /dev/null & )
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.3
     [[ "$(served_copy)" == "$COPY" ]] && { echo "Reader server started: http://localhost:$PORT"; echo "Log: $LOG_PATH"; return 0; }

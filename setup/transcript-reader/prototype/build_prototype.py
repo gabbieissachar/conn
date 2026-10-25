@@ -6,7 +6,8 @@ Claude Code session logs under ~/.claude/projects, the Firstmate fleet
 records under each home's state/ folder, and Herdr's live pane list (for the
 pane labels). It writes only the page and, beside it, a cache of pane labels
 so a closed pane keeps its name and a cache of each log's parsed turns (parsed/)
-so a rebuild parses only the logs that changed.
+so a rebuild parses only the logs that changed. Like Claude's own logs, everything it
+writes is readable by the owner alone.
 
 Usage (from the repo root):
   python3 setup/transcript-reader/prototype/build_prototype.py \
@@ -872,8 +873,7 @@ def pane_labels(session_ids: list[str], cache_path: Path, live: dict[str, dict] 
     _PANE_HISTORY.clear()
     _PANE_HISTORY.update(cache)  # session_chain joins a pane's sessions across a restart with it
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, indent=1, sort_keys=True), encoding="utf-8")
+        write_private(cache_path, json.dumps(cache, indent=1, sort_keys=True))
     except OSError:
         pass
     return {sid: {**cache[sid], "live": sid in live} for sid in session_ids if sid in cache}
@@ -1134,6 +1134,43 @@ def file_version(path: Path) -> tuple[int, int] | None:
     return stat.st_mtime_ns, stat.st_size
 
 
+# Claude keeps its logs for the owner alone (0600 files in 0700 folders), and the reader's
+# files carry the same text, so they get the same modes whatever the umask.
+def private_folder(folder: Path) -> None:
+    """Create <folder>, and any missing parent, readable by the owner alone."""
+    if not folder.is_dir():
+        private_folder(folder.parent)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)
+
+
+def private_open(path: Path, truncate: bool = True):
+    """<path> opened for writing as a file only the owner can read, created so (never
+    readable by others for a moment) and narrowed to that if it already existed."""
+    private_folder(path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if truncate else 0), 0o600)
+    os.fchmod(fd, 0o600)
+    return os.fdopen(fd, "w", encoding="utf-8")
+
+
+def write_private(path: Path, text: str) -> None:
+    with private_open(path) as handle:
+        handle.write(text)
+
+
+def make_private(folder: Path) -> None:
+    """Narrow the reader's own <folder> (out/) and everything in it to the owner, for the
+    files earlier builds wrote with the default modes."""
+    for top, folders, files in os.walk(folder):
+        for name, mode in ([(top, 0o700)] + [(os.path.join(top, f), 0o600) for f in files]):
+            try:
+                info = os.lstat(name)
+                if not os.path.islink(name) and info.st_mode & 0o7777 != mode:
+                    os.chmod(name, mode)
+            except OSError:
+                pass
+
+
 # A rebuild reads every listed log, but between two rebuilds most logs have not changed.
 # Each log's turns are kept parsed on disk, under the version of the log and of this file
 # (its rules decide the turns), and a log is parsed again only once either changes.
@@ -1176,9 +1213,8 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
     # The version was taken before the read: a log that grew meanwhile is parsed again next time.
     if saved and version:
         text = json.dumps({"rules": PARSE_RULES, "path": str(path), "version": list(version), "log": log}, ensure_ascii=False, separators=(",", ":"))
-        saved.parent.mkdir(parents=True, exist_ok=True)
         partial = saved.with_name(f".{saved.name}.{os.getpid()}.partial")
-        partial.write_text(text, encoding="utf-8")
+        write_private(partial, text)
         os.replace(partial, saved)  # whole or not at all, even with two builds at once
         log = json.loads(text)["log"]  # as a saved parse reads back (lists, not tuples)
     return log
@@ -1481,12 +1517,12 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     # The template hash lets a served page tell a new build (swap the data) from new code (reload).
     template_hash = hashlib.sha256(page.encode("utf-8")).hexdigest()[:16]
     page = page.replace("__SCRIPT_HASH__", f"sha256-{digest}").replace("__TEMPLATE_HASH__", template_hash).replace("__PAYLOAD__", data)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    private_folder(out.parent)
     stamp = out.with_suffix(".stamp")
     # A rebuild started by hand can overlap the server's own. Each writes its own file, and the
     # page and its stamp are replaced together under a lock, never by a build older than the
     # one already there, so the stamp always describes the page beside it.
-    with open(out.with_name(f".{out.name}.lock"), "w") as lock:
+    with private_open(out.with_name(f".{out.name}.lock"), truncate=False) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             if float(stamp.read_text(encoding="utf-8")) > payload["generated"]:
@@ -1495,7 +1531,7 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
             pass
         for target, text in ((out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
-            partial.write_text(text, encoding="utf-8")
+            write_private(partial, text)
             os.replace(partial, target)
 
 

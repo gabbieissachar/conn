@@ -531,6 +531,77 @@ class WritePageTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "out.html").exists())
 
 
+class PrivateFilesTest(unittest.TestCase):
+    """The reader's files carry transcript text, so like Claude's logs they are the owner's alone."""
+
+    def setUp(self):
+        self.addCleanup(os.umask, os.umask(0o022))  # the usual default, which would leave them readable by all
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def mode(self, path):
+        return os.lstat(path).st_mode & 0o7777
+
+    def test_written_files_and_created_folders_are_owner_only(self):
+        target = self.root / "out" / "parsed" / "x.json"
+        builder.write_private(target, "private")
+        self.assertEqual((self.mode(target), self.mode(target.parent), self.mode(target.parent.parent)), (0o600, 0o700, 0o700))
+        older = self.root / "older.txt"
+        older.write_text("from before", encoding="utf-8")
+        os.chmod(older, 0o644)
+        builder.write_private(older, "rewritten")
+        self.assertEqual((self.mode(older), older.read_text(encoding="utf-8")), (0o600, "rewritten"))
+
+    def test_the_page_its_stamp_and_a_parsed_log_are_owner_only(self):
+        template = self.root / "t.html"
+        template.write_text("<script>x</script>__PAYLOAD__", encoding="utf-8")
+        out = self.root / "out" / "prototype.html"
+        builder.write_page(template, {"generated": 1.0}, out)
+        self.assertEqual([self.mode(p) for p in (out.parent, out, out.with_suffix(".stamp"))], [0o700, 0o600, 0o600])
+        session = self.root / "s1.jsonl"
+        session.write_text(json.dumps(prompt("hello", iso(T0))) + "\n", encoding="utf-8")
+        builder.parsed_log(session, out.parent / "parsed")
+        self.assertEqual([self.mode(p) for p in (out.parent / "parsed", out.parent / "parsed" / "s1.json")], [0o700, 0o600])
+
+    def test_files_an_earlier_build_left_readable_are_narrowed(self):
+        out = self.root / "out"
+        (out / "parsed").mkdir(parents=True)
+        for name in ("prototype.html", "sessions.txt", "parsed/s1.json"):
+            (out / name).write_text("private", encoding="utf-8")
+            os.chmod(out / name, 0o644)
+        os.chmod(out / "parsed", 0o755)
+        os.chmod(out, 0o755)
+        elsewhere = self.root / "elsewhere.txt"
+        elsewhere.write_text("not the reader's", encoding="utf-8")
+        os.chmod(elsewhere, 0o644)
+        (out / "link.txt").symlink_to(elsewhere)
+        builder.make_private(out)
+        self.assertEqual([self.mode(out / n) for n in ("", "parsed", "prototype.html", "sessions.txt", "parsed/s1.json")],
+                         [0o700, 0o700, 0o600, 0o600, 0o600])
+        self.assertEqual(self.mode(elsewhere), 0o644, "a link's target is not the reader's to change")
+
+    def test_a_rebuild_narrows_out_before_the_builders_run(self):
+        saved = (builder.PROJECTS, builder.herdr_inventory, reader.OUT, reader.LIST)
+        self.addCleanup(lambda: setattr(builder, "PROJECTS", saved[0]) or setattr(builder, "herdr_inventory", saved[1])
+                        or setattr(reader, "OUT", saved[2]) or setattr(reader, "LIST", saved[3]))
+        folder = self.root / "projects" / "-Users-someone-home"
+        folder.mkdir(parents=True)
+        (folder / f"{A}.jsonl").write_text("{}\n", encoding="utf-8")
+        builder.PROJECTS, reader.OUT, reader.LIST = self.root / "projects", self.root / "out", self.root / "out" / "sessions.txt"
+        builder.herdr_inventory = lambda: ({}, set())
+        reader.OUT.mkdir()
+        os.chmod(reader.OUT, 0o755)
+        old = reader.OUT / "prototype.html"
+        old.write_text("private", encoding="utf-8")
+        os.chmod(old, 0o644)
+        modes = []
+        with mock.patch.object(reader.subprocess, "run", side_effect=lambda *a, **k: modes.append((self.mode(reader.OUT), self.mode(old))) or mock.Mock(returncode=0)):
+            self.assertEqual(reader.rebuild([A], serve_page=False), 0)
+        self.assertEqual(modes, [(0o700, 0o600)] * 2)
+        self.assertEqual(self.mode(reader.OUT / ".rebuild.lock"), 0o600)
+
+
 def log(path, records, written):
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     os.utime(path, (written, written))

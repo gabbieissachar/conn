@@ -47,7 +47,7 @@ In any copy of the page:
 ## What it touches
 
 - Reads Claude Code session logs and its running-process records, the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name.
-- Writes only `out/` (gitignored: the pages embed private transcripts). That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
+- Writes only `out/` (gitignored: the pages embed private transcripts). Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
 The server routes are in `api.js`: the pages under `out/` and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.

@@ -86,12 +86,17 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
 test('serve.sh starts, reports, restarts and stops this copy\'s server without hanging a piped caller', { timeout: 60000 }, async () => {
   const { execFile } = require('child_process');
   const script = path.join(__dirname, 'serve.sh');
+  const umask = process.umask(0o022);  // the usual default, which would leave new files readable by all
   const run = (...args) => new Promise((resolve) => execFile('bash', [script, ...args], { timeout: 20000, env: { ...process.env, PMOS_READER_PORT: '' } }, (error, stdout) => resolve({ code: error ? error.code : 0, stdout })));
   const port = String(await freePort());
   try {
     const started = await run('start', '--port', port);
     assert.strictEqual(started.code, 0, started.stdout);
     assert.match(started.stdout, /Reader server started/);
+    // out/ holds private transcript text: owner-only, like Claude's logs, whatever the umask.
+    const mode = (file) => fs.statSync(file).mode & 0o777;
+    assert.strictEqual(mode(path.join(__dirname, 'out')), 0o700);
+    assert.strictEqual(mode(path.join(__dirname, 'out', `server-${port}.log`)), 0o600);
     assert.match((await run('status', '--port', port)).stdout, /serves this copy of the repo/);
     assert.match((await run('start', '--port', port)).stdout, /already running/);
     const answer = await get(Number(port), '/');
@@ -103,4 +108,5 @@ test('serve.sh starts, reports, restarts and stops this copy\'s server without h
   assert.match((await run('status', '--port', port)).stdout, /Nothing listens/);
   const refused = await run('start', '--port', '8765');
   assert.strictEqual(refused.code, 2);
+  process.umask(umask);
 });

@@ -83,8 +83,7 @@ def read_list() -> list[str]:
 
 
 def write_list(ids: list[str]) -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
-    LIST.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
+    builder.write_private(LIST, "".join(f"{i}\n" for i in ids))
 
 
 def session_files(projects: Path, prefix: str) -> list[Path]:
@@ -117,8 +116,7 @@ def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS
 
 
 def write_ids(path: Path, ids: list[str]) -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
+    builder.write_private(path, "".join(f"{i}\n" for i in ids))
 
 
 def forget_dropped(sids: set[str]) -> None:
@@ -219,8 +217,9 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
     sys.stdout.flush()  # keep this script's lines ahead of the builders' in a pipe
     # A rebuild started by hand while the server runs its own waits for it, so two builds
     # never share the machine; the later one reads what the earlier one parsed.
-    OUT.mkdir(parents=True, exist_ok=True)
-    with open(OUT / ".rebuild.lock", "w") as lock:
+    builder.private_folder(OUT)
+    builder.make_private(OUT)  # out/ holds private transcript text: owner-only, like Claude's logs
+    with builder.private_open(OUT / ".rebuild.lock", truncate=False) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
             return 1
@@ -318,7 +317,7 @@ def close(ids: list[str], names: list[str]) -> int:
     pane = {names[0]} | ({member.stem for member in builder.session_chain(path)} if path else set())
     marked = builder.read_ids(REOPENED)
     if pane & set(marked):
-        REOPENED.write_text("".join(f"{i}\n" for i in marked if i not in pane), encoding="utf-8")
+        write_ids(REOPENED, [i for i in marked if i not in pane])
     if not pane & set(ids):
         print(f"{names[0][:8]} is not on the reading list")
         return 1
