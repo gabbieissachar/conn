@@ -87,6 +87,7 @@
   .input.peer { background: var(--wash); border: 1px solid var(--line); margin-right: 1.2rem; }
   .who { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 2px; white-space: normal; }
   .who > b, .who > span, .who > button { white-space: nowrap; }
+  .who > span.note { white-space: normal; flex: 1 1 12ch; min-width: 0; }
   .wake-who { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .who b { color: var(--ink); }
   .input.captain .who b { color: var(--you); }
@@ -1142,7 +1143,7 @@
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
     status.textContent = link.result ? link.result.text : reason || (HOSTED
-      ? `To ${pane.label} through the laptop · ${sessionStatus(session, true).toLowerCase() || "state unknown"} as of ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
+      ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
       : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once this box is sent or left`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
@@ -1220,7 +1221,7 @@
       else if (queue.state === "sent") said = late ? `Sent by the laptop at ${fmtTime(receipt.at)} · not in the log yet; check the pane` : `Sent by the laptop at ${fmtTime(receipt.at)} · waiting for ${p.label}`;
       else if (queue.state === "sending") said = `Queued ${fmtTime(p.at)} · the laptop is sending it now`;
       else said = `Queued ${fmtTime(p.at)} · waiting for the laptop to send it to ${p.label}`;
-      who.append($("b", null, "You"), $("span", null, said));
+      who.append($("b", null, "You"), $("span", queue ? "note" : null, said));
       if (queue && queue.state === "refused") {
         block.classList.add("refused");
         const dismiss = $("button", "reply-to", "Dismiss"); dismiss.type = "button";
