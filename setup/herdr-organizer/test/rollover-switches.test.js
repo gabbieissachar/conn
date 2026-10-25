@@ -81,6 +81,44 @@ test('arm: creates one live file with the page header and the ids, exclusively, 
   } finally { tree.cleanup(); }
 });
 
+test('arm: the file appears complete or not at all (R7-1)', async () => {
+  const tree = tempTree();
+  try {
+    const snapshots = [];
+    let failWrites = false;
+    const env = setup(tree, ['a'], { hooks: {
+      write: (fd, text) => { if (failWrites) { const error = new Error('no space left on device'); error.code = 'ENOSPC'; throw error; } fs.writeSync(fd, text); },
+      beforeLink: (home, name, temp) => { snapshots.push({ target: fs.existsSync(path.join(home.configDir, name)), temp: fs.readFileSync(temp, 'utf8'), listing: fs.readdirSync(home.configDir) }); },
+    } });
+    addRecords(tree, 'a');
+    // a failed write: no target, no temp, no record, and a refusal the page can show
+    failWrites = true;
+    assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'write_failed');
+    assert.deepEqual(listConfig(env), [], 'no empty switch file, which firstmate would read as live for every eligible session, and no temp file');
+    assert.equal(fs.existsSync(env.ledgerPath), false, 'no ledger entry');
+    assert.equal(auditLines(env).at(-1).outcome, 'write_failed');
+    assert.deepEqual(snapshots, [], 'the failure happened before the link');
+    // a good write: at the moment before the link the real name does not exist yet and the temp already holds every id
+    failWrites = false;
+    await arm(env, 'a', 'second-mates', ['sm-b', 'sm-a']);
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].target, false, 'a reader polling config/ sees no file until it is complete');
+    assert.match(snapshots[0].temp, /\nsm-a\nsm-b\n$/, 'the temp file is complete before it gets its name');
+    assert.ok(snapshots[0].listing.every((entry) => entry.startsWith('.rollover-live.tmp.')), 'only a dot-named temp file exists meanwhile');
+    assert.deepEqual(listConfig(env), ['rollover-live'], 'the temp file is gone afterwards');
+    assert.match(fs.readFileSync(path.join(configOf(env), 'rollover-live'), 'utf8'), /\nsm-a\nsm-b\n$/);
+    assert.equal(JSON.parse(fs.readFileSync(env.ledgerPath, 'utf8')).entries[0].ino, fs.statSync(path.join(configOf(env), 'rollover-live')).ino, 'the ledger holds the linked inode');
+    // an existing file still wins, and leaves no temp behind
+    assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'exists');
+    assert.deepEqual(listConfig(env), ['rollover-live']);
+    // Stop's off file goes the same way
+    failWrites = true;
+    const stopped = await env.switches.stop({ homes: [env.ids.a] }).catch((error) => error);
+    assert.deepEqual(listConfig(env), ['rollover-live'], 'a failed off file leaves nothing either');
+    assert.ok(stopped);
+  } finally { tree.cleanup(); }
+});
+
 test('arm: the confirm token, the ids and the kind are checked before anything is read or written', async () => {
   const tree = tempTree();
   try {

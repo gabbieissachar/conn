@@ -197,26 +197,39 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     return home;
   }
 
-  // Exclusive create, no link followed, with the parent checked again after the file exists.
+  // The file appears complete or not at all. The content goes into a dot-named temp file in the same folder (exclusive create,
+  // write, fsync), and a hard link then puts it under its real name: a link is atomic and fails with EEXIST exactly as
+  // O_EXCL would, and firstmate, which reads a regular file that lists no id as live for every eligible session, can never see
+  // the real name without its ids. Any failure before the link removes only the temp file. The parent is checked again after.
   function createSwitchFile(home, name, content) {
     const target = path.join(home.configDir, name);
     const before = lstatOrNull(home.configDir);
     if (!before || !before.isDirectory()) throw refuse(409, 'unsafe', 'The config folder of that home is not a plain folder. Nothing was written.');
     if (hooks.beforeCreate) hooks.beforeCreate(home, name);
-    let fd;
-    try {
-      fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW, 0o644);
-    } catch (error) {
-      if (error.code === 'EEXIST') return null;
-      if (error.code === 'ELOOP') return null;
-      throw error;
-    }
+    const temp = path.join(home.configDir, `.${name}.tmp.${process.pid}.${hex(4)}`);
+    const dropTemp = () => { try { fs.unlinkSync(temp); } catch { /* not there */ } };
     let made;
     try {
-      fs.writeSync(fd, content);
-      fs.fsyncSync(fd);
-      made = fs.fstatSync(fd);
-    } finally { fs.closeSync(fd); }
+      const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW, 0o644);
+      try {
+        (hooks.write || ((descriptor, text) => fs.writeSync(descriptor, text)))(fd, content);
+        fs.fsyncSync(fd);
+        made = fs.fstatSync(fd);
+      } finally { fs.closeSync(fd); }
+      if (hooks.beforeLink) hooks.beforeLink(home, name, temp);
+      try {
+        fs.linkSync(temp, target);
+      } catch (error) {
+        dropTemp();
+        if (error.code === 'EEXIST') return null;
+        throw error;
+      }
+    } catch (error) {
+      dropTemp();
+      if (error instanceof AdapterError) throw error;
+      throw refuse(500, 'write_failed', 'The file could not be written. Nothing was left behind.');
+    }
+    dropTemp();
     const after = lstatOrNull(home.configDir);
     let real = null;
     try { real = fs.realpathSync(home.configDir); } catch { /* gone */ }
