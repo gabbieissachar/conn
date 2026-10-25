@@ -19,6 +19,7 @@ const LIVE_FILE = { 'second-mates': 'rollover-live', crew: 'rollover-crew-live' 
 const OFF_FILE = 'rollover-off';
 const UNDO_FILES = new Set(['rollover-live', 'rollover-crew-live', 'rollover-off']);
 const MAX_IDS = 64;
+const HOLDER_MAX = 4 * 1024;
 const LOCK_WAIT_MS = 3000;
 const LOCK_STEP_MS = 50;
 const STEAL_STALE_MS = 5000;
@@ -49,7 +50,10 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
   const ledgerFile = path.join(dir, 'ledger.json');
   const auditFile = path.join(dir, 'audit.log');
   const isAlive = pidAlive || ((pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } });
-  const myIdentity = () => (platform === 'darwin' ? identityOf(process.pid) : null);
+  // A process identity is a ps command line, which can run to tens of kilobytes (the scratch server's own is 37 KB), so the
+  // holder file keeps its sha256 and not the text.
+  const identityHash = (pid) => { const identity = platform === 'darwin' ? identityOf(pid) : null; return identity ? sha256(identity) : null; };
+  const myIdentity = () => identityHash(process.pid);
 
   // ---- the private folder ----
   function ensureDir() {
@@ -99,7 +103,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
   const stealPath = path.join(dir, 'op.steal');
 
   function readHolder(target) {
-    const text = readRegular(path.join(target, 'holder'), 1024);
+    const text = readRegular(path.join(target, 'holder'), HOLDER_MAX);
     if (text === null) return null;
     try { const value = JSON.parse(text); return value && Number.isInteger(value.pid) && typeof value.nonce === 'string' ? value : null; } catch { return null; }
   }
@@ -114,7 +118,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     const prepared = path.join(dir, `op.new.${process.pid}.${hex(8)}`);
     fs.mkdirSync(prepared, { mode: 0o700 });
     try {
-      fs.writeFileSync(path.join(prepared, 'holder'), JSON.stringify({ pid: process.pid, identity: myIdentity(), started: now().toISOString(), nonce }), { mode: 0o600, flag: 'wx' });
+      fs.writeFileSync(path.join(prepared, 'holder'), JSON.stringify({ pid: process.pid, identity_sha256: myIdentity(), started: now().toISOString(), nonce }), { mode: 0o600, flag: 'wx' });
       fs.renameSync(prepared, lockPath);
       return nonce;
     } catch (error) {
@@ -131,7 +135,7 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     const holder = readHolder(lockPath);
     if (!holder) return now().getTime() - info.mtimeMs > HOLDERLESS_STALE_MS ? '' : null;
     if (!isAlive(holder.pid)) return holder.nonce;
-    if (holder.identity && platform === 'darwin' && identityOf(holder.pid) !== holder.identity) return holder.nonce;
+    if (holder.identity_sha256 && platform === 'darwin' && identityHash(holder.pid) !== holder.identity_sha256) return holder.nonce;
     return null;
   }
 

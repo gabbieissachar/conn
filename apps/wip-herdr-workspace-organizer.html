@@ -207,9 +207,19 @@ created: 2026-09-10
     .ro-files th, .ro-files td { padding: 4px 8px 4px 0; text-align: left; border-top: 1px solid #eef1f6; font-weight: 500; vertical-align: top; }
     .ro-files th { color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .03em; border-top: 0; }
     .ro-files td:first-child { font-family: "DM Mono", monospace; overflow-wrap: anywhere; }
+    .ro-stop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
+    .ro-stop button.danger { color: #a9273b; background: #ffe6ea; }
+    .ro-stop button.danger:hover { background: #ffd7dd; }
+    .ro-origin { margin-top: 2px; color: var(--muted); font: 400 10px "DM Sans", sans-serif; }
+    .ro-arm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 4px; }
+    .ro-why { color: var(--muted); font-size: 11px; }
+    .ro-ids label { cursor: pointer; }
+    .ro-ids input { accent-color: var(--purple); }
     .ro-ids { margin-top: 8px; font-size: 11px; color: var(--muted); }
     .ro-ids summary { cursor: pointer; }
-    .ro-ids li { margin: 2px 0; overflow-wrap: anywhere; }
+    .ro-ids ul { margin: 6px 0 0; padding: 0 0 0 4px; list-style: none; }
+    .ro-ids li { margin: 3px 0; overflow-wrap: anywhere; }
+    .ro-ids li.ro-no { padding-left: 21px; }
     .ro-home .tab-meta { margin-top: 8px; }
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
     .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
@@ -722,7 +732,7 @@ created: 2026-09-10
         });
         const body = await response.json().catch(() => ({}));
         if (response.status === 403 && !retried) { await this.ensureToken(true); return this.run(action, params, true); }
-        if (!response.ok || body.status !== 'ok') { const error = new Error(body.message || `HTTP ${response.status}`); error.code = body.code; throw error; }
+        if (!response.ok || body.status !== 'ok') { const error = new Error(body.message || `HTTP ${response.status}`); error.code = body.code; error.details = body.details; throw error; }
         return body.data;
       }
     };
@@ -1669,6 +1679,204 @@ created: 2026-09-10
       if (key) state.batchOpen[key] = event.target.open;
     }, true);
 
+    // ---- Context rollover: firstmate's rollover switches in each registered home (shown on the Context tab) ----
+    const ROLLOVER_WATCHER = {
+      running: ['watcher running', 'good'],
+      no_lock: ['no watcher', 'warn'],
+      stale_pid: ['watcher stopped', 'warn'],
+      other_home: ['lock names another home', 'bad'],
+      identity_mismatch: ['lock names another process', 'bad'],
+      identity_unverifiable: ['watcher cannot be verified here', 'warn'],
+      beat_old: ['watcher not beating', 'warn'],
+      unsafe_lock: ['lock not trusted', 'bad'],
+    };
+    const ROLLOVER_HOME_STATUS = {
+      missing: 'This home folder is not there.',
+      swapped: 'This home folder is not the one registered at start.',
+      not_directory: 'This home is not a folder.',
+      unsafe: 'The state or data folder of this home is a link, so nothing was read.',
+      not_firstmate_home: 'This folder is not a firstmate home.',
+    };
+    const ROLLOVER_FILE_STATE = { absent: 'absent', regular: 'present', symlink: 'a link (counts as absent, except off files)', not_regular: 'not a regular file', unreadable: 'cannot be read' };
+    const ROLLOVER_REASON = { name: 'odd name', reserved: 'reserved', symlink: 'record is a link', harness: 'not a Claude session', remote: 'remote', home_unseeded: 'no seeded home', no_worktree: 'no worktree', no_brief: 'no instructions file' };
+    const ROLLOVER_KINDS = {
+      'second-mates': { file: 'rollover-live', noun: 'second mates', group: 'second_mates', title: 'Second mates' },
+      crew: { file: 'rollover-crew-live', noun: 'crewmates and scouts', group: 'crew', title: 'Crewmates and scouts' },
+    };
+    const ROLLOVER_ORIGIN = { page: 'made by this page', page_header_only: 'has this page\'s header, no record: remove it by hand', other: 'not made by this page' };
+    const rolloverFile = (home, name) => (home.files || []).find(file => file.name === name) || { state: 'absent' };
+    // The token names the home, the kind and the exact ids, so a stale or forged request cannot arm something else.
+    const rolloverToken = (homeId, kind, ids) => `rollover-arm:${homeId}:${kind}:${[...ids].sort().join(',')}`;
+    const rolloverPickKey = (homeId, kind) => `${homeId}|${kind}`;
+    // The ids a home's roller would roll now, ticked or not; a tick for an id that no longer qualifies is dropped.
+    const rolloverPicked = (home, kind) => {
+      const ok = new Set(((home.ids && home.ids[ROLLOVER_KINDS[kind].group] && home.ids[ROLLOVER_KINDS[kind].group].list) || []).filter(item => item.ok).map(item => item.id));
+      const picked = rollover.pick.get(rolloverPickKey(home.id, kind)) || new Set();
+      return [...picked].filter(id => ok.has(id)).sort();
+    };
+    // Why Arm is not offered for this home and kind; empty when it is. The server checks the same things again.
+    const rolloverArmBlock = (home, kind) => {
+      const { file } = ROLLOVER_KINDS[kind];
+      if (home.status !== 'ok' || home.config !== 'ok') return 'This home cannot be written to.';
+      if (home.watcher !== 'running') return 'No watcher runs in this home, so nothing would read the file.';
+      if (rolloverFile(home, file).capability !== 'read') return 'This home\'s firstmate does not read this file.';
+      if (rolloverFile(home, 'rollover-off').state !== 'absent') return 'The off file is present, so a live file would do nothing. Remove the off file first.';
+      if (rolloverFile(home, file).state !== 'absent') return `${file} already exists. The page never changes an existing file.`;
+      if (!rolloverPicked(home, kind).length) return 'Tick at least one id.';
+      return '';
+    };
+    const rolloverFilesTable = home => `<table class="ro-files"><thead><tr><th>Switch file</th><th>State</th><th>Ids listed</th><th>Read by this home</th><th></th></tr></thead><tbody>${home.files.map(file => {
+      const mine = file.origin === 'page' && ['rollover-live', 'rollover-crew-live', 'rollover-off'].includes(file.name);
+      const made = file.state === 'regular' && file.origin ? `<div class="ro-origin">${escapeHtml(ROLLOVER_ORIGIN[file.origin] || '')}</div>` : '';
+      const undo = mine ? `<button type="button" class="small-btn" data-ro-undo="${escapeHtml(file.name)}" data-home="${escapeHtml(home.id)}" ${rollover.busy ? 'disabled' : ''} title="${file.name === 'rollover-off' ? 'Removes the off file this page made. Every live switch still present in this home turns back on.' : 'Removes the file this page made, if nobody changed it. The watcher may then roll less.'}">${file.name === 'rollover-off' ? 'Resume' : 'Remove'}</button>` : '';
+      return `<tr><td>${escapeHtml(file.name)}${made}</td><td>${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td>${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td>${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td><td>${undo}</td></tr>`;
+    }).join('')}</tbody></table>`;
+    const rolloverIdList = (home, kind) => {
+      const { title, group: groupName } = ROLLOVER_KINDS[kind];
+      const group = home.ids && home.ids[groupName];
+      const list = (group && group.list) || [];
+      if (!list.length) return '';
+      const ready = list.filter(item => item.ok).length;
+      const key = `${home.id}:${title}`;
+      const picked = new Set(rolloverPicked(home, kind));
+      const rows = list.map(item => (item.ok
+        ? `<li><label><input type="checkbox" data-ro-pick="${escapeHtml(rolloverPickKey(home.id, kind))}" value="${escapeHtml(item.id)}" ${picked.has(item.id) ? 'checked' : ''}> ${escapeHtml(item.id)}</label></li>`
+        : `<li class="ro-no">${escapeHtml(item.id)} - ${escapeHtml(ROLLOVER_REASON[item.reason] || item.reason)}</li>`)).join('');
+      const block = rolloverArmBlock(home, kind);
+      const arm = `<div class="ro-arm"><button type="button" class="primary-btn" data-ro-arm="${kind}" data-home="${escapeHtml(home.id)}" ${block || rollover.busy ? 'disabled' : ''} title="${escapeHtml(block || `Asks to create ${ROLLOVER_KINDS[kind].file} listing the ticked ids.`)}">Arm ${escapeHtml(ROLLOVER_KINDS[kind].noun)}${picked.size ? ` (${picked.size})` : ''}</button>${block ? `<span class="ro-why">${escapeHtml(block)}</span>` : ''}</div>`;
+      return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${rows}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}${arm}</details>`;
+    };
+    // The confirmation for the one change being asked for: the exact home, file and ids, and what follows from it.
+    const rolloverConfirmBox = () => {
+      const ask = rollover.confirm;
+      if (!ask || !rollover.data) return '';
+      const home = rollover.data.homes.find(item => item.id === ask.home);
+      if (!home) return '';
+      if (ask.kind === 'arm') {
+        const spec = ROLLOVER_KINDS[ask.which];
+        return `<div class="confirm-box" id="rollover-confirm"><strong>Arm ${escapeHtml(spec.noun)} in ${escapeHtml(home.label)}?</strong>This creates ${escapeHtml(spec.file)} in that home's config folder, listing ${plural(ask.ids.length, 'id')}: ${escapeHtml(ask.ids.join(', '))}. From the home's next watcher pass, firstmate may ask each of them for a handoff and restart it. A restart cannot be undone. Nothing else is written.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="arm">Create ${escapeHtml(spec.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
+      }
+      return `<div class="confirm-box" id="rollover-confirm"><strong>Turn rolling back on in ${escapeHtml(home.label)}?</strong>This removes the off file this page made. Every live switch still present in that home takes effect again at its next watcher pass.<div class="btn-row" style="margin-top:10px;display:flex;gap:8px"><button type="button" class="primary-btn" data-ro-go="undo">Remove ${escapeHtml(ask.file)}</button><button type="button" data-ro-cancel>Cancel</button></div></div>`;
+    };
+    const ROLLOVER_STOP_RESULT = {
+      created: 'stopped: the off file was created',
+      created_no_watcher: 'the off file was created; no watcher runs there now, so it protects only once one starts',
+      present_by_page: 'already stopped by this page',
+      present_other: 'already stopped by a file of your own, left alone',
+      no_config: 'no config folder, nothing written',
+      unsafe: 'not safe to write, nothing written',
+      not_read: 'this home\'s firstmate does not read the off file, nothing written',
+    };
+    const rolloverResultBox = () => {
+      const result = rollover.result;
+      if (!result) return '';
+      const rows = (result.rows || []).map(row => `<li>${escapeHtml(row)}</li>`).join('');
+      return `<div class="${result.tone === 'bad' ? 'scope-note error' : 'result-box'}" id="rollover-result" style="margin:0 0 12px">${escapeHtml(result.text)}${rows ? `<ul style="margin:6px 0 0 16px;padding:0">${rows}</ul>` : ''}</div>`;
+    };
+    const rolloverHome = home => {
+      const [watcherText, tone] = ROLLOVER_WATCHER[home.watcher] || ['', ''];
+      const head = `<div class="ro-head"><strong>${escapeHtml(home.label)}</strong><span class="id">${escapeHtml(home.id)}</span>${home.watcher ? `<span class="pill ${tone}">${escapeHtml(watcherText)}</span>` : ''}${home.is_secondmate_home ? '<span class="pill">second-mate home</span>' : ''}</div>`;
+      if (home.status !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${escapeHtml(ROLLOVER_HOME_STATUS[home.status] || home.status)}</div></div>`;
+      if (home.config !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${home.config === 'missing' ? 'This home has no config folder, so no switch can exist. The page does not create one.' : 'The config folder is a link, so nothing was read.'}</div></div>`;
+      const effective = home.effective;
+      const sentences = effective
+        ? `<ul class="ro-sentences">${[effective.second_mates, effective.crew, effective.primary].map(text => (text ? `<li>${escapeHtml(text)}</li>` : '<li class="none">not read by this home\'s firstmate</li>')).join('')}</ul>`
+        : `<div class="tab-meta">No running watcher reads these files, so they do nothing now.</div>`;
+      const log = Number.isFinite(home.roller_log_age_seconds) ? `<div class="tab-meta">Roller log last changed ${escapeHtml(contextAge(home.roller_log_age_seconds))}. It changes only when a verdict changes.</div>` : '';
+      return `<div class="ro-home">${head}${sentences}${rolloverFilesTable(home)}${rolloverIdList(home, 'second-mates')}${rolloverIdList(home, 'crew')}${log}</div>`;
+    };
+    const rolloverCard = () => {
+      const button = `<button id="rollover-reload" type="button" title="Read the rollover switches again" ${rollover.loading ? 'disabled' : ''}>${rollover.loading ? 'Reading…' : 'Refresh'}</button>`;
+      let body;
+      if (rollover.error) body = `<div class="scope-note error">${escapeHtml(rollover.error)}</div>`;
+      else if (!rollover.data) body = '<div class="skeleton"></div>';
+      else {
+        const { homes, unregistered_homes: others, platform_supported: supported } = rollover.data;
+        const note = `<div class="tab-meta" style="margin:0 0 12px">Firstmate rolls a session only when a switch file in its own home allows it. Arm and Stop only create a file in that home's config folder; firstmate's own roller does the rest, at its next pass, and a restart cannot be undone.${supported ? '' : ' The watcher check needs macOS, so no watcher counts as running here.'}</div>`;
+        const stop = `<div class="ro-stop"><button type="button" id="rollover-stop" class="danger" ${rollover.busy ? 'disabled' : ''} title="Creates the off file in every home listed here. It stops rolls that have not started, and it does not undo a restart already done.">Stop every listed home</button><span class="tab-meta" style="margin:0">One click. Creates the off file in each home below and removes nothing.</span></div>`;
+        const extra = others > 0 ? `<div class="tab-meta" style="margin-top:12px">${plural(others, 'other firstmate home')} on this computer ${others === 1 ? 'is' : 'are'} not listed here, and Stop does not cover ${others === 1 ? 'it' : 'them'}.</div>` : '';
+        body = `${note}${rolloverResultBox()}${rolloverConfirmBox()}${stop}${homes.map(rolloverHome).join('')}${extra}`;
+      }
+      return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill warn">changes files</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
+    };
+    const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null };
+    const ROLLOVER_REFUSAL = { exists: 'That file already exists, so nothing was written.', off_present: 'The off file is present, so nothing was written.', no_watcher: 'No watcher runs in that home, so nothing was written.' };
+    // One change at a time: the server says what it did or why it refused, and the card is read again either way.
+    const runRollover = async (action, params, success) => {
+      if (rollover.busy) return;
+      rollover.busy = true; rollover.confirm = null; rollover.result = null;
+      renderContext();
+      try {
+        const result = await api.run(action, params);
+        rollover.result = success(result);
+      } catch (error) {
+        const reasons = (error.details || []).map(item => `${item.id}: ${ROLLOVER_REASON[item.reason] || item.reason}`);
+        rollover.result = { tone: 'bad', text: ROLLOVER_REFUSAL[error.code] || error.message, rows: reasons };
+      } finally {
+        rollover.busy = false;
+        rollover.at = '';
+        await loadRolloverQuietly();
+      }
+    };
+    const loadRolloverQuietly = async () => {
+      try { rollover.data = await api.run('rollover-state'); rollover.error = ''; rollover.at = planClock(new Date().toISOString()); } catch (error) { rollover.error = error.message; }
+      if (state.view === 'context') renderContext();
+    };
+    const wireRollover = section => {
+      const homeOf = id => (rollover.data && rollover.data.homes.find(item => item.id === id)) || null;
+      section.querySelectorAll('[data-ro-pick]').forEach(box => box.addEventListener('change', () => {
+        const picked = rollover.pick.get(box.dataset.roPick) || new Set();
+        if (box.checked) picked.add(box.value); else picked.delete(box.value);
+        rollover.pick.set(box.dataset.roPick, picked);
+        renderContext();
+      }));
+      section.querySelectorAll('[data-ro-arm]').forEach(button => button.addEventListener('click', () => {
+        const home = homeOf(button.dataset.home);
+        if (!home || rolloverArmBlock(home, button.dataset.roArm)) return;
+        rollover.confirm = { kind: 'arm', home: home.id, which: button.dataset.roArm, ids: rolloverPicked(home, button.dataset.roArm) };
+        rollover.result = null;
+        renderContext();
+        document.querySelector('#rollover-confirm')?.scrollIntoView({ block: 'nearest' });
+      }));
+      section.querySelectorAll('[data-ro-undo]').forEach(button => button.addEventListener('click', () => {
+        const home = homeOf(button.dataset.home);
+        if (!home) return;
+        if (button.dataset.roUndo === 'rollover-off') { rollover.confirm = { kind: 'undo', home: home.id, file: 'rollover-off' }; rollover.result = null; renderContext(); return; }
+        runRollover('rollover-undo', { home: home.id, file: button.dataset.roUndo }, () => ({ tone: 'good', text: `Removed ${button.dataset.roUndo} from ${home.label}.` }));
+      }));
+      section.querySelector('[data-ro-cancel]')?.addEventListener('click', () => { rollover.confirm = null; renderContext(); });
+      section.querySelector('[data-ro-go]')?.addEventListener('click', event => {
+        const ask = rollover.confirm;
+        const home = ask && homeOf(ask.home);
+        if (!home) return;
+        if (event.currentTarget.dataset.roGo === 'arm') {
+          const spec = ROLLOVER_KINDS[ask.which];
+          const ids = ask.ids.slice();
+          rollover.pick.delete(rolloverPickKey(home.id, ask.which));
+          runRollover('rollover-arm', { home: home.id, kind: ask.which, ids, confirm: rolloverToken(home.id, ask.which, ids) }, () => ({ tone: 'good', text: `Created ${spec.file} in ${home.label} for ${plural(ids.length, 'id')}. Firstmate acts on it at that home's next watcher pass.` }));
+        } else runRollover('rollover-undo', { home: home.id, file: 'rollover-off', confirm: `rollover-resume:${home.id}` }, () => ({ tone: 'good', text: `Removed rollover-off from ${home.label}. Its live switches take effect again at the next watcher pass.` }));
+      });
+      section.querySelector('#rollover-stop')?.addEventListener('click', () => runRollover('rollover-stop', {}, result => ({
+        tone: result.homes.every(item => ['created', 'present_by_page', 'present_other', 'created_no_watcher'].includes(item.result)) ? 'good' : 'bad',
+        text: `Stop covered ${plural(result.homes.length, 'home')}.${result.unregistered_homes ? ` ${plural(result.unregistered_homes, 'other firstmate home')} on this computer ${result.unregistered_homes === 1 ? 'is' : 'are'} not covered.` : ''}`,
+        rows: result.homes.map(item => `${item.label}: ${ROLLOVER_STOP_RESULT[item.result] || item.result}`),
+      })));
+    };
+    const loadRollover = async () => {
+      if (rollover.loading) return;
+      rollover.loading = true;
+      if (state.view === 'context') renderContext();
+      try {
+        rollover.data = await api.run('rollover-state');
+        rollover.error = '';
+        rollover.at = planClock(new Date().toISOString());
+      } catch (error) {
+        rollover.data = null; rollover.error = error.message; rollover.at = '';
+      } finally {
+        rollover.loading = false;
+        if (state.view === 'context') renderContext();
+      }
+    };
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
     const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
@@ -1679,7 +1887,6 @@ created: 2026-09-10
     const archiveContext = { rows: new Map(), asked: new Set(), loading: false };
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
     const codex = { loading: false, data: null, error: '', at: '', failedAt: '' };
-    const rollover = { loading: false, data: null, error: '', at: '', open: new Set() };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
     // The colour follows the number printed: 69.6 reads "70%", so it is amber, and 84.6 reads "85%", so it is red.
     const planLevel = percent => { const shown = Math.round(percent); return shown >= PLAN_HIGH ? 'bad' : shown >= PLAN_WARN ? 'warn' : ''; };
@@ -1745,59 +1952,6 @@ created: 2026-09-10
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       const button = `<button id="codex-reload" type="button" title="Read Codex credits again" ${codex.loading ? 'disabled' : ''}>${codex.loading ? 'Reading…' : 'Refresh credits'}</button>`;
       return `<div class="plan-chips" id="codex-card">${chips}<span class="updated">${escapeHtml(readStamp(codex))}</span>${button}${error}</div>`;
-    };
-    // ---- Context rollover: what firstmate's rollover switches say in each registered home. Read only. ----
-    const ROLLOVER_WATCHER = {
-      running: ['watcher running', 'good'],
-      no_lock: ['no watcher', 'warn'],
-      stale_pid: ['watcher stopped', 'warn'],
-      other_home: ['lock names another home', 'bad'],
-      identity_mismatch: ['lock names another process', 'bad'],
-      identity_unverifiable: ['watcher cannot be verified here', 'warn'],
-      beat_old: ['watcher not beating', 'warn'],
-      unsafe_lock: ['lock not trusted', 'bad'],
-    };
-    const ROLLOVER_HOME_STATUS = {
-      missing: 'This home folder is not there.',
-      swapped: 'This home folder is not the one registered at start.',
-      not_directory: 'This home is not a folder.',
-      unsafe: 'The state or data folder of this home is a link, so nothing was read.',
-      not_firstmate_home: 'This folder is not a firstmate home.',
-    };
-    const ROLLOVER_FILE_STATE = { absent: 'absent', regular: 'present', symlink: 'a link (counts as absent, except off files)', not_regular: 'not a regular file', unreadable: 'cannot be read' };
-    const ROLLOVER_REASON = { name: 'odd name', reserved: 'reserved', symlink: 'record is a link', harness: 'not a Claude session', remote: 'remote', home_unseeded: 'no seeded home', no_worktree: 'no worktree', no_brief: 'no instructions file' };
-    const rolloverFilesTable = home => `<table class="ro-files"><thead><tr><th>Switch file</th><th>State</th><th>Ids listed</th><th>Read by this home</th></tr></thead><tbody>${home.files.map(file => `<tr><td>${escapeHtml(file.name)}</td><td>${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td>${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td>${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td></tr>`).join('')}</tbody></table>`;
-    const rolloverIdList = (homeId, title, group) => {
-      const list = (group && group.list) || [];
-      if (!list.length) return '';
-      const ready = list.filter(item => item.ok).length;
-      const key = `${homeId}:${title}`;
-      return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${list.map(item => `<li>${escapeHtml(item.id)} - ${item.ok ? 'could roll' : escapeHtml(ROLLOVER_REASON[item.reason] || item.reason)}</li>`).join('')}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}</details>`;
-    };
-    const rolloverHome = home => {
-      const [watcherText, tone] = ROLLOVER_WATCHER[home.watcher] || ['', ''];
-      const head = `<div class="ro-head"><strong>${escapeHtml(home.label)}</strong><span class="id">${escapeHtml(home.id)}</span>${home.watcher ? `<span class="pill ${tone}">${escapeHtml(watcherText)}</span>` : ''}${home.is_secondmate_home ? '<span class="pill">second-mate home</span>' : ''}</div>`;
-      if (home.status !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${escapeHtml(ROLLOVER_HOME_STATUS[home.status] || home.status)}</div></div>`;
-      if (home.config !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${home.config === 'missing' ? 'This home has no config folder, so no switch can exist.' : 'The config folder is a link, so nothing was read.'}</div></div>`;
-      const effective = home.effective;
-      const sentences = effective
-        ? `<ul class="ro-sentences">${[effective.second_mates, effective.crew, effective.primary].map(text => (text ? `<li>${escapeHtml(text)}</li>` : '<li class="none">not read by this home\'s firstmate</li>')).join('')}</ul>`
-        : `<div class="tab-meta">No running watcher reads these files, so they do nothing now.</div>`;
-      const log = Number.isFinite(home.roller_log_age_seconds) ? `<div class="tab-meta">Roller log last changed ${escapeHtml(contextAge(home.roller_log_age_seconds))}. It changes only when a verdict changes.</div>` : '';
-      return `<div class="ro-home">${head}${sentences}${rolloverFilesTable(home)}${rolloverIdList(home.id, 'Second mates', home.ids && home.ids.second_mates)}${rolloverIdList(home.id, 'Crewmates and scouts', home.ids && home.ids.crew)}${log}</div>`;
-    };
-    const rolloverCard = () => {
-      const button = `<button id="rollover-reload" type="button" title="Read the rollover switches again" ${rollover.loading ? 'disabled' : ''}>${rollover.loading ? 'Reading…' : 'Refresh'}</button>`;
-      let body;
-      if (rollover.error) body = `<div class="scope-note error">${escapeHtml(rollover.error)}</div>`;
-      else if (!rollover.data) body = '<div class="skeleton"></div>';
-      else {
-        const { homes, unregistered_homes: others, platform_supported: supported } = rollover.data;
-        const note = `<div class="tab-meta" style="margin:0 0 12px">Read only. Firstmate rolls a session only when a switch file in its own home allows it. This page changes no switch yet.${supported ? '' : ' The watcher check needs macOS, so no watcher counts as running here.'}</div>`;
-        const extra = others > 0 ? `<div class="tab-meta" style="margin-top:12px">${plural(others, 'other firstmate home')} on this computer ${others === 1 ? 'is' : 'are'} not shown here and not covered.</div>` : '';
-        body = `${note}${homes.map(rolloverHome).join('')}${extra}`;
-      }
-      return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill">read only</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1924,6 +2078,7 @@ created: 2026-09-10
       document.querySelector('#plan-reload').addEventListener('click', () => { loadPlan(true); loadCodex(); });
       document.querySelector('#codex-reload').addEventListener('click', loadCodex);
       document.querySelector('#rollover-reload').addEventListener('click', loadRollover);
+      wireRollover(section);
       section.querySelectorAll('[data-ro-open]').forEach(details => details.addEventListener('toggle', () => { if (details.open) rollover.open.add(details.dataset.roOpen); else rollover.open.delete(details.dataset.roOpen); }));
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
         const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
@@ -2028,21 +2183,6 @@ created: 2026-09-10
         codex.data = null; codex.error = error.message; codex.at = ''; codex.failedAt = planClock(new Date().toISOString());
       } finally {
         codex.loading = false;
-        if (state.view === 'context') renderContext();
-      }
-    };
-    const loadRollover = async () => {
-      if (rollover.loading) return;
-      rollover.loading = true;
-      if (state.view === 'context') renderContext();
-      try {
-        rollover.data = await api.run('rollover-state');
-        rollover.error = '';
-        rollover.at = planClock(new Date().toISOString());
-      } catch (error) {
-        rollover.data = null; rollover.error = error.message; rollover.at = '';
-      } finally {
-        rollover.loading = false;
         if (state.view === 'context') renderContext();
       }
     };

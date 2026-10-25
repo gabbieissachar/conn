@@ -7,6 +7,8 @@ const path = require('node:path');
 const { tempTree, startServer, client, fakeRunner, fixture } = require('./helpers');
 const { createRollover } = require('../rollover');
 const { createSwitches } = require('../rollover-switches');
+const crypto = require('node:crypto');
+const idHash = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const { NOW, IDENTITY, ROLLER_ALL, makeHome } = require('./rollover-fixtures');
 
 // A registry of fixture homes and a write side wired to one private tool root. `server()` makes a second write side on the
@@ -312,7 +314,7 @@ test('the folder lock: a live holder makes arm wait then refuse, and Stop goes a
     addRecords(tree, 'a');
     fs.mkdirSync(env.dir, { recursive: true, mode: 0o700 });
     const holder = (name, data) => { fs.mkdirSync(path.join(env.dir, name)); if (data) fs.writeFileSync(path.join(env.dir, name, 'holder'), JSON.stringify(data)); };
-    holder('op.lock', { pid: process.pid, identity: IDENTITY, started: NOW.toISOString(), nonce: 'live-holder' });
+    holder('op.lock', { pid: process.pid, identity_sha256: idHash(IDENTITY), started: NOW.toISOString(), nonce: 'live-holder' });
     const started = Date.now();
     assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'busy_other_process');
     assert.ok(Date.now() - started >= 180, 'it waited for the holder first');
@@ -343,10 +345,10 @@ test('the folder lock: a dead holder, a changed identity and an old holder-less 
     };
     const clear = () => { for (const name of fs.readdirSync(lock)) fs.unlinkSync(path.join(lock, name)); fs.rmdirSync(lock); };
     const armOnce = async (id) => { await arm(env, 'a', 'second-mates', [id]); await env.switches.undo({ home: env.ids.a, file: 'rollover-live' }); };
-    place({ pid: dead, identity: IDENTITY, nonce: 'n1' });
+    place({ pid: dead, identity_sha256: idHash(IDENTITY), nonce: 'n1' });
     await armOnce('sm-a');
     assert.equal(fs.existsSync(lock), false, 'a dead holder\'s lock was replaced, used and released');
-    place({ pid: process.pid, identity: 'some other process', nonce: 'n2' });
+    place({ pid: process.pid, identity_sha256: idHash('some other process'), nonce: 'n2' });
     await armOnce('sm-a');
     place(null, true);
     await armOnce('sm-a');
@@ -355,6 +357,23 @@ test('the folder lock: a dead holder, a changed identity and an old holder-less 
     assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'busy_other_process', 'a holder-less folder made a moment ago may still be getting its holder');
     clear();
     assert.deepEqual(fs.readdirSync(env.dir).filter((name) => /^op\.(stale|done|new|steal)/.test(name)), [], 'no half-made lock is left behind');
+  } finally { tree.cleanup(); }
+});
+
+test('the folder lock: a long process identity does not hide the holder, and the lock is released afterwards', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['a']);
+    addRecords(tree, 'a');
+    const longIdentity = 'Mon Oct 26 09:00:00 2026     node ' + 'x'.repeat(60000);
+    const long = env.server({ identityOf: () => longIdentity });
+    await long.switches.arm({ home: env.ids.a, kind: 'crew', ids: ['crew-a'], confirm: armToken(env.ids.a, 'crew', ['crew-a']) });
+    assert.deepEqual(fs.readdirSync(env.dir).filter((name) => name.startsWith('op.')), [], 'released, nothing left');
+    const held = long.switches.internals.tryAcquire();
+    assert.ok(held);
+    assert.ok(long.switches.internals.staleNonce() === null, 'a live holder with a long identity is read and is not stale');
+    long.switches.internals.releaseFolderLock(held);
+    assert.equal(fs.existsSync(long.switches.internals.lockPath), false);
   } finally { tree.cleanup(); }
 });
 
@@ -374,7 +393,7 @@ test('the folder lock: exactly one process holds it when two race, and a second 
     assert.equal(fs.existsSync(a.lockPath), false);
     // a dead holder judged stale by both
     fs.mkdirSync(a.lockPath);
-    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity: IDENTITY, nonce: 'old-nonce' }));
+    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity_sha256: idHash(IDENTITY), nonce: 'old-nonce' }));
     const judgedByA = a.staleNonce();
     const judgedByB = b.staleNonce();
     assert.equal(judgedByA, 'old-nonce');
@@ -388,14 +407,14 @@ test('the folder lock: exactly one process holds it when two race, and a second 
     a.releaseFolderLock(fresh);
     // a stale steal mutex does not wedge reclaiming
     fs.mkdirSync(a.lockPath);
-    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity: IDENTITY, nonce: 'n3' }));
+    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity_sha256: idHash(IDENTITY), nonce: 'n3' }));
     fs.mkdirSync(path.join(env.dir, 'op.steal'));
     const long = new Date(NOW.getTime() - 60 * 1000);
     fs.utimesSync(path.join(env.dir, 'op.steal'), long, long);
     assert.equal(await a.reclaim('n3'), true, 'a steal mutex older than 5 s is cleared and the reclaim goes on');
     assert.equal(fs.existsSync(path.join(env.dir, 'op.steal')), false);
     fs.mkdirSync(a.lockPath);
-    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity: IDENTITY, nonce: 'n4' }));
+    fs.writeFileSync(path.join(a.lockPath, 'holder'), JSON.stringify({ pid: dead, identity_sha256: idHash(IDENTITY), nonce: 'n4' }));
     fs.mkdirSync(path.join(env.dir, 'op.steal'));
     fs.utimesSync(path.join(env.dir, 'op.steal'), NOW, NOW);
     assert.equal(await a.reclaim('n4'), false, 'a fresh steal mutex means another process is reclaiming: wait');

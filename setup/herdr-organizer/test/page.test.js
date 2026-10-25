@@ -326,48 +326,107 @@ test('a leader selection in a move is offered only leader-space', () => {
   assert.match(html, /restoreDestinations\(data\.workspaces\.filter\(workspace => !sourceWorkspaces\.has\(workspace\.id\)\), selected\)/, 'the Move panel uses the same rule as the restore panels');
 });
 
-function rolloverCard(rollover) {
+// Runs the page's own rollover card on plain data.
+function rolloverHarness(overrides = {}) {
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
-  const source = html.slice(html.indexOf('const ROLLOVER_WATCHER'), html.indexOf('const contextAge'));
-  return new Function('escapeHtml', 'plural', 'rollover', 'contextAge', `${source}; return rolloverCard();`)(escapeHtml, plural, { loading: false, data: null, error: '', at: '', open: new Set(), ...rollover }, seconds => `${seconds} s ago`);
+  const source = html.slice(html.indexOf('// ---- Context rollover'), html.indexOf('// ---- Context view')).replace(/^    const rollover = \{.*$/m, '');
+  const rollover = { loading: false, data: null, error: '', at: '', open: new Set(), pick: new Map(), confirm: null, busy: false, result: null, ...overrides };
+  const api = { run: async () => { throw new Error('no network in this test'); } };
+  const functions = new Function('escapeHtml', 'plural', 'rollover', 'contextAge', 'api', 'planClock', 'state', 'renderContext', `${source}; return { rolloverCard, rolloverToken, rolloverArmBlock, rolloverPicked };`)(escapeHtml, plural, rollover, seconds => `${seconds} s ago`, api, () => '09:05', { view: 'context' }, () => {});
+  return { ...functions, rollover };
 }
 
-test('rollover card: read only, one block per home, honest about a watcher that does not run', () => {
-  const files = ['rollover-live', 'rollover-crew-live', 'rollover-off', 'rollover-primary-live', 'rollover-primary-off'].map(name => ({ name, state: 'absent', capability: 'read' }));
-  const running = { id: 'ha02f1cb9', label: 'fm-homes/pmos', status: 'ok', config: 'ok', watcher: 'running', is_secondmate_home: false, roller_log_age_seconds: 90, files: files.map((file, index) => (index === 0 ? { ...file, state: 'regular', ids_count: 2 } : file)),
-    effective: { second_mates: 'second mates: live for 2 listed; every other one is dry-run', crew: null, primary: 'the primary: dry-run, nothing is sent or typed' },
-    ids: { second_mates: { list: [{ id: 'sm-ok', ok: true }, { id: '<b>x</b>', ok: false, reason: 'harness' }], truncated: false }, crew: { list: [], truncated: false } } };
-  const idle = { id: 'h11111111', label: 'firstmate-8bf1b0/2', status: 'ok', config: 'ok', watcher: 'stale_pid', is_secondmate_home: true, files: files.map(file => ({ name: file.name, state: 'absent' })), effective: null, ids: { second_mates: { list: [] }, crew: { list: [] } } };
-  const out = rolloverCard({ data: { homes: [running, idle, { id: 'h2', label: 'gone', status: 'missing' }, { id: 'h3', label: 'nocfg', status: 'ok', config: 'missing', watcher: 'no_lock' }], unregistered_homes: 8, platform_supported: true }, at: '09:05' });
-  assert.match(out, /read only/);
-  assert.match(out, /This page changes no switch yet/);
+const ROLLOVER_FILES = ['rollover-live', 'rollover-crew-live', 'rollover-off', 'rollover-primary-live', 'rollover-primary-off'];
+function rolloverHome(extra = {}) {
+  return { id: 'ha02f1cb9', label: 'fm-homes/pmos', status: 'ok', config: 'ok', watcher: 'running', is_secondmate_home: false, roller_log_age_seconds: 90,
+    files: ROLLOVER_FILES.map(name => ({ name, state: 'absent', capability: 'read' })),
+    effective: { second_mates: 'second mates: dry-run: config/rollover-live is absent, so nothing is sent or restarted', crew: 'crewmates and scouts: dry-run: config/rollover-crew-live is absent, so nothing is sent or restarted', primary: 'the primary: dry-run, nothing is sent or typed' },
+    ids: { second_mates: { list: [{ id: 'sm-ok', ok: true }, { id: '<b>x</b>', ok: false, reason: 'harness' }] }, crew: { list: [{ id: 'crew-a', ok: true }, { id: 'crew-b', ok: true }] } },
+    ...extra };
+}
+
+test('rollover card: one block per home, the reasons Arm is not offered, and what each file is', () => {
+  const made = { name: 'rollover-live', state: 'regular', capability: 'read', ids_count: 2, origin: 'page' };
+  const idle = { id: 'h11111111', label: 'firstmate-8bf1b0/2', status: 'ok', config: 'ok', watcher: 'stale_pid', is_secondmate_home: true, files: ROLLOVER_FILES.map(name => ({ name, state: 'absent' })), effective: null, ids: { second_mates: { list: [] }, crew: { list: [] } } };
+  const withFile = rolloverHome({ files: ROLLOVER_FILES.map(name => (name === 'rollover-live' ? made : name === 'rollover-off' ? { name, state: 'regular', capability: 'read', origin: 'page_header_only' } : { name, state: 'absent', capability: 'read' })) });
+  const { rolloverCard } = rolloverHarness({ data: { homes: [withFile, idle, { id: 'h2', label: 'gone', status: 'missing' }, { id: 'h3', label: 'nocfg', status: 'ok', config: 'missing', watcher: 'no_lock' }], unregistered_homes: 8, platform_supported: true }, at: '09:05' });
+  const out = rolloverCard();
   assert.match(out, /watcher running/);
   assert.match(out, /watcher stopped/);
-  assert.match(out, /live for 2 listed; every other one is dry-run/);
-  assert.match(out, /not read by this home's firstmate/, 'a kind the home does not read says so');
+  assert.match(out, /made by this page/);
+  assert.match(out, /has this page&#39;s header, no record: remove it by hand/);
   assert.match(out, /No running watcher reads these files, so they do nothing now/);
   assert.match(out, /This home folder is not there/);
-  assert.match(out, /no config folder/);
-  assert.match(out, /8 other firstmate homes on this computer are not shown here and not covered/);
+  assert.match(out, /does not create one/);
+  assert.match(out, /8 other firstmate homes on this computer are not listed here, and Stop does not cover them/);
   assert.match(out, /&lt;b&gt;x&lt;\/b&gt; - not a Claude session/, 'ids are escaped and carry their reason');
-  assert.match(out, /1 of 2 could roll now/);
+  assert.match(out, /Second mates: 1 of 2 could roll now/);
   assert.match(out, /read 09:05/);
-  assert.equal(/data-command|data-action|type="checkbox"/.test(out), false, 'the card has no command, no action and no tick box');
-  assert.equal((out.match(/<button/g) || []).length, 1, 'one Refresh button and nothing else');
-  assert.match(rolloverCard({}), /class="skeleton"/);
-  assert.match(rolloverCard({ error: 'Not found.' }), /Not found\./);
-  assert.match(rolloverCard({ data: { homes: [], unregistered_homes: 0, platform_supported: false } }), /needs macOS/);
-  assert.match(rolloverCard({ data: { homes: [running], unregistered_homes: 0, platform_supported: true }, open: new Set(['ha02f1cb9:Second mates']) }), /data-ro-open="ha02f1cb9:Second mates" open/, 'an opened list stays open across a redraw');
+  assert.match(out, /Stop every listed home/);
+  assert.equal(/data-command/.test(out), false, 'nothing here copies a command');
+  // Arm: disabled with a reason until an id is ticked, and for each condition the server also refuses
+  const arm = kind => out.match(new RegExp(`data-ro-arm="${kind}"[^>]*>`))[0];
+  assert.match(arm('second-mates'), /disabled/, 'the off file is present in the first home');
+  assert.match(out, /The off file is present, so a live file would do nothing/);
+  assert.equal((out.match(/data-ro-undo="rollover-live"/g) || []).length, 1, 'Remove only for a file the page made and recorded');
+  assert.equal(/data-ro-undo="rollover-off"/.test(out), false, 'the off file with the header and no record has no button');
 });
 
-test('rollover card: it asks only for rollover-state, on the Context tab, and writes nothing', () => {
-  assert.equal((html.match(/api\.run\('rollover-state'/g) || []).length, 1);
+test('rollover card: Arm needs a ticked id and says why it is not offered', () => {
+  const home = rolloverHome();
+  const { rolloverCard, rolloverArmBlock, rolloverPicked, rolloverToken, rollover } = rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true } });
+  assert.equal(rolloverArmBlock(home, 'crew'), 'Tick at least one id.');
+  assert.match(rolloverCard(), /data-ro-arm="crew"[^>]*disabled/);
+  rollover.pick.set('ha02f1cb9|crew', new Set(['crew-b', 'crew-a', 'gone-id']));
+  assert.deepEqual(rolloverPicked(home, 'crew'), ['crew-a', 'crew-b'], 'a tick for an id that no longer qualifies is dropped, and the list is sorted');
+  assert.equal(rolloverArmBlock(home, 'crew'), '');
+  const armed = rolloverCard();
+  assert.equal(/data-ro-arm="crew"[^>]*disabled/.test(armed), false);
+  assert.match(armed, /Arm crewmates and scouts \(2\)/);
+  assert.equal(rolloverToken('ha02f1cb9', 'crew', ['crew-b', 'crew-a']), 'rollover-arm:ha02f1cb9:crew:crew-a,crew-b', 'the token the server expects');
+  // each condition that blocks Arm
+  const block = (changes, kind = 'crew') => rolloverArmBlock({ ...home, ...changes }, kind);
+  assert.match(block({ watcher: 'beat_old' }), /No watcher runs/);
+  assert.match(block({ config: 'missing' }), /cannot be written to/);
+  assert.match(block({ files: home.files.map(file => (file.name === 'rollover-crew-live' ? { ...file, capability: 'not_read' } : file)) }), /does not read this file/);
+  assert.match(block({ files: home.files.map(file => (file.name === 'rollover-off' ? { ...file, state: 'symlink' } : file)) }), /off file is present/);
+  assert.match(block({ files: home.files.map(file => (file.name === 'rollover-crew-live' ? { ...file, state: 'regular' } : file)) }), /already exists/);
+  // the confirmation names the home, the file and the ids, and says a restart cannot be undone
+  rollover.confirm = { kind: 'arm', home: 'ha02f1cb9', which: 'crew', ids: ['crew-a', 'crew-b'] };
+  const confirm = rolloverCard();
+  assert.match(confirm, /Arm crewmates and scouts in fm-homes\/pmos\?/);
+  assert.match(confirm, /creates rollover-crew-live[^]*crew-a, crew-b/);
+  assert.match(confirm, /A restart cannot be undone/);
+  assert.match(confirm, /data-ro-go="arm"/);
+  assert.match(confirm, /data-ro-cancel/);
+  rollover.confirm = { kind: 'undo', home: 'ha02f1cb9', file: 'rollover-off' };
+  assert.match(rolloverCard(), /Turn rolling back on in fm-homes\/pmos\?[^]*Every live switch still present/);
+  rollover.confirm = null;
+  rollover.result = { tone: 'bad', text: '2 of those ids cannot roll now. Nothing was written.', rows: ['<i>x</i>: no worktree'] };
+  const refused = rolloverCard();
+  assert.match(refused, /class="scope-note error" id="rollover-result"/);
+  assert.match(refused, /&lt;i&gt;x&lt;\/i&gt;: no worktree/, 'a reason row is escaped');
+  rollover.busy = true;
+  assert.match(rolloverCard(), /id="rollover-stop"[^>]*disabled/, 'one change at a time in the page too');
+  assert.match(rolloverCard(), /data-ro-arm="crew"[^>]*disabled/);
+  assert.match(rolloverHarness({}).rolloverCard(), /class="skeleton"/);
+  assert.match(rolloverHarness({ error: 'Not found.' }).rolloverCard(), /Not found\./);
+  assert.match(rolloverHarness({ data: { homes: [], unregistered_homes: 0, platform_supported: false } }).rolloverCard(), /needs macOS/);
+  assert.match(rolloverHarness({ data: { homes: [home], unregistered_homes: 0, platform_supported: true }, open: new Set(['ha02f1cb9:Crewmates and scouts']) }).rolloverCard(), /data-ro-open="ha02f1cb9:Crewmates and scouts" open/, 'an opened list stays open across a redraw');
+});
+
+test('rollover card: the page names only the rollover actions of this slice and builds every token itself', () => {
+  const names = [...new Set((html.match(/api\.run\('rollover-[a-z-]+'|runRollover\('rollover-[a-z-]+'/g) || []).map(item => item.replace(/.*'(rollover-[a-z-]+)'/, '$1')))].sort();
+  assert.deepEqual(names, ['rollover-arm', 'rollover-state', 'rollover-stop', 'rollover-undo']);
+  assert.equal(/rollover-primary|handoff-restart/.test(html), false, 'no primary action and no handoff-restart in the page yet');
+  assert.match(html, /runRollover\('rollover-stop', \{\}/, 'Stop sends nothing but itself: no confirm, no typed text');
+  assert.match(html, /confirm: `rollover-resume:\$\{home\.id\}`/, 'removing the off file carries the resume token');
+  assert.match(html, /confirm: rolloverToken\(home\.id, ask\.which, ids\)/);
   assert.match(html, /\$\{body\}\$\{rolloverCard\(\)\}/, 'the card sits under the sessions table');
-  const loader = html.slice(html.indexOf('const loadRollover'), html.indexOf('// Re-read while the Context tab is open'));
-  assert.equal(/rollover-(arm|stop|undo|primary)/.test(html), false, 'no write action is named in the page');
-  assert.match(loader, /rollover\.data = await api\.run\('rollover-state'\)/);
   assert.match(html, /if \(!rollover\.data && !rollover\.error && !rollover\.loading\) loadRollover\(\)/);
+  assert.equal(/rollover[A-Za-z.]*\.(pick|confirm)\s*=\s*[^=].*localStorage/.test(html), false, 'nothing about a pending change is remembered across a reload');
+  assert.equal(/navigator\.clipboard[^;]*rollover/.test(html), false);
 });
 
 test('the archive group has its own tab, and the Archives tab no longer holds the group card', () => {
