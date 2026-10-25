@@ -23,11 +23,12 @@ PATTERNS = [
     # follows it on that line, the cut-off marker included), a header (Proc-Type: ...), a blank line, any of them
     # after quoting (> ) or a line number (2 or 2: or 2.), with lines ending in \n, \r\n or a written-out \n (a key
     # quoted inside a JSON string), indented or not. Each line has one way to match (blanks, then a number, then
-    # one body), so a long run of blanks does not backtrack. A written-out \r\n or \/ (JSON escapes) counts too,
+    # one body, and a base64 run is always taken whole: nothing is tried on a shorter one), so neither a long run of
+    # blanks nor a long base64 line followed by something the rule rejects backtracks. A written-out \r\n or \/ (JSON escapes) counts too,
     # and a quoted key's last line ends at its quote.
     ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[^\r\n\"'\\]*"
                                r"(?:(?:\r?\n|(?:\\r)?\\n)[ \t>]*(?:[0-9]{1,5}[.:)|]?[ \t]+)?"
-                               r"(?:(?:[A-Za-z0-9+/=]|\\/){20,}[^\r\n\"'\\]*|(?:[A-Za-z0-9+/=]|\\/)+[ \t]*|[A-Za-z-]+:[^\r\n\\]*)?\r?"
+                               r"(?:(?:[A-Za-z0-9+/=]|\\/){20,}(?![A-Za-z0-9+/=]|\\/)[^\r\n\"'\\]*|(?:[A-Za-z0-9+/=]|\\/)+(?![A-Za-z0-9+/=]|\\/)[ \t]*|[A-Za-z-]+:[^\r\n\\]*)?\r?"
                                r"(?=\r?\n|(?:\\r)?\\n|\Z|[\"',\]}]))*"), 0),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"), 0),
     ("api-key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}"), 0),

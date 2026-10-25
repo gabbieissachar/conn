@@ -153,6 +153,32 @@ class RedactTextTest(unittest.TestCase):
             redact.redact_text(text, {})
             self.assertLess(time.monotonic() - started, 1.0, text[:20])
 
+    def test_a_long_base64_line_followed_by_what_the_rule_rejects_is_quick(self):
+        # The reviewer's S12: a BEGIN line, a long base64 line, then an ending the line rule rejects (a backslash and a
+        # letter, as a JSON \u2019 or a stray escape leaves) took 2.3 s at 8,000 characters and grows with its square.
+        import random
+        import time
+        head = "-----BEGIN PRIVATE KEY-----\n"
+        run = "A" * 20000
+        shapes = {
+            "backslash and letter": head + run + "\\x", "bare ending": head + run + "\\x", "blanks then escape": head + "A" * 12000 + " " * 12000 + "\\x",
+            "quoted": head + "> " + run + "\\x", "numbered": head + "7. " + run + "\\x", "after a first key line": head + "A" * 76 + "\n" + run + "\\x",
+            "mixed run and tail": head + "A" * 20 + "x" * 20000 + "\\z", "equals": head + "=" * 20000 + "\\x", "words in the tail": head + "A" * 30 + " word " * 4000 + "\\x",
+            "slash runs": head + "\\/" * 10000 + "\\x",
+        }
+        for name, text in shapes.items():
+            started = time.monotonic()
+            redact.redact_text(text, {})
+            self.assertLess(time.monotonic() - started, 0.5, name)
+        # Random text of the key's own characters and its look-alikes after a BEGIN line, seeded, and one pass is never slow.
+        rng = random.Random(12)
+        pieces = ["A", "A", "A", "/", "=", "\\", "\\/", " ", "\t", ">", "7", "x", "\n", "\r\n", '"', "'", ".", ":", "-", "b", "\\n"]
+        for _ in range(300):
+            body = "".join(rng.choice(pieces) for _ in range(rng.randrange(500, 6000))).replace("A", "A" * rng.randrange(1, 40))
+            started = time.monotonic()
+            redact.redact_text(head + body, {})
+            self.assertLess(time.monotonic() - started, 0.5, body[:40])
+
     def test_a_private_key_keeps_its_line_breaks(self):
         block = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + fake("", 40) + "\n" + fake("", 40) + "\n-----END OPENSSH PRIVATE KEY-----"
         text = "Line 1\n" + block + "\nLast line asks: ok?"
