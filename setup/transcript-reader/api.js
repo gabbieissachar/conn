@@ -7,9 +7,9 @@
 //                                                   only; each carries the per-start token
 //   GET  /setup/transcript-reader/out/hosted/index.html
 //                                                   the hosted copy's shell (sync.py), the same way
-//   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*}
-//                                                   the objects that shell loads, to its own
-//                                                   token-bearing fetches only
+//   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*,a/*,r/*}
+//                                                   the objects that shell loads (r/ holds the receipts of
+//                                                   its queued sends), to its own token-bearing fetches only
 //   GET  /setup/transcript-reader/out/bucket/...    the sealed copy a dry run writes (sync.py
 //                                                   --dry-run): its shell, k/params.json and the
 //                                                   *.enc objects, the same ways
@@ -19,6 +19,12 @@
 //   POST /api/transcript-reader/send                { session_id, text }: empties the input box
 //                                                   of the one live Herdr pane running that
 //                                                   session, then sends the text there
+//   POST /api/transcript-reader/queue               a hosted copy's Send: { copy: "hosted", id, object:
+//                                                   { session_id, text, at } } writes out/hosted/q/<id>.json;
+//                                                   { copy: "bucket", id, data } writes the sealed bytes the
+//                                                   page made (base64) to out/bucket/q/<id>.json.enc, so the
+//                                                   server never sees the text. Nothing is sent to Herdr:
+//                                                   drain.js (run by the sync agent) delivers it later.
 //   POST /api/transcript-reader/reopen              { session_id }: lists a session whose pane
 //                                                   has closed, to read again, and rebuilds
 //   POST /api/transcript-reader/close               { session_id }: takes a session off the
@@ -39,7 +45,9 @@
 // session's pane closes (dropping it from the reading list), and adds the session
 // Herdr has focused to the reading list while a page follows focus. reopen and close
 // change the reading list only on a click in the page.
-// A prompt reaches a pane only through send, which the page calls on a click.
+// A prompt reaches a pane only through send, which the page calls on a click, or through
+// the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
+// through this module's own sendPrompt, so both routes check the pane the same way.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
 
 const crypto = require('crypto');
@@ -54,8 +62,8 @@ const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.htm
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {
-  hosted: { re: /^(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
-  bucket: { re: /^(?:(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
+  hosted: { re: /^(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
+  bucket: { re: /^(?:(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };
 const TOKEN_HEADER = 'x-transcript-reader-token';
 // Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell
@@ -84,6 +92,11 @@ const CLEAR_KEYS = ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 
 const CLEAR_CALLS = 25;
 const CLEAR_PAUSE_MS = 40;
 const MAX_BODY_BYTES = 16 * 1024;
+// A queued send carries up to MAX_TEXT characters, sealed and in base64, so its route takes a larger body.
+const MAX_QUEUE_BODY_BYTES = 64 * 1024;
+const MAX_QUEUED = 50;
+const QUEUE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SEALED_MAGIC = Buffer.from('HRC1');
 const SCAN_TTL_MS = 700;
 const REBUILD_GAP_MS = 3000;
 const RETRY_AFTER_FAILURE_MS = 30000;
@@ -105,7 +118,7 @@ function fail(res, status, code, message) {
   send(res, status, { status: 'error', code, message });
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
     let done = false;
@@ -113,7 +126,7 @@ function readJsonBody(req) {
     req.on('data', (chunk) => {
       if (done) return;
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) { done = true; reject(new RequestError('Message too long.', 413)); return; }
+      if (size > limit) { done = true; reject(new RequestError('Message too long.', 413)); return; }
       chunks.push(chunk);
     });
     req.on('end', () => {
@@ -189,6 +202,9 @@ function create({
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
+  // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
+  // conversations of the hosted copy it drains.
+  sendable = null,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const readerScript = path.join(root, 'setup', 'transcript-reader', 'reader.py');
@@ -448,7 +464,7 @@ function create({
     const sessionId = body.session_id;
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) throw new RequestError('Invalid session id.');
     const text = checkText(body.text);
-    if (!listed().includes(sessionId)) throw new RequestError('That session is not on the reading list.', 409, 'not_listed');
+    if (!(sendable ? sendable() : listed()).includes(sessionId)) throw new RequestError('That session is not on the reading list.', 409, 'not_listed');
     const sessions = await scan({ fresh: true });
     const matches = sessions.flatMap((session) => session.panes.filter((p) => p.session_id === sessionId).map((p) => ({ ...p, herdr: session.name })));
     if (!matches.length) throw new RequestError('No live Herdr pane is running that session, so nothing was sent.', 409, 'no_pane');
@@ -474,6 +490,45 @@ function create({
       }
     } finally { sending = false; }
     return { label: pane.label, herdr: pane.herdr, status: pane.status };
+  }
+
+  // ------------------------------------------------------------------- queue
+
+  // The hosted copy's Send, from a page served here: the request is written into the copy's
+  // q/ folder, for drain.js to send when the sync agent next runs. Nothing is sent to Herdr, and
+  // a request is written once (never replaced), owner-only like every file this reader writes.
+  function queueWrite(body) {
+    for (const key of Object.keys(body)) if (!['copy', 'id', 'object', 'data'].includes(key)) throw new RequestError('Unknown field.');
+    const folder = body.copy;
+    if (folder !== 'hosted' && folder !== 'bucket') throw new RequestError('Unknown copy.');
+    if (typeof body.id !== 'string' || !QUEUE_ID_RE.test(body.id)) throw new RequestError('Invalid request id.');
+    let bytes;
+    let name;
+    if (folder === 'hosted') {
+      const object = body.object;
+      if (body.data !== undefined || !object || typeof object !== 'object' || Array.isArray(object)) throw new RequestError('Invalid request.');
+      for (const key of Object.keys(object)) if (!['session_id', 'text', 'at'].includes(key)) throw new RequestError('Unknown field.');
+      if (typeof object.session_id !== 'string' || !SESSION_ID_RE.test(object.session_id)) throw new RequestError('Invalid session id.');
+      if (!Number.isFinite(object.at)) throw new RequestError('Invalid time.');
+      bytes = Buffer.from(JSON.stringify({ id: body.id, session_id: object.session_id, text: checkText(object.text), at: object.at }), 'utf8');
+      name = body.id + '.json';
+    } else {
+      // Sealed by the page: only its envelope can be checked here (the bytes open with the passphrase's key, which this server never has).
+      if (body.object !== undefined || typeof body.data !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) throw new RequestError('Invalid request.');
+      bytes = Buffer.from(body.data, 'base64');
+      if (bytes.length < 32 || bytes.length > MAX_QUEUE_BODY_BYTES || !bytes.subarray(0, 4).equals(SEALED_MAGIC)) throw new RequestError('That is not a sealed request.');
+      name = body.id + '.json.enc';
+    }
+    const directory = path.join(outDir, folder, 'q');
+    let waiting = 0;
+    try { waiting = fs.readdirSync(directory).filter((entry) => !entry.startsWith('.')).length; } catch { waiting = 0; }
+    if (waiting >= MAX_QUEUED) throw new RequestError('Too many messages are waiting for the laptop. Wait for them to be sent.', 429, 'queue_full');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    try { fs.writeFileSync(path.join(directory, name), bytes, { mode: 0o600, flag: 'wx' }); } catch (error) {
+      if (error.code === 'EEXIST') throw new RequestError('That request is already queued.', 409, 'exists');
+      throw new RequestError('The request could not be queued.', 500, 'queue_failed');
+    }
+    return { id: body.id, queued: waiting + 1 };
   }
 
   // ------------------------------------------------------------------- routes
@@ -539,6 +594,10 @@ function create({
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
     }
+    if (pathname === API + 'queue' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...queueWrite(await readJsonBody(req, MAX_QUEUE_BODY_BYTES)) });
+      return;
+    }
     for (const command of ['reopen', 'close']) {
       if (pathname === API + command && req.method === 'POST') {
         send(res, 200, { status: 'ok', ...(await changeList(command, await readJsonBody(req))) });
@@ -576,7 +635,7 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan };
+  return { handle, guard, scan, sendPrompt };
 }
 
-module.exports = { create, checkText, copyId, namesReaderOut, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };
+module.exports = { create, checkText, copyId, namesReaderOut, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

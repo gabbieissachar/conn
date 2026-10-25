@@ -16,6 +16,7 @@ const { create, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
 const A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const B = 'bbbbbbbb-2222-4222-8222-222222222222';
 const C = 'cccccccc-3333-4333-8333-333333333333';
+const Q = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1';  // a queued send's id
 
 // A built page as build_prototype.write_page leaves it: the token tag unfilled, and the
 // payload escaping "<" (here it quotes a transcript that mentions the tag's placeholder).
@@ -273,7 +274,8 @@ test('pages: a spelling the file system folds (Unicode form and case) or a symli
 // The hosted copy sync.py writes into out/hosted/: its shell, an index, objects, and the manifest beside them.
 function writeHosted(outDir) {
   const hosted = path.join(outDir, 'hosted');
-  for (const folder of ['s', 'd', 'f', 'a']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
+  for (const folder of ['s', 'd', 'f', 'a', 'r']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
+  fs.writeFileSync(path.join(hosted, 'r', Q + '.json'), JSON.stringify({ id: Q, state: 'sent' }));
   fs.writeFileSync(path.join(hosted, 'index.html'), builtPage('hosted shell'));
   fs.writeFileSync(path.join(hosted, 'sheet.html'), builtPage('hosted sheet'));
   fs.writeFileSync(path.join(hosted, 'a', A + '.json'), JSON.stringify({ questionnaires: [] }));
@@ -309,7 +311,7 @@ test('hosted: the shell\'s own token-bearing fetch gets each object; without the
   try {
     writeHosted(t.tree.outDir);
     const fetchHeaders = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
-    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json', `a/${A}.json`]) {
+    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json', `a/${A}.json`, `r/${Q}.json`]) {
       const urlPath = '/setup/transcript-reader/out/hosted/' + name;
       const got = await t.request({ path: urlPath, headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
       assert.equal(got.status, 200, name);
@@ -379,6 +381,106 @@ test('bucket: the sealed copy of a dry run is served like the hosted copy: its s
     const plainParams = await t.request({ path: '/setup/transcript-reader/out/hosted/k/params.json', headers: fetchHeaders });
     assert.equal(plainParams.status, 404, 'the plain copy has no params, so its shell reads it as plain');
   } finally { await t.close(); }
+});
+
+// A sealed request as the page writes it: the envelope's magic, a nonce and ciphertext (nothing here opens it).
+const sealedBytes = (n = 60) => Buffer.concat([Buffer.from('HRC1'), Buffer.alloc(n, 7)]);
+
+test('queue: a hosted page\'s Send writes its request into the copy\'s q/ and sends nothing to Herdr', async () => {
+  const t = await start();
+  try {
+    const request = { copy: 'hosted', id: Q, object: { session_id: A, text: 'A1=accept;A2=inline', at: 1761441000.5 } };
+    const response = await t.post('queue', request);
+    assert.equal(response.status, 200, response.raw);
+    assert.deepEqual(response.json, { status: 'ok', id: Q, queued: 1 });
+    const file = path.join(t.tree.outDir, 'hosted', 'q', Q + '.json');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { id: Q, session_id: A, text: 'A1=accept;A2=inline', at: 1761441000.5 });
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+    assert.equal(t.herdr.calls.length, 0, 'queueing never reaches Herdr');
+    assert.equal((await t.post('queue', request)).status, 409, 'a request is written once');
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).text, 'A1=accept;A2=inline');
+    // The queue is write-only from the page: nothing under q/ is served, to anyone.
+    const headers = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty', [TOKEN_HEADER]: t.token };
+    for (const name of [`q/${Q}.json`, 'q/']) {
+      const got = await t.request({ path: '/setup/transcript-reader/out/hosted/' + name, headers });
+      assert.equal(got.status, 404, name);
+      assert.equal(got.headers['x-static'], undefined, name);
+    }
+  } finally { await t.close(); }
+});
+
+test('queue: a sealed page\'s request is stored as the bytes it made, which this server cannot open', async () => {
+  const t = await start();
+  try {
+    const bytes = sealedBytes();
+    const response = await t.post('queue', { copy: 'bucket', id: Q, data: bytes.toString('base64') });
+    assert.equal(response.status, 200, response.raw);
+    const file = path.join(t.tree.outDir, 'bucket', 'q', Q + '.json.enc');
+    assert.deepEqual(fs.readFileSync(file), bytes);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q')), false);
+    // Not sealed at all (no magic), too short, or not base64: refused, and nothing is written.
+    for (const data of [Buffer.alloc(80, 1).toString('base64'), Buffer.from('HRC1abc').toString('base64'), '!!not base64!!', '']) {
+      const refused = await t.post('queue', { copy: 'bucket', id: '22222222-aaaa-4aaa-8aaa-aaaaaaaaaaa2', data });
+      assert.equal(refused.status, 400, data.slice(0, 20));
+    }
+    assert.deepEqual(fs.readdirSync(path.join(t.tree.outDir, 'bucket', 'q')), [Q + '.json.enc']);
+    const room = await t.post('queue', { copy: 'bucket', id: '33333333-aaaa-4aaa-8aaa-aaaaaaaaaaa3', data: sealedBytes(40000).toString('base64') });
+    assert.equal(room.status, 200, 'a sealed 4000-character message fits');
+    assert.equal((await t.post('queue', { copy: 'bucket', id: '44444444-aaaa-4aaa-8aaa-aaaaaaaaaaa4', data: sealedBytes(70000).toString('base64') })).status, 413);
+  } finally { await t.close(); }
+});
+
+test('queue: bad requests are refused whole, as send refuses them, and write nothing', async () => {
+  const t = await start();
+  try {
+    const good = { session_id: A, text: 'hello', at: 1 };
+    const bad = [
+      { copy: 'elsewhere', id: Q, object: good }, { copy: 'hosted', id: 'not-a-uuid', object: good }, { copy: 'hosted', id: Q },
+      { copy: 'hosted', id: Q, object: { ...good, session_id: '../../etc' } }, { copy: 'hosted', id: Q, object: { ...good, text: '' } },
+      { copy: 'hosted', id: Q, object: { ...good, text: '--help' } }, { copy: 'hosted', id: Q, object: { ...good, text: 'a\u001b[201~b' } },
+      { copy: 'hosted', id: Q, object: { ...good, text: 'x'.repeat(4001) } }, { copy: 'hosted', id: Q, object: { ...good, at: 'now' } },
+      { copy: 'hosted', id: Q, object: { ...good, extra: 1 } }, { copy: 'hosted', id: Q, object: good, data: 'AAAA' }, { copy: 'hosted', id: Q, object: good, other: 1 },
+      { copy: 'bucket', id: Q, object: good },
+    ];
+    for (const body of bad) assert.equal((await t.post('queue', body)).status >= 400, true, JSON.stringify(body).slice(0, 80));
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q')), false);
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'bucket', 'q')), false);
+    // Every route's own guard: the token, the origin and JSON.
+    const ok = { copy: 'hosted', id: Q, object: good };
+    assert.equal((await t.post('queue', ok, { [TOKEN_HEADER]: 'b'.repeat(64) })).status, 403);
+    assert.equal((await t.post('queue', ok, { Origin: 'http://evil.example' })).status, 403);
+    assert.equal((await t.post('queue', ok, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    assert.equal((await t.request({ method: 'GET', path: '/api/transcript-reader/queue', headers: { [TOKEN_HEADER]: t.token } })).status, 404);
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q')), false);
+  } finally { await t.close(); }
+});
+
+test('queue: a full queue takes no more until drain.js has sent what is in it', async () => {
+  const t = await start();
+  try {
+    const id = (n) => `${String(n).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
+    for (let n = 1; n <= 50; n += 1) assert.equal((await t.post('queue', { copy: 'hosted', id: id(n), object: { session_id: A, text: 'm' + n, at: 1 } })).status, 200, 'request ' + n);
+    const full = await t.post('queue', { copy: 'hosted', id: id(51), object: { session_id: A, text: 'one more', at: 1 } });
+    assert.equal(full.status, 429);
+    assert.equal(full.json.code, 'queue_full');
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q', id(51) + '.json')), false);
+  } finally { await t.close(); }
+});
+
+test('send: the drain\'s own list of sendable sessions replaces the reading list, and nothing else in the checks', async () => {
+  const tree = fixtureTree();
+  const herdr = fakeHerdr();
+  try {
+    // C has a live pane but is on no reading list; the list given here names it, and not A.
+    const api = create({ root: tree.root, outDir: tree.outDir, port: 1, runner: herdr.runner, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pause: async () => {}, sendable: () => [C] });
+    assert.deepEqual(await api.sendPrompt({ session_id: C, text: 'hello' }), { label: 'unlisted', herdr: 'work', status: 'idle' });
+    await assert.rejects(api.sendPrompt({ session_id: A, text: 'hello' }), (error) => error.code === 'not_listed');
+    herdr.panes[2].agent_status = 'blocked';
+    await assert.rejects(api.sendPrompt({ session_id: C, text: 'hello' }), (error) => error.code === 'agent_blocked');
+    assert.equal(herdr.prompts().length, 1);
+  } finally { tree.cleanup(); }
 });
 
 test('api: every call needs the token; there is no endpoint that hands it out', async () => {

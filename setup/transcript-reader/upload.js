@@ -70,4 +70,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => { process.stderr.write(error.message + '\n'); process.exit(1); });
 }
 
-module.exports = { main, OBJECT_RE };
+module.exports = { main, OBJECT_RE, replace };
