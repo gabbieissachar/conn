@@ -191,6 +191,12 @@ created: 2026-09-10
     .open-tab { flex: none; padding: 1px 9px; border: 1px solid #c7cde0; border-radius: 999px; background: #fff; color: var(--navy); font-size: 11px; font-weight: 500; line-height: 18px; cursor: pointer; }
     .open-tab:hover { background: #eef1fb; } .open-tab:disabled { opacity: .5; cursor: default; }
     .ctx-compact .compact-tab .open-tab { margin-left: auto; }
+    .clear-mark { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; }
+    .clear-mark .status { margin: 0; white-space: normal; overflow-wrap: anywhere; }
+    .clear-mark .small-btn { padding: 2px 8px; }
+    .ctx-compact .compact-tab { flex-wrap: wrap; }
+    .ctx-compact .compact-tab .clear-mark { flex: 1 1 100%; margin: 0 0 0 26px; }
+    .ctx-compact .compact-tab .clear-mark .status { flex: 0 1 auto; margin: 0; }
     .ctx-compact .compact-tab { padding: 6px 8px; }
     .ctx-compact .compact-tab { align-items: flex-start; }
     .ctx-compact .compact-tab input { margin-top: 3px; }
@@ -384,6 +390,14 @@ created: 2026-09-10
     // Compact Workspaces view: a per-viewer convenience, so a blocked or empty browser store just means the full view.
     const COMPACT_KEY = 'herdr-organizer-compact-workspaces';
     const CONTEXT_COMPACT_KEY = 'herdr-organizer-compact-context';
+    // A dismissed "Herdr still reports the old session" mark, kept in this browser only. The command decides again whenever it runs.
+    const CLEAR_DISMISS_KEY = 'herdr-organizer-dismissed-clears';
+    function readDismissedClears() {
+      try {
+        const list = JSON.parse(localStorage.getItem(CLEAR_DISMISS_KEY) || '[]');
+        return new Set(Array.isArray(list) ? list.filter(item => typeof item === 'string').slice(-200) : []);
+      } catch { return new Set(); }
+    }
     function readContextCompact() { try { return localStorage.getItem(CONTEXT_COMPACT_KEY) === '1'; } catch { return false; } }
     function readCompact() { try { return localStorage.getItem(COMPACT_KEY) === '1'; } catch { return false; } }
     const state = { data: null, query: '', selectedTabs: new Set(), selectedArchivedTabs: new Set(), selectedGroupTabs: new Set(), selectedGroupBatch: '', destinationWorkspace: '', selectedTabsArchive: '', selectedTabsBatch: '', archiveDestinations: {}, groupTabDestinations: {}, groupPanelDestinations: {}, selectedTabsAction: 'move', view: 'restart', snapshotSession: '', compact: readCompact() };
@@ -2049,7 +2063,7 @@ created: 2026-09-10
     };
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, restartBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, restartBusy: false, dismissed: readDismissedClears(), sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '', failedAt: '' };
@@ -2160,12 +2174,21 @@ created: 2026-09-10
       const present = new Set(rows.map(pickKeyOf));
       for (const key of [...picked.keys()]) if (!present.has(key)) picked.delete(key);
     };
-    // Handoff and restart (the organizer tool's own command for an ordinary Claude pane). Only an ordinary session at its prompt can be offered: every firstmate,
+    // A pane that had /clear typed into it by the command and that Herdr still reports under the session it had before. The mark
+    // ends when the pane reports another session (the server sends nothing then), when it is dismissed here, or 12 hours after the
+    // clear (the server then sends still_old_id false). The percent keeps a "may be stale" note while the id is unchanged.
+    const dismissKeyOf = row => `${row.cleared_run}|${row.pane_id}|${row.id}`;
+    const clearMarked = row => row.still_old_id === true && Boolean(row.cleared_run) && !context.dismissed.has(dismissKeyOf(row));
+    const clearMarkText = row => `cleared ${new Date(row.cleared_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}, Herdr still reports the old session`;
+    const clearMarkHtml = row => clearMarked(row) ? `<span class="clear-mark"><span class="status blocked" title="/clear was typed into this pane, but Herdr still reports the session it had before. Check the pane before restarting it again.">${escapeHtml(clearMarkText(row))}</span><button type="button" class="small-btn clear-dismiss" data-dismiss="${escapeHtml(dismissKeyOf(row))}" title="I have seen the resume line; this pane was restarted. Remembered in this browser only; nothing is sent.">Dismiss</button></span>` : '';
+    const staleNote = row => row.cleared_at && row.cleared_run ? '<span class="status blocked" title="This pane had /clear typed into it and Herdr still reports the session it had before, so this percent may be the old session\'s.">may be stale</span>' : '';
+    // Handoff and restart (the organizer tool's own command for an ordinary Claude pane): only an ordinary session at its prompt can be offered: every firstmate,
     // second mate, crewmate and primary row is another kind, and a busy or unreadable row is left out with its reason. This is
     // a cheap filter; the server checks again from the live panes and the gauge, and the command's own refusals decide last.
     const restartReason = row => {
       if (row.leader || row.kind !== 'session') return 'a firstmate session';
       if (!row.pane_id || !row.id) return 'no live pane';
+      if (clearMarked(row)) return clearMarkText(row);
       if (row.busy !== 'idle') return row.busy === 'busy' ? 'busy' : 'state unknown';
       return '';
     };
@@ -2196,7 +2219,7 @@ created: 2026-09-10
     const STATE_TIPS = { idle: 'Waiting at its prompt.', busy: 'In the middle of a turn.', unknown: 'The pane\'s state could not be read.' };
     const contextStateBadge = row => `<span class="status ${row.busy === 'busy' ? 'working' : row.busy === 'idle' ? 'idle' : ''}" title="${escapeHtml(STATE_TIPS[row.busy] || STATE_TIPS.unknown)}">${escapeHtml(row.busy)}</span>`;
     // Compact rows keep the same tick box as the table, so the handoff request works identically; the percent and the state sit right after the name.
-    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${contextStateBadge(row)}${openTabButton(row)}</label>`;
+    const contextCompactRow = (row, thresholds) => `<label class="compact-tab">${handoffPickBox(row)}<span class="tab-name">${escapeHtml(sessionName(row))}</span>${contextPercent(row, contextLevel(row, thresholds))}${staleNote(row)}${contextStateBadge(row)}${openTabButton(row)}${clearMarkHtml(row)}</label>`;
     const contextRow = (row, thresholds) => {
       const level = contextLevel(row, thresholds);
       const percent = contextPercent(row, level);
@@ -2204,7 +2227,7 @@ created: 2026-09-10
       const tokens = row.tokens === null ? 'unknown' : `${Math.round(row.tokens / 1000)}k`;
       const pick = handoffPickBox(row);
       const meta = [escapeHtml(row.kind), escapeHtml(row.id), row.tab_label && row.tab_label !== row.map ? escapeHtml(row.map) : '', row.leader && row.leader.label !== sessionName(row) && row.leader.label !== row.map ? escapeHtml(row.leader.label) : '', row.problem ? `${escapeHtml(row.problem.label)} (${escapeHtml(row.problem.state)})` : ''].filter(Boolean).join(' · ');
-      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}</td><td>${escapeHtml(contextAge(row.age_s))}</td><td>${openTabButton(row)}</td></tr>`;
+      return `<tr class="ctx-row ${level}"><td>${pick}</td><td>${percent}${staleNote(row)}</td><td><strong>${escapeHtml(sessionName(row))}</strong><div class="tab-meta">${meta}</div></td><td>${where}</td><td>${tokens}</td><td>${escapeHtml(row.busy)}${clearMarkHtml(row)}</td><td>${escapeHtml(contextAge(row.age_s))}</td><td>${openTabButton(row)}</td></tr>`;
     };
     // Sortable columns. `first` is the direction a first click uses: biggest first for numbers, A-Z for text, and
     // newest first for the record age. A row with nothing to compare (no percent, no live pane) always sorts last.
@@ -2285,6 +2308,7 @@ created: 2026-09-10
       section.querySelectorAll('.open-tab').forEach(button => button.addEventListener('click', event => { event.preventDefault(); openTab(button); }));
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);
+      section.querySelectorAll('.clear-dismiss').forEach(button => button.addEventListener('click', event => { event.preventDefault(); dismissClear(button.dataset.dismiss); }));
       const restartButton = document.querySelector('#restart-copy');
       if (restartButton) restartButton.addEventListener('click', copyRestart);
     };
@@ -2318,6 +2342,12 @@ created: 2026-09-10
         context.handoffBusy = false;
         if (state.view === 'context') renderContext();
       }
+    };
+    // Ends the mark for this browser only; nothing is sent to the server.
+    const dismissClear = key => {
+      context.dismissed.add(key);
+      try { localStorage.setItem(CLEAR_DISMISS_KEY, JSON.stringify([...context.dismissed].slice(-200))); } catch { /* the dismissal just is not remembered */ }
+      if (state.view === 'context') renderContext();
     };
     // The server re-checks every reference against the live panes and the gauge and builds the command; the page copies it and sends nothing into a pane.
     const copyRestart = async () => {

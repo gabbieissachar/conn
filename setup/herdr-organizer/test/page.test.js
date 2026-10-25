@@ -968,8 +968,8 @@ test('context view: compact mode shows each row\'s state as a badge, in the tabl
   assert.match(contextStateBadge({ busy: 'unknown' }), /^<span class="status " title="The pane&#39;s state could not be read\.">unknown<\/span>$/, 'unknown stays neutral');
   assert.match(contextStateBadge({ busy: '<b>' }), /&lt;b&gt;/, 'a value outside the three is escaped');
   // the compact row has the badge between the percent and Open, on every row, and the table still prints the plain value
-  assert.match(html, /contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}<\/label>`;/);
-  assert.match(html, /<td>\$\{escapeHtml\(row\.busy\)\}<\/td><td>\$\{escapeHtml\(contextAge\(row\.age_s\)\)\}<\/td>/, 'full mode is unchanged');
+  assert.match(html, /contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{staleNote\(row\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}\$\{clearMarkHtml\(row\)\}<\/label>`;/);
+  assert.match(html, /<td>\$\{escapeHtml\(row\.busy\)\}\$\{clearMarkHtml\(row\)\}<\/td><td>\$\{escapeHtml\(contextAge\(row\.age_s\)\)\}<\/td>/, 'full mode prints the same plain value, with the clear mark after it');
   assert.match(html, /\.ctx-compact \.compact-tab \.status \{ flex: none;/);
 });
 
@@ -1031,7 +1031,8 @@ function restartFunctions(context = {}) {
   const start = html.indexOf('const sessionName = ');
   const end = html.indexOf('const percentLevel = ');
   const vm = require('node:vm');
-  return vm.runInNewContext(`${html.slice(start, end)}; ({ pickKeyOf, restartReason, restartPlan, restartNote })`, { context });
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+  return vm.runInNewContext(`${html.slice(start, end)}; ({ pickKeyOf, restartReason, restartPlan, restartNote, clearMarked, clearMarkText, clearMarkHtml, staleNote, dismissKeyOf })`, { context, escapeHtml });
 }
 
 test('context view: only an ordinary idle session with a live pane can be put into the restart command, and each other ticked row says why', () => {
@@ -1054,6 +1055,55 @@ test('context view: only an ordinary idle session with a live pane can be put in
   assert.equal(restartNote({ refs: [], excluded: [] }, 0), 'Ordinary idle sessions only.');
   assert.equal(restartNote({ refs: ['x'], excluded: [] }, 1), '', 'nothing to explain when every ticked row is included');
   assert.equal(restartPlan(rows, new Map()).refs.length, 0, 'nothing starts ticked');
+});
+
+test('context view: a pane that still reports its old session after a typed /clear is marked, and the mark ends on a new id, on Dismiss and after 12 hours', () => {
+  const context = { dismissed: new Set() };
+  const f = restartFunctions(context);
+  const row = (extra = {}) => ({ id: 'aaaaaaa1', map: 'work', kind: 'session', busy: 'idle', herdr_session: 'project-a', pane_id: 'wC1:p1', leader: null, percent: 12, ...extra });
+  const cleared = { cleared_at: '2026-10-26T01:25:13.000Z', cleared_run: 'handoff-20261026-010000-aaaaaa', still_old_id: true };
+  // 1. Marked: the time, the plain words, a Dismiss button keyed by run, pane and id, and the restart reason names it; the percent is flagged.
+  const marked = row(cleared);
+  assert.equal(f.clearMarked(marked), true);
+  assert.match(f.clearMarkText(marked), /^cleared \d\d:\d\d, Herdr still reports the old session$/);
+  const markHtml = f.clearMarkHtml(marked);
+  assert.match(markHtml, /^<span class="clear-mark">[^]*<\/span>$/);
+  assert.match(markHtml, /Herdr still reports the old session/);
+  assert.match(markHtml, /data-dismiss="handoff-20261026-010000-aaaaaa\|wC1:p1\|aaaaaaa1"[^>]*>Dismiss</);
+  assert.match(f.restartReason(marked), /^cleared \d\d:\d\d, Herdr still reports the old session$/, 'its restart is refused with that text');
+  assert.equal(f.restartPlan([marked], new Map([['project-a|wC1:p1|aaaaaaa1', true]])).refs.length, 0);
+  assert.match(f.staleNote(marked), /may be stale/);
+  // 2. Ends when the pane reports another id: the server sends no clear fields for that row, so it is an ordinary row again.
+  const renewed = row({ id: 'bbbbbbb2' });
+  assert.equal(f.clearMarked(renewed), false);
+  assert.equal(f.clearMarkHtml(renewed), '');
+  assert.equal(f.staleNote(renewed), '');
+  assert.equal(f.restartReason(renewed), '');
+  // 3. Ends on Dismiss: the restart is allowed again, and the percent keeps its note.
+  context.dismissed.add(f.dismissKeyOf(marked));
+  assert.equal(f.clearMarked(marked), false);
+  assert.equal(f.clearMarkHtml(marked), '');
+  assert.equal(f.restartReason(marked), '');
+  assert.match(f.staleNote(marked), /may be stale/, 'the percent keeps its note');
+  // A dismissal belongs to the run, the pane and the id: a later run on the same pane is marked again.
+  assert.equal(f.clearMarked(row({ ...cleared, cleared_run: 'handoff-20261026-030000-bbbbbb' })), true);
+  assert.equal(f.clearMarked(row({ ...cleared, id: 'ccccccc3' })), true);
+  // 4. Ends after 12 hours: the server sends still_old_id false and the time; the restart is allowed and the percent keeps its note.
+  const aged = row({ ...cleared, still_old_id: false });
+  assert.equal(f.clearMarked(aged), false);
+  assert.equal(f.restartReason(aged), '');
+  assert.match(f.staleNote(aged), /may be stale/);
+  // A row with no run id is never marked.
+  assert.equal(f.clearMarked(row({ cleared_at: cleared.cleared_at, still_old_id: true })), false);
+});
+
+test('context view: Dismiss is a per-viewer note in this browser only, and never reaches the server', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  const dismiss = view.slice(view.indexOf('const dismissClear = '), view.indexOf('const copyRestart = '));
+  assert.match(dismiss, /localStorage\.setItem\(CLEAR_DISMISS_KEY/);
+  assert.match(dismiss, /try \{ localStorage\.setItem[^]*\} catch/, 'storage is inside try/catch');
+  assert.equal(/api\.run|fetch\(|navigator\.clipboard/.test(dismiss), false, 'a dismissal is never sent anywhere');
+  assert.match(html, /function readDismissedClears\(\) \{\s*try \{/, 'the read is inside try/catch too');
 });
 
 // Runs the page's own pick-key and prune functions on plain rows, so the check is of the shipped code and not of a copy.
@@ -1132,7 +1182,7 @@ test('context view: the compact toggle keeps the tick box, puts the percent next
 test('context table: every session row has an Open button that sends only a session name, pane id and the row\'s 8-character session id', () => {
   assert.match(html, /const openTabButton = row => row\.pane_id && row\.herdr_session && row\.id/);
   assert.match(html, /\$\{openTabButton\(row\)\}<\/td><\/tr>/, 'the table row carries it');
-  assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}<\/label>/, 'and so does the compact row');
+  assert.match(html, /\$\{contextPercent\(row, contextLevel\(row, thresholds\)\)\}\$\{staleNote\(row\)\}\$\{contextStateBadge\(row\)\}\$\{openTabButton\(row\)\}\$\{clearMarkHtml\(row\)\}<\/label>/, 'and so does the compact row');
   const handler = html.slice(html.indexOf('const openTab = async'), html.indexOf('const copyHandoff'));
   assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane, id: button\.dataset\.id \}\)/);
   assert.equal(/tab_id|command|args/.test(handler), false, 'the page names no tab and builds no command');
