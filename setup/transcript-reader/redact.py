@@ -14,16 +14,20 @@ import re
 # (kind, pattern, group to replace or 0 for the whole match). Order matters: a private key
 # block first, so a token inside it is not counted twice.
 PATTERNS = [
-    # A whole key block first, headers (Proc-Type, DEK-Info) and blank lines inside it included.
-    # Its body never crosses another BEGIN or END line, so a text of many BEGINs reads once.
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:(?!-----(?:BEGIN|END) )[\s\S])*-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----"), 0),
-    # Then one cut off before its END line (the head of a key file, a truncated tool output): its
-    # BEGIN line and every following line of key material (base64, a header, a blank line), lines
-    # ending in \n, \r\n or a written-out \n (a key quoted inside a JSON string), indented or not.
-    # Each line has one way to match (blanks lead, a body takes its own trailing blanks), so a long
-    # run of blanks does not backtrack. A written-out \r\n or \/ (JSON escapes) counts too, and a
-    # quoted key's last line ends at its quote.
-    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:(?:\r?\n|(?:\\r)?\\n)[ \t]*(?:(?:[A-Za-z0-9+/=]|\\/)+[ \t]*|[A-Za-z-]+:[^\r\n\\]*)?\r?"
+    # A whole key block first, headers (Proc-Type, DEK-Info) and blank lines inside it included (an armoured PGP key
+    # block too). Its body never crosses another BEGIN or END line, so a text of many BEGINs reads once.
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?:(?!-----(?:BEGIN|END) )[\s\S])*-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"), 0),
+    # Then one cut off before its END line (the head of a key file, a truncated tool output): the rest of its BEGIN
+    # line (key text may start there, or the whole key may sit on it with its line breaks turned to spaces) and every
+    # following line that is key material or its scaffolding: base64 (alone, or a run of 20 or more with whatever
+    # follows it on that line, the cut-off marker included), a header (Proc-Type: ...), a blank line, any of them
+    # after quoting (> ) or a line number (2 or 2: or 2.), with lines ending in \n, \r\n or a written-out \n (a key
+    # quoted inside a JSON string), indented or not. Each line has one way to match (blanks, then a number, then
+    # one body), so a long run of blanks does not backtrack. A written-out \r\n or \/ (JSON escapes) counts too,
+    # and a quoted key's last line ends at its quote.
+    ("private-key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[^\r\n\"'\\]*"
+                               r"(?:(?:\r?\n|(?:\\r)?\\n)[ \t>]*(?:[0-9]{1,5}[.:)|]?[ \t]+)?"
+                               r"(?:(?:[A-Za-z0-9+/=]|\\/){20,}[^\r\n\"'\\]*|(?:[A-Za-z0-9+/=]|\\/)+[ \t]*|[A-Za-z-]+:[^\r\n\\]*)?\r?"
                                r"(?=\r?\n|(?:\\r)?\\n|\Z|[\"',\]}]))*"), 0),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"), 0),
     ("api-key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}"), 0),
@@ -37,6 +41,11 @@ PATTERNS = [
     ("slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), 0),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), 0),
     ("bearer", re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._~+/-]{8,}=*)"), 1),
+    # Basic auth in an Authorization header (the base64 of user:password), a cookie header's whole value, and an Azure
+    # connection string's keys.
+    ("basic-auth", re.compile(r"(?i)\b(?:proxy-)?authorization[\"']?[ \t]*[:=][ \t]*[\"']?basic[ \t]+([A-Za-z0-9+/]{6,}=*)"), 1),
+    ("cookie", re.compile(r"(?i)\b(?:set-)?cookie[\"']?[ \t]*:[ \t]*[\"']?([^\r\n\"']{6,})"), 1),
+    ("azure-key", re.compile(r"(?i)\b(?:AccountKey|SharedAccessKey|SharedAccessSignature)=([^;\s\"']{8,})"), 1),
     # A password in a URL (https://user:secret@host) and a secret as a query value: any length for
     # a password, 8 characters for the other names, which also name ordinary values (?key=page).
     ("url-password", re.compile(r"(?<=://)[^/\s:@'\"<>]+:([^/\s@'\"<>]+)@"), 1),
@@ -48,7 +57,7 @@ PATTERNS = [
     # a $reference or a placeholder is no secret. A value's floor is in assigned() below.
     # It starts only where a run of name characters starts, so a long run backtracks once (linear).
     ("assigned-secret", re.compile(r"(?i)(?<![A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]*[_.-])?(password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key))"
-                                   r"[\"']?[ \t]*[:=][ \t]*([\"']?)([^\s\"'$<>{}()\[\],;`]+)\3"), 4),
+                                   r"(?:\\*[\"'])?[ \t]*[:=][ \t]*((?:\\*[\"'])?)([^\s\"'$<>{}()\[\],;`]+)\3"), 4),
     # The fleet's own per-start tokens (64 lowercase hex characters); sha256 digests go too.
     ("hex64-token", re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])"), 0),
 ]
@@ -74,6 +83,8 @@ def redact_text(text: str, counts: dict[str, int]) -> str:
         def replace(match, kind=kind, group=group):
             if kind == "assigned-secret" and not assigned(match):
                 return match.group(0)
+            if group and match.group(group).startswith("[redacted:"):
+                return match.group(0)  # already a marker: redacting twice changes nothing and counts nothing
             counts[kind] = counts.get(kind, 0) + 1
             if not group:
                 return marker(kind, match.group(0))

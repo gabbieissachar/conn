@@ -95,10 +95,60 @@ class RedactTextTest(unittest.TestCase):
             self.assertNotIn(body2, out)
             self.assertEqual(out.count("\n"), text.count("\n"))
 
+    def test_a_cut_off_key_in_the_shapes_the_reviewer_found_leaks_nothing(self):
+        # The reviewer's S8 repros: a key whose line breaks became spaces, key text on the BEGIN line, lines quoted
+        # with "> ", lines with a number prefix, a partial last line followed by text, and an armoured PGP block.
+        b1, b2, b3 = fake("MIIE", 64), fake("", 64), fake("zQ", 30)
+        for name, text in {
+            "spaces": "echo:\n-----BEGIN RSA PRIVATE KEY----- " + b1 + " " + b2 + " " + b3 + "\nnext line",
+            "on the BEGIN line": "-----BEGIN RSA PRIVATE KEY-----" + b1 + "\n" + b2 + "\n" + b3 + "\nnext line",
+            "quoted": "-----BEGIN RSA PRIVATE KEY-----\n> " + b1 + "\n> " + b2 + "\n> " + b3 + "\nnext line",
+            "numbered": "-----BEGIN RSA PRIVATE KEY-----\n     1\t" + b1 + "\n     2\t" + b2 + "\n3: " + b3 + "\nnext line",
+            "partial last line": "-----BEGIN RSA PRIVATE KEY-----\n" + b1 + "\n" + b2 + "\n" + b3 + " ... [truncated]\nnext line",
+            "pgp": "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: Made Up 1.0\n\n" + b1 + "\n" + b2 + "\n=" + fake("", 4) + "\nnext line",
+        }.items():
+            counts = {}
+            out = redact.redact_text(text, counts)
+            self.assertEqual(counts, {"private-key": 1}, name)
+            for body in (b1, b2, b3):
+                self.assertNotIn(body, out, name)
+            self.assertNotIn("truncated", out, name)
+            self.assertTrue(out.endswith("next line"), (name, out))
+            self.assertEqual(out.count("\n"), text.count("\n"), name)
+        # A whole PGP block, END line and all, goes too.
+        whole = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n" + b1 + "\n-----END PGP PRIVATE KEY BLOCK-----\nafter"
+        out = redact.redact_text(whole, {})
+        self.assertTrue(out.startswith("[redacted:private-key]") and out.endswith("\nafter"), out)
+        self.assertEqual(out.count("\n"), whole.count("\n"))
+
+    def test_prose_after_a_cut_off_key_stays(self):
+        text = "-----BEGIN PRIVATE KEY-----\n" + fake("MIIE", 64) + "\nThat is all, thanks. See notes.md for more."
+        out = redact.redact_text(text, {})
+        self.assertTrue(out.endswith("That is all, thanks. See notes.md for more."), out)
+
+    def test_basic_auth_cookies_and_azure_keys(self):
+        self.check("curl -H 'Authorization: Basic " + "dXNlcjpwYXNz" * 2 + "==' https://example.com", "basic-auth", kept=("Authorization: Basic ", "' https://example.com"))
+        self.check("Cookie: session=" + fake("", 20) + "; theme=dark", "cookie", kept=("Cookie: ",))
+        self.check('"Set-Cookie": "sid=' + fake("", 20) + '; Path=/"', "cookie", kept=('"Set-Cookie": "',))
+        self.check("DefaultEndpointsProtocol=https;AccountName=made;AccountKey=" + fake("", 40) + "==;EndpointSuffix=core", "azure-key",
+                   kept=("AccountName=made;AccountKey=", ";EndpointSuffix=core"))
+        self.check("SharedAccessKey=" + fake("", 30), "azure-key", kept=("SharedAccessKey=",))
+        # What only looks like them stays: the word basic in prose, a cookie banner, a setting named cookie_consent.
+        text = "A basic configuration, the cookie banner shows, cookie_consent: accepted, Authorization: Bearer-less, AccountKey=short."
+        self.assertEqual(redact.redact_text(text, {}), text)
+
+    def test_a_secret_inside_a_json_string_that_was_escaped_twice(self):
+        text = '{"output": "{\\"password\\": \\"' + fake("", 12) + '\\", \\"user\\": \\"made\\"}"}'
+        out = self.check(text, "assigned-secret", kept=("made",))
+        self.assertNotIn(fake("", 12), out)
+
     def test_long_runs_of_name_characters_are_quick(self):
         import time
         for text in ("a-" * 60000, "_" * 120000, "x." * 60000 + "password=" + fake("", 9), "A" * 120000, "-----BEGIN PRIVATE KEY-----" * 2000,
-                     "-----BEGIN PRIVATE KEY-----\n" + " \t" * 60000 + "!", ("-----BEGIN PRIVATE KEY-----\n" + " " * 300 + "\n") * 300):
+                     "-----BEGIN PRIVATE KEY-----\n" + " \t" * 60000 + "!", ("-----BEGIN PRIVATE KEY-----\n" + " " * 300 + "\n") * 300,
+                     "-----BEGIN PRIVATE KEY-----\n" + "> " * 60000 + "!", "-----BEGIN PRIVATE KEY-----\n" + "1 " * 60000 + "!", "-----BEGIN PRIVATE KEY-----\n" + "9" * 120000 + " !",
+                     "-----BEGIN PRIVATE KEY-----\n" + ("A" * 25 + " x\n") * 20000, "-----BEGIN PRIVATE KEY-----\n" + "1 > 2: " * 30000 + "!",
+                     "Cookie: " + "a" * 200000, "Authorization: Basic " + "A" * 200000 + "!", "AccountKey=" + "x" * 200000):
             started = time.monotonic()
             redact.redact_text(text, {})
             self.assertLess(time.monotonic() - started, 1.0, text[:20])
