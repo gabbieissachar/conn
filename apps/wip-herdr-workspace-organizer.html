@@ -197,6 +197,20 @@ created: 2026-09-10
     .ctx-compact .compact-tab .tab-name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 13px; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
     .ctx-compact .compact-tab .pill { flex: none; margin-top: 1px; }
     .ctx-row.bad td:first-child { box-shadow: inset 3px 0 0 var(--red); } .ctx-row.warn td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+    .ro-home { padding: 12px 0; border-top: 1px solid #eef1f6; }
+    .ro-home:first-of-type { padding-top: 0; border-top: 0; }
+    .ro-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+    .ro-head strong { font-size: 13px; }
+    .ro-sentences { margin: 8px 0 0; padding: 0; list-style: none; color: var(--ink); font-size: 12px; line-height: 1.5; }
+    .ro-sentences .none { color: var(--muted); }
+    .ro-files { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 11px; }
+    .ro-files th, .ro-files td { padding: 4px 8px 4px 0; text-align: left; border-top: 1px solid #eef1f6; font-weight: 500; vertical-align: top; }
+    .ro-files th { color: var(--muted); font: 500 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .03em; border-top: 0; }
+    .ro-files td:first-child { font-family: "DM Mono", monospace; overflow-wrap: anywhere; }
+    .ro-ids { margin-top: 8px; font-size: 11px; color: var(--muted); }
+    .ro-ids summary { cursor: pointer; }
+    .ro-ids li { margin: 2px 0; overflow-wrap: anywhere; }
+    .ro-home .tab-meta { margin-top: 8px; }
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 500 10px "DM Mono", monospace; letter-spacing: .02em; white-space: nowrap; color: #506079; background: #edf0f5; }
     .pill.good { color: #27806b; background: #dcf5ee; } .pill.warn { color: #925a08; background: #fff0d9; } .pill.bad { color: #a9273b; background: #ffe6ea; }
     .evidence { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
@@ -1665,6 +1679,7 @@ created: 2026-09-10
     const archiveContext = { rows: new Map(), asked: new Set(), loading: false };
     // Codex credits (week and month to date) sit under the Claude chips and load through `codex-credits`, on their own so one failing never blanks the other.
     const codex = { loading: false, data: null, error: '', at: '', failedAt: '' };
+    const rollover = { loading: false, data: null, error: '', at: '', open: new Set() };
     const PLAN_WARN = 70, PLAN_HIGH = 85, PLAN_REFRESH_MS = 5 * 60 * 1000;
     // The colour follows the number printed: 69.6 reads "70%", so it is amber, and 84.6 reads "85%", so it is red.
     const planLevel = percent => { const shown = Math.round(percent); return shown >= PLAN_HIGH ? 'bad' : shown >= PLAN_WARN ? 'warn' : ''; };
@@ -1730,6 +1745,59 @@ created: 2026-09-10
       const error = codex.error ? `<div class="scope-note error plan-error">${escapeHtml(codex.error)}</div>` : '';
       const button = `<button id="codex-reload" type="button" title="Read Codex credits again" ${codex.loading ? 'disabled' : ''}>${codex.loading ? 'Reading…' : 'Refresh credits'}</button>`;
       return `<div class="plan-chips" id="codex-card">${chips}<span class="updated">${escapeHtml(readStamp(codex))}</span>${button}${error}</div>`;
+    };
+    // ---- Context rollover: what firstmate's rollover switches say in each registered home. Read only. ----
+    const ROLLOVER_WATCHER = {
+      running: ['watcher running', 'good'],
+      no_lock: ['no watcher', 'warn'],
+      stale_pid: ['watcher stopped', 'warn'],
+      other_home: ['lock names another home', 'bad'],
+      identity_mismatch: ['lock names another process', 'bad'],
+      identity_unverifiable: ['watcher cannot be verified here', 'warn'],
+      beat_old: ['watcher not beating', 'warn'],
+      unsafe_lock: ['lock not trusted', 'bad'],
+    };
+    const ROLLOVER_HOME_STATUS = {
+      missing: 'This home folder is not there.',
+      swapped: 'This home folder is not the one registered at start.',
+      not_directory: 'This home is not a folder.',
+      unsafe: 'The state or data folder of this home is a link, so nothing was read.',
+      not_firstmate_home: 'This folder is not a firstmate home.',
+    };
+    const ROLLOVER_FILE_STATE = { absent: 'absent', regular: 'present', symlink: 'a link (counts as absent, except off files)', not_regular: 'not a regular file', unreadable: 'cannot be read' };
+    const ROLLOVER_REASON = { name: 'odd name', reserved: 'reserved', symlink: 'record is a link', harness: 'not a Claude session', remote: 'remote', home_unseeded: 'no seeded home', no_worktree: 'no worktree', no_brief: 'no instructions file' };
+    const rolloverFilesTable = home => `<table class="ro-files"><thead><tr><th>Switch file</th><th>State</th><th>Ids listed</th><th>Read by this home</th></tr></thead><tbody>${home.files.map(file => `<tr><td>${escapeHtml(file.name)}</td><td>${escapeHtml(ROLLOVER_FILE_STATE[file.state] || file.state)}</td><td>${Number.isFinite(file.ids_count) ? (file.ids_count ? file.ids_count : 'every eligible') : ''}</td><td>${file.capability === 'read' ? 'yes' : file.capability === 'not_read' ? 'not read by this home\'s firstmate' : '-'}</td></tr>`).join('')}</tbody></table>`;
+    const rolloverIdList = (homeId, title, group) => {
+      const list = (group && group.list) || [];
+      if (!list.length) return '';
+      const ready = list.filter(item => item.ok).length;
+      const key = `${homeId}:${title}`;
+      return `<details class="ro-ids" data-ro-open="${escapeHtml(key)}"${rollover.open.has(key) ? ' open' : ''}><summary>${escapeHtml(title)}: ${ready} of ${list.length} could roll now</summary><ul>${list.map(item => `<li>${escapeHtml(item.id)} - ${item.ok ? 'could roll' : escapeHtml(ROLLOVER_REASON[item.reason] || item.reason)}</li>`).join('')}</ul>${group.truncated ? '<div>The list is cut at 200.</div>' : ''}</details>`;
+    };
+    const rolloverHome = home => {
+      const [watcherText, tone] = ROLLOVER_WATCHER[home.watcher] || ['', ''];
+      const head = `<div class="ro-head"><strong>${escapeHtml(home.label)}</strong><span class="id">${escapeHtml(home.id)}</span>${home.watcher ? `<span class="pill ${tone}">${escapeHtml(watcherText)}</span>` : ''}${home.is_secondmate_home ? '<span class="pill">second-mate home</span>' : ''}</div>`;
+      if (home.status !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${escapeHtml(ROLLOVER_HOME_STATUS[home.status] || home.status)}</div></div>`;
+      if (home.config !== 'ok') return `<div class="ro-home">${head}<div class="tab-meta">${home.config === 'missing' ? 'This home has no config folder, so no switch can exist.' : 'The config folder is a link, so nothing was read.'}</div></div>`;
+      const effective = home.effective;
+      const sentences = effective
+        ? `<ul class="ro-sentences">${[effective.second_mates, effective.crew, effective.primary].map(text => (text ? `<li>${escapeHtml(text)}</li>` : '<li class="none">not read by this home\'s firstmate</li>')).join('')}</ul>`
+        : `<div class="tab-meta">No running watcher reads these files, so they do nothing now.</div>`;
+      const log = Number.isFinite(home.roller_log_age_seconds) ? `<div class="tab-meta">Roller log last changed ${escapeHtml(contextAge(home.roller_log_age_seconds))}. It changes only when a verdict changes.</div>` : '';
+      return `<div class="ro-home">${head}${sentences}${rolloverFilesTable(home)}${rolloverIdList(home.id, 'Second mates', home.ids && home.ids.second_mates)}${rolloverIdList(home.id, 'Crewmates and scouts', home.ids && home.ids.crew)}${log}</div>`;
+    };
+    const rolloverCard = () => {
+      const button = `<button id="rollover-reload" type="button" title="Read the rollover switches again" ${rollover.loading ? 'disabled' : ''}>${rollover.loading ? 'Reading…' : 'Refresh'}</button>`;
+      let body;
+      if (rollover.error) body = `<div class="scope-note error">${escapeHtml(rollover.error)}</div>`;
+      else if (!rollover.data) body = '<div class="skeleton"></div>';
+      else {
+        const { homes, unregistered_homes: others, platform_supported: supported } = rollover.data;
+        const note = `<div class="tab-meta" style="margin:0 0 12px">Read only. Firstmate rolls a session only when a switch file in its own home allows it. This page changes no switch yet.${supported ? '' : ' The watcher check needs macOS, so no watcher counts as running here.'}</div>`;
+        const extra = others > 0 ? `<div class="tab-meta" style="margin-top:12px">${plural(others, 'other firstmate home')} on this computer ${others === 1 ? 'is' : 'are'} not shown here and not covered.</div>` : '';
+        body = `${note}${homes.map(rolloverHome).join('')}${extra}`;
+      }
+      return `<article class="card" id="rollover-card" style="margin-top:14px"><div class="card-head"><h3>Context rollover</h3><span class="pill">read only</span></div><div class="card-body">${body}<div class="btn-row" style="margin-top:12px;display:flex;align-items:center;gap:10px"><span class="updated">${rollover.at ? `read ${escapeHtml(rollover.at)}` : ''}</span>${button}</div></div></article>`;
     };
     const contextAge = seconds => seconds === null || seconds === undefined ? 'no record' : seconds < 90 ? 'just now' : seconds < 5400 ? `${Math.round(seconds / 60)} min ago` : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
     // herdr reports a session waiting for input as idle, or done when its last turn finished unseen. Neither is mid-turn.
@@ -1846,7 +1914,7 @@ created: 2026-09-10
         const actions = rows.length ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript. Sessions with no live pane are not listed; an archived session's last context shows on the Archive group tab. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything; Open only switches your Herdr window to that session's tab.</div></div></article>` : '<div class="empty">No live agent sessions.</div>';
       }
-      section.innerHTML = `${head}${planRail()}${codexRail()}${body}`;
+      section.innerHTML = `${head}${planRail()}${codexRail()}${body}${rolloverCard()}`;
       document.querySelector('#context-reload').addEventListener('click', loadContext);
       document.querySelector('#context-compact').addEventListener('click', () => {
         context.compact = !context.compact;
@@ -1855,6 +1923,8 @@ created: 2026-09-10
       });
       document.querySelector('#plan-reload').addEventListener('click', () => { loadPlan(true); loadCodex(); });
       document.querySelector('#codex-reload').addEventListener('click', loadCodex);
+      document.querySelector('#rollover-reload').addEventListener('click', loadRollover);
+      section.querySelectorAll('[data-ro-open]').forEach(details => details.addEventListener('toggle', () => { if (details.open) rollover.open.add(details.dataset.roOpen); else rollover.open.delete(details.dataset.roOpen); }));
       section.querySelectorAll('.ctx-sort').forEach(button => button.addEventListener('click', () => {
         const column = CONTEXT_COLUMNS.find(item => item.key === button.dataset.sort);
         context.sort = context.sort.key === column.key ? { key: column.key, dir: context.sort.dir === 'asc' ? 'desc' : 'asc' } : { key: column.key, dir: column.first };
@@ -1961,6 +2031,21 @@ created: 2026-09-10
         if (state.view === 'context') renderContext();
       }
     };
+    const loadRollover = async () => {
+      if (rollover.loading) return;
+      rollover.loading = true;
+      if (state.view === 'context') renderContext();
+      try {
+        rollover.data = await api.run('rollover-state');
+        rollover.error = '';
+        rollover.at = planClock(new Date().toISOString());
+      } catch (error) {
+        rollover.data = null; rollover.error = error.message; rollover.at = '';
+      } finally {
+        rollover.loading = false;
+        if (state.view === 'context') renderContext();
+      }
+    };
     // Re-read while the Context tab is open and the browser tab is in front; a hidden tab asks nothing.
     setInterval(() => { if (state.view === 'context' && !document.hidden) { loadPlan(false); loadCodex(); } }, PLAN_REFRESH_MS);
 
@@ -2018,7 +2103,7 @@ created: 2026-09-10
     document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
       state.view = button.dataset.view;
       render();
-      if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); if (!plan.data && !plan.error && !plan.loading) loadPlan(false); if (!codex.data && !codex.error && !codex.loading) loadCodex(); return; }
+      if (state.view === 'context') { if (!context.data && !context.loading) loadContext(); if (!plan.data && !plan.error && !plan.loading) loadPlan(false); if (!codex.data && !codex.error && !codex.loading) loadCodex(); if (!rollover.data && !rollover.error && !rollover.loading) loadRollover(); return; }
       if (state.view === 'group' && !context.data && !context.loading) loadContext();
       if (state.view !== 'restart') {
         syncSnapshotSelect();

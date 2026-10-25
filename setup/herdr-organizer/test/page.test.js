@@ -326,6 +326,50 @@ test('a leader selection in a move is offered only leader-space', () => {
   assert.match(html, /restoreDestinations\(data\.workspaces\.filter\(workspace => !sourceWorkspaces\.has\(workspace\.id\)\), selected\)/, 'the Move panel uses the same rule as the restore panels');
 });
 
+function rolloverCard(rollover) {
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const plural = (count, one) => `${count} ${count === 1 ? one : one + 's'}`;
+  const source = html.slice(html.indexOf('const ROLLOVER_WATCHER'), html.indexOf('const contextAge'));
+  return new Function('escapeHtml', 'plural', 'rollover', 'contextAge', `${source}; return rolloverCard();`)(escapeHtml, plural, { loading: false, data: null, error: '', at: '', open: new Set(), ...rollover }, seconds => `${seconds} s ago`);
+}
+
+test('rollover card: read only, one block per home, honest about a watcher that does not run', () => {
+  const files = ['rollover-live', 'rollover-crew-live', 'rollover-off', 'rollover-primary-live', 'rollover-primary-off'].map(name => ({ name, state: 'absent', capability: 'read' }));
+  const running = { id: 'ha02f1cb9', label: 'fm-homes/pmos', status: 'ok', config: 'ok', watcher: 'running', is_secondmate_home: false, roller_log_age_seconds: 90, files: files.map((file, index) => (index === 0 ? { ...file, state: 'regular', ids_count: 2 } : file)),
+    effective: { second_mates: 'second mates: live for 2 listed; every other one is dry-run', crew: null, primary: 'the primary: dry-run, nothing is sent or typed' },
+    ids: { second_mates: { list: [{ id: 'sm-ok', ok: true }, { id: '<b>x</b>', ok: false, reason: 'harness' }], truncated: false }, crew: { list: [], truncated: false } } };
+  const idle = { id: 'h11111111', label: 'firstmate-8bf1b0/2', status: 'ok', config: 'ok', watcher: 'stale_pid', is_secondmate_home: true, files: files.map(file => ({ name: file.name, state: 'absent' })), effective: null, ids: { second_mates: { list: [] }, crew: { list: [] } } };
+  const out = rolloverCard({ data: { homes: [running, idle, { id: 'h2', label: 'gone', status: 'missing' }, { id: 'h3', label: 'nocfg', status: 'ok', config: 'missing', watcher: 'no_lock' }], unregistered_homes: 8, platform_supported: true }, at: '09:05' });
+  assert.match(out, /read only/);
+  assert.match(out, /This page changes no switch yet/);
+  assert.match(out, /watcher running/);
+  assert.match(out, /watcher stopped/);
+  assert.match(out, /live for 2 listed; every other one is dry-run/);
+  assert.match(out, /not read by this home's firstmate/, 'a kind the home does not read says so');
+  assert.match(out, /No running watcher reads these files, so they do nothing now/);
+  assert.match(out, /This home folder is not there/);
+  assert.match(out, /no config folder/);
+  assert.match(out, /8 other firstmate homes on this computer are not shown here and not covered/);
+  assert.match(out, /&lt;b&gt;x&lt;\/b&gt; - not a Claude session/, 'ids are escaped and carry their reason');
+  assert.match(out, /1 of 2 could roll now/);
+  assert.match(out, /read 09:05/);
+  assert.equal(/data-command|data-action|type="checkbox"/.test(out), false, 'the card has no command, no action and no tick box');
+  assert.equal((out.match(/<button/g) || []).length, 1, 'one Refresh button and nothing else');
+  assert.match(rolloverCard({}), /class="skeleton"/);
+  assert.match(rolloverCard({ error: 'Not found.' }), /Not found\./);
+  assert.match(rolloverCard({ data: { homes: [], unregistered_homes: 0, platform_supported: false } }), /needs macOS/);
+  assert.match(rolloverCard({ data: { homes: [running], unregistered_homes: 0, platform_supported: true }, open: new Set(['ha02f1cb9:Second mates']) }), /data-ro-open="ha02f1cb9:Second mates" open/, 'an opened list stays open across a redraw');
+});
+
+test('rollover card: it asks only for rollover-state, on the Context tab, and writes nothing', () => {
+  assert.equal((html.match(/api\.run\('rollover-state'/g) || []).length, 1);
+  assert.match(html, /\$\{body\}\$\{rolloverCard\(\)\}/, 'the card sits under the sessions table');
+  const loader = html.slice(html.indexOf('const loadRollover'), html.indexOf('// Re-read while the Context tab is open'));
+  assert.equal(/rollover-(arm|stop|undo|primary)/.test(html), false, 'no write action is named in the page');
+  assert.match(loader, /rollover\.data = await api\.run\('rollover-state'\)/);
+  assert.match(html, /if \(!rollover\.data && !rollover\.error && !rollover\.loading\) loadRollover\(\)/);
+});
+
 test('the archive group has its own tab, and the Archives tab no longer holds the group card', () => {
   assert.match(html, /data-view="group"[^>]*>Archive group</);
   const group = html.slice(html.indexOf('<section id="group-section"'), html.indexOf('<section id="archives-section"'));
