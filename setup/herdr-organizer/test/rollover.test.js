@@ -8,8 +8,8 @@ const { execFileSync, spawn } = require('node:child_process');
 const { tempTree, startServer, client } = require('./helpers');
 const { createRollover, RolloverConfigError, psIdentity, defaultLabels } = require('../rollover');
 
-const { NOW, IDENTITY, ROLLER_ALL, makeHome } = require('./rollover-fixtures');
-const options = (extra = {}) => ({ now: () => NOW, identityOf: () => IDENTITY, pidAlive: () => true, platform: 'darwin', ...extra });
+const { NOW, IDENTITY, identityOf, ROLLER_ALL, makeHome } = require('./rollover-fixtures');
+const options = (extra = {}) => ({ now: () => NOW, identityOf, pidAlive: () => true, platform: 'darwin', ...extra });
 const view = (tree, homes, extra = {}) => createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: homes }, homedir: path.join(tree.real, 'nohome'), ...options(extra) }).state();
 
 test('rollover registry: labels, ids and the refusals that stop the server from starting', () => {
@@ -93,6 +93,23 @@ test('rollover watcher: the same checks fm_watcher_healthy makes, each failure w
     const after = view(tree, slash.home).homes[0];
     assert.equal(after.watcher, 'running');
     assert.equal(JSON.stringify(after).includes('code_changed'), false);
+  } finally { tree.cleanup(); }
+});
+
+test('rollover watcher: the process must run the script the lock names (R7-5)', () => {
+  const tree = tempTree();
+  try {
+    // The lock's own identity matches the live process, but that process is some other script: the named code root is not trusted.
+    const other = makeHome(tree, 'other', { identity: 'Mon Oct 26 09:00:00 2026     sleep 1800' });
+    const home = view(tree, other.home).homes[0];
+    assert.equal(home.watcher, 'identity_mismatch');
+    assert.equal(home.effective, null, 'no code root, so nothing is said about what the files do');
+    assert.equal(home.files.every((file) => file.capability === undefined), true);
+    // A command line that names the script by its real path, or by the recorded path, is accepted; a path that merely contains it is not.
+    const good = makeHome(tree, 'good');
+    assert.equal(view(tree, good.home).homes[0].watcher, 'running');
+    const partial = makeHome(tree, 'partial', { identity: `Mon Oct 26 09:00:00 2026     bash ${path.join(tree.real, 'partial/code/bin/fm-watch.sh')}.copy` });
+    assert.equal(view(tree, partial.home).homes[0].watcher, 'identity_mismatch');
   } finally { tree.cleanup(); }
 });
 

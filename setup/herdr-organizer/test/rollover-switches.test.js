@@ -9,7 +9,7 @@ const { createRollover } = require('../rollover');
 const { createSwitches } = require('../rollover-switches');
 const crypto = require('node:crypto');
 const idHash = (text) => crypto.createHash('sha256').update(text).digest('hex');
-const { NOW, IDENTITY, ROLLER_ALL, makeHome } = require('./rollover-fixtures');
+const { NOW, IDENTITY, identityOf, ROLLER_ALL, makeHome } = require('./rollover-fixtures');
 
 // A registry of fixture homes and a write side wired to one private tool root. `server()` makes a second write side on the
 // same tool root, the way a scratch server on another port would be.
@@ -19,8 +19,8 @@ function setup(tree, names, { roller, hooks, lockWaitMs = 300, pidAlive = () => 
   const env = { HERDR_ORGANIZER_ROLLOVER_HOMES: homes.map((home, index) => `${names[index]}=${home.home}`).join(path.delimiter) };
   const ledgerPath = path.join(tree.real, 'tools', 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json');
   const make = (extra = {}) => {
-    const rollover = createRollover({ env, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf: () => IDENTITY, pidAlive: extra.pidAlive || pidAlive, platform: 'darwin', ledgerPath });
-    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => NOW, pidAlive, identityOf: () => IDENTITY, platform: 'darwin', lockWaitMs, hooks, ...extra });
+    const rollover = createRollover({ env, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf, pidAlive: extra.pidAlive || pidAlive, platform: 'darwin', ledgerPath });
+    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => NOW, pidAlive, identityOf, platform: 'darwin', lockWaitMs, hooks, ...extra });
     return { rollover, switches };
   };
   const first = make();
@@ -271,8 +271,8 @@ test('stop covers every registered home, never waits for a missing watcher, and 
     fs.rmdirSync(configOf(env, 2));
     fs.writeFileSync(path.join(tree.real, 'legacy/code/bin/fm-rollover.sh'), 'nothing here\n');
     tree.mkdir('h/.treehouse/firstmate-aaaaaa/1/firstmate');
-    const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: env.homes.map((home, index) => `${['run', 'idle', 'bare', 'legacy'][index]}=${home.home}`).join(path.delimiter) }, homedir: path.join(tree.real, 'h'), now: () => NOW, identityOf: () => IDENTITY, pidAlive: () => true, platform: 'darwin' });
-    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => NOW, pidAlive: () => true, identityOf: () => IDENTITY, platform: 'darwin' });
+    const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: env.homes.map((home, index) => `${['run', 'idle', 'bare', 'legacy'][index]}=${home.home}`).join(path.delimiter) }, homedir: path.join(tree.real, 'h'), now: () => NOW, identityOf, pidAlive: () => true, platform: 'darwin' });
+    const switches = createSwitches({ rollover, toolRoot: path.join(tree.real, 'tools'), now: () => NOW, pidAlive: () => true, identityOf, platform: 'darwin' });
     const result = await switches.stop();
     const by = Object.fromEntries(result.homes.map((item) => [item.label, item.result]));
     assert.deepEqual(by, { run: 'created', idle: 'created_no_watcher', bare: 'no_config', legacy: 'not_read' });
@@ -395,6 +395,25 @@ test('the folder lock: a dead holder, a changed identity and an old holder-less 
     assert.equal(await code(arm(env, 'a', 'second-mates', ['sm-a'])), 'busy_other_process', 'a holder-less folder made a moment ago may still be getting its holder');
     clear();
     assert.deepEqual(fs.readdirSync(env.dir).filter((name) => /^op\.(stale|done|new|steal)/.test(name)), [], 'no half-made lock is left behind');
+  } finally { tree.cleanup(); }
+});
+
+test('the folder lock: a live holder whose identity cannot be read right now stays held (R7-3)', async () => {
+  const tree = tempTree();
+  try {
+    const env = setup(tree, ['a']);
+    const holderSide = env.server();
+    const held = holderSide.switches.internals.tryAcquire();
+    assert.ok(held);
+    // ps failed or timed out in the other process: no identity, the pid is alive, so the lock is not stale and cannot be taken
+    const blind = env.server({ identityOf: () => null });
+    assert.equal(blind.switches.internals.staleNonce(), null);
+    assert.equal(await blind.switches.internals.reclaim(held), false);
+    assert.equal(blind.switches.internals.tryAcquire(), null, 'a second writer cannot get in');
+    // a genuinely different process on that pid is still stale
+    const changed = env.server({ identityOf: () => 'a different process' });
+    assert.equal(changed.switches.internals.staleNonce(), held);
+    holderSide.switches.internals.releaseFolderLock(held);
   } finally { tree.cleanup(); }
 });
 

@@ -135,7 +135,11 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
     const holder = readHolder(lockPath);
     if (!holder) return now().getTime() - info.mtimeMs > HOLDERLESS_STALE_MS ? '' : null;
     if (!isAlive(holder.pid)) return holder.nonce;
-    if (holder.identity_sha256 && platform === 'darwin' && identityHash(holder.pid) !== holder.identity_sha256) return holder.nonce;
+    // A live pid whose identity cannot be read right now (ps failed or timed out) is unknown, not a different process: it stays held.
+    if (holder.identity_sha256 && platform === 'darwin') {
+      const current = identityHash(holder.pid);
+      if (current && current !== holder.identity_sha256) return holder.nonce;
+    }
     return null;
   }
 
@@ -156,6 +160,8 @@ function createSwitches({ rollover, toolRoot, now = () => new Date(), pidAlive, 
       const holder = readHolder(lockPath);
       const current = holder ? holder.nonce : (lstatOrNull(lockPath) ? '' : null);
       if (current === null || current !== judged) return false;
+      // Judge again now that nobody else is reclaiming: the holder may have come back, or its identity read may differ this time.
+      if (staleNonce() !== judged) return false;
       if (!holder) {
         const info = lstatOrNull(lockPath);
         if (!info || now().getTime() - info.mtimeMs <= HOLDERLESS_STALE_MS) return false;

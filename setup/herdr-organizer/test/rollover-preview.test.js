@@ -7,7 +7,7 @@ const path = require('node:path');
 const { tempTree, startServer, client } = require('./helpers');
 const { createRollover } = require('../rollover');
 const { createPreview } = require('../rollover-preview');
-const { NOW, IDENTITY, ROLLER_STUB, makeHome } = require('./rollover-fixtures');
+const { NOW, IDENTITY, identityOf, ROLLER_STUB, makeHome } = require('./rollover-fixtures');
 
 // One fixture home whose watcher code root is a different folder from its data home, as for ~/fm-homes/pmos.
 function setup(tree, { roller = ROLLER_STUB, timeoutMs = 3000, env = {} } = {}) {
@@ -15,7 +15,7 @@ function setup(tree, { roller = ROLLER_STUB, timeoutMs = 3000, env = {} } = {}) 
   const ids = ['crew-ok', 'crew-covered', 'crew-low', 'crew-uuid', 'crew-skip', 'crew-off', 'crew-slow', 'crew-junk'];
   const worktree = tree.mkdir('p/worktree');
   for (const id of ids) { tree.write(`p/home/state/${id}.meta`, `kind=ship\nharness=claude\nworktree=${worktree}\n`); tree.write(`p/home/data/${id}/brief.md`, 'brief\n'); }
-  const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `p=${made.home}` }, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf: () => IDENTITY, pidAlive: () => true, platform: 'darwin' });
+  const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `p=${made.home}` }, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf, pidAlive: () => true, platform: 'darwin' });
   const preview = createPreview({ rollover, env, timeoutMs });
   const id = rollover.state().homes[0].id;
   return { made, rollover, preview, id, calls: path.join(tree.real, 'p', 'calls.log') };
@@ -90,11 +90,24 @@ test('preview: refusals before anything runs', async () => {
     assert.equal(await ask({ home: 'hdeadbeef' }), 'unknown_home');
     assert.equal(fs.existsSync(env.calls), false, 'nothing was run for a refused request');
     // no watcher, and a roller that has no check command
-    const dead = createPreview({ rollover: createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `p=${env.made.home}` }, homedir: '/h', now: () => NOW, identityOf: () => IDENTITY, pidAlive: () => false, platform: 'darwin' }) });
+    const dead = createPreview({ rollover: createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `p=${env.made.home}` }, homedir: '/h', now: () => NOW, identityOf, pidAlive: () => false, platform: 'darwin' }) });
     assert.equal(await code(dead.preview({ home: env.id, kind: 'crew', ids: ['crew-ok'] })), 'no_watcher');
     fs.writeFileSync(path.join(tree.real, 'p/code/bin/fm-rollover.sh'), ': rollover-live rollover-crew-live rollover-off rollover-primary-live rollover-primary-off\n');
     assert.equal(await ask({}), 'unsupported');
     assert.equal(fs.existsSync(env.calls), false);
+  } finally { tree.cleanup(); }
+});
+
+test('preview: a lock whose process runs another script gets nothing run (R7-5)', async () => {
+  const tree = tempTree();
+  try {
+    const made = makeHome(tree, 'q', { roller: ROLLER_STUB, identity: 'Mon Oct 26 09:00:00 2026     sleep 1800' });
+    const worktree = tree.mkdir('q/worktree');
+    tree.write('q/home/state/crew-ok.meta', `kind=ship\nharness=claude\nworktree=${worktree}\n`);
+    const rollover = createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `q=${made.home}` }, homedir: path.join(tree.real, 'nohome'), now: () => NOW, identityOf, pidAlive: () => true, platform: 'darwin' });
+    const preview = createPreview({ rollover });
+    assert.equal(await code(preview.preview({ home: rollover.state().homes[0].id, kind: 'crew', ids: ['crew-ok'] })), 'no_watcher');
+    assert.equal(fs.existsSync(path.join(tree.real, 'q', 'calls.log')), false, 'the roller named by the lock was not run');
   } finally { tree.cleanup(); }
 });
 

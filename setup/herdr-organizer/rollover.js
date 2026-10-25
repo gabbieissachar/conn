@@ -178,7 +178,11 @@ function createRollover({ env = process.env, homedir = os.homedir(), now = () =>
     if (realpathOrNull(lockHome) !== home.real) return { state: 'other_home', code_root: codeRoot };
     if (!codeRoot) return { state: 'unsafe_lock' };
     if (platform !== 'darwin') return { state: 'identity_unverifiable', code_root: codeRoot };
-    if (identityOf(pid) !== lockIdentity) return { state: 'identity_mismatch', code_root: codeRoot };
+    // The process must be the lock's own record of itself AND must be running the script the lock names: firstmate's identity is
+    // "<start time>     bash <watcher-path>", so a lock that names a code root its process does not run is not trusted.
+    const live = identityOf(pid);
+    const named = typeof live === 'string' && live.split(/\s+/).some((token) => token === watcherPath || token === path.join(codeRoot, 'bin', 'fm-watch.sh'));
+    if (live !== lockIdentity || !named) return { state: 'identity_mismatch', code_root: codeRoot };
     const beat = lstatOrNull(path.join(state, '.last-watcher-beat'));
     if (!beat || !beat.isFile() || ageSeconds(beat) >= BEAT_GRACE_SECONDS) return { state: 'beat_old', code_root: codeRoot };
     return { state: 'running', code_root: codeRoot };
