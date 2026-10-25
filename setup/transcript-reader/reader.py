@@ -194,18 +194,18 @@ def drop_closed(ids: list[str]) -> list[str]:
 def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
     kept = drop_closed(ids)
     if kept != ids:
+        if ids and not kept:
+            print("Every listed session's pane has closed")
         ids = kept
         write_list(ids)
-        if not ids:
-            print("Every listed session's pane has closed; the page keeps its last build")
-            return 1
+    # An empty list is a page with no conversation on it, not a failed build: the page then
+    # shows the one on screen as a closed pane, and the picker offers it under "Closed panes".
     if not ids:
-        print("No sessions listed yet. Add one: reader.py add <session id or Herdr pane label>")
-        return 1
+        print("No sessions listed. Add one: reader.py add <session id or Herdr pane label>")
     present = [i for i in ids if builder.find_session_file(i)]
     for missing in sorted(set(ids) - set(present)):
         print(f"Skipping {missing}: its session log is gone")
-    if not present:
+    if ids and not present:
         return 1
     # A listed session that was cleared reads on in the pane's newer session, which the
     # page shows as the same conversation; list that one too so its pane can be answered.
@@ -215,7 +215,7 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
         ids += added
         present += added
         write_list(ids)
-    argv = ["--out", str(PAGE)] + [arg for sid in present for arg in ("--session", sid)]
+    argv = ["--out", str(PAGE), "--listed"] + [arg for sid in present for arg in ("--session", sid)]
     # The answer-sheet prototype reads the same list: replies that ask for keyed answers.
     questions = [arg for sid in present for arg in ("--session", sid)]
     sys.stdout.flush()  # keep this script's lines ahead of the builders' in a pipe
@@ -328,9 +328,6 @@ def close(ids: list[str], names: list[str]) -> int:
     ids = [i for i in ids if i not in pane]
     write_list(ids)
     forget_dropped(pane)
-    if not ids:
-        print("The reading list is empty now; the page keeps its last build")
-        return 0
     return rebuild(ids, serve_page=False)
 
 

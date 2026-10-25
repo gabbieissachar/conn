@@ -692,8 +692,9 @@ def build(args) -> dict:
     out_dir = Path(args.out).expanduser().parent
     cache = out_dir / "parsed"
     chosen = []
-    if args.session:
-        for name in args.session:
+    listed = bool(args.session or args.listed)
+    if listed:
+        for name in args.session or []:
             path = find_session_file(name)
             if not path:
                 raise SystemExit(f"session not found: {name}")
@@ -751,13 +752,13 @@ def build(args) -> dict:
     for session in sessions:
         session["pane"] = labels.get(session["id"])
         session["reopened"] = bool(reopened & set(session["ids"]))
-    closed = closed_panes(out_dir / "pane-labels.json", live, {sid for s in sessions for sid in s["ids"]}) if args.session else []
-    if args.session:
+    closed = closed_panes(out_dir / "pane-labels.json", live, {sid for s in sessions for sid in s["ids"]}) if listed else []
+    if listed:
         # Chosen sessions read newest activity first; the page opens on the first one.
         sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
     return {"generated": started, "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
-            "summaries": summaries, "chosen": bool(args.session), "documents": documents, "closed": closed}
+            "summaries": summaries, "chosen": listed, "documents": documents, "closed": closed}
 
 
 CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
@@ -1583,6 +1584,7 @@ def main() -> int:
     parser.add_argument("--main-home", default=str(MAIN_HOME))
     parser.add_argument("--home", action="append", help="secondmate home to include (default: the main home's registry)")
     parser.add_argument("--session", action="append", help="session id or path to show (repeatable); only these are read")
+    parser.add_argument("--listed", action="store_true", help="show exactly the --session ones, even none (the reader's list)")
     parser.add_argument("--since-hours", type=float, help="fleet window (default 72, or from the earliest --session)")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--stats", action="store_true", help="print counts only; write no page")

@@ -81,7 +81,7 @@ function fakeHerdr() {
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
-    if (file === 'python3') return ok('');
+    if (file === 'python3') return herdr.readerResult || ok('');  // reader.py; a test may make it fail
     return { code: 1, stdout: '', stderr: 'unexpected command', timedOut: false, truncated: false };
   };
   herdr.prompts = () => herdr.calls.filter((call) => call.args[2] === 'agent' && call.args[3] === 'prompt');
@@ -413,6 +413,31 @@ test('state: a dropped session that runs in a pane again starts one rebuild, eve
     await t.state();
     await t.settle();
     assert.equal(t.herdr.readerRuns().length, 1, 'once it is listed again, nothing more to rebuild');
+  } finally { await t.close(); }
+});
+
+test('state: a failed rebuild shows until a page built after it, by hand say, ends it and its hold', async () => {
+  const t = await start();
+  try {
+    fs.writeFileSync(path.join(t.tree.outDir, 'prototype.stamp'), String(Date.now() / 1000 - 600));
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'Traceback\nValueError: broken', timedOut: false, truncated: false };
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.equal((await t.state()).json.build.error, 'ValueError: broken');
+    t.herdr.readerResult = null;
+    t.tick(5000);
+    await t.settle();
+    assert.equal((await t.state()).json.build.error, 'ValueError: broken', 'held: no retry within 30 s');
+    assert.equal(t.herdr.readerRuns().length, 1);
+    fs.writeFileSync(path.join(t.tree.outDir, 'prototype.stamp'), String((Date.now() + 10000) / 1000));  // reader.py add, run by hand
+    assert.equal((await t.state()).json.build.error, null);
+    fs.utimesSync(t.tree.logOf(A), new Date(Date.now() + 20000), new Date(Date.now() + 20000));
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.equal(t.herdr.readerRuns().length, 2, 'and the hold went with it');
   } finally { await t.close(); }
 });
 

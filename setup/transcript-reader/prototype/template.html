@@ -593,14 +593,20 @@
     const closed = (data.closed || []).find(c => c.id === sid), session = data.sessions.find(s => s.id === sid);
     const name = closed ? closed.label : session ? sessionName(session) : sid.slice(0, 8);
     link.listing = { text: command === "reopen" ? `Opening ${name}…` : `Closing ${name}…` }; renderLive();
+    const others = handClosed.filter(id => id !== sid);
+    handClosed.splice(0, handClosed.length, ...others, ...(command === "close" ? [sid] : []));
+    keep("tr-closed", handClosed);
+    link.closing = command === "close" ? sid : null;  // the poll may swap in the rebuilt page first
     try {
       await live.changeList(command, sid);
       link.listing = null;
       await refreshData(true);
+      link.closing = null;
       const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
       if (command === "reopen" && index >= 0 && !stay) { state.session = index; state.view = "reader"; setAddress(); render(); showLatest(); }
+      else if (command === "close") { setAddress(); render(); showLatest(); }  // on to the next conversation, at its latest turn
       else { setAddress(); render(); }
-    } catch (e) { link.listing = { text: `Could not ${command === "reopen" ? "open" : "close"} ${name}: ${e.message}` }; renderLive(); }
+    } catch (e) { link.closing = null; link.listing = { text: `Could not ${command === "reopen" ? "open" : "close"} ${name}: ${e.message}` }; renderLive(); }
   }
   function renderReader() {
     if (link.opening) {  // a reload is listing the closed pane's conversation it was on again (see the load code)
@@ -616,6 +622,17 @@
     const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
     fillSessions(select);
     select.addEventListener("change", () => pickSession(select.value));
+    if (!session) {  // nothing on the reading list: every pane closed, or the last one was closed by hand
+      const none = $("option", null, "No conversation on the reader"); none.value = ""; none.disabled = none.selected = true;
+      select.prepend(none);
+      row.append(select);
+      const note = $("div", "follow-note"); note.id = "follow-note";
+      const offered = select.options.length > 1;
+      controls.append(row, $("div", "summary", offered ? "Open one again under Closed panes, or add one with reader.py add." : "Add one with reader.py add."), note);
+      renderLive();
+      document.getElementById("main").replaceChildren($("div", "empty", "No conversation to show."));
+      return;
+    }
     const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
@@ -817,7 +834,7 @@
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -871,6 +888,8 @@
   const drafts = (() => { try { return JSON.parse(sessionStorage.getItem("tr-drafts") || "{}") || {}; } catch (e) { return {}; } })();
   const draftOf = sid => typeof drafts[sid] === "string" ? { text: drafts[sid], sid } : drafts[sid] || null;
   const keep = (key, value) => { try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* kept until the page reloads */ } };
+  // Sessions this tab closed by hand, which a reload never lists again on its own (see the load code).
+  const handClosed = (() => { try { return JSON.parse(sessionStorage.getItem("tr-closed") || "[]") || []; } catch (e) { return []; } })();
   function saveDraft() {
     const session = dockSession(); if (!session) return;
     const text = dock("text").value, target = link.target && link.target.sid === session.id ? link.target : null;
@@ -1213,7 +1232,7 @@
   // The address keeps the session and, in the document view, the document, so a reload reopens both.
   function setAddress() {
     const session = data.sessions[state.session];
-    if (!session) return;
+    if (!session) { history.replaceState(null, "", location.pathname + location.search); return; }
     history.replaceState(null, "", "#s=" + session.id.slice(0, 8) + (state.view === "doc" && state.doc ? "&d=" + state.doc : ""));
   }
   // The documents the session's messages and replies name, each with the last turn that named it.
@@ -1391,7 +1410,8 @@
     const builtAt = data.generated;
     data = payload;
     let index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
-    if (index < 0 && reading) {
+    // A session closed by hand leaves the page instead.
+    if (index < 0 && reading && !(link.closing && (reading.ids || [reading.id]).includes(link.closing))) {
       // The conversation on screen is no longer on the reading list (its Herdr pane closed).
       // It stays on screen, as it was, with a notice and Send off, rather than moving the page to
       // another conversation and the bar to another pane; it leaves when another one is picked.
@@ -1520,8 +1540,9 @@
   // code, a restarted server) or its address would land on another one, with the bar aimed at that
   // pane. A closed pane's conversation is opened again instead, as "Keep it on the reader" does.
   const lost = wanted && fromHash < 0 ? wanted : !wanted && saved && saved.session && fromSaved < 0 ? saved.session : null;
-  link.opening = lost && live.served ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
-  if (lost && !link.opening) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
+  const closedHere = lost && handClosed.some(id => id.startsWith(lost));
+  link.opening = lost && live.served && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
+  if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
   state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : data.chosen ? 0 : biggest;
   if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
   // The session the page opened on, by address or by this tab, wins over the first Herdr focus.

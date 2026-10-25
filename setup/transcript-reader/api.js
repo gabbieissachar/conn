@@ -371,6 +371,10 @@ function create({
     const sessions = await scan();
     const focused = trackFocus(sessions);
     notePaneChanges(ids, sessions);
+    // A page built after the last failed rebuild (by `reader.py add`, say) ends that failure:
+    // its banner and its hold on rebuilds.
+    const built = stamp('prototype.stamp');
+    if (build.failedAt && built !== null && built * 1000 > build.failedAt) { build.error = null; build.failedAt = 0; }
     maybeRebuild(ids, focused, follow);
     const panes = {};
     for (const session of sessions) {

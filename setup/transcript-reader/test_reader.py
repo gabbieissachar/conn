@@ -357,7 +357,7 @@ class ClosedPanesTest(unittest.TestCase):
             self.assertEqual(reader.main(["close", B]), 0, "closing the newest session closes the conversation")
         self.assertEqual(reader.read_list(), [])
         self.assertEqual(builder.read_ids(reader.REOPENED), [])
-        self.assertEqual(rebuilds, [([A], False)])
+        self.assertEqual(rebuilds, [([A], False), ([], False)], "closing the last one builds a page with none")
         self.assertEqual(reader.drop_closed([A]), [], "closed again, it is dropped like any closed pane")
 
     def test_reopen_and_close_take_one_full_id(self):
@@ -387,14 +387,16 @@ class ClosedPanesTest(unittest.TestCase):
             self.chains[B] = self.chains[C] = [log(B), log(C)]
             self.assertEqual([item["id"] for item in builder.closed_panes(reader.PANE_CACHE, {A: PANES[A]}, set())], [C])
 
-    def test_when_every_pane_has_closed_the_page_keeps_its_last_build(self):
+    def test_when_every_pane_has_closed_the_page_is_built_with_none_and_that_is_no_failure(self):
+        # The page then keeps the conversation on screen as a closed pane, and offers it under Closed panes.
         self.seen(A)
         self.live = {C: PANES[C]}
         reader.write_list([A])
-        with mock.patch.object(reader.subprocess, "run") as run:
-            self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 1)
-        self.assertEqual(reader.read_list(), [])
-        run.assert_not_called()
+        with mock.patch.object(reader.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertEqual(reader.rebuild(reader.read_list(), serve_page=False), 0)
+            self.assertEqual(reader.read_list(), [])
+            self.assertEqual(run.call_args_list[0].args[0][-3:], ["--out", str(reader.PAGE), "--listed"])
+            self.assertEqual(reader.rebuild([], serve_page=False), 0, "nor is a list that was empty already")
 
 
 class DocumentsTest(unittest.TestCase):
