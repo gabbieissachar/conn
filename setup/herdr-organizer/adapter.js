@@ -13,6 +13,7 @@ const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const parse = require('./parse');
+const { readClearMarks } = require('./handoff-runs');
 const { scrub, findLeaks } = require('./text');
 
 class AdapterError extends Error {
@@ -38,6 +39,8 @@ function timeoutError(what, ms) {
   return new AdapterError(what + ' did not finish within ' + minutes(ms) + ' minutes, so it was stopped. The machine is probably busy. Try again when it is quieter.', 504, 'timeout');
 }
 
+// How long a typed /clear counts as "Herdr may still report the old session" (R5-7).
+const CLEAR_MARK_MS = 12 * 60 * 60 * 1000;
 // A stopped session on this machine is literally named "-h", so a name must
 // never be able to start with a dash and be read as an option.
 const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -838,6 +841,49 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return { text: HANDOFF_REQUEST, other_text: HANDOFF_REQUEST_OTHER, ready, skipped, command: lines.length ? lines.join('\n') : null };
   }
 
+  // Copy-only "ask for a handoff, clear and resume" command (`workspace-organizer.py handoff-restart`) for the ordinary
+  // Claude sessions the user ticked. Nothing is sent here and the page never runs it. A reference is
+  // `<herdr session>|<pane id>|<first 8 characters of its session id>`. It is kept only when a running session has a live
+  // Claude pane that still runs that session and the gauge calls the row an ordinary session (every firstmate, second
+  // mate, crewmate and primary row is another kind). The command's own step 0 decides again when it runs, so this is a
+  // cheap pre-filter. One command per Herdr session, built from validated values with the fixed confirm string and no
+  // home paths or other flags.
+  const RESTART_REF_RE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\|(w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10})\|([A-Za-z0-9-]{8})$/;
+
+  async function handoffRestartCommand(panes = []) {
+    if (!Array.isArray(panes) || panes.length === 0 || panes.some((ref) => typeof ref !== 'string' || !RESTART_REF_RE.test(ref))) {
+      throw new AdapterError('Pick one or more sessions.');
+    }
+    const refs = [...new Set(panes)].map((ref) => RESTART_REF_RE.exec(ref));
+    const [{ rows }, sessions] = await Promise.all([contextGauge(), listSessions()]);
+    const running = new Set(sessions.filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name)).map((item) => item.name));
+    const kinds = new Map(rows.filter((row) => row.herdr_session && row.pane_id).map((row) => [`${row.herdr_session}|${row.pane_id}|${row.id}`, row.kind]));
+    const live = new Map();
+    const bySession = new Map();
+    const ready = [];
+    const skipped = [];
+    for (const [, session, paneId, prefix] of refs) {
+      if (!running.has(session)) { skipped.push({ label: paneId, state: 'session not running' }); continue; }
+      if (!live.has(session)) {
+        const result = await herdrCall(session, ['pane', 'list'], { timeoutMs: 20000 }).catch(() => null);
+        live.set(session, result && result.code === 0 ? parse.parseAgentPanes(result.stdout) : null);
+      }
+      const pane = (live.get(session) || []).find((item) => item.pane_id === paneId && item.agent === 'claude');
+      if (!pane) { skipped.push({ label: paneId, state: 'no live Claude pane' }); continue; }
+      if (!pane.agent_session_id.startsWith(prefix)) { skipped.push({ label: paneId, state: 'runs another session now' }); continue; }
+      const label = pane.label || paneId;
+      if (kinds.get(`${session}|${paneId}|${prefix}`) !== 'session') { skipped.push({ label, state: 'a firstmate session, or one the gauge cannot name' }); continue; }
+      ready.push({ label: pane.label || '', herdr_session: session, pane_id: paneId, id: prefix });
+      if (!bySession.has(session)) bySession.set(session, []);
+      bySession.get(session).push({ paneId, prefix });
+    }
+    const lines = [...bySession].map(([session, items]) => {
+      const ids = [...new Set(items.map((item) => item.prefix))].sort();
+      return `herdr-organizer --session ${session} handoff-restart ${items.map((item) => `--pane ${item.paneId}:${item.prefix}`).join(' ')} --execute --confirm handoff-restart:${session}:${ids.join(',')}`;
+    });
+    return { ready, skipped, command: lines.length ? lines.join('\n') : null };
+  }
+
   // Herdr names the session a pane really runs; the gauge names the newest session it has a record for, and a
   // session restarted without the gauge's statusline wiring leaves that record pointing at the one it replaced. So
   // a live Claude pane the gauge has no usable row for is read from its own transcript, the same newest main-thread
@@ -1010,6 +1056,14 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const shown = [...rows.filter((row) => !replaced.has(row)), ...fromPanes.map(({ cwds: _cwds, ...row }) => row)]
         .map((row) => (row.percent === null && row.tokens !== null ? { ...row, percent: assumedPercent(row.tokens), estimated: true } : row));
       shown.sort((a, b) => (b.percent === null ? -1 : b.percent) - (a.percent === null ? -1 : a.percent));
+      // A pane that had /clear typed into it by `handoff-restart` and that Herdr still reports under the session id it had
+      // before. The record's own contents stay here: the row gets the time, the run id the page keys a dismissal by, and
+      // whether the clear is under 12 hours old (R5-7).
+      const marks = await readClearMarks(toolRoot).catch(() => new Map());
+      for (const row of shown) {
+        const mark = row.herdr_session && row.pane_id ? marks.get(`${row.herdr_session}|${row.pane_id}|${row.id}`) : null;
+        if (mark) Object.assign(row, { cleared_at: new Date(mark.at).toISOString(), cleared_run: mark.run, still_old_id: now().getTime() - mark.at < CLEAR_MARK_MS });
+      }
       return { thresholds: { warn: CONTEXT_WARN_PERCENT, high: CONTEXT_HIGH_PERCENT }, rows: shown };
     });
   }
@@ -1180,6 +1234,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     codexCredits,
     leaderSpace,
     handoffCommand,
+    handoffRestartCommand,
     focusTab,
     // exposed for later phases and tests
     _internal: { runner, runEnv, herdrCall, registryScript, organizerScript, pythonBin, runPreflight, validatedAcks, preflightArgs, allowedAcknowledgements, normalizeAcks, preflightView },

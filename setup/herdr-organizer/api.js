@@ -128,6 +128,8 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     'rollover-undo': { tier: 1, params: { home: { type: 'string' }, file: { type: 'string' }, confirm: { type: 'string', optional: true } }, run: (p, ctx) => rolloverSwitches.undo(p, ctx) },
     'leader-space': { tier: 0, params: {}, run: () => tools.leaderSpace() },
     'handoff-command': { tier: 0, params: { labels: { type: 'array', optional: true }, panes: { type: 'array', optional: true } }, run: (p) => tools.handoffCommand(p.labels, p.panes) },
+    // Copy-only: the `handoff-restart` command for ordinary Claude sessions, built from references the server re-checks against the live panes and the gauge. Nothing is sent to a pane.
+    'handoff-restart-command': { tier: 0, params: { panes: { type: 'array' } }, run: (p) => tools.handoffRestartCommand(p.panes) },
     // View only (no confirm, no input into any pane): shows a session's tab in the attached Herdr window. It takes
     // the tier 1 route's cross-site protections but not its one-at-a-time lock, so opening a tab never waits on a seal.
     'focus-tab': { tier: 1, lock: false, params: { session: { type: 'string' }, pane_id: { type: 'string' }, id: { type: 'string' } }, run: (p) => tools.focusTab(p.session, p.pane_id, p.id) },

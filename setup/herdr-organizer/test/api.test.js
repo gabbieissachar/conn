@@ -1048,6 +1048,202 @@ test('handoff-command: any live Claude pane can be ticked by reference, with tex
   } finally { await server.close(); }
 });
 
+// A fixture for `handoff-restart-command`: ordinary Claude panes read from a transcript (kind "session"), one fleet pane the gauge names,
+// one Claude pane with no transcript and no gauge row, and a codex pane. Every Herdr session gets its own pane list.
+function restartFixture() {
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('herdr-organizer-restart-');
+  const id = (n) => `aaaaaaa${n}-bbbb-4ccc-8ddd-00000000000${n}`;
+  const usage = JSON.stringify({ type: 'assistant', timestamp: new Date(Date.now() - 60000).toISOString(), message: { model: 'claude-x', usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 99000 } } });
+  for (const n of [2, 4, 6]) tree.write(`claude/projects/-proj/${id(n)}.jsonl`, `${usage}\n`);
+  const pane = (paneId, n, extra = {}) => ({ pane_id: paneId, workspace_id: paneId.split(':')[0], tab_id: `${paneId.split(':')[0]}:t1`, agent: 'claude', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', value: id(n) }, ...extra });
+  const lists = {
+    'project-a': [pane('wX:p2', 2), pane('wX:p4', 4), pane('wS:p1', 5, { label: 'ship-one' }), pane('wX:p7', 7), pane('wX:p3', 3, { agent: 'codex', agent_session: { agent: 'codex', kind: 'id', value: id(3) } })],
+    'project-b': [pane('wY:p1', 6)],
+  };
+  const gauge = JSON.stringify({ session_id: id(5), map: 'ship-one', kind: 'ship', current: true, source: 'statusline', window_inferred: false, input_tokens: 90000, percent: 9, busy: 'idle claude-hook', age_s: 30 }) + '\n';
+  const fake = fakeRunner({
+    sessions: [{ default: false, name: 'project-a', running: true }, { default: false, name: 'project-b', running: true }, { default: false, name: 'stopped-one', running: false }],
+    handle: (file, args) => {
+      if (file === 'bash') return { code: 0, stdout: gauge, stderr: '', timedOut: false, truncated: false };
+      if (file === 'herdr' && args[0] === '--session' && args[2] === 'pane' && args[3] === 'list') {
+        return { code: 0, stdout: JSON.stringify({ result: { panes: lists[args[1]] || [] } }), stderr: '', timedOut: false, truncated: false };
+      }
+      return undefined;
+    },
+  });
+  return { tree, fake, root: tree.abs('claude') };
+}
+
+test('handoff-restart-command: builds one copy-only command per Herdr session for ordinary Claude panes, with the exact confirm string', async () => {
+  const { tree, fake, root } = restartFixture();
+  const server = await startServer({ runner: fake.runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-restart-command', { panes: ['project-a|wX:p4|aaaaaaa4', 'project-b|wY:p1|aaaaaaa6', 'project-a|wX:p2|aaaaaaa2', 'project-a|wX:p2|aaaaaaa2'] });
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.ready, [
+      { label: '', herdr_session: 'project-a', pane_id: 'wX:p4', id: 'aaaaaaa4' },
+      { label: '', herdr_session: 'project-b', pane_id: 'wY:p1', id: 'aaaaaaa6' },
+      { label: '', herdr_session: 'project-a', pane_id: 'wX:p2', id: 'aaaaaaa2' },
+    ], 'a repeated reference is made once');
+    assert.deepEqual(data.skipped, []);
+    assert.deepEqual(data.command.split('\n'), [
+      'herdr-organizer --session project-a handoff-restart --pane wX:p4:aaaaaaa4 --pane wX:p2:aaaaaaa2 --execute --confirm handoff-restart:project-a:aaaaaaa2,aaaaaaa4',
+      'herdr-organizer --session project-b handoff-restart --pane wY:p1:aaaaaaa6 --execute --confirm handoff-restart:project-b:aaaaaaa6',
+    ], 'the confirm names the distinct ids in ascii order whatever the order of the panes, and the command carries no path and no other flag');
+    assert.equal(response.raw.includes('-bbbb-4ccc'), false, 'never more than 8 characters of a session id');
+    assert.equal(response.raw.includes(root), false, 'no private path leaves the server');
+    assert.equal(server.api.ACTIONS['handoff-restart-command'].tier, 0);
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'prompt', 'rename', 'close'].includes(arg))), false, 'nothing is sent from the server');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('handoff-restart-command: a fleet pane, a codex pane, a reused pane id, a stopped session and a pane the gauge cannot name are skipped', async () => {
+  const { tree, fake, root } = restartFixture();
+  const server = await startServer({ runner: fake.runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-restart-command', { panes: ['project-a|wS:p1|aaaaaaa5', 'project-a|wX:p3|aaaaaaa3', 'project-a|wX:p2|aaaaaaa9', 'project-a|wZ:p9|aaaaaaa2', 'stopped-one|wX:p2|aaaaaaa2', 'project-a|wX:p7|aaaaaaa7', 'project-a|wX:p2|aaaaaaa2'] });
+    assert.equal(response.status, 200);
+    const data = response.json.data;
+    assert.deepEqual(data.ready.map((item) => item.pane_id), ['wX:p2']);
+    assert.deepEqual(data.skipped.map((item) => [item.label, item.state]), [
+      ['ship-one', 'a firstmate session, or one the gauge cannot name'],
+      ['wX:p3', 'no live Claude pane'],
+      ['wX:p2', 'runs another session now'],
+      ['wZ:p9', 'no live Claude pane'],
+      ['wX:p2', 'session not running'],
+      ['wX:p7', 'a firstmate session, or one the gauge cannot name'],
+    ]);
+    assert.equal(data.command, 'herdr-organizer --session project-a handoff-restart --pane wX:p2:aaaaaaa2 --execute --confirm handoff-restart:project-a:aaaaaaa2');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('handoff-restart-command: a fleet row is never offered, and nothing is built when nothing is left', async () => {
+  const { tree, fake, root } = restartFixture();
+  const server = await startServer({ runner: fake.runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-restart-command', { panes: ['project-a|wS:p1|aaaaaaa5'] });
+    assert.equal(response.status, 200);
+    assert.equal(response.json.data.command, null);
+    assert.deepEqual(response.json.data.ready, []);
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('handoff-restart-command: only well-formed references are taken, and the browser sends no text, flag or path', async () => {
+  const { tree, fake, root } = restartFixture();
+  const server = await startServer({ runner: fake.runner, env: { CLAUDE_CONFIG_DIR: root } });
+  try {
+    const { post } = await client(server);
+    for (const panes of [[], 'project-a|wX:p2|aaaaaaa2', ['bad ref'], ["a'b|wX:p2|aaaaaaa2"], ['project-a|wX:p2'], ['project-a|wX:p2|short'], ['project-a|wX:p2|aaaaaaa_'], ['project-a|wX:p2|aaaaaaa2; id'], [1]]) {
+      assert.equal((await post('handoff-restart-command', { panes })).status, 400, JSON.stringify(panes));
+    }
+    assert.equal((await post('handoff-restart-command', {})).status, 400);
+    assert.equal((await post('handoff-restart-command', { panes: ['project-a|wX:p2|aaaaaaa2'], text: 'x' })).status, 400);
+    assert.equal((await post('handoff-restart-command', { panes: ['project-a|wX:p2|aaaaaaa2'], confirm: 'x', flags: ['--skip-fleet-gauge'] })).status, 400);
+    assert.equal(fake.calls.length, 0, 'a refused request spawns nothing');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('handoff-restart-command: an unreadable gauge is an error, so fleet sessions are never guessed', async () => {
+  const failing = fakeRunner({ handle: (file) => (file === 'bash' ? { code: 1, stdout: '', stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: failing.runner });
+  try {
+    const { post } = await client(server);
+    const response = await post('handoff-restart-command', { panes: ['project-a|wX:p2|aaaaaaa2'] });
+    assert.equal(response.status, 502);
+    assert.equal(response.raw.includes('/secret/path'), false);
+  } finally { await server.close(); }
+});
+
+// R5-7: a pane that had /clear typed by `handoff-restart` and that Herdr still reports under its old session id.
+function clearMarkFixture(records) {
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('herdr-organizer-marks-');
+  const id = (n) => `aaaaaaa${n}-bbbb-4ccc-8ddd-00000000000${n}`;
+  const usage = JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { model: 'claude-x', usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 99000 } } });
+  for (const n of [1, 2, 3, 4]) tree.write(`claude/projects/-proj/${id(n)}.jsonl`, `${usage}\n`);
+  const pane = (paneId, n) => ({ pane_id: paneId, workspace_id: 'wX', tab_id: 'wX:t1', agent: 'claude', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', value: id(n) } });
+  const fake = fakeRunner({
+    sessions: [{ default: false, name: 'project-a', running: true }],
+    panes: [pane('wX:p1', 1), pane('wX:p2', 2), pane('wX:p3', 3), pane('wX:p4', 4)],
+    handle: (file) => (file === 'bash' ? { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false } : undefined),
+  });
+  for (const [name, record] of Object.entries(records)) tree.write(`tools/state/workspace-organizer/handoff-runs/${name}`, typeof record === 'string' ? record : JSON.stringify(record));
+  return { tree, fake, root: tree.abs('claude'), toolRoot: tree.abs('tools') };
+}
+const clearRecord = (run, panes, extra = {}) => ({ version: 1, run_id: run, session: 'project-a', started_at: '2026-10-26T01:00:00+00:00', confirm: 'handoff-restart:project-a:x', panes, ...extra });
+const clearedPane = (paneId, before, at, extra = {}) => ({ pane_id: paneId, id8_before: before, id8_after: before, label: 'x', step: 'clear', state: 'typed_unconfirmed', reason: 'typed_unconfirmed', updated_at: at, document: '/Users/someone/private/handoff.md', clear_typed_at: at, ...extra });
+
+test('context-gauge: a pane with a typed /clear that Herdr still reports under the old id carries the time, the run and an under-12-hours flag, and nothing else from the record', async () => {
+  const records = {
+    'handoff-20261026-010000-aaaaaa.json': clearRecord('handoff-20261026-010000-aaaaaa', {
+      'wX:p1': clearedPane('wX:p1', 'aaaaaaa1', '2026-10-26T01:25:13+00:00'),
+      'wX:p2': clearedPane('wX:p2', 'aaaaaaa2', '2026-10-25T13:00:00+00:00'),
+      'wX:p3': clearedPane('wX:p3', 'ffffffff', '2026-10-26T01:25:13+00:00'),
+      'wX:p4': { pane_id: 'wX:p4', id8_before: 'aaaaaaa4', state: 'refused', reason: 'working', updated_at: '2026-10-26T01:25:13+00:00' },
+    }),
+  };
+  const { tree, fake, root, toolRoot } = clearMarkFixture(records);
+  const server = await startServer({ runner: fake.runner, toolRoot, env: { CLAUDE_CONFIG_DIR: root }, now: () => new Date('2026-10-26T02:30:00Z') });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.pane_id, row]));
+    assert.deepEqual([rows['wX:p1'].cleared_at, rows['wX:p1'].cleared_run, rows['wX:p1'].still_old_id], ['2026-10-26T01:25:13.000Z', 'handoff-20261026-010000-aaaaaa', true], 'cleared an hour ago and the id is unchanged');
+    assert.deepEqual([rows['wX:p2'].cleared_at, rows['wX:p2'].still_old_id], ['2026-10-25T13:00:00.000Z', false], 'older than 12 hours: the time stays for the stale note, the flag goes');
+    assert.equal(rows['wX:p3'].cleared_at, undefined, 'the pane reports another id than the record names, so Herdr did update it');
+    assert.equal(rows['wX:p4'].cleared_at, undefined, 'a pane the run only refused had no /clear typed');
+    assert.equal(response.raw.includes('/Users/someone'), false, 'the document path never leaves the server');
+    assert.equal(response.raw.includes('document'), false);
+    assert.equal(response.raw.includes('handoff-restart:'), false, 'neither does the confirm string');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('context-gauge: the newest typed /clear for a pane wins, and a record that is not trustworthy is ignored', async () => {
+  const good = (run, at) => clearRecord(run, { 'wX:p1': clearedPane('wX:p1', 'aaaaaaa1', at) });
+  const records = {
+    'handoff-20261026-000000-aaaaaa.json': good('handoff-20261026-000000-aaaaaa', '2026-10-26T00:10:00+00:00'),
+    'handoff-20261026-020000-bbbbbb.json': good('handoff-20261026-020000-bbbbbb', '2026-10-26T02:10:00+00:00'),
+    'handoff-20261026-021000-cccccc.json': good('handoff-20261026-999999-zzzzzz', '2026-10-26T02:20:00+00:00'),
+    'handoff-20261026-022000-dddddd.json': '{not json',
+    'handoff-20261026-023000-eeeeee.json': clearRecord('handoff-20261026-023000-eeeeee', { 'wX:p1': clearedPane('wX:p1', 'aaaaaaa1', 'yesterday') }),
+    'handoff-20261026-024000-ffffff.json': clearRecord('handoff-20261026-024000-ffffff', { 'bad pane': clearedPane('bad pane', 'aaaaaaa1', '2026-10-26T02:25:00+00:00') }, { session: '-h' }),
+    'notes.json': good('notes', '2026-10-26T02:28:00+00:00'),
+  };
+  const { tree, fake, root, toolRoot } = clearMarkFixture(records);
+  const server = await startServer({ runner: fake.runner, toolRoot, env: { CLAUDE_CONFIG_DIR: root }, now: () => new Date('2026-10-26T02:30:00Z') });
+  try {
+    const { post } = await client(server);
+    const row = (await post('context-gauge')).json.data.rows.find((item) => item.pane_id === 'wX:p1');
+    assert.deepEqual([row.cleared_run, row.cleared_at], ['handoff-20261026-020000-bbbbbb', '2026-10-26T02:10:00.000Z'], 'a record whose run id is not its file name, bad JSON, a bad time, a bad session or pane and a stray file name are never used');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('context-gauge: a run-record folder that is a link is not read, and a missing one marks nothing', async () => {
+  const { tree, fake, root, toolRoot } = clearMarkFixture({});
+  tree.mkdir('real-runs');
+  tree.write('real-runs/handoff-20261026-010000-aaaaaa.json', JSON.stringify(clearRecord('handoff-20261026-010000-aaaaaa', { 'wX:p1': clearedPane('wX:p1', 'aaaaaaa1', '2026-10-26T01:25:13+00:00') })));
+  tree.link('tools/state/workspace-organizer/handoff-runs', tree.abs('real-runs'));
+  const server = await startServer({ runner: fake.runner, toolRoot, env: { CLAUDE_CONFIG_DIR: root }, now: () => new Date('2026-10-26T02:30:00Z') });
+  try {
+    const { post } = await client(server);
+    assert.equal((await post('context-gauge')).json.data.rows.some((row) => row.cleared_at), false);
+  } finally { await server.close(); tree.cleanup(); }
+  const none = clearMarkFixture({});
+  const second = await startServer({ runner: none.fake.runner, toolRoot: none.toolRoot, env: { CLAUDE_CONFIG_DIR: none.root } });
+  try {
+    const { post } = await client(second);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    assert.equal(response.json.data.rows.some((row) => row.cleared_at), false);
+  } finally { await second.close(); none.tree.cleanup(); }
+});
+
 test('focus-tab: shows the tab of a live pane, finds the tab itself and sends nothing into any pane', async () => {
   const fake = fakeRunner({
     handle: (file, args) => (file === 'herdr' && args.includes('tab') && args.includes('focus')
