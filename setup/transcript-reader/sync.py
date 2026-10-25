@@ -622,14 +622,16 @@ class DryRun:
         replace(self.out / "redactions.json", encode({"totals": totals, "objects": per_object, "index": self.state.get("index_redacted") or {}}))
 
 
-def drain(folder: Path, sealed: bool, secret: str = "") -> None:
+def drain(folder: Path, sealed: bool, state: Path, secret: str = "") -> None:
     """Send what the page queued in <folder>/q (drain.js, which checks each pane again and writes the
     receipts). Nothing starts when nothing waits. A drain that fails never stops the sync: it says so
     and the requests wait for the next run."""
     if not any(not path.name.startswith(".") for path in (folder / "q").glob("*")):
         return
     try:
-        done = subprocess.run(["node", str(HERE / "drain.js"), str(folder), "--sealed" if sealed else "--plain"], capture_output=True, text=True,
+        # The ledger of handled ids goes in the output folder's parent (out/), not beside the folder drained.
+        done = subprocess.run(["node", str(HERE / "drain.js"), str(folder), "--sealed" if sealed else "--plain", "--state", str(state.resolve())],
+                              capture_output=True, text=True,
                               env={**os.environ, **({PASSPHRASE_ENV: secret} if secret else {})}, timeout=600)
     except subprocess.TimeoutExpired:
         print(f"Drain of {folder} took over 10 minutes and was stopped; the requests wait for the next run.")
@@ -748,9 +750,9 @@ def main(argv: list[str]) -> int:
                 builder.make_private(folder)
         if args.wipe:
             return wipe(target, out)
-        drain(out, False)
+        drain(out, False, out.parent)
         if args.dry_run:
-            drain(target, True, secret)
+            drain(target, True, out.parent, secret)
         code = Build(args).run()
         if args.dry_run and not code:
             code = DryRun(out, target, secret, args.new_passphrase).run()

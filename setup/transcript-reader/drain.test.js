@@ -11,6 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const seal = require('./prototype/seal.js');
 const { drain, summary, TTL_MS, RECEIPT_KEEP_MS } = require('./drain.js');
 
@@ -83,7 +84,8 @@ async function copy({ sealed = false } = {}) {
       return JSON.parse(sealed ? zlib.gunzipSync(Buffer.from(await seal.open(key, `r/${id}.json`, bytes))).toString('utf8') : bytes.toString('utf8'));
     },
     queued: () => (fs.existsSync(path.join(folder, 'q')) ? fs.readdirSync(path.join(folder, 'q')) : []),
-    drain: (options = {}) => drain({ folder, sealed, passphrase: PASS, runner: herdr.runner, claudeSessionsDir, pause: async () => {}, ...options }),
+    ledger: () => path.join(base, 'state', `.drain-handled-v2-${crypto.createHash('sha256').update(fs.realpathSync(folder)).digest('hex').slice(0, 16)}.json`),
+    drain: (options = {}) => drain({ folder, sealed, stateFolder: path.join(base, 'state'), passphrase: PASS, runner: herdr.runner, claudeSessionsDir, pause: async () => {}, ...options }),
     cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
   };
   return api;
@@ -271,8 +273,7 @@ test('a request refused for its time is on the laptop\'s record too, so it is no
   assert.equal((await lab.receipt(Q1)).code, 'handled');
   assert.deepEqual(lab.queued(), []);
   // The record is kept until the request could no longer be fresh, not just for two days.
-  const ledgerFile = path.join(lab.base, '.drain-handled-v2-bucket.json');
-  const until = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'))[Q1];
+  const until = JSON.parse(fs.readFileSync(lab.ledger(), 'utf8'))[Q1];
   assert.ok(until >= Date.now() + 3600 * 1000 + TTL_MS, 'at least until its own time plus 12 hours');
 });
 
@@ -290,8 +291,9 @@ test('deleting a receipt does not make a copied request run again: the laptop ke
   assert.equal(lab.herdr.prompts().length, 1);
   assert.deepEqual(lab.queued(), [], 'the copy is dropped');
   assert.equal((await lab.receipt(Q1)).code, 'handled', 'and the page is told');
-  assert.ok(fs.existsSync(path.join(lab.base, '.drain-handled-v2-bucket.json')), 'the record is beside the bucket, not in it');
-  assert.equal(fs.existsSync(path.join(lab.folder, '.drain-handled-v2-bucket.json')), false);
+  assert.ok(fs.existsSync(lab.ledger()), 'the record is in the state folder');
+  assert.deepEqual(fs.readdirSync(lab.base).sort(), ['bucket', 'state'], 'not in the bucket, and not beside it');
+  assert.equal(fs.readdirSync(lab.folder).some((name) => name.startsWith('.drain-handled')), false);
 });
 
 test('sealed: a plaintext request in a sealed bucket is never read, nor a sealed one in a plain copy', async (t) => {
@@ -337,6 +339,39 @@ test('sealed: neither the text nor the receipt is readable on disk, and the wron
     assert.equal(bytes.includes('private'), false);
     assert.equal(bytes.includes('sent'), false);
   }
+});
+
+test('a drain killed mid-send leaves a lock that the next one takes over at once; a lock of a live drain holds', async (t) => {
+  const lab = await copy();
+  t.after(lab.cleanup);
+  await lab.queue(Q1, { session_id: A, text: 'hello' });
+  const lock = path.join(lab.folder, 'q', '.drain.lock');
+  // The pid of a process that has ended (a child that exited).
+  const dead = require('child_process').spawnSync(process.execPath, ['-e', '0']).pid;
+  fs.writeFileSync(lock, String(process.pid));
+  assert.equal((await lab.drain()).error, 'busy', 'this very process is alive');
+  fs.writeFileSync(lock, String(dead));
+  assert.equal((await lab.drain()).sent, 1, 'its owner is gone, so no ten minutes of waiting');
+  assert.equal(fs.existsSync(lock), false);
+  // A pid that was reused by another process is still stale after ten minutes.
+  await lab.queue(Q2, { session_id: A, text: 'again' });
+  fs.writeFileSync(lock, String(process.pid));
+  const old = new Date(Date.now() - 11 * 60000);
+  fs.utimesSync(lock, old, old);
+  assert.equal((await lab.drain()).sent, 1);
+});
+
+test('the ledger is kept apart by folder, outside it and its neighbours, and a wipe of the folder does not clear it', async (t) => {
+  const one = await copy({ sealed: true });
+  const two = await copy({ sealed: true });  // another folder, also called bucket, in a parent of its own
+  t.after(() => { one.cleanup(); two.cleanup(); });
+  assert.notEqual(one.ledger(), two.ledger());
+  await one.queue(Q1, { session_id: A, text: 'one' });
+  await one.drain();
+  assert.ok(fs.existsSync(one.ledger()));
+  assert.equal(fs.existsSync(two.ledger()), false);
+  fs.rmSync(path.join(one.folder, 'r'), { recursive: true, force: true });
+  assert.ok(fs.existsSync(one.ledger()), 'what the folder holds can go; the record stays');
 });
 
 test('a second drain on the same folder stops while the first runs, and takes over a lock left over 10 minutes', async (t) => {

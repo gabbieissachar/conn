@@ -754,6 +754,9 @@ class SendTest(unittest.TestCase):
         done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), f"r/{Q2}.json"], capture_output=True, text=True, check=True, env=os.environ)
         self.assertEqual(json.loads(done.stdout)[f"r/{Q2}.json"]["state"], "sent")
         self.assertEqual(list((self.target / "q").iterdir()), [])
+        # The replay ledger is in out/, apart from the bucket and from the folder that holds it.
+        self.assertEqual(len([p for p in (self.lab.root / "out").iterdir() if p.name.startswith(".drain-handled")]), 1)
+        self.assertEqual([p.name for p in self.target.iterdir() if p.name.startswith(".drain-handled")], [])
         # The receipt and the queue are not objects of the bucket: the next run neither prunes nor reseals them.
         self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
         self.assertTrue((self.target / "r" / f"{Q2}.json.enc").is_file())

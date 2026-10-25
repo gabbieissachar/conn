@@ -6,8 +6,8 @@
 // by the page with the passphrase's key, to q/<uuid>.json.enc (a sealed bucket); the sync agent
 // (sync.py, once a minute while the laptop is awake) runs this on the folder.
 //
-//   node setup/transcript-reader/drain.js <folder> --plain
-//   HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js <folder> --sealed
+//   node setup/transcript-reader/drain.js <folder> --plain [--state <folder for the ledger>]
+//   HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js <folder> --sealed [--state <folder>]
 //
 // The caller says which kind of copy the folder is, and the folder never decides: a sealed bucket
 // takes only requests sealed under its key (a missing k/params.json stops the run, it does not
@@ -26,8 +26,9 @@
 // (inside the sealed bytes, so a copied request cannot be given a new one) or its time in the folder is
 // over 12 hours old, so an old message never lands in a conversation that moved on, and one whose
 // time is more than 10 minutes ahead of the laptop's clock (the page's clock is wrong) is refused.
-// Receipts go after 7 days. The ids handled are also kept on the laptop only (beside the folder, in
-// .drain-handled-v2-<folder>.json: each id until it can no longer be fresh, at least 2 days), so deleting a receipt in the bucket cannot make a copied
+// Receipts go after 7 days. The ids handled are also kept on the laptop only, in the reader's own out/
+// (or the folder --state names), in .drain-handled-v2-<hash of the folder's path>.json: each id until it
+// can no longer be fresh, at least 2 days, and a wipe of the folder does not clear it, so deleting a receipt in the bucket cannot make a copied
 // request run again.
 //
 // HOSTED_READER_HERDR names the Herdr binary (default `herdr`); tests give it a fake. With no
@@ -65,10 +66,14 @@ async function listedIds(folder, key) {
   } catch { return []; }
 }
 
-// The ids already handled, on this laptop only: beside the folder, never in it. The v2 in the name is the
-// format (an id maps to the time it is kept until); an earlier format never meant that, so it is not read.
-function ledger(folder, at) {
-  const file = path.join(path.dirname(folder), `.drain-handled-v2-${path.basename(folder)}.json`);
+// The ids already handled, on this laptop only: in the reader's own out/ (or the folder the caller names), never in the
+// folder drained and never beside it, keyed by the folder's resolved path so two folders never share one. The v2 in the
+// name is the format (an id maps to the time it is kept until); an earlier format never meant that, so it is not read.
+const DEFAULT_STATE = path.join(__dirname, 'out');
+function ledger(folder, at, stateFolder) {
+  let resolved = folder;
+  try { resolved = fs.realpathSync(folder); } catch { /* the folder is there: it holds the queue */ }
+  const file = path.join(stateFolder, `.drain-handled-v2-${crypto.createHash('sha256').update(resolved).digest('hex').slice(0, 16)}.json`);
   let handled = {};
   try { handled = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { handled = {}; }
   // Each id is kept until the time it was recorded for (see add), then forgotten.
@@ -77,7 +82,7 @@ function ledger(folder, at) {
   return { has: (id) => Object.prototype.hasOwnProperty.call(handled, id), add: (id, until) => { handled[id] = until; save(); } };
 }
 
-async function drain({ folder, sealed, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
+async function drain({ folder, sealed, stateFolder = DEFAULT_STATE, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
   if (typeof sealed !== 'boolean') throw new Error('Say whether the folder is a sealed bucket or a plain copy.');
   const queue = path.join(folder, 'q');
   const entries = listing(queue, new RegExp('^' + ID + (sealed ? '\\.json\\.enc$' : '\\.json$')));
@@ -90,14 +95,19 @@ async function drain({ folder, sealed, passphrase = '', root = path.join(__dirna
     try { key = await seal.unlock(passphrase, JSON.parse(fs.readFileSync(path.join(folder, 'k', 'params.json'), 'utf8'))); } catch { key = null; }
     if (!key) return { ...result, error: 'wrong-passphrase' };
   }
+  // The lock holds its owner's pid, so a drain that was killed or crashed is told from one still running and its lock
+  // taken over at once; any lock goes stale after 10 minutes (a pid that was reused, or none in it).
   const lock = path.join(queue, '.drain.lock');
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
   try {
-    if (now() - mtimeMs(lock) > LOCK_STALE_MS && exists(lock)) fs.unlinkSync(lock);
-    fs.closeSync(fs.openSync(lock, 'wx', 0o600));
+    let held = null;
+    try { held = Number(fs.readFileSync(lock, 'utf8').trim()); } catch { held = null; }
+    if (exists(lock) && ((Number.isInteger(held) && held > 0 && !alive(held)) || now() - mtimeMs(lock) > LOCK_STALE_MS)) fs.unlinkSync(lock);
+    fs.writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 });
   } catch { return { ...result, error: 'busy' }; }
   try {
     const ids = await listedIds(folder, key);
-    const handled = ledger(folder, now());
+    const handled = ledger(folder, now(), stateFolder);
     // The passphrase opens the bucket here; the Herdr commands this runs never need it, so they do not inherit it.
     const childSource = env || Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'HOSTED_READER_PASSPHRASE'));
     const api = create({ root, port: 1, token: crypto.randomBytes(32).toString('hex'), ...(runner ? { runner } : {}), herdrBin, env: childSource,
@@ -181,8 +191,9 @@ function summary(result) {
 
 if (require.main === module) {
   const [folder, kind, ...rest] = process.argv.slice(2);
-  if (!folder || !['--sealed', '--plain'].includes(kind) || rest.length) { process.stderr.write('usage: drain.js <folder> --plain | --sealed\n'); process.exit(2); }
-  drain({ folder: path.resolve(folder), sealed: kind === '--sealed', passphrase: process.env.HOSTED_READER_PASSPHRASE || '', herdrBin: process.env.HOSTED_READER_HERDR || 'herdr' })
+  const named = rest[0] === '--state' && rest[1] ? path.resolve(rest[1]) : null;
+  if (!folder || !['--sealed', '--plain'].includes(kind) || (rest.length && !(named && rest.length === 2))) { process.stderr.write('usage: drain.js <folder> --plain | --sealed [--state <folder>]\n'); process.exit(2); }
+  drain({ folder: path.resolve(folder), sealed: kind === '--sealed', ...(named ? { stateFolder: named } : {}), passphrase: process.env.HOSTED_READER_PASSPHRASE || '', herdrBin: process.env.HOSTED_READER_HERDR || 'herdr' })
     .then((result) => { process.stdout.write(summary(result) + '\n'); process.exitCode = result.error ? 1 : 0; },
       (error) => { process.stderr.write(error.message + '\n'); process.exit(1); });
 }
