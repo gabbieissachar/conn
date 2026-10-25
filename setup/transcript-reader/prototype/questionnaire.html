@@ -44,6 +44,9 @@
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
   .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  /* The hosted copy's "As of" line, as the reader's: the laptop's build time, in the warning colour once it is old. */
+  .asof { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .asof.stale { color: var(--ask); font-weight: 600; }
   .title a { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
   .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; }
   .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
@@ -93,7 +96,7 @@
   .empty { color: var(--muted); text-align: center; padding: 30px 0; }
   [hidden] { display: none !important; }
   /* A sealed copy asks for its passphrase first; the picker and the answer line wait for it. */
-  .locked .pick, .locked .meta, .locked .dock { display: none; }
+  .locked .pick, .locked .meta, .locked .asof, .locked .dock { display: none; }
 </style>
 </head>
 <body>
@@ -101,6 +104,7 @@
   <div class="title">Answer sheet <span class="proto">prototype</span><a href="prototype.html">← Reader</a></div>
   <select class="pick" id="pick" aria-label="Questionnaire"></select>
   <div class="meta" id="meta"></div>
+  <div class="asof" id="asof" hidden aria-live="polite"></div>
 </div></header>
 <main id="main"></main>
 <div class="dock"><div class="inner">
@@ -126,6 +130,9 @@
 /*__HOSTED__*/
   let data = HOSTED ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  // When the laptop built the copy: the time alone today, with the day before that.
+  const builtAt = s => new Date(s * 1000).toDateString() === new Date().toDateString()
+    ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : fmtWhen(s);
   const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
   function inline(text) {
     // Transcript text comes from outside, so every quote is escaped before any markup is added.
@@ -287,7 +294,10 @@
         : !seen.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
       button.disabled = Boolean(reason) || link.sending || !q || !message(q);
       why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
-      why.textContent = link.result ? link.result.text : reason || `Send queues this line for ${seen.label}; the laptop sends it when it is awake.`;
+      const asleep = hosted.stale(data.generated);
+      why.textContent = link.result ? link.result.text : reason || (asleep
+        ? `The laptop looks asleep (last build ${builtAt(data.generated)}): Send queues this line for ${seen.label}, and it goes out when the laptop is awake.`
+        : `Send queues this line for ${seen.label}; the laptop sends it when it is awake.`);
       return;
     }
     if (!live.served) reason = "Read-only copy: open the served page to send.";
@@ -366,6 +376,17 @@
     pick.value = String(state.q);
   }
   // ---------------------------------------------------------------- hosted copy
+  // The reader's "As of" line: how old the cards are, and "Laptop asleep or not syncing since" once the build is older than the
+  // sync's heartbeat, since cards answered at the keyboard since then still show as open.
+  function paintAsOf() {
+    const line = document.getElementById("asof");
+    line.hidden = !HOSTED || !data.generated;
+    if (line.hidden) return;
+    const old = hosted.stale(data.generated);
+    line.classList.toggle("stale", old);
+    line.textContent = old ? `Laptop asleep or not syncing since ${builtAt(data.generated)}` : `As of ${builtAt(data.generated)}`;
+    line.title = `The laptop built this copy at ${fmtWhen(data.generated)}; the cards and the Herdr states are as of then.`;
+  }
   // The list from the index: one entry per questionnaire, its cards loaded with its conversation's sheet.
   function hostedList(index, before = []) {
     const panes = new Map((index.conversations || []).map(c => [c.id, c.pane || null]));
@@ -414,19 +435,19 @@
     // A sealed copy is opened first (the reader's shell may have remembered the key on this device).
     hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = { generated: index.as_of || 0, index }; qs = hostedList(index);
-      fillPick(); openLinked();
+      fillPick(); paintAsOf(); openLinked();
       // Every 30 seconds while visible: a newer index brings the new list, and the open questionnaire
       // again when its sheet changed. New page code reloads it.
       hosted.poll(async () => {
         const next = await hosted.index();
         if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.reload(); return; }
-        if ((next.as_of || 0) <= data.generated) return;
+        if ((next.as_of || 0) <= data.generated) { paintAsOf(); renderDock(); return; }  // the time passes on an unchanged copy
         const shown = qs[state.q], before = JSON.stringify(shown);
         data = { generated: next.as_of || 0, index: next }; qs = hostedList(next, qs);
         Object.keys(answers).forEach(k => delete answers[k]);
         const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
         state.q = index >= 0 ? index : 0;
-        fillPick();
+        fillPick(); paintAsOf();
         if (qs[state.q] && !qs[state.q].cards) await openSheet(qs[state.q]);
         if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); } else renderDock();
       });
