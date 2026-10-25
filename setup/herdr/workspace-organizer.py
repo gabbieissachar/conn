@@ -22,7 +22,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -6405,6 +6408,865 @@ def rollback_reconcile_command(args: argparse.Namespace) -> None:
     print(f"Rolled back {created_count} workspace(s) created by this recovery journal. Adopted native workspaces were not touched.")
 
 
+# ---- handoff-restart: ask one Claude pane to save a handoff, then restart that session with /clear ----
+#
+# Every step is gated on the one before it and re-reads the live pane first. Nothing typed is ever typed twice, a pane
+# that stops mid-way is reported and left alone, and the run record holds no transcript text and no full session id.
+# Spec: send-and-restart-spec r8 section 3.
+
+HANDOFF_REQUEST = (
+    '/handoff to restart this session with cleaner context. Before you finish, stop every background task and '
+    'scheduled job you started and list each under a "## Restart list" heading in the handoff document, with the '
+    'exact command that starts it again or "not needed: <why>". End your reply with one line: '
+    "HANDOFF_DOC: <absolute path of the document>"
+)
+HANDOFF_REQUEST_ANCHOR = "Before you finish, stop every background task and scheduled job you started"
+HANDOFF_RESUME_TEXT = 'Read {path} and continue. First start every entry under "## Restart list" again.'
+HANDOFF_MARKER = re.compile(r"^HANDOFF_DOC: (/[A-Za-z0-9._/-]+\.md)$")
+HANDOFF_PANE_REF = re.compile(r"^(?P<pane>[A-Za-z0-9][A-Za-z0-9_.:-]*):(?P<id8>[A-Za-z0-9-]{8})$")
+HANDOFF_RUN_DIR = STATE_DIR / "handoff-runs"
+HANDOFF_RUN_ID_PATTERN = re.compile(r"^handoff-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+HANDOFF_TIMESCALE_ENV = "HERDR_ORGANIZER_HANDOFF_TIMESCALE"
+HANDOFF_TAIL_BYTES = 1_000_000
+HANDOFF_MAX_DOCUMENT_BYTES = 1_000_000
+HANDOFF_MAX_PARALLEL = 4
+HANDOFF_QUIET_STATUSES = {"idle", "done"}
+HANDOFF_WATCHER_BEAT_GRACE = 300
+HANDOFF_GAUGE_TIMEOUT = 10
+HANDOFF_TASK_WORKSPACE = re.compile(r"^└ \S.* · p:\S+")
+HANDOFF_RULE = re.compile(r"^[─]{20,}\s*$")
+HANDOFF_REASON_TEXT = {
+    "session_moved": "The pane is gone, or it now holds another session than the one named.",
+    "not_claude": "The pane does not run Claude.",
+    "fleet_pane": "This pane belongs to a firstmate session. Those restart through firstmate's own rollover.",
+    "focused": "This pane has the focus. Focus another pane first. The page's Open button focuses a row's tab, "
+    "so a row opened a moment ago is refused.",
+    "working": "The session is working. Wait for it to finish its turn.",
+    "blocked": "The session is waiting for an answer to a dialog.",
+    "not_idle": "The session is not idle or done.",
+    "composer_unknown": "The input box could not be proved empty.",
+    "composer_not_empty": "The input box holds text.",
+    "dialog_open": "A dialog is open in the pane.",
+    "duplicate": "The pane or its session was named twice.",
+    "prompt_unconfirmed": "The handoff request was not confirmed: unknown, check the pane.",
+    "transcript_unavailable": "The session transcript could not be found exactly once.",
+    "no_handoff_marker": "The session's last reply did not end with a HANDOFF_DOC line.",
+    "document_invalid": "The handoff document failed a check.",
+    "composer_not_confirmed": "/clear was typed but the input box did not show it.",
+    "typed_unconfirmed": "/clear was typed but a restart could not be proved.",
+    "session_unstable": "The session id changed more than once after /clear.",
+    "not_idle_after_clear": "The restarted session did not settle to idle.",
+    "herdr_error": "Herdr refused or failed a call.",
+    "interrupted": "The run was interrupted.",
+    "internal_error": "The run hit an unexpected error.",
+}
+
+
+class HandoffNeedsYou(Exception):
+    """A pane stopped at a gate. Nothing further is sent to it."""
+
+
+class HandoffStopped(Exception):
+    """The run was interrupted (Ctrl-C) between steps."""
+
+
+def handoff_scale() -> float:
+    """Test-only knob: shrinks every wait. It can never lengthen one."""
+    try:
+        value = float(os.environ.get(HANDOFF_TIMESCALE_ENV, "1"))
+    except ValueError:
+        return 1.0
+    return min(max(value, 0.001), 1.0)
+
+
+def handoff_seconds(seconds: float) -> float:
+    return seconds * handoff_scale()
+
+
+def handoff_classify(text: str) -> tuple[str, str | None]:
+    """The composer classifier (spec 3.3a). It anchors on the last two rules, never on the last `❯` line."""
+    lines = text.rstrip("\n").split("\n")
+    rules = [index for index, line in enumerate(lines) if HANDOFF_RULE.match(line)]
+    tail = "\n".join(lines[-14:])
+    if re.search(r"^\s*❯ \d+\. ", tail, re.M) or re.search(r"Esc to cancel", tail):
+        return ("dialog", None)
+    if len(rules) < 2:
+        return ("unknown", None)
+    top, bottom = rules[-2], rules[-1]
+    body = lines[top + 1:bottom]
+    if not body or not body[0].startswith("❯"):
+        return ("unknown", None)
+    composer = "\n".join([body[0][1:].lstrip(" ")] + [line.strip() for line in body[1:]]).strip()
+    above = lines[max(0, top - 8):top]
+    menu = any(re.match(r"^\s+❯? ?/\S+\s{2,}\S", line) for line in above)
+    return ("menu" if menu else ("empty" if composer == "" else "typed"), composer)
+
+
+def handoff_composer_reason(composer_class: str) -> str | None:
+    return {
+        "empty": None, "unknown": "composer_unknown", "dialog": "dialog_open",
+        "typed": "composer_not_empty", "menu": "composer_not_empty",
+    }[composer_class]
+
+
+def handoff_screen_proof(text: str) -> bool:
+    """The weaker proof that /clear ran when the session id never changed (spec SPEC-1, probe 1 shape)."""
+    if handoff_classify(text)[0] != "empty":
+        return False
+    lines = text.rstrip("\n").split("\n")
+    if any(line.startswith(("⏺ ", "✻ ")) or "HANDOFF_DOC:" in line or HANDOFF_REQUEST_ANCHOR in line for line in lines):
+        return False
+    header = next((index for index, line in enumerate(lines) if "Claude Code v" in line), None)
+    if header is None:
+        return False
+    end = header + 2  # the logo block is three lines and ends with the folder line
+    while end + 1 < len(lines) and lines[end + 1].startswith("▎"):
+        end += 1
+    for index, line in enumerate(lines):
+        if "notice hidden" in line:
+            end = max(end, index)
+    rules = [index for index, line in enumerate(lines) if HANDOFF_RULE.match(line)]
+    top = rules[-2]
+    between = [line.rstrip() for line in lines[end + 1:top] if line.strip()]
+    return len(between) == 1 and between[0] == "❯ /clear"
+
+
+def handoff_parse_refs(references: list[str]) -> list[dict[str, str]]:
+    parsed: list[dict[str, str]] = []
+    for reference in references:
+        match = HANDOFF_PANE_REF.match(reference)
+        if not match:
+            raise OrganizerError(
+                f"--pane {reference!r} must look like <pane id>:<first 8 characters of the session id>, for example w1:p2:0b407c12."
+            )
+        parsed.append({"pane_id": match["pane"], "id8": match["id8"]})
+    return parsed
+
+
+def handoff_confirm_string(session: str, refs: list[dict[str, str]]) -> str:
+    return f"handoff-restart:{session}:{','.join(sorted({ref['id8'] for ref in refs}))}"
+
+
+def handoff_panes(session: str) -> list[dict[str, Any]]:
+    panes = result_of(run_json(["pane", "list"], session)).get("panes")
+    if not isinstance(panes, list):
+        raise OrganizerError("Herdr pane list did not contain a panes list.")
+    return [pane for pane in panes if isinstance(pane, dict)]
+
+
+def handoff_pane_id8(pane: dict[str, Any]) -> str:
+    agent_session = pane.get("agent_session")
+    value = agent_session.get("value") if isinstance(agent_session, dict) else None
+    return value[:8] if isinstance(value, str) else ""
+
+
+def handoff_pane_session_id(pane: dict[str, Any]) -> str | None:
+    """The full session id. It is kept in memory only: never printed, never written to the run record."""
+    agent_session = pane.get("agent_session")
+    value = agent_session.get("value") if isinstance(agent_session, dict) else None
+    return value if isinstance(value, str) and SAFE_SESSION_ID.match(value) else None
+
+
+def handoff_read_visible(session: str, pane_id: str) -> str:
+    return run_command(["agent", "read", pane_id, "--source", "visible"], session)
+
+
+def handoff_call(arguments: list[str], session: str) -> str:
+    """A Herdr call that changes a pane. An error object on stdout counts as a failure even when the exit code is 0."""
+    text = run_command(arguments, session)
+    if text.lstrip().startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return text
+        if isinstance(payload, dict) and payload.get("error"):
+            error = payload["error"]
+            code = error.get("code") if isinstance(error, dict) else error
+            raise OrganizerError(f"Herdr {' '.join(arguments[:2])} failed: {code}")
+    return text
+
+
+# -- Which panes are firstmate's (spec SPEC-6) --
+
+def handoff_watcher_lock(home: Path, state: Path) -> tuple[str, Path | None]:
+    """A home's watcher state and the code root its lock names, from the lock alone (spec 4.2)."""
+    lock = state / ".watch.lock"
+    try:
+        if not lock.is_symlink():
+            return ("no_lock", None)
+        target = Path(os.readlink(lock))
+        owner = target if target.is_absolute() else state / target
+        info = os.lstat(owner)
+        if (
+            not stat.S_ISDIR(info.st_mode) or owner.parent.resolve() != state.resolve()
+            or not owner.name.startswith(".watch.lock.owner.")
+        ):
+            return ("unsafe_lock", None)
+        fields: dict[str, str] = {}
+        for name in ("pid", "fm-home", "watcher-path", "pid-identity"):
+            file_info = os.lstat(owner / name)
+            if not stat.S_ISREG(file_info.st_mode) or file_info.st_size > 1024:
+                return ("unsafe_lock", None)
+            fields[name] = (owner / name).read_text().rstrip("\n")
+    except (OSError, ValueError):
+        return ("unsafe_lock", None)
+    watcher = Path(fields["watcher-path"])
+    try:
+        watcher_info = os.lstat(watcher)
+    except OSError:
+        return ("unsafe_lock", None)
+    if not stat.S_ISREG(watcher_info.st_mode) or watcher.name != "fm-watch.sh" or watcher.parent.name != "bin":
+        return ("unsafe_lock", None)
+    code_root = watcher.parent.parent
+    if not fields["pid"].isdigit():
+        return ("stale_pid", code_root)
+    try:
+        os.kill(int(fields["pid"]), 0)
+    except ProcessLookupError:
+        return ("stale_pid", code_root)
+    except PermissionError:
+        pass
+    if os.path.realpath(fields["fm-home"]) != os.path.realpath(home):
+        return ("other_home", code_root)
+    completed = subprocess.run(
+        ["ps", "-p", fields["pid"], "-o", "lstart=", "-o", "command="],
+        env={**os.environ, "COLUMNS": "10000", "LC_ALL": "C"}, text=True, capture_output=True, check=False,
+    )
+    if completed.stdout.strip("\n").lstrip() != fields["pid-identity"]:
+        return ("identity_mismatch", code_root)
+    try:
+        beat = time.time() - (state / ".last-watcher-beat").stat().st_mtime
+    except OSError:
+        return ("beat_old", code_root)
+    return ("running" if beat < HANDOFF_WATCHER_BEAT_GRACE else "beat_old", code_root)
+
+
+def handoff_homes(extra: list[str]) -> list[dict[str, Any]]:
+    """Every firstmate home the CLI can find, numbered in a stable order. The numbers, never the paths, reach output."""
+    found: dict[Path, dict[str, Any]] = {}
+    for state_dir in owner_state_dirs():
+        found.setdefault(state_dir.parent.resolve(), {"home": state_dir.parent, "state": state_dir, "code_root": None})
+    for entry in extra:
+        path, _, code_root = entry.partition("=")
+        home = Path(path).expanduser()
+        if not home.is_dir():
+            raise OrganizerError(f"--fleet-home {path!r} is not a folder.")
+        found[home.resolve()] = {
+            "home": home, "state": home / "state", "code_root": Path(code_root).expanduser() if code_root else None,
+        }
+    homes = [found[key] for key in sorted(found)]
+    for number, item in enumerate(homes, start=1):
+        item["number"] = number
+    return homes
+
+
+def handoff_gauge_for_home(item: dict[str, Any]) -> tuple[str, list[str]]:
+    """Rule 6 for one home: its state and the session ids the context gauge maps to a firstmate session."""
+    home: Path = item["home"]
+    watcher, lock_root = handoff_watcher_lock(home, item["state"])
+    candidates = [root / "bin" / "fm-ctx-gauge.sh" for root in (item["code_root"], lock_root) if root is not None]
+    candidates.append(home / "bin" / "fm-ctx-gauge.sh")
+    script = next((path for path in candidates if os.path.lexists(path)), None)
+    if script is None:
+        return ("no_gauge", [])
+    try:
+        info = os.lstat(script)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            return ("failed", [])
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("FM_", "HERDR_"))}
+        env["FM_HOME"] = str(home)
+        completed = subprocess.run(
+            [str(script), "report", "--json"], env=env, text=True, capture_output=True, timeout=HANDOFF_GAUGE_TIMEOUT,
+            check=False, stdin=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return ("failed", [])
+        text = completed.stdout.strip()
+        try:
+            value = json.loads(text) if text else []
+            rows = value if isinstance(value, list) else [value]
+        except ValueError:
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        if not all(isinstance(row, dict) for row in rows):
+            return ("failed", [])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return ("failed", [])
+    sessions = [
+        row["session_id"] for row in rows
+        if isinstance(row.get("session_id"), str) and row.get("kind") not in (None, "", "unmapped")
+    ]
+    return ("applied" if watcher == "running" else "applied_no_watcher", sessions)
+
+
+class HandoffFleet:
+    """Everything needed to decide, per pane, whether firstmate owns it."""
+
+    def __init__(self, session: str, skip_gauge: bool, extra_homes: list[str]):
+        self.homes = handoff_homes(extra_homes)
+        self.records = owner_records(session, [item["state"] for item in self.homes if item["state"].is_dir()])
+        self.roots = {Path(os.path.realpath(item["home"])) for item in self.homes}
+        for pattern in ("~/.treehouse/firstmate-*", "~/fm-homes"):
+            self.roots |= {Path(os.path.realpath(path)) for path in glob.glob(os.path.expanduser(pattern))}
+        self.primary_texts: list[str] = []
+        for item in self.homes:
+            try:
+                self.primary_texts.append((item["state"] / ".primary-control").read_text())
+            except OSError:
+                continue
+        self.skipped = skip_gauge
+        self.gauge: dict[int, str] = {}
+        self.gauge_sessions: set[str] = set()
+        if skip_gauge:
+            self.gauge = {item["number"]: "skipped_by_choice" for item in self.homes}
+        elif self.homes:
+            with ThreadPoolExecutor(max_workers=min(4, len(self.homes))) as pool:
+                for item, (outcome, sessions) in zip(self.homes, pool.map(handoff_gauge_for_home, self.homes)):
+                    self.gauge[item["number"]] = outcome
+                    self.gauge_sessions.update(sessions)
+
+    def incomplete(self) -> list[int]:
+        return [number for number, outcome in self.gauge.items() if outcome == "failed"]
+
+    def summary(self) -> list[dict[str, Any]]:
+        return [{"home": number, "rule6": outcome} for number, outcome in sorted(self.gauge.items())]
+
+    def reason(self, pane: dict[str, Any], workspace_label: str, tab_label: str) -> str | None:
+        pane_id = str(pane.get("pane_id"))
+        if any(record["values"].get("herdr_pane_id") == pane_id for record in self.records):
+            return "owner_record"
+        token = re.compile(rf"(?<![A-Za-z0-9]){re.escape(pane_id)}(?![A-Za-z0-9])")
+        if any(token.search(text) for text in self.primary_texts):
+            return "primary_control"
+        for key in ("cwd", "foreground_cwd"):
+            folder = pane.get(key)
+            if isinstance(folder, str) and folder:
+                resolved = Path(os.path.realpath(folder))
+                if any(resolved == root or root in resolved.parents for root in self.roots):
+                    return "under_home_root"
+        if base_workspace_label(workspace_label) == LEADER_WORKSPACE_LABEL:
+            return "leader_workspace"
+        if tab_label.startswith(("fm-", LEADER_TAB_PREFIX)):
+            return "tab_label"
+        session_id = handoff_pane_session_id(pane)
+        if session_id and session_id in self.gauge_sessions:
+            return "gauge"
+        if HANDOFF_TASK_WORKSPACE.match(workspace_label):
+            return "task_workspace"
+        return None
+
+
+# -- Step 0: the plan --
+
+def handoff_world(session: str) -> dict[str, Any]:
+    snapshot = session_snapshot(session)
+    return {
+        "panes": {str(pane.get("pane_id")): pane for pane in handoff_panes(session)},
+        "workspaces": {str(item.get("workspace_id")): str(item.get("label") or "") for item in snapshot.get("workspaces", [])},
+        "tabs": {str(item.get("tab_id")): str(item.get("label") or "") for item in snapshot.get("tabs", [])},
+        "focused": snapshot.get("focused_pane_id"),
+    }
+
+
+def handoff_is_focused(pane: dict[str, Any], world: dict[str, Any]) -> bool:
+    return bool(pane.get("focused")) or (world.get("focused") is not None and str(pane.get("pane_id")) == str(world["focused"]))
+
+
+def handoff_refusal(
+    ref: dict[str, str], world: dict[str, Any], fleet: HandoffFleet, session: str
+) -> tuple[str, str | None] | None:
+    """Why this pane may not be restarted, as (reason code, sub-reason), or None when it may."""
+    pane = world["panes"].get(ref["pane_id"])
+    if pane is None or handoff_pane_id8(pane) != ref["id8"]:
+        return ("session_moved", None)
+    if pane.get("agent") != "claude":
+        return ("not_claude", None)
+    fleet_rule = fleet.reason(pane, world["workspaces"].get(str(pane.get("workspace_id")), ""),
+                              world["tabs"].get(str(pane.get("tab_id")), ""))
+    if fleet_rule:
+        return ("fleet_pane", fleet_rule)
+    if handoff_is_focused(pane, world):
+        return ("focused", None)
+    status = pane.get("agent_status")
+    if status in ("working", "blocked"):
+        return (str(status), None)
+    if status not in HANDOFF_QUIET_STATUSES:
+        return ("not_idle", None)
+    reason = handoff_composer_reason(handoff_classify(handoff_read_visible(session, ref["pane_id"]))[0])
+    return (reason, None) if reason else None
+
+
+def handoff_plan(args: argparse.Namespace, session: str) -> dict[str, Any]:
+    refs = handoff_parse_refs(args.pane)
+    fleet = HandoffFleet(session, bool(args.skip_fleet_gauge), list(args.fleet_home or []))
+    world = handoff_world(session)
+    accepted: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = []
+    seen_panes: set[str] = set()
+    seen_ids: set[str] = set()
+    for ref in refs:
+        entry: dict[str, Any] = {"pane_id": ref["pane_id"], "id8": ref["id8"]}
+        if ref["pane_id"] in seen_panes or ref["id8"] in seen_ids:
+            refused.append({**entry, "reason": "duplicate", "detail": HANDOFF_REASON_TEXT["duplicate"]})
+            continue
+        seen_panes.add(ref["pane_id"])
+        seen_ids.add(ref["id8"])
+        problem = handoff_refusal(ref, world, fleet, session)
+        if problem is None:
+            pane = world["panes"][ref["pane_id"]]
+            accepted.append({**entry, "label": world["tabs"].get(str(pane.get("tab_id")), ""),
+                             "terminal_id": pane.get("terminal_id")})
+            continue
+        reason, sub_reason = problem
+        item = {**entry, "reason": reason, "detail": HANDOFF_REASON_TEXT.get(reason, reason)}
+        if sub_reason:
+            item["fleet_rule"] = sub_reason
+        refused.append(item)
+    return {
+        "session": session,
+        "to_restart": accepted,
+        "refused": refused,
+        "fleet_gauge": fleet.summary(),
+        "skip_fleet_gauge": fleet.skipped,
+        "fixed_request": HANDOFF_REQUEST,
+        "fixed_resume": HANDOFF_RESUME_TEXT,
+        "confirm": handoff_confirm_string(session, refs),
+        "_fleet_incomplete": fleet.incomplete(),
+    }
+
+
+# -- Steps 2: the handoff document --
+
+def handoff_entry_text(entry: dict[str, Any]) -> str:
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(block.get("text", "")) for block in content if isinstance(block, dict) and block.get("type") == "text")
+    return ""
+
+
+def handoff_is_tool_result(entry: dict[str, Any]) -> bool:
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, list) and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+
+
+def handoff_find_transcript(session_id: str) -> Path | None:
+    """Exactly one regular, non-link `<session id>.jsonl` under the Claude projects folder, or None."""
+    if not CLAUDE_PROJECTS_DIR.is_dir():
+        return None
+    found: list[Path] = []
+    for candidate in CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"):
+        try:
+            if stat.S_ISREG(os.lstat(candidate).st_mode):
+                found.append(candidate)
+        except OSError:
+            continue
+    return found[0] if len(found) == 1 else None
+
+
+def handoff_transcript_marker(log: Path) -> str | None:
+    """The document path on the last line of the reply that follows the handoff request, read from the transcript."""
+    with open(log, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        offset = max(0, size - HANDOFF_TAIL_BYTES)
+        handle.seek(offset)
+        data = handle.read()
+    raw_lines = data.split(b"\n")
+    if offset:
+        raw_lines = raw_lines[1:]
+    entries: list[dict[str, Any]] = []
+    for raw in raw_lines:
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+    request_at = None
+    for index, item in enumerate(entries):
+        if item.get("type") == "user" and not handoff_is_tool_result(item) and HANDOFF_REQUEST_ANCHOR in handoff_entry_text(item):
+            request_at = index
+    if request_at is None:
+        return None
+    last_text = None
+    for item in entries[request_at + 1:]:
+        if item.get("type") != "assistant" or item.get("isSidechain"):
+            continue
+        message = item.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "")).strip():
+                last_text = str(block["text"])
+    if last_text is None:
+        return None
+    lines = [line for line in last_text.split("\n") if line.strip()]
+    match = HANDOFF_MARKER.match(lines[-1]) if lines else None
+    return match.group(1) if match else None
+
+
+def handoff_document_roots() -> list[Path]:
+    roots = [state_dir.parent / "data" / "handoffs" for state_dir in owner_state_dirs()]
+    roots += [CLAUDE_PROJECTS_DIR.parent / "handoffs", Path.home() / ".claude" / "handoffs"]
+    resolved: list[Path] = []
+    for root in roots:
+        real = Path(os.path.realpath(root))
+        if real not in resolved:
+            resolved.append(real)
+    return resolved
+
+
+def handoff_check_document(path_text: str, started: float) -> str | None:
+    """The failed check's name, or None when the document passes every check of spec 3.3 step 2."""
+    path = Path(path_text)
+    real = Path(os.path.realpath(path))
+    if not any(real == root or root in real.parents for root in handoff_document_roots()):
+        return "outside_allowlist"
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return "missing"
+    if stat.S_ISLNK(info.st_mode):
+        return "symlink"
+    if not stat.S_ISREG(info.st_mode):
+        return "not_regular"
+    if info.st_size == 0:
+        return "empty"
+    if info.st_size > HANDOFF_MAX_DOCUMENT_BYTES:
+        return "too_large"
+    if info.st_mtime <= started:
+        return "stale"
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return "unreadable"
+    in_list = False
+    for line in text.splitlines():
+        if re.match(r"^## Restart list\s*$", line):
+            in_list = True
+        elif in_list and re.match(r"^#{1,6} ", line):
+            break
+        elif in_list and re.sub(r"^\s*(?:[-*+]|\d+[.)])?\s*", "", line).strip():
+            return None
+    return "no_restart_list"
+
+
+# -- The run --
+
+def handoff_resume_line(pane_id: str, document: str) -> str:
+    return (
+        f"{pane_id}: /clear was typed and may have run. Resume it by hand with: "
+        + HANDOFF_RESUME_TEXT.format(path=document)
+    )
+
+
+class HandoffRun:
+    """One execute run: the record, the stop flag, and the gated steps of each pane."""
+
+    def __init__(self, session: str, run_id: str, accepted: list[dict[str, Any]], handoff_timeout: float, meta: dict[str, Any]):
+        self.session = session
+        self.timeout = handoff_timeout
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.path = HANDOFF_RUN_DIR / f"{run_id}.json"
+        self.steps: dict[str, str] = {}
+        self.documents: dict[str, str] = {}
+        self.terminals = {item["pane_id"]: item.get("terminal_id") for item in accepted}
+        self.record: dict[str, Any] = {
+            "version": 1, "run_id": run_id, "session": session, "started_at": now(), **meta,
+            "panes": {
+                item["pane_id"]: {
+                    "pane_id": item["pane_id"], "id8_before": item["id8"], "id8_after": None, "label": item.get("label", ""),
+                    "step": "not_started", "state": "pending", "reason": None, "updated_at": now(),
+                }
+                for item in accepted
+            },
+        }
+        write_private_json(self.path, self.record)
+
+    def update(self, pane_id: str, **fields: Any) -> None:
+        with self.lock:
+            self.record["panes"][pane_id].update(fields, updated_at=now())
+            write_private_json(self.path, self.record)
+
+    def wait(self, seconds: float) -> None:
+        if self.stop.wait(seconds):
+            raise HandoffStopped()
+
+    def begin(self, pane_id: str, step: str) -> None:
+        if self.stop.is_set():
+            raise HandoffStopped()
+        self.steps[pane_id] = step
+        self.update(pane_id, step=step)
+
+    def fail(self, pane_id: str, reason: str, detail: str | None = None) -> None:
+        fields: dict[str, Any] = {"state": "needs_you", "reason": reason}
+        if detail:
+            fields["detail"] = detail
+        self.update(pane_id, **fields)
+        raise HandoffNeedsYou(reason)
+
+    def find(self, pane_id: str) -> dict[str, Any] | None:
+        return next((pane for pane in handoff_panes(self.session) if str(pane.get("pane_id")) == pane_id), None)
+
+    def check(self, pane_id: str, id8: str, *, quiet: bool = True, empty: bool = True, focus: bool = True) -> dict[str, Any]:
+        """The pre-step re-read: the same pane and session, still Claude, unfocused, idle or done, composer empty."""
+        pane = self.find(pane_id)
+        if pane is None or handoff_pane_id8(pane) != id8:
+            self.fail(pane_id, "session_moved")
+        terminal = self.terminals.get(pane_id)
+        if terminal and pane.get("terminal_id") and pane.get("terminal_id") != terminal:
+            self.fail(pane_id, "session_moved")
+        if pane.get("agent") != "claude":
+            self.fail(pane_id, "not_claude")
+        if focus and pane.get("focused"):
+            self.fail(pane_id, "focused")
+        status = pane.get("agent_status")
+        if quiet and status in ("working", "blocked"):
+            self.fail(pane_id, str(status))
+        if quiet and status not in HANDOFF_QUIET_STATUSES:
+            self.fail(pane_id, "not_idle")
+        if empty:
+            reason = handoff_composer_reason(handoff_classify(handoff_read_visible(self.session, pane_id))[0])
+            if reason:
+                self.fail(pane_id, reason)
+        return pane
+
+    # step 1
+    def ask(self, pane_id: str, id8: str) -> float:
+        self.begin(pane_id, "ask")
+        self.check(pane_id, id8)
+        started = time.time()
+        self.update(pane_id, ask_started_at=now())
+        try:
+            handoff_call(
+                ["agent", "prompt", pane_id, HANDOFF_REQUEST, "--wait", "--timeout", str(int(self.timeout * 1000))], self.session
+            )
+        except OrganizerError as error:
+            self.fail(pane_id, "prompt_unconfirmed", str(error)[:200])
+        pane = self.find(pane_id)
+        status = pane.get("agent_status") if pane else None
+        if status == "blocked":
+            self.fail(pane_id, "blocked")
+        if status not in HANDOFF_QUIET_STATUSES:
+            self.fail(pane_id, "not_idle")
+        self.update(pane_id, state="asked")
+        return started
+
+    # step 2
+    def validate(self, pane_id: str, id8: str, started: float) -> str:
+        self.begin(pane_id, "validate")
+        pane = self.check(pane_id, id8, quiet=False, empty=False, focus=False)
+        session_id = handoff_pane_session_id(pane)
+        log = handoff_find_transcript(session_id) if session_id else None
+        if log is None:
+            self.fail(pane_id, "transcript_unavailable")
+        deadline = time.monotonic() + handoff_seconds(10)
+        marker = handoff_transcript_marker(log)
+        while marker is None and time.monotonic() < deadline:
+            self.wait(handoff_seconds(1))
+            marker = handoff_transcript_marker(log)
+        if marker is None:
+            self.fail(pane_id, "no_handoff_marker")
+        problem = handoff_check_document(marker, started)
+        if problem:
+            self.fail(pane_id, "document_invalid", problem)
+        self.documents[pane_id] = marker
+        self.update(pane_id, state="written", document=marker)
+        return marker
+
+    # step 3
+    def quiet_gate(self, pane_id: str, id8: str) -> None:
+        self.begin(pane_id, "quiet_gate")
+        self.check(pane_id, id8)
+        self.wait(handoff_seconds(5))
+        self.check(pane_id, id8)
+
+    # step 4
+    def clear(self, pane_id: str, id8: str) -> str:
+        self.begin(pane_id, "clear")
+        self.check(pane_id, id8)
+        handoff_call(["pane", "send-text", pane_id, "/clear"], self.session)
+        self.update(pane_id, clear_text_typed_at=now())
+        deadline = time.monotonic() + handoff_seconds(5)
+        while True:
+            composer = handoff_classify(handoff_read_visible(self.session, pane_id))
+            if composer[0] in ("menu", "typed") and composer[1] == "/clear":
+                break
+            if time.monotonic() >= deadline:
+                self.fail(pane_id, "composer_not_confirmed")
+            self.wait(handoff_seconds(0.2))
+        self.update(pane_id, clear_typed_at=now())
+        handoff_call(["pane", "send-keys", pane_id, "Enter"], self.session)
+        start = time.monotonic()
+        fast_until = start + handoff_seconds(5)
+        deadline = start + handoff_seconds(30)
+        next_screen = start + handoff_seconds(5)
+        enters = 1
+        new_id8 = None
+        while True:
+            pane = self.find(pane_id)
+            if pane is None or pane.get("agent") != "claude":
+                self.fail(pane_id, "session_moved")
+            current = handoff_pane_id8(pane)
+            if current and current != id8:
+                new_id8 = current
+                break
+            moment = time.monotonic()
+            if moment >= deadline:
+                break
+            if moment >= next_screen and enters < 3:
+                composer = handoff_classify(handoff_read_visible(self.session, pane_id))
+                if composer[0] in ("menu", "typed") and composer[1] == "/clear":
+                    handoff_call(["pane", "send-keys", pane_id, "Enter"], self.session)
+                    enters += 1
+                next_screen = moment + handoff_seconds(5)
+            self.wait(handoff_seconds(0.25) if moment < fast_until else handoff_seconds(0.5))
+        if new_id8 is not None:
+            self.wait(handoff_seconds(0.5))
+            settled = self.find(pane_id)
+            if settled is None or handoff_pane_id8(settled) != new_id8:
+                self.fail(pane_id, "session_unstable")
+            self.update(pane_id, state="cleared", id8_after=new_id8, clear_proof="session_id_changed")
+            return new_id8
+        if handoff_screen_proof(handoff_read_visible(self.session, pane_id)):
+            self.update(pane_id, state="cleared_by_screen", id8_after=id8, clear_proof="screen", session_value_unchanged=True)
+            return id8
+        self.update(pane_id, state="typed_unconfirmed", reason="typed_unconfirmed")
+        raise HandoffNeedsYou("typed_unconfirmed")
+
+    # step 5
+    def resume(self, pane_id: str, id8: str, document: str) -> None:
+        self.begin(pane_id, "resume")
+        deadline = time.monotonic() + handoff_seconds(15)
+        while True:
+            pane = self.find(pane_id)
+            if pane is None or handoff_pane_id8(pane) != id8:
+                self.fail(pane_id, "session_moved")
+            if pane.get("agent_status") in HANDOFF_QUIET_STATUSES:
+                break
+            if time.monotonic() >= deadline:
+                self.fail(pane_id, "not_idle_after_clear")
+            self.wait(handoff_seconds(0.25))
+        self.check(pane_id, id8)
+        try:
+            handoff_call(["agent", "prompt", pane_id, HANDOFF_RESUME_TEXT.format(path=document)], self.session)
+        except OrganizerError as error:
+            self.fail(pane_id, "herdr_error", str(error)[:200])
+        self.update(pane_id, state="sent")
+
+    def run_pane(self, pane_id: str, id8: str) -> None:
+        try:
+            started = self.ask(pane_id, id8)
+            document = self.validate(pane_id, id8, started)
+            self.quiet_gate(pane_id, id8)
+            pinned = self.clear(pane_id, id8)
+            self.resume(pane_id, pinned, document)
+        except HandoffNeedsYou:
+            pass
+        except HandoffStopped:
+            self.update(pane_id, state="interrupted", reason="interrupted")
+        except OrganizerError as error:
+            self.update(pane_id, state="needs_you", reason="herdr_error", detail=str(error)[:200])
+        except Exception as error:  # a bug here must stop this pane, never the others
+            self.update(pane_id, state="needs_you", reason="internal_error", detail=type(error).__name__)
+
+    def resume_lines(self) -> list[str]:
+        lines = []
+        for pane_id, pane in self.record["panes"].items():
+            if pane.get("clear_text_typed_at") and pane.get("state") != "sent" and self.documents.get(pane_id):
+                lines.append(handoff_resume_line(pane_id, self.documents[pane_id]))
+        return lines
+
+
+def handoff_run_id() -> str:
+    return f"handoff-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+
+
+def handoff_restart_command(args: argparse.Namespace) -> None:
+    session = args.session or os.environ.get("HERDR_SESSION")
+    if not session:
+        raise OrganizerError("handoff-restart needs a named Herdr session. Pass --session <name>.")
+    if args.handoff_timeout <= 0:
+        raise OrganizerError("--handoff-timeout must be a positive number of seconds.")
+    if args.confirm and not args.execute:
+        raise OrganizerError("--confirm only applies together with --execute.")
+    plan = handoff_plan(args, session)
+    incomplete = plan.pop("_fleet_incomplete")
+    if not args.execute:
+        print(json.dumps({"mode": "preview", **plan}, indent=2))
+        if args.json:
+            return
+        print(
+            f"Preview only. Re-run with --execute --confirm {plan['confirm']!r} to ask {len(plan['to_restart'])} "
+            "session(s) for a handoff and restart them."
+        )
+        return
+
+    require_execute_confirmation(args.execute, args.confirm, plan["confirm"], "Handoff restart")
+    if incomplete:
+        homes = ", ".join(str(number) for number in incomplete)
+        raise OrganizerError(
+            f"fleet_gauge_incomplete: the firstmate context gauge failed for home {homes}, so a pane that home owns could not "
+            "be ruled out. Nothing was sent. Fix the gauge, or pass --skip-fleet-gauge to go on without that rule."
+        )
+    accepted = plan["to_restart"]
+    if not accepted:
+        result = {"mode": "execute", "session": session, "run_id": None, "record": None, "panes": [], "refused": plan["refused"],
+                  "resume_lines": [], "sent": 0}
+        _handoff_print_result(args, result)
+        raise OrganizerError("Nothing was sent: every pane was refused.", suppress_message=True)
+    with batch_run_lock("handoff-restart"):
+        run = HandoffRun(
+            session, handoff_run_id(), accepted, float(args.handoff_timeout),
+            {"fleet_gauge": plan["fleet_gauge"], "skip_fleet_gauge": plan["skip_fleet_gauge"], "confirm": plan["confirm"]},
+        )
+        pool = ThreadPoolExecutor(max_workers=min(HANDOFF_MAX_PARALLEL, len(accepted)))
+        futures = {item["pane_id"]: pool.submit(run.run_pane, item["pane_id"], item["id8"]) for item in accepted}
+        interrupted = False
+        try:
+            for future in futures.values():
+                future.result()
+        except KeyboardInterrupt:
+            interrupted = True
+            run.stop.set()
+            for future in futures.values():
+                future.cancel()
+        finally:
+            pool.shutdown(wait=True)
+        if interrupted:
+            for pane_id, future in futures.items():
+                if future.cancelled():
+                    run.update(pane_id, state="interrupted", reason="interrupted")
+    panes = [dict(item) for item in run.record["panes"].values()]
+    result = {
+        "mode": "execute", "session": session, "run_id": run.record["run_id"], "record": str(run.path), "panes": panes,
+        "refused": plan["refused"], "resume_lines": run.resume_lines(), "interrupted": interrupted,
+        "sent": sum(1 for pane in panes if pane["state"] == "sent"),
+    }
+    _handoff_print_result(args, result)
+    if interrupted or plan["refused"] or result["sent"] != len(accepted):
+        raise OrganizerError("Not every pane reached the end of the restart.", suppress_message=True)
+
+
+def _handoff_print_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+    for pane in result["panes"]:
+        reason = f" ({HANDOFF_REASON_TEXT.get(pane['reason'], pane['reason'])})" if pane.get("reason") else ""
+        print(f"{pane['pane_id']}: {pane['state']}{reason}")
+    for item in result["refused"]:
+        print(f"{item['pane_id']}: refused ({item['detail']})")
+    for line in result["resume_lines"]:
+        print(line)
+    if result.get("record"):
+        print(f"Run record: {result['record']}")
+    if result.get("interrupted"):
+        print("Interrupted. Each pane stopped between steps and nothing was typed again.")
+
+
 def parser() -> argparse.ArgumentParser:
     program = argparse.ArgumentParser(description=__doc__)
     program.add_argument("--session", help="Herdr named session. Defaults to HERDR_SESSION.")
@@ -6625,6 +7487,31 @@ def parser() -> argparse.ArgumentParser:
     reorder.set_defaults(func=reorder_command)
 
     commands.add_parser("list-archives", help="Print archive summaries.").set_defaults(func=list_archives_command)
+
+    handoff = commands.add_parser(
+        "handoff-restart",
+        help="Ask chosen Claude panes to save a handoff, then restart each session with /clear, every step gated.",
+    )
+    handoff.add_argument(
+        "--pane", action="append", required=True, metavar="PANE_ID:ID8",
+        help="A Claude pane and the first 8 characters of its session id, for example w1:p2:0b407c12. Repeat per pane.",
+    )
+    handoff.add_argument("--execute", action="store_true")
+    handoff.add_argument("--confirm", help="Must equal the confirm string the preview prints.")
+    handoff.add_argument(
+        "--handoff-timeout", type=float, default=600.0, metavar="SEC",
+        help="How long to wait for the /handoff turn to finish (default 600).",
+    )
+    handoff.add_argument("--json", action="store_true", help="Print one JSON object and nothing else.")
+    handoff.add_argument(
+        "--skip-fleet-gauge", action="store_true",
+        help="Go on although a home's context gauge failed. The run record says rule 6 was skipped by choice.",
+    )
+    handoff.add_argument(
+        "--fleet-home", action="append", default=[], metavar="PATH[=CODE_ROOT]",
+        help="A firstmate home the usual folders do not reach. Repeat as needed.",
+    )
+    handoff.set_defaults(func=handoff_restart_command)
 
     relink = commands.add_parser(
         "relink-owner-records",

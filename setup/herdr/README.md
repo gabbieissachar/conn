@@ -478,8 +478,35 @@ herdr-organizer delete-batch --batch <batch_id> --execute --confirm <batch_id>
 Commands that create, restore, move or delete archives, or close tabs, share one lock while they execute
 (`archive`, `archive-all`, `archive-tabs`, `restore`, `restore-batch`, `restore-tab`, `restore-tabs`,
 `delete-archive`, `delete-archived-tab`, `delete-batch --archives`, `move-tabs`, `resume-move`,
-`cleanup-empty-tabs`, `add-tabs-to-batch`, `finish-tab-add`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
+`cleanup-empty-tabs`, `add-tabs-to-batch`, `finish-tab-add`, `handoff-restart --execute`), so a second run is refused instead of overwriting the first. Previews, `snapshot`,
 `list-archives`, `list-batches` and `reorder-tab` do not lock. `delete-batch` and the group commands lock when they execute.
+
+### Handoff and restart (other Claude panes)
+
+`handoff-restart` asks chosen Claude panes to save a handoff, then restarts each session with `/clear` and tells it to read
+the handoff. It is a preview unless `--execute --confirm` is given, and it runs from a terminal, never from a page.
+
+```sh
+herdr-organizer --session esim handoff-restart --pane w1:p2:0b407c12
+herdr-organizer --session esim handoff-restart --pane w1:p2:0b407c12 --execute --confirm handoff-restart:esim:0b407c12
+```
+
+A pane is `<pane id>:<first 8 characters of its session id>`. The preview names the exact confirm string (the ids sorted)
+and refuses, with a reason, every pane that is not an idle, unfocused Claude pane with an empty input box. Panes that
+belong to firstmate (worker or primary records, firstmate home folders, leader and task workspaces, `fm-` and `leader-`
+tabs, and sessions the context gauge of any home maps to a worker) are always refused: they restart through firstmate's
+own rollover.
+
+Each pane then runs five gated steps, re-reading the pane before each one: ask for the handoff (`/handoff ...`), check
+the document named on the last line of the reply (read from the session transcript, never from the screen), a quiet
+check, `/clear` typed once and submitted with Enter, and a resume message sent only to the pane whose session id changed.
+Nothing typed is ever typed twice, a pane that stops is reported and left alone, and a pane that stopped after `/clear`
+was typed gets a printed line telling you how to resume it by hand. Up to four panes run at once under the same lock as
+`archive-all`. The run record is `state/workspace-organizer/handoff-runs/<run id>.json` (0600, no transcript text, no
+full session id). Exit code 0 means every pane reached the resume message.
+
+If the context gauge of a firstmate home fails, `--execute` refuses (`fleet_gauge_incomplete`); `--skip-fleet-gauge` goes
+on and the run record says so. `--fleet-home <path>[=<code root>]` adds a home the usual folders do not reach.
 
 ### Firstmate worker records
 
