@@ -40,9 +40,31 @@ class RedactTextTest(unittest.TestCase):
         self.check("Authorization: Bearer " + fake("", 32), "bearer", kept=("Authorization: Bearer ",))
         self.check("open https://deploy:" + fake("", 12) + "@example.com/x", "url-password", kept=("https://deploy:", "@example.com/x"))
         self.check("https://example.com/cb?state=1&access_token=" + fake("", 24) + "&x=2", "url-secret", kept=("&access_token=", "&x=2"))
-        self.check("export SERVICE_API_KEY=" + fake("", 24), "env-secret", kept=("export SERVICE_API_KEY=",))
-        self.check('DB_PASSWORD="' + fake("", 16) + '"', "env-secret", kept=('DB_PASSWORD="',))
+        self.check("export SERVICE_API_KEY=" + fake("", 24), "assigned-secret", kept=("export SERVICE_API_KEY=",))
+        self.check('DB_PASSWORD="' + fake("", 16) + '"', "assigned-secret", kept=('DB_PASSWORD="',))
         self.check("token " + "0123456789abcdef" * 4 + " end", "hex64-token", kept=("token ", " end"))
+
+    def test_a_secret_given_a_value_in_any_form(self):
+        # The reviewer's S4 and S5 repros: plain env names, lower case, ini, YAML and JSON keys, a status
+        # line, short passwords and a short bearer token.
+        for line, kept in [
+            ("PASSWORD=" + fake("", 14), "PASSWORD="), ("TOKEN=" + fake("", 16), "TOKEN="), ("SECRET=" + fake("", 13), "SECRET="),
+            ("API_KEY=" + fake("", 10), "API_KEY="), ("APIKEY=" + fake("", 10), "APIKEY="), ("PRIVATE_KEY=" + fake("", 8), "PRIVATE_KEY="),
+            ("export PASSWORD=" + fake("", 14), "export PASSWORD="), ("password=" + fake("", 14), "password="),
+            ("db_password = " + fake("", 8), "db_password = "), ("aws_secret_access_key = " + fake("", 12), "aws_secret_access_key = "),
+            ('"password": "' + fake("", 8) + '"', '"password": "'), ("password: " + fake("", 8), "password: "),
+            ("old token=" + fake("", 17) + " is dead", " is dead"), ("DB_PASSWORD=" + fake("", 7), "DB_PASSWORD="),
+        ]:
+            self.check(line, "assigned-secret", kept=(kept,))
+        self.check("https://x.example/login?password=" + fake("", 7), "url-secret", kept=("?password=",))
+        self.check("Authorization: Bearer " + fake("", 15), "bearer", kept=("Bearer ",))
+
+    def test_a_private_key_cut_off_before_its_end_line(self):
+        # The reviewer's S6 repro: the head of a key file, then the rest of the reply after a blank line.
+        text = "Here:\n-----BEGIN RSA PRIVATE KEY-----\n" + fake("MIIE", 40) + "\n" + fake("", 40) + "\n\nThat is all."
+        out = self.check(text, "private-key", kept=("Here:", "That is all."))
+        self.assertEqual(out.count("\n"), text.count("\n"))
+        self.check("-----BEGIN PRIVATE KEY-----\n" + fake("", 40), "private-key")
 
     def test_a_private_key_keeps_its_line_breaks(self):
         block = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + fake("", 40) + "\n" + fake("", 40) + "\n-----END OPENSSH PRIVATE KEY-----"
@@ -54,7 +76,8 @@ class RedactTextTest(unittest.TestCase):
     def test_what_is_not_a_secret_stays(self):
         text = ("Session aaaaaaaa-1111-4111-8111-111111111111, commit 0123456789abcdef0123456789abcdef01234567, "
                 "the token header x-transcript-reader-token, TOKEN_HEADER = 'x-token', export API_TOKEN=$TOKEN_FROM_KEYCHAIN, "
-                "Bearer of good news, https://example.com/a?page=2&key=short, sk-short, ~/notes.md, YOUR_PASSPHRASE_HERE.")
+                "Bearer of good news, https://example.com/a?page=2&key=short, sk-short, ~/notes.md, YOUR_PASSPHRASE_HERE, "
+                "token=YOUR_TOKEN_HERE, def login(password: str), Passwords: see the vault, secret: <from the keychain>, pwd=***.")
         counts = {}
         self.assertEqual(redact.redact_text(text, counts), text)
         self.assertEqual(counts, {})
