@@ -229,7 +229,7 @@ test('group card: a layout-only copy keeps every restore command, shows layout o
   assert.match(view, /\[layoutOpen, 'layout open'\]/);
   // the per-member and group resume commands stay for an archived member, whatever its layout copy
   assert.match(view, /const restoreCommand = member\.status === 'archived' \? memberRestoreCommand\(member, session\) : ''/);
-  assert.match(view, /canRestore \? `data-command="\$\{escapeHtml\(resume\)\}"`/);
+  assert.match(view, /canRestore && !notRebooted \? `data-command="\$\{escapeHtml\(resume\)\}"`/);
   // layout only is offered only while some archived member has no open copy, so it cannot make duplicates
   assert.match(view, /const canLayout = canRestore && layoutOpen < archivedMembers\.length/);
   assert.match(view, /canLayout \? `data-command="\$\{escapeHtml\(layout\)\}"`/);
@@ -479,7 +479,49 @@ test('a leader tab in the group has its own resume button aimed at leader-space,
   assert.match(blocked, /no leader-space workspace is open/);
 });
 
-test('the snapshot restore button is disabled when every snapshot member was captured after the last boot, with a deliberate way around it', () => {
+test('per-tab resume buttons go to the member\'s own open workspace unless the picker was used, and never to an unrelated one', () => {
+  const batch = { batch_id: 'batch-20261014-101500', herdr_session: 'esim' };
+  const data = { herdr_session: 'esim', batches: [batch], workspaces: [{ id: 'wBK', label: 'leader-space' }, { id: 'wBV', label: 'Herdr-Fix' }, { id: 'wCG', label: 'BC-43' }] };
+  const { memberTabsView } = memberTabHelpers({ data: null }, { rows: new Map() }, { data });
+  const tab = { id: 'w9J:t3', label: 'shell', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 };
+  const member = label => ({ archive_id: '20261014-101500-esim', status: 'archived', workspace_label: label, tabs: [tab] });
+  assert.match(memberTabsView(member('BC-43 (selected tabs) (selected tabs)'), ' --session esim', '', batch.batch_id), /--tab w9J:t3 --to-workspace wCG /, 'the open workspace named like the archive');
+  assert.match(memberTabsView(member('Herdr-Fix'), ' --session esim', '', batch.batch_id), /--to-workspace wBV /, 'another member in the same group goes to its own');
+  assert.match(memberTabsView(member('BC-43'), ' --session esim', 'wBV', batch.batch_id), /--to-workspace wBV /, 'a workspace picked by the user wins');
+  const none = memberTabsView(member('closed-one'), ' --session esim', '', batch.batch_id);
+  assert.equal(none.includes('--to-workspace'), false, 'no workspace carries the name: no command, not the first workspace');
+  assert.match(none, /Pick one in &quot;Resume tabs into&quot;/);
+});
+
+test('the group panel works out the default again for each selection and forgets a choice when the selection ends', () => {
+  const key = (archive, tab) => `${archive}::${tab}`;
+  const bc43 = '20261014-101500-bc43';
+  const fix = '20261014-101600-fix';
+  const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const tab = id => ({ id, label: 'shell', pane_count: 1, resumable_agent_count: 1, unresumable_agent_count: 0 });
+  const batch = { batch_id: 'batch-20261014-101500', herdr_session: 'esim', members: [
+    { archive_id: bc43, status: 'archived', workspace_label: 'BC-43 (selected tabs)', tabs: [tab('w1:t2')] },
+    { archive_id: fix, status: 'archived', workspace_label: 'Herdr-Fix', tabs: [tab('w2:t2')] },
+  ] };
+  const data = { herdr_session: 'esim', workspaces: [{ id: 'wBK', label: 'leader-space' }, { id: 'wBV', label: 'Herdr-Fix' }, { id: 'wCG', label: 'BC-43' }], batches: [batch] };
+  const state = { groupTabDestinations: {}, groupPanelDestinations: {}, selectedGroupBatch: batch.batch_id, selectedGroupTabs: new Set() };
+  const { groupPanelView } = new Function('escapeHtml', 'state', [line('SESSION_NAME_PATTERN'), line('TAB_ID_PATTERN'), line('WORKSPACE_ID_PATTERN'), line('archiveTabKey'), html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = ')), html.slice(html.indexOf('const ARCHIVE_ID_PATTERN'), html.indexOf('const memberTabsView')), html.slice(html.indexOf('const groupPanelView'), html.indexOf('const archivedTabView')), 'return { groupPanelView };'].join('\n'))(escapeHtml, state);
+  state.selectedGroupTabs = new Set([key(fix, 'w2:t2')]);
+  assert.match(groupPanelView(data), /--to-workspace wBV /, 'first selection: the insurance member\'s workspace');
+  state.selectedGroupTabs = new Set([key(bc43, 'w1:t2')]);
+  assert.match(groupPanelView(data), /--to-workspace wCG /, 'second selection in the same group: its own workspace, not the first one\'s');
+  assert.deepEqual(state.groupPanelDestinations, {}, 'rendering stores nothing');
+  state.groupPanelDestinations[batch.batch_id] = 'wBV';
+  assert.match(groupPanelView(data), /--to-workspace wBV /, 'a choice the user made stays while the selection lasts');
+  state.selectedGroupTabs = new Set();
+  assert.equal(groupPanelView(data), '');
+  assert.deepEqual(state.groupPanelDestinations, {}, 'the choice ends with the selection');
+  state.selectedGroupTabs = new Set([key(bc43, 'w1:t2')]);
+  assert.match(groupPanelView(data), /--to-workspace wCG /, 'the next selection starts from its own default again');
+});
+
+test('the snapshot restore buttons are disabled when any snapshot member was captured after the last boot, with a deliberate way around it', () => {
   const start = html.indexOf('const snapshotNotRebooted = ');
   const vm = require('node:vm');
   const { snapshotNotRebooted } = vm.runInNewContext(`${html.slice(start, html.indexOf('const NOT_REBOOTED_REASON'))}; ({ snapshotNotRebooted })`, {});
@@ -487,13 +529,15 @@ test('the snapshot restore button is disabled when every snapshot member was cap
   const archives = [{ archive_id: 'a1', created_at: '2026-10-25T02:00:00Z' }, { archive_id: 'a2', created_at: '2026-10-24T20:00:00Z' }, { archive_id: 'a3', created_at: 'not a time' }];
   assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }], archives, boot), true, 'captured after boot: the workspaces are still open');
   assert.equal(snapshotNotRebooted([{ archive_id: 'a2' }], archives, boot), false, 'captured before boot: the restart happened');
-  assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }, { archive_id: 'a2' }], archives, boot), false, 'one member from before the boot is enough to allow the restore');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }, { archive_id: 'a2' }], archives, boot), true, 'one member left over from before the boot does not switch the guard off');
+  assert.equal(snapshotNotRebooted([{ archive_id: 'a2' }, { archive_id: 'a3' }, { archive_id: 'missing' }], archives, boot), false, 'unreadable times add nothing');
   assert.equal(snapshotNotRebooted([{ archive_id: 'a3' }], archives, boot), false, 'an unreadable time never blocks');
   assert.equal(snapshotNotRebooted([{ archive_id: 'missing' }], archives, boot), false, 'a member with no archive never blocks');
   assert.equal(snapshotNotRebooted([{ archive_id: 'a1' }], archives, undefined), false, 'no boot time never blocks');
   assert.equal(snapshotNotRebooted([], archives, boot), false);
   assert.match(html, /snapshotCount && notRebooted \? `<button class="primary" type="button" disabled/, 'the primary button is disabled with the reason');
   assert.match(html, /Copy anyway \(computer not restarted\)/, 'a Herdr-only restart can still copy the command, on purpose');
+  assert.match(html, /canRestore && !notRebooted \? `data-command="\$\{escapeHtml\(resume\)\}"` : 'disabled'/, 'restore all restores snapshot members too, so the same guard disables it');
 });
 
 test('the archive group can select every tab of one archived workspace at once, and a stacked mark reads once', () => {
@@ -536,11 +580,11 @@ test('an archived workspace in the group offers to resume one tab into an open w
   assert.equal(memberTabCommand(member, member.tabs[0], '', 'w9Z; rm'), '');
   assert.equal(memberTabCommand({ ...member, archive_id: 'bad id' }, member.tabs[0], '', 'w9Z'), '');
   assert.equal(memberTabsView({ ...member, status: 'restored' }, '', 'w9Z').includes('Copy resume tab'), false);
-  // Only open workspaces of the group's own session are offered, and the first one is the default.
+  // Only open workspaces of the group's own session are offered.
   const data = { herdr_session: 'esim', workspaces: [{ id: 'w9Z', label: 'one' }, { id: 'w9Y', label: 'two' }] };
   assert.equal(groupDestinations({ herdr_session: 'esim' }, data).length, 2);
   assert.deepEqual(groupDestinations({ herdr_session: 'other' }, data), []);
-  assert.equal(groupTabDestination({ batch_id: 'b1' }, data.workspaces), 'w9Z');
+  assert.equal(groupTabDestination({ batch_id: 'b1' }, data.workspaces), '', 'nothing chosen: the picker does not decide, each tab uses its own workspace');
 });
 
 test('context view: read-only, fetched through the organizer API, and escapes what it prints', () => {
@@ -625,6 +669,7 @@ test('selected tabs panel: each mode states its effect in a visible line, not on
   const panel = html.slice(html.indexOf('const MODE_LINES = '), html.indexOf('const detail = mode === \'batch\''));
   for (const mode of ['move', 'archive', 'batch']) assert.match(panel, new RegExp(`${mode}: '[^']*closes`, 'i'), mode);
   assert.match(panel, /archive: '[^']*stops their processes/, 'the destructive effect of Archive is spelled out');
+  assert.match(panel, /move: '[^']*stops their processes[^']*resumes verified agent sessions/, 'Move says processes stop and only verified agents come back');
   assert.match(html, /<p class="mp-note" id="mode-effect">\$\{escapeHtml\(MODE_LINES\[mode\]\)\}<\/p>/, 'the line is in the panel, escaped');
 });
 
@@ -659,7 +704,9 @@ test('workspaces view: the compact toggle shows names and tick boxes only, escap
 test('phone layout: Context session names wrap instead of being cut, and the header stops sticking on a narrow screen', () => {
   assert.match(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere/);
   assert.doesNotMatch(html, /\.ctx-compact \.compact-tab \.tab-name \{[^}]*text-overflow: ellipsis/, 'no ellipsis on a session name');
-  assert.match(html, /@media \(max-width: 600px\) \{ \.topbar \{ position: static; \} \.controls \{ flex-wrap: wrap; \} \.search \{ flex: 1 1 100%; \} \}/, 'the filter has its own row on a phone');
+  assert.match(html, /@media \(max-width: 600px\) \{ \.topbar \{ position: static; \} \.controls \{ flex-wrap: wrap; \} \.search \{ flex: 1 1 100%; \} \.move-panel \.mode-row \{ margin-left: 0; \} \}/, 'the filter has its own row on a phone, and the mode buttons start at the left edge');
+  assert.match(html, /@media \(max-width: 640px\) \{ \.summary \{ gap: 8px;[^}]*\} \.metric \{ min-height: 0;/, 'the three counts stay in one row on a phone');
+  assert.equal(/@media \(max-width: 640px\) \{ \.summary \{ grid-template-columns: 1fr;/.test(html), false);
   assert.match(html, /\.toast \{[^}]*max-width: calc\(100vw - 48px\); overflow-wrap: anywhere/, 'a long message stays inside the screen');
 });
 
@@ -696,11 +743,11 @@ function destinationFunctions() {
   const start = html.indexOf('const LEADER_WORKSPACE_LABEL = ');
   const end = html.indexOf('const archiveTabKey = ');
   const vm = require('node:vm');
-  return vm.runInNewContext(`${html.slice(start, end)}; ({ isLeaderTabLabel, restoreDestinations, defaultDestination, keepOrDefaultDestination })`, {});
+  return vm.runInNewContext(`${html.slice(start, end)}; ({ isLeaderTabLabel, restoreDestinations, ownWorkspace, defaultDestination, chosenOrDefaultDestination })`, {});
 }
 
 test('restore destinations: leader-space is offered only for leader tabs, and the default is the workspace with the archive\'s own name', () => {
-  const { isLeaderTabLabel, restoreDestinations, defaultDestination, keepOrDefaultDestination } = destinationFunctions();
+  const { isLeaderTabLabel, restoreDestinations, ownWorkspace, defaultDestination, chosenOrDefaultDestination } = destinationFunctions();
   // leader-space is first in the list, as it is on the operator's machine.
   const workspaces = [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }, { id: 'wB1', label: 'nip' }];
   const tab = label => ({ label });
@@ -714,20 +761,25 @@ test('restore destinations: leader-space is offered only for leader tabs, and th
   assert.equal(defaultDestination(offered, ['nip (selected tabs)']), 'wB1');
   assert.equal(defaultDestination(offered, ['no such workspace']), 'wA8', 'without a match, the first offered one, never leader-space');
   assert.equal(defaultDestination([], ['esim']), '');
+  assert.equal(ownWorkspace(offered, ['nip (selected tabs) (selected tabs)']), 'wB1');
+  assert.equal(ownWorkspace(offered, ['no such workspace']), '', 'no name match is not a guess');
   const chosen = {};
-  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8');
+  assert.equal(chosenOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8');
+  assert.deepEqual(chosen, {}, 'a default is never stored, so it cannot carry into the next selection');
+  assert.equal(chosenOrDefaultDestination(chosen, 'k', offered, ['nip']), 'wB1', 'the next selection gets its own default');
   chosen.k = 'wB1';
-  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wB1', 'a destination the user picked stays while it is offered');
+  assert.equal(chosenOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wB1', 'a destination the user picked stays while it is offered');
   chosen.k = 'wBK';
-  assert.equal(keepOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8', 'a stale choice of leader-space is replaced');
+  assert.equal(chosenOrDefaultDestination(chosen, 'k', offered, ['esim']), 'wA8', 'a stale choice of leader-space is replaced');
 });
 
 test('restore destinations: every restore panel and per-tab button follows the leader convention', () => {
   assert.match(html, /restoreDestinations\(data\.workspaces \|\| \[\], selected\.map/, 'the single-archive panel');
   assert.match(html, /restoreDestinations\(groupDestinations\(batch, data\), pickedTabs\)/, 'the group panel');
   assert.match(html, /groupDestinations\(batch, state\.data\)\.filter\(workspace => workspace\.label !== LEADER_WORKSPACE_LABEL\)/, 'the group picker offers no leader-space');
-  assert.match(html, /const target = leader \? groupLeaderDestination\(batchId\) : destination;/, 'a leader tab targets leader-space on its own');
+  assert.match(html, /const target = leader \? groupLeaderDestination\(batchId\) : \(destination \|\| memberOwnDestination\(member, batchId\)\);/, 'a leader tab targets leader-space on its own, another tab its own workspace unless the picker says otherwise');
   assert.equal(/groupTabDestination\(batch, [A-Za-z]*\)[^;]*\[0\]/.test(html), false, 'no destination falls back to the first workspace of the list');
+  assert.equal(html.includes('keepOrDefaultDestination'), false, 'only the change handlers store a destination');
 });
 
 test('context view: the compact toggle keeps the tick box, puts the percent next to the name, and is remembered safely', () => {

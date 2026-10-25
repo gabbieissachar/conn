@@ -284,8 +284,8 @@ created: 2026-09-10
     @keyframes shimmer { to { background-position: -200% 0; } }
     @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
     /* On a phone the header alone is a third of the screen, so it scrolls away instead of sticking, and the filter gets a row of its own. */
-    @media (max-width: 600px) { .topbar { position: static; } .controls { flex-wrap: wrap; } .search { flex: 1 1 100%; } }
-    @media (max-width: 640px) { .summary { grid-template-columns: 1fr; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; }
+    @media (max-width: 600px) { .topbar { position: static; } .controls { flex-wrap: wrap; } .search { flex: 1 1 100%; } .move-panel .mode-row { margin-left: 0; } }
+    @media (max-width: 640px) { .summary { gap: 8px; margin-bottom: 18px; } .metric { min-height: 0; padding: 10px 12px; } .metric strong { margin-top: 4px; font-size: 22px; } .move-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); } .topline { align-items: flex-start; } .badge { margin-top: 4px; } main { padding-inline: 16px; } .topbar { padding-inline: 16px; }
       .pane-row { grid-template-columns: 1fr; } .verdict, .evidence { align-items: flex-start; justify-content: flex-start; text-align: left; } .view-tabs { flex-wrap: wrap; } .controls { flex-wrap: wrap; } .select { max-width: none; flex: 1; } }
   </style>
 </head>
@@ -446,7 +446,7 @@ created: 2026-09-10
       };
       // One visible line per mode, because a tooltip never shows on a phone and each of these closes real tabs.
       const MODE_LINES = {
-        move: 'Closes the selected tabs here and rebuilds them in the workspace you pick.',
+        move: 'Closes the selected tabs, which stops their processes, rebuilds them in the workspace you pick and resumes verified agent sessions.',
         archive: 'Saves the selected tabs into the archive, then closes them and stops their processes.',
         batch: 'Saves the selected tabs into the archive group, then closes them and stops their processes.',
       };
@@ -478,24 +478,23 @@ created: 2026-09-10
     // The open workspaces these tabs may be restored into: only leader-space for leader tabs, any other workspace for the rest, none for a mix.
     const restoreDestinations = (workspaces, tabs) => (mixesLeaderTabs(tabs) ? [] : workspaces.filter(workspace => (workspace.label === LEADER_WORKSPACE_LABEL) === tabs.some(tab => isLeaderTabLabel(tab.label))));
     // The default destination is the open workspace that carries the archive's own name (without the "(selected tabs)" mark), else the first one offered.
-    const defaultDestination = (offered, archiveLabels) => {
+    const ownWorkspace = (offered, archiveLabels) => {
       const names = new Set(archiveLabels.map(label => String(label ?? '').replace(/(\s*\(selected tabs\))+$/, '')).filter(Boolean));
-      return (offered.find(workspace => names.has(workspace.label)) || offered[0])?.id || '';
+      return offered.find(workspace => names.has(workspace.label))?.id || '';
     };
-    const keepOrDefaultDestination = (chosen, key, offered, archiveLabels) => {
-      if (!offered.some(workspace => workspace.id === chosen[key])) chosen[key] = defaultDestination(offered, archiveLabels);
-      return chosen[key];
-    };
+    const defaultDestination = (offered, archiveLabels) => ownWorkspace(offered, archiveLabels) || offered[0]?.id || '';
+    // Only a choice the user made is remembered. The default is worked out again from the current selection every time, so one selection's default never carries into the next.
+    const chosenOrDefaultDestination = (chosen, key, offered, archiveLabels) => (offered.some(workspace => workspace.id === chosen[key]) ? chosen[key] : defaultDestination(offered, archiveLabels));
     const LEADER_MIX_NOTE = 'Leader tabs and other tabs cannot go into one workspace. Select them separately.';
     const archiveTabKey = (archiveId, tabId) => `${archiveId}::${tabId}`;
     const restorePanelView = data => {
       const selected = data.archives.flatMap(archive => (archive.tabs || []).map(tab => ({ archive, tab }))).filter(({ archive, tab }) => state.selectedArchivedTabs.has(archiveTabKey(archive.archive_id, tab.id)));
-      if (!selected.length) return '';
+      if (!selected.length) { state.archiveDestinations = {}; return ''; }
       const archiveIds = new Set(selected.map(({ archive }) => archive.archive_id));
       if (archiveIds.size !== 1) return '<div class="mp-head"><strong>Restore selected archived tabs</strong><button class="mp-close" type="button" data-panel-close="archived" aria-label="Dismiss and clear the selection" title="Dismiss and clear the selection (Esc)">&times;</button></div><p class="mp-note">Select tabs from one archive at a time.</p>';
       const archiveId = selected[0].archive.archive_id;
       const destinations = restoreDestinations(data.workspaces || [], selected.map(({ tab }) => tab));
-      const destination = keepOrDefaultDestination(state.archiveDestinations, archiveId, destinations, [selected[0].archive.workspace_label]);
+      const destination = chosenOrDefaultDestination(state.archiveDestinations, archiveId, destinations, [selected[0].archive.workspace_label]);
       const mixed = mixesLeaderTabs(selected.map(({ tab }) => tab));
       const unavailable = selected.filter(({ tab }) => tab.unresumable_agent_count > 0);
       const command = destination && !unavailable.length
@@ -512,11 +511,11 @@ created: 2026-09-10
     const groupPanelView = data => {
       const batch = (data.batches || []).find(item => item.batch_id === state.selectedGroupBatch);
       const picks = batch ? (batch.members || []).filter(member => member.status === 'archived').flatMap(member => (member.tabs || []).filter(tab => state.selectedGroupTabs.has(archiveTabKey(member.archive_id, tab.id))).map(tab => ({ member, tab }))) : [];
-      if (!picks.length) return '';
+      if (!picks.length) { state.groupPanelDestinations = {}; return ''; }
       const session = SESSION_NAME_PATTERN.test(batch.herdr_session || '') ? ` --session ${batch.herdr_session}` : '';
       const pickedTabs = picks.map(({ tab }) => tab);
       const destinations = restoreDestinations(groupDestinations(batch, data), pickedTabs);
-      const destination = keepOrDefaultDestination(state.groupPanelDestinations, batch.batch_id, destinations, picks.map(({ member }) => member.workspace_label));
+      const destination = chosenOrDefaultDestination(state.groupPanelDestinations, batch.batch_id, destinations, picks.map(({ member }) => member.workspace_label));
       const mixed = mixesLeaderTabs(pickedTabs);
       const unavailable = picks.filter(({ tab }) => tab.unresumable_agent_count > 0);
       const byArchive = new Map();
@@ -1509,13 +1508,13 @@ created: 2026-09-10
       ? `herdr-organizer${session} restore --archive ${member.archive_id} --resume-agents --execute --confirm ${member.archive_id}` : '');
     // A layout-only restore leaves the archive archived and an open workspace behind. It counts only while that workspace is still listed.
     const hasOpenLayout = (member, liveIds) => member.status === 'archived' && Boolean(member.layout_workspace_id) && liveIds.has(member.layout_workspace_id);
-    // A snapshot is for after a restart. When every snapshot member was captured after the computer last started, the workspaces
+    // A snapshot is for after a restart. When any snapshot member was captured after the computer last started, its workspaces
     // are still open, and a restore now would adopt them and take them out of the group. Unknown times never block. Boot time
     // does not see a Herdr restart without a reboot, which is why the page keeps a deliberate way to copy the command anyway.
     const snapshotNotRebooted = (members, archives, bootTime) => {
       const boot = Date.parse(bootTime);
       if (!members.length || !Number.isFinite(boot)) return false;
-      return members.every(member => {
+      return members.some(member => {
         const archive = (archives || []).find(item => item.archive_id === member.archive_id);
         const captured = archive ? Date.parse(archive.created_at) : NaN;
         return Number.isFinite(captured) && captured > boot;
@@ -1524,8 +1523,12 @@ created: 2026-09-10
     const NOT_REBOOTED_REASON = 'This snapshot was taken after the computer last started, so its workspaces are probably still open. Restoring now would take them out of the group. Restart the computer first, then restore.';
     // The open workspaces a single archived tab can be resumed into: only those of the session the group belongs to.
     const groupDestinations = (batch, data) => (SESSION_NAME_PATTERN.test(batch.herdr_session || '') && batch.herdr_session === data.herdr_session ? (data.workspaces || []) : []);
-    // The picker above a group's per-tab buttons offers every workspace except leader-space and starts on the first one (a group holds many archives, so no name decides); a leader tab's button goes to leader-space on its own.
-    const groupTabDestination = (batch, destinations) => keepOrDefaultDestination(state.groupTabDestinations, batch.batch_id, destinations.filter(workspace => workspace.label !== LEADER_WORKSPACE_LABEL), []);
+    // The picker above a group's per-tab buttons offers every workspace except leader-space. Left alone, each tab goes to the open workspace that carries its own archive's name; a leader tab's button goes to leader-space on its own.
+    const groupTabDestination = (batch, destinations) => { const chosen = state.groupTabDestinations[batch.batch_id]; return destinations.some(workspace => workspace.id === chosen && workspace.label !== LEADER_WORKSPACE_LABEL) ? chosen : ''; };
+    const memberOwnDestination = (member, batchId) => {
+      const batch = ((state.data && state.data.batches) || []).find(item => item.batch_id === batchId);
+      return batch ? ownWorkspace(groupDestinations(batch, state.data).filter(workspace => workspace.label !== LEADER_WORKSPACE_LABEL), [member.workspace_label]) : '';
+    };
     const groupLeaderDestination = batchId => {
       const batch = ((state.data && state.data.batches) || []).find(item => item.batch_id === batchId);
       return batch ? (groupDestinations(batch, state.data).find(workspace => workspace.label === LEADER_WORKSPACE_LABEL)?.id || '') : '';
@@ -1556,9 +1559,9 @@ created: 2026-09-10
         if (!offer) return '';
         // A leader tab goes only into leader-space and no other tab goes there, so the picker never offers leader-space and a leader tab targets it on its own.
         const leader = isLeaderTabLabel(tab.label);
-        const target = leader ? groupLeaderDestination(batchId) : destination;
+        const target = leader ? groupLeaderDestination(batchId) : (destination || memberOwnDestination(member, batchId));
         const command = memberTabCommand(member, tab, session, target);
-        const why = !target ? (leader ? 'A leader tab goes only into leader-space, and no leader-space workspace is open in this session.' : 'No open workspace to resume into. Refresh the snapshot, or open the workspace first.')
+        const why = !target ? (leader ? 'A leader tab goes only into leader-space, and no leader-space workspace is open in this session.' : 'No open workspace carries this tab\'s archive name. Pick one in "Resume tabs into", or open the workspace first.')
           : tab.unresumable_agent_count > 0 ? 'This tab has an agent session that is not verified, so it cannot be resumed from here. Register it first.'
           : !TAB_ID_PATTERN.test(tab.id || '') ? 'This tab has an unexpected id, so no command is built.' : '';
         return `<button type="button" class="tab-resume" ${command ? `data-command="${escapeHtml(command)}"` : 'disabled'} title="${escapeHtml(command ? `Copies a command that rebuilds only this tab in ${leader ? 'leader-space' : 'the chosen workspace'} and resumes its verified agents. The tab then leaves the archive; the rest of the archived workspace stays. When its last tab leaves, the archived workspace leaves the group.` : why)}">Copy resume tab</button>`;
@@ -1616,7 +1619,7 @@ created: 2026-09-10
       const tabDestinations = groupDestinations(batch, state.data).filter(workspace => workspace.label !== LEADER_WORKSPACE_LABEL);
       const tabDestination = groupTabDestination(batch, tabDestinations);
       const offersTabs = archivedMembers.some(member => (member.tabs || []).length);
-      const destinationPicker = offersTabs ? `<div class="group-destination"><label for="group-dest-${escapeHtml(id)}">Resume tabs into</label><select class="select" id="group-dest-${escapeHtml(id)}" data-group-destination="${escapeHtml(id)}" ${tabDestinations.length ? '' : 'disabled'}>${tabDestinations.length ? tabDestinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === tabDestination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('') : '<option value="">No open workspace in this session</option>'}</select></div>` : '';
+      const destinationPicker = offersTabs ? `<div class="group-destination"><label for="group-dest-${escapeHtml(id)}">Resume tabs into</label><select class="select" id="group-dest-${escapeHtml(id)}" data-group-destination="${escapeHtml(id)}" ${tabDestinations.length ? '' : 'disabled'}>${tabDestinations.length ? `<option value="" ${tabDestination ? '' : 'selected'}>Each tab's own workspace</option>${tabDestinations.map(workspace => `<option value="${escapeHtml(workspace.id)}" ${workspace.id === tabDestination ? 'selected' : ''}>${escapeHtml(workspace.label)} (${escapeHtml(workspace.id)})</option>`).join('')}` : '<option value="">No open workspace in this session</option>'}</select></div>` : '';
       return `<article class="archive batch">
         <div class="archive-line"><div><div class="archive-name">${escapeHtml(batchTitle(batch))}</div><div class="archive-meta">${escapeHtml(id)}${batchUpdated(batch) ? ` · updated ${escapeHtml(batchUpdated(batch))}` : ''}${batch.status && batch.status !== 'completed' ? ` · last run ${escapeHtml(String(batch.status).replace(/_/g, ' '))}` : ''}</div></div><span class="archive-state">${escapeHtml(summaryLabel)}</span></div>
         <div class="batch-counts">${escapeHtml(parts.join(' · ') || 'No members')}</div>
@@ -1625,7 +1628,7 @@ created: 2026-09-10
         <div class="archive-actions">
           ${valid && snapshotCount && !notRebooted ? `<button class="primary" type="button" data-command="${escapeHtml(snapshotRestore)}" title="Copies one command that restores only the ${plural(snapshotCount, 'workspace')} (${plural(snapshotTabs, 'tab')}) a snapshot saved before a restart and resumes their verified agents. A workspace Herdr already brought back is adopted, not rebuilt. The group's other archives are not touched.">Copy restore snapshot + resume agents</button>` : ''}
           ${valid && snapshotCount && notRebooted ? `<button class="primary" type="button" disabled title="${escapeHtml(NOT_REBOOTED_REASON)}">Copy restore snapshot + resume agents</button><button type="button" data-command="${escapeHtml(snapshotRestore)}" title="${escapeHtml(`${NOT_REBOOTED_REASON} Copy it anyway only when Herdr restarted without the computer restarting and these workspaces are gone.`)}">Copy anyway (computer not restarted)</button>` : ''}
-          <button class="${valid && snapshotCount ? '' : 'primary'}" type="button" ${canRestore ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
+          <button class="${valid && snapshotCount ? '' : 'primary'}" type="button" ${canRestore && !notRebooted ? `data-command="${escapeHtml(resume)}"` : 'disabled'} title="${notRebooted ? `${NOT_REBOOTED_REASON} Restore all would restore these snapshot workspaces too.` : canRestore ? 'Copies one command that restores every member still archived and resumes their verified agents. A member whose layout copy is still open is resumed there, not duplicated. Members already restored are skipped.' : why}">Copy restore all + resume agents</button>
           <button type="button" ${canLayout ? `data-command="${escapeHtml(layout)}"` : 'disabled'} title="${canLayout ? 'Copies one command that rebuilds the layout of every archived member that has no open copy, as fresh shells. Nothing is marked restored and every restore command stays.' : (canRestore ? 'Every archived member already has its layout open' : why)}">Copy restore all (layout only)</button>
           ${valid && duplicates.length ? `<button class="danger" type="button" data-command="${escapeHtml(dedupe)}" title="Copies one command that permanently removes the older copy of each duplicated tab from its archive. The newer archive keeps its copy, and no live workspace changes. Run it with the same command plus no --execute to preview.">Copy remove ${plural(duplicates.length, 'duplicate tab')}</button>` : ''}
           ${valid && !removable ? `<button class="danger" type="button" data-command="${escapeHtml(remove)}" title="Removes this empty group record. The next Archive all starts the group again.">Copy delete group</button>` : ''}
