@@ -11,8 +11,10 @@ python3 setup/transcript-reader/reader.py          # rebuild every listed sessio
 ```
 
 `reader.py` also has `remove`, `list` and `panes` (live Herdr panes to pick from).
-Set `PMOS_SERVE_PORT` when the default port 8765 serves another copy of the repo; `reader.py` checks which copy a port serves and says so.
-After changing `api.js` or `setup/serve.sh`, restart the server: `bash setup/serve.sh --restart`.
+The reader has its own server, in its own process, apart from `setup/serve.sh` and the pages that one serves. `reader.py` starts it when needed, on port **8768** (8765 and 8766 belong to other pages). Set `PMOS_READER_PORT` or pass `--port` to `serve.sh` for another port.
+`reader.py` checks which copy of the repo answers on the port and says so, with where that other copy runs (`Port 8768 serves another copy of the repo (/path)`).
+Start and stop it by hand with `bash setup/transcript-reader/serve.sh [start|stop|restart|status] [--port <port>]`. `stop` only stops this copy's own reader server, never another copy's or another app's.
+After changing `api.js` or `server.js`, restart it: `bash setup/transcript-reader/serve.sh restart`.
 
 Open the printed `http://localhost:…/setup/transcript-reader/out/prototype.html` link, in a browser or a VS Code browser tab.
 Opened that way, the page:
@@ -44,14 +46,14 @@ In any copy of the page:
 - Sends a prompt to one Herdr pane, only on a Send click, and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session.
 
 The server routes are in `api.js`: the pages under `out/` and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
-Other apps served on the same port share the page's origin, so no endpoint hands out the token.
-The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it, so a script in another app on that port cannot read the transcripts or send a prompt either.
+The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
+The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it.
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
-A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` too, never by the shared static handler.
+A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` on the reader's server, and refused with a 404 by `setup/serve.sh`.
 
 ## Tests
 
 ```bash
 python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py
-node --test setup/transcript-reader/api.test.js
+node --test setup/transcript-reader/api.test.js setup/transcript-reader/server.test.js
 ```

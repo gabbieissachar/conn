@@ -30,7 +30,7 @@ Corpus: 30 home sessions, 2026-09-17 to 2026-10-17, 3,030 turns. Fleet view: the
 3. **How much of a kept reply to show.** Recommended: the asking lines first, then the first lines of the reply, with the rest behind "Show full reply" once it passes about 90 words.
 4. **Timeline spine.** Recommended: fleet records plus your messages and the homes' replies, with the handling turn one tap away. Raw turns never become the default rows.
 5. **Source of "waiting on you".** Recommended: each home's own summary only. Do not derive open items from update keys.
-6. **Scope and delivery.** Recommended: the main home and the second mates, not workers' own sessions. Default window of 3 days, with a session picker for older reads. Rebuild with one command, and serve it with `setup/serve.sh` so it opens in a VS Code Simple Browser tab. No auto-refresh in the first version.
+6. **Scope and delivery.** Recommended: the main home and the second mates, not workers' own sessions. Default window of 3 days, with a session picker for older reads. Rebuild with one command, and serve it with the reader's own server (`setup/transcript-reader/serve.sh`, port 8768) so it opens in a browser tab (see README for the supported browsers). No auto-refresh in the first version.
 
 ## Answers (2026-10-21)
 
@@ -51,7 +51,7 @@ Viewing beside a Herdr tab in VS Code: `workbench.browser.newTabPlacement: "side
 { "key": "ctrl+alt+r", "command": "runCommands", "when": "browserEditorOpen",
   "args": { "commands": ["workbench.action.focusFirstEditorGroup", "workbench.action.toggleMaximizeEditorGroup"] } },
 { "key": "ctrl+alt+r", "command": "workbench.action.browser.open", "when": "!browserEditorOpen",
-  "args": "http://localhost:8765/setup/transcript-reader/out/prototype.html" }
+  "args": "http://localhost:8768/setup/transcript-reader/out/prototype.html" }
 ```
 
 ## Send and follow (2026-10-21)
@@ -61,7 +61,7 @@ Like Lavish's "comment and send back to the agent", without an agent blocking on
 1. A focused session that is not on the reading list is added automatically.
 2. Send goes straight to the pane, with the exact text visible before sending. No confirm step.
 
-The message points at the reply instead of copying it (its time and first words, plus a quote of at most 100 characters for a passage), because the session already holds the text. Sending, following and refreshing need the page served over http by `setup/serve.sh`, so `reader.py` now prints the served links first; the server rebuilds the pages when a listed log changes, which replaces the `file://` auto-reload. The pages under `out/` are now served only through the guarded routes in `api.js`, so the shared static handler's wildcard CORS header no longer exposes them. How it works and what it touches: `README.md`.
+The message points at the reply instead of copying it (its time and first words, plus a quote of at most 100 characters for a passage), because the session already holds the text. Sending, following and refreshing need the page served over http by the reader's own server (`setup/transcript-reader/serve.sh`), so `reader.py` now prints the served links first; the server rebuilds the pages when a listed log changes, which replaces the `file://` auto-reload. The pages under `out/` are now served only through the guarded routes in `api.js`, so the shared static handler's wildcard CORS header no longer exposes them. How it works and what it touches: `README.md`.
 
 Not verified end to end: no message was sent to a real pane while building this (the tests fake Herdr), and the VS Code shortcut above was not tried in the captain's window.
 

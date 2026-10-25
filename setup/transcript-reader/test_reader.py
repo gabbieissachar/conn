@@ -6,6 +6,7 @@ Fixtures are synthetic; no real session log or Herdr call is used.
 """
 
 import fcntl
+import io
 import json
 import os
 import shutil
@@ -72,6 +73,39 @@ class HerdrInventoryTest(unittest.TestCase):
 
     def test_no_running_herdr_session_lists_no_pane(self):
         self.assertEqual(self.run_with({}), ({}, set()))
+
+
+class ServingTest(unittest.TestCase):
+    """reader.py says which copy of the repo answers on the reader's port."""
+
+    def answer(self, headers=None, error=None, status=404):
+        def urlopen(url, timeout=0):
+            if error:
+                raise error
+            raise reader.urllib.error.HTTPError(url, status, "x", headers or {}, io.BytesIO())
+        return mock.patch.object(reader.urllib.request, "urlopen", urlopen)
+
+    def test_this_copys_server_is_recognised_by_its_copy_header(self):
+        with self.answer({"x-transcript-reader-copy": reader.copy_id(reader.REPO)}):
+            self.assertEqual(reader.serving("8768"), (True, "Port 8768 serves this copy of the repo."))
+
+    def test_another_copys_server_is_named_with_where_it_runs(self):
+        def run(argv, **kwargs):
+            out = {"-tiTCP:8768": "4242\n"}.get(argv[1], "p4242\nfcwd\nn/work/other-copy\n")
+            return mock.Mock(stdout=out)
+        with self.answer({"x-transcript-reader-copy": "0123456789abcdef"}), mock.patch.object(reader.subprocess, "run", run):
+            ok, said = reader.serving("8768")
+        self.assertFalse(ok)
+        self.assertEqual(said, "Port 8768 serves another copy of the repo (/work/other-copy).")
+
+    def test_nothing_listening_and_a_server_that_is_not_the_reader_are_told_apart(self):
+        with self.answer(error=ConnectionRefusedError()):
+            self.assertEqual(reader.serving("8768"), (False, "Nothing answers on port 8768."))
+        with self.answer({}), mock.patch.object(reader.subprocess, "run", lambda *a, **k: mock.Mock(stdout="")):
+            self.assertEqual(reader.serving("8768"), (False, "Port 8768 is used by another server, not a transcript reader."))
+
+    def test_the_default_port_is_the_readers_own(self):
+        self.assertEqual(reader.DEFAULT_PORT, "8768")
 
 
 class ResolveTest(unittest.TestCase):

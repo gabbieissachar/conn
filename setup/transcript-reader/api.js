@@ -1,7 +1,7 @@
 'use strict';
 
-// HTTP surface for the transcript reader. serve.sh requires this module and hands
-// it every request before its shared CORS handling.
+// HTTP surface for the transcript reader. server.js (the reader's own server) hands
+// every request to this module.
 //
 //   GET  /setup/transcript-reader/out/<page>.html  the built pages, opened in a browser tab
 //                                                   only; each carries the per-start token
@@ -21,7 +21,7 @@
 // uses the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, token)
 // and never sends an Access-Control-Allow-* header.
 //
-// Other apps share this origin, so the token is never handed out by an endpoint.
+// The reader has its own server, but the token is still never handed out by an endpoint.
 // It is written into a page only when the browser opens that page as a top-level
 // document (Fetch-Metadata navigate/document), and the page refuses framing and
 // cuts off its opener. A script on another page of this origin therefore cannot
@@ -44,8 +44,8 @@ const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer
 const API = '/api/transcript-reader/';
 const PAGES = new Set(['prototype.html', 'questionnaire.html']);
 const TOKEN_HEADER = 'x-transcript-reader-token';
-// Names the copy of the repo whose pages this server serves, so reader.py can tell its own
-// copy's server from another copy's on the same port (reader.py's copy_id computes the same).
+// Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell
+// their own copy's server from another copy's on the same port (reader.py's copy_id computes the same).
 const COPY_HEADER = 'x-transcript-reader-copy';
 const copyId = (root) => crypto.createHash('sha256').update(fs.realpathSync(root)).digest('hex').slice(0, 16);
 // The templates carry this tag; the server fills it in at serve time, so the built
@@ -129,6 +129,44 @@ function checkText(value) {
 
 function parseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
+}
+
+// Where a path really is, as the file system resolves it: the nearest existing
+// part goes through realpath (symlinks, and macOS's own case and Unicode folding),
+// and the missing rest is appended as spelled.
+function realLocation(full) {
+  const rest = [];
+  let head = full;
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(head), ...rest); } catch { /* not there: try its parent */ }
+    const parent = path.dirname(head);
+    if (parent === head) return full;
+    rest.unshift(path.basename(head));
+    head = parent;
+  }
+}
+
+// Any request whose path lands in out/ belongs to the reader, however it is spelled (encoded
+// slashes, doubled slashes, another letter case or Unicode form, a symlink), so no static
+// handler ever serves a page or the reading list with a wildcard CORS header. Both spellings
+// are checked: the parsed URL, and the raw one that a static file handler would decode.
+function requestsOut(root, outDir, req, url) {
+  const realOut = realLocation(outDir);
+  for (const spelling of [url.pathname, req.url.split('?')[0]]) {
+    let decoded;
+    try { decoded = decodeURIComponent(spelling); } catch { return { inside: true, name: '' }; }
+    const real = realLocation(path.join(root, decoded));
+    if (real === realOut || real.startsWith(realOut + path.sep)) return { inside: true, name: path.relative(realOut, real) };
+  }
+  return { inside: false };
+}
+
+// For a server that serves repo files for other apps (setup/serve.sh): whether the request
+// names the reader's out/ folder, which that server must refuse.
+function namesReaderOut(root, req) {
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch { return true; }
+  return requestsOut(root, path.join(root, 'setup', 'transcript-reader', 'out'), req, url).inside;
 }
 
 function create({
@@ -471,36 +509,7 @@ function create({
     fail(res, 404, 'not_found', 'Not found.');
   }
 
-  // Where a path really is, as the file system resolves it: the nearest existing
-  // part goes through realpath (symlinks, and macOS's own case and Unicode folding),
-  // and the missing rest is appended as spelled.
-  function realLocation(full) {
-    const rest = [];
-    let head = full;
-    for (;;) {
-      try { return path.join(fs.realpathSync.native(head), ...rest); } catch { /* not there: try its parent */ }
-      const parent = path.dirname(head);
-      if (parent === head) return full;
-      rest.unshift(path.basename(head));
-      head = parent;
-    }
-  }
-
-  // Any request whose path lands in out/ belongs here, however it is spelled (encoded
-  // slashes, doubled slashes, another letter case or Unicode form, a symlink), so the
-  // shared static handler never serves a page or the reading list with its wildcard
-  // CORS header. Both spellings are checked: the parsed URL, and the raw one that
-  // serve.sh's static handler decodes.
-  function insideOut(req, url) {
-    const realOut = realLocation(outDir);
-    for (const spelling of [url.pathname, req.url.split('?')[0]]) {
-      let decoded;
-      try { decoded = decodeURIComponent(spelling); } catch { return { inside: true, name: '' }; }
-      const real = realLocation(path.join(root, decoded));
-      if (real === realOut || real.startsWith(realOut + path.sep)) return { inside: true, name: path.relative(realOut, real) };
-    }
-    return { inside: false };
-  }
+  const insideOut = (req, url) => requestsOut(root, outDir, req, url);
 
   // Returns true when the request belongs to this module (and is handled here).
   function handle(req, res) {
@@ -526,4 +535,4 @@ function create({
   return { handle, guard, scan };
 }
 
-module.exports = { create, checkText, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };
+module.exports = { create, checkText, copyId, namesReaderOut, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

@@ -1,7 +1,7 @@
   // ---------------------------------------------------------------- live link (live.js, shared by both pages)
   // build_prototype.write_page pastes this file into each page's script before hashing it.
-  // Only a page served by setup/serve.sh on localhost can reach the server; a file:// page
-  // stays read-only.
+  // Only a page served by the reader's own server (setup/transcript-reader/serve.sh) on localhost
+  // can reach the server; a file:// page stays read-only.
   const live = (() => {
     const API = "/api/transcript-reader/";
     const served = location.protocol === "http:" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);

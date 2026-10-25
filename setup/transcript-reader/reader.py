@@ -36,10 +36,11 @@ the page's "Close" button).
 
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
-gitignored because they name or embed private sessions. The pages are served by
-setup/serve.sh, which also follows Herdr's focus and sends replies to a pane (see
-README.md); set PMOS_SERVE_PORT when that port serves a different copy of the
-repo. Only session logs and Herdr's pane list are read, and only out/ is written.
+gitignored because they name or embed private sessions. The pages are served by the
+reader's own server, setup/transcript-reader/serve.sh (port 8768, or PMOS_READER_PORT),
+which also follows Herdr's focus and sends replies to a pane (see README.md); a
+port that serves another copy of the repo is reported with where that copy is. Only
+session logs and Herdr's pane list are read, and only out/ is written.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -66,6 +68,7 @@ REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pan
 DROPPED = OUT / "dropped.txt"  # sessions a closed pane took off the list, listed again if they run in a pane again
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+DEFAULT_PORT = "8768"  # the reader's own server (serve.sh in this folder); 8765 and 8766 are other pages
 PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
 
 
@@ -233,25 +236,43 @@ def copy_id(root: Path) -> str:
     return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
 
 
-def serve(focus: str | None) -> None:
-    """Start setup/serve.sh if needed and print the page address."""
-    port = os.environ.get("PMOS_SERVE_PORT", "8765")
-    subprocess.run(["bash", str(REPO / "setup" / "serve.sh"), "--port", port], cwd=REPO, stdout=subprocess.DEVNULL)
-    url = f"http://localhost:{port}/{PAGE.relative_to(REPO).as_posix()}"
-    sheet = f"http://localhost:{port}/{(OUT / 'questionnaire.html').relative_to(REPO).as_posix()}"
+def serving(port: str) -> tuple[bool, str]:
+    """Whether this copy's reader server answers on <port>, and in words, what does."""
     try:
         # Any 200 is not enough: another copy of the repo may serve its own pages on this port.
-        with urllib.request.urlopen(url, timeout=3) as response:
-            ok = response.status == 200 and response.headers.get("x-transcript-reader-copy") == copy_id(REPO)
+        with urllib.request.urlopen(f"http://localhost:{port}/", timeout=3):
+            copy = ""
+    except urllib.error.HTTPError as error:  # the reader server answers / with a 404 that names its copy
+        copy = error.headers.get("x-transcript-reader-copy") or ""
+        error.close()
     except OSError:
-        ok = False
+        return False, f"Nothing answers on port {port}."
+    if copy == copy_id(REPO):
+        return True, f"Port {port} serves this copy of the repo."
+    pid = subprocess.run(["lsof", f"-tiTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.split()
+    where = ""
+    if pid and copy:
+        found = subprocess.run(["lsof", "-a", "-d", "cwd", "-p", pid[0], "-Fn"], capture_output=True, text=True).stdout
+        where = next((line[1:] for line in found.splitlines() if line.startswith("n")), "")
+    if copy:
+        return False, f"Port {port} serves another copy of the repo{f' ({where})' if where else ''}."
+    return False, f"Port {port} is used by another server, not a transcript reader."
+
+
+def serve(focus: str | None) -> None:
+    """Start this copy's reader server (setup/transcript-reader/serve.sh) if needed and print the page address."""
+    port = os.environ.get("PMOS_READER_PORT", DEFAULT_PORT)
+    subprocess.run(["bash", str(HERE / "serve.sh"), "start", "--port", port], cwd=REPO, stdout=subprocess.DEVNULL)
+    url = f"http://localhost:{port}/{PAGE.relative_to(REPO).as_posix()}"
+    sheet = f"http://localhost:{port}/{(OUT / 'questionnaire.html').relative_to(REPO).as_posix()}"
+    ok, said = serving(port)
     anchor = f"#s={focus[:8]}" if focus else ""
     if ok:
         # Served, the pages refresh themselves, follow Herdr's focus and can send replies.
         print(f"Reader:       {url}{anchor}")
         print(f"Answer sheet: {sheet}")
     else:
-        print(f"Port {port} does not serve this copy of the repo (set PMOS_SERVE_PORT to a free port or this copy's), so these read-only file links cannot send or follow:")
+        print(f"{said} Set PMOS_READER_PORT to a free port, or run `bash setup/transcript-reader/serve.sh status`. These read-only file links cannot send or follow:")
         print(f"Reader:       {PAGE.as_uri()}{anchor}")
         print(f"Answer sheet: {(OUT / 'questionnaire.html').as_uri()}")
 
