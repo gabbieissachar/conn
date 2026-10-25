@@ -2049,7 +2049,7 @@ created: 2026-09-10
     };
     // ---- Context view: how full each agent session's context window is ----
     // Read-only. Restarting a session stays manual; this only says which tab is due.
-    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
+    const context = { loading: false, data: null, error: '', at: null, leader: null, leaderError: '', picked: new Map(), handoffBusy: false, restartBusy: false, sort: { key: null, dir: 'desc' }, compact: readContextCompact() };
     // Claude plan usage rail: read through `plan-usage`, independent of the session table so a slow or failed read of
     // one never blanks the other. The tick on a bar marks where an even burn would be by now.
     const plan = { loading: false, data: null, error: '', at: '', failedAt: '' };
@@ -2160,6 +2160,28 @@ created: 2026-09-10
       const present = new Set(rows.map(pickKeyOf));
       for (const key of [...picked.keys()]) if (!present.has(key)) picked.delete(key);
     };
+    // Handoff and restart (the organizer tool's own command for an ordinary Claude pane). Only an ordinary session at its prompt can be offered: every firstmate,
+    // second mate, crewmate and primary row is another kind, and a busy or unreadable row is left out with its reason. This is
+    // a cheap filter; the server checks again from the live panes and the gauge, and the command's own refusals decide last.
+    const restartReason = row => {
+      if (row.leader || row.kind !== 'session') return 'a firstmate session';
+      if (!row.pane_id || !row.id) return 'no live pane';
+      if (row.busy !== 'idle') return row.busy === 'busy' ? 'busy' : 'state unknown';
+      return '';
+    };
+    const restartPlan = (rows, picked) => {
+      const refs = [];
+      const excluded = [];
+      for (const row of rows) {
+        const key = pickKeyOf(row);
+        if (!key || !picked.get(key)) continue;
+        const reason = restartReason(row);
+        if (reason) excluded.push({ name: row.leader ? row.leader.label : sessionName(row), reason });
+        else refs.push(key);
+      }
+      return { refs, excluded };
+    };
+    const restartNote = (plan, ticked) => plan.excluded.length ? `Not included: ${plan.excluded.map(item => `${item.name} (${item.reason})`).join(', ')}.` : ticked ? '' : 'Ordinary idle sessions only.';
     const percentLevel = (percent, thresholds) => percent >= thresholds.high ? 'bad' : percent >= thresholds.warn ? 'warn' : 'good';
     const contextLevel = (row, thresholds) => row.percent === null ? '' : percentLevel(row.percent, thresholds);
     const contextPercent = (row, level) => row.percent === null ? '<span class="pill">no percent yet</span>' : `<span class="pill ${level}">${row.estimated ? '~' : ''}${row.percent}%</span>`;
@@ -2238,7 +2260,8 @@ created: 2026-09-10
         const due = rows.filter(row => row.percent !== null && row.percent >= thresholds.warn).length;
         const workspace = context.leader ? context.leader.workspace : 'leader-space';
         const pickedCount = rows.filter(row => pickKeyOf(row) && context.picked.get(pickKeyOf(row))).length;
-        const actions = rows.length ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span></div>` : '';
+        const restart = restartPlan(rows, context.picked);
+        const actions = rows.length ? `<div class="panel-actions" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><button class="primary" type="button" id="handoff-copy" ${pickedCount && !context.handoffBusy ? '' : 'disabled'} title="Copies one command that types the handoff request into each ticked pane and presses Enter. It runs in your terminal; this page sends nothing.">${context.handoffBusy ? 'Building…' : `Copy handoff request for ${plural(pickedCount, 'session')}`}</button><button type="button" id="restart-copy" ${restart.refs.length && !context.restartBusy ? '' : 'disabled'} title="Copies one command to run in your terminal. For each ticked idle session it asks for a handoff, sends /clear, then tells the session to read the handoff and start its background tasks again. A pane that has the focus, is busy or is a firstmate session is refused. This page sends nothing.">${context.restartBusy ? 'Building…' : `Copy handoff and restart command for ${plural(restart.refs.length, 'session')}`}</button><span class="tab-meta">Nothing starts ticked. Tick a working session only if you want to interrupt its turn.</span><span class="tab-meta" id="restart-note" style="flex:1 1 100%;margin:-6px 0 0">${escapeHtml(restartNote(restart, pickedCount))}</span></div>` : '';
         body = rows.length ? `<article class="card"><div class="card-head"><h3>Sessions by context used</h3><span class="pill ${due ? 'warn' : 'good'}">${due ? `${plural(due, 'session')} over ${thresholds.warn}%` : `none over ${thresholds.warn}%`}</span></div><div class="card-body">${leaderNotice(problems)}${context.compact ? `<div class="ctx-compact">${sortedContextRows(rows).map(row => contextCompactRow(row, thresholds)).join('')}</div>` : `<table class="ctx-table"><thead><tr>${contextHead()}</tr></thead><tbody>${sortedContextRows(rows).map(row => contextRow(row, thresholds)).join('')}</tbody></table>`}${actions}<div class="tab-meta" style="margin-top:12px">Amber from ${thresholds.warn}%, red from ${thresholds.high}%. A ~ means estimated from the transcript. Sessions with no live pane are not listed; an archived session's last context shows on the Archive group tab. Restart an idle session; leave a busy one. Every firstmate and secondmate lives in the ${escapeHtml(workspace)} workspace, one tab each, and a label exists once; a restore refuses to break this. Nothing here moves, closes or restarts anything; Open only switches your Herdr window to that session's tab.</div></div></article>` : '<div class="empty">No live agent sessions.</div>';
       }
       section.innerHTML = `${rolloverBanner()}${head}${planRail()}${codexRail()}${body}${rolloverCard()}`;
@@ -2262,6 +2285,8 @@ created: 2026-09-10
       section.querySelectorAll('.open-tab').forEach(button => button.addEventListener('click', event => { event.preventDefault(); openTab(button); }));
       const handoff = document.querySelector('#handoff-copy');
       if (handoff) handoff.addEventListener('click', copyHandoff);
+      const restartButton = document.querySelector('#restart-copy');
+      if (restartButton) restartButton.addEventListener('click', copyRestart);
     };
     // The server finds the tab from the live pane list and refuses a pane that runs another session than the row's; the page sends only the session name, the pane id and the row's 8-character session id.
     const openTab = async button => {
@@ -2291,6 +2316,23 @@ created: 2026-09-10
         showToast(error.message);
       } finally {
         context.handoffBusy = false;
+        if (state.view === 'context') renderContext();
+      }
+    };
+    // The server re-checks every reference against the live panes and the gauge and builds the command; the page copies it and sends nothing into a pane.
+    const copyRestart = async () => {
+      const { refs } = restartPlan(contextRows().rows.filter(row => row.pane_id), context.picked);
+      if (!refs.length || context.restartBusy) return;
+      context.restartBusy = true; renderContext();
+      try {
+        const result = await api.run('handoff-restart-command', { panes: refs });
+        if (!result.command) throw new Error('None of the ticked sessions can be restarted from here any more. Refresh and tick again.');
+        const skipped = result.skipped.length ? `. Skipped ${result.skipped.map(item => `${item.label} (${item.state})`).join(', ')}` : '';
+        await copy(result.command, `Handoff and restart command copied for ${plural(result.ready.length, 'session')}${skipped}`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        context.restartBusy = false;
         if (state.view === 'context') renderContext();
       }
     };

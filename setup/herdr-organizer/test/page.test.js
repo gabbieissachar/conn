@@ -556,7 +556,7 @@ test('primary switch in the page: the token and phrase are built from the server
 test('rollover card: the page names only the rollover actions of this slice and builds every token itself', () => {
   const names = [...new Set((html.match(/api\.run\('rollover-[a-z-]+'|runRollover\('rollover-[a-z-]+'/g) || []).map(item => item.replace(/.*'(rollover-[a-z-]+)'/, '$1')))].sort();
   assert.deepEqual(names, ['rollover-arm', 'rollover-preview', 'rollover-primary-arm', 'rollover-primary-prepare', 'rollover-state', 'rollover-stop', 'rollover-undo']);
-  assert.equal(/handoff-restart/.test(html), false, 'no handoff-restart in the page yet (B2)');
+  assert.deepEqual(html.match(/handoff-restart[^ ]{0,8}/g), ['handoff-restart-command'], 'the only handoff-restart name in the page is the server action that builds the command');
   assert.match(html, /api\.run\('rollover-stop', scope === 'primary' \? \{ scope: 'primary', homes \} : \{\}\)/, 'Stop sends only its scope and homes: no confirm, no typed text');
   assert.match(html, /const runStop = async \(scope, homes\) => \{\s*if \(rollover\.stopping\) return;/, 'Stop does not wait for another request, and a second click while one Stop runs is ignored');
   assert.match(html, /: `rollover-resume:\$\{home\.id\}` \}/, 'removing the off file carries the resume token');
@@ -1015,6 +1015,45 @@ test('context view: the handoff request command is built by the server from tick
   assert.match(view, /api\.run\('handoff-command', \{ labels, panes \}\)/);
   assert.equal(/herdr --session|send-text|send-keys/.test(view), false, 'the page never assembles the shell command');
   assert.equal(/picked\.set\(row\.label/.test(view), false, 'no session starts ticked: the only writer of a tick is the box itself');
+});
+
+test('context view: the handoff and restart command is built by the server from ticked references, and the page copies it', () => {
+  const view = html.slice(html.indexOf('// ---- Context view'), html.indexOf('// ---- Snapshot-backed views'));
+  assert.match(view, /api\.run\('handoff-restart-command', \{ panes: refs \}\)/);
+  assert.match(view, /id="restart-copy"[^>]*>\$\{context\.restartBusy \? 'Building…' : `Copy handoff and restart command for/);
+  assert.equal(/handoff-restart:|--confirm|herdr-organizer/.test(view), false, 'the page never assembles the command or its confirm string');
+  assert.equal(/\bpane send-text|send-keys|agent prompt/.test(view), false, 'the page types nothing into a pane');
+  assert.match(view, /restartBusy = true; renderContext\(\);/, 'the button is disabled while the command is built');
+});
+
+// Runs the page's own restart filter on plain rows, so the check is of the shipped code and not of a copy.
+function restartFunctions(context = {}) {
+  const start = html.indexOf('const sessionName = ');
+  const end = html.indexOf('const percentLevel = ');
+  const vm = require('node:vm');
+  return vm.runInNewContext(`${html.slice(start, end)}; ({ pickKeyOf, restartReason, restartPlan, restartNote })`, { context });
+}
+
+test('context view: only an ordinary idle session with a live pane can be put into the restart command, and each other ticked row says why', () => {
+  const { restartReason, restartPlan, restartNote } = restartFunctions();
+  const row = (extra = {}) => ({ id: 'aaaaaaaa', map: 'work', tab_label: null, kind: 'session', busy: 'idle', herdr_session: 'project-a', pane_id: 'wC1:p3', leader: null, ...extra });
+  assert.equal(restartReason(row()), '');
+  assert.equal(restartReason(row({ kind: 'ship' })), 'a firstmate session');
+  assert.equal(restartReason(row({ kind: 'secondmate' })), 'a firstmate session');
+  assert.equal(restartReason(row({ kind: 'primary' })), 'a firstmate session');
+  assert.equal(restartReason(row({ leader: { label: 'leader-esim' } })), 'a firstmate session', 'a leader read from its transcript is still a firstmate session');
+  assert.equal(restartReason(row({ busy: 'busy' })), 'busy');
+  assert.equal(restartReason(row({ busy: 'unknown' })), 'state unknown');
+  assert.equal(restartReason(row({ pane_id: null })), 'no live pane');
+  const rows = [row({ id: 'aaaaaaa1', pane_id: 'wC1:p1', tab_label: 'one' }), row({ id: 'aaaaaaa2', pane_id: 'wC1:p2', tab_label: 'two', busy: 'busy' }), row({ id: 'aaaaaaa3', pane_id: 'wC1:p3', tab_label: 'three', kind: 'ship' }), row({ id: 'aaaaaaa4', pane_id: 'wC1:p4', tab_label: 'four' }), { ...row({ id: '', pane_id: 'wK:p2', kind: 'leader' }), leader: { label: 'leader-esim' } }];
+  const picked = new Map([['project-a|wC1:p1|aaaaaaa1', true], ['project-a|wC1:p2|aaaaaaa2', true], ['project-a|wC1:p3|aaaaaaa3', true], ['leader-esim', true]]);
+  const plan = JSON.parse(JSON.stringify(restartPlan(rows, picked)));
+  assert.deepEqual(plan.refs, ['project-a|wC1:p1|aaaaaaa1'], 'only a ticked, ordinary, idle row; an unticked idle row is not added');
+  assert.deepEqual(plan.excluded, [{ name: 'two', reason: 'busy' }, { name: 'three', reason: 'a firstmate session' }, { name: 'leader-esim', reason: 'a firstmate session' }]);
+  assert.equal(restartNote(plan, 4), 'Not included: two (busy), three (a firstmate session), leader-esim (a firstmate session).');
+  assert.equal(restartNote({ refs: [], excluded: [] }, 0), 'Ordinary idle sessions only.');
+  assert.equal(restartNote({ refs: ['x'], excluded: [] }, 1), '', 'nothing to explain when every ticked row is included');
+  assert.equal(restartPlan(rows, new Map()).refs.length, 0, 'nothing starts ticked');
 });
 
 // Runs the page's own pick-key and prune functions on plain rows, so the check is of the shipped code and not of a copy.
