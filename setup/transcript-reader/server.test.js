@@ -80,3 +80,27 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
   ]) assert.strictEqual(namesReaderOut(root, req(url)), true, url);
   for (const url of ['/notes.md', '/setup/transcript-reader/README.md', '/setup/serve.sh', '/']) assert.strictEqual(namesReaderOut(root, req(url)), false, url);
 });
+
+// serve.sh end to end, on a free port: started with its output piped (as a caller capturing it
+// would), it must return, serve this copy, refuse a second start on another copy's port, and stop.
+test('serve.sh starts, reports, restarts and stops this copy\'s server without hanging a piped caller', { timeout: 60000 }, async () => {
+  const { execFile } = require('child_process');
+  const script = path.join(__dirname, 'serve.sh');
+  const run = (...args) => new Promise((resolve) => execFile('bash', [script, ...args], { timeout: 20000, env: { ...process.env, PMOS_READER_PORT: '' } }, (error, stdout) => resolve({ code: error ? error.code : 0, stdout })));
+  const port = String(await freePort());
+  try {
+    const started = await run('start', '--port', port);
+    assert.strictEqual(started.code, 0, started.stdout);
+    assert.match(started.stdout, /Reader server started/);
+    assert.match((await run('status', '--port', port)).stdout, /serves this copy of the repo/);
+    assert.match((await run('start', '--port', port)).stdout, /already running/);
+    const answer = await get(Number(port), '/');
+    assert.strictEqual(answer.headers[COPY_HEADER], copyId(path.join(__dirname, '..', '..')));
+    assert.match((await run('restart', '--port', port)).stdout, /Stopped[\s\S]*started/);
+  } finally {
+    assert.match((await run('stop', '--port', port)).stdout, /Stopped the reader server/);
+  }
+  assert.match((await run('status', '--port', port)).stdout, /Nothing listens/);
+  const refused = await run('start', '--port', '8765');
+  assert.strictEqual(refused.code, 2);
+});

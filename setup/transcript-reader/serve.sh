@@ -70,7 +70,8 @@ start() {
   esac
   if ! command -v node &>/dev/null; then echo "Node.js not found. Run: bash setup/check.sh"; return 1; fi
   mkdir -p "$HERE/out"
-  (cd "$REPO_ROOT" && nohup node "$HERE/server.js" --port "$PORT" --root "$REPO_ROOT" >> "$LOG_PATH" 2>&1 &)
+  # node alone goes to the background (not a "cd && node" list, whose subshell would keep this script's output open).
+  ( cd "$REPO_ROOT" || exit 1; nohup node "$HERE/server.js" --port "$PORT" --root "$REPO_ROOT" >> "$LOG_PATH" 2>&1 < /dev/null & )
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.3
     [[ "$(served_copy)" == "$COPY" ]] && { echo "Reader server started: http://localhost:$PORT"; echo "Log: $LOG_PATH"; return 0; }
