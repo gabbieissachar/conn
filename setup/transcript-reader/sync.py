@@ -628,8 +628,12 @@ def drain(folder: Path, sealed: bool, secret: str = "") -> None:
     and the requests wait for the next run."""
     if not any(not path.name.startswith(".") for path in (folder / "q").glob("*")):
         return
-    done = subprocess.run(["node", str(HERE / "drain.js"), str(folder), "--sealed" if sealed else "--plain"], capture_output=True, text=True,
-                          env={**os.environ, **({PASSPHRASE_ENV: secret} if secret else {})})
+    try:
+        done = subprocess.run(["node", str(HERE / "drain.js"), str(folder), "--sealed" if sealed else "--plain"], capture_output=True, text=True,
+                              env={**os.environ, **({PASSPHRASE_ENV: secret} if secret else {})}, timeout=600)
+    except subprocess.TimeoutExpired:
+        print(f"Drain of {folder} took over 10 minutes and was stopped; the requests wait for the next run.")
+        return
     print((done.stdout.strip() or done.stderr.strip() or f"Drain of {folder} stopped.").splitlines()[-1])
 
 
