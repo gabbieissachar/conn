@@ -23,9 +23,9 @@ B = "aaaaaabb-2222-4222-8222-222222222222"
 C = "cccccccc-3333-4333-8333-333333333333"
 
 PANES = {
-    A: {"label": "leader-alpha", "title": "Secondmate alpha session handoff", "herdr": "work"},
-    B: {"label": "fm-2026-10-05-alpha-x12-final-spec", "title": "X12 spec handoff rule 3", "herdr": "work"},
-    C: {"label": "fm-2026-10-05-alpha-x12-spec-review", "title": "Alpha X12 spec review handoff", "herdr": "work"},
+    A: {"label": "leader-alpha", "title": "Secondmate alpha session handoff", "herdr": "work", "pane": "w1:p1"},
+    B: {"label": "fm-2026-10-05-alpha-x12-final-spec", "title": "X12 spec handoff rule 3", "herdr": "work", "pane": "w1:p2"},
+    C: {"label": "fm-2026-10-05-alpha-x12-spec-review", "title": "Alpha X12 spec review handoff", "herdr": "work", "pane": "w1:p3"},
 }
 
 
@@ -43,6 +43,34 @@ class PaneIndexTest(unittest.TestCase):
         self.assertEqual(index[B], {"label": "fm-x12-final-spec", "title": "X12 spec", "herdr": "work", "pane": "w1:p2"})
         self.assertEqual(index[C]["label"], "Review")
         self.assertEqual(len(index), 3)
+
+
+class HerdrInventoryTest(unittest.TestCase):
+    """Every pane Herdr lists is known, with or without an agent in it, and a list that could not be read is not mistaken for a short one."""
+
+    def run_with(self, replies):
+        def fake(argv, **kwargs):
+            key = tuple(argv[3:5] if argv[1] == "--session" else argv[1:3])
+            reply = replies.get(key)
+            return mock.Mock(returncode=0 if reply is not None else 1, stdout=json.dumps(reply) if reply is not None else "")
+        with mock.patch.object(builder.subprocess, "run", fake), mock.patch.object(builder, "running_claude_sessions", lambda: {}):
+            return builder.herdr_inventory()
+
+    def test_a_pane_without_an_agent_is_listed(self):
+        panes = [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "claude", "agent_session": {"value": A}},
+                 {"pane_id": "w1:p2", "tab_id": "w1:t2", "terminal_title_stripped": "a shell"}]
+        replies = {("session", "list"): {"sessions": [{"name": "work", "running": True}, {"name": "-old", "running": True}, {"name": "idle", "running": False}]},
+                   ("pane", "list"): {"result": {"panes": panes}}, ("tab", "list"): {"result": {"tabs": []}}}
+        sessions, listed = self.run_with(replies)
+        self.assertEqual(list(sessions), [A])
+        self.assertEqual(listed, {("work", "w1:p1"), ("work", "w1:p2")})
+
+    def test_a_herdr_session_that_cannot_be_read_leaves_the_list_unknown(self):
+        replies = {("session", "list"): {"sessions": [{"name": "work", "running": True}]}}
+        self.assertEqual(self.run_with(replies), ({}, None))
+
+    def test_no_running_herdr_session_lists_no_pane(self):
+        self.assertEqual(self.run_with({}), ({}, set()))
 
 
 class ResolveTest(unittest.TestCase):
@@ -136,17 +164,22 @@ class ClosedPanesTest(unittest.TestCase):
         folder.mkdir(parents=True)
         for sid in (A, B, C):
             (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
-        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE, reader.REOPENED)
+        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.herdr_inventory, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE,
+                      reader.REOPENED, reader.DROPPED)
         builder.PROJECTS, reader.OUT = root / "projects", root / "out"
         reader.LIST, reader.PANE_CACHE, reader.REOPENED = reader.OUT / "sessions.txt", reader.OUT / "pane-labels.json", reader.OUT / "reopened.txt"
+        reader.DROPPED = reader.OUT / "dropped.txt"
         reader.OUT.mkdir()
         self.live = {}
+        self.listed = "live"  # the panes Herdr lists: those of the live sessions, a set of (Herdr session, pane id), or None (unreadable)
         builder.herdr_panes = lambda: self.live
+        builder.herdr_inventory = lambda: (self.live, {(p["herdr"], p["pane"]) for p in self.live.values()} if self.listed == "live" else self.listed)
         self.chains = {}
         builder.session_chain = lambda path: self.chains.get(path.stem, [path])
 
     def tearDown(self):
-        builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE, reader.REOPENED = self.saved
+        (builder.PROJECTS, builder.herdr_panes, builder.herdr_inventory, builder.session_chain, reader.OUT, reader.LIST, reader.PANE_CACHE,
+         reader.REOPENED, reader.DROPPED) = self.saved
         self.tmp.cleanup()
 
     def seen(self, *ids):
@@ -167,6 +200,53 @@ class ClosedPanesTest(unittest.TestCase):
     def test_nothing_is_dropped_while_herdr_shows_no_pane(self):
         self.seen(A, B)
         self.assertEqual(reader.drop_closed([A, B]), [A, B])
+
+    def test_a_pane_whose_agent_has_not_come_back_is_not_closed(self):
+        # After a Herdr restart the panes are back before their agents: A's pane is at its shell.
+        self.seen(A, B)
+        self.live = {B: PANES[B]}
+        self.listed = {("work", "w1:p1"), ("work", "w1:p2")}
+        self.assertEqual(reader.drop_closed([A, B]), [A, B])
+        self.assertFalse(reader.DROPPED.exists())
+        self.live = {A: PANES[A], B: PANES[B]}
+        self.listed = "live"
+        self.assertEqual(reader.drop_closed([A, B]), [A, B])
+
+    def test_nothing_is_dropped_while_a_herdr_session_cannot_be_read(self):
+        self.seen(A, B)
+        self.live = {A: PANES[A]}
+        self.listed = None
+        self.assertEqual(reader.drop_closed([A, B]), [A, B])
+
+    def test_a_pane_listed_with_no_agent_and_no_live_session_still_keeps_its_sessions(self):
+        self.seen(A, B)
+        self.listed = {("work", "w1:p1"), ("work", "w1:p2")}
+        self.assertEqual(reader.drop_closed([A, B]), [A, B], "Herdr is back with shells only")
+
+    def test_a_cache_entry_without_a_pane_id_closes_with_its_session(self):
+        reader.PANE_CACHE.write_text(json.dumps({A: {k: v for k, v in PANES[A].items() if k != "pane"}, B: PANES[B]}), encoding="utf-8")
+        self.live = {B: PANES[B]}
+        self.assertEqual(reader.drop_closed([A, B]), [B])
+
+    def test_a_dropped_session_that_runs_in_a_pane_again_is_listed_again(self):
+        self.seen(A, B)
+        self.live = {B: PANES[B]}
+        self.assertEqual(reader.drop_closed([A, B]), [B], "its pane id is gone")
+        self.assertEqual(builder.read_ids(reader.DROPPED), [A])
+        self.assertEqual(reader.drop_closed([B]), [B], "still closed: stays dropped")
+        self.live = {B: PANES[B], A: {**PANES[A], "pane": "w1:p9"}}  # claude --resume in a new pane
+        self.assertEqual(reader.drop_closed([B]), [B, A])
+        self.assertEqual(builder.read_ids(reader.DROPPED), [])
+
+    def test_naming_a_session_to_remove_or_close_it_keeps_it_from_coming_back(self):
+        self.seen(A, B)
+        self.live = {B: PANES[B]}
+        self.assertEqual(reader.drop_closed([A, B]), [B])
+        self.live = {B: PANES[B], A: {**PANES[A], "pane": "w1:p9"}}
+        with mock.patch.object(reader, "rebuild", lambda ids, focus=None, serve_page=True: 0), mock.patch.object(reader, "resolve", lambda name, panes: name):
+            self.assertEqual(reader.main(["remove", A]), 0)
+        self.assertEqual(builder.read_ids(reader.DROPPED), [])
+        self.assertEqual(reader.drop_closed([B]), [B])
 
     def test_a_rebuild_writes_the_shorter_list(self):
         self.seen(A, B)

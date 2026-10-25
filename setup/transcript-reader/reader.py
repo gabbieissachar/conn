@@ -23,11 +23,15 @@ together with the sessions the same pane ran before and after it (one conversati
 under the newest), and that newest session is added to the list.
 
 Every rebuild drops a listed session whose Herdr pane has closed: one that ran in a
-pane before, while neither it nor a later session of its pane runs in one now. A
-session never seen in a Herdr pane stays, and nothing is dropped while Herdr shows
-no pane at all (after a restart, before Herdr is back). A session reopened to read
-again (`reopen`, or "Closed panes" in the page's session picker) stays until it is
-closed (`close`, or the page's "Close" button).
+pane before, while neither it nor a later session of its pane runs in one now and
+Herdr no longer lists the pane itself (a closed pane's id is never reused). A pane
+Herdr still lists stays, agent or not: after a restart the panes come back before
+their agents do. A session never seen in a Herdr pane stays, and nothing is dropped
+while Herdr shows no pane at all or a Herdr session cannot be read. A dropped session
+that runs in a pane again (`claude --resume` in a new pane, say) is listed again,
+unless `remove` or `close` named it. A session reopened to read again (`reopen`, or
+"Closed panes" in the page's session picker) stays until it is closed (`close`, or
+the page's "Close" button).
 
 The list lives in out/sessions.txt, the reader in out/prototype.html and the
 answer sheet (replies that ask for keyed answers) in out/questionnaire.html, all
@@ -57,6 +61,7 @@ LIST = OUT / "sessions.txt"
 PAGE = OUT / "prototype.html"
 PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in; the builder writes it
 REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pane does not drop
+DROPPED = OUT / "dropped.txt"  # sessions a closed pane took off the list, listed again if they run in a pane again
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
@@ -106,10 +111,23 @@ def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS
     raise ValueError(f"no session or Herdr pane matches {name!r}; run `panes` to see the live ones")
 
 
+def write_ids(path: Path, ids: list[str]) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
+
+
+def forget_dropped(sids: set[str]) -> None:
+    """Take sessions a person named (add, remove, close) out of the dropped record, so none is listed again unasked."""
+    dropped = builder.read_ids(DROPPED)
+    if sids & set(dropped):
+        write_ids(DROPPED, [sid for sid in dropped if sid not in sids])
+
+
 def drop_closed(ids: list[str]) -> list[str]:
-    """The list without the sessions whose Herdr pane has closed (see the module help)."""
-    live = builder.herdr_panes()
-    if not live:
+    """The list without the sessions whose Herdr pane has closed (see the module help), and with
+    a session that was dropped before back on it when it runs in a Herdr pane again."""
+    live, listed = builder.herdr_inventory()
+    if not live and not listed:
         return ids
     builder.pane_labels([], PANE_CACHE, live)  # records the panes live sessions run in, for session_chain
     try:
@@ -117,15 +135,37 @@ def drop_closed(ids: list[str]) -> list[str]:
     except (OSError, json.JSONDecodeError):
         seen = {}
     reopened = set(builder.read_ids(REOPENED))
-    kept = []
-    for sid in ids:
+    dropped = builder.read_ids(DROPPED)
+
+    def members(sid: str) -> list[str]:
         path = builder.find_session_file(sid)
-        pane = [member.stem for member in builder.session_chain(path)] if path else [sid]
+        return [member.stem for member in builder.session_chain(path)] if path else [sid]
+
+    def pane_closed(member: str) -> bool:
+        """Whether the pane this session was last seen in is gone from Herdr. A pane whose agent
+        has not come back (a Herdr restart brings agents back one at a time) is still listed."""
+        entry = seen[member]
+        return listed is not None and (entry.get("herdr"), entry.get("pane")) not in listed
+
+    kept, gone = [], []
+    for sid in ids:
+        pane = members(sid)
         if any(member in live or member in reopened for member in pane) or not any(member in seen for member in pane):
             kept.append(sid)
+        elif not all(pane_closed(member) for member in pane if member in seen):
+            kept.append(sid)
         else:
+            gone.append(sid)
             print(f"Dropping {sid[:8]}: its Herdr pane has closed")
-    return kept
+    # A session dropped before that runs in a pane again (Herdr's agents came back after the pane
+    # list shrank, or `claude --resume` in a new pane) is listed again.
+    back = [sid for sid in dropped if sid not in kept and builder.find_session_file(sid) and any(member in live for member in members(sid))]
+    for sid in back:
+        print(f"Listing {sid[:8]} again: it runs in a Herdr pane again")
+    still = [sid for sid in dict.fromkeys([*dropped, *gone]) if sid not in kept and sid not in back and builder.find_session_file(sid)]
+    if still != dropped:
+        write_ids(DROPPED, still)
+    return kept + back
 
 
 def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
@@ -236,6 +276,7 @@ def close(ids: list[str], names: list[str]) -> int:
         return 1
     ids = [i for i in ids if i not in pane]
     write_list(ids)
+    forget_dropped(pane)
     if not ids:
         print("The reading list is empty now; the page keeps its last build")
         return 0
@@ -289,6 +330,7 @@ def main(argv: list[str]) -> int:
     else:
         ids = [sid for sid in ids if sid not in chosen]
     write_list(ids)
+    forget_dropped(set(chosen))
     return rebuild(ids, chosen[-1] if command == "add" else None)
 
 

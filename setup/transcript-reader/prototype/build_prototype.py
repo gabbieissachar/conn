@@ -788,7 +788,17 @@ def pane_session(claimed: str | None, process_info: dict | None, running: dict[i
 
 
 def herdr_panes() -> dict[str, dict]:
-    """Session id -> the Herdr pane running it, from every running Herdr session.
+    """Session id -> the Herdr pane running it, from every running Herdr session (see herdr_inventory)."""
+    return herdr_inventory()[0]
+
+
+def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
+    """Session id -> the Herdr pane running it, and every pane Herdr lists, from every running Herdr session.
+
+    The second value holds (Herdr session, pane id) of every pane, with or without an agent
+    in it, so a caller can tell a pane that has closed (its id is gone: Herdr never reuses
+    one) from a pane whose agent has not come back yet. It is None when a running Herdr
+    session could not be read, since a pane missing from a partial list has not closed.
 
     Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for a
     Claude pane whose session id no running Claude holds. No Herdr, no labels.
@@ -803,13 +813,20 @@ def herdr_panes() -> dict[str, dict]:
     listing = call("session", "list", "--json") or {}
     running = running_claude_sessions()
     panes = {}
+    pane_ids: set[tuple[str, str]] | None = set()
     for herdr_session in listing.get("sessions") or []:
         name = herdr_session.get("name") or ""
         if not herdr_session.get("running") or name.startswith("-"):
             continue
-        panes_result = (call("--session", name, "pane", "list") or {}).get("result") or {}
+        panes_reply = call("--session", name, "pane", "list")
+        if panes_reply is None:
+            pane_ids = None
+            continue
+        panes_result = panes_reply.get("result") or {}
         tabs_result = (call("--session", name, "tab", "list") or {}).get("result") or {}
         found = panes_result.get("panes") or []
+        if pane_ids is not None:
+            pane_ids.update((name, pane["pane_id"]) for pane in found if pane.get("pane_id"))
         for pane in found:
             claimed = (pane.get("agent_session") or {}).get("value")
             if pane.get("agent") == "claude" and running and claimed not in running.values() and pane.get("pane_id"):
@@ -817,7 +834,7 @@ def herdr_panes() -> dict[str, dict]:
                 actual = pane_session(claimed, info, running)
                 pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
         panes.update(pane_index(name, found, tabs_result.get("tabs") or []))
-    return panes
+    return panes, pane_ids
 
 
 def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict]) -> dict[str, dict]:
