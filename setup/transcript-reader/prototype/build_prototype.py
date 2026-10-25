@@ -1342,6 +1342,9 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
+    if page.count("__PAYLOAD__") != 1:
+        # A second mention (a comment, say) would carry the whole payload into the page again.
+        raise ValueError(f"{template.name} must name __PAYLOAD__ exactly once, in its payload slot")
     # The policy allows only the page's own script, by hash, so injected markup cannot run code.
     script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
     digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")

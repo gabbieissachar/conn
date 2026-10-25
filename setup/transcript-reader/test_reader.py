@@ -370,6 +370,22 @@ class WritePageTest(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir() if p.name.endswith(".partial")), [])
 
 
+    def test_the_payload_is_in_the_page_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for template in (builder.TEMPLATE, builder.HERE / "questionnaire.html"):
+                out = Path(tmp) / f"{template.stem}.out.html"
+                builder.write_page(template, {"generated": 1.0, "marker": "unique-payload-marker"}, out)
+                self.assertEqual(out.read_text(encoding="utf-8").count("unique-payload-marker"), 1, template.name)
+
+    def test_a_template_naming_the_payload_twice_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "t.html"
+            template.write_text("<!-- fills __PAYLOAD__ -->\n<script>x</script>__PAYLOAD__", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                builder.write_page(template, {"generated": 1.0}, Path(tmp) / "out.html")
+            self.assertFalse((Path(tmp) / "out.html").exists())
+
+
 def log(path, records, written):
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     os.utime(path, (written, written))
