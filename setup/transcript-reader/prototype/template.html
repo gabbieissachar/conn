@@ -1052,7 +1052,7 @@
     count.classList.toggle("bad", over);
     const status = dock("status");
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? ` · Herdr is on ${link.held}; following once this box is sent or left` : ""}`;
+    status.textContent = link.result ? link.result.text : reason || `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once this box is sent or left`) : ""}`;
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -1326,6 +1326,7 @@
       let text = "";
       if (link.listing) text = link.listing.text;
       else if (b.error) text = `Rebuild failed: ${b.error}`;
+      else if (state.follow && link.held && link.want) text = `Herdr is on ${link.held}; following once the message box is sent or left.`;
       else if (state.follow && link.want && f && f.session_id === link.want) text = f.readable ? `Herdr is on ${f.label}; adding it to the reading list…` : `Herdr is on ${f.label}, which has no Claude session log to read.`;
       else if (state.follow && f && !f.session_id) text = `Herdr is on ${f.label}, which runs no agent.`;
       note.textContent = text;
