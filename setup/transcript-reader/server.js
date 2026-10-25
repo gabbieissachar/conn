@@ -34,12 +34,19 @@ function start({ root, port = DEFAULT_PORT, ...options }) {
   };
   const v4 = http.createServer(onRequest);
   const v6 = http.createServer(onRequest);
-  v6.on('error', () => {});  // no IPv6 loopback on this machine: IPv4 alone serves
   return new Promise((resolve, reject) => {
     v4.once('error', reject);
     v4.listen(port, '127.0.0.1', () => {
-      v6.listen(v4.address().port, '::1');
-      resolve({ port: v4.address().port, close: () => { v4.close(); v6.close(); } });
+      const bound = v4.address().port;
+      const ready = (close) => resolve({ port: bound, close });
+      v6.once('error', (error) => {
+        // No IPv6 loopback on this machine: IPv4 alone serves. Anything else, a port another
+        // process holds on ::1 above all, would leave "localhost" reaching that process
+        // (browsers try ::1 first), so the start fails.
+        if (['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes(error.code)) ready(() => v4.close());
+        else v4.close(() => reject(error));
+      });
+      v6.listen(bound, '::1', () => ready(() => { v4.close(); v6.close(); }));
     });
   });
 }

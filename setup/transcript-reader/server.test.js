@@ -70,6 +70,21 @@ test('a port already taken is an error, not a second server', async () => {
   try { await assert.rejects(start({ root, port }), /EADDRINUSE/); } finally { first.close(); }
 });
 
+test('a port another process holds on IPv6 loopback alone is an error too, since localhost would reach it', async () => {
+  const port = await freePort();
+  const other = net.createServer();
+  const listening = await new Promise((resolve) => { other.once('error', () => resolve(false)); other.listen(port, '::1', () => resolve(true)); });
+  if (!listening) return;  // no IPv6 loopback here: nothing to collide with
+  try {
+    await assert.rejects(start({ root: repoCopy(), port }), { code: 'EADDRINUSE' });
+    // The IPv4 side it had bound is let go again.
+    const free = await new Promise((resolve) => { const s = net.createServer().once('error', () => resolve(false)).listen(port, '127.0.0.1', () => s.close(() => resolve(true))); });
+    assert.ok(free);
+  } finally {
+    other.close();
+  }
+});
+
 test('the shared server refuses anything that names the reader\'s out/ folder, however it is spelled', () => {
   const root = repoCopy();
   const req = (url) => ({ url });
