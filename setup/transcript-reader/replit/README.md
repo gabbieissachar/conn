@@ -118,6 +118,7 @@ python3 -m unittest setup/transcript-reader/test_push.py
 ## What was not verified
 
 - **Replit Object Storage client.** `store.js` follows the package's documented `{ ok, value, error }` results and is tested against a stand-in client only. If a call differs, that file is the only place to change.
+- **The package version.** `package.json` asks for `@replit/object-storage` `^1.0.0`. If Replit cannot install it, add the package from Replit's own package manager and keep the rest.
 - **JumpCloud's claims.** The app expects `email` and `email_verified` in the ID token and reads the provider's discovery document. If JumpCloud leaves out `email_verified`, set `OIDC_EMAIL_VERIFIED_OPTIONAL=1` as described above.
 - **Deployment visibility.** That "Public" is available to the ShopBack workspace and lets the laptop's upload through is the Marking-Down team's experience, not something checked here.
 - **The first real upload's size and time**, and how the phone handles the sign-in redirect.
