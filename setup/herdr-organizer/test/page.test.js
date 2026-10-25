@@ -319,6 +319,25 @@ test('the Move panel follows the leader rule and starts with nothing chosen', ()
   assert.equal(/<option value="[^"]+" selected/.test(ordinary.out), false, 'no workspace is marked selected');
 });
 
+test('the Archive mode starts with no archive chosen, so a selection never lands in an unrelated archive (R7-7)', () => {
+  const line = name => html.split('\n').find(row => row.trim().startsWith('const ' + name + ' = ')).trim();
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const source = html.slice(html.indexOf('const TAB_MODES'), html.indexOf('const archiveTabKey'));
+  const run = chosen => {
+    const state = { selectedTabs: new Set(['wA8:t1']), selectedTabsAction: 'archive', destinationWorkspace: '', selectedTabsArchive: chosen, selectedTabsBatch: '' };
+    const { movePanelView } = new Function('escapeHtml', 'state', [line('TAB_ID_PATTERN'), line('SESSION_NAME_PATTERN'), 'const BATCH_ID_PATTERN = /^batch-[0-9]{8}-[0-9]{6}(-[0-9]+)?$/;', source, 'return { movePanelView };'].join('\n'))(escapeHtml, state);
+    const out = movePanelView({ workspaces: [{ id: 'wA8', label: 'esim', tab_count: 1, tabs: [{ id: 'wA8:t1', label: 'shell' }] }], archives: [{ archive_id: '20261019-esim-a', status: 'archived', workspace_label: 'unrelated' }, { archive_id: '20261020-esim-b', status: 'archived', workspace_label: 'other' }], batches: [], herdr_session: 'esim' });
+    return { out, state, command: (out.match(/id="copy-move-tabs"[^>]*data-command="([^"]*)"/) || [])[1] };
+  };
+  const none = run('');
+  assert.equal(none.command, '', 'no archive picked: no command');
+  assert.equal(none.state.selectedTabsArchive, '', 'a computed default is never stored');
+  assert.equal(/<option value="[^"]+" selected/.test(none.out), false);
+  assert.match(none.out, /<option value="">Choose destination<\/option>/);
+  assert.match(run('20261020-esim-b').command, /archive-tabs --tab wA8:t1 --into-archive 20261020-esim-b --execute --confirm 20261020-esim-b/, 'a pick the user made is used');
+  assert.equal(run('gone-archive').command, '', 'a stale pick is not used');
+});
+
 test('a leader selection in a move is offered only leader-space', () => {
   const { restoreDestinations } = require('node:vm').runInNewContext(`${html.slice(html.indexOf('const LEADER_WORKSPACE_LABEL = '), html.indexOf('const archiveTabKey = '))}; ({ restoreDestinations })`, {});
   const workspaces = [{ id: 'wBK', label: 'leader-space' }, { id: 'wA8', label: 'esim' }];

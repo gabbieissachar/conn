@@ -441,7 +441,7 @@ created: 2026-09-10
     const movePanelView = data => {
       const allTabs = data.workspaces.flatMap(workspace => workspace.tabs.map(tab => ({ ...tab, workspace })));
       const selected = allTabs.filter(tab => state.selectedTabs.has(tab.id));
-      if (!selected.length) { state.destinationWorkspace = ''; return ''; }
+      if (!selected.length) { state.destinationWorkspace = ''; state.selectedTabsArchive = ''; return ''; }
       const mode = TAB_MODES.some(([key]) => key === state.selectedTabsAction) ? state.selectedTabsAction : 'move';
       const sourceWorkspaces = new Set(selected.map(tab => tab.workspace.id));
       const tabArgs = selected.map(tab => `--tab ${tab.id}`).join(' ');
@@ -450,11 +450,12 @@ created: 2026-09-10
       const destinationChoices = mode === 'archive'
         ? (data.archives || []).filter(archive => ['archived', 'restored', 'resumed', 'restore_partial'].includes(archive.status))
         : mode === 'batch' ? batchChoices : restoreDestinations(data.workspaces.filter(workspace => !sourceWorkspaces.has(workspace.id)), selected);
-      if (mode === 'archive' && !destinationChoices.some(archive => archive.archive_id === state.selectedTabsArchive)) state.selectedTabsArchive = destinationChoices[0]?.archive_id || '';
       if (mode === 'batch' && !batchChoices.some(batch => batch.batch_id === state.selectedTabsBatch)) state.selectedTabsBatch = batchChoices[0]?.batch_id || '';
       // A move needs a pick: only a workspace the user chose counts, and a computed default is never stored (the leader rule: leader tabs only into leader-space, others anywhere else).
       const movePick = destinationChoices.some(workspace => workspace.id === state.destinationWorkspace) ? state.destinationWorkspace : '';
-      const destination = mode === 'archive' ? state.selectedTabsArchive : mode === 'batch' ? state.selectedTabsBatch : movePick;
+      // Archive, like Move, needs a pick: with 150 archives the first one is an unrelated workspace, so a computed default is never used or stored.
+      const archivePick = destinationChoices.some(archive => archive.archive_id === state.selectedTabsArchive) ? state.selectedTabsArchive : '';
+      const destination = mode === 'archive' ? archivePick : mode === 'batch' ? state.selectedTabsBatch : movePick;
       const chosenBatch = mode === 'batch' ? batchChoices.find(batch => batch.batch_id === destination) : null;
       // A session with no archive group yet gets one from the first add. Its id is chosen when the command runs, so that run is confirmed with the session name.
       const newGroupSession = mode === 'batch' && !batchChoices.length && SESSION_NAME_PATTERN.test(data.herdr_session || '')
