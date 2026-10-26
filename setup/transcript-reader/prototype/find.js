@@ -1,5 +1,5 @@
   // ---------------------------------------------------------------- find (find.js, the reader page only)
-  // build_prototype.fill_template pastes this file into the reader page's script, after pins.js.
+  // build_prototype.fill_template pastes this file into the reader page's script, after pins.js and markdown.js.
   // The matching behind the search row: plain functions over the turns the page already holds, with no DOM, no
   // network and no model, so a vm sandbox can run them (find.test.js). A match is a part of a turn: your message
   // (or the instruction a Firstmate doorbell delivered), the reply, or the turn's working notes. A part is named the
@@ -24,33 +24,10 @@
       return { terms, ok: terms.join("").length >= 2 };
     }
     const squash = text => text.replace(/\s+/g, " ").trim();
-    // What a reply reads as once the page has drawn it (renderMarkdown in template.html): the markers gone, a link as
-    // its label and its address, code as written, a table without its pipes. Spaces squeezed.
-    const CODE = /(`[^`]+`)/;
-    const FENCE = /^\s*(?:```+|~~~+)/;
-    const RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
-    const BREAK = /^\s*([-*_])(\s*\1){2,}\s*$/;
-    const inlinePlain = text => text.split(CODE).map((part, i) => i % 2 ? part.slice(1, -1) : part
-      .replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, "$1 $2")
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=$|[\s).,;:!?])/g, "$1$2")).join("");
-    function plainMarkdown(text) {
-      let code = false;
-      const out = [];
-      for (const line of text.split("\n")) {
-        if (FENCE.test(line)) { code = !code; continue; }
-        if (code) { out.push(line); continue; }
-        if (line.trimStart().startsWith("|")) {
-          if (RULE.test(line)) continue;
-          out.push(line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map(c => inlinePlain(c.trim().replace(/\\\|/g, "|"))).join(" "));
-          continue;
-        }
-        if (BREAK.test(line)) continue;
-        const heading = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
-        out.push(inlinePlain(heading ? heading[2] : line.replace(/^\s*>\s?/, "").replace(/^\s*[-*+]\s+(?:\[[ xX]\]\s+)?/, "")));
-      }
-      return squash(out.join(" "));
-    }
+    // What a reply reads as once the page has drawn it: the markers gone, a link as its label and its address, code as
+    // written, a table without its pipes, spaces squeezed. markdown.js draws the page and reads this off the same parse
+    // (markdownView, which the page script defines before this file), so the words searched are the words shown.
+    const plainMarkdown = text => markdownView.plain(text);
     // The text each kind of part shows. A message and the working notes are drawn as written; only a reply is markdown.
     const instruction = ex => ex.source === "firstmate" && ex.delivered && ex.delivered.length ? ex.delivered.join("\n\n") : ex.input;
     const partText = (ex, part) => part === "in" ? squash(instruction(ex) || "") : part === "reply" ? plainMarkdown(ex.reply || "") : squash((ex.narration || []).join("\n\n"));

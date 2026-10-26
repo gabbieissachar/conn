@@ -11,6 +11,8 @@ const path = require('path');
 const vm = require('vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'find.js'), 'utf8');
+// The page defines markdownView (the vendored parser and markdown.js) before find.js, which reads replies through it.
+const MARKDOWN = ['vendor/markdown-it.min.js', 'markdown.js'].map((file) => fs.readFileSync(path.join(__dirname, 'prototype', file), 'utf8'));
 
 // What the sandbox builds has its own Array and Object, which a strict comparison tells apart: compare as data.
 const deepEqual = (actual, expected, message) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), JSON.parse(JSON.stringify(expected)), message);
@@ -18,6 +20,7 @@ const deepEqual = (actual, expected, message) => assert.deepStrictEqual(JSON.par
 function load() {
   const sandbox = {};
   vm.createContext(sandbox);
+  for (const source of MARKDOWN) vm.runInContext(source, sandbox);
   return vm.runInContext(SOURCE + '\nfinder;', sandbox);
 }
 
@@ -74,6 +77,20 @@ test('a reply is matched on what the page draws: markers gone, a link as label a
   const finder = load();
   const s = session('s1', [turn({ reply: 'Then the **deploy** step runs.', reply_words: 5, verdict: 'no-action' })]);
   assert.equal(finder.search([s], parse('"the deploy step"').terms, 'any', 'here').length, 1);
+});
+
+test('search reads the markers the page now draws: bold around code, __bold__, ~~strike~~, an escape, a line break', () => {
+  const { plainMarkdown, parse, search } = load();
+  assert.equal(plainMarkdown('**`code` in bold** and __under__ and ~~gone~~'), 'code in bold and under and gone');
+  assert.equal(plainMarkdown('**a * b** and \\*escaped\\*'), 'a * b and *escaped*');
+  assert.equal(plainMarkdown('**bold that spans\ntwo lines** after'), 'bold that spans two lines after');
+  assert.equal(plainMarkdown('- [ ] open task\n- [x] done task'), 'open task done task');
+  assert.equal(plainMarkdown('| a |\n|:-:|\n| x<br>y |'), 'a x y');
+  const finder = load();
+  const s = session('s1', [turn({ reply: 'Run **`npm test` first**, then __ship it__.', reply_words: 7, verdict: 'no-action' })]);
+  assert.equal(finder.search([s], parse('"npm test first, then ship it"').terms, 'any', 'here').length, 1);
+  assert.equal(finder.search([s], parse('**').terms, 'any', 'here').length, 0, 'the markers are not words the page shows');
+  assert.equal(finder.search([s], parse('__ship').terms, 'any', 'here').length, 0);
 });
 
 test('the field builder: a doorbell searches what it delivered, a wake-up its reply, notes are their own part, dividers are skipped', () => {

@@ -844,6 +844,23 @@ class PageShellTest(unittest.TestCase):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("const finder", sheet)
 
+    def test_both_copies_draw_markdown_through_the_vendored_parser_and_the_answer_sheet_keeps_its_own(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            self.assertEqual(script.count("const markdownView = (() => {"), 1, mode)
+            for slot in ("/*__MARKDOWN_IT__*/", "/*__MARKDOWN__*/"):
+                self.assertNotIn(slot, page, mode)
+            # The parser is in the hashed script, so the page needs no network to draw a reply, and it comes before what reads it.
+            self.assertEqual(script.count("/*! markdown-it "), 1, mode)
+            self.assertLess(script.index("/*! markdown-it "), script.index("const markdownView"), mode)
+            self.assertLess(script.index("const markdownView"), script.index("const finder"), mode)
+            self.assertIn("markdownView.render(text,", script, mode)
+            # The hand-written pass that missed bold around code is gone, and so is the second reading of a reply in find.js.
+            self.assertNotIn(r"replace(/\*\*([^*]+)\*\*/g", script, mode)
+            self.assertIn("markdownView.plain(text)", script, mode)
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        self.assertNotIn("markdownView", sheet)
+
 
 class PrivateFilesTest(unittest.TestCase):
     """The reader's files carry transcript text, so like Claude's logs they are the owner's alone."""

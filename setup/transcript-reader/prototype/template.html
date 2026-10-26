@@ -119,18 +119,22 @@
   .asks div + div { margin-top: 4px; }
   .asks code, .input code { font: 13px var(--mono); background: color-mix(in srgb, var(--code) 70%, transparent); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md p { margin: 0 0 .55em; }
-  .md .li { padding-left: 1.1em; text-indent: -.8em; margin: 0 0 .25em; }
-  .md .li.l2 { padding-left: 2.1em; }
+  .md ul, .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
+  .md li { margin: 0 0 .25em; }
+  .md li > p { margin: 0 0 .35em; }
+  .md li > ul, .md li > ol { margin: .25em 0; }
+  .md li.task { list-style: none; position: relative; }
+  .md li.task::before { content: "\2610"; position: absolute; left: -1.4em; }
+  .md li.task.done::before { content: "\2611"; }
   .md h4 { margin: .6em 0 .3em; font-size: 15px; }
   .md .ask { background: var(--ask-wash); box-shadow: -4px 0 0 var(--ask-wash), 4px 0 0 var(--ask-wash); border-radius: 3px; }
   .md .reminder { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
   .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
-  .md i { font-style: italic; }
   .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
-  .md .li + p, .md .li + .codebox, .md .li + .table-wrap { margin-top: .55em; }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
-  .md .quote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .3em; }
+  .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
+  .md blockquote > :last-child { margin-bottom: 0; }
   .codebox { position: relative; margin: 0 0 .55em; }
   /* Wrapped, not scrolled sideways, so a whole command shows at once and stays clear of Copy. */
   .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -168,7 +172,6 @@
   .doc-md h2 { font-size: 20px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
   .doc-md h3 { font-size: 17px; }
   .doc-md h4, .doc-md h5, .doc-md h6 { font-size: 15px; }
-  .doc-md .li.l3 { padding-left: 3.1em; }
   @media (min-width: 820px) {
     .docview { display: grid; grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr); gap: 16px; align-items: start; }
     .toc { margin: 0; background: none; }
@@ -392,6 +395,8 @@
   const canLive = live.served && !HOSTED;
 /*__PINS__*/
 /*__PICKER__*/
+/*__MARKDOWN_IT__*/
+/*__MARKDOWN__*/
 /*__FIND__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
@@ -415,88 +420,16 @@
   // When the hosted copy was built: the time alone today, with the day before that.
   const builtAt = s => fmtShortDay(s) === fmtShortDay(Date.now() / 1000) ? fmtTime(s) : fmtWhen(s);
 
-  // ---------------------------------------------------------------- tiny safe markdown
-  // Transcripts and documents carry text from outside (pages, Slack, tool output), so every
-  // quote is escaped too: an escaped URL can never close the href attribute it is placed in.
-  const esc = text => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  function inline(text) {
-    return text.split(/(`[^`]+`)/).map((part, i) => i % 2 ? `<code>${esc(part.slice(1, -1))}</code>` : esc(part)
-      .replace(/\[([^\]]+)\]\(([^\s)]+)\)|(https?:\/\/[^\s<>)]*[^\s<>).,;:!?])/g, (m, label, href, bare) =>
-        // A link to a local file cannot open from here: its words stay, its target shows on hover.
-        href && !/^https?:\/\//.test(href) ? `<span class="local-link" title="${href}">${label}</span>`
-          : `<a href="${href || bare}" target="_blank" rel="noopener noreferrer">${label || bare}</a>`)
-      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=$|[\s).,;:!?])/g, "$1<i>$2</i>")).join("");
-  }
-  // A code block in a box with a Copy button. The button's label is drawn by CSS, so
-  // selecting the code never picks it up.
-  function codeBox(label) {
-    const wrap = $("div", "codebox"), pre = $("pre"), copy = $("button", "copy");
-    copy.type = "button"; copy.dataset.label = "Copy"; copy.setAttribute("aria-label", "Copy");
-    copy.title = "Copy this to the clipboard";
-    if (label) wrap.append($("span", "code-label", label));
-    wrap.append(copy, pre);
-    return { wrap, pre, lines: [] };
-  }
-  const tableCells = line => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
-  const isTableRule = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
-  function tableNode(rows) {
-    const wrap = $("div", "table-wrap"), table = $("table"), thead = $("thead"), tbody = $("tbody");
-    const head = rows.length > 1 && isTableRule(rows[1].line);
-    rows.forEach((row, i) => {
-      if (head && i === 1) return;
-      const tr = $("tr", row.mark || null);
-      tableCells(row.line).forEach(cell => { const td = $(head && i === 0 ? "th" : "td"); td.innerHTML = inline(cell); tr.append(td); });
-      (head && i === 0 ? thead : tbody).append(tr);
-    });
-    if (head) table.append(thead);
-    table.append(tbody); wrap.append(table);
-    return wrap;
-  }
-  // doc: a whole document, with real heading levels (collected in box.headings for its
-  // contents list), nested list levels and front matter; a reply keeps small headings.
+  // ---------------------------------------------------------------- markdown
+  // The parsing and the safety of it (no raw HTML, only http(s) links) are in markdown.js; this draws its HTML into a box.
+  const inline = text => markdownView.inline(text);
+  // doc: a whole document, with real heading levels (collected in box.headings for its contents list), nested lists and a
+  // front matter box; a reply keeps small headings. The asked and reminding lines of a reply are marked where they are.
   function renderMarkdown(text, askLines = [], reminderLines = [], doc = false) {
-    const asks = new Set(askLines), reminders = new Set(reminderLines);
+    const drawn = markdownView.render(text, { ask: askLines, reminder: reminderLines, doc });
     const box = $("div", "md" + (doc ? " doc-md" : ""));
-    box.headings = [];
-    let para = null, code = null, rows = null;
-    const closeCode = () => { code.pre.textContent = code.lines.join("\n"); code = null; };
-    const closeTable = () => { if (rows) box.append(tableNode(rows)); rows = null; };
-    text.split("\n").forEach((line, n) => {
-      const mark = asks.has(n) ? "ask" : reminders.has(n) ? "reminder" : "";
-      const fence = line.trimStart().match(/^(```+|~~~+)\s*([\w+#.-]*)/);
-      if (code) {
-        if (code.until ? line.trim() === code.until : fence && line.trim().startsWith(code.fence)) closeCode(); else code.lines.push(line);
-        return;
-      }
-      if (doc && n === 0 && line.trim() === "---") { code = { ...codeBox("front matter"), until: "---" }; box.append(code.wrap); return; }
-      if (fence) { closeTable(); para = null; code = { ...codeBox(fence[2]), fence: fence[1] }; box.append(code.wrap); return; }
-      if (line.trimStart().startsWith("|")) { para = null; (rows = rows || []).push({ line, mark }); return; }
-      closeTable();
-      if (!line.trim()) { para = null; return; }
-      const heading = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
-      const item = line.match(/^(\s*)(?:([-*+])|(\d+[.)]))\s+(.*)/);
-      const quote = line.match(/^\s*>\s?(.*)/);
-      let el;
-      if (heading) {
-        el = $(doc ? "h" + heading[1].length : "h4"); el.innerHTML = inline(heading[2]); para = null;
-        if (doc) { el.id = "doc-h-" + n; box.headings.push({ level: heading[1].length, text: el.textContent, el }); }
-      } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { el = $("hr"); para = null; }
-      else if (quote) { el = $("div", "quote"); el.innerHTML = inline(quote[1]); para = null; }
-      else if (item) {
-        const depth = item[1].replace(/\t/g, "    ").length;
-        el = $("div", "li" + (depth >= 4 && doc ? " l3" : depth >= 2 ? " l2" : ""));
-        const check = item[4].match(/^\[([ xX])\]\s+(.*)/);
-        const bullet = item[3] ? item[3] + " " : check ? (check[1] === " " ? "☐ " : "☑ ") : "• ";
-        el.innerHTML = esc(bullet) + inline(check ? check[2] : item[4]); para = null;
-      }
-      else if (para) { para.append(document.createElement("br")); const span = $("span", mark); span.innerHTML = inline(line); para.append(span); return; }
-      else { el = $("p"); para = el; const span = $("span", mark); span.innerHTML = inline(line); el.append(span); box.append(el); return; }
-      if (mark) el.classList.add(mark);
-      box.append(el);
-    });
-    if (code) closeCode();
-    closeTable();
+    box.innerHTML = drawn.html;
+    box.headings = drawn.headings.map(h => ({ level: h.level, text: h.text, el: box.querySelector("#" + h.id) }));
     return box;
   }
   function clipped(node, words, limitWords, label, key) {
