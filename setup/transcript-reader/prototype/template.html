@@ -1781,8 +1781,8 @@
   });
   // The Sync button: take everything again now, not at the next poll. The local page asks the server to read
   // Herdr again and rebuild from the session logs and the fleet records (all read-only; it writes only out/),
-  // then swaps in the list, each session's live or ended state and the open conversation's newest turns where
-  // you are reading. The hosted copy cannot make the laptop build: it reads the newest copy the laptop wrote.
+  // then swaps in the list, each session's live or ended state and every listed session's newest turns, keeping
+  // the place in the conversation you are reading. The hosted copy cannot make the laptop build: it reads the newest copy the laptop wrote.
   async function syncNow() {
     if (link.syncing || !(canLive || HOSTED)) return;
     link.syncing = true; link.listing = null; paintSync(); renderLive();
@@ -1858,7 +1858,7 @@
     line.classList.toggle("stale", failing);
     text.setAttribute("aria-live", "off");
     text.textContent = failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}` : `${synced[0].toUpperCase()}${synced.slice(1)}`;
-    text.title = `Built ${fmtWhen(when)}. The session list, each session's live or ended state and the open conversation's newest turns are read again at each sync.`;
+    text.title = `Built ${fmtWhen(when)}. The session list, each session's live or ended state and the newest turns of every listed session are read again at each sync.`;
   }
   // Every 30 seconds while visible: a newer index brings the new list, and the conversation on
   // screen again when its stamp changed, swapped in where you are reading. New page code reloads.

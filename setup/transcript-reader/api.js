@@ -441,7 +441,7 @@ function create({
   // What the Sync button asks for: Herdr is read again now (not from the last scan), the pages are rebuilt from the
   // session logs and the fleet records whether or not a log looks newer, and the answer is state's, once it is done.
   // That is the same read-only rebuild a changed log starts, so the reading list, each session's live or ended
-  // state and the open conversation's newest turns are all taken again; it waits for one already running.
+  // state and every listed session's newest turns are all taken again; it waits for one already running.
   async function sync(body) {
     for (const key of Object.keys(body)) if (key !== 'follow') throw new RequestError('Unknown field.');
     if (body.follow !== undefined && typeof body.follow !== 'boolean') throw new RequestError('Invalid follow.');
