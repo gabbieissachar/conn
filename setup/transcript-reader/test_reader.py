@@ -5,7 +5,9 @@ Run from the repo root: python3 -m unittest setup/transcript-reader/test_reader.
 Fixtures are synthetic; no real session log or Herdr call is used.
 """
 
+import base64
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -802,8 +804,8 @@ class PageShellTest(unittest.TestCase):
     def test_follow_herdr_is_in_the_folded_header_and_is_the_same_switch_as_the_one_in_the_controls(self):
         for mode, page in self.pages():
             title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)
-            # In the one-line header, beside the chevron that unfolds it, not in the controls the fold hides.
-            self.assertRegex(title, r'<button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="bar-toggle"', mode)
+            # In the one-line header, beside the chevron that unfolds it (the search button may sit between), not in the controls the fold hides.
+            self.assertRegex(title, r'<button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button>(?:<button class="search-toggle".*?</button>)?<button class="bar-toggle"', mode)
             self.assertNotIn("follow-quick", re.search(r'<div id="bar-more">.*?<div id="controls">', page, re.S).group(0), mode)
             # Shown only when the bar is folded; unfolded, the controls' own button is there.
             self.assertIn(".bar.collapsed .follow-quick:not([hidden]) { display: block; }", page)
@@ -827,6 +829,20 @@ class PageShellTest(unittest.TestCase):
             self.assertNotIn("/*__PICKER__*/", page, mode)
             self.assertIn("picker.label(s, data.sessions, pickerSection, sessionName)", page, mode)
             self.assertIn("picker.sections(data.sessions, paneLive)", page, mode)
+
+    def test_both_copies_carry_find_once_inside_the_hashed_script_and_the_answer_sheet_does_not(self):
+        for mode, page in self.pages():
+            self.assertEqual(page.count("const finder = (() => {"), 1, mode)
+            self.assertNotIn("/*__FIND__*/", page, mode)
+            # Inside the script the content policy hashes, so no policy change lets it run.
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            self.assertIn("const finder = (() => {", script, mode)
+            digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+            self.assertIn(f"script-src 'sha256-{digest}'", page, mode)
+            # The page adds no way out of the browser: no request, no model.
+            self.assertNotRegex(re.search(r"const finder = \(\(\) => \{.*?\n  \}\)\(\);", script, re.S).group(0), r"fetch\(|XMLHttpRequest|WebSocket|sendBeacon|import\(", mode)
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        self.assertNotIn("const finder", sheet)
 
 
 class PrivateFilesTest(unittest.TestCase):

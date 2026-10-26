@@ -45,8 +45,8 @@
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
   .to-sheet .short { display: none; }
-  /* Folded to one line at phone width, the session picker needs the room the long link takes. */
-  @media (max-width: 440px) { .bar.collapsed .to-sheet .long { display: none; } .bar.collapsed .to-sheet .short { display: inline; } }
+  /* At phone width the title row also holds the search button, and folded to one line the session picker needs the room too: the link is short. */
+  @media (max-width: 440px) { .to-sheet .long { display: none; } .to-sheet .short { display: inline; } }
   .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
   /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
   .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
@@ -231,7 +231,7 @@
   .pin-x { flex: none; border: 0; background: none; color: var(--muted); font-size: 12px; padding: 8px 6px; text-decoration: underline; }
   .pins-note { font-size: 12px; color: var(--muted); padding: 6px 2px 2px; }
   .reply.is-target-reply { box-shadow: 0 0 0 2px var(--you); }
-  .live { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .live { font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; }
   .live.on { color: var(--ok); }
   .follow-note { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .kept-note { font-size: 12px; margin-top: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
@@ -281,13 +281,73 @@
   .input.pending { opacity: .6; border-style: dashed; }
   .input.pending.refused { opacity: 1; border-color: var(--open); }
   .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+
+  /* Search: the button in the title row, the row under it and the list of matches. Opening it folds the tabs and controls,
+     as the folded header already does, so on a phone the row and the list have the screen. */
+  .search-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
+  .search-toggle[aria-expanded="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
+  .search-toggle:focus-visible, .search-row button:focus-visible, .search-chips .btn:focus-visible, .hit:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .locked .search-toggle, .locked .search { display: none; }
+  .search { margin-top: 6px; }
+  .search-row { display: flex; gap: 6px; align-items: center; }
+  /* 16px keeps a phone from zooming in when the box is tapped. */
+  .search-row input { flex: 1 1 auto; min-width: 0; height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 2px 9px; background: var(--paper); color: var(--ink); font: 16px/1.3 var(--sans); }
+  .search-row input:focus { outline: 2px solid var(--you); outline-offset: -1px; }
+  .search-count { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .search-row button { flex: none; height: 30px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 0 8px; font-size: 13px; color: var(--ink); }
+  .search-row button[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
+  .search-row button:disabled { opacity: .45; cursor: default; }
+  .search-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
+  .search-chips .btn { font-size: 12px; padding: 3px 7px; }
+  .search-chips .brk { flex-basis: 100%; height: 0; }
+  @media (max-width: 440px) { .search-chips .long { display: none; } .bar.searching .asof { display: none; } }
+  .search-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .search-results { margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); max-height: min(58vh, 32rem); overflow-y: auto; overscroll-behavior: contain; }
+  .hit-group { position: sticky; top: 0; display: flex; gap: 6px; background: var(--wash); border-bottom: 1px solid var(--line); padding: 3px 9px; font-size: 12px; font-weight: 700; color: var(--muted); }
+  .hit-group span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); background: none; padding: 6px 9px; }
+  .hit-group + .hit { border-top: 0; }
+  .hit[aria-current="true"] { background: var(--you-wash); }
+  .hit-meta { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
+  .hit-meta b { color: var(--ink); }
+  .hit-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 14px; }
+  .hit-text mark { background: var(--hit); color: inherit; border-radius: 2px; }
+  .hit-more { padding: 6px 9px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+  /* Where the words are on the page. The page's own text is never rewrapped: these are ranges over it. */
+  :root { --hit: #ffe066; }
+  @media (prefers-color-scheme: dark) { :root { --hit: #6b5a12; } }
+  ::highlight(find-hit) { background-color: #ffe066; color: #1d2433; }
+  ::highlight(find-current) { background-color: #ff9632; color: #1d2433; }
+  @media (prefers-color-scheme: dark) { ::highlight(find-hit) { background-color: #6b5a12; color: #ffffff; } ::highlight(find-current) { background-color: #c2641a; color: #ffffff; } }
 </style>
 </head>
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><button class="sync" id="sync" type="button">Sync</button><button id="forget" type="button" hidden title="Forget the key this device keeps for this copy; the passphrase is asked again">Forget this device</button></div>
+    <div class="search" id="search" role="search" hidden>
+      <div class="search-row">
+        <input id="search-input" type="search" placeholder="Search" aria-label="Search" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+        <span class="search-count" id="search-count" aria-live="polite"></span>
+        <button id="search-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">↑</button>
+        <button id="search-next" type="button" aria-label="Next match" title="Next match (Enter)">↓</button>
+        <button id="search-list" type="button" aria-pressed="false" aria-controls="search-results" title="Show or hide the list of matches">List</button>
+        <button id="search-close" type="button" aria-label="Close the search" title="Close the search (Esc)">✕</button>
+      </div>
+      <div class="search-chips" role="group" aria-label="Where and whose">
+        <button class="btn" type="button" data-scope="here" title="Only the conversation on screen">This<span class="long"> conversation</span></button>
+        <button class="btn" type="button" data-scope="all" title="Every conversation on this page">All<span class="long"> conversations</span></button>
+        <span class="brk" aria-hidden="true"></span>
+        <button class="btn" type="button" data-who="any" title="Anyone's words">Anyone</button>
+        <button class="btn" type="button" data-who="you" title="Your own messages">You</button>
+        <button class="btn" type="button" data-who="replies" title="Replies and working notes">Replies</button>
+        <button class="btn" type="button" data-who="needs" title="Replies that need you">Needs you</button>
+        <button class="btn" type="button" data-who="firstmate" title="Firstmate's instructions">Firstmate</button>
+      </div>
+      <div class="search-note" id="search-note" hidden></div>
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
     <div id="bar-more">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
@@ -332,10 +392,16 @@
   const canLive = live.served && !HOSTED;
 /*__PINS__*/
 /*__PICKER__*/
+/*__FIND__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
+  // What hides text on screen, each with its own opener, so a pin or a search match opens only what hides it, in place,
+  // and never redraws the conversation: a run of folded wake-ups, a folded wake-up, a clipped message or reply, working
+  // notes. Keyed like state.open (the key a click on the button adds), and filled again by each render.
+  // { open(), close(), shown() }
+  const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
   const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
@@ -438,8 +504,10 @@
     if (words <= limitWords || state.open.has(key)) { wrap.append(node); return wrap; }
     const inner = $("div", "clip"); inner.append(node); wrap.append(inner);
     const more = $("button", "more", `${label} (${words} words)`);
-    more.addEventListener("click", () => { inner.classList.remove("clip"); more.remove(); if (key) state.open.add(key); });
+    const show = () => { inner.classList.remove("clip"); more.remove(); if (key) state.open.add(key); };
+    more.addEventListener("click", show);
     wrap.append(more);
+    if (key) reveals.set(key, { open: show, close: () => { inner.classList.add("clip"); wrap.append(more); state.open.delete(key); }, shown: () => !inner.classList.contains("clip") });
     return wrap;
   }
 
@@ -477,7 +545,11 @@
       if (later.length > 3) asks.append($("div", "notes", `and ${later.length - 3} more below`));
       card.append(asks);
     }
-    if (ex.reply) card.append(clipped(renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines), ex.reply_words, 90, "Show full reply", key + ":reply"));
+    if (ex.reply) {
+      const md = renderMarkdown(ex.reply, ex.ask_lines, ex.reminder_lines);
+      if (sid && ex.uid) md.dataset.find = `${ex.uid}:reply`;
+      card.append(clipped(md, ex.reply_words, 90, "Show full reply", key + ":reply"));
+    }
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);
     // The hosted copy's answer sheet is sheet.html beside it.
@@ -492,12 +564,13 @@
       if (ex.tools) parts.push(`${ex.tools} tool step${ex.tools === 1 ? "" : "s"}`);
       const btn = $("button", null, parts.join(", "));
       const body = $("div");
+      if (sid && ex.uid) body.dataset.find = `${ex.uid}:notes`;
       const show = () => ex.narration.forEach(n => body.append($("div", "note-body", n)));
-      btn.addEventListener("click", () => {
-        if (body.childElementCount) { body.replaceChildren(); state.open.delete(key + ":notes"); return; }
-        show(); state.open.add(key + ":notes");
-      });
+      const fold = () => { body.replaceChildren(); state.open.delete(key + ":notes"); };
+      const unfold = () => { show(); state.open.add(key + ":notes"); };
+      btn.addEventListener("click", () => { if (body.childElementCount) fold(); else unfold(); });
       if (state.open.has(key + ":notes")) show();
+      reveals.set(key + ":notes", { open: unfold, close: fold, shown: () => body.childElementCount > 0 });
       notes.append(btn, body); card.append(notes);
     }
     return card;
@@ -535,6 +608,7 @@
     let text = ex.input;
     if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
     const body = $("div", null, text);
+    if (sid && ex.uid) body.dataset.find = `${ex.uid}:in`;
     block.append(clipped(body, text.split(/\s+/).length, 120, "Show all", key + ":input"));
     if (ex.source === "firstmate" && ex.undelivered) block.append($("div", "notes", "The instruction itself was not found in its inbox; this is only the line that pointed to it."));
     const chips = docChips(ex.input_documents, key);
@@ -564,6 +638,7 @@
       };
       row.addEventListener("click", () => show(row.getAttribute("aria-expanded") !== "true"));
       show(state.open.has(key + ":fold"));
+      reveals.set(key + ":fold", { open: () => show(true), close: () => show(false), shown: () => row.getAttribute("aria-expanded") === "true" });
       box.append(row, detail); frag.append(box); return frag;
     }
     frag.append(inputBlock(ex, index, key, sid));
@@ -805,7 +880,9 @@
     const toggle = $("button", "fold");
     toggle.append($("span", "t", runSpan(Number(run.dataset.first), Number(run.dataset.last))), $("span", "l", `${count} wake-ups, nothing new`));
     run.replaceChildren(toggle);
-    toggle.addEventListener("click", () => { run.replaceChildren(...kids); state.open.add(run.dataset.key); });
+    const expand = () => { run.replaceChildren(...kids); state.open.add(run.dataset.key); };
+    toggle.addEventListener("click", expand);
+    reveals.set(run.dataset.key, { open: expand, close: () => { run.replaceChildren(toggle); state.open.delete(run.dataset.key); }, shown: () => !run.contains(toggle) });
   }
   function jump(kind, dir) {
     const session = data.sessions[state.session]; if (!session) return;
@@ -816,6 +893,42 @@
     if (!target) return;
     window.scrollBy({ top: target.top, behavior: "smooth" });
     target.el.classList.remove("is-target"); void target.el.offsetWidth; target.el.classList.add("is-target");
+  }
+
+  // ---------------------------------------------------------------- going to a turn, opening only what hides it
+  // The run of folded wake-ups (drawn as one row) that holds a turn, which the page does not draw until the row opens.
+  function runOf(index) {
+    return [...document.querySelectorAll("#main > .foldrun")].find(run => {
+      const start = Number(run.dataset.key.split(":")[1]);
+      return reveals.has(run.dataset.key) && start <= index && index < start + Number(run.dataset.count);
+    });
+  }
+  // The element that holds one part of a turn (the message, the reply, the working notes), when it is drawn.
+  const partElement = (ex, index, part) => document.querySelector(`[data-find="${finder.uid(ex, index)}:${part}"]`);
+  // Open what hides the part of the turn on screen, each through the opener its own button uses, and answer the part's
+  // element (or the turn's). clips also opens a clipped message or reply and the working notes (a pin goes to the
+  // message as it stands). track notes what was opened, so closing the search can fold it back.
+  function openAt(index, part, { clips = false, track = false } = {}) {
+    const session = data.sessions[state.session], ex = session.exchanges[index], sid = session.id;
+    const open = (key, kind) => {
+      const r = reveals.get(key);
+      if (!r || r.shown()) return;
+      r.open();
+      if (track) look.opened.push({ conv: sid, uid: finder.uid(ex, index), kind });
+    };
+    if (!document.getElementById(`ex-${index}`)) { const run = runOf(index); if (run) open(run.dataset.key, "run"); }
+    open(`${sid}:${index}:fold`, "fold");
+    if (clips) { const kind = part === "reply" ? "reply" : part === "in" ? "input" : "notes"; open(`${sid}:${index}:${kind}`, kind); }
+    return partElement(ex, index, part) || document.getElementById(`ex-${index}`);
+  }
+  // Show a turn's part: its conversation (drawn once, when another one is on screen) with what hides the part opened in
+  // place. found gets the part's element once it is there.
+  function goTo(si, index, part, opts, found) {
+    const show = () => found(openAt(index, part, opts));
+    if (state.view === "reader" && state.session === si) { show(); return; }
+    state.session = si; state.view = "reader";
+    setAddress();
+    whenReady(() => { render(); show(); });
   }
 
   // ---------------------------------------------------------------- pins: a button on each message and reply, and their list
@@ -923,7 +1036,8 @@
     try { for (const i of missing) { try { await hosted.conversation(data.sessions[i]); } catch (e) { /* listed as not loaded */ } } } finally { pinLoading = false; }
     paintPins();
   }
-  // Go to a pinned message: its conversation, with what hides it opened (a wake-up folded into a run), scrolled under the header.
+  // Go to a pinned message: its conversation, with what hides it opened in place (a wake-up folded into a run, a folded
+  // wake-up), scrolled under the header. A conversation already on screen is not drawn again.
   async function openPin(p) {
     let at = pinLocator()(p);
     if (!at && HOSTED && pinSession(p) >= 0) {
@@ -932,17 +1046,9 @@
     }
     if (!at) { link.listing = { text: "That message is not on the reader now." }; renderLive(); paintPins(); return; }
     link.listing = null;
-    const session = data.sessions[at.si], exs = session.exchanges;
-    if (at.ex.folded && !state.showWakes) {
-      let start = at.index;
-      while (start > 0 && exs[start - 1].folded) start -= 1;
-      state.open.add(`${session.id}:${start}:run`);
-      state.open.add(`${session.id}:${at.index}:fold`);
-    }
-    state.session = at.si; state.view = "reader"; state.pinsOpen = false;
-    setAddress();
-    whenReady(() => {
-      render();
+    state.pinsOpen = false;
+    goTo(at.si, at.index, at.part, {}, () => {
+      paintPins();
       const node = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === p.key) || document.getElementById(`ex-${at.index}`);
       if (!node) return;
       window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
@@ -950,6 +1056,292 @@
     });
   }
   pins.onChange(paintPins);
+
+  // ---------------------------------------------------------------- search: find in this conversation or across the reading list
+  // The matching is find.js (plain text over the turns this page already holds: no index, no server route, no model).
+  // This is the row in the header, the list of matches, the highlights, and the way to a match: it opens only what hides
+  // it, in place (goTo, through the reveals), never a redraw of the conversation on screen. Closing the search folds back
+  // what it opened. The search is kept in this tab (sessionStorage), so a reload for new page code keeps it.
+  // Kept apart from the local page's: on one server both pages share this browser's storage.
+  const SEARCH_KEY = HOSTED ? "tr-hosted-search" : "tr-search";
+  const LIST_ROWS = 300;
+  const MAX_RANGES = 3000;
+  // scope is "here" or "all"; who one of finder.filters; current the match being read, by its key; opened what this search
+  // opened ({ conv, uid, kind }, in order); ranges the highlight ranges of the current match.
+  const look = { open: false, q: "", scope: "here", who: "any", list: false, current: null, hits: [], terms: [], opened: [], ranges: [], timer: 0 };
+  const sq = id => document.getElementById("search-" + id);
+  const convIndex = conv => data.sessions.findIndex(s => (s.ids || [s.id]).includes(conv));
+  function saveSearch() {
+    keep(SEARCH_KEY, look.open ? { open: true, q: look.q, scope: look.scope, who: look.who, list: look.list, current: look.current, opened: look.opened } : null);
+  }
+  // A tab that reloads (new page code) takes its search back; the turns it opened are open already (state.open is kept too).
+  function restoreSearch() {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(SEARCH_KEY) || "null"); } catch (e) { saved = null; }
+    if (!saved || !saved.open || !data.sessions[state.session]) return;
+    look.open = true; look.q = String(saved.q || ""); look.scope = saved.scope === "all" ? "all" : "here";
+    look.who = finder.filters.includes(saved.who) ? saved.who : "any";
+    look.list = Boolean(saved.list); look.current = typeof saved.current === "string" && /^[\w-]+:(?:in|reply|notes)$/.test(saved.current) ? saved.current : null;
+    look.opened = (Array.isArray(saved.opened) ? saved.opened : []).filter(d => d && typeof d.conv === "string" && typeof d.uid === "string" && typeof d.kind === "string");
+  }
+  function searchHits() {
+    const parsed = finder.parse(look.q);
+    look.terms = parsed.ok ? parsed.terms : [];
+    const sessions = look.scope === "all" ? data.sessions : [data.sessions[state.session]].filter(Boolean);
+    return finder.search(sessions, look.terms, look.who, look.scope);
+  }
+  // Where the reader is, by the top-level piece of the conversation (a turn, or a run of folded wake-ups): those stay
+  // when what is inside them opens or folds, which a turn inside a run does not.
+  function mainAnchor() {
+    if (atBottom()) return { bottom: true };
+    const barH = document.getElementById("bar").offsetHeight;
+    const el = [...document.getElementById("main").children].find(node => node.getBoundingClientRect().bottom > barH);
+    return el ? { el, top: el.getBoundingClientRect().top } : { y: window.scrollY };
+  }
+  function restoreMainAnchor(anchor) {
+    if (anchor.bottom) window.scrollTo(0, document.documentElement.scrollHeight);
+    else if (anchor.el && anchor.el.isConnected) window.scrollBy(0, anchor.el.getBoundingClientRect().top - anchor.top);
+    else window.scrollTo(0, anchor.y || 0);
+  }
+  // The first match at or after the turn being read (before it, going back), else the end the search came from.
+  function nearestHit(hits, dir = 0) {
+    const anchor = readingAnchor();
+    const at = anchor.bottom ? Infinity : anchor.id ? Number(anchor.id.slice(3)) : 0;
+    if (dir < 0) return [...hits].reverse().find(h => h.field.i <= at) || hits[hits.length - 1];
+    return hits.find(h => h.field.i >= at) || hits[dir > 0 ? 0 : hits.length - 1];
+  }
+  // Run the query again on the page as it is now, keeping the current match by its key. pick: take the match nearest the
+  // place being read when there is none; reveal: go to it (the search of this conversation does, as find in a page does,
+  // when typing; a rebuild never moves the page).
+  function refreshSearch({ pick = false, reveal = false } = {}) {
+    if (!look.open) return;
+    look.hits = searchHits();
+    let current = look.hits.find(h => h.key === look.current);
+    if (!current && pick && look.scope === "here" && look.hits.length) current = nearestHit(look.hits);
+    look.current = current ? current.key : null;
+    paintSearch();
+    if (reveal && current && look.scope === "here") showHit(current); else paintHighlights();
+  }
+  function paintSearch() {
+    const bar = document.getElementById("bar"), before = bar.offsetHeight, anchor = mainAnchor();
+    const input = sq("input");
+    if (input.value !== look.q) input.value = look.q;
+    const parsed = finder.parse(look.q), n = look.hits.length;
+    const at = look.hits.findIndex(h => h.key === look.current);
+    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+    const count = sq("count");
+    count.textContent = !parsed.ok ? "" : !n ? "No matches" : at >= 0 ? `${at + 1} of ${n}` : plural(n, "message");
+    count.title = n ? `${plural(n, "message")} with ${plural(look.hits.reduce((sum, h) => sum + h.count, 0), "occurrence")}. Each message counts once; every occurrence in it is marked.` : "";
+    sq("prev").disabled = sq("next").disabled = sq("list").disabled = !n;
+    sq("list").setAttribute("aria-pressed", String(look.list && n > 0));
+    document.querySelectorAll("#search [data-scope]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.scope === look.scope)));
+    document.querySelectorAll("#search [data-who]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.who === look.who)));
+    // What "All conversations" reaches: the reading list here; in the hosted copy only what this device has loaded.
+    const loaded = data.sessions.filter(s => s.exchanges).length, listed = data.sessions.length;
+    const note = sq("note");
+    note.textContent = look.q.trim() && !parsed.ok ? "Type at least two characters." : look.scope !== "all" ? ""
+      : HOSTED && loaded < listed ? `Looks in the conversations this device has loaded (${loaded} of ${listed}). Open a conversation to load it.` : `Looks in ${plural(loaded, "conversation")} on the reader.`;
+    note.hidden = !note.textContent;
+    paintHitList();
+    if (bar.offsetHeight !== before) restoreMainAnchor(anchor);
+  }
+  function snippetNode(hit) {
+    const { pieces, cut } = finder.snippet(hit.field, look.terms);
+    const line = $("span", "hit-text");
+    if (cut.before) line.append("… ");
+    pieces.forEach(p => line.append(p.hit ? $("mark", null, p.text) : p.text));
+    if (cut.after) line.append(" …");
+    return line;
+  }
+  // The list of matches under the search row: grouped by conversation across them all, and the first rows only when
+  // there are very many.
+  function paintHitList() {
+    const box = sq("results");
+    box.hidden = !(look.list && look.hits.length);
+    if (box.hidden) { box.replaceChildren(); return; }
+    const sizes = new Map();
+    look.hits.forEach(h => sizes.set(h.conv, (sizes.get(h.conv) || 0) + 1));
+    const frag = document.createDocumentFragment();
+    let conv = null;
+    look.hits.slice(0, LIST_ROWS).forEach(h => {
+      if (look.scope === "all" && h.conv !== conv) {
+        conv = h.conv;
+        const session = data.sessions[convIndex(conv)];
+        const head = $("div", "hit-group"); head.append($("span", null, session ? pickerName(session) : "Conversation"), $("span", null, String(sizes.get(conv))));
+        frag.append(head);
+      }
+      const f = h.field, row = $("button", "hit"); row.type = "button";
+      if (h.key === look.current) row.setAttribute("aria-current", "true");
+      const meta = $("span", "hit-meta");
+      meta.append($("b", null, f.label), $("span", null, fmtWhen(f.at)));
+      if (f.needs) meta.append($("span", "chip needs", "Needs you"));
+      if (f.folded) meta.append($("span", "chip reminder", "folded wake-up"));
+      if (pins.has(f.key)) meta.append($("span", "chip reminder", "Pinned"));
+      if (h.count > 1) meta.append($("span", null, `· ${h.count}x`));
+      row.append(meta, snippetNode(h));
+      row.addEventListener("click", () => chooseHit(h));
+      frag.append(row);
+    });
+    if (look.hits.length > LIST_ROWS) frag.append($("div", "hit-more", `The first ${LIST_ROWS} of ${look.hits.length} are listed, and the arrows reach them all. Add a word, or pick Replies or You, to narrow it.`));
+    box.replaceChildren(frag);
+    const row = box.querySelector('[aria-current="true"]');
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }
+  // The highlight ranges of the words inside one part's element: find.js's spans over its text nodes, with a line or block
+  // end between nodes standing for the space a phrase may cross. The page's own text is never rewrapped.
+  function elementRanges(el, terms) {
+    const nodes = [], pieces = [];
+    let block = null, gap = false;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === 1) { if (node.nodeName === "BR") gap = true; continue; }
+      if (node.parentElement.closest(".code-label")) continue;
+      const own = node.parentElement.closest("p, div, li, h1, h2, h3, h4, h5, h6, td, th, pre");
+      pieces.push({ text: node.nodeValue, gap: pieces.length > 0 && (gap || own !== block) });
+      nodes.push(node); block = own; gap = false;
+    }
+    return finder.spans(pieces, terms).map(s => {
+      const range = new Range();
+      range.setStart(nodes[s.from.piece], s.from.offset); range.setEnd(nodes[s.to.piece], s.to.offset);
+      return range;
+    });
+  }
+  const canHighlight = () => Boolean(window.CSS && CSS.highlights && typeof Highlight !== "undefined");
+  function clearHighlights() {
+    look.ranges = [];
+    if (canHighlight()) { CSS.highlights.delete("find-hit"); CSS.highlights.delete("find-current"); }
+  }
+  // Every match on screen is tinted and the current one is stronger. Without the CSS Custom Highlight API (older
+  // browsers) the current message flashes instead, which is also what shows when the drawn text has none of the words
+  // (a link's address, say).
+  function paintHighlights() {
+    clearHighlights();
+    if (!look.open || !look.terms.length || !canHighlight()) return;
+    const wanted = new Set(look.hits.map(h => h.key));
+    const now = [], rest = [];
+    const current = look.current && document.querySelector(`#main [data-find="${look.current}"]`);
+    if (current) now.push(...elementRanges(current, look.terms));
+    for (const el of document.querySelectorAll("#main [data-find]")) {
+      if (rest.length + now.length >= MAX_RANGES) break;
+      if (el !== current && wanted.has(el.dataset.find)) rest.push(...elementRanges(el, look.terms));
+    }
+    look.ranges = now;
+    if (rest.length) CSS.highlights.set("find-hit", new Highlight(...rest));
+    if (now.length) { const h = new Highlight(...now); h.priority = 1; CSS.highlights.set("find-current", h); }
+  }
+  // Take the current match to the top of the screen, under the header, or its first words when the part is long.
+  function scrollToHit(el) {
+    if (!el) return;
+    const first = look.ranges[0] && look.ranges[0].getClientRects()[0];
+    const top = el.getBoundingClientRect().top;
+    window.scrollTo(0, window.scrollY + Math.max(top, first ? first.top - 60 : top) - document.getElementById("bar").offsetHeight - 8);
+    const block = el.closest(".input, .reply") || el;
+    block.classList.remove("is-target"); void block.offsetWidth; block.classList.add("is-target");
+  }
+  function showHit(hit) {
+    const si = convIndex(hit.conv);
+    if (si < 0) return;
+    goTo(si, hit.field.i, hit.field.part, { clips: true, track: true }, el => {
+      if (!look.open || look.current !== hit.key) return;
+      paintHighlights();
+      scrollToHit(el);
+      saveSearch();
+    });
+  }
+  // A row picked, or an arrow pressed: the list closes and the match shows under the search row.
+  function chooseHit(hit) {
+    look.current = hit.key; look.list = false;
+    paintSearch();
+    showHit(hit);
+    saveSearch();
+  }
+  function stepHit(dir) {
+    const n = look.hits.length;
+    if (!n) return;
+    const at = look.hits.findIndex(h => h.key === look.current);
+    chooseHit(at >= 0 ? look.hits[(at + dir + n) % n] : look.scope === "here" ? nearestHit(look.hits, dir) : look.hits[dir > 0 ? 0 : n - 1]);
+  }
+  // What a search opened, by the turn's id (the turn's number may have moved since): the key state.open holds for it.
+  function openedKey(d) {
+    const session = data.sessions[convIndex(d.conv)];
+    const exs = session && session.exchanges;
+    const at = exs ? exs.findIndex((e, i) => finder.uid(e, i) === d.uid) : -1;
+    if (at < 0) return null;
+    let start = at;
+    if (d.kind === "run") while (start > 0 && exs[start - 1].folded) start -= 1;
+    return `${session.id}:${d.kind === "run" ? start : at}:${d.kind}`;
+  }
+  // The search is over: what it opened folds back, in place while the page still holds it, last opened first.
+  function endSearch() {
+    clearTimeout(look.timer); look.timer = 0;
+    for (const d of look.opened.splice(0).reverse()) {
+      const key = openedKey(d);
+      if (!key) continue;
+      const r = reveals.get(key);
+      if (r && r.shown()) r.close(); else state.open.delete(key);
+    }
+    Object.assign(look, { open: false, list: false, hits: [], terms: [], current: null });
+    clearHighlights();
+    saveSearch();
+  }
+  function openSearch(scope) {
+    if (state.view !== "reader" || !data.sessions[state.session]) return;
+    const anchor = mainAnchor();
+    look.open = true;
+    if (scope && scope !== look.scope) { look.scope = scope; look.current = null; look.list = scope === "all"; }
+    paintBar(); restoreMainAnchor(anchor);
+    sq("input").focus(); sq("input").select();
+    refreshSearch({ pick: true });
+    saveSearch();
+  }
+  function closeSearch() {
+    if (!look.open) return;
+    const anchor = mainAnchor();
+    endSearch();
+    paintBar(); restoreMainAnchor(anchor);
+    applyFocus();  // Herdr's focus waited while the search was open
+  }
+  // Typing runs the query a moment after the last key; Enter does not wait for it.
+  function typed() {
+    clearTimeout(look.timer); look.timer = 0;
+    if (look.scope === "all") { look.current = null; look.list = true; }
+    refreshSearch({ pick: true, reveal: true });
+    saveSearch();
+  }
+  sq("input").addEventListener("input", () => { look.q = sq("input").value; clearTimeout(look.timer); look.timer = setTimeout(typed, 120); });
+  sq("input").addEventListener("keydown", e => {
+    if (e.isComposing) return;
+    if (e.key === "Enter") { e.preventDefault(); if (look.timer) typed(); stepHit(e.shiftKey ? -1 : 1); }
+  });
+  // Esc closes the search from anywhere in its row or list (Esc in the message bar keeps its own meaning).
+  document.getElementById("search").addEventListener("keydown", e => { if (e.key === "Escape" && !e.isComposing) { e.preventDefault(); closeSearch(); } });
+  sq("next").addEventListener("click", () => stepHit(1));
+  sq("prev").addEventListener("click", () => stepHit(-1));
+  sq("list").addEventListener("click", () => { look.list = !look.list; paintSearch(); saveSearch(); });
+  sq("close").addEventListener("click", closeSearch);
+  document.getElementById("search-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else openSearch(); });
+  document.querySelectorAll("#search [data-scope]").forEach(b => b.addEventListener("click", () => {
+    if (b.dataset.scope === look.scope) return;
+    look.scope = b.dataset.scope; look.current = null; look.list = look.scope === "all";
+    refreshSearch({ pick: true, reveal: true }); saveSearch();
+  }));
+  document.querySelectorAll("#search [data-who]").forEach(b => b.addEventListener("click", () => {
+    look.who = b.dataset.who;
+    refreshSearch({ pick: true, reveal: true }); saveSearch();
+  }));
+  // The list's "Pinned" tag follows the pins.
+  pins.onChange(() => { if (look.open && look.list) paintHitList(); });
+  // Cmd/Ctrl+F opens this search, since the browser's own find cannot see text the page folds away or has not drawn; pressed
+  // again inside the search box it falls through to the browser's. Shift adds all conversations. Cmd/Ctrl+G steps.
+  document.addEventListener("keydown", e => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || state.view !== "reader" || !data.sessions[state.session]) return;
+    const key = e.key.toLowerCase();
+    if (key === "f") {
+      if (look.open && document.activeElement === sq("input") && !e.shiftKey) return;
+      e.preventDefault();
+      if (look.open) { if (e.shiftKey && look.scope !== "all") openSearch("all"); else { sq("input").focus(); sq("input").select(); } } else openSearch(e.shiftKey ? "all" : "here");
+    } else if (key === "g" && look.open) { e.preventDefault(); stepHit(e.shiftKey ? -1 : 1); }
+  });
 
   // ---------------------------------------------------------------- View B
   const STATE_LABEL = {
@@ -1320,7 +1712,7 @@
     status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
     status.textContent = link.result ? link.result.text : reason || (HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
-      : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once this box is sent or left`) : ""}`);
+      : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -1650,7 +2042,7 @@
       let text = "";
       if (link.listing) text = link.listing.text;
       else if (b.error) text = `Rebuild failed: ${b.error}`;
-      else if (state.follow && link.held && link.want) text = `Herdr is on ${link.held}; following once the message box is sent or left.`;
+      else if (state.follow && link.held && link.want) text = `Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "the message box is sent or left"}.`;
       else if (state.follow && link.want && f && f.session_id === link.want) text = f.readable ? `Herdr is on ${f.label}; adding it to the reading list…` : `Herdr is on ${f.label}, which has no Claude session log to read.`;
       else if (state.follow && f && !f.session_id) text = `Herdr is on ${f.label}, which runs no agent.`;
       note.textContent = text;
@@ -1748,7 +2140,7 @@
     if (index < 0) return;  // the server adds it; the next refresh brings it in
     // A message being written stays with its session: the switch waits until the box is
     // left or emptied, so the next Enter cannot go to the pane Herdr moved to.
-    link.held = index !== state.session && writing() ? f.label : null;
+    link.held = index !== state.session && (writing() || look.open) ? f.label : null;
     if (link.held) { renderDock(); return; }
     link.want = null;
     if (index === state.session && state.view !== "fleet") return;  // reading its conversation or a document already
@@ -1895,6 +2287,8 @@
   function render() {
     if (missing()) { whenReady(render); return; }  // the hosted copy loads first
     pruneKept();
+    reveals.clear();
+    if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
     document.body.classList.toggle("wide", state.view === "fleet");
     document.body.classList.toggle("docmode", state.view === "doc");
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
@@ -1903,17 +2297,25 @@
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
     if (state.view === "reader") renderReader(); else { if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
+    refreshSearch();  // the page was drawn again: the query runs on it as it is now
     markRead();
     renderDock();
   }
   // A collapsed bar keeps one line: where you are, the live badge and the way back to the controls.
   function paintBar() {
     const bar = document.getElementById("bar"), toggle = document.getElementById("bar-toggle");
-    bar.classList.toggle("collapsed", !state.barOpen);
-    toggle.setAttribute("aria-expanded", String(state.barOpen));
-    toggle.setAttribute("aria-label", state.barOpen ? "Hide the tabs and controls" : "Show the tabs and controls");
+    // While searching, the tabs and controls fold away as in the folded header, so the search row and its list have the screen.
+    const folded = !state.barOpen || look.open;
+    bar.classList.toggle("collapsed", folded);
+    bar.classList.toggle("searching", look.open);
+    toggle.setAttribute("aria-expanded", String(!folded));
+    toggle.setAttribute("aria-label", look.open ? "Close the search" : state.barOpen ? "Hide the tabs and controls" : "Show the tabs and controls");
     toggle.title = toggle.getAttribute("aria-label");
     const session = data.sessions[state.session];
+    const find = document.getElementById("search-toggle");
+    find.hidden = state.view !== "reader" || !session;
+    find.setAttribute("aria-expanded", String(look.open));
+    document.getElementById("search").hidden = !look.open;
     const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
     const pick = state.view === "reader" && data.sessions.length > 1;
     bar.classList.toggle("pick", pick);
@@ -1921,21 +2323,23 @@
     quick.hidden = !canLive || state.view !== "reader";
     quick.setAttribute("aria-pressed", String(state.follow));
     quick.title = "Follow Herdr: show the session of the pane Herdr has focused (the same switch as Follow Herdr in the controls)";
-    if (pick && !state.barOpen) fillSessions(document.getElementById("crumb-session"));
+    if (pick && folded) fillSessions(document.getElementById("crumb-session"));
     const crumb = document.getElementById("crumb");
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
       : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
   }
+  // The search row and its list change the header's height without a call to paintBar.
+  if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px")).observe(document.getElementById("bar"));
   function setBarOpen(open) {
     const anchor = readingAnchor();
     state.barOpen = open;
     try { localStorage.setItem("tr-bar", open ? "1" : "0"); } catch (e) { /* not kept */ }
     paintBar(); restoreAnchor(anchor);
   }
-  document.getElementById("bar-toggle").addEventListener("click", () => setBarOpen(!state.barOpen));
-  document.getElementById("crumb").addEventListener("click", () => setBarOpen(true));
+  document.getElementById("bar-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(!state.barOpen); });
+  document.getElementById("crumb").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(true); });
   document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
   document.getElementById("tab-reader").addEventListener("click", () => {
     const opening = state.view !== "reader";
@@ -1950,6 +2354,7 @@
     if (e.key === "k") jump("captain", -1);
     if (e.key === "n") jump("needs", 1);
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
+    if (e.key === "/" && data.sessions[state.session]) { e.preventDefault(); openSearch("here"); }
   });
   const biggest = () => data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
   // The hosted copy opens on the newest conversation with a reply that waits on you (hosted.waiting),
@@ -1989,12 +2394,14 @@
       state.showWakes = !!saved.showWakes;
       if (state.view === "reader" && saved.view === "fleet") state.view = "fleet";
     }
+    if (state.view === "reader") restoreSearch();
     setAddress();
     render();
     if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
   }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   window.addEventListener("pagehide", () => {
+    saveSearch();
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
