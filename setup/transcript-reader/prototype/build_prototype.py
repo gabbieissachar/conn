@@ -48,6 +48,7 @@ TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
 HOSTED_SCRIPT = HERE / "hosted.js"
 PINS_SCRIPT = HERE / "pins.js"
+PICKER_SCRIPT = HERE / "picker.js"
 SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 PROJECTS = Path.home() / ".claude" / "projects"
@@ -835,6 +836,10 @@ def herdr_panes() -> dict[str, dict]:
 # restart keeps the session's folder, and with it the panes and their ids, so the folder's
 # identity marks the life. Name -> life, for every running session the last inventory read.
 HERDR_LIVES: dict[str, str] = {}
+# Name -> when each running Herdr session's server started (its socket's creation time), for the same sessions. A
+# pane back from a Herdr restart shows no agent until Claude is started in it, so panes without one are only
+# taken for stopped while the server is older than reader.HERDR_GRACE.
+HERDR_STARTS: dict[str, float] = {}
 
 
 def herdr_life(herdr_session: dict) -> str:
@@ -870,11 +875,16 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     panes = {}
     pane_ids: set[tuple[str, str]] | None = set()
     HERDR_LIVES.clear()
+    HERDR_STARTS.clear()
     for herdr_session in listing.get("sessions") or []:
         name = herdr_session.get("name") or ""
         if not herdr_session.get("running") or name.startswith("-"):
             continue
         HERDR_LIVES[name] = life = herdr_life(herdr_session)
+        try:
+            HERDR_STARTS[name] = os.stat(herdr_session.get("socket_path") or "").st_mtime
+        except (OSError, ValueError):
+            pass  # unknown: its panes without an agent are kept
         panes_reply = call("--session", name, "pane", "list")
         if panes_reply is None:
             pane_ids = None
@@ -1374,6 +1384,48 @@ def log_mtime(path: Path) -> float | None:
         return None
 
 
+TAIL_BYTES = 256 * 1024
+_TAILS: dict[Path, tuple[tuple[int, int], float | None]] = {}
+
+
+def last_record_time(path: Path) -> float | None:
+    """When the log's newest dated record was written, from the end of the file.
+
+    A log is appended to long after its last turn: the records that carry the session's remote-control link, cost
+    and monitors have no time and come when the process is touched again (a Herdr restart rewrites every one).
+    Its modification time then names that late write, not the turn that ended the session.
+    """
+    version = file_version(path)
+    cached = _TAILS.get(path)
+    if version and cached and cached[0] == version:
+        return cached[1]
+    found = None
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - TAIL_BYTES))
+            lines = handle.read().splitlines()
+        for line in reversed(lines):  # the first line may be cut: it fails to parse and is skipped
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            at = iso_to_epoch(record.get("timestamp")) if isinstance(record, dict) and isinstance(record.get("timestamp"), str) else None
+            if at is not None:
+                found = at
+                break
+    except OSError:
+        pass
+    if version:
+        _TAILS[path] = (version, found)
+    return found
+
+
+def written_at(path: Path) -> list[float]:
+    """The times a log can be said to have been last written: its modification time, and when its last dated record is."""
+    return [at for at in dict.fromkeys((log_mtime(path), last_record_time(path))) if at is not None]
+
+
 def head_records(path: Path, limit: int = HEAD_RECORDS) -> list[dict]:
     """The first parseable records of a log, without reading the whole file, cut down to
     what cleared_at, bridge_id and first_time read (see head_fields)."""
@@ -1475,6 +1527,26 @@ def reads_bridge(path: Path, bridge: str) -> bool:
     return False
 
 
+LATE_LINK_WINDOW = 86400  # a log that names the clear's link ended up to this long before it, as people clear when they return
+
+
+def late_linked(path: Path, clear_time: float, bridge: str) -> Path | None:
+    """The log naming <bridge> whose last dated record is nearest before <clear_time>, within LATE_LINK_WINDOW.
+
+    Only the process that wrote the link writes it, so the log it named last before the clear is the one the clear left.
+    That log's modification time is no guide when later records without a time touched it (see last_record_time), nor is
+    the two minutes cleared_from allows: the clear may come long after the last turn.
+    """
+    found = []
+    for other in all_logs():
+        if other == path or (log_mtime(other) or 0) < clear_time - LATE_LINK_WINDOW:
+            continue
+        at = last_record_time(other)
+        if at is not None and -30 <= clear_time - at <= LATE_LINK_WINDOW:
+            found.append((abs(clear_time - at), other))
+    return next((other for _, other in sorted(found) if names_bridge(other, bridge)), None)
+
+
 def cleared_from(path: Path, clear_time: float) -> Path | None:
     """The log a /clear at <clear_time> left behind, last written by the clear itself, so
     within two minutes before it (nearest wins).
@@ -1483,22 +1555,27 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
     resumed from another directory keeps its old folder, but its /clear starts the new log
     under the current one. Only that process writes the link, so its old log may also get
     its last records up to 30 seconds after the clear. Without a link to match, it is the
-    nearest log in the same folder, written at most 5 seconds after the clear.
+    nearest log in the same folder, written at most 5 seconds after the clear. A linked log's last dated record
+    counts too, when later records without a time moved its modification time past the clear.
     """
-    def nearest(candidates, late, keep=lambda other: True):
+    def nearest(candidates, late, keep=lambda other: True, written=lambda other: [log_mtime(other)]):
         best = None
         for other in candidates:
             if other == path:
                 continue
-            written = log_mtime(other)
-            if written is None:
-                continue
-            gap = clear_time - written
-            if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
-                best = (abs(gap), other)
+            for at in written(other):
+                if at is None:
+                    continue
+                gap = clear_time - at
+                if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
+                    best = (abs(gap), other)
         return best[1] if best else None
     bridge = bridge_id(head_records(path))
-    linked = nearest(all_logs(), 30, lambda other: names_bridge(other, bridge)) if bridge else None
+    names = lambda other: names_bridge(other, bridge)
+    linked = nearest(all_logs(), 30, names) if bridge else None
+    # A linked log whose process was touched again long after the clear (see last_record_time) still ended with the clear.
+    # It is asked before the nearest log in the folder, which may be another session's that merely ended nearby.
+    linked = linked or (late_linked(path, clear_time, bridge) if bridge else None)
     return linked or nearest(logs_in(path.parent), 5)
 
 
@@ -1546,11 +1623,8 @@ def restarted(before: Path, after: Path) -> bool:
         return False
     head = head_records(after)
     start = first_time(head)
-    try:
-        ended = before.stat().st_mtime
-    except OSError:
-        return False
-    return cleared_at(head) is None and start is not None and -30 <= start - ended <= RESTART_WINDOW
+    ended = written_at(before)
+    return cleared_at(head) is None and start is not None and any(-30 <= start - when <= RESTART_WINDOW for when in ended)
 
 
 def pane_neighbours(path: Path) -> list[Path]:
@@ -1572,17 +1646,20 @@ def restarted_into(chain: list[Path]) -> Path | None:
 
 def cleared_into(chain: list[Path]) -> Path | None:
     """The log a /clear in the pane started after the chain's last log, if any."""
-    written = log_mtime(chain[-1])
-    if written is None:
+    written = written_at(chain[-1])
+    if not written:
         return None
+    recorded = last_record_time(chain[-1])
     # The next log may sit in another project folder (see cleared_from), and was written
     # to since; only those few are sorted and read.
-    recent = (other for other in {*logs_in(chain[-1].parent), *all_logs()} if (log_mtime(other) or 0) >= written - 5)
+    recent = (other for other in {*logs_in(chain[-1].parent), *all_logs()} if (log_mtime(other) or 0) >= min(written) - 5)
     for other in sorted(recent):
         if other in chain:
             continue
         at = cleared_at(head_records(other))
-        if at is not None and -30 <= at - written <= 120 and cleared_from(other, at) == chain[-1]:
+        near = any(-30 <= at - when <= 120 for when in written) if at is not None else False
+        # cleared_from decides which log a clear left; this only skips the clears no log of the chain could be before.
+        if at is not None and (near or (recorded is not None and -30 <= at - recorded <= LATE_LINK_WINDOW)) and cleared_from(other, at) == chain[-1]:
             return other
     return None
 
@@ -1596,12 +1673,13 @@ def payload_json(payload) -> str:
 def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, str]:
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
-    The shared live.js goes into the page's script, and pins.js into the reader page's (the answer sheet
+    The shared live.js goes into the page's script, and pins.js and picker.js into the reader page's (the answer sheet
     has no slot for it); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__PICKER__*/", PICKER_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)

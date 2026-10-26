@@ -81,6 +81,18 @@ class HerdrInventoryTest(unittest.TestCase):
             life = str(os.stat(folder).st_ino)
             self.assertEqual((sessions[A]["life"], builder.HERDR_LIVES), (life, {"work": life}))
 
+    def test_each_running_herdr_session_carries_when_its_server_started(self):
+        with tempfile.TemporaryDirectory() as folder:
+            socket = Path(folder) / "herdr.sock"
+            socket.write_text("", encoding="utf-8")
+            os.utime(socket, (T0, T0))
+            panes = [{"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "claude", "agent_session": {"value": A}}]
+            replies = {("session", "list"): {"sessions": [{"name": "work", "running": True, "socket_path": str(socket)},
+                                                           {"name": "bare", "running": True, "socket_path": str(Path(folder) / "none.sock")}]},
+                       ("pane", "list"): {"result": {"panes": panes}}, ("tab", "list"): {"result": {"tabs": []}}}
+            self.run_with(replies)
+            self.assertEqual(builder.HERDR_STARTS, {"work": T0}, "a session whose socket cannot be read has no start, so its idle panes are kept")
+
     def test_a_herdr_session_that_cannot_be_read_leaves_the_list_unknown(self):
         replies = {("session", "list"): {"sessions": [{"name": "work", "running": True}]}}
         self.assertEqual(self.run_with(replies), ({}, None))
@@ -397,6 +409,46 @@ class ClosedPanesTest(unittest.TestCase):
         self.seen(A, B)
         self.listed = {("work", "w1:p1"), ("work", "w1:p2")}
         self.assertEqual(reader.drop_closed([A, B]), [A, B], "Herdr is back with shells only")
+
+    def test_a_pane_that_runs_another_session_now_no_longer_runs_this_one(self):
+        # A ran in w1:p1 and its log was never joined to B's, which runs there now: A is not running, though its pane is listed.
+        self.seen(A)
+        self.live = {B: {**PANES[B], "pane": "w1:p1"}}
+        self.listed = {("work", "w1:p1")}
+        view = reader.PaneView()
+        self.assertEqual(view.why_closed(A), "its pane runs another session now")
+        self.assertEqual(reader.drop_closed([A]), [])
+        self.assertEqual(builder.read_ids(reader.DROPPED), [A], "and it is offered under Closed panes, listed again if it runs again")
+
+    def test_a_cleared_session_stays_while_a_later_session_of_its_conversation_runs_in_the_pane(self):
+        folder = builder.PROJECTS / "-Users-someone-home"
+        self.chains = {A: [folder / f"{A}.jsonl", folder / f"{B}.jsonl"]}
+        self.seen(A)
+        self.live = {B: {**PANES[B], "pane": "w1:p1"}}
+        self.listed = {("work", "w1:p1")}
+        self.assertEqual(reader.drop_closed([A]), [A], "B is A's own conversation")
+
+    def test_a_pane_without_an_agent_keeps_its_session_for_the_grace_after_its_herdr_server_starts_and_not_beyond(self):
+        self.seen(A)
+        self.live = {B: PANES[B]}
+        self.listed = {("work", "w1:p1"), ("work", "w1:p2")}  # A's pane is listed and runs nothing
+        for started, kept in ((time.time() - 60, [A]), (time.time() - reader.HERDR_GRACE - 60, []), (None, [A])):
+            with mock.patch.dict(builder.HERDR_STARTS, {} if started is None else {"work": started}, clear=True):
+                self.assertEqual(reader.PaneView().why_closed(A), None if kept else "its pane runs no agent", started)
+                self.assertEqual(reader.drop_closed([A]), kept, started)
+
+    def test_a_pane_that_runs_its_session_is_never_taken_for_stopped_however_old_its_server(self):
+        self.seen(A)
+        self.live = {A: PANES[A]}
+        with mock.patch.dict(builder.HERDR_STARTS, {"work": time.time() - 10 * reader.HERDR_GRACE}, clear=True):
+            self.assertEqual(reader.drop_closed([A]), [A])
+
+    def test_a_session_reopened_by_hand_stays_listed_whatever_its_pane_runs(self):
+        self.seen(A)
+        self.live = {B: {**PANES[B], "pane": "w1:p1"}}
+        self.listed = {("work", "w1:p1")}
+        reader.write_ids(reader.REOPENED, [A])
+        self.assertEqual(reader.drop_closed([A]), [A])
 
     def test_a_pane_id_handed_out_again_by_a_herdr_session_made_anew_is_a_closed_pane(self):
         # "work" was deleted and made again: its new w1:p1 is not the pane A ran in.
@@ -769,6 +821,13 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('id="sync"', page, mode)
             self.assertIn("async function syncNow()", page, mode)
 
+    def test_the_reader_pages_carry_the_picker_rules_that_picker_test_js_runs(self):
+        for mode, page in self.pages():
+            self.assertIn("const picker = (() => {", page, mode)
+            self.assertNotIn("/*__PICKER__*/", page, mode)
+            self.assertIn("picker.label(s, data.sessions, pickerSection, sessionName)", page, mode)
+            self.assertIn("picker.sections(data.sessions, paneLive)", page, mode)
+
 
 class PrivateFilesTest(unittest.TestCase):
     """The reader's files carry transcript text, so like Claude's logs they are the owner's alone."""
@@ -952,6 +1011,74 @@ class ClearedSessionsTest(unittest.TestCase):
         history = {"haiku": {**pane, "life": "old"}, "sonnet": {**pane, "life": "new"}}
         with mock.patch.dict(builder._PANE_HISTORY, history, clear=True):
             self.assertEqual(self.stems("sonnet"), ["sonnet"])
+
+
+class LateWritesTest(unittest.TestCase):
+    """A log is touched long after its last turn (a restart rewrites the link and cost records, which have no time),
+    so its modification time must not decide which session a /clear or a restart came from."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        projects = mock.patch.object(builder, "PROJECTS", Path(self.tmp.name))
+        projects.start()
+        self.addCleanup(projects.stop)
+        self.folder = Path(self.tmp.name) / "project"
+        self.folder.mkdir()
+
+    def stems(self, name):
+        return [p.stem for p in builder.session_chain(self.folder / f"{name}.jsonl")]
+
+    @staticmethod
+    def link(name):  # the records a process appends to its log, which carry no time
+        return {"type": "bridge-session", "bridgeSessionId": name}
+
+    def test_a_clear_is_joined_to_the_linked_log_even_though_that_log_was_touched_after_it(self):
+        f = self.folder
+        log(f / "before.jsonl", [prompt("hello", iso(T0 + 4000)), self.link("cse_01Late")], T0 + 9000)  # touched at T0+9000
+        log(f / "after.jsonl", [self.link("cse_01Late"), prompt(CLEAR, iso(T0 + 4050)), prompt("go on", iso(T0 + 4100))], T0 + 4200)
+        # Another session of the folder that ended right at the clear, and has no part in it.
+        log(f / "decoy.jsonl", [prompt("busy nearby", iso(T0 + 4020))], T0 + 4052)
+        self.assertEqual(self.stems("after"), ["before", "after"], "not the decoy")
+        self.assertEqual(self.stems("before"), ["before", "after"], "the join reads the same from the older log")
+        self.assertEqual(self.stems("decoy"), ["decoy"])
+
+    def test_a_clear_made_long_after_the_last_turn_still_names_the_log_with_its_link(self):
+        f = self.folder
+        log(f / "idle.jsonl", [prompt("hello", iso(T0 + 5000)), self.link("cse_01Idle")], T0 + 5000)
+        log(f / "back.jsonl", [self.link("cse_01Idle"), prompt(CLEAR, iso(T0 + 5300)), prompt("go on", iso(T0 + 5400))], T0 + 5500)
+        log(f / "other-link.jsonl", [prompt("elsewhere", iso(T0 + 5290)), self.link("cse_01Other")], T0 + 5295)
+        self.assertEqual(self.stems("back"), ["idle", "back"])
+        self.assertEqual(self.stems("other-link"), ["other-link"])
+
+    def test_the_log_before_a_clear_with_a_link_is_the_nearest_one_that_names_it(self):
+        f = self.folder
+        log(f / "one.jsonl", [prompt("first", iso(T0 + 6000)), self.link("cse_01Run")], T0 + 6000)
+        log(f / "two.jsonl", [self.link("cse_01Run"), prompt(CLEAR, iso(T0 + 6100)), prompt("second", iso(T0 + 6200))], T0 + 8000)
+        log(f / "three.jsonl", [self.link("cse_01Run"), prompt(CLEAR, iso(T0 + 7000)), prompt("third", iso(T0 + 7100))], T0 + 7200)
+        for name in ("one", "two", "three"):
+            self.assertEqual(self.stems(name), ["one", "two", "three"], name)
+
+    def test_claude_started_again_in_the_pane_joins_a_log_touched_after_the_new_one_began(self):
+        f = self.folder
+        log(f / "haiku.jsonl", [prompt("the brief", iso(T0 + 6000))], T0 + 9500)
+        log(f / "sonnet.jsonl", [prompt("the brief again", iso(T0 + 6135))], T0 + 6500)
+        pane = {"herdr": "work", "pane": "w1:p2", "label": "fm-task"}
+        with mock.patch.dict(builder._PANE_HISTORY, {"haiku": pane, "sonnet": pane}, clear=True):
+            self.assertEqual(self.stems("sonnet"), ["haiku", "sonnet"])
+
+    def test_last_record_time_is_the_newest_dated_record_of_the_end_of_the_file(self):
+        path = self.folder / "tail.jsonl"
+        log(path, [prompt("a", iso(T0 + 10)), {"type": "assistant", "timestamp": iso(T0 + 20)}, {"type": "cost-state"}, self.link("cse_01X")], T0 + 99)
+        self.assertEqual(builder.last_record_time(path), T0 + 20)
+        # A window that starts mid-line skips that cut line, and a window with no dated record says so.
+        with mock.patch.object(builder, "TAIL_BYTES", 40):
+            builder._TAILS.clear()
+            self.assertIsNone(builder.last_record_time(path))
+        builder._TAILS.clear()
+        log(path, [{"type": "cost-state"}], T0)
+        self.assertIsNone(builder.last_record_time(path))
+        self.assertIsNone(builder.last_record_time(self.folder / "missing.jsonl"))
 
 
 class PaneSessionTest(unittest.TestCase):

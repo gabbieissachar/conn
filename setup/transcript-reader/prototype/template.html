@@ -331,6 +331,7 @@
   // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
   const canLive = live.served && !HOSTED;
 /*__PINS__*/
+/*__PICKER__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -626,12 +627,10 @@
     });
   }
   // The picker names a session by its Herdr tab or pane label alone; the session's own title
-  // comes back only to tell apart two listed sessions with the same label.
-  function pickerName(s) {
-    if (!s.pane) return sessionName(s);
-    const twins = data.sessions.filter(x => x.pane && x.pane.label === s.pane.label && Boolean(x.reopened) === Boolean(s.reopened));
-    return twins.length > 1 ? sessionName(s) : s.pane.label;
-  }
+  // comes back only to tell apart two sessions of the same section with the same label, so a
+  // closed or kept session never makes a running one show its title.
+  const pickerSection = s => HOSTED ? Boolean(s.reopened) : paneLive(s);
+  const pickerName = s => picker.label(s, data.sessions, pickerSection, sessionName);
   // A session whose pane was seen but no longer runs it says so in the picker, as the header does, so it does not read as running.
   const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) || (!HOSTED && s.pane && !paneLive(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The hosted list starts each name with the asks waiting on you (hosted.asks) and the last
@@ -650,18 +649,21 @@
       return group;
     }).filter(Boolean));
   }
-  // The picker lists the reading list, then the sessions of panes closed in the last two weeks,
-  // which open again for reading (with their documents) until closed.
+  // The picker lists the sessions an agent runs now. Under Closed panes come the listed sessions no pane runs (kept
+  // after the pane closed, reopened by hand, never seen in a pane: still readable), then the sessions of panes
+  // closed in the last two weeks, which open again for reading (with their documents) until closed.
   function fillSessions(select) {
     if (HOSTED) { fillHostedSessions(select); return; }
-    select.replaceChildren(...data.sessions.map((s, i) => {
+    const option = ([s, i]) => {
       const opt = $("option", null, sessionOption(s));
       opt.value = i; opt.selected = i === state.session; return opt;
-    }));
-    const offered = (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id)));
-    if (!canLive || !offered.length) return;
-    const group = $("optgroup"); group.label = "Closed panes · open to read again";
-    group.append(...offered.map(c => {
+    };
+    const { running, idle } = picker.sections(data.sessions, paneLive);
+    select.replaceChildren(...running.map(option));
+    const offered = canLive ? (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id))) : [];
+    if (!idle.length && !offered.length) return;
+    const group = $("optgroup"); group.label = "Closed panes";
+    group.append(...idle.map(option), ...offered.map(c => {
       const opt = $("option", null, `${c.label} · ${fmtShortDay(c.at)}`);
       opt.value = "c:" + c.id; return opt;
     }));

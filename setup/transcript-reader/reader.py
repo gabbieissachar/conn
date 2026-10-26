@@ -73,6 +73,7 @@ PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in
 REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pane does not drop
 DROPPED = OUT / "dropped.txt"  # sessions a closed pane took off the list, listed again if they run in a pane again
 CLOSED_NAME = "closed.txt"  # sessions a person took off the list (remove, close), which a Sync does not list again
+HERDR_GRACE = 900  # seconds after a Herdr session's server starts during which a pane without an agent may still get its agent back
 DROPPED_KEEP_DAYS = 14  # a dropped session whose log has not changed for this long is forgotten (as Closed panes does)
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
@@ -173,29 +174,49 @@ class PaneView:
         except (OSError, json.JSONDecodeError):
             self.seen = {}
         self.reopened = set(builder.read_ids(REOPENED))
+        self.occupant = {(info.get("herdr"), info.get("pane")): sid for sid, info in self.live.items()}  # (Herdr session, pane id) -> the session running there
 
     def members(self, sid: str) -> list[str]:
         path = builder.find_session_file(sid)
         return [member.stem for member in builder.session_chain(path)] if path else [sid]
 
-    def pane_closed(self, member: str) -> bool:
-        """Whether the pane this session was last seen in is gone from Herdr. A pane whose agent
-        has not come back (a Herdr restart brings agents back one at a time) is still listed."""
+    def pane_left(self, member: str) -> str | None:
+        """Why the pane this session was last seen in no longer runs it, or None while it may. A pane
+        Herdr still lists without an agent is given HERDR_GRACE after its server starts (a Herdr restart
+        brings agents back one at a time); beyond it the pane is a shell, and a pane whose agent is
+        another session has moved on, however many panes of that name Herdr lists."""
         entry = self.seen[member]
         if self.listed is None:
-            return False
+            return None
+        key = (entry.get("herdr"), entry.get("pane"))
         # A session made again under the same name reuses pane ids for new panes (see HERDR_LIVES).
-        return (entry.get("herdr"), entry.get("pane")) not in self.listed or not builder.same_life(entry, builder.HERDR_LIVES.get(entry.get("herdr")))
+        if key not in self.listed or not builder.same_life(entry, builder.HERDR_LIVES.get(entry.get("herdr"))):
+            return "its Herdr pane has closed"
+        if key in self.occupant:  # closed() has seen that none of this conversation's sessions is it
+            return "its pane runs another session now"
+        started = builder.HERDR_STARTS.get(entry.get("herdr"))
+        if started is not None and time.time() - started > HERDR_GRACE:
+            return "its pane runs no agent"
+        return None
 
-    def closed(self, sid: str) -> bool:
-        """Whether <sid> ran in a pane before and neither it nor a later session of its pane runs in one that Herdr still lists."""
+    def pane_closed(self, member: str) -> bool:
+        return self.pane_left(member) is not None
+
+    def why_closed(self, sid: str) -> str | None:
+        """Why <sid> no longer runs in a pane (see pane_left), when it ran in one before and neither it nor
+        a later session of its pane runs now; None while it does, or never ran in one."""
         if self.empty:
-            return False
+            return None
         pane = self.members(sid)
         if any(member in self.live or member in self.reopened for member in pane):
-            return False
+            return None
         seen = [member for member in pane if member in self.seen]
-        return bool(seen) and all(self.pane_closed(member) for member in seen)
+        reasons = [self.pane_left(member) for member in seen]
+        return reasons[-1] if seen and all(reasons) else None
+
+    def closed(self, sid: str) -> bool:
+        """Whether <sid> ran in a pane before and neither it nor a later session of its pane runs in one that Herdr still lists as its own."""
+        return self.why_closed(sid) is not None
 
 
 def drop_closed(ids: list[str]) -> list[str]:
@@ -206,9 +227,10 @@ def drop_closed(ids: list[str]) -> list[str]:
         return ids
     kept, gone = [], []
     for sid in ids:
-        if view.closed(sid):
+        why = view.why_closed(sid)
+        if why:
             gone.append(sid)
-            print(f"Dropping {sid[:8]}: its Herdr pane has closed")
+            print(f"Dropping {sid[:8]}: {why}")
         else:
             kept.append(sid)
     # A session dropped before that runs in a pane again (Herdr's agents came back after the pane
