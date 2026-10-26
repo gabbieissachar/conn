@@ -175,6 +175,38 @@ test('the passcode page is phone-sized and carries no inline code the page\'s ow
   assert.match(response.raw, /font-size:16px/, '16px inputs keep iOS from zooming in');
 });
 
+// The passcode page's own script, run against a fake page: what it does once the server accepts the passcode.
+async function signInFrom(page, location, next) {
+  const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const moves = [];
+  let submit;
+  const element = (extra = {}) => ({ value: 'correct horse battery', textContent: '', disabled: false, focus() {}, addEventListener(name, fn) { if (name === 'submit') submit = fn; }, ...extra });
+  const sandbox = {
+    document: { getElementById: () => element() },
+    location: { ...location, replace: (to) => moves.push(['replace', to]), reload: () => moves.push(['reload']) },
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', next }) }),
+    JSON, Promise,
+  };
+  require('vm').runInNewContext(script, sandbox);
+  submit({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  return moves;
+}
+
+test('signing in on the very address that asked for it loads that page again, a fragment included', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const page = (await s.onTailnet({ path: '/transcript-reader/signin', headers: NAVIGATE })).raw;
+  // A reader page opened with #s=..., or the reload after a sign-out: replacing the location with itself
+  // would only move within the page, so the phone would sit on the passcode page after a correct passcode.
+  const deep = { pathname: PAGE, search: '', hash: '#s=aaaaaaaa' };
+  assert.deepEqual(await signInFrom(page, deep, PAGE + '#s=aaaaaaaa'), [['reload']]);
+  assert.deepEqual(await signInFrom(page, { pathname: '/', search: '', hash: '' }, '/'), [['reload']]);
+  // From the sign-in page itself, the server's answer is "/", a different address, so it moves there.
+  assert.deepEqual(await signInFrom(page, { pathname: '/transcript-reader/signin', search: '', hash: '' }, '/'), [['replace', '/']]);
+});
+
 // ------------------------------------------------------------ Host, Origin, Fetch-Metadata
 
 test('the tailnet listener still refuses a wrong Host, Origin or Fetch-Metadata, signed in or not', async (t) => {

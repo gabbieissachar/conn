@@ -179,6 +179,8 @@ a.quiet{display:block;margin-top:16px;text-align:center;color:var(--muted);font-
 #m{min-height:20px;margin:10px 0 0;color:var(--bad);font-size:14px}
 `.trim();
 
+// Signing in at the very address that asked for it (a reader page opened with #s=..., or the reload after a
+// sign-out) must load it again: replacing the location with itself only moves within the page when it has a fragment.
 const SCRIPT = `
 var f=document.getElementById('f'),p=document.getElementById('p'),m=document.getElementById('m'),b=document.getElementById('b');
 var next=location.pathname.indexOf('/transcript-reader/')===0?'/':location.pathname+location.search+location.hash;
@@ -187,7 +189,7 @@ e.preventDefault();b.disabled=true;m.textContent='';
 fetch('/transcript-reader/signin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({passcode:p.value,next:next})})
 .then(function(r){return r.json().catch(function(){return{}}).then(function(j){return{r:r,j:j}})})
 .then(function(x){
-if(x.r.ok&&x.j.next){location.replace(x.j.next);return}
+if(x.r.ok&&x.j.next){if(x.j.next===location.pathname+location.search+location.hash)location.reload();else location.replace(x.j.next);return}
 p.value='';b.disabled=false;
 m.textContent=x.r.status===429?'Too many tries. Try again in '+(x.j.retry_after||30)+' seconds.':x.r.status===503?'No passcode is set on the laptop.':'That passcode did not work.';
 p.focus()})

@@ -280,6 +280,13 @@
   .dock-preview { margin: 0 0 5px; max-height: 30vh; overflow-y: auto; }
   .dock-preview .dock-line { max-height: none; overflow: visible; border: 1px solid var(--line); }
   @media (max-width: 440px) { .dock-batch ol { max-height: 18vh; } }
+  /* A fingertip is about 44 px: Send and Add, the links under the box and the Pin and Reply pills grow where the screen is touched, not under a mouse. */
+  @media (pointer: coarse) {
+    .dock-row button { min-height: 44px; min-width: 44px; }
+    .dock textarea { min-height: 44px; }
+    .dock-acts button, .dock-head button, .dock-batch li button { padding: 8px 6px; }
+    .pin, .reply-to { padding-top: 7px; padding-bottom: 7px; }
+  }
   .dock button:disabled { opacity: .45; cursor: default; }
   .input.pending { opacity: .6; border-style: dashed; }
   .input.pending.refused { opacity: 1; border-color: var(--open); }

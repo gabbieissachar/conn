@@ -1,13 +1,18 @@
   // ---------------------------------------------------------------- live link (live.js, shared by both pages)
   // build_prototype.write_page pastes this file into each page's script before hashing it.
-  // Only a page served by the reader's own server (setup/transcript-reader/serve.sh) on localhost
-  // can reach the server; a file:// page stays read-only.
+  // Only a page served by the reader's own server (setup/transcript-reader/serve.sh), on localhost
+  // or on the Mac's Tailscale address (the phone, serve.sh --tailnet), can reach the server; a
+  // file:// page stays read-only.
   const live = (() => {
     const API = "/api/transcript-reader/";
-    const served = location.protocol === "http:" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
     // The server writes its per-start token into the page as it serves it (api.js);
     // no endpoint hands it out, so other pages on this origin cannot get it.
     const token = (document.querySelector('meta[name="reader-token"]') || {}).content || "";
+    // Loopback is the reader's own server. Beyond it, only a Tailscale address (100.64.0.0/10, the one
+    // other address the server listens on) counts, and only for a page that carries the token: a file
+    // copy has none, and a page some other server hands out has no token the reader would accept.
+    const served = location.protocol === "http:" && (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
+      || (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(location.hostname) && /^[0-9a-f]{64}$/.test(token)));
     // A restarted server has a new token, which only a fresh load of the page brings:
     // reload once, unless a text box is being typed in or the last try was under a minute ago.
     function reloadForToken() {
@@ -26,6 +31,11 @@
       let j = null; try { j = await r.json(); } catch (e) { j = null; }
       if (r.status === 403 && j && /token/i.test(j.message || "")) {
         throw new Error(reloadForToken() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
+      }
+      // The tailnet listener signs a phone out when the server restarts or the passcode changes: a fresh load
+      // of the page brings the sign-in page, and signing in comes back to this address (drafts survive a reload).
+      if (r.status === 401 && j && j.code === "sign_in_required") {
+        throw new Error(reloadForToken() ? "Signed out: opening the sign-in page…" : "Signed out: reload the page to sign in again.");
       }
       if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; throw error; }
       return j;
