@@ -269,9 +269,11 @@ function create({
   // { ip, port, passcodeFile } when server.js also listens on the Mac's Tailscale address
   // (tailnet.js); handle() then takes the listener a request came in on.
   tailnet = null,
+  // Where the tailnet listener writes its sign-in record (a line of text each); the server's stderr when left out.
+  log = undefined,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
-  const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now });
+  const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) });
   // The guard that holds for a request: the loopback one, or the tailnet listener's (its own
   // Host and Origin, the same token). Set by handle().
   const guards = new WeakMap();

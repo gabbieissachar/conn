@@ -8,7 +8,8 @@
 //
 //   - the guard checks (Host and Origin must be the tailnet address and port, Fetch-Metadata)
 //   - no valid session: a passcode page for a page request, 401 JSON for anything else
-//   - a correct passcode on POST /transcript-reader/signin sets the session cookie
+//   - a correct passcode on POST /transcript-reader/signin sets the session cookie, and
+//     GET /transcript-reader/signin?check=1 tells the page whether that cookie came back
 //   - GET /transcript-reader/signout ends the session
 //   - one exception to the session: a GET for the HTML viewer (api.js), which a sandboxed page
 //     without its own origin loads for itself and so cannot send the SameSite cookie with. Its
@@ -17,6 +18,10 @@
 // A session that passes goes on to api.js, whose routes check Host, Origin, Fetch-Metadata
 // and the per-start token again, so a phone needs both the cookie and the token the page
 // carries. Requests on the loopback listeners never come here.
+//
+// Every sign-in attempt, refused ones included, is one line in the server log with the
+// client address and the outcome (never the passcode), so a phone that cannot get in can be
+// read from the Mac. The passcode page shows each way a sign-in can fail in words.
 //
 // The passcode is stored only as a salted scrypt hash in one owner-only file (set with
 // `serve.sh passcode`, which reads it from the terminal without echo). Sessions live in
@@ -180,23 +185,52 @@ button,a.button{display:flex;align-items:center;justify-content:center;width:100
 button:disabled{opacity:.6}
 a.quiet{display:block;margin-top:16px;text-align:center;color:var(--muted);font-size:14px}
 #m{min-height:20px;margin:10px 0 0;color:var(--bad);font-size:14px}
+#w{margin:14px 0 0;color:var(--bad);font-size:14px}
 `.trim();
 
+// The page's one script. Every way a sign-in can end shows in #m; nothing ends silently:
+// a wrong passcode, a lock with its wait, a refusal by the guard (plain text), a network error, no
+// answer in 10 seconds, an answer that is not the reader's, a right passcode whose cookie did not come
+// back, and a page that did not open. #w is a message the script removes as its first act, so a page
+// whose script cannot run (turned off or blocked) says so instead of sitting there.
 // Signing in at the very address that asked for it (a reader page opened with #s=..., or the reload after a
 // sign-out) must load it again: replacing the location with itself only moves within the page when it has a fragment.
 const SCRIPT = `
 var f=document.getElementById('f'),p=document.getElementById('p'),m=document.getElementById('m'),b=document.getElementById('b');
-var next=location.pathname.indexOf('/transcript-reader/')===0?'/':location.pathname+location.search+location.hash;
+document.getElementById('w').remove();
+var label=b.textContent,here=location.pathname+location.search+location.hash;
+var next=location.pathname.indexOf('/transcript-reader/')===0?'/':here;
+function stop(text,clear){if(clear)p.value='';b.disabled=false;b.textContent=label;m.textContent=text;p.focus()}
+function parse(t){try{var j=JSON.parse(t);return j&&typeof j==='object'?j:null}catch(e){return null}}
+function ask(url,init){return new Promise(function(resolve,reject){
+var c=typeof AbortController==='function'?new AbortController():null,done=false;
+var t=setTimeout(function(){done=true;if(c)c.abort();reject('timeout')},10000);
+if(c)init.signal=c.signal;
+fetch(url,init).then(function(r){return r.text().then(function(s){return{r:r,t:s,j:parse(s)}})}).then(function(x){if(done)return;done=true;clearTimeout(t);resolve(x)},function(){if(done)return;done=true;clearTimeout(t);reject('network')})})}
+function why(x){
+var s=x.r.status,j=x.j||{},n=Number(j.retry_after)||0,t=x.j?'':x.t.trim().slice(0,100);
+if(j.code==='wrong_passcode')return'Wrong passcode.'+(n?' Too many wrong tries in a row: sign-in is locked for '+n+' seconds.':'');
+if(j.code==='throttled')return'Too many wrong passcodes. Try again in '+n+' seconds.';
+if(j.code==='busy')return'The laptop is busy checking other tries. Try again in a moment.';
+if(j.code==='no_passcode')return'No passcode is set on the laptop. Set one there with serve.sh passcode.';
+if(j.code==='bad_request')return'The reader could not read the request (HTTP '+s+'). Reload this page and try again.';
+if(j.code==='internal')return'The reader hit an unexpected error. Its log on the laptop says why.';
+if(s===403||s===405||s===415)return'The reader refused the request (HTTP '+s+(t&&t.indexOf('<')<0?': '+t:'')+'). Open this page at the exact address the laptop shows, with no proxy, VPN or other name in between.';
+return'The reader gave an answer this page cannot read (HTTP '+s+'). Something between the phone and the laptop may have answered instead.'}
+function open(to){b.textContent='Opening...';if(to===here)location.reload();else location.replace(to);
+setTimeout(function(){stop('You are signed in, but the reader did not open. Reload this page.',false)},8000)}
 f.addEventListener('submit',function(e){
-e.preventDefault();b.disabled=true;m.textContent='';
-fetch('/transcript-reader/signin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({passcode:p.value,next:next})})
-.then(function(r){return r.json().catch(function(){return{}}).then(function(j){return{r:r,j:j}})})
+e.preventDefault();if(b.disabled)return;b.disabled=true;b.textContent='Checking...';m.textContent='';
+ask('/transcript-reader/signin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({passcode:p.value,next:next})})
 .then(function(x){
-if(x.r.ok&&x.j.next){if(x.j.next===location.pathname+location.search+location.hash)location.reload();else location.replace(x.j.next);return}
-p.value='';b.disabled=false;
-m.textContent=x.r.status===429?'Too many tries. Try again in '+(x.j.retry_after||30)+' seconds.':x.r.status===503?'No passcode is set on the laptop.':'That passcode did not work.';
-p.focus()})
-.catch(function(){b.disabled=false;m.textContent='Could not reach the reader.'})});
+if(!(x.r.ok&&x.j&&x.j.status==='ok'&&x.j.next)){stop(why(x),x.j&&x.j.code==='wrong_passcode');return}
+return ask('/transcript-reader/signin?check=1',{credentials:'same-origin',cache:'no-store'}).then(function(y){
+if(!(y.r.ok&&y.j))stop(why(y),false);
+else if(y.j.signed_in)open(x.j.next);
+else stop('The passcode was right, but this browser did not keep the sign-in cookie, so the reader would only ask again. Allow cookies for this address (and leave Private Browsing), then try again.',false)})})
+.catch(function(e){stop(e==='timeout'?'The reader did not answer within 10 seconds. Check that the laptop is awake and on the tailnet, then try again.'
+:e==='network'?'Could not reach the reader. Check that this phone is on the tailnet and the laptop is awake, then try again.'
+:'Something went wrong on this page: '+(e&&e.message||e),false)})});
 `.trim();
 
 const sourceHash = (text) => `'sha256-${crypto.createHash('sha256').update(text).digest('base64')}'`;
@@ -213,7 +247,8 @@ const shell = (body, withScript) => '<!doctype html><html lang="en"><head><meta 
 const PASSCODE_PAGE = shell('<h1>Transcript reader</h1><p>Enter the passcode set on the laptop.</p>'
   + '<form id="f" autocomplete="on"><label for="p">Passcode</label>'
   + '<input id="p" type="password" name="passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>'
-  + '<p id="m" role="alert" aria-live="polite"></p><button id="b" type="submit">Open the reader</button></form>', true);
+  + '<p id="m" role="alert" aria-live="polite"></p><button id="b" type="submit">Open the reader</button></form>'
+  + '<p id="w" role="alert">The passcode check did not start: JavaScript is turned off for this page or the browser blocked its script. Turn JavaScript on, reload this page and try again.</p>', true);
 
 const SIGNED_IN_PAGE = shell(`<h1>Signed in</h1><p>This device can open the reader.</p><a class="button" href="${HOME}">Open the reader</a>`
   + `<a class="quiet" href="${SIGNOUT}">Sign out</a>`, false);
@@ -258,8 +293,9 @@ function cookieOf(req) {
 const safeNext = (value) => (typeof value === 'string' && value.length <= 2048 && /^\/(?![/\\])[^\s\\]*$/.test(value) && !value.startsWith(SIGNIN) && !value.startsWith(SIGNOUT) ? value : '/');
 
 // ip and port are where the listener is bound; passcodeFile holds the hash; token is the
-// reader's per-start token, shared with the loopback guard so pages carry one token.
-function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.now() }) {
+// reader's per-start token, shared with the loopback guard so pages carry one token. log takes
+// one line of text, the sign-in record (the server's own log by default).
+function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
   const guard = createGuard({ port, token, tokenHeader, hosts: [ip] });
   const currentRecord = recordSource(passcodeFile);
   const sessions = createSessions(now);
@@ -268,22 +304,25 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
 
   const setCookie = (value, maxAge) => `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`;
   const signedIn = (req) => { const record = currentRecord(); return Boolean(record) && sessions.valid(cookieOf(req), record.hash); };
+  // One line per sign-in attempt: when, which address, what came of it. Never the passcode.
+  const note = (req, outcome) => log(`${new Date(now()).toISOString()} Tailnet: sign-in from ${req.socket.remoteAddress || 'unknown address'}: ${outcome}`);
 
   async function signIn(req, res) {
     const record = currentRecord();
-    if (!record) { json(res, 503, { status: 'error', code: 'no_passcode', message: 'No passcode is set.' }); return; }
+    if (!record) { note(req, 'no passcode is set'); json(res, 503, { status: 'error', code: 'no_passcode', message: 'No passcode is set.' }); return; }
     let body;
-    try { body = await readBody(req); } catch (error) { json(res, error.status || 400, { status: 'error', code: 'bad_request', message: 'Bad request.' }); return; }
+    try { body = await readBody(req); } catch (error) { note(req, `bad request (${error.status || 400})`); json(res, error.status || 400, { status: 'error', code: 'bad_request', message: 'Bad request.' }); return; }
     const candidate = body && body.passcode;
-    if (typeof candidate !== 'string') { json(res, 400, { status: 'error', code: 'bad_request', message: 'Bad request.' }); return; }
+    if (typeof candidate !== 'string') { note(req, 'bad request (400, no passcode in it)'); json(res, 400, { status: 'error', code: 'bad_request', message: 'Bad request.' }); return; }
     const address = req.socket.remoteAddress || '';
     const wait = throttle.attempt(address);
     if (wait) {
       const seconds = Math.ceil(wait / 1000);
+      note(req, `refused, locked for ${seconds} more s`);
       json(res, 429, { status: 'error', code: 'throttled', message: 'Too many wrong passcodes.', retry_after: seconds }, { 'Retry-After': String(seconds) });
       return;
     }
-    if (verifying >= MAX_VERIFYING) { json(res, 429, { status: 'error', code: 'busy', message: 'Try again in a moment.', retry_after: 2 }, { 'Retry-After': '2' }); return; }
+    if (verifying >= MAX_VERIFYING) { note(req, 'refused, too many passcodes being checked at once'); json(res, 429, { status: 'error', code: 'busy', message: 'Try again in a moment.', retry_after: 2 }, { 'Retry-After': '2' }); return; }
     let ok = false;
     if (!passcodeProblem(candidate)) {
       verifying += 1;
@@ -292,11 +331,12 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
     // The file may have changed while this one was checked: only the passcode it held then counts.
     if (!ok || currentRecord() !== record) {
       const seconds = Math.ceil(throttle.waiting(address) / 1000);
-      if (seconds) process.stderr.write(`Tailnet: wrong passcodes from ${address}, locked for ${seconds} s\n`);
+      note(req, seconds ? `wrong passcode, now locked for ${seconds} s` : 'wrong passcode');
       json(res, 401, { status: 'error', code: 'wrong_passcode', message: 'Wrong passcode.', retry_after: seconds });
       return;
     }
     throttle.passed(address);
+    note(req, 'ok');
     json(res, 200, { status: 'ok', next: safeNext(body.next) }, { 'Set-Cookie': setCookie(sessions.open(record.hash), SESSION_MS / 1000) });
   }
 
@@ -305,12 +345,21 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
   // the HTML viewer's address (api.js), which needs the guard's Host check but no session.
   function intercept(req, res, url, isPage, isViewer = false) {
     const verdict = guard.check(req, { requireToken: false, crossSite: isViewer });
-    if (!verdict.ok) { text(res, verdict.status, verdict.message); return true; }
     const method = String(req.method).toUpperCase();
     const pathname = url.pathname;
+    if (!verdict.ok) {
+      if (pathname === SIGNIN && method === 'POST') note(req, `refused by the guard (${verdict.status} ${verdict.message})`);
+      text(res, verdict.status, verdict.message);
+      return true;
+    }
     if (pathname === SIGNIN) {
-      if (method === 'POST') signIn(req, res).catch(() => { if (!res.headersSent) json(res, 500, { status: 'error', code: 'internal', message: 'Unexpected error.' }); else res.end(); });
-      else html(res, 200, signedIn(req) ? SIGNED_IN_PAGE : PASSCODE_PAGE);
+      if (method === 'POST') signIn(req, res).catch((error) => { note(req, `error (${(error && error.message) || error})`); if (!res.headersSent) json(res, 500, { status: 'error', code: 'internal', message: 'Unexpected error.' }); else res.end(); });
+      else if (url.searchParams.get('check') === '1') {
+        // The passcode page asks this right after a correct passcode: did the cookie come back?
+        const signed = signedIn(req);
+        if (!signed) note(req, 'cookie check failed: the browser sent no valid session cookie right after a correct passcode');
+        json(res, 200, { status: 'ok', signed_in: signed });
+      } else html(res, 200, signedIn(req) ? SIGNED_IN_PAGE : PASSCODE_PAGE);
       return true;
     }
     if (pathname === SIGNOUT) {
