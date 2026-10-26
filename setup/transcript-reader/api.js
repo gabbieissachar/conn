@@ -16,6 +16,12 @@
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
+//   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once and rebuilds the
+//                                                   pages from the session logs and the fleet records, then answers
+//                                                   as state does, with the time it finished
+//   GET  /api/transcript-reader/pins                the pinned messages (pinstore.js: a small owner-only file
+//                                                   outside the repo) and their revision
+//   POST /api/transcript-reader/pins                { op: "pin", key, conv, at } or { op: "unpin", key }
 //   POST /api/transcript-reader/send                { session_id, text }: empties the input box
 //                                                   of the one live Herdr pane running that
 //                                                   session, then sends the text there
@@ -44,7 +50,8 @@
 // Writes: reader.py rebuilds the pages when a listed session log changes or a listed
 // session's pane closes (dropping it from the reading list), and adds the session
 // Herdr has focused to the reading list while a page follows focus. reopen and close
-// change the reading list only on a click in the page.
+// change the reading list only on a click in the page, and so does sync (a rebuild, no
+// more). The pins file is the only thing written outside out/, and only on a pin or an unpin.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
@@ -55,6 +62,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createGuard } = require('../herdr-organizer/guard');
+const pinstore = require('./pinstore');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
@@ -202,6 +210,7 @@ function create({
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
+  pinsFile = pinstore.defaultFile(env),
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
   // conversations of the hosted copy it drains.
   sendable = null,
@@ -220,6 +229,7 @@ function create({
   // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
   const seenLive = new Set();
   let sending = false;
+  const pins = pinstore.create({ file: pinsFile, now });
 
   // ------------------------------------------------------------- local records
 
@@ -297,15 +307,17 @@ function create({
   }
 
   // Herdr keeps the session id it was first told even when Claude is restarted in the same
-  // pane (Firstmate swaps a worker's model that way). A Claude pane whose id no running Claude
-  // holds takes the session of its foreground Claude process, or none when the pane is back
-  // at its shell. Read-only: `herdr pane process-info`, asked only for such panes.
+  // pane (Firstmate swaps a worker's model that way), and it can keep the id of an agent that
+  // has exited, the pane then naming no agent at all. A pane with such an id that no running
+  // Claude holds takes the session of its foreground Claude process, or none when the pane is
+  // back at its shell. Read-only: `herdr pane process-info`, asked only for such panes.
   async function checkSessions(session) {
     const running = runningClaude();
     if (!running.size) return session;
     const held = new Set(running.values());
     for (const pane of session.panes) {
-      if (pane.agent !== 'claude' || held.has(pane.session_id)) continue;
+      const retained = !pane.agent && pane.session_id;
+      if ((pane.agent !== 'claude' && !retained) || held.has(pane.session_id)) continue;
       const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
       const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
       if (!info) continue;
@@ -413,7 +425,7 @@ function create({
       }
     }
     return {
-      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp') },
+      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev },
       focus: focused && {
         ...focused,
         listed: focused.session_id ? ids.includes(focused.session_id) : false,
@@ -422,6 +434,24 @@ function create({
       panes,
       build: { running: Boolean(build.running), adding: build.running ? build.running.adding : null, error: build.error },
     };
+  }
+
+  // ------------------------------------------------------------------- sync
+
+  // What the Sync button asks for: Herdr is read again now (not from the last scan), the pages are rebuilt from the
+  // session logs and the fleet records whether or not a log looks newer, and the answer is state's, once it is done.
+  // That is the same read-only rebuild a changed log starts, so the reading list, each session's live or ended
+  // state and the open conversation's newest turns are all taken again; it waits for one already running.
+  async function sync(body) {
+    for (const key of Object.keys(body)) if (key !== 'follow') throw new RequestError('Unknown field.');
+    if (body.follow !== undefined && typeof body.follow !== 'boolean') throw new RequestError('Invalid follow.');
+    while (build.running) await build.running.done;
+    const sessions = await scan({ fresh: true });
+    notePaneChanges(listed(), sessions);
+    const result = await runReader(['rebuild']);
+    if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
+    build.paneClosed = false;
+    return { synced: now() / 1000, ...(await state(body.follow === true)) };
   }
 
   // ------------------------------------------------------------ reopen, close
@@ -590,6 +620,18 @@ function create({
       send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1')) });
       return;
     }
+    if (pathname === API + 'sync' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...(await sync(await readJsonBody(req))) });
+      return;
+    }
+    if (pathname === API + 'pins' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...pins.read() });
+      return;
+    }
+    if (pathname === API + 'pins' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...pins.change(await readJsonBody(req)) });
+      return;
+    }
     if (pathname === API + 'send' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
@@ -629,7 +671,7 @@ function create({
     if (!url.pathname.startsWith(API)) return false;
     dispatch(req, res, url.pathname, url.searchParams).catch((error) => {
       if (res.headersSent) { res.end(); return; }
-      if (error instanceof RequestError) fail(res, error.status, error.code, error.message);
+      if (error instanceof RequestError || error instanceof pinstore.PinError) fail(res, error.status, error.code, error.message);
       else fail(res, 500, 'internal', 'Unexpected error.');
     });
     return true;

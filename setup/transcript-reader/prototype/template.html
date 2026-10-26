@@ -44,10 +44,18 @@
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .to-sheet .short { display: none; }
+  /* Folded to one line at phone width, the session picker needs the room the long link takes. */
+  @media (max-width: 440px) { .bar.collapsed .to-sheet .long { display: none; } .bar.collapsed .to-sheet .short { display: inline; } }
   .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
   /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
   .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
   .bar.collapsed .bar-toggle::before { transform: translateY(-2px) rotate(225deg); }
+  /* Follow Herdr, kept in reach when the header is folded to one line (the same switch as the one in the controls). */
+  .follow-quick { display: none; flex: none; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; height: 28px; padding: 0 9px; font-size: 13px; color: var(--muted); }
+  .bar.collapsed .follow-quick:not([hidden]) { display: block; }
+  .follow-quick[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
+  .follow-quick:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .crumb { display: none; flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 0; text-align: left; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .name { white-space: nowrap; }
   .bar.collapsed .name, .bar.collapsed .proto, .bar.collapsed #bar-more { display: none; }
@@ -73,6 +81,10 @@
   .asof span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .asof.stale span { color: var(--ask); font-weight: 600; }
   .asof button { flex: none; border: 0; background: none; padding: 0; font-size: 12px; color: var(--muted); text-decoration: underline; }
+  .asof span { font-variant-numeric: tabular-nums; }
+  .asof button.sync { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 1px 9px; color: var(--ink); text-decoration: none; }
+  .asof button.sync:disabled { opacity: .6; cursor: default; }
+  .asof button.sync:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   /* A sealed copy asks for its passphrase before anything else; the tabs wait until it opens. */
   .locked #bar-more, .locked .bar-toggle { display: none; }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
@@ -201,6 +213,23 @@
 
   /* Replying to a reply: the Reply button, the selection button and the composer */
   .reply-to { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--you); }
+  /* Pin: on a message and on a reply, then the list of pins in the header. */
+  .pin { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+  .pin + .reply-to { margin-left: 0; }
+  .pin[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); color: var(--ask); font-weight: 600; }
+  .pin:focus-visible, .pin-item:focus-visible, .pin-x:focus-visible, .reply-to:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  #pins-panel { flex: 1 1 100%; min-width: 0; }
+  .pins { margin-top: 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 6px 8px; }
+  .pins-scope { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .pins-scope .where { margin-left: auto; font-size: 11px; color: var(--faint); }
+  .pins-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: min(38vh, 22rem); overflow-y: auto; overscroll-behavior: contain; }
+  .pins-list li { display: flex; gap: 4px; align-items: flex-start; border-top: 1px solid var(--line); }
+  .pin-item { flex: 1; min-width: 0; text-align: left; border: 0; background: none; padding: 6px 2px; }
+  .pin-meta { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pin-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 14px; }
+  .pin-item.gone .pin-text { color: var(--muted); font-style: italic; }
+  .pin-x { flex: none; border: 0; background: none; color: var(--muted); font-size: 12px; padding: 8px 6px; text-decoration: underline; }
+  .pins-note { font-size: 12px; color: var(--muted); padding: 6px 2px 2px; }
   .reply.is-target-reply { box-shadow: 0 0 0 2px var(--you); }
   .live { font-size: 11px; font-weight: 600; color: var(--muted); }
   .live.on { color: var(--ok); }
@@ -257,8 +286,8 @@
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html">Answer sheet →</a><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
-    <div class="asof" id="asof" hidden><span id="asof-text" aria-live="polite"></span><button id="forget" type="button" hidden title="Forget the key this device keeps for this copy; the passphrase is asked again">Forget this device</button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="asof" id="asof" hidden><span id="asof-text"></span><button class="sync" id="sync" type="button">Sync</button><button id="forget" type="button" hidden title="Forget the key this device keeps for this copy; the passphrase is asked again">Forget this device</button></div>
     <div id="bar-more">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
@@ -301,16 +330,18 @@
 /*__HOSTED__*/
   // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
   const canLive = live.served && !HOSTED;
+/*__PINS__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
   try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
   const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
   const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
+  const fmtClock = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
   const fmtShortDay = s => new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(s * 1000));
   const fmtWhen = s => s ? `${fmtDay(s)} ${fmtTime(s)}` : "";
@@ -426,6 +457,8 @@
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
     if (sid && ex.reply) {
+      const pin = pinButton(ex, "reply", sid);
+      if (pin) { who.append(pin); card.dataset.msg = pinKey(ex, "reply"); }
       const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
       const to = $("button", "reply-to", "Reply"); to.type = "button";
@@ -482,7 +515,7 @@
     });
     return row;
   }
-  function inputBlock(ex, index, key) {
+  function inputBlock(ex, index, key, sid) {
     // A repeated doorbell delivers nothing new: one line, so it does not bury the reply.
     if (ex.source === "firstmate" && ex.repeat) {
       const line = $("div", "divider", `Firstmate rang again · ${fmtTime(ex.at)}`);
@@ -495,6 +528,8 @@
     who.append($("b", null, ex.source === "captain" ? (ex.kind === "command" ? `You ran ${ex.label.split(" ")[0]}` : "You") : ex.label));
     who.append($("span", null, fmtWhen(ex.at)));
     if (ex.absorbed) who.append($("span", null, "· sent while it was busy"));
+    const pin = sid ? pinButton(ex, "in", sid) : null;
+    if (pin) { who.append(pin); block.dataset.msg = pinKey(ex, "in"); }
     block.append(who);
     let text = ex.input;
     if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
@@ -530,7 +565,7 @@
       show(state.open.has(key + ":fold"));
       box.append(row, detail); frag.append(box); return frag;
     }
-    frag.append(inputBlock(ex, index, key));
+    frag.append(inputBlock(ex, index, key, sid));
     if (ex.reply || ex.tools) frag.append(replyCard(ex, key, sid));
     return frag;
   }
@@ -541,6 +576,9 @@
   // so a glance down the list shows which ones still run. Empty without the live server or a pane.
   // Words only: the browser marks the chosen option with its own check, which a symbol here would echo.
   const PANE_STATES = { working: "Working", blocked: "Waiting for you", done: "Done", idle: "Idle" };
+  // Whether a Herdr pane runs the session now. The served page asks the server every few seconds, so this follows
+  // a session that has ended; the build only says what was true when it was made (and is all a copy has to go on).
+  const paneLive = s => !HOSTED && canLive && link.panes !== undefined ? Boolean(link.panes[s.id]) : Boolean(s.pane && s.pane.live);
   // The hosted copy has each pane's state as of its build, which the picker drops once that
   // build is old (anyAge keeps it, for the line that says when it was).
   function sessionStatus(s, anyAge = false) {
@@ -594,7 +632,8 @@
     const twins = data.sessions.filter(x => x.pane && x.pane.label === s.pane.label && Boolean(x.reopened) === Boolean(s.reopened));
     return twins.length > 1 ? sessionName(s) : s.pane.label;
   }
-  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  // A session whose pane was seen but no longer runs it says so in the picker, as the header does, so it does not read as running.
+  const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) || (!HOSTED && s.pane && !paneLive(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The hosted list starts each name with the asks waiting on you (hosted.asks) and the last
   // activity, so a phone shows them before the name is cut off.
   const lastSeen = at => !at ? "" : fmtShortDay(at) === fmtShortDay(Date.now() / 1000) ? fmtTime(at) : fmtShortDay(at);
@@ -690,16 +729,17 @@
     const follow = $("button", "btn", "Follow Herdr"); follow.setAttribute("aria-pressed", String(state.follow));
     follow.title = "Show the session of the pane Herdr has focused, adding it to the reading list when needed";
     follow.hidden = !canLive;
-    follow.addEventListener("click", () => {
-      state.follow = !state.follow; link.seenSeq = null;
-      try { localStorage.setItem("tr-follow", state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
-      render();
-    });
+    follow.addEventListener("click", toggleFollow);
+    const pinned = $("button", "btn", pinsLabel()); pinned.id = "pins-toggle"; pinned.type = "button";
+    pinned.setAttribute("aria-pressed", String(state.pinsOpen)); pinned.setAttribute("aria-controls", "pins-panel");
+    pinned.title = "Pinned messages: this conversation's, or every conversation's";
+    pinned.addEventListener("click", () => { state.pinsOpen = !state.pinsOpen; paintPins(); });
+    const pinHost = $("div"); pinHost.id = "pins-panel"; pinHost.hidden = true;
     prev.addEventListener("click", () => jump("captain", -1));
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
-    row.append(select, prev, next, needs, wakes, shut, follow);
+    row.append(select, prev, next, needs, wakes, pinned, shut, follow, pinHost);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.source === "peer") ? count(e => e.source === "peer") + " from other sessions · " : ""}${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
     const pane = session && session.pane;
@@ -709,7 +749,7 @@
     // The hosted copy has the agent's state as Herdr reported it when the laptop built the copy.
     const stated = HOSTED && pane && pane.live && session ? sessionStatus(session, true) : "";
     const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
-    const origin = $("div", "summary", pane ? `${pane.live ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
+    const origin = $("div", "summary", pane ? `${paneLive(session) ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
     const note = $("div", "follow-note"); note.id = "follow-note";
     controls.append(row, origin, summary, note);
     if (session && session.kept) {
@@ -740,6 +780,7 @@
     });
     if (run) collapseRun(run);
     main.append(...pendingNodes(session));
+    paintPins();
   }
   // Opening a conversation starts at its latest turn, placed under the bar so it reads from its first line.
   // Wake-ups folded after it stay as the one-line rows below.
@@ -774,6 +815,139 @@
     window.scrollBy({ top: target.top, behavior: "smooth" });
     target.el.classList.remove("is-target"); void target.el.offsetWidth; target.el.classList.add("is-target");
   }
+
+  // ---------------------------------------------------------------- pins: a button on each message and reply, and their list
+  // A pin names a message by its turn's id (ex.uid, the session log's own record id) and its part, so it holds
+  // however the page is rebuilt or the turns move (pins.js keeps them, and no text). The list says where each is.
+  const pinKey = (ex, part) => ex.uid ? `${ex.uid}:${part}` : "";
+  function paintPinButton(btn) {
+    const on = pins.has(btn.dataset.pin);
+    btn.textContent = on ? "Pinned" : "Pin";
+    btn.setAttribute("aria-pressed", String(on));
+    btn.title = on ? "Unpin this message" : "Pin this message, to come back to it from the Pins list";
+  }
+  function pinButton(ex, part, sid) {
+    const key = pinKey(ex, part);
+    if (!key) return null;  // a page built before turns had ids: the next rebuild brings them
+    const btn = $("button", "pin"); btn.type = "button"; btn.dataset.pin = key;
+    paintPinButton(btn);
+    btn.addEventListener("click", () => togglePin(key, sid, part === "in" ? ex.at : (ex.reply_at || ex.at)));
+    return btn;
+  }
+  async function togglePin(key, conv, at) {
+    try { await pins.toggle(key, conv, at); }
+    catch (e) { link.listing = { text: `Could not change the pin: ${e.message}` }; renderLive(); }
+  }
+  // Each pinned message where it is on the page now: its conversation, turn and part, or null when its
+  // conversation is not loaded (the hosted copy loads one when asked) or no longer on the reader.
+  function pinLocator() {
+    const where = new Map();
+    data.sessions.forEach((s, si) => (s.exchanges || []).forEach((e, index) => { if (e.uid && !where.has(e.uid)) where.set(e.uid, { si, index, ex: e }); }));
+    return p => {
+      const cut = p.key.lastIndexOf(":");
+      const found = where.get(p.key.slice(0, cut));
+      return found ? { ...found, part: p.key.slice(cut + 1) } : null;
+    };
+  }
+  const pinSession = p => data.sessions.findIndex(s => (s.ids || [s.id]).includes(p.conv));
+  function pinSummary(at) {
+    const ex = at.ex;
+    const text = at.part === "in" ? (ex.source === "firstmate" && ex.delivered && ex.delivered.length ? ex.delivered[0] : ex.input) : ex.reply;
+    const line = (text || "").split("\n").map(l => l.replace(/^[\s#>*\-\d.)|]+/, "").replace(/[*`_]/g, "").trim()).find(Boolean) || "(no text)";
+    const who = at.part === "reply" ? "Reply" : ex.source === "captain" ? "You" : ex.label;
+    return { who, line: line.length > 160 ? line.slice(0, 159).trimEnd() + "…" : line, at: at.part === "reply" ? (ex.reply_at || ex.at) : ex.at };
+  }
+  function pinsLabel() { return pins.count() ? `Pins · ${pins.count()}` : "Pins"; }
+  // The list in the header: this conversation's pins in reading order, or every pin, newest pinned first.
+  function paintPins() {
+    document.querySelectorAll("button.pin").forEach(paintPinButton);
+    const toggle = document.getElementById("pins-toggle");
+    if (toggle) { toggle.textContent = pinsLabel(); toggle.setAttribute("aria-pressed", String(state.pinsOpen)); }
+    const host = document.getElementById("pins-panel");
+    if (!host) return;
+    host.hidden = !state.pinsOpen;
+    if (!state.pinsOpen) { host.replaceChildren(); paintBar(); return; }
+    const locate = pinLocator();
+    const current = data.sessions[state.session];
+    const rows = pins.all().map(p => ({ p, at: locate(p) })).map(row => ({ ...row, here: row.at ? row.at.si === state.session : Boolean(current) && (current.ids || [current.id]).includes(row.p.conv) }));
+    const here = rows.filter(row => row.here).sort((a, b) => (a.at ? a.at.index : 1e9) - (b.at ? b.at.index : 1e9) || a.p.at - b.p.at);
+    const shown = state.pinsScope === "all" ? rows.slice().sort((a, b) => b.p.pinned - a.p.pinned) : here;
+    const panel = $("div", "pins");
+    const scope = $("div", "pins-scope");
+    for (const [value, label, count] of [["here", "This conversation", here.length], ["all", "All conversations", rows.length]]) {
+      const b = $("button", "btn", `${label} · ${count}`); b.type = "button"; b.setAttribute("aria-pressed", String(state.pinsScope === value));
+      b.addEventListener("click", () => { state.pinsScope = value; paintPins(); });
+      scope.append(b);
+    }
+    const kept = $("span", "where", pins.where() === "file" ? "Kept in a file on this laptop" : "Kept in this browser only");
+    kept.title = pins.where() === "file" ? "A small owner-only file outside the repo. It holds which messages are pinned, not their text." : "This browser's own storage. It holds which messages are pinned, not their text.";
+    scope.append(kept);
+    panel.append(scope);
+    if (!shown.length) panel.append($("div", "pins-note", rows.length && state.pinsScope === "here" ? "Nothing pinned in this conversation. All conversations lists the others." : "Nothing pinned yet. Pin on a message or a reply keeps it here."));
+    else {
+      const list = $("ul", "pins-list");
+      for (const { p, at } of shown) {
+        const item = $("li"), open = $("button", "pin-item"); open.type = "button";
+        if (at) {
+          const sum = pinSummary(at);
+          const name = state.pinsScope === "all" ? ` · ${sessionName(data.sessions[at.si])}` : "";
+          open.append($("span", "pin-meta", `${sum.who} · ${fmtWhen(sum.at)}${name}`), $("span", "pin-text", sum.line));
+          open.title = "Go to this message";
+        } else {
+          const known = pinSession(p) >= 0;
+          open.classList.add("gone");
+          open.append($("span", "pin-meta", `${fmtWhen(p.at)} · session ${p.conv.slice(0, 8)}`),
+            $("span", "pin-text", known ? "Open to load this conversation, then the message shows here." : "Not on the reader now (its conversation left the list or is older than the page keeps)."));
+          open.title = known ? "Load this conversation and go to the message" : "This message is not on the page";
+        }
+        open.addEventListener("click", () => openPin(p));
+        const drop = $("button", "pin-x", "Unpin"); drop.type = "button"; drop.setAttribute("aria-label", "Unpin this message");
+        drop.addEventListener("click", () => togglePin(p.key, p.conv, p.at));
+        item.append(open, drop); list.append(item);
+      }
+      panel.append(list);
+    }
+    host.replaceChildren(panel);
+    paintBar();
+    if (HOSTED) loadPinned(rows);
+  }
+  // The hosted copy holds a conversation only once it is opened: the pinned ones load in the background so the list can say what each says.
+  let pinLoading = false;
+  async function loadPinned(rows) {
+    if (pinLoading) return;
+    const missing = [...new Set(rows.filter(row => !row.at).map(row => pinSession(row.p)).filter(i => i >= 0 && !data.sessions[i].exchanges))];
+    if (!missing.length) return;
+    pinLoading = true;
+    try { for (const i of missing) { try { await hosted.conversation(data.sessions[i]); } catch (e) { /* listed as not loaded */ } } } finally { pinLoading = false; }
+    paintPins();
+  }
+  // Go to a pinned message: its conversation, with what hides it opened (a wake-up folded into a run), scrolled under the header.
+  async function openPin(p) {
+    let at = pinLocator()(p);
+    if (!at && HOSTED && pinSession(p) >= 0) {
+      try { await hosted.conversation(data.sessions[pinSession(p)]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
+      at = pinLocator()(p);
+    }
+    if (!at) { link.listing = { text: "That message is not on the reader now." }; renderLive(); paintPins(); return; }
+    link.listing = null;
+    const session = data.sessions[at.si], exs = session.exchanges;
+    if (at.ex.folded && !state.showWakes) {
+      let start = at.index;
+      while (start > 0 && exs[start - 1].folded) start -= 1;
+      state.open.add(`${session.id}:${start}:run`);
+      state.open.add(`${session.id}:${at.index}:fold`);
+    }
+    state.session = at.si; state.view = "reader"; state.pinsOpen = false;
+    setAddress();
+    whenReady(() => {
+      render();
+      const node = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === p.key) || document.getElementById(`ex-${at.index}`);
+      if (!node) return;
+      window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
+      node.classList.remove("is-target"); void node.offsetWidth; node.classList.add("is-target");
+    });
+  }
+  pins.onChange(paintPins);
 
   // ---------------------------------------------------------------- View B
   const STATE_LABEL = {
@@ -889,7 +1063,7 @@
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -1463,8 +1637,9 @@
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
     const badge = document.getElementById("live");
-    badge.textContent = HOSTED ? "hosted" : !canLive ? "read-only" : link.panes === undefined ? "connecting" : "live";
-    badge.className = "live" + (canLive && link.panes !== undefined ? " on" : "");
+    const offline = canLive && syncFailing();
+    badge.textContent = HOSTED ? "hosted" : !canLive ? "read-only" : offline ? "offline" : link.panes === undefined ? "connecting" : "live";
+    badge.className = "live" + (canLive && link.panes !== undefined && !offline ? " on" : "");
     badge.title = canLive ? "Refreshes itself, follows Herdr and can send replies"
       : HOSTED ? "The hosted copy: it takes the laptop's newer builds every 30 seconds and cannot follow; Send queues a message for the laptop" : "Opened as a file: no refresh, follow or send";
     const note = document.getElementById("follow-note");
@@ -1480,6 +1655,13 @@
     }
     renderDock();
   }
+  // Follow Herdr on or off: the button in the controls and the one in the folded header are this one switch.
+  function toggleFollow() {
+    state.follow = !state.follow; link.seenSeq = null;
+    try { localStorage.setItem("tr-follow", state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
+    render();
+  }
+  document.getElementById("follow-quick").addEventListener("click", toggleFollow);
   // Where the reader is, so a refresh can put the same turn back in the same place.
   function readingAnchor() {
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 40) return { bottom: true };
@@ -1574,15 +1756,55 @@
     showLatest();
   }
   const writing = () => document.activeElement === dock("text") && Boolean(dockTyped());
-  if (!HOSTED) live.poll(async () => {
-    const s = await live.state(state.follow);
+  // What the server answered about Herdr and the build, from the poll or from Sync.
+  function takeState(s) {
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
+    link.syncedAt = Date.now() / 1000; link.syncFail = null;
+    pins.refresh(s.stamps && s.stamps.pins);
+  }
+  // The server (or the hosted copy's folder) stopped answering: after a few seconds the page says so, with since when.
+  const syncFailing = () => Boolean(link.syncFail) && Date.now() - link.syncFail.since > 8000;
+  function noteSyncFail(e) {
+    link.syncFail = link.syncFail || { since: Date.now(), message: e.message };
+    if (syncFailing()) { renderLive(); paintSync(); }
+  }
+  if (!HOSTED) live.poll(async () => {
+    let s;
+    try { s = await live.state(state.follow); } catch (e) { noteSyncFail(e); throw e; }
+    takeState(s);
     markRead();
     labelSessions();
     if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData();
     applyFocus();
     renderLive();
+    paintSync();
   });
+  // The Sync button: take everything again now, not at the next poll. The local page asks the server to read
+  // Herdr again and rebuild from the session logs and the fleet records (all read-only; it writes only out/),
+  // then swaps in the list, each session's live or ended state and the open conversation's newest turns where
+  // you are reading. The hosted copy cannot make the laptop build: it reads the newest copy the laptop wrote.
+  async function syncNow() {
+    if (link.syncing || !(canLive || HOSTED)) return;
+    link.syncing = true; link.listing = null; paintSync(); renderLive();
+    try {
+      if (HOSTED) await refreshHosted(true);
+      else {
+        let answer;
+        try { answer = await live.sync(state.follow); } catch (e) {
+          if (e.status !== 404) throw e;
+          // A server started before this page's code has no Sync route: read what it does offer.
+          answer = await live.state(state.follow);
+          link.listing = { text: "This server has no Sync yet (restart it: serve.sh restart). Read what it can." };
+        }
+        takeState(answer);
+        await refreshData(true);
+        markRead(); labelSessions(); applyFocus();
+      }
+    } catch (e) {
+      link.listing = { text: `Sync failed: ${e.message}` };
+    } finally { link.syncing = false; paintSync(); renderLive(); }
+  }
+  document.getElementById("sync").addEventListener("click", syncNow);
 
   // ---------------------------------------------------------------- hosted copy: load what the view needs
   // Whether the view on screen needs an object not loaded yet: the conversation, its document or
@@ -1610,22 +1832,40 @@
     document.getElementById("main").replaceChildren($("div", "empty", "Loading…"));
     ensure().then(show, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load this: ${e.message}`)));
   }
-  // When the laptop built the copy on screen; an older build than the sync's heartbeat means it is not syncing.
-  function paintAsOf() {
-    const line = document.getElementById("asof");
-    line.hidden = !HOSTED || !data.generated;
+  // The line under the title, in both copies: when this page last heard from where it reads (the local server, or the
+  // hosted copy's folder), and the Sync button. The hosted copy also says when the laptop built what it holds, and
+  // says so louder once that is older than the sync's heartbeat.
+  function paintSync() {
+    const line = document.getElementById("asof"), text = document.getElementById("asof-text"), button = document.getElementById("sync");
+    line.hidden = HOSTED ? !data.generated : !canLive;
     if (line.hidden) return;
-    const when = data.generated, old = hosted.stale(when), at = builtAt(when), text = document.getElementById("asof-text");
-    line.classList.toggle("stale", old || Boolean(hosted.outdated()));
-    text.textContent = hosted.outdated() || (old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`);
-    text.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then.`;
-    document.getElementById("forget").hidden = !hosted.isSealed();
+    const when = data.generated, synced = link.syncedAt ? `synced ${fmtClock(link.syncedAt)}` : "not synced yet";
+    button.disabled = Boolean(link.syncing);
+    button.textContent = link.syncing ? "Syncing…" : "Sync";
+    if (HOSTED) {
+      const old = hosted.stale(when), at = builtAt(when);
+      const failing = syncFailing();
+      line.classList.toggle("stale", old || failing || Boolean(hosted.outdated()));
+      text.setAttribute("aria-live", "polite");
+      text.textContent = (failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}`
+        : hosted.outdated() || (old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`)) + (failing ? "" : ` · ${synced}`);
+      text.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.`;
+      document.getElementById("forget").hidden = !hosted.isSealed();
+      return;
+    }
+    // The text changes with every poll, so it is not announced; the button says when a sync it asked for is under way.
+    const failing = syncFailing();
+    line.classList.toggle("stale", failing);
+    text.setAttribute("aria-live", "off");
+    text.textContent = failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}` : `${synced[0].toUpperCase()}${synced.slice(1)}`;
+    text.title = `Built ${fmtWhen(when)}. The session list, each session's live or ended state and the open conversation's newest turns are read again at each sync.`;
   }
   // Every 30 seconds while visible: a newer index brings the new list, and the conversation on
   // screen again when its stamp changed, swapped in where you are reading. New page code reloads.
-  async function refreshHosted() {
+  async function refreshHosted(now = false) {
     const sel = window.getSelection();
-    const next = sel && !sel.isCollapsed ? null : await hosted.index();  // a passage is being picked: later
+    const next = sel && !sel.isCollapsed && !now ? null : await hosted.index();  // a passage is being picked: later
+    if (next) { link.syncedAt = Date.now() / 1000; link.syncFail = null; }
     if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.template); if (!hosted.outdated()) return; }
     if (next && next.as_of > data.generated) {
       const fresh = hosted.data(next, data);
@@ -1637,7 +1877,7 @@
       if (state.view === "fleet") await hosted.fleet(fresh);
       applyPayload(fresh);
     }
-    paintAsOf();
+    paintSync();
     labelSessions();
   }
 
@@ -1675,6 +1915,10 @@
     const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
     const pick = state.view === "reader" && data.sessions.length > 1;
     bar.classList.toggle("pick", pick);
+    const quick = document.getElementById("follow-quick");
+    quick.hidden = !canLive || state.view !== "reader";
+    quick.setAttribute("aria-pressed", String(state.follow));
+    quick.title = "Follow Herdr: show the session of the pane Herdr has focused (the same switch as Follow Herdr in the controls)";
     if (pick && !state.barOpen) fillSessions(document.getElementById("crumb-session"));
     const crumb = document.getElementById("crumb");
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
@@ -1752,6 +1996,7 @@
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
+  pins.load().then(paintPins);
   if (!HOSTED) openReading(chooseOpening());
   else {
     // The shell holds no transcript: a sealed copy is opened first, then the list comes from
@@ -1761,10 +2006,15 @@
     document.getElementById("forget").addEventListener("click", () => hosted.forget().then(() => location.reload()));
     hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
-      paintAsOf();
+      link.syncedAt = Date.now() / 1000;
+      paintSync();
       const saved = chooseOpening();
       whenReady(() => {
-        openReading(saved); hosted.poll(async () => { await refreshHosted(); await checkReceipts(); });
+        openReading(saved);
+        hosted.poll(async () => {
+          try { await refreshHosted(); } catch (e) { noteSyncFail(e); throw e; }
+          await checkReceipts();
+        });
         setInterval(() => { if (!document.hidden) checkReceipts(); }, 4000);
         checkReceipts();
       });

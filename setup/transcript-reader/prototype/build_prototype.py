@@ -47,6 +47,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
 HOSTED_SCRIPT = HERE / "hosted.js"
+PINS_SCRIPT = HERE / "pins.js"
 SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 PROJECTS = Path.home() / ".claude" / "projects"
@@ -329,10 +330,20 @@ def classify_reply(reply: str) -> dict:
 
 # ------------------------------------------------------------ exchanges (View A)
 
-def new_exchange(source, kind, label, text, timestamp, absorbed=False):
+def turn_id(record: dict, text: str) -> str:
+    """The id of the turn a record starts: the session log's own record id, which never changes, so a
+    pin on the turn's message holds however the page is rebuilt or the turns move. A record without a
+    usable one (none seen) gets a hash of its time and opening words instead."""
+    uid = record.get("uuid")
+    if isinstance(uid, str) and re.fullmatch(r"[0-9A-Za-z_-]{8,64}", uid):
+        return uid
+    return "t" + hashlib.sha1(f"{record.get('timestamp')}|{text[:200]}".encode("utf-8")).hexdigest()[:24]
+
+
+def new_exchange(source, kind, label, text, timestamp, absorbed=False, uid=None):
     return {
         "source": source, "kind": kind, "label": label, "input": text,
-        "at": iso_to_epoch(timestamp), "absorbed": absorbed,
+        "at": iso_to_epoch(timestamp), "absorbed": absorbed, "uid": uid,
         "events": [], "tools": 0, "notices": [],
     }
 
@@ -358,7 +369,7 @@ def session_exchanges(records: list[dict]) -> list[dict]:
             if source == "session" and sub == "command-output":
                 continue
             text = peer_text(origin, text) if peer else text
-            current = new_exchange(source, sub, label, clean_input(text), record.get("timestamp"))
+            current = new_exchange(source, sub, label, clean_input(text), record.get("timestamp"), uid=turn_id(record, text))
             current["signal_task"] = signal_task(text) if source == "wake" else None
             exchanges.append(current)
         elif kind == "attachment" and (record.get("attachment") or {}).get("type") == "queued_command":
@@ -373,7 +384,7 @@ def session_exchanges(records: list[dict]) -> list[dict]:
                 if current is not None:
                     current["notices"].append({"label": label, "signal_task": signal_task(text) if source == "wake" else None})
                 continue
-            current = new_exchange(source, sub, label, clean_input(text), record.get("timestamp"), absorbed=True)
+            current = new_exchange(source, sub, label, clean_input(text), record.get("timestamp"), absorbed=True, uid=turn_id(record, text))
             current["signal_task"] = None
             exchanges.append(current)
         elif kind == "assistant" and current is not None:
@@ -875,7 +886,11 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
             pane_ids.update((name, pane["pane_id"]) for pane in found if pane.get("pane_id"))
         for pane in found:
             claimed = (pane.get("agent_session") or {}).get("value")
-            if pane.get("agent") == "claude" and running and claimed not in running.values() and pane.get("pane_id"):
+            # Herdr also keeps the session id of an agent that has exited: the pane then names no agent at all
+            # and its state is unknown, while its shell runs in the foreground. So a session id no running
+            # Claude holds is checked against the pane's foreground whether or not Herdr still names Claude.
+            retained = bool(claimed) and not pane.get("agent")
+            if (pane.get("agent") == "claude" or retained) and running and claimed not in running.values() and pane.get("pane_id"):
                 info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
                 actual = pane_session(claimed, info, running)
                 pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
@@ -1581,10 +1596,12 @@ def payload_json(payload) -> str:
 def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, str]:
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
-    The shared live.js goes into the page's script; mode "hosted" (the hosted copy's shell,
-    sync.py) also pastes seal.js and hosted.js there, and the script reads the mode from __MODE__.
+    The shared live.js goes into the page's script, and pins.js into the reader page's (the answer sheet
+    has no slot for it); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
+    there, and the script reads the mode from __MODE__.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)

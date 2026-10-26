@@ -27,13 +27,18 @@
       if (r.status === 403 && j && /token/i.test(j.message || "")) {
         throw new Error(reloadForToken() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
       }
-      if (!r.ok) throw new Error((j && j.message) || `The server answered ${r.status}.`);
+      if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; throw error; }
       return j;
     }
     const state = follow => call("state" + (follow ? "?follow=1" : ""));
     // The built page's current text, for a page that swaps in new turns without reloading.
     const page = name => call("page?name=" + encodeURIComponent(name)).then(j => j.html);
     const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
+    // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
+    const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
+    // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
+    const pinsList = () => call("pins");
+    const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
     // Reopen a session whose pane has closed, to read it again, or close one; both answer once the page is rebuilt.
     const changeList = (command, sessionId) => call(command, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
     // tick runs every 2 seconds while the page is visible, and at once when it is shown again.
@@ -68,5 +73,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, page, send, changeList, poll, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, page, send, changeList, poll, pointer, clip };
   })();

@@ -42,7 +42,9 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   // Logs older than the page, so no rebuild starts unless a test asks for one.
   const old = new Date(Date.now() - 3600 * 1000);
   for (const id of [A, B, C]) fs.utimesSync(path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), old, old);
-  return { root, outDir, projectsDir, claudeSessionsDir, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  // The pins file lives outside the repo; a test gets one inside its own temporary folder, never the owner's.
+  const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
+  return { root, outDir, projectsDir, claudeSessionsDir, pinsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -78,7 +80,8 @@ function fakeHerdr() {
       return ok(JSON.stringify({ result: { snapshot: { focused_pane_id: herdr.focused, panes: herdr.panes, tabs: [{ tab_id: 'w1:t2', label: 'fm-task-tab' }] } } }));
     }
     if (file === 'herdr' && args[2] === 'pane' && args[3] === 'process-info') {
-      return ok(JSON.stringify({ result: { process_info: { foreground_processes: herdr.processInfo[args[5]] || [] } } }));
+      const info = herdr.processInfo[args[5]];
+      return ok(JSON.stringify({ result: { process_info: { foreground_processes: (typeof info === 'function' ? info() : info) || [] } } }));
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
@@ -108,7 +111,7 @@ async function start({ env = {}, outParts } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, now: () => clock, pause: async () => {} });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, now: () => clock, pause: async () => {} });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -128,9 +131,10 @@ async function start({ env = {}, outParts } = {}) {
   const state = (follow = false) => request({ path: '/api/transcript-reader/state' + (follow ? '?follow=1' : ''), headers: { [TOKEN_HEADER]: token } });
   const send = (body, headers = {}) => request({ method: 'POST', path: '/api/transcript-reader/send', headers: { Origin: origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: token, ...headers }, body });
   const post = (command, body, headers = {}) => request({ method: 'POST', path: '/api/transcript-reader/' + command, headers: { Origin: origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: token, ...headers }, body });
+  const get = (command, headers = {}) => request({ path: '/api/transcript-reader/' + command, headers: { [TOKEN_HEADER]: token, ...headers } });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   return {
-    tree, herdr, request, open, token, state, send, post, settle, origin,
+    tree, herdr, request, open, token, state, send, post, get, settle, origin,
     tick: (ms) => { clock += ms; },
     close: () => new Promise((resolve) => server.close(() => { tree.cleanup(); resolve(); })),
   };
@@ -531,6 +535,36 @@ test('state: a Claude pane whose session id no running Claude holds takes its fo
   } finally { await t.close(); }
 });
 
+test('state: a pane whose agent has exited still holds its session id in Herdr, and runs no session', async () => {
+  const t = await start();
+  try {
+    // The reported bug: A's Claude ended and its pane is back at the shell. Herdr keeps A's id and drops the agent
+    // (the pane lists no agent, its state is unknown), so the id alone made A look live. B still runs in its pane.
+    fs.mkdirSync(t.tree.claudeSessionsDir);
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: A }));
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.ppid + '.json'), JSON.stringify({ pid: process.ppid, sessionId: B }));
+    t.herdr.panes = t.herdr.panes.map((pane) => (pane.agent_session ? { ...pane, agent: 'claude' } : pane));
+    t.herdr.processInfo = { 'w1:p1': [{ pid: process.pid, argv0: 'claude' }], 'w1:p2': [{ pid: process.ppid, argv0: 'claude' }], 'w1:p3': [{ pid: 4243, argv0: 'claude' }] };
+    assert.deepEqual(Object.keys((await t.state()).json.panes).sort(), [A, B]);
+    await t.settle();
+    const before = t.herdr.readerRuns().length;
+    // Claude exits: no live process holds its record any more, the pane's foreground is the shell, Herdr keeps the id but names no agent.
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: 999999999, sessionId: A }));
+    t.herdr.panes[0] = { pane_id: 'w1:p1', tab_id: 'w1:t1', label: 'leader-alpha', agent_status: 'unknown', agent_session: { value: A } };
+    t.herdr.processInfo['w1:p1'] = [{ pid: 4242, argv0: 'zsh' }];
+    t.tick(5000);
+    const { json } = await t.state();
+    assert.deepEqual(Object.keys(json.panes), [B], 'the pane that kept A\'s id no longer shows A as running');
+    await t.settle();
+    assert.equal(t.herdr.readerRuns().length, before + 1, 'and the page is rebuilt, which records that A\'s pane no longer runs it');
+    assert.deepEqual(t.herdr.readerRuns().slice(-1), [['rebuild']]);
+    // The same pane with Claude in its foreground (no record: Herdr's word stands) still shows the session.
+    t.herdr.processInfo['w1:p1'] = [{ pid: 4242, argv0: 'claude' }];
+    t.tick(5000);
+    assert.deepEqual(Object.keys((await t.state()).json.panes).sort(), [A, B]);
+  } finally { await t.close(); }
+});
+
 test('state: the focus counter moves when Herdr focuses another pane or the focused pane starts another session', async () => {
   const t = await start();
   try {
@@ -654,6 +688,97 @@ test('state: a failed rebuild shows until a page built after it, by hand say, en
   } finally { await t.close(); }
 });
 
+test('sync: a click reads Herdr again and rebuilds at once, even when no log looks newer, and answers with the state and when it finished', async () => {
+  const t = await start();
+  try {
+    const before = t.herdr.calls.filter((call) => call.args[3] === 'snapshot').length;
+    t.tick(1000);
+    const synced = await t.post('sync', {});
+    assert.equal(synced.status, 200, synced.raw);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']], 'the page is newer than every log, and it is rebuilt all the same');
+    assert.equal(typeof synced.json.synced, 'number');
+    assert.ok(Math.abs(synced.json.synced - (Date.now() / 1000 + 1)) < 5, 'when it finished, by the server\'s clock');
+    assert.deepEqual(Object.keys(synced.json.panes).sort(), [A, B], 'the state of each listed session comes with it');
+    assert.equal(synced.json.build.error, null);
+    assert.ok(t.herdr.calls.filter((call) => call.args[3] === 'snapshot').length > before, 'Herdr was read again');
+    assert.equal(t.herdr.agentCalls().length, 0, 'no pane is touched');
+    t.tick(5000);
+    assert.equal((await t.post('sync', { follow: true })).status, 200);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild'], ['rebuild']], 'every click rebuilds');
+    // A session that stopped running since the last look is seen at once, and the page built for it.
+    t.herdr.panes = t.herdr.panes.filter((pane) => pane.pane_id !== 'w1:p2');
+    t.tick(5000);
+    const after = await t.post('sync', {});
+    assert.deepEqual(Object.keys(after.json.panes), [A]);
+  } finally { await t.close(); }
+});
+
+test('sync: a failed rebuild is reported, and bad input and foreign pages are refused', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.post('sync', { extra: 1 })).status, 400);
+    assert.equal((await t.post('sync', { follow: 'yes' })).status, 400);
+    assert.equal((await t.post('sync', {}, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await t.post('sync', {}, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/sync', headers: { [TOKEN_HEADER]: t.token } })).status, 404, 'GET is not a sync');
+    assert.equal(t.herdr.readerRuns().length, 0, 'none of them rebuilt anything');
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'Traceback\nValueError: broken', timedOut: false, truncated: false };
+    const failed = await t.post('sync', {});
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'rebuild_failed');
+    assert.equal(failed.json.message, 'ValueError: broken');
+  } finally { await t.close(); }
+});
+
+test('pins: written to the owner-only file outside out/, one change at a time, and the state carries the revision', async () => {
+  const t = await start();
+  try {
+    const key = 'abcdef12-3456-4789-8abc-def012345678:reply';
+    assert.deepEqual((await t.get('pins')).json, { status: 'ok', rev: 0, pins: [] });
+    assert.equal((await t.state()).json.stamps.pins, 0);
+    const pinned = await t.post('pins', { op: 'pin', key, conv: A, at: 1700000000.5 });
+    assert.equal(pinned.status, 200, pinned.raw);
+    assert.equal(pinned.json.rev, 1);
+    assert.deepEqual(pinned.json.pins.map(({ key: k, conv, at }) => [k, conv, at]), [[key, A, 1700000000.5]]);
+    assert.equal((await t.post('pins', { op: 'pin', key, conv: A, at: 1700000000.5 })).json.rev, 1, 'pinning again changes nothing');
+    assert.equal((await t.state()).json.stamps.pins, 1);
+    assert.deepEqual((await t.get('pins')).json.pins.map((pin) => pin.key), [key]);
+    const mode = (file) => fs.statSync(file).mode & 0o777;
+    assert.equal(mode(t.tree.pinsFile), 0o600);
+    assert.equal(mode(path.dirname(t.tree.pinsFile)), 0o700);
+    assert.ok(!t.tree.pinsFile.startsWith(t.tree.outDir), 'not under out/, which a fresh copy of the repo starts without');
+    assert.equal((await t.post('pins', { op: 'unpin', key })).json.rev, 2);
+    assert.deepEqual((await t.get('pins')).json.pins, []);
+    assert.equal(t.herdr.agentCalls().length, 0);
+    assert.equal(t.herdr.readerRuns().length, 0, 'a pin rebuilds nothing');
+  } finally { await t.close(); }
+});
+
+test('pins: bad input and foreign pages are refused, and no message text is ever stored', async () => {
+  const t = await start();
+  try {
+    const key = 'abcdef12-3456-4789-8abc-def012345678:in';
+    const refused = [
+      [{ op: 'pin', key, conv: A }, 400],
+      [{ op: 'pin', key, conv: A, at: 'now' }, 400],
+      [{ op: 'pin', key, conv: A, at: 1, text: 'the whole message' }, 400],
+      [{ op: 'pin', key: 'short:in', conv: A, at: 1 }, 400],
+      [{ op: 'pin', key: 'abcdef12-3456-4789-8abc-def012345678:other', conv: A, at: 1 }, 400],
+      [{ op: 'pin', key, conv: '../x', at: 1 }, 400],
+      [{ op: 'unpin', key, conv: A }, 400],
+      [{ op: 'toggle', key }, 400],
+      [{}, 400],
+    ];
+    for (const [body, status] of refused) assert.equal((await t.post('pins', body)).status, status, JSON.stringify(body));
+    assert.equal((await t.post('pins', { op: 'pin', key, conv: A, at: 1 }, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await t.post('pins', { op: 'pin', key, conv: A, at: 1 }, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.equal((await t.get('pins', { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.equal(fs.existsSync(t.tree.pinsFile), false, 'nothing was written');
+    assert.equal((await t.post('pins', { op: 'pin', key, conv: A, at: 1 })).status, 200);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(t.tree.pinsFile, 'utf8')).pins[0]).sort(), ['at', 'conv', 'key', 'pinned']);
+  } finally { await t.close(); }
+});
+
 test('reopen and close: one click runs reader.py with that session and answers once it has rebuilt', async () => {
   const t = await start();
   try {
@@ -742,10 +867,15 @@ test('send: nothing goes unless the pane\'s foreground holds Claude running that
     await refused('agent_not_foreground');
     t.herdr.processInfo['w1:p2'] = [];
     await refused('agent_not_foreground');
-    // A Claude in front whose record names another session.
+    // A Claude in front whose record names another session. The scan, which asks first, sees a Claude without a
+    // record and keeps the pane; the Claude that took the pane over shows only when the send looks again.
     runs(C);
-    t.herdr.processInfo['w1:p2'] = [{ pid: process.pid, argv0: 'claude' }];
+    let asked = 0;
+    t.herdr.processInfo['w1:p2'] = () => (asked++ ? [{ pid: process.pid, argv0: 'claude' }] : [{ pid: 4243, argv0: 'claude' }]);
     await refused('other_session');
+    // Seen at the scan already, the pane is not B's at all.
+    t.herdr.processInfo['w1:p2'] = [{ pid: process.pid, argv0: 'claude' }];
+    await refused('no_pane');
     assert.equal(t.herdr.agentCalls().length, 0, 'no key and no prompt reached the pane');
     // The pane's own Claude, by its record, even when Herdr names the process by its version.
     runs(B);

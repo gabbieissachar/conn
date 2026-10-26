@@ -219,6 +219,15 @@ class RedactObjectTest(unittest.TestCase):
         self.assertEqual(counts, {"gitlab-token": 2})
         self.assertIn(secret, value["exchanges"][0]["input"], "the original is not changed")
 
+    def test_a_turns_id_is_never_taken_for_a_secret(self):
+        """A pin names its message by the turn's id, in the hosted copy too, so redacting must leave the id as it is."""
+        import hashlib
+        import uuid
+        ids = [str(uuid.uuid4()) for _ in range(2000)] + ["t" + hashlib.sha1(str(n).encode()).hexdigest()[:24] for n in range(2000)]
+        counts = {}
+        self.assertEqual(redact.redact([{"uid": i} for i in ids], counts), [{"uid": i} for i in ids])
+        self.assertEqual(counts, {})
+
 
 if __name__ == "__main__":
     unittest.main()

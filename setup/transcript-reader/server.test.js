@@ -101,7 +101,7 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
 function serverCopy() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-serve-')));
   const organizer = path.join(__dirname, '..', 'herdr-organizer');
-  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js']],
+  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js', 'pinstore.js']],
     [organizer, 'herdr-organizer', fs.readdirSync(organizer).filter((name) => name.endsWith('.js'))]];
   for (const [from, folder, names] of files) {
     fs.mkdirSync(path.join(root, 'setup', folder), { recursive: true });

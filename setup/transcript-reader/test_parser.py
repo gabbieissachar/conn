@@ -265,6 +265,44 @@ class SessionExchangesTest(unittest.TestCase):
         self.assertEqual(queued_handback["notices"], [{"label": "Hand-back from doc-checker", "signal_task": None}])
 
 
+class TurnIdTest(unittest.TestCase):
+    """A pin names its message by the turn's id, so the id must be the log's own record id, and must not move when turns are added before it."""
+
+    def test_a_turn_takes_the_id_of_the_record_that_started_it(self):
+        records = [user("First", 0, uuid="11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), say("One.", 1),
+                   user("Second", 2, uuid="22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2"), tool(3), say("Two.", 4)]
+        first, second = builder.session_exchanges(records)
+        self.assertEqual((first["uid"], second["uid"]), ("11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2"))
+
+    def test_a_message_sent_while_busy_has_the_id_of_its_own_record(self):
+        attachment = queued("while busy", 3)
+        attachment["uuid"] = "33333333-cccc-4ccc-8ccc-ccccccccccc3"
+        _, absorbed = builder.session_exchanges([user("Start", 0, uuid="11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), tool(1), attachment, say("Done.", 4)])
+        self.assertEqual(absorbed["uid"], "33333333-cccc-4ccc-8ccc-ccccccccccc3")
+
+    def test_an_id_does_not_depend_on_what_came_before_the_turn(self):
+        later = [user("Second", 2, uuid="22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2"), say("Two.", 3)]
+        alone = builder.session_exchanges(later)
+        after = builder.session_exchanges([user("Zeroth", 0, uuid="00000000-aaaa-4aaa-8aaa-aaaaaaaaaaa0"), say("Zero.", 1), *later])
+        self.assertEqual(alone[0]["uid"], after[1]["uid"])
+
+    def test_a_record_without_a_usable_id_gets_one_made_from_its_time_and_words_that_holds_on_a_rebuild(self):
+        [turn] = builder.session_exchanges([user("Plain words", 5), say("Reply.", 6)])
+        [again] = builder.session_exchanges([user("Plain words", 5), say("Reply.", 6)])
+        [other] = builder.session_exchanges([user("Other words", 5), say("Reply.", 6)])
+        self.assertEqual(turn["uid"], again["uid"])
+        self.assertNotEqual(turn["uid"], other["uid"])
+        self.assertRegex(turn["uid"], r"^[0-9A-Za-z_-]{8,80}$")
+        [odd] = builder.session_exchanges([user("Plain words", 5, uuid="has spaces/and:colons"), say("Reply.", 6)])
+        self.assertEqual(odd["uid"], turn["uid"], "an id that could not be a pin's key is not used")
+
+    def test_ids_are_unique_within_a_conversation_and_session_dividers_have_none(self):
+        records = [user(f"Message {n}", n, uuid=f"{n:08d}-aaaa-4aaa-8aaa-aaaaaaaaaaaa") for n in range(5)]
+        uids = [e["uid"] for e in builder.session_exchanges(records)]
+        self.assertEqual(len(set(uids)), 5)
+        self.assertIsNone(builder.new_exchange("session", "cleared", "Session abc", "", None)["uid"])
+
+
 class DoorbellTest(unittest.TestCase):
     """A steering doorbell shows the inbox messages it delivered, in either format."""
 

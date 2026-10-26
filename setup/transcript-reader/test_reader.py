@@ -9,7 +9,9 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -85,6 +87,61 @@ class HerdrInventoryTest(unittest.TestCase):
 
     def test_no_running_herdr_session_lists_no_pane(self):
         self.assertEqual(self.run_with({}), ({}, set()))
+
+
+class EndedAgentTest(unittest.TestCase):
+    """The reported bug: a pane whose Claude has exited keeps the session id in Herdr, and that id alone made the session look live.
+
+    The panes are the shapes seen on the owner's Herdr: a Claude that runs (agent named, a running Claude holds the id), two panes
+    back at the shell that still hold the id they had (no agent named, state unknown), and one back at the shell that holds none.
+    """
+
+    RUNNING, GONE_A, GONE_B = A, B, C
+
+    def inventory(self, foreground, running=None):
+        panes = [
+            {"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "claude", "agent_status": "idle", "agent_session": {"value": self.RUNNING}},
+            {"pane_id": "w1:p2", "tab_id": "w1:t2", "agent_status": "unknown", "agent_session": {"agent": "claude", "kind": "id", "value": self.GONE_A}},
+            {"pane_id": "w1:p3", "tab_id": "w1:t3", "agent_status": "unknown", "agent_session": {"agent": "claude", "kind": "id", "value": self.GONE_B}},
+            {"pane_id": "w1:p4", "tab_id": "w1:t4", "agent_status": "unknown"},
+        ]
+        asked = []
+
+        def fake(argv, **kwargs):
+            rest = argv[3:] if argv[1] == "--session" else argv[1:]
+            if rest[:2] == ["pane", "process-info"]:
+                asked.append(rest[3])
+                reply = {"result": {"process_info": {"foreground_processes": foreground.get(rest[3], [])}}}
+            else:
+                reply = {("session", "list"): {"sessions": [{"name": "work", "running": True}]},
+                         ("pane", "list"): {"result": {"panes": panes}}, ("tab", "list"): {"result": {"tabs": []}}}[tuple(rest[:2])]
+            return mock.Mock(returncode=0, stdout=json.dumps(reply))
+
+        records = {101: self.RUNNING} if running is None else running
+        with mock.patch.object(builder.subprocess, "run", fake), mock.patch.object(builder, "running_claude_sessions", lambda: records):
+            return (*builder.herdr_inventory(), asked)
+
+    def test_a_pane_back_at_its_shell_runs_no_session_even_though_herdr_kept_its_id(self):
+        shell = lambda pid: [{"pid": pid, "argv0": "zsh"}]
+        sessions, listed, asked = self.inventory({"w1:p2": shell(202), "w1:p3": shell(303)})
+        self.assertEqual(list(sessions), [self.RUNNING], "only the Claude that runs shows as running")
+        self.assertEqual(listed, {("work", f"w1:p{n}") for n in (1, 2, 3, 4)}, "every pane is still listed, so none of its sessions leaves the reading list")
+        self.assertEqual(asked, ["w1:p2", "w1:p3"], "a pane whose id a running Claude holds, and one with no id, are not asked about")
+
+    def test_a_kept_id_stays_while_a_claude_runs_in_the_foreground(self):
+        # Herdr has not named the agent again yet (after its own restart, say), but Claude is in front.
+        sessions, _, _ = self.inventory({"w1:p2": [{"pid": 202, "argv0": "claude"}], "w1:p3": [{"pid": 303, "argv0": "zsh"}]})
+        self.assertEqual(sorted(sessions), sorted([self.RUNNING, self.GONE_A]))
+
+    def test_a_kept_id_gives_way_to_the_session_of_the_claude_in_front(self):
+        sessions, _, _ = self.inventory({"w1:p2": [{"pid": 202, "argv0": "claude"}], "w1:p3": [{"pid": 303, "argv0": "zsh"}]},
+                                        running={101: self.RUNNING, 202: "dddddddd-4444-4444-8444-444444444444"})
+        self.assertEqual(sorted(sessions), sorted([self.RUNNING, "dddddddd-4444-4444-8444-444444444444"]))
+
+    def test_without_process_records_herdr_is_taken_at_its_word(self):
+        sessions, _, asked = self.inventory({"w1:p2": [{"pid": 202, "argv0": "zsh"}]}, running={})
+        self.assertEqual(sorted(sessions), sorted([self.RUNNING, self.GONE_A, self.GONE_B]))
+        self.assertEqual(asked, [])
 
 
 class ServingTest(unittest.TestCase):
@@ -599,6 +656,47 @@ class WritePageTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 builder.write_page(template, {"generated": 1.0}, Path(tmp) / "out.html")
             self.assertFalse((Path(tmp) / "out.html").exists())
+
+
+class PageShellTest(unittest.TestCase):
+    """What the page's header and script hold, checked on the filled-in page (there is no browser in the suite)."""
+
+    def pages(self):
+        for mode in ("local", "hosted"):
+            page, _ = builder.fill_template(builder.TEMPLATE, "null", mode)
+            yield mode, page
+
+    def test_the_script_of_each_copy_is_valid_javascript(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "page.js"
+                path.write_text(script, encoding="utf-8")
+                done = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, f"{mode}: {done.stderr}")
+            self.assertNotIn("/*__", script, f"{mode}: a slot was left unfilled")
+
+    def test_follow_herdr_is_in_the_folded_header_and_is_the_same_switch_as_the_one_in_the_controls(self):
+        for mode, page in self.pages():
+            title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)
+            # In the one-line header, beside the chevron that unfolds it, not in the controls the fold hides.
+            self.assertRegex(title, r'<button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="bar-toggle"', mode)
+            self.assertNotIn("follow-quick", re.search(r'<div id="bar-more">.*?<div id="controls">', page, re.S).group(0), mode)
+            # Shown only when the bar is folded; unfolded, the controls' own button is there.
+            self.assertIn(".bar.collapsed .follow-quick:not([hidden]) { display: block; }", page)
+            self.assertIn("  .follow-quick { display: none;", page)
+            # One function flips the state, keeps it in this browser and paints again; both buttons call it.
+            self.assertEqual(page.count("function toggleFollow()"), 1)
+            self.assertIn('follow.addEventListener("click", toggleFollow);', page)
+            self.assertIn('document.getElementById("follow-quick").addEventListener("click", toggleFollow);', page)
+            self.assertIn('quick.setAttribute("aria-pressed", String(state.follow));', page)
+            self.assertIn('quick.hidden = !canLive || state.view !== "reader";', page)
+
+    def test_both_copies_carry_pins_and_sync(self):
+        for mode, page in self.pages():
+            self.assertIn("const pins = (() => {", page, mode)
+            self.assertIn('id="sync"', page, mode)
+            self.assertIn("async function syncNow()", page, mode)
 
 
 class PrivateFilesTest(unittest.TestCase):
