@@ -54,6 +54,7 @@ MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
 SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
+HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
 PROJECTS = Path.home() / ".claude" / "projects"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
 
@@ -781,7 +782,7 @@ def build(args) -> dict:
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
     mark_sheets(sessions)
-    documents = attach_documents(sessions)
+    documents = attach_documents(sessions, html=True)
     labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
     reopened = set(read_ids(out_dir / "reopened.txt"))
     for session in sessions:
@@ -1055,14 +1056,16 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
 
 # A markdown file name or path as written in a message: `requirements.md`, 02-Projects/x/work-log.md,
 # /abs/path.md, ~/notes.md. A web URL is left out (it reads as //host/... once its scheme is cut
-# off); a file:// URL is read as the path it names.
+# off); a file:// URL is read as the path it names. HTML files (.html, .htm) are named the same way.
 MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
-NAME_RUN = re.compile(r"[\w.~/@+-]+")  # the characters MD_MENTION's names are made of
+HTML_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.html?(?![\w/-])")
+NAME_RUN = re.compile(r"[\w.~/@+-]+")  # the characters the mention regexes' names are made of
 NAME_END = re.compile(r"[\w-]\.md(?![\w/-])")
+HTML_NAME_END = re.compile(r"[\w-]\.html?(?![\w/-])")
 
 
-def md_mentions(text: str):
-    """(start, name) for each match MD_MENTION.finditer gives, in the same order, in linear time.
+def file_mentions(text: str, suffix: str, name_end: re.Pattern):
+    """(start, name) for each match the mention regex (MD_MENTION for ".md", HTML_MENTION for ".htm") gives, in the same order, in linear time.
 
     A match cannot leave a run of name characters, and within one it runs from the run's
     start to its last place where a name can end, so each run holds one match at most. The
@@ -1071,22 +1074,35 @@ def md_mentions(text: str):
     """
     for run in NAME_RUN.finditer(text):
         start, end = run.span()
-        at = text.rfind(".md", start, end)
+        at = text.rfind(suffix, start, end)
         while at > start:
-            if NAME_END.match(text, at - 1):
-                yield start, text[start:at + 3]
+            found = name_end.match(text, at - 1)
+            if found:
+                yield start, text[start:found.end()]
                 break
-            at = text.rfind(".md", start, at + 2)
+            at = text.rfind(suffix, start, at + len(suffix) - 1)
+
+
+def md_mentions(text: str):
+    return file_mentions(text, ".md", NAME_END)
+
+
+def html_mentions(text: str):
+    return file_mentions(text, ".htm", HTML_NAME_END)
+
+
 FILE_URL = re.compile(r"\bfile://(?=/)")
 CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
+# An HTML file is not embedded, only served on request (api.js), so its limit is about what a browser takes comfortably.
+MAX_HTML_BYTES = 8 * 1024 * 1024
 # Besides the home folder, the temp folders agents write reports and scratch notes to. Agents
 # quote paths from untrusted material, so a named file anywhere else is never embedded.
 TEMP_ROOTS = (Path("/tmp"), Path(tempfile.gettempdir()))
 
 
 def tool_documents(tool_input, cwd: str) -> list[str]:
-    """Markdown files a tool call names, as absolute paths that may not exist.
+    """Markdown and HTML files a tool call names, as absolute paths that may not exist.
 
     A path field (Read, Edit and Write give `file_path`) is taken whole. A shell
     command's file names start from its latest `cd` before them, else from the
@@ -1098,10 +1114,10 @@ def tool_documents(tool_input, cwd: str) -> list[str]:
     for key, value in tool_input.items():
         if not isinstance(value, str):
             continue
-        if key.endswith("path") and MD_MENTION.fullmatch(value):
+        if key.endswith("path") and (MD_MENTION.fullmatch(value) or HTML_MENTION.fullmatch(value)):
             tokens, cds = [(0, value)], []
         elif key == "command":
-            tokens = [(at, token) for at, token in md_mentions(value) if not token.startswith("//")]
+            tokens = [(at, token) for at, token in [*md_mentions(value), *html_mentions(value)] if not token.startswith("//")]
             cds = [(m.start(), os.path.expanduser(m.group(1).strip("\"'"))) for m in CD_LINE.finditer(value)]
         else:
             continue
@@ -1113,8 +1129,8 @@ def tool_documents(tool_input, cwd: str) -> list[str]:
     return found
 
 
-def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str] = ()) -> Path | None:
-    """The existing markdown file a reply means by <token>, or None.
+def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str] = (), limit: int = MAX_DOCUMENT_BYTES) -> Path | None:
+    """The existing file (at most <limit> bytes) a reply means by <token>, or None.
 
     An absolute or ~ path is taken as written. A relative one is tried, in order,
     under each directory an earlier `cd` line in the reply named (latest first),
@@ -1136,7 +1152,7 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
             candidates += [base / raw for base in [here] + [parent for parent in here.parents if Path.home() in parent.parents]]
     for candidate in candidates:
         try:
-            if candidate.is_file() and candidate.stat().st_size <= MAX_DOCUMENT_BYTES:
+            if candidate.is_file() and candidate.stat().st_size <= limit:
                 found = candidate.resolve()
                 if any(found.is_relative_to(root) for root in roots):
                     return found
@@ -1145,19 +1161,29 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     return None
 
 
-def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[str, Path]]:
-    """(as written, file) for each existing markdown file a message names, in order, once each."""
+def named_files(text: str, cwd: str, touched: list[str] = (), mentions=md_mentions, limit: int = MAX_DOCUMENT_BYTES) -> list[tuple[int, str, Path]]:
+    """(where in the text, as written, file) for each existing file a message names by <mentions>, in order, once each."""
     text = FILE_URL.sub("", text)
     cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(text)]
-    found: list[tuple[str, Path]] = []
-    for start, token in md_mentions(text):
+    found: list[tuple[int, str, Path]] = []
+    for start, token in mentions(text):
         if token.startswith("//"):
             continue
         cd_dirs = [d for at, d in reversed(cds) if at < start and d.is_absolute()]
-        path = resolve_mention(token, cd_dirs, cwd, touched)
-        if path and all(path != known for _, known in found):
-            found.append((token, path))
+        path = resolve_mention(token, cd_dirs, cwd, touched, limit)
+        if path and all(path != known for _, _, known in found):
+            found.append((start, token, path))
     return found
+
+
+def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[str, Path]]:
+    """(as written, file) for each existing markdown file a message names, in order, once each."""
+    return [(token, path) for _, token, path in named_files(text, cwd, touched)]
+
+
+def named_html(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int, str, Path]]:
+    """(where in the text, as written, file) for each existing HTML file a message names, in order, once each."""
+    return named_files(text, cwd, touched, html_mentions, MAX_HTML_BYTES)
 
 
 # Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
@@ -1165,30 +1191,44 @@ def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[
 DOCUMENT_INPUTS = ("captain", "firstmate", "peer")
 
 
-def attach_documents(sessions: list[dict]) -> dict[str, dict]:
+def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict]:
     """Give each exchange the ids of the documents its reply names (`documents`) and its message
     names (`input_documents`, for a message from you, Firstmate or another session); return
     the documents.
 
-    Each file is read once, as it is now on disk (the page says when it last changed).
+    Each markdown file is read once, as it is now on disk (the page says when it last changed).
     A short name can match a file the session's tool calls named in this turn or an earlier one.
+    With <html>, the HTML files they name are listed too, in the order named, as documents of
+    kind "html" with no text: the page shows one from the server (api.js), as the file is when
+    opened. The hosted copy builds without them.
     """
     documents: dict[str, dict] = {}
 
+    def doc_key(path: Path) -> str:
+        return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+
+    def shown_dir(path: Path) -> str:
+        home = Path.home()
+        return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
+
     def ids_for(text: str, cwd: str, touched: list[str]) -> list[str]:
+        found = [(start, token, path, False) for start, token, path in named_files(text, cwd, touched)]
+        if html:
+            found += [(start, token, path, True) for start, token, path in named_html(text, cwd, touched)]
         ids = []
-        for token, path in named_documents(text, cwd, touched):
-            key = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+        for _, token, path, is_html in sorted(found, key=lambda item: item[0]):
+            key = doc_key(path)
             if key not in documents:
                 try:
-                    body = path.read_text(encoding="utf-8", errors="replace")
-                    mtime = path.stat().st_mtime
+                    stat = path.stat()
+                    body = None if is_html else path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                home = Path.home()
-                shown_dir = "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
-                documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir, "mention": token,
-                                  "mtime": mtime, "text": body}
+                documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": token, "mtime": stat.st_mtime}
+                if is_html:
+                    documents[key].update(kind="html", size=stat.st_size)
+                else:
+                    documents[key]["text"] = body
             ids.append(key)
         return ids
 
@@ -1721,7 +1761,10 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
                 return
         except (OSError, ValueError):
             pass
-        for target, text in ((out, page), (stamp, repr(payload["generated"]))):
+        # The HTML files the page offers to open, which the server reads to find a file by the id the page asks for
+        # (api.js), written first so no page is served whose files the server does not know. The sheet has no documents.
+        files = [(out.with_name(HTML_FILES), json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == "html"}))] if "documents" in payload else []
+        for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)
             os.replace(partial, target)

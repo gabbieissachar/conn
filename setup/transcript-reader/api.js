@@ -33,6 +33,13 @@
 //                                                   page made (base64) to out/bucket/q/<id>.json.enc, so the
 //                                                   server never sees the text. Nothing is sent to Herdr:
 //                                                   drain.js (run by the sync agent) delivers it later.
+//   POST /api/transcript-reader/html-open           { id }: an HTML file the page offers (listed beside it in
+//                                                   out/html-files.json) is checked now (still there, under the
+//                                                   home or a temp folder, not over the size limit) and given an
+//                                                   address: { url, name, size, mtime }
+//   GET  /api/transcript-reader/html/<key>/<file>   that file, and the files beside it and below it that it names, as
+//                                                   they are on disk now, for the page to show in a sandboxed frame
+//                                                   (see "HTML files" below); the key in the address is the credential
 //   POST /api/transcript-reader/reopen              { session_id }: lists a session whose pane
 //                                                   has closed, to read again, and rebuilds
 //   POST /api/transcript-reader/close               { session_id }: takes a session off the
@@ -42,6 +49,19 @@
 // shared static handler, which sends Access-Control-Allow-Origin: *. Every route
 // uses the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, token)
 // and never sends an Access-Control-Allow-* header.
+//
+// HTML files. A reply that names an HTML file (a throwaway sketch, a report) gets a button; the page
+// asks html-open for an address and shows it in an iframe with sandbox="allow-scripts" and no
+// allow-same-origin, so the file's scripts run but cannot reach the reader's origin, cookies, token
+// or API. That frame, and the files it loads, send no token, and a sandboxed frame is cross-site
+// to everything (Fetch-Metadata, SameSite), so the address itself is the credential: a random key
+// minted by html-open (token-guarded), held in memory for an hour of disuse and handed to no one
+// else. Every answer carries a Content-Security-Policy that sandboxes the response itself and lets
+// the file load only what sits beside it (no network, no frames, no forms, no fetch), and the
+// guard still checks Host (so DNS rebinding cannot reach it) and Origin. Only files under the home
+// and temp folders are served, only those the page offers, and beside one only files below its own
+// folder (never a dot file or folder, never a link out of it, and only the types in ASSET_TYPES);
+// an HTML file directly in the home or a temp folder gets its own folder's files and no deeper.
 //
 // A request that came in on the Tailscale listener (server.js, opt-in) first goes through
 // tailnet.js: a passcode and a session cookie on top of all of this, with that listener's own
@@ -81,6 +101,29 @@ const OBJECTS = {
   bucket: { re: /^(?:(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };
 const TOKEN_HEADER = 'x-transcript-reader-token';
+const HTML_ROUTE = API + 'html/';
+const HTML_FILES = 'html-files.json';  // beside the page: id -> path (build_prototype.write_page)
+const HTML_ID_RE = /^[0-9a-f]{10}$/;
+const HTML_PAGE_RE = /\.html?$/i;
+// build_prototype.MAX_HTML_BYTES: what the page offers. A file beside it may be larger (a picture).
+const MAX_HTML_BYTES = 8 * 1024 * 1024;
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
+const VIEW_IDLE_MS = 60 * 60 * 1000;
+const MAX_VIEWS = 64;
+const TEXT_UTF8 = (type) => type + '; charset=utf-8';
+// What a shown file may load from its folder: its pages, styles, scripts and pictures. Fonts, media and
+// anything else are not served (a font or a module script is a CORS fetch, which this server never answers).
+const ASSET_TYPES = {
+  '.html': TEXT_UTF8('text/html'), '.htm': TEXT_UTF8('text/html'), '.css': TEXT_UTF8('text/css'), '.js': TEXT_UTF8('text/javascript'),
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.bmp': 'image/bmp',
+};
+// The file's own scripts and styles run (inline, or from beside it) and nothing leaves: no network, no frames, no forms.
+// "sandbox allow-scripts" makes the response itself a sandboxed page whatever frames it, or opens it alone in a tab.
+const VIEW_CSP = ["sandbox allow-scripts", "default-src 'none'", "script-src 'self' 'unsafe-inline'", "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:", "font-src 'self' data:", "media-src 'self' data: blob:", "connect-src 'none'", "frame-src 'none'",
+  "object-src 'none'", "form-action 'none'", "base-uri 'self'", "frame-ancestors 'self'"].join('; ');
+const ASSET_CSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'";
 // Names the copy of the repo whose pages this server serves, so reader.py and serve.sh can tell
 // their own copy's server from another copy's on the same port (reader.py's copy_id computes the same).
 const COPY_HEADER = 'x-transcript-reader-copy';
@@ -218,6 +261,8 @@ function create({
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
   pinsFile = pinstore.defaultFile(env),
+  // Where an HTML file may be shown from, as in build_prototype.resolve_mention: the home folder and the temp folders.
+  homeDir = os.homedir(), tempRoots = ['/tmp', os.tmpdir()],
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
   // conversations of the hosted copy it drains.
   sendable = null,
@@ -595,6 +640,77 @@ function create({
     return { id: body.id, queued: waiting + 1 };
   }
 
+  // -------------------------------------------------------------- HTML files
+
+  // key -> { dir, entry, flat, expires } for each file shown: the folder it is in, its name, whether that folder is
+  // itself an allowed root (so only its own files may load, nothing below), and when the key lapses from disuse.
+  const views = new Map();
+
+  const within = (real, base) => real === base || real.startsWith(base + path.sep);
+  const roots = () => [homeDir, ...tempRoots].map(realLocation);
+
+  function pruneViews() {
+    for (const [key, view] of views) if (view.expires <= now()) views.delete(key);
+    while (views.size > MAX_VIEWS) views.delete(views.keys().next().value);
+  }
+
+  // What the Open button of an HTML file asks: the file as the last build listed it, checked now. The listing
+  // comes from the page's own build (never from the request), so only a file a listed conversation named opens.
+  function htmlOpen(body) {
+    for (const key of Object.keys(body)) if (key !== 'id') throw new RequestError('Unknown field.');
+    if (typeof body.id !== 'string' || !HTML_ID_RE.test(body.id)) throw new RequestError('Invalid file id.');
+    let listing = null;
+    try { listing = parseJson(fs.readFileSync(path.join(outDir, HTML_FILES), 'utf8')); } catch { listing = null; }
+    const named = listing && typeof listing === 'object' && Object.hasOwn(listing, body.id) ? listing[body.id] : null;
+    if (typeof named !== 'string' || !path.isAbsolute(named)) throw new RequestError('That file is not on the page. Sync to rebuild it.', 404, 'not_listed');
+    let real;
+    let stat;
+    try { real = fs.realpathSync.native(named); stat = fs.statSync(real); } catch { throw new RequestError('That file is gone.', 404, 'gone'); }
+    if (!stat.isFile()) throw new RequestError('That file is gone.', 404, 'gone');
+    if (!HTML_PAGE_RE.test(real)) throw new RequestError('That is not an HTML file.', 404, 'not_html');
+    if (!roots().some((root) => within(real, root))) throw new RequestError('That file is outside the home and temp folders.', 403, 'outside');
+    if (stat.size > MAX_HTML_BYTES) throw new RequestError('That file is over ' + MAX_HTML_BYTES / 1024 / 1024 + ' MB.', 413, 'too_big');
+    const key = crypto.randomBytes(16).toString('base64url');
+    const dir = path.dirname(real);
+    views.set(key, { dir, entry: path.basename(real), flat: roots().includes(dir), expires: now() + VIEW_IDLE_MS });
+    pruneViews();
+    return { url: HTML_ROUTE + key + '/' + encodeURIComponent(path.basename(real)), name: path.basename(real), size: stat.size, mtime: stat.mtimeMs / 1000 };
+  }
+
+  // The file named by the address, as it is on disk now.
+  function serveView(req, res) {
+    const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
+    const verdict = guardFor(req).check(req, { requireToken: false, crossSite: true });
+    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (req.method !== 'GET') { text(405, 'GET only'); return; }
+    pruneViews();
+    const [key, ...segments] = new URL(req.url, 'http://localhost').pathname.slice(HTML_ROUTE.length).split('/');
+    const view = views.get(key);
+    let parts;
+    try { parts = segments.map(decodeURIComponent); } catch { parts = []; }
+    // A name is one path segment: no empty or dot segment, no encoded slash or backslash, and nothing hidden (a dot
+    // file or folder) other than the file itself.
+    const valid = parts.length > 0 && parts.every((part) => part && part !== '.' && part !== '..' && !/[\\/\u0000]/.test(part));
+    const entry = valid && parts.length === 1 && parts[0] === view?.entry;
+    const type = valid && ASSET_TYPES[path.extname(parts[parts.length - 1]).toLowerCase()];
+    if (!view || !valid || !type || (!entry && (parts.some((part) => part.startsWith('.')) || (view.flat && parts.length > 1)))) { text(404, 'Not found'); return; }
+    let real;
+    let stat;
+    try { real = fs.realpathSync.native(path.join(view.dir, ...parts)); stat = fs.statSync(real); } catch { text(404, 'Not found'); return; }
+    if (!stat.isFile() || !within(real, view.dir) || !roots().some((root) => within(real, root))) { text(404, 'Not found'); return; }
+    if (stat.size > (HTML_PAGE_RE.test(real) ? MAX_HTML_BYTES : MAX_ASSET_BYTES)) { text(413, 'Too big'); return; }
+    view.expires = now() + VIEW_IDLE_MS;
+    const stream = fs.createReadStream(real);
+    stream.on('error', () => { if (!res.headersSent) text(404, 'Not found'); else res.end(); });
+    stream.on('open', () => {
+      res.writeHead(200, {
+        'Content-Type': type, 'Content-Length': stat.size, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy': type.startsWith('text/html') ? VIEW_CSP : ASSET_CSP, 'X-Frame-Options': 'SAMEORIGIN',
+      });
+      stream.pipe(res);
+    });
+  }
+
   // ------------------------------------------------------------------- routes
 
   function servePage(req, res, name) {
@@ -670,6 +786,10 @@ function create({
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
     }
+    if (pathname === API + 'html-open' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...htmlOpen(await readJsonBody(req)) });
+      return;
+    }
     if (pathname === API + 'queue' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...queueWrite(await readJsonBody(req, MAX_QUEUE_BODY_BYTES)) });
       return;
@@ -698,11 +818,13 @@ function create({
       return true;
     }
     const page = insideOut(req, url);
+    const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
     if (listener === 'tailnet') {
       if (!lane) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
-      if (lane.intercept(req, res, url, page.inside && page.name.endsWith('.html'))) return true;
+      if (lane.intercept(req, res, url, page.inside && page.name.endsWith('.html'), viewing)) return true;
       guards.set(req, lane.guard);
     }
+    if (viewing) { serveView(req, res); return true; }
     if (page.inside) {
       const folder = Object.keys(OBJECTS).find((name) => page.name.startsWith(name + path.sep));
       if (folder && !PAGES.has(page.name)) serveObject(req, res, folder, page.name.slice(folder.length + 1));

@@ -37,8 +37,11 @@ function createGuard({ port, token, tokenHeader = TOKEN_HEADER, hosts = LOOPBACK
     return crypto.timingSafeEqual(candidateBuffer, tokenBuffer);
   }
 
-  // Returns { ok: true } or { ok: false, status, message }.
-  function check(req, { requireToken = true } = {}) {
+  // Returns { ok: true } or { ok: false, status, message }. crossSite (for a GET only) lets a
+  // request through that Fetch-Metadata calls cross-site: what a sandboxed page without its own
+  // origin loads for itself (the reader's HTML viewer, whose address is its own credential). The
+  // Host and Origin checks stay, so a page on another site still cannot read it.
+  function check(req, { requireToken = true, crossSite = false } = {}) {
     const method = String(req.method || '').toUpperCase();
     if (method === 'OPTIONS') return { ok: false, status: 403, message: 'Cross-origin preflight is not allowed for this endpoint' };
     if (method !== 'GET' && method !== 'POST') return { ok: false, status: 405, message: 'Method not allowed' };
@@ -47,7 +50,7 @@ function createGuard({ port, token, tokenHeader = TOKEN_HEADER, hosts = LOOPBACK
     if (!allowedHosts.has(host)) return { ok: false, status: 403, message: 'Host not allowed for this endpoint' };
 
     const fetchSite = req.headers['sec-fetch-site'];
-    if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none' && !(crossSite && method === 'GET')) {
       return { ok: false, status: 403, message: 'Cross-site request refused' };
     }
 

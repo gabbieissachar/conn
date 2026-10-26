@@ -282,6 +282,40 @@ test('a session is not enough on its own: the API still needs the token, and the
   assert.equal((await s.onTailnet({ path: PAGE, headers: { Cookie: cookie, 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } })).status, 403);
 });
 
+test('an HTML file opens on the phone: the signed-in page gets the address, the sandboxed frame loads it with no cookie, and no one else gets in', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const sketch = path.join(s.base, 'sketch');
+  fs.mkdirSync(sketch);
+  fs.writeFileSync(path.join(sketch, 'region.html'), '<p>sketch</p><link rel="stylesheet" href="style.css">');
+  fs.writeFileSync(path.join(sketch, 'style.css'), 'body{margin:0}');
+  fs.writeFileSync(path.join(s.base, 'repo', 'setup', 'transcript-reader', 'out', 'html-files.json'), JSON.stringify({ aaaaaaaaaa: path.join(fs.realpathSync(sketch), 'region.html') }));
+  const cookie = await s.signedIn();
+  const token = tokenIn((await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } })).raw);
+  const open = (headers) => s.onTailnet({ method: 'POST', path: '/api/transcript-reader/html-open', headers: { Origin: s.phone.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', ...headers }, body: { id: 'aaaaaaaaaa' } });
+  assert.equal((await open({ [TOKEN_HEADER]: token })).status, 401, 'opening a file needs the session');
+  assert.equal((await open({ Cookie: cookie })).status, 403, 'and the token');
+  const opened = await open({ Cookie: cookie, [TOKEN_HEADER]: token });
+  assert.equal(opened.status, 200, opened.raw);
+  // What the sandboxed frame sends: the navigation from the page carries the cookie, but the files it loads are cross-site and carry none.
+  const frame = (urlPath, headers = {}) => s.onTailnet({ path: urlPath, headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script', ...headers } });
+  const shown = await frame(opened.json.url);
+  assert.equal(shown.status, 200);
+  assert.match(shown.raw, /sketch/);
+  assert.match(shown.headers['content-security-policy'], /^sandbox allow-scripts;/);
+  assert.equal(shown.headers['set-cookie'], undefined, 'the viewer does not renew or set a session');
+  assert.equal((await frame(opened.json.url.replace('region.html', 'style.css'))).status, 200);
+  // The exception is for the viewer's address alone, and the Host check still holds.
+  assert.equal((await frame('/api/transcript-reader/state', { [TOKEN_HEADER]: token })).status, 403, 'the API, cross-site and without a session');
+  assert.equal((await frame(PAGE)).status, 403);
+  assert.equal((await frame(opened.json.url, { Host: s.loopback.host })).status, 403, 'another host');
+  assert.equal((await frame(opened.json.url, { Origin: 'http://evil.example' })).status, 403);
+  assert.equal((await frame(opened.json.url.replace(/html\/[^/]+\//, 'html/' + 'x'.repeat(22) + '/'))).status, 404, 'a key that was never given');
+  assert.equal((await s.onTailnet({ method: 'POST', path: opened.json.url, headers: { Origin: s.phone.origin, 'Content-Type': 'application/json' }, body: {} })).status, 401, 'a POST to it needs the session like any other');
+  // Another device on the tailnet without the key gets the passcode page or nothing, never the file.
+  assert.equal((await s.onTailnet({ path: '/api/transcript-reader/html/', headers: NAVIGATE })).status, 404);
+});
+
 test('wrong passcodes are throttled per client address with a growing lock, and a lock holds even for the right passcode', async (t) => {
   const s = await boot();
   t.after(s.close);
@@ -519,4 +553,18 @@ test('the shared guard accepts only the hosts it is given, and loopback when non
   for (const host of ['localhost:9000', '127.0.0.1:9000', '100.97.27.50:9001', '100.97.27.51:9000']) assert.equal(phone.check(request(host), { requireToken: false }).ok, false, host);
   assert.equal(phone.check(request('100.97.27.50:9000', 'http://localhost:9000'), { requireToken: false }).ok, false);
   assert.throws(() => createGuard({ port: 9000, hosts: [] }), /at least one host/);
+});
+
+test('the shared guard lets a cross-site GET through only when asked, and still checks Host and Origin', () => {
+  const guard = createGuard({ port: 9000 });
+  const get = (headers) => ({ method: 'GET', headers: { host: 'localhost:9000', ...headers } });
+  const loose = { requireToken: false, crossSite: true };
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site' }), { requireToken: false }).ok, false, 'refused by default');
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site' }), loose).ok, true);
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'same-site' }), loose).ok, true);
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site', host: 'evil.example:9000' }), loose).ok, false);
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site', origin: 'http://evil.example' }), loose).ok, false);
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site', origin: 'null' }), loose).ok, false);
+  assert.equal(guard.check({ method: 'POST', headers: { host: 'localhost:9000', origin: 'http://localhost:9000', 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' } }, loose).ok, false, 'never for a POST');
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site' }), { crossSite: true }).ok, false, 'the token is still required unless waived');
 });

@@ -10,6 +10,9 @@
 //   - no valid session: a passcode page for a page request, 401 JSON for anything else
 //   - a correct passcode on POST /transcript-reader/signin sets the session cookie
 //   - GET /transcript-reader/signout ends the session
+//   - one exception to the session: a GET for the HTML viewer (api.js), which a sandboxed page
+//     without its own origin loads for itself and so cannot send the SameSite cookie with. Its
+//     address holds a random key that only a signed-in page was given, and api.js checks it.
 //
 // A session that passes goes on to api.js, whose routes check Host, Origin, Fetch-Metadata
 // and the per-start token again, so a phone needs both the cookie and the token the page
@@ -298,9 +301,10 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
   }
 
   // Returns true when this module answered. false: the request is signed in and api.js goes on.
-  // isPage: whether the path names one of the reader's built pages.
-  function intercept(req, res, url, isPage) {
-    const verdict = guard.check(req, { requireToken: false });
+  // isPage: whether the path names one of the reader's built pages. isViewer: whether it names
+  // the HTML viewer's address (api.js), which needs the guard's Host check but no session.
+  function intercept(req, res, url, isPage, isViewer = false) {
+    const verdict = guard.check(req, { requireToken: false, crossSite: isViewer });
     if (!verdict.ok) { text(res, verdict.status, verdict.message); return true; }
     const method = String(req.method).toUpperCase();
     const pathname = url.pathname;
@@ -315,6 +319,7 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
       res.end();
       return true;
     }
+    if (isViewer && method === 'GET') return false;
     if (!signedIn(req)) {
       if (method === 'GET' && (pathname === '/' || isPage)) html(res, 401, PASSCODE_PAGE);
       else json(res, 401, { status: 'error', code: 'sign_in_required', message: 'Sign in first.' });

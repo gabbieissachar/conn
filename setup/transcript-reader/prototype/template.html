@@ -12,7 +12,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="reader-token" content="__READER_TOKEN__">
 <meta name="template" content="__TEMPLATE_HASH__">
 <title>Transcript reader (prototype)</title>
@@ -152,6 +152,17 @@
   .doc-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--you); background: var(--you-wash); color: var(--you); border-radius: 8px; padding: 3px 10px; font-size: 13px; font-weight: 600; max-width: 100%; }
   .doc-chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .doc-icon { font-weight: 400; }
+
+  /* An HTML file a reply names, shown from the server in a sandboxed frame (api.js) */
+  .htmlview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .htmlbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .htmlbar a.btn { text-decoration: none; color: inherit; }
+  .htmlbar .when { flex: 1 1 10rem; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .htmlframe { position: relative; height: 72vh; height: 72dvh; min-height: 18rem; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+  .htmlframe iframe { display: block; border: 0; width: 100%; height: 100%; background: #fff; transform-origin: 0 0; }
+  .htmlnote { padding: 18px 14px; font-size: 14px; color: var(--muted); background: var(--paper); height: 100%; }
+  .htmlview.full { position: fixed; inset: 0; z-index: 20; background: var(--wash); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); overscroll-behavior: contain; }
+  .htmlview.full .htmlframe { flex: 1; height: auto; min-height: 0; border-radius: 8px; }
 
   /* Documents: a file a message names, beside its contents list */
   .docmode .bar-inner, .docmode main { max-width: 76rem; }
@@ -515,15 +526,15 @@
     }
     return card;
   }
-  // Markdown files a message names that exist on this machine open beside their contents list.
+  // Markdown and HTML files a message names that exist on this machine open in the Documents view: markdown beside its contents list, HTML rendered in a sandbox.
   function docChips(ids, key) {
     const docs = (ids || []).filter(id => data.documents && data.documents[id]);
     if (!docs.length) return null;
     const row = $("div", "doc-chips");
     docs.forEach(id => {
       const d = data.documents[id];
-      const chip = $("button", "doc-chip"); chip.type = "button"; chip.title = `Open ${d.dir}/${d.name}`;
-      chip.append($("span", "doc-icon", "▤"), $("span", null, d.name));
+      const chip = $("button", "doc-chip"); chip.type = "button"; chip.title = `Open ${d.dir}/${d.name}` + (d.kind === "html" ? ", shown rendered in a sandbox" : "");
+      chip.append($("span", "doc-icon", d.kind === "html" ? "◧" : "▤"), $("span", null, d.name));
       chip.addEventListener("click", () => openDocument(id, Number(key.split(":").pop())));
       row.append(chip);
     });
@@ -1878,19 +1889,84 @@
     if (passage) text += `, the part "${live.clip(passage, 100)}"`;
     return text + ": ";
   }
+  // The HTML file on screen, kept across redraws (a new build redraws the view every few seconds) so its frame is not reloaded
+  // and the sketch keeps its state: { key, node, frame, iframe, desk, full, load, layout }.
+  let htmlView = null;
+  const DESKTOP_WIDTH = 1280;
+  const fmtSize = n => n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
+  // The file, shown by the server (api.js) in an iframe with sandbox="allow-scripts" and no allow-same-origin: its scripts run
+  // but cannot reach this page's origin, its token or the reader's API. Each open reads the file as it is on disk now.
+  function htmlDocView(key, d, status) {
+    const node = $("div", "htmlview");
+    const bar = $("div", "htmlbar");
+    const reload = $("button", "btn", "Reload"); reload.type = "button"; reload.title = "Read the file again from disk: the agent may have changed it since it was opened";
+    const fit = $("button", "btn", "Desktop width"); fit.type = "button"; fit.setAttribute("aria-pressed", "false"); fit.title = "Lay the page out 1280 px wide and shrink it to fit the screen (otherwise it is laid out at the screen's width)";
+    const full = $("button", "btn", "Full screen"); full.type = "button";
+    const alone = $("a", "btn", "Open alone"); alone.target = "_blank"; alone.rel = "noopener noreferrer"; alone.hidden = true; alone.title = "The file by itself in a new tab, still sandboxed; the browser's own zoom and scrolling apply";
+    const note = $("span", "when");
+    bar.append(reload, fit, full, alone, note);
+    const frame = $("div", "htmlframe");
+    node.append(bar, frame);
+    const view = { key, node, frame, iframe: null, desk: false, full: false, load: 0 };
+    view.layout = () => {
+      const f = view.iframe;
+      if (!f) return;
+      const scale = view.desk ? Math.min(1, frame.clientWidth / DESKTOP_WIDTH) : 1;
+      f.style.width = scale < 1 ? DESKTOP_WIDTH + "px" : "100%";
+      f.style.height = scale < 1 ? frame.clientHeight / scale + "px" : "100%";
+      f.style.transform = scale < 1 ? `scale(${scale})` : "";
+    };
+    const open = async () => {
+      const mine = ++view.load;
+      note.textContent = "Opening…";
+      try {
+        const info = await live.htmlOpen(d.id);
+        if (mine !== view.load) return;
+        const f = document.createElement("iframe");
+        f.setAttribute("sandbox", "allow-scripts");  // set before the address: no allow-same-origin, no navigation of the page, no popups, no forms
+        f.referrerPolicy = "no-referrer";
+        f.title = `${d.name}, shown in a sandbox`;
+        f.src = info.url;
+        frame.replaceChildren(f); view.iframe = f; view.layout();
+        alone.href = info.url; alone.hidden = false;
+        note.textContent = `As on disk now · changed ${fmtWhen(info.mtime)} · ${fmtSize(info.size)}`;
+        view.info = info; status(info);
+      } catch (e) {
+        if (mine !== view.load) return;
+        view.iframe = null; alone.hidden = true;
+        frame.replaceChildren($("div", "htmlnote", e.message));
+        note.textContent = "";
+      }
+    };
+    reload.addEventListener("click", open);
+    fit.addEventListener("click", () => { view.desk = !view.desk; fit.setAttribute("aria-pressed", String(view.desk)); view.layout(); });
+    view.setFull = on => {
+      view.full = on; node.classList.toggle("full", on);
+      full.textContent = on ? "Exit" : "Full screen";
+      view.layout();
+    };
+    full.addEventListener("click", () => view.setFull(!view.full));
+    if (window.ResizeObserver) new ResizeObserver(() => view.layout()).observe(frame);
+    open();
+    return view;
+  }
+  window.addEventListener("keydown", e => { if (e.key === "Escape" && htmlView && htmlView.full && !e.defaultPrevented) htmlView.setFull(false); });
   function renderDocView() {
     const session = data.sessions[state.session];
     const docs = sessionDocuments(session);
     pickDoc(session);
     const entry = docs.find(d => d.id === state.doc);
     const controls = document.getElementById("controls"); controls.replaceChildren();
-    const main = document.getElementById("main"); main.replaceChildren();
+    const main = document.getElementById("main");
+    const d = entry && data.documents[entry.id];
+    // The same HTML file still on screen keeps its frame, so a redraw does not reload it.
+    const keep = Boolean(d && d.kind === "html" && htmlView && htmlView.key === session.id + ":" + d.id && htmlView.node.parentNode === main);
+    if (!keep) { htmlView = null; main.replaceChildren(); }
     if (!entry) {
-      controls.append($("div", "summary", "No message or reply in this session names a markdown file that is on this machine."));
-      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`) open here beside their contents list."));
+      controls.append($("div", "summary", "No message or reply in this session names a markdown or HTML file that is on this machine."));
+      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, or a sketch's `.html`) open here: markdown beside its contents list, HTML rendered."));
       return;
     }
-    const d = data.documents[entry.id];
     const row = $("div", "controls");
     const select = $("select"); select.setAttribute("aria-label", "Document");
     docs.forEach(x => {
@@ -1907,18 +1983,35 @@
       if (el) el.scrollIntoView({ block: "start" });
     });
     const message = $("button", "btn", "Message about this file");
-    message.title = "Write to the session about the whole file. Select a passage to comment on it.";
+    message.title = d.kind === "html" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
     row.append(select, back, message);
-    const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(d.mtime)}`);
-    meta.title = `${d.dir}/${d.name}, as on disk at the last rebuild`;
+    const shown = keep && htmlView.info;  // the frame's own reading of the file, newer than the build's
+    const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
+    meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
     controls.append(row, meta);
+    const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
+      pointer: p => docPointer(d, section, p) });
+
+    if (d.kind === "html") {
+      if (!keep) {
+        // Once the frame has the file, the line above says when it last changed on disk, not as of the last rebuild.
+        const view = htmlDocView(session.id + ":" + d.id, d, info => {
+          if (htmlView !== view) return;
+          meta.textContent = `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(info.mtime)}`;
+          meta.title = `${d.dir}/${d.name}, as on disk when it was opened`;
+        });
+        htmlView = view;
+        main.append(view.node);
+      }
+      message.addEventListener("click", () => useTarget(target("", ""), message));
+      docSpy.headings = [];
+      return;
+    }
 
     const view = $("div", "docview");
     const body = $("article", "doc-body");
     const md = renderMarkdown(d.text, [], [], true);
     body.append(md);
-    const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
-      pointer: p => docPointer(d, section, p) });
     replyTargets.set(body, passage => target(passage, sectionAt(md.headings)));
     message.addEventListener("click", () => useTarget(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : ""), message));
     const toc = $("details", "toc");

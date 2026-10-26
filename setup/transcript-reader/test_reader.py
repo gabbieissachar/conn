@@ -732,6 +732,107 @@ class DocumentsTest(unittest.TestCase):
                          ["copy/personal/02-Projects/alpha/prds/x49/requirements.md", "copy/personal/notes.md"])
 
 
+class HtmlFilesTest(unittest.TestCase):
+    """An HTML file a reply names resolves like a markdown file, by the same rules, but is listed and never read."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name).resolve()
+        self.sketches = self.home / "scratch" / "sketches"
+        self.sketches.mkdir(parents=True)
+        (self.sketches / "region.html").write_text("<!doctype html><title>x</title>", encoding="utf-8")
+        (self.sketches / "old.htm").write_text("<p>old</p>", encoding="utf-8")
+        (self.sketches / "notes.md").write_text("# Notes\n", encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})  # Path.home() and ~ both read it
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def names(self, reply, cwd="", touched=()):
+        return [(token, path.relative_to(self.home).as_posix()) for _, token, path in builder.named_html(reply, str(cwd), list(touched))]
+
+    def test_a_path_a_short_name_and_a_file_url_resolve_as_a_markdown_file_does(self):
+        reply = f"Open {self.sketches}/region.html, then\ncd {self.sketches}\n`old.htm` or file://{self.sketches}/region.html and ~/scratch/sketches/old.htm."
+        self.assertEqual(self.names(reply), [(f"{self.sketches}/region.html", "scratch/sketches/region.html"), ("old.htm", "scratch/sketches/old.htm")])
+        self.assertEqual(self.names("`region.html`", self.sketches), [("region.html", "scratch/sketches/region.html")])
+        self.assertEqual(self.names("`region.html`", "/elsewhere", [f"{self.sketches}/region.html"]), [("region.html", "scratch/sketches/region.html")])
+        self.assertEqual(self.names("`sketches/region.html`", self.home / "scratch" / "deeper"), [("sketches/region.html", "scratch/sketches/region.html")], "found from a parent of the working directory")
+
+    def test_urls_missing_files_other_types_and_markdown_are_left_out(self):
+        reply = "https://example.com/x/region.html, `gone.html`, `region.txt`, `notes.md`, `region.html5`"
+        self.assertEqual(self.names(reply, self.sketches), [])
+
+    def test_a_file_outside_the_home_and_temp_folders_is_left_out_even_through_a_link(self):
+        outside = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "secret.html").write_text("x", encoding="utf-8")
+        (self.sketches / "link.html").symlink_to(outside / "secret.html")
+        reply = f"See {outside}/secret.html and `link.html`."
+        with mock.patch.object(builder, "TEMP_ROOTS", ()):
+            self.assertEqual(builder.named_html(reply, str(self.sketches)), [])
+        self.assertEqual(len(builder.named_html(reply, str(self.sketches))), 1, "a temp folder is allowed; the link resolves into it")
+
+    def test_the_size_limit_is_the_html_one_not_the_markdown_one(self):
+        (self.sketches / "big.html").write_text("x" * (builder.MAX_DOCUMENT_BYTES + 1), encoding="utf-8")
+        self.assertEqual(self.names("`big.html`", self.sketches), [("big.html", "scratch/sketches/big.html")])
+        with mock.patch.object(builder, "MAX_HTML_BYTES", 100):
+            self.assertEqual(self.names("`big.html`, `region.html`", self.sketches), [("region.html", "scratch/sketches/region.html")])
+
+    def test_attach_lists_html_files_as_text_less_documents_only_when_asked_in_the_order_named(self):
+        reply = f"First `notes.md`, then {self.sketches}/region.html, and `old.htm`."
+        sessions = lambda: [{"exchanges": [{"reply": reply, "cwd": str(self.sketches)}]}]
+        plain = sessions()
+        self.assertEqual([doc["name"] for doc in builder.attach_documents(plain).values()], ["notes.md"], "the hosted copy's build is unchanged")
+        both = sessions()
+        documents = builder.attach_documents(both, html=True)
+        ids = both[0]["exchanges"][0]["documents"]
+        self.assertEqual([documents[i]["name"] for i in ids], ["notes.md", "region.html", "old.htm"])
+        region = documents[ids[1]]
+        self.assertEqual((region["kind"], region["size"], region["path"], region["dir"]), ("html", len("<!doctype html><title>x</title>"), str(self.sketches / "region.html"), "~/scratch/sketches"))
+        self.assertNotIn("text", region)
+        self.assertNotIn("kind", documents[ids[0]])
+        self.assertEqual(documents[ids[0]]["text"], "# Notes\n")
+
+    def test_a_message_naming_an_html_file_gets_it_too(self):
+        records = [prompt(f"Look at {self.sketches}/region.html please", iso(T0)), reply("Looking.", T0 + 1)]
+        sessions = [{"exchanges": builder.session_exchanges(records)}]
+        documents = builder.attach_documents(sessions, html=True)
+        self.assertEqual([documents[i]["name"] for i in sessions[0]["exchanges"][0]["input_documents"]], ["region.html"])
+
+    def test_tool_calls_name_html_files_by_path_field_or_from_a_shell_command(self):
+        self.assertEqual(builder.tool_documents({"file_path": f"{self.sketches}/region.html"}, ""), [f"{self.sketches}/region.html"])
+        self.assertEqual(builder.tool_documents({"command": f"cd {self.sketches} && open region.html && cat notes.md"}, ""),
+                         [f"{self.sketches}/notes.md", f"{self.sketches}/region.html"])
+        self.assertEqual(builder.tool_documents({"file_path": "/a/b.py"}, ""), [])
+
+    def test_a_turn_matches_an_html_file_its_own_tool_call_wrote(self):
+        far = self.home / "worktree" / "sketch.html"
+        far.parent.mkdir(parents=True)
+        far.write_text("<p>x</p>", encoding="utf-8")
+        records = [prompt("draw", iso(T0)), tool_use("Write", {"file_path": str(far)}, T0 + 1), reply("Wrote `sketch.html`.", T0 + 2)]
+        sessions = [{"exchanges": builder.session_exchanges(records)}]
+        documents = builder.attach_documents(sessions, html=True)
+        self.assertEqual([documents[i]["path"] for i in sessions[0]["exchanges"][0]["documents"]], [str(far)])
+
+
+class HtmlNamesTest(unittest.TestCase):
+    """html_mentions finds what the HTML_MENTION regex finds, without the regex's backtracking."""
+
+    def test_the_same_names_as_the_regex(self):
+        import random
+        rng = random.Random(5)
+        for _ in range(5000):
+            text = "".join(rng.choice("ab.htmlx-_/~@+ \n:\u00e9`1") for _ in range(rng.randrange(0, 40)))
+            self.assertEqual(list(builder.html_mentions(text)), [(m.start(), m.group(0)) for m in builder.HTML_MENTION.finditer(text)], repr(text))
+
+    def test_a_long_run_of_name_characters_is_quick(self):
+        import time
+        started = time.monotonic()
+        found = list(builder.html_mentions("a" * 200_000 + ".htm" * 20_000 + " see page.html"))
+        self.assertEqual(found[-1], (len("a" * 200_000 + ".htm" * 20_000) + 5, "page.html"))
+        self.assertLess(time.monotonic() - started, 2.0)
+
+
 class MarkdownNamesTest(unittest.TestCase):
     """md_mentions finds what the MD_MENTION regex finds, without the regex's backtracking."""
 
@@ -766,6 +867,23 @@ class WritePageTest(unittest.TestCase):
             self.assertIn('"newer"', out.read_text(encoding="utf-8"))
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir() if p.name.endswith(".partial")), [])
 
+
+    def test_the_html_files_a_page_offers_are_listed_beside_it_for_the_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "prototype.html"
+            template = Path(tmp) / "t.html"
+            template.write_text("<script>x</script>__PAYLOAD__", encoding="utf-8")
+            documents = {"a1": {"id": "a1", "path": "/p/a.md", "text": "t"}, "b2": {"id": "b2", "path": "/p/b.html", "kind": "html"}}
+            builder.write_page(template, {"generated": 20.0, "documents": documents}, out)
+            listing = Path(tmp) / builder.HTML_FILES
+            self.assertEqual(json.loads(listing.read_text(encoding="utf-8")), {"b2": "/p/b.html"}, "markdown is embedded, so only HTML is listed")
+            self.assertEqual(listing.stat().st_mode & 0o777, 0o600)
+            builder.write_page(template, {"generated": 10.0, "documents": {}}, out)
+            self.assertEqual(json.loads(listing.read_text(encoding="utf-8")), {"b2": "/p/b.html"}, "a build older than the page leaves its list")
+            builder.write_page(template, {"generated": 30.0, "documents": {}}, out)
+            self.assertEqual(json.loads(listing.read_text(encoding="utf-8")), {})
+            builder.write_page(template, {"generated": 40.0}, out)  # the answer sheet has no documents and leaves the list alone
+            self.assertEqual(json.loads(listing.read_text(encoding="utf-8")), {})
 
     def test_the_payload_is_in_the_page_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -816,6 +934,19 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('document.getElementById("follow-quick").addEventListener("click", toggleFollow);', page)
             self.assertIn('quick.setAttribute("aria-pressed", String(state.follow));', page)
             self.assertIn('quick.hidden = !canLive || state.view !== "reader";', page)
+
+    def test_an_html_file_is_shown_in_a_sandboxed_frame_that_never_shares_the_pages_origin(self):
+        for mode, page in self.pages():
+            policy = re.search(r'<meta http-equiv="Content-Security-Policy" content="(.*?)">', page).group(1)
+            self.assertIn("frame-src 'self'", policy, mode)
+            self.assertIn("default-src 'none'", policy, mode)
+            self.assertIn('f.setAttribute("sandbox", "allow-scripts");', page, mode)
+            self.assertEqual(len(re.findall(r'"sandbox"', page)), 1, "the one frame the page makes")
+            self.assertNotRegex(page, r'"sandbox", "[^"]*allow-same-origin', mode)
+            self.assertEqual(page.count("document.createElement(\"iframe\")"), 1, mode)
+            # The sandbox is set before the address, so the file never loads unsandboxed.
+            self.assertLess(page.index('f.setAttribute("sandbox"'), page.index("f.src = info.url;"), mode)
+            self.assertIn("htmlOpen", page, mode)
 
     def test_both_copies_carry_pins_and_sync(self):
         for mode, page in self.pages():

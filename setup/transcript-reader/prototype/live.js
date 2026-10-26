@@ -24,8 +24,7 @@
       location.reload();
       return true;
     }
-    async function call(path, options = {}) {
-      if (!served) throw new Error("Open the served page (reader.py prints its address) to send or follow.");
+    async function request(path, options = {}) {
       if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("This page has no server token: reload it from the address reader.py prints.");
       const r = await fetch(API + path, { cache: "no-store", ...options, headers: { ...(options.headers || {}), "x-transcript-reader-token": token } });
       let j = null; try { j = await r.json(); } catch (e) { j = null; }
@@ -40,12 +39,22 @@
       if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; throw error; }
       return j;
     }
+    async function call(path, options = {}) {
+      if (!served) throw new Error("Open the served page (reader.py prints its address) to send or follow.");
+      return request(path, options);
+    }
     const state = follow => call("state" + (follow ? "?follow=1" : ""));
     // The built page's current text, for a page that swaps in new turns without reloading.
     const page = name => call("page?name=" + encodeURIComponent(name)).then(j => j.html);
     const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
+    // An HTML file a reply names: the server checks it again and answers with the address to show it from, { url, name, size, mtime }.
+    // It needs only a served page with its token, so it also works on the Tailscale address, where the page is not `served` as above.
+    async function htmlOpen(id) {
+      if (location.protocol !== "http:") throw new Error("Open the served page (reader.py prints its address) to see an HTML file.");
+      return request("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    }
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
@@ -83,5 +92,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, page, send, changeList, poll, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, page, send, changeList, htmlOpen, poll, pointer, clip };
   })();
