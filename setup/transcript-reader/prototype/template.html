@@ -696,6 +696,7 @@
   }
   // Statuses change between rebuilds and reads, so the pickers' names follow them.
   function labelSessions() {
+    paintTitle();
     document.querySelectorAll("select[name=session] option, #crumb-session option").forEach(opt => {
       const session = /^\d+$/.test(opt.value) && data.sessions[Number(opt.value)];
       if (session && opt.textContent !== optionText(session)) opt.textContent = optionText(session);
@@ -2301,6 +2302,12 @@
     markRead();
     renderDock();
   }
+  // The tab's title names the open conversation as the picker does, so tabs of several conversations tell apart.
+  function paintTitle() {
+    const session = data.sessions[state.session];
+    const title = picker.pageTitle(state.view, session ? pickerName(session) : null);
+    if (document.title !== title) document.title = title;
+  }
   // A collapsed bar keeps one line: where you are, the live badge and the way back to the controls.
   function paintBar() {
     const bar = document.getElementById("bar"), toggle = document.getElementById("bar-toggle");
@@ -2311,6 +2318,7 @@
     toggle.setAttribute("aria-expanded", String(!folded));
     toggle.setAttribute("aria-label", look.open ? "Close the search" : state.barOpen ? "Hide the tabs and controls" : "Show the tabs and controls");
     toggle.title = toggle.getAttribute("aria-label");
+    paintTitle();
     const session = data.sessions[state.session];
     const find = document.getElementById("search-toggle");
     find.hidden = state.view !== "reader" || !session;

@@ -51,3 +51,22 @@ test('label: a session with no known pane has only its own name to go by', () =>
   assert.equal(picker.label(list[0], list, () => true, titled), 'no pane · a');
   assert.equal(picker.label(list[1], list, () => true, titled), 'beta');
 });
+
+test('pageTitle: the open conversation leads the tab title, with the name the picker shows', () => {
+  const list = [session('a', 'leader-workspaceos'), session('b', 'dup'), session('c', 'dup')];
+  const name = (s) => picker.label(s, list, () => true, titled);
+  assert.equal(picker.pageTitle('reader', name(list[0])), 'leader-workspaceos · Reader');
+  assert.equal(picker.pageTitle('reader', name(list[1])), 'dup · a title for b · Reader', 'twins keep the title the picker adds');
+  assert.equal(picker.pageTitle('doc', name(list[0])), 'leader-workspaceos · Documents');
+  assert.equal(picker.pageTitle('fleet', name(list[0])), 'Fleet timeline · Reader');
+  assert.equal(picker.pageTitle('reader', null), 'Transcript reader', 'no conversation open');
+  assert.equal(picker.pageTitle('doc', null), 'Transcript reader');
+});
+
+test('page: the template repaints the tab title where the picker names change', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+  assert.match(body('paintBar'), /paintTitle\(\)/, 'a switch, Follow Herdr or a view change draws the bar');
+  assert.match(body('labelSessions'), /paintTitle\(\)/, 'a poll, a rebuild or a Sync relabels the sessions');
+  assert.match(body('paintTitle'), /picker\.pageTitle\(state\.view, session \? pickerName\(session\) : null\)/);
+});

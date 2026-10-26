@@ -17,5 +17,12 @@
       const twins = sessions.filter(x => x.pane && x.pane.label === s.pane.label && section(x) === section(s));
       return twins.length > 1 ? titled(s) : s.pane.label;
     }
-    return { sections, label };
+    // The browser tab's title, so tabs of several conversations tell apart: the open conversation's picker name
+    // (<name>, or null when none is open) leads, then the view. The fleet timeline belongs to no conversation.
+    function pageTitle(view, name) {
+      if (view === "fleet") return "Fleet timeline · Reader";
+      if (!name) return "Transcript reader";
+      return name + (view === "doc" ? " · Documents" : " · Reader");
+    }
+    return { sections, label, pageTitle };
   })();
