@@ -101,7 +101,7 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
 function serverCopy() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-serve-')));
   const organizer = path.join(__dirname, '..', 'herdr-organizer');
-  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js', 'pinstore.js']],
+  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js', 'pinstore.js', 'tailnet.js', 'passcode.js']],
     [organizer, 'herdr-organizer', fs.readdirSync(organizer).filter((name) => name.endsWith('.js'))]];
   for (const [from, folder, names] of files) {
     fs.mkdirSync(path.join(root, 'setup', folder), { recursive: true });
@@ -141,4 +141,70 @@ test('serve.sh starts, reports, restarts and stops this copy\'s server without h
   assert.strictEqual(refused.code, 2);
   assert.ok(!fs.existsSync(path.join(__dirname, 'out', `server-${port}.log`)), 'nothing written in this repo copy');
   process.umask(umask);
+});
+
+// The phone address is opt-in, and serve.sh says why it stays off. A fake `tailscale` on the PATH
+// stands in for the real one; the real address is bound in tailnet.test.js.
+test('serve.sh --tailnet starts loopback only, with one line of why, when Tailscale is down or no passcode is set', { timeout: 60000 }, async () => {
+  const { execFile } = require('child_process');
+  const root = serverCopy();
+  const here = path.join(root, 'setup', 'transcript-reader');
+  const script = path.join(here, 'serve.sh');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-fake-tailscale-'));
+  const fake = (body) => { fs.writeFileSync(path.join(bin, 'tailscale'), `#!/bin/sh\n${body}\n`, { mode: 0o755 }); };
+  const passcodeFile = path.join(root, 'passcode.json');
+  const run = (env, ...args) => new Promise((resolve) => execFile('bash', [script, ...args], { timeout: 20000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, PMOS_READER_PORT: '', PMOS_READER_TAILNET: '', PMOS_READER_PASSCODE_FILE: passcodeFile, ...env } }, (error, stdout) => resolve({ code: error ? error.code : 0, stdout })));
+  const port = String(await freePort());
+  try {
+    // Tailscale not running: loopback only, and the reason.
+    fake('echo "Tailscale is stopped." >&2; exit 1');
+    const down = await run({}, 'start', '--port', port, '--tailnet');
+    assert.strictEqual(down.code, 0, down.stdout);
+    assert.match(down.stdout, /Reader server started/);
+    assert.match(down.stdout, /Tailnet address not served: Tailscale is not running/);
+    assert.match((await run({}, 'status', '--port', port)).stdout, /Tailnet address not served \(loopback only\)/);
+    // Already running without it: start says how to add it.
+    assert.match((await run({}, 'start', '--port', port, '--tailnet')).stdout, /not serving the tailnet address[\s\S]*restart --tailnet/);
+    assert.match((await run({}, 'stop', '--port', port)).stdout, /Stopped/);
+
+    // An address outside Tailscale's range is never used.
+    fake('echo 192.168.1.20');
+    assert.match((await run({}, 'start', '--port', port, '--tailnet')).stdout, /Tailscale is not running or gave no IPv4 address/);
+    await run({}, 'stop', '--port', port);
+
+    // Tailscale up, no passcode yet: loopback only, and how to set one. The env var is the same switch.
+    fake('echo 100.64.0.9');
+    const unset = await run({ PMOS_READER_TAILNET: '1' }, 'start', '--port', port);
+    assert.match(unset.stdout, /Tailnet address not served: no passcode is set. Set one with: bash .*serve\.sh passcode/);
+    await run({}, 'stop', '--port', port);
+
+    // Without the switch, nothing about the tailnet is attempted, even with a passcode.
+    await require('./tailnet').writePasscodeFile(passcodeFile, 'a test passcode');
+    const plain = await run({}, 'start', '--port', port);
+    assert.ok(!/Tailnet/i.test(plain.stdout), plain.stdout);
+    await run({}, 'stop', '--port', port);
+
+    // An address Tailscale gave but this machine does not hold cannot be bound: loopback keeps serving.
+    const unbound = await run({}, 'start', '--port', port, '--tailnet');
+    assert.strictEqual(unbound.code, 0, unbound.stdout);
+    assert.match(unbound.stdout, /Tailnet address not served: 100\.64\.0\.9:\d+ could not be bound/);
+    assert.match((await run({}, 'status', '--port', port)).stdout, /serves this copy[\s\S]*not served \(loopback only\)/);
+    assert.match(fs.readFileSync(path.join(here, 'out', `server-${port}.log`), 'utf8'), /Tailnet: not served, 100\.64\.0\.9:\d+ could not be bound/);
+  } finally {
+    await run({}, 'stop', '--port', port);
+  }
+});
+
+test('serve.sh passcode takes the passcode only from a terminal and leaves no file otherwise', { timeout: 30000 }, async () => {
+  const { execFile } = require('child_process');
+  const root = serverCopy();
+  const script = path.join(root, 'setup', 'transcript-reader', 'serve.sh');
+  const passcodeFile = path.join(root, 'out-here', 'passcode.json');
+  const result = await new Promise((resolve) => {
+    const child = execFile('bash', [script, 'passcode'], { timeout: 10000, env: { ...process.env, PMOS_READER_PASSCODE_FILE: passcodeFile } }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr }));
+    child.stdin.end('a test passcode\na test passcode\n');
+  });
+  assert.notStrictEqual(result.code, 0);
+  assert.match(result.stderr, /terminal/);
+  assert.ok(!fs.existsSync(passcodeFile));
 });

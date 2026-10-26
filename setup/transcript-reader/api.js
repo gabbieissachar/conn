@@ -43,6 +43,10 @@
 // uses the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, token)
 // and never sends an Access-Control-Allow-* header.
 //
+// A request that came in on the Tailscale listener (server.js, opt-in) first goes through
+// tailnet.js: a passcode and a session cookie on top of all of this, with that listener's own
+// Host and Origin. Loopback requests do not.
+//
 // The reader has its own server, but the token is still never handed out by an endpoint.
 // It is written into a page only when the browser opens that page as a top-level
 // document (Fetch-Metadata navigate/document), and the page refuses framing and
@@ -64,6 +68,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createGuard } = require('../herdr-organizer/guard');
+const tailnetLane = require('./tailnet');
 const pinstore = require('./pinstore');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
@@ -216,8 +221,16 @@ function create({
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
   // conversations of the hosted copy it drains.
   sendable = null,
+  // { ip, port, passcodeFile } when server.js also listens on the Mac's Tailscale address
+  // (tailnet.js); handle() then takes the listener a request came in on.
+  tailnet = null,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
+  const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now });
+  // The guard that holds for a request: the loopback one, or the tailnet listener's (its own
+  // Host and Origin, the same token). Set by handle().
+  const guards = new WeakMap();
+  const guardFor = (req) => guards.get(req) || guard;
   const readerScript = path.join(root, 'setup', 'transcript-reader', 'reader.py');
   const copy = copyId(root);
   const runEnv = () => childEnv(env);
@@ -586,7 +599,7 @@ function create({
 
   function servePage(req, res, name) {
     const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
-    const verdict = guard.check(req, { requireToken: false });
+    const verdict = guardFor(req).check(req, { requireToken: false });
     if (!verdict.ok) { text(verdict.status, verdict.message); return; }
     if (req.method !== 'GET') { text(405, 'GET only'); return; }
     // Only a browser tab opening the page gets it (and so the token), never a script's
@@ -614,7 +627,7 @@ function create({
   // it needs the token, which only the shell opened in a tab holds, so another page on this origin
   // cannot read the transcripts here either.
   function serveObject(req, res, folder, name) {
-    const verdict = guard.check(req);
+    const verdict = guardFor(req).check(req);
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
     if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
     const kind = OBJECTS[folder];
@@ -627,7 +640,7 @@ function create({
   }
 
   async function dispatch(req, res, pathname, query) {
-    const verdict = guard.check(req);
+    const verdict = guardFor(req).check(req);
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
     if (pathname === API + 'page' && req.method === 'GET') {
       const name = query.get('name');
@@ -672,8 +685,10 @@ function create({
 
   const insideOut = (req, url) => requestsOut(root, outDir, req, url);
 
-  // Returns true when the request belongs to this module (and is handled here).
-  function handle(req, res) {
+  // Returns true when the request belongs to this module (and is handled here). listener is
+  // 'tailnet' for a request that came in on the Tailscale address, which must be signed in
+  // first (tailnet.js); anything else is a loopback request, handled as it always was.
+  function handle(req, res, listener = 'loopback') {
     let url;
     // A request URL nothing can parse may still name out/, so it is refused here rather
     // than passed on to the shared static handler.
@@ -683,6 +698,11 @@ function create({
       return true;
     }
     const page = insideOut(req, url);
+    if (listener === 'tailnet') {
+      if (!lane) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
+      if (lane.intercept(req, res, url, page.inside && page.name.endsWith('.html'))) return true;
+      guards.set(req, lane.guard);
+    }
     if (page.inside) {
       const folder = Object.keys(OBJECTS).find((name) => page.name.startsWith(name + path.sep));
       if (folder && !PAGES.has(page.name)) serveObject(req, res, folder, page.name.slice(folder.length + 1));
@@ -698,7 +718,7 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan, sendPrompt };
+  return { handle, guard, scan, sendPrompt, tailnet: lane };
 }
 
 module.exports = { create, checkText, copyId, namesReaderOut, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

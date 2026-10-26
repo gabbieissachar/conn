@@ -19,12 +19,15 @@ const TOKEN_HEADER = 'x-herdr-organizer-token';
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
 // tokenHeader lets another module behind the same server (the transcript reader)
-// use the same checks with its own token and header name.
-function createGuard({ port, token, tokenHeader = TOKEN_HEADER } = {}) {
+// use the same checks with its own token and header name. hosts replaces the loopback
+// names the Host and Origin must carry: the reader's tailnet listener passes its one
+// Tailscale address, so that listener accepts nothing else. Left out, loopback as before.
+function createGuard({ port, token, tokenHeader = TOKEN_HEADER, hosts = LOOPBACK_HOSTS } = {}) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('guard needs the served port');
   const serverToken = token || crypto.randomBytes(32).toString('hex');
-  const allowedHosts = new Set(LOOPBACK_HOSTS.map((host) => host + ':' + port));
-  const allowedOrigins = new Set(LOOPBACK_HOSTS.map((host) => 'http://' + host + ':' + port));
+  if (!Array.isArray(hosts) || !hosts.length) throw new Error('guard needs at least one host');
+  const allowedHosts = new Set(hosts.map((host) => String(host).toLowerCase() + ':' + port));
+  const allowedOrigins = new Set(hosts.map((host) => 'http://' + String(host).toLowerCase() + ':' + port));
   const tokenBuffer = Buffer.from(serverToken, 'utf8');
 
   function tokenMatches(candidate) {
