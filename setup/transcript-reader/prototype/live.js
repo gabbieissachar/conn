@@ -50,11 +50,7 @@
     // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
     // An HTML file a reply names: the server checks it again and answers with the address to show it from, { url, name, size, mtime }.
-    // It needs only a served page with its token, so it also works on the Tailscale address, where the page is not `served` as above.
-    async function htmlOpen(id) {
-      if (location.protocol !== "http:") throw new Error("Open the served page (reader.py prints its address) to see an HTML file.");
-      return request("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-    }
+    const htmlOpen = id => call("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
