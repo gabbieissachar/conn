@@ -31,6 +31,7 @@ W = "bbbbbbbb-2222-4222-8222-222222222222"  # a worker in its own copy inside th
 M = "cccccccc-3333-4333-8333-333333333333"  # the second mate's session
 X = "dddddddd-4444-4444-8444-444444444444"  # outside every fleet home
 N = "eeeeeeee-5555-4555-8555-555555555555"  # A's pane after a /clear
+PASS = "a made-up lab passphrase"
 
 NOW = time.time()
 T0 = float(int(NOW - 2 * 86400))  # whole seconds, so times read back from the logs compare equal
@@ -493,7 +494,6 @@ if __name__ == "__main__":
     unittest.main()
 
 
-PASS = "a made-up lab passphrase"
 SEAL = Path(__file__).resolve().parent / "prototype" / "seal.js"
 # Opens sealed objects of a bucket with the passphrase in the environment, as the shell does.
 OPEN_JS = r"""
