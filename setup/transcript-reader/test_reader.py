@@ -258,6 +258,77 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(self.rebuilds, [])
 
 
+class AdoptTest(unittest.TestCase):
+    """`adopt` is what a Sync runs for the live Claude panes the list lacks; a session a person took off the list stays off."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        folder = root / "projects" / "-Users-someone-home"
+        folder.mkdir(parents=True)
+        for sid in (A, B):  # C has no log
+            (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.saved = (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.REOPENED, reader.DROPPED, reader.rebuild)
+        builder.PROJECTS, reader.OUT = root / "projects", root / "out"
+        reader.LIST, reader.REOPENED, reader.DROPPED = reader.OUT / "sessions.txt", reader.OUT / "reopened.txt", reader.OUT / "dropped.txt"
+        reader.OUT.mkdir()
+        builder.herdr_panes = lambda: {}
+        builder.session_chain = lambda path: [path]
+        self.rebuilds = []
+        reader.rebuild = lambda ids, focus=None, serve_page=True: self.rebuilds.append((list(ids), serve_page)) or 0
+
+    def tearDown(self):
+        (builder.PROJECTS, builder.herdr_panes, builder.session_chain, reader.OUT, reader.LIST, reader.REOPENED, reader.DROPPED, reader.rebuild) = self.saved
+        self.tmp.cleanup()
+
+    def test_lists_the_unlisted_ids_with_a_log_and_rebuilds_once_without_serving(self):
+        reader.write_list([A])
+        self.assertEqual(reader.main(["adopt", A, B, C, B]), 0)
+        self.assertEqual(reader.read_list(), [A, B], "A was listed already, C has no log")
+        self.assertEqual(self.rebuilds, [([A, B], False)])
+
+    def test_a_session_a_person_closed_or_removed_is_not_listed_again(self):
+        reader.write_list([A, B])
+        with mock.patch.object(reader, "resolve", lambda name, panes: name):
+            self.assertEqual(reader.main(["remove", A]), 0)
+        self.assertEqual(reader.main(["close", B]), 0)
+        self.assertEqual(reader.read_list(), [])
+        self.assertEqual(sorted(builder.read_ids(reader.closed_file())), sorted([A, B]))
+        self.assertEqual(reader.main(["adopt", A, B]), 0)
+        self.assertEqual(reader.read_list(), [], "neither comes back with the Sync")
+
+    def test_naming_a_closed_session_again_lets_a_sync_list_it(self):
+        reader.write_list([A, B])
+        with mock.patch.object(reader, "resolve", lambda name, panes: name):
+            reader.main(["remove", A, B])
+            self.assertEqual(reader.main(["add", A]), 0)
+        self.assertEqual(builder.read_ids(reader.closed_file()), [B])
+        self.assertEqual(reader.main(["follow", B]), 0)
+        self.assertEqual(builder.read_ids(reader.closed_file()), [])
+        reader.main(["close", B])
+        self.assertEqual(builder.read_ids(reader.closed_file()), [B])
+        self.assertEqual(reader.main(["reopen", B]), 0)
+        self.assertEqual(builder.read_ids(reader.closed_file()), [])
+
+    def test_closing_takes_the_whole_pane_so_a_cleared_session_is_not_adopted_either(self):
+        reader.write_list([B])
+        folder = builder.PROJECTS / "-Users-someone-home"
+        builder.session_chain = lambda path: [folder / f"{A}.jsonl", folder / f"{B}.jsonl"]
+        self.assertEqual(reader.main(["close", B]), 0)
+        self.assertEqual(sorted(builder.read_ids(reader.closed_file())), sorted([A, B]))
+
+    def test_a_closed_session_whose_log_is_gone_is_forgotten(self):
+        reader.write_ids(reader.closed_file(), [C, A])  # C has no log
+        reader.mark_closed({B})
+        self.assertEqual(builder.read_ids(reader.closed_file()), [A, B])
+
+    def test_refuses_anything_but_full_ids(self):
+        for names in ([], ["aaaaaaaa"], [A, "leader-alpha"]):
+            self.assertEqual(reader.main(["adopt", *names]), 2, names)
+        self.assertEqual(reader.read_list(), [])
+        self.assertEqual(self.rebuilds, [])
+
+
 class ClosedPanesTest(unittest.TestCase):
     """A rebuild drops listed sessions whose Herdr pane has closed, and only those."""
 

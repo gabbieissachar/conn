@@ -16,9 +16,11 @@
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
-//   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once and rebuilds the
-//                                                   pages from the session logs and the fleet records, then answers
-//                                                   as state does, with the time it finished
+//   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once, lists every live
+//                                                   Claude pane's session that is not listed (unless a person closed
+//                                                   or removed it) and rebuilds the pages from the session logs and
+//                                                   the fleet records, then answers as state does, with the time
+//                                                   it finished
 //   GET  /api/transcript-reader/pins                the pinned messages (pinstore.js: a small owner-only file
 //                                                   outside the repo) and their revision
 //   POST /api/transcript-reader/pins                { op: "pin", key, conv, at } or { op: "unpin", key }
@@ -50,8 +52,8 @@
 // Writes: reader.py rebuilds the pages when a listed session log changes or a listed
 // session's pane closes (dropping it from the reading list), and adds the session
 // Herdr has focused to the reading list while a page follows focus. reopen and close
-// change the reading list only on a click in the page, and so does sync (a rebuild, no
-// more). The pins file is the only thing written outside out/, and only on a pin or an unpin.
+// change the reading list only on a click in the page, and so does sync, which also lists
+// every live Claude pane's session not yet listed, except one a person closed or removed. The pins file is the only thing written outside out/, and only on a pin or an unpin.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
@@ -241,6 +243,8 @@ function create({
   const listed = () => idsIn('sessions.txt');
   // Sessions reader.py dropped because their pane closed, and lists again if one runs in a pane.
   const dropped = () => idsIn('dropped.txt');
+  // Sessions a person took off the list (reader.py close and remove), which a Sync does not list again.
+  const closedByHand = () => idsIn('closed.txt');
 
   function stamp(name) {
     try {
@@ -438,17 +442,34 @@ function create({
 
   // ------------------------------------------------------------------- sync
 
-  // What the Sync button asks for: Herdr is read again now (not from the last scan), the pages are rebuilt from the
-  // session logs and the fleet records whether or not a log looks newer, and the answer is state's, once it is done.
-  // That is the same read-only rebuild a changed log starts, so the reading list, each session's live or ended
-  // state and every listed session's newest turns are all taken again; it waits for one already running.
+  // The sessions running in a Herdr pane with Claude that the reading list lacks and has a log to read, and that no
+  // person took off the list. Only listing them changes the list; the panes are not touched.
+  function unlistedLive(sessions) {
+    const skip = new Set([...listed(), ...closedByHand()]);
+    const found = [];
+    for (const session of sessions) {
+      for (const pane of session.panes) {
+        const id = pane.session_id;
+        if (pane.agent === 'claude' && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
+      }
+    }
+    return found;
+  }
+
+  // What the Sync button asks for: Herdr is read again now (not from the last scan), every live Claude pane's session
+  // not yet listed is listed (reader.py adopt, as follow lists the focused one, so /clear joins and labels work the
+  // same), the pages are rebuilt from the session logs and the fleet records whether or not a log looks newer, and
+  // the answer is state's, once it is done. That is the same read-only rebuild a changed log starts, so the reading
+  // list, each session's live or ended state and every listed session's newest turns are all taken again; it waits
+  // for one already running.
   async function sync(body) {
     for (const key of Object.keys(body)) if (key !== 'follow') throw new RequestError('Unknown field.');
     if (body.follow !== undefined && typeof body.follow !== 'boolean') throw new RequestError('Invalid follow.');
     while (build.running) await build.running.done;
     const sessions = await scan({ fresh: true });
     notePaneChanges(listed(), sessions);
-    const result = await runReader(['rebuild']);
+    const adopt = unlistedLive(sessions);
+    const result = await runReader(adopt.length ? ['adopt', ...adopt] : ['rebuild']);
     if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
     build.paneClosed = false;
     return { synced: now() / 1000, ...(await state(body.follow === true)) };

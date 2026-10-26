@@ -14,6 +14,9 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py reopen <id>      list one full session id whose pane has closed, kept
                                                              until closed, then rebuild only (the page's picker)
   python3 setup/transcript-reader/reader.py close <id>       take one full session id off the list, then rebuild only
+  python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude panes a Sync found
+                                                             that are not listed), then rebuild only; one a person
+                                                             closed or removed is skipped
 
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
@@ -30,7 +33,8 @@ Herdr still lists stays, agent or not: after a restart the panes come back befor
 their agents do. A session never seen in a Herdr pane stays, and nothing is dropped
 while Herdr shows no pane at all or a Herdr session cannot be read. A dropped session
 that runs in a pane again (`claude --resume` in a new pane, say) within two weeks of its
-last turn is listed again, unless `remove` or `close` named it. `add` of a session whose pane has closed lists it as
+last turn is listed again, unless `remove` or `close` named it. The same two commands keep a session out of
+`adopt` (out/closed.txt) until `add`, `reopen` or `follow` names it. `add` of a session whose pane has closed lists it as
 reopened, so the rebuild after it does not drop it again. A session reopened to read again (`reopen`, or
 "Closed panes" in the page's session picker) stays until it is closed (`close`, or
 the page's "Close" button).
@@ -68,6 +72,7 @@ PAGE = OUT / "prototype.html"
 PANE_CACHE = OUT / "pane-labels.json"  # every pane a listed session was seen in; the builder writes it
 REOPENED = OUT / "reopened.txt"  # sessions reopened by hand, which a closed pane does not drop
 DROPPED = OUT / "dropped.txt"  # sessions a closed pane took off the list, listed again if they run in a pane again
+CLOSED_NAME = "closed.txt"  # sessions a person took off the list (remove, close), which a Sync does not list again
 DROPPED_KEEP_DAYS = 14  # a dropped session whose log has not changed for this long is forgotten (as Closed panes does)
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
@@ -127,6 +132,31 @@ def forget_dropped(sids: set[str]) -> None:
     dropped = builder.read_ids(DROPPED)
     if sids & set(dropped):
         write_ids(DROPPED, [sid for sid in dropped if sid not in sids])
+
+
+def closed_file() -> Path:
+    return OUT / CLOSED_NAME
+
+
+def mark_closed(sids: set[str]) -> None:
+    """Remember sessions a person took off the list, so a Sync never lists them again. A session whose log is gone is forgotten."""
+    marked = [sid for sid in builder.read_ids(closed_file()) if builder.find_session_file(sid)]
+    more = [sid for sid in sorted(sids) if sid not in marked and builder.find_session_file(sid)]
+    if more or len(marked) != len(builder.read_ids(closed_file())):
+        write_ids(closed_file(), marked + more)
+
+
+def forget_closed(sids: set[str]) -> None:
+    """A session a person names again (add, reopen, follow) may be adopted again."""
+    marked = builder.read_ids(closed_file())
+    if sids & set(marked):
+        write_ids(closed_file(), [sid for sid in marked if sid not in sids])
+
+
+def chain_members(sid: str) -> set[str]:
+    """The session and every session its pane ran across /clear, as `close` takes them off together."""
+    path = builder.find_session_file(sid)
+    return {sid} | ({member.stem for member in builder.session_chain(path)} if path else set())
 
 
 class PaneView:
@@ -296,8 +326,25 @@ def follow(ids: list[str], names: list[str]) -> int:
     if len(names) != 1 or not UUID.match(names[0]) or not session_files(builder.PROJECTS, names[0]):
         print("follow takes one full session id that has a session log")
         return 2
+    forget_closed({names[0]})
     if names[0] not in ids:
         ids.append(names[0])
+        write_list(ids)
+    return rebuild(ids, serve_page=False)
+
+
+def adopt(ids: list[str], names: list[str]) -> int:
+    """List full session ids with a log (the live Claude panes a Sync found that are not listed), skipping any a
+    person closed or removed, then rebuild without serving. The ids are listed as `follow` lists one."""
+    if not names or not all(UUID.match(name) for name in names):
+        print("adopt takes full session ids")
+        return 2
+    closed = set(builder.read_ids(closed_file()))
+    added = [sid for sid in dict.fromkeys(names) if sid not in ids and sid not in closed and session_files(builder.PROJECTS, sid)]
+    for sid in added:
+        print(f"Listing {sid[:8]}: it runs in a Herdr pane")
+    if added:
+        ids += added
         write_list(ids)
     return rebuild(ids, serve_page=False)
 
@@ -316,6 +363,7 @@ def reopen(ids: list[str], names: list[str]) -> int:
         return 2
     sid = names[0]
     mark_reopened(sid)
+    forget_closed({sid})
     if sid not in ids:
         ids.append(sid)
         write_list(ids)
@@ -328,13 +376,13 @@ def close(ids: list[str], names: list[str]) -> int:
         print("close takes one full session id")
         return 2
     # The page shows a cleared pane's sessions as one conversation, so all of them go.
-    path = builder.find_session_file(names[0])
-    pane = {names[0]} | ({member.stem for member in builder.session_chain(path)} if path else set())
+    pane = chain_members(names[0])
     marked = builder.read_ids(REOPENED)
     if pane & set(marked):
         write_ids(REOPENED, [i for i in marked if i not in pane])
     dropped = bool(pane & set(builder.read_ids(DROPPED)))
     forget_dropped(pane)  # closed by hand, it is not listed again when it next runs in a pane
+    mark_closed(pane)  # nor adopted by a Sync
     if not pane & set(ids):
         if dropped:
             print(f"{names[0][:8]} was dropped when its pane closed; it will not be listed again when it runs")
@@ -370,6 +418,8 @@ def main(argv: list[str]) -> int:
         return reopen(ids, names)
     if command == "close":
         return close(ids, names)
+    if command == "adopt":
+        return adopt(ids, names)
     if command == "list":
         show(ids)
         return 0
@@ -396,8 +446,10 @@ def main(argv: list[str]) -> int:
                 mark_reopened(sid)
                 print(f"{sid[:8]}: its Herdr pane has closed, so it is listed as reopened and stays until `close`")
         ids += [sid for sid in dict.fromkeys(chosen) if sid not in ids]
+        forget_closed(set(chosen))
     else:
         ids = [sid for sid in ids if sid not in chosen]
+        mark_closed(set().union(*(chain_members(sid) for sid in chosen)))
     write_list(ids)
     forget_dropped(set(chosen))
     return rebuild(ids, chosen[-1] if command == "add" else None)

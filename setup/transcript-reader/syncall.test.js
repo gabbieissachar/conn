@@ -1,9 +1,10 @@
 'use strict';
 
 // One Sync click, end to end: the server's sync route with the real reader.py and builder, against
-// synthetic logs and a fake Herdr in a temporary folder. It pins that a click brings every listed
-// live session up to date (turns, and the state of its pane), not only the one Herdr has focused or
-// the one open on screen. Run from the repo root:
+// synthetic logs and a fake Herdr in a temporary folder. It pins that a click brings every live
+// session up to date (turns, and the state of its pane), not only the one Herdr has focused or the
+// one open on screen, and that one Claude pane not on the reading list joins it, unless a person took it
+// off. Run from the repo root:
 //   node --test setup/transcript-reader/syncall.test.js
 // No real session, pane or page is read or written: the repo copy is copied into a temporary root,
 // HOME points at a temporary folder, and `herdr` is a script there.
@@ -14,10 +15,14 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { create, TOKEN_HEADER } = require('./api');
 
-const IDS = { A: 'aaaaaaaa-1111-4111-8111-111111111111', B: 'bbbbbbbb-2222-4222-8222-222222222222', C: 'cccccccc-3333-4333-8333-333333333333' };
-const PANES = { A: 'w1:p1', B: 'w1:p2', C: 'w1:p3' };
+const IDS = {
+  A: 'aaaaaaaa-1111-4111-8111-111111111111', B: 'bbbbbbbb-2222-4222-8222-222222222222', C: 'cccccccc-3333-4333-8333-333333333333',
+  D: 'dddddddd-4444-4444-8444-444444444444', E: 'eeeeeeee-5555-4555-8555-555555555555',
+};
+const PANES = { A: 'w1:p1', B: 'w1:p2', C: 'w1:p3', D: 'w1:p4', E: 'w1:p5' };
 
 // The few calls reader.py and api.js make, answered from herdr.json beside it (a test edits that file).
 const FAKE_HERDR = `#!/usr/bin/env python3
@@ -45,7 +50,7 @@ else:
 
 // A repo-shaped temporary root holding a copy of the reader (reader.py, the builders and the page template),
 // so a rebuild writes its out/ folder there, and a home with one log per session.
-function world() {
+function world({ listed = 'ABC', live = 'ABC' } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-syncall-')));
   const root = path.join(base, 'repo');
   const here = path.join(root, 'setup', 'transcript-reader');
@@ -54,13 +59,13 @@ function world() {
   const logs = path.join(home, '.claude', 'projects', '-Users-someone-project');
   fs.mkdirSync(logs, { recursive: true });
   fs.mkdirSync(path.join(here, 'out'), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(here, 'out', 'sessions.txt'), Object.values(IDS).join('\n') + '\n');
+  fs.writeFileSync(path.join(here, 'out', 'sessions.txt'), [...listed].map((key) => IDS[key]).join('\n') + '\n');
   const bin = path.join(base, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'herdr'), FAKE_HERDR, { mode: 0o755 });
   const herdr = {
     focused: PANES.A,
-    panes: Object.keys(IDS).map((key) => ({ pane_id: PANES[key], tab_id: 'w1:t1', label: 'live-' + key, agent: 'claude', agent_status: 'idle', agent_session: { value: IDS[key] } })),
+    panes: [...live].map((key) => ({ pane_id: PANES[key], tab_id: 'w1:t1', label: 'live-' + key, agent: 'claude', agent_status: 'idle', agent_session: { value: IDS[key] } })),
   };
   const saveHerdr = () => fs.writeFileSync(path.join(bin, 'herdr.json'), JSON.stringify(herdr));
   saveHerdr();
@@ -75,7 +80,7 @@ function world() {
     fs.utimesSync(log(key), new Date(), new Date());
   };
   return {
-    root, here, home, bin, herdr, turn,
+    root, here, home, bin, herdr, turn, env: () => ({ ...process.env, HOME: home, PATH: bin + path.delimiter + process.env.PATH }),
     focus: (key) => { herdr.focused = PANES[key]; saveHerdr(); },
     status: (key, value) => { herdr.panes.find((pane) => pane.pane_id === PANES[key]).agent_status = value; saveHerdr(); },
     cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
@@ -84,7 +89,7 @@ function world() {
 
 async function start(w) {
   const token = 'a1'.repeat(32);
-  const env = { ...process.env, HOME: w.home, PATH: w.bin + path.delimiter + process.env.PATH, PMOS_READER_PINS: path.join(w.home, 'pins.json') };
+  const env = { ...w.env(), PMOS_READER_PINS: path.join(w.home, 'pins.json') };
   let api;
   const server = http.createServer((req, res) => { if (!api.handle(req, res)) { res.writeHead(404); res.end(); } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -130,7 +135,7 @@ test('sync: one click brings every listed live session up to date, not only the 
     assert.equal(first.status, 200, JSON.stringify(first.json));
     const page = await server.payload();
     for (const key of 'ABC') assert.equal(newestAsk(page, IDS[key]), `first ask ${key}`);
-    assert.deepEqual(Object.keys(first.json.panes).sort(), Object.values(IDS).sort());
+    assert.deepEqual(Object.keys(first.json.panes).sort(), [IDS.A, IDS.B, IDS.C].sort());
 
     // While the owner reads A, with Herdr focused on A and no poll in between, the two others move on.
     w.focus('A');
@@ -154,5 +159,41 @@ test('sync: one click brings every listed live session up to date, not only the 
     assert.equal(reply(IDS.C), 'reply to second ask C');
     // Each pane's state is Herdr's now, for all of them, in the same answer.
     assert.deepEqual(Object.fromEntries(Object.entries(synced.json.panes).map(([id, pane]) => [id, pane.status])), { [IDS.A]: 'idle', [IDS.B]: 'working', [IDS.C]: 'blocked' });
+  } finally { await server.close(); w.cleanup(); }
+});
+
+test('sync: a live Claude pane that is not on the reading list joins it with its newest turns in the same click, unless a person took it off', { timeout: 120000 }, async () => {
+  const w = world({ listed: 'ABE', live: 'ABCDE' });
+  const server = await start(w);
+  try {
+    for (const key of 'ABCDE') w.turn(key, `first ask ${key}`);
+    // The owner took E off the reading list while its pane still runs.
+    const closed = spawnSync('python3', ['-I', path.join(w.here, 'reader.py'), 'close', IDS.E], { env: w.env(), cwd: w.root, encoding: 'utf8' });
+    assert.equal(closed.status, 0, closed.stdout + closed.stderr);
+    assert.equal(fs.readFileSync(path.join(w.here, 'out', 'closed.txt'), 'utf8').trim(), IDS.E);
+    w.turn('C', 'second ask C');
+    w.turn('D', 'second ask D');
+    w.status('D', 'working');
+
+    const synced = await server.sync();
+    assert.equal(synced.status, 200, JSON.stringify(synced.json));
+    const page = await server.payload();
+    assert.deepEqual(page.sessions.map((s) => s.id).sort(), [IDS.A, IDS.B, IDS.C, IDS.D].sort(), 'C and D joined; E stays off');
+    assert.equal(newestAsk(page, IDS.C), 'second ask C');
+    assert.equal(newestAsk(page, IDS.D), 'second ask D');
+    assert.equal(synced.json.panes[IDS.D].status, 'working', 'and the answer already names their panes');
+    assert.equal(synced.json.panes[IDS.C].label, 'live-C');
+    assert.equal(synced.json.panes[IDS.E], undefined);
+    assert.deepEqual(fs.readFileSync(path.join(w.here, 'out', 'sessions.txt'), 'utf8').split('\n').filter(Boolean).sort(), [IDS.A, IDS.B, IDS.C, IDS.D].sort());
+
+    // A second click lists nothing more and E is still off; naming it again by hand puts it back in reach.
+    w.turn('D', 'third ask D');
+    assert.equal((await server.sync()).status, 200);
+    const again = await server.payload();
+    assert.equal(again.sessions.length, 4);
+    assert.equal(newestAsk(again, IDS.D), 'third ask D');
+    const followed = spawnSync('python3', ['-I', path.join(w.here, 'reader.py'), 'follow', IDS.E], { env: w.env(), cwd: w.root, encoding: 'utf8' });
+    assert.equal(followed.status, 0, followed.stdout + followed.stderr);
+    assert.equal(fs.readFileSync(path.join(w.here, 'out', 'closed.txt'), 'utf8').trim(), '');
   } finally { await server.close(); w.cleanup(); }
 });

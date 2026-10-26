@@ -713,6 +713,73 @@ test('sync: a click reads Herdr again and rebuilds at once, even when no log loo
   } finally { await t.close(); }
 });
 
+// The reading list's blind side: live panes running Claude whose session is not listed. Their logs sit beside the listed ones'.
+const D = 'dddddddd-4444-4444-8444-444444444444';  // Claude in a pane, with a log
+const E = 'eeeeeeee-5555-4555-8555-555555555555';  // another agent in a pane, with a log
+const F = 'ffffffff-6666-4666-8666-666666666666';  // Claude in a pane, no log to read
+const G = '99999999-7777-4777-8777-777777777777';  // Claude in a pane, taken off the list by hand
+
+function withUnlistedPanes(t) {
+  const logs = path.dirname(t.tree.logOf(A));
+  for (const id of [D, E, G]) fs.writeFileSync(path.join(logs, id + '.jsonl'), '{}\n');
+  for (const pane of t.herdr.panes) if (pane.agent_session && !pane.agent) pane.agent = 'claude';
+  t.herdr.panes.push(
+    { pane_id: 'w1:p5', tab_id: 'w1:t5', label: 'live-d', agent: 'claude', agent_status: 'working', agent_session: { value: D } },
+    { pane_id: 'w1:p6', tab_id: 'w1:t6', label: 'other-agent', agent: 'codex', agent_status: 'idle', agent_session: { value: E } },
+    { pane_id: 'w1:p7', tab_id: 'w1:t7', label: 'no-log', agent: 'claude', agent_status: 'idle', agent_session: { value: F } },
+    { pane_id: 'w1:p8', tab_id: 'w1:t8', label: 'closed-by-hand', agent: 'claude', agent_status: 'idle', agent_session: { value: G } },
+  );
+  for (const [pane, id] of [['w1:p1', A], ['w1:p2', B], ['w1:p3', C], ['w1:p5', D], ['w1:p7', F], ['w1:p8', G]]) t.herdr.processInfo[pane] = [{ pid: 2000 + parseInt(pane.slice(4), 10), argv0: 'claude' }];
+}
+
+test('sync: every live Claude pane whose session is not listed is listed by the same click; the panes are not touched', async () => {
+  const t = await start();
+  try {
+    withUnlistedPanes(t);
+    fs.writeFileSync(path.join(t.tree.outDir, 'closed.txt'), `${G}\n`);
+    t.tick(1000);
+    const synced = await t.post('sync', {});
+    assert.equal(synced.status, 200, synced.raw);
+    // C is the unlisted pane of the fixtures; D is Claude too. E is another agent, F has no log, G was taken off by hand.
+    assert.deepEqual(t.herdr.readerRuns(), [['adopt', C, D]], 'one rebuild, which lists them first');
+    assert.equal(t.herdr.agentCalls().length, 0, 'no pane is touched');
+    const read = t.herdr.calls.filter((call) => call.args[0] === '--session').map((call) => call.args[1]);
+    assert.deepEqual([...new Set(read)], ['work'], 'the default and dash-named Herdr sessions stay unread');
+    // What reader.py adopt did: the next click lists nothing new, and a session listed since is not named again.
+    fs.writeFileSync(path.join(t.tree.outDir, 'sessions.txt'), [A, B, C, D].join('\n') + '\n');
+    t.tick(5000);
+    assert.equal((await t.post('sync', {})).status, 200);
+    assert.deepEqual(t.herdr.readerRuns(), [['adopt', C, D], ['rebuild']]);
+    assert.deepEqual(Object.keys(synced.json.panes).sort(), [A, B].sort(), 'the answer names the sessions listed when it was read');
+  } finally { await t.close(); }
+});
+
+test('sync: a session taken off the list by hand stays off, and listing it again by name puts it back in reach', async () => {
+  const t = await start();
+  try {
+    withUnlistedPanes(t);
+    fs.writeFileSync(path.join(t.tree.outDir, 'closed.txt'), `${C}\n${D}\n${G}\n`);
+    t.tick(1000);
+    assert.equal((await t.post('sync', {})).status, 200);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']], 'C, D and G were each closed or removed by a person');
+    fs.writeFileSync(path.join(t.tree.outDir, 'closed.txt'), `${C}\n`);  // what reader.py add, reopen and follow do for D and G
+    t.tick(5000);
+    assert.equal((await t.post('sync', {})).status, 200);
+    assert.deepEqual(t.herdr.readerRuns().at(-1), ['adopt', D, G], 'C stays off');
+  } finally { await t.close(); }
+});
+
+test('sync: a pane Herdr stopped answering about lists nothing, and nothing is read from a session that is not running', async () => {
+  const t = await start();
+  try {
+    withUnlistedPanes(t);
+    t.herdr.down = true;
+    t.tick(1000);
+    assert.equal((await t.post('sync', {})).status, 200);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+  } finally { await t.close(); }
+});
+
 test('sync: a failed rebuild is reported, and bad input and foreign pages are refused', async () => {
   const t = await start();
   try {
