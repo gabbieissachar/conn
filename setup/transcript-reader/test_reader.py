@@ -961,6 +961,17 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("picker.label(s, data.sessions, pickerSection, sessionName)", page, mode)
             self.assertIn("picker.sections(data.sessions, paneLive)", page, mode)
 
+    def test_the_answer_sheet_carries_the_send_once_rules_that_sendonce_test_js_runs(self):
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        hosted_sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null", "hosted")
+        for mode, page in (("local", sheet), ("hosted", hosted_sheet)):
+            self.assertEqual(page.count("const makeSendOnce = () => {"), 1, mode)
+            self.assertNotIn("/*__SENDONCE__*/", page, mode)
+            self.assertIn("if (!sendOnce.begin(key, text)) return;", page, mode)
+            self.assertNotIn("link.sending", page, mode)
+        for mode, page in self.pages():
+            self.assertNotIn("makeSendOnce", page, mode)
+
     def test_both_copies_carry_find_once_inside_the_hashed_script_and_the_answer_sheet_does_not(self):
         for mode, page in self.pages():
             self.assertEqual(page.count("const finder = (() => {"), 1, mode)

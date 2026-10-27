@@ -127,6 +127,7 @@
   // sends it to the session's pane when it is awake and writes a receipt this page then shows.
   const HOSTED = "__MODE__" === "hosted";
 /*__LIVE__*/
+/*__SENDONCE__*/
 /*__HOSTED__*/
   let data = HOSTED ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -282,7 +283,9 @@
     renderSend();
   }
   // Send needs the served page and a live Herdr pane for the session; the reason shows when it cannot.
-  const link = { pane: undefined, sending: false, result: null };
+  const link = { pane: undefined, result: null };
+  // What stays under a sent questionnaire once the result message has gone: Send is off for exactly these answers.
+  const sentLine = gone => `${gone.word} at ${gone.at}. Change an answer to send again.`;
   function renderSend() {
     const q = qs[state.q], button = document.getElementById("send"), why = document.getElementById("why");
     const pane = q && link.pane ? link.pane[q.session] : null;
@@ -292,10 +295,12 @@
       const seen = q && q.pane;
       reason = !seen ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
         : !seen.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
-      button.disabled = Boolean(reason) || link.sending || !q || !message(q);
+      const gone = q && sendOnce.sentFor(storeKey(q), message(q));
+      button.disabled = Boolean(reason) || sendOnce.busy() || !q || !message(q) || Boolean(gone);
+      button.textContent = gone ? gone.word : "Send";
       why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
       const asleep = hosted.stale(data.generated);
-      why.textContent = link.result ? link.result.text : reason || (asleep
+      why.textContent = link.result ? link.result.text : reason || (gone ? sentLine(gone) : asleep
         ? `The laptop looks asleep (last build ${builtAt(data.generated)}): Send queues this line for ${seen.label}, and it goes out when the laptop is awake.`
         : `Send queues this line for ${seen.label}; the laptop sends it when it is awake.`);
       return;
@@ -304,37 +309,44 @@
     else if (link.pane === undefined) reason = "Connecting to the local server…";
     else if (!pane) reason = "No live Herdr pane runs this session, so Send is off. Copy still works.";
     else if (pane.status === "blocked") reason = `${pane.label} is waiting at a permission prompt or question. Answer it in Herdr first.`;
-    button.disabled = Boolean(reason) || link.sending || !message(q);
+    const gone = q && sendOnce.sentFor(storeKey(q), message(q));
+    button.disabled = Boolean(reason) || sendOnce.busy() || !message(q) || Boolean(gone);
+    button.textContent = gone ? gone.word : "Send";
     why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
-    why.textContent = link.result ? link.result.text : reason || (pane ? `Send goes straight to ${pane.label} in Herdr ${pane.herdr}.` : "");
+    why.textContent = link.result ? link.result.text : reason || (gone ? sentLine(gone) : pane ? `Send goes straight to ${pane.label} in Herdr ${pane.herdr}.` : "");
   }
   async function sendAnswers() {
     const q = qs[state.q], text = message(q); if (!text) return;
-    link.sending = true; link.result = null; renderSend();
+    // Taken before anything is awaited, so a second tap before the first render sends nothing.
+    const key = storeKey(q); if (!sendOnce.begin(key, text)) return;
+    link.result = null; renderSend();
     const clock = at => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(at));
     try {
       if (HOSTED) {
         const queued = await hosted.enqueue(q.session, text);
         const label = (q.pane && q.pane.label) || q.session.slice(0, 8);
         link.result = { ok: true, text: `Queued for ${label} at ${clock(queued.at * 1000)}. The laptop sends it when it is awake.` };
-        link.sending = false; renderSend();
-        await watchReceipt(queued.id, label, clock);
+        sendOnce.done(key, text, "Queued", clock(queued.at * 1000)); renderSend();
+        await watchReceipt(queued.id, label, clock, key, text);
         return;
       }
       const sent = await live.send(q.session, text);
+      sendOnce.done(key, text, "Sent", clock(Date.now()));
       link.result = { ok: true, text: `Sent to ${sent.label} at ${clock(Date.now())}.` };
-    } catch (e) { link.result = { ok: false, text: e.message }; }
-    link.sending = false; renderSend();
+    } catch (e) { sendOnce.failed(); link.result = { ok: false, text: e.message }; }
+    renderSend();
     setTimeout(() => { link.result = null; renderSend(); }, 6000);
   }
   // The hosted copy: the laptop's receipt for a queued line, asked about every 4 seconds (up to a day) and shown in place.
-  async function watchReceipt(id, label, clock) {
+  async function watchReceipt(id, label, clock, key, text) {
     link.watching = id;
     for (let tries = 0; tries < 21600 && link.watching === id; tries += 1) {
       await new Promise(resolve => setTimeout(resolve, 4000));
       if (document.hidden) continue;
       const receipt = await hosted.receipt(id).catch(() => null);
       if (!receipt || receipt.state === "sending" || link.watching !== id) continue;
+      // A line the laptop refused did not go, so it can be sent again.
+      if (receipt.state === "sent") sendOnce.relabel(key, text, "Sent"); else sendOnce.forget(key, text);
       link.result = receipt.state === "sent" ? { ok: true, text: `Sent by the laptop to ${receipt.label || label} at ${clock(receipt.at * 1000)}.` }
         : { ok: false, text: `Not sent: ${receipt.reason || "the laptop refused it."}` };
       renderSend();
@@ -475,7 +487,7 @@
     const s = await live.state(false);
     link.pane = s.panes || {}; renderSend();
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
-    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !link.sending) await refresh();
+    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !sendOnce.busy()) await refresh();
   });
 })();
 </script>
