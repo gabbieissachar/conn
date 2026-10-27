@@ -21,18 +21,10 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const { create, COPY_HEADER, copyId } = require('./api');
+const { isTailnetAddress } = require('./tailnet');
 
 const DEFAULT_PORT = 8768;
-const TAILNET_RANGE = [100 * 2 ** 24 + 64 * 2 ** 16, 100 * 2 ** 24 + 128 * 2 ** 16];  // 100.64.0.0/10, Tailscale's addresses
 const SERVER_HEADER = 'x-transcript-reader-server';
-
-// Whether text is a Tailscale IPv4 address, the only kind the tailnet listener may bind.
-function isTailnetAddress(text) {
-  const parts = String(text).split('.');
-  if (parts.length !== 4 || !parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)) return false;
-  const value = parts.reduce((sum, part) => sum * 256 + Number(part), 0);
-  return value >= TAILNET_RANGE[0] && value < TAILNET_RANGE[1];
-}
 
 // Listens on loopback only, IPv4 and IPv6 (a bare listen would expose the reader to the network),
 // plus, when tailnet is { ip, passcodeFile[, port] } and the passcode file holds a hash, that one

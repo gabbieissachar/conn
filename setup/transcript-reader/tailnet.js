@@ -19,13 +19,18 @@
 // and the per-start token again, so a phone needs both the cookie and the token the page
 // carries. Requests on the loopback listeners never come here.
 //
+// The Herdr organizer's phone listener (setup/herdr-organizer/phone.js) uses this same module with its
+// own site (paths, wording), the same passcode file and the same cookie, so one sign-in opens both; the
+// reader's site is the default.
+//
 // Every sign-in attempt, refused ones included, is one line in the server log with the
 // client address and the outcome (never the passcode), so a phone that cannot get in can be
 // read from the Mac. The passcode page shows each way a sign-in can fail in words.
 //
 // The passcode is stored only as a salted scrypt hash in one owner-only file (set with
-// `serve.sh passcode`, which reads it from the terminal without echo). Sessions live in
-// memory: a restart signs the phone out, and so does a new passcode or a removed file.
+// `serve.sh passcode`, which reads it from the terminal without echo). Sessions are files in a
+// folder beside it, so the reader and the organizer share one sign-in: a new passcode signs every device
+// out of both, and so does a removed passcode file; a restart does not.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -35,8 +40,20 @@ const { createGuard } = require('../herdr-organizer/guard');
 const SIGNIN = '/transcript-reader/signin';
 const SIGNOUT = '/transcript-reader/signout';
 const HOME = '/setup/transcript-reader/out/prototype.html';
-const COOKIE = 'reader_session';
+// One cookie name for every site that shares the passcode: browsers scope a cookie to the address, not the port, so
+// the one sign-in reaches the reader (port 8768) and the organizer (port 8765) alike.
+const COOKIE = 'pmos_session';
+// What differs between the pages that use this module: where the sign-in lives, where a signed-in phone
+// lands, and the words (the passcode, the cookie and the sessions are shared). prefix is the folder the sign-in routes sit under; landing is
+// where a page with nothing better to go back to ends up. rootRedirect: whether "/" is the reader's
+// front door (a site that serves an explicit list of paths has no "/").
+const READER_SITE = {
+  noun: 'reader', title: 'Transcript reader', openLabel: 'Open the reader', passcodeCommand: 'serve.sh passcode',
+  prefix: '/transcript-reader/', signin: SIGNIN, signout: SIGNOUT, home: HOME, landing: '/', rootRedirect: true,
+};
+const TAILNET_RANGE = [100 * 2 ** 24 + 64 * 2 ** 16, 100 * 2 ** 24 + 128 * 2 ** 16];  // 100.64.0.0/10, Tailscale's addresses
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;  // idle: every request from the phone renews it
+const RENEW_AFTER_MS = 60 * 60 * 1000;
 const MAX_SESSIONS = 20;
 const MAX_BODY_BYTES = 2048;
 const MIN_PASSCODE = 8;
@@ -50,6 +67,20 @@ const LOCK_BASE_MS = 30 * 1000;
 const LOCK_MAX_MS = 15 * 60 * 1000;
 const FORGET_MS = 60 * 60 * 1000;
 const MAX_TRACKED = 500;
+
+// The passcode file every phone listener uses unless told otherwise: PMOS_READER_PASSCODE_FILE, else the reader's
+// out/passcode.json in this copy of the repo (gitignored). One file, one passcode command (reader serve.sh passcode).
+function defaultPasscodeFile(root, env = process.env) {
+  return env.PMOS_READER_PASSCODE_FILE || path.join(root, 'setup', 'transcript-reader', 'out', 'passcode.json');
+}
+
+// Whether text is a Tailscale IPv4 address, the only kind a tailnet listener may bind.
+function isTailnetAddress(text) {
+  const parts = String(text).split('.');
+  if (parts.length !== 4 || !parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)) return false;
+  const value = parts.reduce((sum, part) => sum * 256 + Number(part), 0);
+  return value >= TAILNET_RANGE[0] && value < TAILNET_RANGE[1];
+}
 
 // ---------------------------------------------------------------- the passcode file
 
@@ -117,30 +148,59 @@ function recordSource(file) {
 
 // ----------------------------------------------------------- sessions and throttling
 
-// Sessions are kept under the hash of their token, so looking one up never compares the
-// token itself, and what a memory dump holds cannot be replayed as a cookie.
-function createSessions(now) {
-  const sessions = new Map();
-  const key = (token) => crypto.createHash('sha256').update(token).digest('hex');
+// Sessions are one small file each in a folder beside the passcode file, named by the SHA-256 of
+// their token, so looking one up never compares the token itself, and what the folder holds cannot be
+// replayed as a cookie. They are on disk so that every server using this passcode file (the reader's and
+// the Herdr organizer's, on the same Tailscale address) accepts the same sign-in, and a sign-out in one
+// ends the session in both. A file holds the expiry and a digest of the passcode hash that was current at
+// sign-in, so a new passcode ends every session. Each session is its own file, so two servers never
+// rewrite one shared file. A restart keeps sessions; a lookup renews one at most once an hour (the
+// cookie itself is renewed on every request).
+function createSessions(now, dir) {
+  const fileOf = (token) => path.join(dir, crypto.createHash('sha256').update(token).digest('hex'));
+  const digest = (generation) => crypto.createHash('sha256').update(String(generation)).digest('hex');
+  const read = (file) => {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return value && typeof value.exp === 'number' && typeof value.gen === 'string' ? value : null;
+    } catch { return null; }
+  };
+  const write = (file, value) => {
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
+    fs.renameSync(temporary, file);
+  };
+  const drop = (file) => { try { fs.unlinkSync(file); } catch { /* already gone */ } };
   return {
     open(generation) {
-      for (const [id, session] of sessions) if (session.expires <= now()) sessions.delete(id);
-      while (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const live = [];
+      for (const name of fs.readdirSync(dir)) {
+        const file = path.join(dir, name);
+        if (/^[0-9a-f]{64}$/.test(name)) {
+          const value = read(file);
+          if (!value || value.exp <= now()) drop(file); else live.push({ file, exp: value.exp });
+        } else if (name.endsWith('.tmp')) {
+          try { if (Date.now() - fs.statSync(file).mtimeMs > 60 * 1000) drop(file); } catch { /* gone */ }
+        }
+      }
+      live.sort((a, b) => a.exp - b.exp);
+      while (live.length >= MAX_SESSIONS) drop(live.shift().file);
       const token = crypto.randomBytes(32).toString('base64url');
-      sessions.set(key(token), { expires: now() + SESSION_MS, generation });
+      write(fileOf(token), { exp: now() + SESSION_MS, gen: digest(generation) });
       return token;
     },
     // A session made under an earlier passcode is no longer valid.
     valid(token, generation) {
-      if (typeof token !== 'string' || !token) return false;
-      const id = key(token);
-      const session = sessions.get(id);
-      if (!session) return false;
-      if (session.expires <= now() || session.generation !== generation) { sessions.delete(id); return false; }
-      session.expires = now() + SESSION_MS;
+      if (typeof token !== 'string' || !token || token.length > 200) return false;
+      const file = fileOf(token);
+      const value = read(file);
+      if (!value) return false;
+      if (value.exp <= now() || value.gen !== digest(generation)) { drop(file); return false; }
+      if (value.exp - now() < SESSION_MS - RENEW_AFTER_MS) write(file, { exp: now() + SESSION_MS, gen: value.gen });
       return true;
     },
-    close(token) { if (typeof token === 'string' && token) sessions.delete(key(token)); },
+    close(token) { if (typeof token === 'string' && token) drop(fileOf(token)); },
   };
 }
 
@@ -188,18 +248,18 @@ a.quiet{display:block;margin-top:16px;text-align:center;color:var(--muted);font-
 #w{margin:14px 0 0;color:var(--bad);font-size:14px}
 `.trim();
 
-// The page's one script. Every way a sign-in can end shows in #m; nothing ends silently:
+// The page's one script, written for one site. Every way a sign-in can end shows in #m; nothing ends silently:
 // a wrong passcode, a lock with its wait, a refusal by the guard (plain text), a network error, no
-// answer in 10 seconds, an answer that is not the reader's, a right passcode whose cookie did not come
+// answer in 10 seconds, an answer that is not the server's, a right passcode whose cookie did not come
 // back, and a page that did not open. #w is a message the script removes as its first act, so a page
 // whose script cannot run (turned off or blocked) says so instead of sitting there.
-// Signing in at the very address that asked for it (a reader page opened with #s=..., or the reload after a
+// Signing in at the very address that asked for it (a page opened with #s=..., or the reload after a
 // sign-out) must load it again: replacing the location with itself only moves within the page when it has a fragment.
-const SCRIPT = `
+const scriptFor = (site) => `
 var f=document.getElementById('f'),p=document.getElementById('p'),m=document.getElementById('m'),b=document.getElementById('b');
 document.getElementById('w').remove();
 var label=b.textContent,here=location.pathname+location.search+location.hash;
-var next=location.pathname.indexOf('/transcript-reader/')===0?'/':here;
+var next=location.pathname.indexOf('${site.prefix}')===0?'${site.landing}':here;
 function stop(text,clear){if(clear)p.value='';b.disabled=false;b.textContent=label;m.textContent=text;p.focus()}
 function parse(t){try{var j=JSON.parse(t);return j&&typeof j==='object'?j:null}catch(e){return null}}
 function ask(url,init){return new Promise(function(resolve,reject){
@@ -212,46 +272,57 @@ var s=x.r.status,j=x.j||{},n=Number(j.retry_after)||0,t=x.j?'':x.t.trim().slice(
 if(j.code==='wrong_passcode')return'Wrong passcode.'+(n?' Too many wrong tries in a row: sign-in is locked for '+n+' seconds.':'');
 if(j.code==='throttled')return'Too many wrong passcodes. Try again in '+n+' seconds.';
 if(j.code==='busy')return'The laptop is busy checking other tries. Try again in a moment.';
-if(j.code==='no_passcode')return'No passcode is set on the laptop. Set one there with serve.sh passcode.';
-if(j.code==='bad_request')return'The reader could not read the request (HTTP '+s+'). Reload this page and try again.';
-if(j.code==='internal')return'The reader hit an unexpected error. Its log on the laptop says why.';
-if(s===403||s===405||s===415)return'The reader refused the request (HTTP '+s+(t&&t.indexOf('<')<0?': '+t:'')+'). Open this page at the exact address the laptop shows, with no proxy, VPN or other name in between.';
-return'The reader gave an answer this page cannot read (HTTP '+s+'). Something between the phone and the laptop may have answered instead.'}
+if(j.code==='no_passcode')return'No passcode is set on the laptop. Set one there with ${site.passcodeCommand}.';
+if(j.code==='bad_request')return'The ${site.noun} could not read the request (HTTP '+s+'). Reload this page and try again.';
+if(j.code==='internal')return'The ${site.noun} hit an unexpected error. Its log on the laptop says why.';
+if(s===403||s===405||s===415)return'The ${site.noun} refused the request (HTTP '+s+(t&&t.indexOf('<')<0?': '+t:'')+'). Open this page at the exact address the laptop shows, with no proxy, VPN or other name in between.';
+return'The ${site.noun} gave an answer this page cannot read (HTTP '+s+'). Something between the phone and the laptop may have answered instead.'}
 function open(to){b.textContent='Opening...';if(to===here)location.reload();else location.replace(to);
-setTimeout(function(){stop('You are signed in, but the reader did not open. Reload this page.',false)},8000)}
+setTimeout(function(){stop('You are signed in, but the ${site.noun} did not open. Reload this page.',false)},8000)}
 f.addEventListener('submit',function(e){
 e.preventDefault();if(b.disabled)return;b.disabled=true;b.textContent='Checking...';m.textContent='';
-ask('/transcript-reader/signin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({passcode:p.value,next:next})})
+ask('${site.signin}',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({passcode:p.value,next:next})})
 .then(function(x){
 if(!(x.r.ok&&x.j&&x.j.status==='ok'&&x.j.next)){stop(why(x),x.j&&x.j.code==='wrong_passcode');return}
-return ask('/transcript-reader/signin?check=1',{credentials:'same-origin',cache:'no-store'}).then(function(y){
+return ask('${site.signin}?check=1',{credentials:'same-origin',cache:'no-store'}).then(function(y){
 if(!(y.r.ok&&y.j))stop(why(y),false);
 else if(y.j.signed_in)open(x.j.next);
-else stop('The passcode was right, but this browser did not keep the sign-in cookie, so the reader would only ask again. Allow cookies for this address (and leave Private Browsing), then try again.',false)})})
-.catch(function(e){stop(e==='timeout'?'The reader did not answer within 10 seconds. Check that the laptop is awake and on the tailnet, then try again.'
-:e==='network'?'Could not reach the reader. Check that this phone is on the tailnet and the laptop is awake, then try again.'
+else stop('The passcode was right, but this browser did not keep the sign-in cookie, so the ${site.noun} would only ask again. Allow cookies for this address (and leave Private Browsing), then try again.',false)})})
+.catch(function(e){stop(e==='timeout'?'The ${site.noun} did not answer within 10 seconds. Check that the laptop is awake and on the tailnet, then try again.'
+:e==='network'?'Could not reach the ${site.noun}. Check that this phone is on the tailnet and the laptop is awake, then try again.'
 :'Something went wrong on this page: '+(e&&e.message||e),false)})});
 `.trim();
 
 const sourceHash = (text) => `'sha256-${crypto.createHash('sha256').update(text).digest('base64')}'`;
-const PAGE_HEADERS = {
-  'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-  'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
-  'Content-Security-Policy': `default-src 'none'; style-src ${sourceHash(STYLE)}; script-src ${sourceHash(SCRIPT)}; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
-};
 
-const shell = (body, withScript) => '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-  + '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex">'
-  + `<title>Transcript reader</title><style>${STYLE}</style></head><body><main>${body}</main>${withScript ? `<script>${SCRIPT}</script>` : ''}</body></html>`;
-
-const PASSCODE_PAGE = shell('<h1>Transcript reader</h1><p>Enter the passcode set on the laptop.</p>'
-  + '<form id="f" autocomplete="on"><label for="p">Passcode</label>'
-  + '<input id="p" type="password" name="passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>'
-  + '<p id="m" role="alert" aria-live="polite"></p><button id="b" type="submit">Open the reader</button></form>'
-  + '<p id="w" role="alert">The passcode check did not start: JavaScript is turned off for this page or the browser blocked its script. Turn JavaScript on, reload this page and try again.</p>', true);
-
-const SIGNED_IN_PAGE = shell(`<h1>Signed in</h1><p>This device can open the reader.</p><a class="button" href="${HOME}">Open the reader</a>`
-  + `<a class="quiet" href="${SIGNOUT}">Sign out</a>`, false);
+// The two pages of a site, built once: the passcode page (with its content policy, whose hashes name
+// exactly this style and script) and the signed-in page.
+const pageSets = new Map();
+function pagesFor(site) {
+  let pages = pageSets.get(site);
+  if (pages) return pages;
+  const script = scriptFor(site);
+  const headers = {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
+    'Content-Security-Policy': `default-src 'none'; style-src ${sourceHash(STYLE)}; script-src ${sourceHash(script)}; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
+  };
+  const shell = (body, withScript) => '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex">'
+    + `<title>${site.title}</title><style>${STYLE}</style></head><body><main>${body}</main>${withScript ? `<script>${script}</script>` : ''}</body></html>`;
+  pages = {
+    headers,
+    passcode: shell(`<h1>${site.title}</h1><p>Enter the passcode set on the laptop.</p>`
+      + '<form id="f" autocomplete="on"><label for="p">Passcode</label>'
+      + '<input id="p" type="password" name="passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>'
+      + `<p id="m" role="alert" aria-live="polite"></p><button id="b" type="submit">${site.openLabel}</button></form>`
+      + '<p id="w" role="alert">The passcode check did not start: JavaScript is turned off for this page or the browser blocked its script. Turn JavaScript on, reload this page and try again.</p>', true),
+    signedIn: shell(`<h1>Signed in</h1><p>This device can open the ${site.noun}.</p><a class="button" href="${site.home}">${site.openLabel}</a>`
+      + `<a class="quiet" href="${site.signout}">Sign out</a>`, false),
+  };
+  pageSets.set(site, pages);
+  return pages;
+}
 
 // ------------------------------------------------------------------ the listener
 
@@ -260,7 +331,7 @@ const json = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(JSON.stringify(body));
 };
-const html = (res, status, page) => { res.writeHead(status, PAGE_HEADERS); res.end(page); };
+const html = (res, status, headers, page) => { res.writeHead(status, headers); res.end(page); };
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -281,24 +352,27 @@ function readBody(req) {
   });
 }
 
-function cookieOf(req) {
+function cookieOfName(req, name) {
   for (const part of String(req.headers.cookie || '').split(';')) {
     const at = part.indexOf('=');
-    if (at > 0 && part.slice(0, at).trim() === COOKIE) return part.slice(at + 1).trim();
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim();
   }
   return '';
 }
 
 // Only a same-origin path: a leading slash, and not "//host" or "/\host".
-const safeNext = (value) => (typeof value === 'string' && value.length <= 2048 && /^\/(?![/\\])[^\s\\]*$/.test(value) && !value.startsWith(SIGNIN) && !value.startsWith(SIGNOUT) ? value : '/');
+const safeNext = (value, site = READER_SITE) => (typeof value === 'string' && value.length <= 2048 && /^\/(?![/\\])[^\s\\]*$/.test(value) && !value.startsWith(site.signin) && !value.startsWith(site.signout) ? value : site.landing);
 
 // ip and port are where the listener is bound; passcodeFile holds the hash; token is the
-// reader's per-start token, shared with the loopback guard so pages carry one token. log takes
-// one line of text, the sign-in record (the server's own log by default).
-function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
+// server's per-start token, shared with the loopback guard so pages carry one token. log takes
+// one line of text, the sign-in record (the server's own log by default). site: see READER_SITE. sessionsDir: where
+// sessions are kept; every server given the same passcode file shares it (see createSessions).
+function create({ ip, port, token, tokenHeader, passcodeFile, sessionsDir = `${passcodeFile}.sessions`, site = READER_SITE, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
   const guard = createGuard({ port, token, tokenHeader, hosts: [ip] });
+  const pages = pagesFor(site);
+  const cookieOf = (req) => cookieOfName(req, COOKIE);
   const currentRecord = recordSource(passcodeFile);
-  const sessions = createSessions(now);
+  const sessions = createSessions(now, sessionsDir);
   const throttle = createThrottle(now);
   let verifying = 0;
 
@@ -337,7 +411,7 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
     }
     throttle.passed(address);
     note(req, 'ok');
-    json(res, 200, { status: 'ok', next: safeNext(body.next) }, { 'Set-Cookie': setCookie(sessions.open(record.hash), SESSION_MS / 1000) });
+    json(res, 200, { status: 'ok', next: safeNext(body.next, site) }, { 'Set-Cookie': setCookie(sessions.open(record.hash), SESSION_MS / 1000) });
   }
 
   // Returns true when this module answered. false: the request is signed in and api.js goes on.
@@ -348,36 +422,36 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
     const method = String(req.method).toUpperCase();
     const pathname = url.pathname;
     if (!verdict.ok) {
-      if (pathname === SIGNIN && method === 'POST') note(req, `refused by the guard (${verdict.status} ${verdict.message})`);
+      if (pathname === site.signin && method === 'POST') note(req, `refused by the guard (${verdict.status} ${verdict.message})`);
       text(res, verdict.status, verdict.message);
       return true;
     }
-    if (pathname === SIGNIN) {
+    if (pathname === site.signin) {
       if (method === 'POST') signIn(req, res).catch((error) => { note(req, `error (${(error && error.message) || error})`); if (!res.headersSent) json(res, 500, { status: 'error', code: 'internal', message: 'Unexpected error.' }); else res.end(); });
       else if (url.searchParams.get('check') === '1') {
         // The passcode page asks this right after a correct passcode: did the cookie come back?
         const signed = signedIn(req);
         if (!signed) note(req, 'cookie check failed: the browser sent no valid session cookie right after a correct passcode');
         json(res, 200, { status: 'ok', signed_in: signed });
-      } else html(res, 200, signedIn(req) ? SIGNED_IN_PAGE : PASSCODE_PAGE);
+      } else html(res, 200, pages.headers, signedIn(req) ? pages.signedIn : pages.passcode);
       return true;
     }
-    if (pathname === SIGNOUT) {
+    if (pathname === site.signout) {
       sessions.close(cookieOf(req));
-      res.writeHead(303, { Location: SIGNIN, 'Set-Cookie': setCookie('', 0), 'Cache-Control': 'no-store' });
+      res.writeHead(303, { Location: site.signin, 'Set-Cookie': setCookie('', 0), 'Cache-Control': 'no-store' });
       res.end();
       return true;
     }
     if (isViewer && method === 'GET') return false;
     if (!signedIn(req)) {
-      if (method === 'GET' && (pathname === '/' || isPage)) html(res, 401, PASSCODE_PAGE);
+      if (method === 'GET' && ((site.rootRedirect && pathname === '/') || isPage)) html(res, 401, pages.headers, pages.passcode);
       else json(res, 401, { status: 'error', code: 'sign_in_required', message: 'Sign in first.' });
       return true;
     }
     // Every request from a signed-in device renews its session (and its cookie).
     res.setHeader('Set-Cookie', setCookie(cookieOf(req), SESSION_MS / 1000));
-    if (pathname === '/' && method === 'GET') {
-      res.writeHead(302, { Location: HOME, 'Cache-Control': 'no-store' });
+    if (site.rootRedirect && pathname === '/' && method === 'GET') {
+      res.writeHead(302, { Location: site.home, 'Cache-Control': 'no-store' });
       res.end();
       return true;
     }
@@ -387,4 +461,4 @@ function create({ ip, port, token, tokenHeader, passcodeFile, now = () => Date.n
   return { intercept, guard, hasPasscode: () => Boolean(currentRecord()) };
 }
 
-module.exports = { create, writePasscodeFile, makeRecord, parseRecord, passcodeMatches, passcodeProblem, recordSource, createThrottle, createSessions, safeNext, SIGNIN, SIGNOUT, HOME, COOKIE, MIN_PASSCODE };
+module.exports = { create, isTailnetAddress, defaultPasscodeFile, READER_SITE, writePasscodeFile, makeRecord, parseRecord, passcodeMatches, passcodeProblem, recordSource, createThrottle, createSessions, safeNext, SIGNIN, SIGNOUT, HOME, COOKIE, MIN_PASSCODE };

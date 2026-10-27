@@ -46,7 +46,8 @@ function fakeHerdr() {
 }
 
 // A reader server with its loopback listeners and, unless withTailnet is false, a tailnet listener.
-async function boot({ passcode = PASSCODE, withTailnet = true } = {}) {
+// sharedPasscodeFile: another boot's passcode file, so this server shares its passcode and sessions (a restart, or a second server).
+async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFile = null } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-tailnet-'));
   const root = path.join(base, 'repo');
   const outDir = path.join(root, 'setup', 'transcript-reader', 'out');
@@ -60,8 +61,8 @@ async function boot({ passcode = PASSCODE, withTailnet = true } = {}) {
   fs.writeFileSync(log, '{}\n');
   const old = new Date(Date.now() - 3600 * 1000);
   fs.utimesSync(log, old, old);
-  const passcodeFile = path.join(base, 'config', 'passcode.json');
-  if (passcode) await tailnet.writePasscodeFile(passcodeFile, passcode);
+  const passcodeFile = sharedPasscodeFile || path.join(base, 'config', 'passcode.json');
+  if (passcode && !sharedPasscodeFile) await tailnet.writePasscodeFile(passcodeFile, passcode);
   const herdr = fakeHerdr();
   const lines = [];
   let clock = Date.now();
@@ -158,7 +159,7 @@ test('on the tailnet listener a request without a session gets the passcode page
 test('a made-up or stale session cookie is no session', async (t) => {
   const s = await boot();
   t.after(s.close);
-  for (const cookie of ['reader_session=nope', 'reader_session=', 'other=1', 'reader_session=' + 'a'.repeat(43)]) {
+  for (const cookie of ['pmos_session=nope', 'pmos_session=', 'other=1', 'pmos_session=' + 'a'.repeat(43)]) {
     assert.equal((await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } })).status, 401, cookie);
   }
 });
@@ -400,7 +401,7 @@ test('GET /transcript-reader/signin?check=1 says whether the request carries a s
   assert.equal(none.status, 200);
   assert.deepEqual(none.json, { status: 'ok', signed_in: false });
   assert.match(none.headers['content-type'], /application\/json/);
-  assert.equal((await check({ Cookie: 'reader_session=nope' })).json.signed_in, false);
+  assert.equal((await check({ Cookie: 'pmos_session=nope' })).json.signed_in, false);
   const cookie = await s.signedIn();
   assert.deepEqual((await check({ Cookie: cookie })).json, { status: 'ok', signed_in: true });
   assert.equal((await check({ Host: 'evil.example:' + s.tailnetPort, Cookie: cookie })).status, 403);
@@ -510,7 +511,7 @@ test('a correct passcode sets an HttpOnly, SameSite=Strict session cookie and th
   assert.equal(signIn.status, 200);
   assert.equal(signIn.json.next, PAGE);
   const setCookie = signIn.headers['set-cookie'][0];
-  assert.match(setCookie, /^reader_session=[A-Za-z0-9_-]{43};/);
+  assert.match(setCookie, /^pmos_session=[A-Za-z0-9_-]{43};/);
   assert.match(setCookie, /; HttpOnly/);
   assert.match(setCookie, /; SameSite=Strict/);
   assert.match(setCookie, /; Path=\//);
@@ -663,7 +664,7 @@ test('sign-out ends the session, and a restart, a new passcode or a removed pass
   const out = await s.onTailnet({ path: '/transcript-reader/signout', headers: { ...NAVIGATE, Cookie: fresh } });
   assert.equal(out.status, 303);
   assert.equal(out.headers.location, '/transcript-reader/signin');
-  assert.match(out.headers['set-cookie'][0], /^reader_session=;.*Max-Age=0/);
+  assert.match(out.headers['set-cookie'][0], /^pmos_session=;.*Max-Age=0/);
   assert.equal((await openFresh()).status, 401);
 
   // Removing the file shuts the address off for everyone, signed in or not.
@@ -674,7 +675,7 @@ test('sign-out ends the session, and a restart, a new passcode or a removed pass
   assert.equal((await s.signIn('a brand new passcode')).status, 503);
 });
 
-test('a session lasts 30 days from its last use, and a restart forgets every session', async (t) => {
+test('a session lasts 30 days from its last use, survives a restart, and is known only to servers sharing the passcode file', async (t) => {
   const s = await boot();
   t.after(s.close);
   const cookie = await s.signedIn();
@@ -689,9 +690,39 @@ test('a session lasts 30 days from its last use, and a restart forgets every ses
   s.tick(31 * day);
   assert.equal((await open()).status, 401, 'idle for more than 30 days');
 
+  // A restart (a new server over the same passcode file) keeps the phone signed in...
+  const fresh = await s.signedIn();
+  const restarted = await boot({ sharedPasscodeFile: s.passcodeFile });
+  t.after(restarted.close);
+  assert.equal((await restarted.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: fresh } })).status, 200, 'a restart keeps the session');
+  // ...and so does a second server on the same file, while a server with another passcode file never heard of it.
   const other = await boot();
   t.after(other.close);
-  assert.equal((await other.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } })).status, 401, 'a cookie from another server start is no session');
+  assert.equal((await other.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: fresh } })).status, 401, 'a cookie from a server with another passcode file is no session');
+  // A sign-out on one server ends the session on the other.
+  await s.onTailnet({ path: '/transcript-reader/signout', headers: { ...NAVIGATE, Cookie: fresh } });
+  assert.equal((await restarted.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: fresh } })).status, 401, 'signed out everywhere that shares the file');
+});
+
+test('sessions are one owner-only file each beside the passcode file, named by a hash, holding no token or passcode', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const cookie = await s.signedIn();
+  const token = cookie.split('=')[1];
+  const dir = s.passcodeFile + '.sessions';
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  const names = fs.readdirSync(dir);
+  assert.equal(names.length, 1);
+  assert.match(names[0], /^[0-9a-f]{64}$/);
+  assert.equal(fs.statSync(path.join(dir, names[0])).mode & 0o777, 0o600);
+  const text = fs.readFileSync(path.join(dir, names[0]), 'utf8');
+  assert.equal(text.includes(token), false, 'the token itself is not stored');
+  assert.equal(names[0].includes(token), false);
+  const record = fs.readFileSync(s.passcodeFile, 'utf8');
+  assert.equal(text.includes(JSON.parse(record).hash), false, 'nor the passcode hash');
+  // no more than 20 live sessions: the oldest goes first
+  for (let i = 0; i < 25; i += 1) { s.tick(1000); await s.signIn(PASSCODE); }
+  assert.ok(fs.readdirSync(dir).length <= 20);
 });
 
 // ----------------------------------------------------------- the listener itself

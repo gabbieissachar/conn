@@ -9,10 +9,18 @@
 //
 // The browser never sends a command, an argument list or free text that reaches
 // a shell. Unknown actions and unknown params are refused.
+//
+// A request that came in on the phone listener (phone.js, opt-in) is handed to handle()
+// with listener 'tailnet', after phone.js has checked the Host, Origin, Fetch-Metadata and
+// the passcode session. The same routes then run under the tailnet guard instead: the
+// Host and Origin must be the one Tailscale address and port, and the token, Fetch-Metadata,
+// JSON and one-change-at-a-time rules are the loopback ones. The two listeners share one
+// token and one lock.
 
 const os = require('os');
 const path = require('path');
-const { createGuard } = require('./guard');
+const { createGuard, TOKEN_HEADER } = require('./guard');
+const tailnetLane = require('../transcript-reader/tailnet');
 const { createAdapter, AdapterError } = require('./adapter');
 const { buildShareReport } = require('./redact');
 const { createRollover } = require('./rollover');
@@ -20,6 +28,13 @@ const { createSwitches } = require('./rollover-switches');
 const { createPreview } = require('./rollover-preview');
 
 const PREFIX = '/api/herdr-organizer/';
+// The organizer page the phone lands on, and the sign-in routes the phone listener adds. The passcode, the
+// cookie and the sessions are the transcript reader's (one sign-in opens both apps on the tailnet address).
+const PAGE_PATH = '/apps/wip-herdr-workspace-organizer.html';
+const ORGANIZER_SITE = {
+  noun: 'organizer', title: 'Herdr organizer', openLabel: 'Open the organizer', passcodeCommand: 'setup/transcript-reader/serve.sh passcode',
+  prefix: '/herdr-organizer/', signin: '/herdr-organizer/signin', signout: '/herdr-organizer/signout', home: PAGE_PATH, landing: PAGE_PATH, rootRedirect: false,
+};
 const MAX_BODY_BYTES = 64 * 1024;
 
 function send(res, status, body) {
@@ -79,9 +94,16 @@ function validateParams(spec, params) {
   return input;
 }
 
-function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches, preview } = {}) {
+// tailnet: { ip, passcodeFile[, port] } when phone.js also listens on the Mac's Tailscale address; log takes
+// one line of text, the sign-in record (the server's stderr when left out).
+function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches, preview, tailnet = null, log } = {}) {
   const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
   const guard = createGuard({ port, token });
+  const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, site: ORGANIZER_SITE, ...(log ? { log } : {}) });
+  // The guard that holds for a request: the loopback one, or the tailnet listener's (its own Host and
+  // Origin, the same token). Set by handle().
+  const guards = new WeakMap();
+  const guardFor = (req) => guards.get(req) || guard;
   // The firstmate home and code root the context gauge reads, as serve.sh names them.
   const fmHome = env.HERDR_ORGANIZER_FM_HOME || path.join(os.homedir(), 'fm-homes', 'pmos');
   const gaugeScript = env.HERDR_ORGANIZER_GAUGE_SCRIPT || path.join(os.homedir(), 'workspace', 'firstmate', 'bin', 'fm-ctx-gauge.sh');
@@ -185,29 +207,34 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
 
   async function dispatch(req, res, pathname) {
     if (pathname === PREFIX + 'token' && req.method === 'GET') {
-      const verdict = guard.check(req, { requireToken: false });
+      const verdict = guardFor(req).check(req, { requireToken: false });
       if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
       send(res, 200, { status: 'ok', token: guard.token, header: guard.tokenHeader });
       return;
     }
     if (pathname === PREFIX + 'run' && (req.method === 'POST' || req.method === 'OPTIONS' || req.method === 'GET')) {
-      const verdict = guard.check(req);
+      const verdict = guardFor(req).check(req);
       if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
       if (req.method !== 'POST') { fail(res, 405, 'method', 'POST required.'); return; }
       await runAction(req, res);
       return;
     }
     // Unknown route under the prefix: still pass the guard first so probes learn nothing.
-    const verdict = guard.check(req, { requireToken: false });
+    const verdict = guardFor(req).check(req, { requireToken: false });
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
     fail(res, 404, 'not_found', 'Not found.');
   }
 
-  // Returns true when the request belongs to this module (and is handled here).
-  function handle(req, res) {
+  // Returns true when the request belongs to this module (and is handled here). listener is 'tailnet' for a
+  // request phone.js has already checked and signed in: it runs under the tailnet listener's guard.
+  function handle(req, res, listener = 'loopback') {
     let pathname;
     try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { return false; }
     if (!pathname.startsWith(PREFIX)) return false;
+    if (listener === 'tailnet') {
+      if (!lane) { fail(res, 403, 'refused', 'Not served here.'); return true; }
+      guards.set(req, lane.guard);
+    }
     dispatch(req, res, pathname).catch((error) => {
       if (res.headersSent) { res.end(); return; }
       if (error instanceof AdapterError || (error && error.status && error.code)) fail(res, error.status || 400, error.code || 'error', error.message, error.reasons);
@@ -216,7 +243,7 @@ function create({ root, port, toolRoot, adapter, token, now = () => new Date(), 
     return true;
   }
 
-  return { handle, guard, adapter: tools, ACTIONS };
+  return { handle, guard, adapter: tools, ACTIONS, tailnet: lane };
 }
 
-module.exports = { create, validateParams, PREFIX };
+module.exports = { create, validateParams, PREFIX, PAGE_PATH, ORGANIZER_SITE };

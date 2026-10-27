@@ -107,6 +107,7 @@ function serverCopy() {
     fs.mkdirSync(path.join(root, 'setup', folder), { recursive: true });
     for (const name of names) fs.copyFileSync(path.join(from, name), path.join(root, 'setup', folder, name));
   }
+  fs.copyFileSync(path.join(__dirname, '..', 'tailnet-lib.sh'), path.join(root, 'setup', 'tailnet-lib.sh'));  // sourced by serve.sh
   return root;
 }
 

@@ -6,7 +6,7 @@ App: `apps/wip-herdr-workspace-organizer.html`, served by `setup/serve.sh`.
 ## Purpose and flow
 
 One browser page to run and understand the safe computer-restart flow for named Herdr sessions.
-The user is the person restarting their own machine; the page is a local cockpit, not a remote console.
+The user is the person restarting their own machine; the page is a local cockpit. Since 2026-10-27 it can also be opened from the owner's own phone over Tailscale, opt-in ("Phone access" below), and it is still not a console for anyone else.
 
 1. Inspect sessions (default session never selectable).
 2. Verify identities per pane; apply the verified rows.
@@ -69,7 +69,7 @@ The page never runs `herdr-organizer archive`, `archive-all --execute`, restore,
 Any web page the user visits could otherwise call a write endpoint on localhost.
 Every `/api/herdr-organizer/*` request therefore passes these checks, all covered by tests:
 
-- The listener binds to loopback only (`127.0.0.1` and `::1`). This changes the whole server, not just these routes.
+- The listener binds to loopback only (`127.0.0.1` and `::1`). This changes the whole server, not just these routes. (Opt-in since 2026-10-27: one more listener on the owner's Tailscale address, with a handler of its own that answers only this page and its routes; see "Phone access".)
 - The Host header must be one of `localhost`, `127.0.0.1`, `[::1]` on the served port (defeats DNS rebinding).
 - `Origin` is required on POST and must equal the served origin exactly (scheme, host and port). On GET it may be absent (same-origin) but must match when present.
 - `Sec-Fetch-Site`, when sent, must be `same-origin` or `none`.
@@ -196,16 +196,42 @@ All new code is isolated under `setup/herdr-organizer/` so `serve.sh` stays a th
 - `guard.js` - Host, Origin, Fetch-Metadata and token checks.
 - `redact.js` - share report builder and leak scan.
 - `store_check.py` - read-only store and folder check for manual identity (imports the verifier's store classes).
+- `phone.js` and `snapshot-refresh.js` - the opt-in Tailscale listener and its allow-list, and the Refresh snapshot command both listeners share ("Phone access").
 - `test/` - `node --test` tests with fixtures.
 
 The tool root defaults to `personal/01-System/setup/herdr` and can be overridden with `HERDR_ORGANIZER_TOOL_ROOT`, so tests and local runs can use a scratch copy and never write into a real registry or bundle directory.
 `HERDR_LAB_HELPER`, when set, is passed through to the organizer (it already routes Herdr calls through the isolated lab).
 
+## Phone access (2026-10-27)
+
+The owner works remotely and wanted this page on their iPhone the way the transcript reader is: over Tailscale, opt-in, behind a passcode. Built on branch `fm/organizer-phone-access`.
+
+**Where it lives: a second listener inside the shared app server (port 8765), with a request handler of its own.** `setup/serve.sh --tailnet` (or `PMOS_SERVE_TAILNET=1`) finds the Mac's Tailscale address (`tailscale ip -4`, shared helper `setup/tailnet-lib.sh`), checks the reader's passcode file has a hash, and passes both to the node program. `phone.js` binds that one address on the same port, next to the loopback listeners. Off by default; without Tailscale or without a passcode the server starts on loopback only and prints one line of why. `serve.sh status` says whether the address is served.
+
+Alternatives weighed:
+
+- *A separate small server on its own port, like the reader's.* Cleaner process isolation, but the API keeps state in memory that must be single: the one-change-at-a-time lock, the per-start token, the in-flight identity check shared by identical requests, the rollover mutex. A second process would have two of each, so a seal from the phone and a seal from the Mac could run together. In one process the two listeners share the same `api.js` instance, so the lock, the token and the in-flight work are shared by construction (a test holds a change from the phone and is refused on loopback with a 409).
+- *The shared handler on the new address with a filter in front.* The shared handler serves the whole repo root, including private files, and carries wildcard CORS and write routes. A filter would be one missed case from leaking all of it. The phone listener never calls it: the only code that answers on the tailnet address is `phone.js`, so nothing else is reachable whatever the shared handler gains later.
+
+**The allow-list (exact paths, everything else 404, signed in or not).** The page (`/apps/wip-herdr-workspace-organizer.html`, read from disk on each request, with `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `no-store`, no CORS header), its own assets (none: it is one self-contained file and loads only Google Fonts; a test fails if the page starts naming a local file that is not listed), `POST /api/herdr-workspace-organizer/snapshot` (the page's Refresh snapshot, one fixed command with no input, shared with loopback through `snapshot-refresh.js`; on the tailnet one refresh runs at a time and a second tap shares its answer), `/api/herdr-organizer/*`, and the sign-in routes `/herdr-organizer/signin` and `/signout`. Matching is exact on the path as sent: no prefix tricks, no decoding, no case folding, so `/apps/../README.md`, `%2e`, a trailing slash, `//apps/...` and another case are all 404. There is no `/` redirect: the phone opens the page's address (bookmark it). The tests cover the other apps, the repo files, `.git`, the reader's `out/`, the shared server's own routes (health, git state, write-file, packet tree, refresh) and the reader's API.
+
+**Sign-in in front of everything on the list.** One passcode and one sign-in with the transcript reader (the owner's later instruction, replacing a separate passcode for this page): the passcode file is the reader's (`PMOS_READER_PASSCODE_FILE`, else `setup/transcript-reader/out/passcode.json`) and `setup/transcript-reader/serve.sh passcode` is the one command that sets it. `phone.js` runs the reader's own sign-in code (`transcript-reader/tailnet.js`: the passcode page and its words, scrypt check, per-address throttle, the cookie, the cookie check) as a lane with this site's paths and wording. The sessions are files shared by both servers; the reasons for that choice, and what it changes for the reader, are in `transcript-reader/DESIGN.md` ("One sign-in for the reader and the organizer"). No session: the page request gets the passcode page (401), anything else 401 JSON, and no token is handed out.
+
+**Every existing guard stays in force, now for the tailnet origin.** `api.js` takes a `tailnet` option and builds a second guard (`createGuard({ hosts: [ip] })`) sharing the one token; `handle(req, res, 'tailnet')` runs the same routes under it. On the phone listener the Host and Origin must be exactly `http://<tailscale ip>:<port>` (the loopback names and the other port are refused), and Fetch-Metadata, JSON bodies, the per-start token (fetched by the signed-in page the way it always was) and the one-at-a-time lock are the loopback rules. On the loopback listeners nothing changed: the tailnet Host or Origin is refused there, as any other name. The Origin the audit log records for a change is the tailnet origin when it came from the phone.
+
+**What the phone can do.** The whole page and every action it has on the Mac, restarts of fleet sessions and rollover switch files included (tier 1s and 1p), each behind its own confirm and typed phrase as before. That is the owner's call (the page is a cockpit for their own machine), and the passcode is the extra gate. Anything that can reach the tailnet address can see the passcode page, which is why the passcode, its throttle and its hash exist.
+
+**The page at phone width.** One change to behaviour: Refresh snapshot now sends the token and a JSON body (the tailnet guard's rule for every POST; loopback ignores both). One CSS block under `@media (pointer: coarse)` (so desktop is untouched): buttons, selects, fields and checkbox rows at least 44 px tall, checkboxes 22 px, long commands wrapping instead of widening the page. The confirm boxes are inline cards, not overlays, so they follow the page width. The page already had a 600 px and a 640 px layout (header scrolls away, tabs wrap, panels full width).
+
+**Tests.** `test/phone.test.js`: off by default (no switch, no lane, no listener, and a loopback request is unchanged), the allow-list, sign-in before every route, the guard per listener, one lock across both, one sign-in for both apps against the reader's real server code, the page's references against the list, and `serve.sh --tailnet` end to end on the real Tailscale address (skipped when Tailscale is not up): off by default, the reason without a passcode, then the page and 404 for everything else.
+
+**Accepted.** Plain HTTP (Tailscale encrypts the link; no padlock, no `Secure` cookie). A passcode guess gets its free tries on each server (the throttle is per process). A browser on the Mac may be sent through a corporate proxy that blocks tailnet addresses (use `localhost` there).
+
 ## Out of scope for v1
 
 - Running `reconcile --confirm`, rollback, archive, restore or tab moves from the page.
 - `/status` capture (sends input into panes), resume replay, Herdr integration install, auto-recovery at login.
-- Candidate picker for manual identity (masked ids plus last-activity time), remote or multi-machine access.
+- Candidate picker for manual identity (masked ids plus last-activity time), multi-machine access, hosted or public access. (Opening it from the owner's phone over Tailscale is "Phone access" below.)
 
 ## Companion tasks for `personal` (firstmate to dispatch)
 

@@ -53,23 +53,10 @@ served_copy() { curl --max-time 2 -sI "http://localhost:$PORT/" 2>/dev/null | tr
 # Where the process listening on the port was started (server.js runs from its repo copy's root).
 where() { lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
 
-# This Mac's Tailscale IPv4 address, when Tailscale is up and gives one in its 100.64.0.0/10 range.
-tailnet_ip() {
-  local bin ip
-  bin="$(command -v tailscale || true)"
-  [[ -z "$bin" && -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]] && bin=/Applications/Tailscale.app/Contents/MacOS/Tailscale
-  [[ -z "$bin" ]] && return 1
-  ip="$("$bin" ip -4 2>/dev/null | head -1)"
-  [[ "$ip" =~ ^100\.([0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && (( BASH_REMATCH[1] >= 64 && BASH_REMATCH[1] <= 127 )) || return 1
-  echo "$ip"
-}
-# The Tailscale address the process on the port listens on, if any (read from the process itself).
-tailnet_served() {
-  local pid
-  pid="$(listener)"
-  [[ -n "$pid" ]] || return 1
-  lsof -nP -a -p "$pid" -iTCP:"$PORT" -sTCP:LISTEN -Fn 2>/dev/null | sed -n "s/^n\(100\.[0-9.]*\):$PORT\$/\1/p" | head -1 | grep .
-}
+# tailnet_ip and tailnet_listening: setup/tailnet-lib.sh, shared with setup/serve.sh.
+source "$REPO_ROOT/setup/tailnet-lib.sh"
+# The Tailscale address the process on the port listens on, if any.
+tailnet_served() { tailnet_listening "$(listener)" "$PORT"; }
 
 describe() {
   local pid copy
