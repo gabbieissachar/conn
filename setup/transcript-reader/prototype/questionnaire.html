@@ -507,6 +507,11 @@ __HEAD_HOSTED__
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
     if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !sendOnce.busy()) await refresh();
   });
+  // A newer sheet is taken as soon as the server publishes it (see live.waitForBuilds), by the same rule.
+  if (!HOSTED) live.waitForBuilds(() => ({ sheet: data.generated }), async () => {
+    const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+    if (!typing && !sendOnce.busy()) await refresh();
+  });
 })();
 </script>
 </body>

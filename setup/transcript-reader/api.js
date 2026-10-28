@@ -19,6 +19,10 @@
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
+//   GET  /api/transcript-reader/events?reader=<stamp>&sheet=<stamp>&wait=<ms>
+//                                                   answers with the build stamps as soon as a page build is newer than the
+//                                                   stamp(s) given, or after the wait (at most 30 s) with the same stamps: how an
+//                                                   open page learns of a new build at once instead of at its next poll
 //   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once, lists every live
 //                                                   Claude pane's session that is not listed (unless a person closed
 //                                                   or removed it) and rebuilds the pages from the session logs and
@@ -81,7 +85,10 @@
 //
 // Writes: reader.py rebuilds the pages when a listed session log changes or a listed
 // session's pane closes (dropping it from the reading list), and adds the session
-// Herdr has focused to the reading list while a page follows focus. reopen and close
+// Herdr has focused to the reading list while a page follows focus. While a page is open (it polls, or waits on events) the
+// server itself watches the folders of the listed logs and starts the rebuild when one changes, rather than at the page's
+// next poll; with no page open it watches nothing and rebuilds nothing. The rebuilds run in one reader.py that stays running
+// (worker.js), which falls back to a fresh reader.py for a request it cannot take. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
 // every live Claude pane's session not yet listed, except one a person closed or removed. The pins and stars files are the only things written outside out/, and only on a pin, an unpin, a star or an unstar.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
@@ -97,6 +104,7 @@ const { createGuard } = require('../herdr-organizer/guard');
 const tailnetLane = require('./tailnet');
 const deltaStore = require('./delta');
 const pinstore = require('./pinstore');
+const workerLib = require('./worker');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
@@ -171,7 +179,14 @@ const MAX_QUEUED = 50;
 const QUEUE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SEALED_MAGIC = Buffer.from('HRC1');
 const SCAN_TTL_MS = 700;
-const REBUILD_GAP_MS = 3000;
+// Between two rebuilds, a short pause: a log changed during a rebuild is picked up by the next one at once, and a writer that
+// writes without a pause does not start rebuilds faster than a build can finish.
+const REBUILD_GAP_MS = 250;
+// While a page is open, the logs are looked at this often besides the file system's own notice (which can be missed), and a
+// page seen this recently keeps the server watching.
+const SWEEP_MS = 500;
+const PRESENCE_MS = 20000;
+const MAX_WAIT_MS = 30000;
 const RETRY_AFTER_FAILURE_MS = 30000;
 
 class RequestError extends Error {
@@ -288,6 +303,10 @@ function create({
   tailnet = null,
   // Where the tailnet listener writes its sign-in record (a line of text each); the server's stderr when left out.
   log = undefined,
+  // Rebuilds in one reader.py that stays running (worker.js) instead of a new one each time; server.js turns it on.
+  worker = false,
+  // Watching the listed logs while a page is open, and answering `events` as a build is published; server.js turns it on.
+  watch = false, sweepMs = SWEEP_MS,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
@@ -306,7 +325,7 @@ function create({
   let scanning = null;
   const focusSeen = new Map();
   const focus = { seq: 0, herdr: null };
-  const build = { running: null, lastEnd: 0, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false };
+  const build = { running: null, lastEnd: 0, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false, newest: 0, rebuiltFor: 0 };
   // Listed sessions seen running in a pane. One that leaves while Herdr still answers had
   // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
   const seenLive = new Set();
@@ -454,19 +473,40 @@ function create({
 
   // ----------------------------------------------------------------- rebuilds
 
+  // The reader.py that stays running, started on its first request; one that cannot take a request leaves it to a fresh reader.py.
+  const readerWorker = worker ? workerLib.create({ command: pythonBin, args: ['-I', readerScript, 'worker'], cwd: root, env: runEnv(), timeoutMs: 60000, now }) : null;
+
+  async function execReader(args) {
+    if (readerWorker) {
+      const result = await readerWorker.run(args);
+      if (!result.crashed) return result;
+    }
+    return runner(pythonBin, ['-I', readerScript, ...args], { env: runEnv(), cwd: root, timeoutMs: 60000, maxBytes: 64 * 1024 });
+  }
+
   function runReader(args, adding = null) {
-    const done = runner(pythonBin, ['-I', readerScript, ...args], { env: runEnv(), cwd: root, timeoutMs: 60000, maxBytes: 64 * 1024 }).then((result) => {
+    const done = execReader(args).then((result) => {
       if (result.code === 0) { build.error = null; build.failedAt = 0; }
       else {
         build.failedAt = now();
+        build.rebuiltFor = 0;  // a failed rebuild is tried again once its hold is over, whatever the logs do meanwhile
         const lines = (result.stderr || result.stdout || '').trim().split('\n');
         build.error = result.timedOut ? 'The rebuild took over a minute and was stopped.' : (lines[lines.length - 1] || 'The rebuild failed.').slice(0, 200);
         if (adding) build.failedAdds.set(adding, now());
       }
       return result;
-    }).finally(() => { build.running = null; build.lastEnd = now(); });
+    }).finally(() => { build.running = null; build.lastEnd = now(); afterBuild(); });
     build.running = { args: args[0], adding, done };
     return done;
+  }
+
+  // Whether a listed log was written after the page was built (the page's stamp is when its build began, so a turn written
+  // while it ran counts), and after the write the last rebuild this started was for: a log dated in the future, or one that stays
+  // newer than every build for another reason, is rebuilt for once, not in a loop.
+  function logsNewer(ids) {
+    const built = stamp('prototype.stamp');
+    build.newest = Math.max(0, ...ids.map((id) => { const file = logPath(id); return file ? mtimeMs(file) : 0; }));
+    return built === null || (build.newest > built * 1000 && build.newest > build.rebuiltFor);
   }
 
   // Rebuild when a listed session's log is newer than the page or its pane closed, or add the focused session.
@@ -477,9 +517,119 @@ function create({
       if (!failed || now() - failed > RETRY_AFTER_FAILURE_MS) { runReader(['follow', focused.session_id], focused.session_id); return; }
     }
     if (build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS) return;
-    const built = stamp('prototype.stamp');
-    const newest = Math.max(0, ...ids.map((id) => { const file = logPath(id); return file ? mtimeMs(file) : 0; }));
-    if ((ids.length || build.paneClosed) && (build.paneClosed || built === null || newest > built * 1000)) { build.paneClosed = false; runReader(['rebuild']); }
+    if ((ids.length || build.paneClosed) && (build.paneClosed || logsNewer(ids))) { build.paneClosed = false; build.rebuiltFor = build.newest; runReader(['rebuild']); }
+  }
+
+  // ----------------------------------------------------------------- watching
+
+  // While a page is open (it polled, or waits on `events`) the logs of the listed sessions are watched here, and a change
+  // starts the rebuild at once. Nothing is watched, and nothing rebuilt, with no page open. The folders are watched for the
+  // file system's notice of a write; the sweep is the check that does not depend on it, and what runs after each build.
+  let lastSeen = 0;
+  let sweepTimer = null;
+  let afterTimer = null;
+  let sweepQueued = false;
+  const folders = new Map();
+  const waiters = new Set();
+
+  const buildInfo = () => ({ running: Boolean(build.running), adding: build.running ? build.running.adding : null, error: build.error });
+  const stampsNow = () => ({ reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp') });
+  const isNewer = (have, current) => (Number.isFinite(have.reader) && current.reader !== null && current.reader > have.reader)
+    || (Number.isFinite(have.sheet) && current.sheet !== null && current.sheet > have.sheet);
+
+  function sweepSoon() {
+    if (sweepQueued) return;
+    sweepQueued = true;
+    setImmediate(() => { sweepQueued = false; sweep(); });
+  }
+
+  function syncFolders() {
+    const want = new Set([outDir]);
+    for (const id of listed()) { const file = logPath(id); if (file) want.add(path.dirname(file)); }
+    for (const [dir, watcher] of folders) if (!want.has(dir)) { watcher.close(); folders.delete(dir); }
+    for (const dir of want) {
+      if (folders.has(dir)) continue;
+      try {
+        // In out/ only the stamps and the list say anything (a build writes many other files).
+        const watcher = fs.watch(dir, { persistent: false }, (event, name) => { if (dir !== outDir || /stamp$|^sessions\.txt$/.test(name || '')) sweepSoon(); });
+        watcher.on('error', () => { watcher.close(); if (folders.get(dir) === watcher) folders.delete(dir); });
+        folders.set(dir, watcher);
+      } catch { /* the sweep covers a folder that cannot be watched */ }
+    }
+  }
+
+  function sweep() {
+    if (!watch) return;
+    if (now() - lastSeen > PRESENCE_MS && !waiters.size) { stopWatching(); return; }
+    syncFolders();
+    if (!build.running && now() - build.lastEnd >= REBUILD_GAP_MS && !(build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS)) {
+      const ids = listed();
+      if (ids.length && logsNewer(ids)) { build.rebuiltFor = build.newest; runReader(['rebuild']); }
+    }
+    answerWaiters();
+  }
+
+  function startWatching() {
+    if (sweepTimer) return;
+    sweepTimer = setInterval(sweep, sweepMs);
+    if (sweepTimer.unref) sweepTimer.unref();
+    sweepSoon();
+  }
+
+  function stopWatching() {
+    clearInterval(sweepTimer);
+    clearTimeout(afterTimer);
+    sweepTimer = afterTimer = null;
+    for (const watcher of folders.values()) watcher.close();
+    folders.clear();
+  }
+
+  // A page is there: it polled or it waits.
+  function seen() {
+    lastSeen = now();
+    if (watch) startWatching();
+  }
+
+  // After a build: waiting pages learn of the stamp it left, and a log written meanwhile is looked at once the pause is over.
+  function afterBuild() {
+    answerWaiters();
+    if (!sweepTimer) return;
+    clearTimeout(afterTimer);
+    afterTimer = setTimeout(sweep, REBUILD_GAP_MS);
+    if (afterTimer.unref) afterTimer.unref();
+  }
+
+  function finishWaiter(waiter) {
+    if (!waiters.delete(waiter)) return;
+    clearTimeout(waiter.timer);
+    send(waiter.res, 200, { status: 'ok', stamps: stampsNow(), build: buildInfo() });
+  }
+
+  function answerWaiters() {
+    if (!waiters.size) return;
+    const current = stampsNow();
+    for (const waiter of [...waiters]) if (isNewer(waiter.have, current)) finishWaiter(waiter);
+  }
+
+  // events: answers at once when a build newer than the page's is there, else when one is published, else after `wait`.
+  function events(res, query) {
+    const stampOf = (name) => (query.get(name) === null || query.get(name) === '' ? NaN : Number(query.get(name)));
+    const have = { reader: stampOf('reader'), sheet: stampOf('sheet') };
+    const wait = Math.min(Math.max(Number(query.get('wait')) || 0, 0), MAX_WAIT_MS);
+    seen();
+    if (!wait || isNewer(have, stampsNow())) { send(res, 200, { status: 'ok', stamps: stampsNow(), build: buildInfo() }); return; }
+    const waiter = { have, res, timer: null };
+    waiter.timer = setTimeout(() => finishWaiter(waiter), wait);
+    waiters.add(waiter);
+    res.on('close', () => { if (waiters.delete(waiter)) clearTimeout(waiter.timer); });
+    if (watch) sweepSoon();
+  }
+
+  // Ends what runs for the server: the waiting pages, the watching and the worker.
+  function close() {
+    for (const waiter of [...waiters]) finishWaiter(waiter);
+    stopWatching();
+    if (readerWorker) readerWorker.stop();
   }
 
   function notePaneChanges(ids, sessions) {
@@ -496,6 +646,7 @@ function create({
   }
 
   async function state(follow) {
+    seen();
     const ids = listed();
     const sessions = await scan();
     const focused = trackFocus(sessions);
@@ -519,7 +670,7 @@ function create({
         readable: focused.session_id ? Boolean(logPath(focused.session_id)) : false,
       },
       panes,
-      build: { running: Boolean(build.running), adding: build.running ? build.running.adding : null, error: build.error },
+      build: buildInfo(),
     };
   }
 
@@ -819,6 +970,10 @@ function create({
       send(res, 200, { status: 'ok', ...deltas.since(html, have) });
       return;
     }
+    if (pathname === API + 'events' && req.method === 'GET') {
+      events(res, query);
+      return;
+    }
     if (pathname === API + 'state' && req.method === 'GET') {
       send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1')) });
       return;
@@ -903,7 +1058,7 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan, sendPrompt, tailnet: lane, tailnetHttps: httpsLane };
+  return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane };
 }
 
 module.exports = { create, checkText, copyId, namesReaderOut, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

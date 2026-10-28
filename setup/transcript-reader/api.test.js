@@ -86,7 +86,7 @@ function fakeHerdr() {
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
-    if (file === 'python3') return herdr.readerResult || ok('');  // reader.py; a test may make it fail
+    if (file === 'python3') { if (herdr.readerGate) await herdr.readerGate; return herdr.readerResult || ok(''); }  // reader.py; a test may make it fail, or hold it
     return { code: 1, stdout: '', stderr: 'unexpected command', timedOut: false, truncated: false };
   };
   herdr.prompts = () => herdr.calls.filter((call) => call.args[2] === 'agent' && call.args[3] === 'prompt');
@@ -96,7 +96,7 @@ function fakeHerdr() {
   return herdr;
 }
 
-async function start({ env = {}, outParts } = {}) {
+async function start({ env = {}, outParts, options = {} } = {}) {  // options: more for create(), or a function of the fake Herdr that gives them
   const tree = fixtureTree({ outParts });
   const herdr = fakeHerdr();
   let api;
@@ -112,7 +112,7 @@ async function start({ env = {}, outParts } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {} });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, ...(typeof options === 'function' ? options(herdr) : options) });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -135,9 +135,9 @@ async function start({ env = {}, outParts } = {}) {
   const get = (command, headers = {}) => request({ path: '/api/transcript-reader/' + command, headers: { [TOKEN_HEADER]: token, ...headers } });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   return {
-    tree, herdr, request, open, token, state, send, post, get, settle, origin,
+    tree, herdr, request, open, token, state, send, post, get, settle, origin, api,
     tick: (ms) => { clock += ms; },
-    close: () => new Promise((resolve) => server.close(() => { tree.cleanup(); resolve(); })),
+    close: () => new Promise((resolve) => { api.close(); server.close(() => { tree.cleanup(); resolve(); }); }),
   };
 }
 
@@ -613,7 +613,7 @@ test('state: a listed log newer than the page starts one rebuild, spaced out', a
     await t.state();
     await t.settle();
     assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
-    t.tick(1000);
+    t.tick(100);
     await t.state();
     await t.settle();
     assert.equal(t.herdr.readerRuns().length, 1, 'not again within the gap');
@@ -1051,5 +1051,286 @@ test('send: a refusal from Herdr is reported, not claimed as sent', async () => 
     const failed = await t.send({ session_id: A, text: 'hi' });
     assert.equal(failed.status, 502);
     assert.equal(failed.json.code, 'herdr_failed');
+  } finally { await t.close(); }
+});
+
+
+// ------------------------------------------------------------- events, watching and the worker
+
+const events = (t, query) => t.request({ path: '/api/transcript-reader/events' + query, headers: { [TOKEN_HEADER]: t.token } });
+const readStamp = (t, name = 'prototype.stamp') => Number(fs.readFileSync(path.join(t.tree.outDir, name), 'utf8'));
+// A build as the builders leave it: the stamp is replaced whole, by a rename.
+const publish = (t, stamp, name = 'prototype.stamp') => {
+  const partial = path.join(t.tree.outDir, '.' + name + '.partial');
+  fs.writeFileSync(partial, String(stamp));
+  fs.renameSync(partial, path.join(t.tree.outDir, name));
+};
+const until = async (condition, ms = 3000) => {
+  const end = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > end) throw new Error('timed out waiting for ' + condition);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+const WATCHING = { watch: true, sweepMs: 20 };
+
+test('events: needs the token and the guard like every call, and never sends a CORS header', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.request({ path: '/api/transcript-reader/events?wait=0' })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/events?wait=0', headers: { [TOKEN_HEADER]: t.token, Host: 'evil.example:80' } })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/events?wait=0', headers: { [TOKEN_HEADER]: t.token, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    const ok = await events(t, '?wait=0');
+    assert.equal(ok.status, 200);
+    assert.equal(Object.keys(ok.headers).some((name) => name.startsWith('access-control')), false);
+    assert.equal(ok.headers['cache-control'], 'no-store');
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/events', headers: { Origin: t.origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: t.token }, body: {} })).status, 404);
+  } finally { await t.close(); }
+});
+
+test('events: a build newer than the page\'s answers at once, with the stamps and the build state; the page\'s own build does not', async () => {
+  const t = await start();
+  try {
+    const built = readStamp(t);
+    const newer = await events(t, `?reader=${built - 10}&wait=10000`);
+    assert.equal(newer.status, 200);
+    assert.deepEqual(newer.json.stamps, { reader: built, sheet: 1 });
+    assert.deepEqual(newer.json.build, { running: false, adding: null, error: null });
+    const sheet = await events(t, `?sheet=0&wait=10000`);
+    assert.equal(sheet.json.stamps.sheet, 1, 'the answer sheet\'s stamp, for the sheet page');
+    const begun = Date.now();
+    const same = await events(t, `?reader=${built}&wait=60`);
+    assert.deepEqual(same.json.stamps, { reader: built, sheet: 1 }, 'nothing newer: the same stamps, after the wait');
+    assert.ok(Date.now() - begun >= 50 && Date.now() - begun < 2000);
+    const garbage = await events(t, '?reader=abc&sheet=&wait=abc');
+    assert.equal(garbage.status, 200, 'numbers that are not numbers ask for nothing and wait for nothing');
+  } finally { await t.close(); }
+});
+
+test('events: a waiting page is answered the moment a build is published, not at the end of its wait', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    const built = readStamp(t);
+    const began = Date.now();
+    const waiting = events(t, `?reader=${built}&wait=20000`);
+    await t.settle();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    publish(t, built + 5);
+    const answer = await waiting;
+    assert.equal(answer.json.stamps.reader, built + 5);
+    assert.ok(Date.now() - began < 3000, 'answered by the publication, not by the wait');
+    // The answer sheet's page waits on its own stamp, which another build moves.
+    const sheet = events(t, '?sheet=1&wait=20000');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    publish(t, 9, 'questionnaire.stamp');
+    assert.equal((await sheet).json.stamps.sheet, 9);
+  } finally { await t.close(); }
+});
+
+test('events: a page that goes away leaves nothing waiting, and the server stopping answers the pages that wait', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    const built = readStamp(t);
+    const gone = http.request({ host: '127.0.0.1', port: Number(t.origin.split(':').pop()), path: `/api/transcript-reader/events?reader=${built}&wait=20000`, headers: { Host: t.origin.slice(7), [TOKEN_HEADER]: t.token } });
+    gone.on('error', () => {});
+    gone.end();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    gone.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const waiting = events(t, `?reader=${built}&wait=20000`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.api.close();
+    const answer = await waiting;
+    assert.equal(answer.status, 200, 'closing answers a waiting page instead of cutting it off');
+  } finally { await t.close(); }
+});
+
+test('watch: with a page open, a listed log written after the page was built starts the rebuild at once, with no further request', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    await t.state();  // a page is open
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());  // the session wrote a new turn
+    await until(() => t.herdr.readerRuns().length === 1);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+    // The next write is noticed once the pause is over, and not before.
+    fs.utimesSync(t.tree.logOf(A), new Date(Date.now() + 1000), new Date(Date.now() + 1000));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(t.herdr.readerRuns().length, 1, 'not within the pause');
+    t.tick(300);
+    await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+});
+
+test('watch: the file system\'s notice starts the rebuild before the sweep would', async () => {
+  const t = await start({ options: { watch: true, sweepMs: 60000 } });  // the sweep is out of the way
+  try {
+    await t.state();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    publish(t, Date.now() / 1000 - 600);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const before = t.herdr.readerRuns().length;
+    fs.utimesSync(t.tree.logOf(B), new Date(), new Date());
+    fs.appendFileSync(t.tree.logOf(B), '{}\n');
+    await until(() => t.herdr.readerRuns().length > before, 1500);
+  } finally { await t.close(); }
+});
+
+test('watch: a log written while a rebuild runs is rebuilt as soon as that one ends and the pause is over', async () => {
+  let release;
+  const t = await start({ options: WATCHING });
+  try {
+    t.herdr.readerGate = new Promise((resolve) => { release = resolve; });
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    await t.state();
+    await until(() => t.herdr.calls.some((call) => call.file === 'python3'));
+    assert.equal((await t.state()).json.build.running, true);
+    fs.utimesSync(t.tree.logOf(A), new Date(Date.now() + 2000), new Date(Date.now() + 2000));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(t.herdr.readerRuns().length, 1, 'one rebuild at a time');
+    t.herdr.readerGate = null;
+    release();
+    await t.settle();
+    t.tick(300);
+    await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+});
+
+test('watch: with no page open nothing is rebuilt, and a page that has gone quiet stops being watched for', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(t.herdr.readerRuns().length, 0, 'nobody is looking');
+    await t.state();
+    await until(() => t.herdr.readerRuns().length === 1);
+    t.tick(30000);  // the page has not been heard from for longer than the server keeps watching
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    fs.utimesSync(t.tree.logOf(A), new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(t.herdr.readerRuns().length, 1, 'quiet again');
+    await t.state();
+    await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+});
+
+test('watch: a log that stays newer than every build is rebuilt for once, not in a loop, and the next write is rebuilt for again', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    await t.state();
+    publish(t, Date.now() / 1000 - 600);
+    const future = new Date(Date.now() + 3600 * 1000);  // a clock that ran ahead: the log is dated after every build
+    fs.utimesSync(t.tree.logOf(A), future, future);
+    await until(() => t.herdr.readerRuns().length === 1);
+    for (let i = 0; i < 4; i += 1) { t.tick(1000); await new Promise((resolve) => setTimeout(resolve, 60)); }
+    await t.state();
+    assert.equal(t.herdr.readerRuns().length, 1, 'once, though the page is never newer than the log');
+    const later = new Date(Date.now() + 7200 * 1000);
+    fs.utimesSync(t.tree.logOf(A), later, later);
+    await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+});
+
+test('watch: a failed rebuild is not retried at once, and a page polling a server that does not watch still rebuilds as before', async () => {
+  const t = await start({ options: WATCHING });
+  try {
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'ValueError: broken', timedOut: false, truncated: false };
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    await t.state();
+    await until(() => t.herdr.readerRuns().length === 1);
+    t.tick(5000);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(t.herdr.readerRuns().length, 1, 'held for 30 seconds');
+    t.tick(30000);
+    await t.state();
+    await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+  const plain = await start();  // no watch: only a poll starts a rebuild, as before
+  try {
+    publish(plain, Date.now() / 1000 - 600);
+    fs.utimesSync(plain.tree.logOf(A), new Date(), new Date());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(plain.herdr.readerRuns().length, 0);
+    await plain.state();
+    await plain.settle();
+    assert.equal(plain.herdr.readerRuns().length, 1);
+  } finally { await plain.close(); }
+});
+
+// A reader.py that stays running, as the server starts it, faked by a script that answers each request line and records it.
+function fakeWorker({ crash = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-worker-'));
+  const requests = path.join(dir, 'requests.log');
+  fs.writeFileSync(path.join(dir, 'worker.js'), `
+    const fs = require('fs');
+    let buffer = '';
+    process.stdin.on('data', (chunk) => {
+      buffer += chunk;
+      for (let at = buffer.indexOf('\\n'); at >= 0; at = buffer.indexOf('\\n')) {
+        const request = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
+        fs.appendFileSync(${JSON.stringify(requests)}, JSON.stringify(request.args) + '\\n');
+        if (fs.existsSync(${JSON.stringify(path.join(dir, 'crash'))})) process.exit(3);
+        process.stdout.write(JSON.stringify({ id: request.id, code: 0, output: 'built\\n' }) + '\\n');
+      }
+    });`);
+  fs.writeFileSync(path.join(dir, 'fakepy'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(dir, 'worker.js'))}\n`, { mode: 0o755 });
+  if (crash) fs.writeFileSync(path.join(dir, 'crash'), '');
+  return { dir, pythonBin: path.join(dir, 'fakepy'), requests: () => (fs.existsSync(requests) ? fs.readFileSync(requests, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []),
+    stopCrashing: () => fs.rmSync(path.join(dir, 'crash'), { force: true }) };
+}
+
+test('worker: the rebuilds go to the reader.py that stays running, one request each; a worker that cannot take one leaves it to a fresh reader.py', async () => {
+  const fake = fakeWorker();
+  const t = await start({ options: (herdr) => ({ worker: true, pythonBin: fake.pythonBin, runner: (file, args, opts) => herdr.runner(file === fake.pythonBin ? 'python3' : file, args, opts) }) });
+  try {
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    t.tick(5000);
+    await t.state();
+    await until(() => fake.requests().length === 1);
+    assert.deepEqual(fake.requests(), [['rebuild']]);
+    assert.equal(t.herdr.readerRuns().length, 0, 'not by a fresh reader.py');
+    // Reopen goes through it too, and answers once it has built.
+    const reopened = await t.post('reopen', { session_id: C });
+    assert.equal(reopened.status, 200);
+    assert.deepEqual(fake.requests().slice(-1), [['reopen', C]]);
+    // The worker dies in the middle of a request: that request runs in a fresh reader.py, and the answer is the build's.
+    fs.writeFileSync(path.join(fake.dir, 'crash'), '');
+    const closed = await t.post('close', { session_id: A });
+    assert.equal(closed.status, 200);
+    assert.deepEqual(t.herdr.readerRuns(), [['close', A]]);
+    // A broken worker is left alone for a while, so the next requests do not each wait for it to fail.
+    await t.post('close', { session_id: B });
+    assert.equal(fake.requests().length, 3);
+    assert.deepEqual(t.herdr.readerRuns(), [['close', A], ['close', B]]);
+  } finally { await t.close(); }
+});
+
+test('worker: a rebuild that fails in the worker reports what the build said, and the next one is tried', async () => {
+  const fake = fakeWorker();
+  fs.writeFileSync(path.join(fake.dir, 'worker.js'), `
+    let buffer = '';
+    let n = 0;
+    process.stdin.on('data', (chunk) => {
+      buffer += chunk;
+      for (let at = buffer.indexOf('\\n'); at >= 0; at = buffer.indexOf('\\n')) {
+        const request = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
+        n += 1;
+        process.stdout.write(JSON.stringify({ id: request.id, code: n === 1 ? 1 : 0, output: n === 1 ? 'Traceback\\nValueError: broken log\\n' : 'built\\n' }) + '\\n');
+      }
+    });`);
+  const t = await start({ options: { worker: true, pythonBin: fake.pythonBin } });
+  try {
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    await until(() => t.state().then((r) => r.json.build.error === 'ValueError: broken log'));
+    const closed = await t.post('close', { session_id: A });
+    assert.equal(closed.status, 200, 'the worker that failed one build still takes the next');
   } finally { await t.close(); }
 });

@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import base64
 import bisect
+import contextlib
 import fcntl
 import hashlib
 import html
@@ -56,7 +57,9 @@ MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see ven
 SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
-PROJECTS = Path.home() / ".claude" / "projects"
+# Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
+# that must not touch the real logs.
+PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
 
 
@@ -1094,12 +1097,29 @@ def file_mentions(text: str, suffix: str, name_end: re.Pattern):
             at = text.rfind(suffix, start, at + len(suffix) - 1)
 
 
+# A rebuild scans every reply and message again for the file names it mentions, though almost none changed since the last one.
+# What a text mentions depends on the text alone, so it is kept by a digest of the text (never the text itself) for a process
+# that builds more than once.
+_MENTIONS: dict[tuple[bytes, str], tuple] = {}
+MENTIONS_KEPT = 20000
+
+
+def kept_mentions(text: str, suffix: str, name_end: re.Pattern):
+    key = (hashlib.sha1(text.encode("utf-8", "surrogatepass")).digest(), suffix)
+    found = _MENTIONS.get(key)
+    if found is None:
+        if len(_MENTIONS) >= MENTIONS_KEPT:
+            _MENTIONS.clear()
+        found = _MENTIONS[key] = tuple(file_mentions(text, suffix, name_end))
+    return iter(found)
+
+
 def md_mentions(text: str):
-    return file_mentions(text, ".md", NAME_END)
+    return kept_mentions(text, ".md", NAME_END)
 
 
 def html_mentions(text: str):
-    return file_mentions(text, ".htm", HTML_NAME_END)
+    return kept_mentions(text, ".htm", HTML_NAME_END)
 
 
 FILE_URL = re.compile(r"\bfile://(?=/)")
@@ -1140,6 +1160,44 @@ def tool_documents(tool_input, cwd: str) -> list[str]:
     return found
 
 
+class Touched:
+    """The paths a session's tool calls named so far, oldest first, found again by their last name: a reply that names
+    `requirements.md` asks which of thousands of touched paths end that way, once per mention."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+        self.by_name: dict[str, list[str]] = {}
+
+    def extend(self, paths) -> None:
+        for path in paths:
+            self.paths.append(path)
+            self.by_name.setdefault(os.path.basename(path), []).append(path)
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __reversed__(self):
+        return reversed(self.paths)
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __bool__(self) -> bool:
+        return bool(self.paths)
+
+
+_ROOTS: dict[tuple, list[Path]] = {}
+
+
+def mention_roots() -> list[Path]:
+    """The home folder and the temp folders, as the file system resolves them (kept: this is asked once per mention)."""
+    key = (str(Path.home()), *map(str, TEMP_ROOTS))
+    roots = _ROOTS.get(key)
+    if roots is None:
+        roots = _ROOTS[key] = [root.resolve() for root in (Path.home(), *TEMP_ROOTS)]
+    return roots
+
+
 def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str] = (), limit: int = MAX_DOCUMENT_BYTES) -> Path | None:
     """The existing file (at most <limit> bytes) a reply means by <token>, or None.
 
@@ -1151,16 +1209,22 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     folder, since agents often name files from their repository's root. The file
     found must lie, once links are followed, under the home folder or a temp folder.
     """
-    roots = [root.resolve() for root in (Path.home(), *TEMP_ROOTS)]
+    roots = mention_roots()
     raw = Path(os.path.expanduser(token))
     if raw.is_absolute():
         candidates = [raw]
     else:
         candidates = [base / raw for base in cd_dirs]
-        candidates += [Path(path) for path in reversed(touched) if Path(path).parts[-len(raw.parts):] == raw.parts]
+        wanted = raw.parts
+        if isinstance(touched, Touched):
+            named = touched.by_name.get(wanted[-1], ()) if wanted else ()
+            candidates += [Path(path) for path in reversed(named) if Path(path).parts[-len(wanted):] == wanted]
+        else:
+            candidates += [Path(path) for path in reversed(touched) if Path(path).parts[-len(wanted):] == wanted]
         if cwd:
             here = Path(cwd)
-            candidates += [base / raw for base in [here] + [parent for parent in here.parents if Path.home() in parent.parents]]
+            home = Path.home()
+            candidates += [base / raw for base in [here] + [parent for parent in here.parents if home in parent.parents]]
     for candidate in candidates:
         try:
             if candidate.is_file() and candidate.stat().st_size <= limit:
@@ -1222,7 +1286,7 @@ def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict
         home = Path.home()
         return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
 
-    def ids_for(text: str, cwd: str, touched: list[str]) -> list[str]:
+    def ids_for(text: str, cwd: str, touched: Touched) -> list[str]:
         found = [(start, token, path, False) for start, token, path in named_files(text, cwd, touched)]
         if html:
             found += [(start, token, path, True) for start, token, path in named_html(text, cwd, touched)]
@@ -1244,10 +1308,10 @@ def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict
         return ids
 
     for session in sessions:
-        touched: list[str] = []
+        touched = Touched()
         for exchange in session["exchanges"]:
             cwd = exchange.pop("cwd", "")
-            touched += exchange.pop("touched", [])
+            touched.extend(exchange.pop("touched", []))
             if exchange.get("source") in DOCUMENT_INPUTS:
                 # A doorbell names only an inbox; the messages it delivered are what was said.
                 said = "\n\n".join([exchange.get("input") or ""] + list(exchange.get("delivered") or []))
@@ -1405,7 +1469,7 @@ def all_logs() -> list[Path]:
 # A build walks the chains of every listed session, asking for every log thousands of times
 # within a few seconds; even unchanged, listing the folders again each time took seconds.
 LOG_LIST_REUSE = 1.0  # seconds a list of every log is reused for
-_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float]]] = {}
+_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float], dict[Path, tuple[int, int]]]] = {}
 
 
 def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
@@ -1413,18 +1477,29 @@ def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
     each one's last write."""
     cached = _LOG_INDEX.get(PROJECTS)
     if cached and time.monotonic() - cached[0] < LOG_LIST_REUSE:
-        return cached[1:]
+        return cached[1:4]
     logs = [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
     by_id: dict[str, Path] = {}
     written: dict[Path, float] = {}
+    versions: dict[Path, tuple[int, int]] = {}
     for log in logs:
         by_id.setdefault(log.stem, log)
         try:
-            written[log] = log.stat().st_mtime
+            stat = log.stat()
         except OSError:
-            pass
-    _LOG_INDEX[PROJECTS] = (time.monotonic(), logs, by_id, written)
+            continue
+        written[log] = stat.st_mtime
+        versions[log] = (stat.st_mtime_ns, stat.st_size)
+    _LOG_INDEX[PROJECTS] = (time.monotonic(), logs, by_id, written, versions)
     return logs, by_id, written
+
+
+def listed_version(path: Path) -> tuple[int, int] | None:
+    """A log's (modification time, size) as the list of every log found it, while that list is reused: what the caches of a
+    log's head, tail and link are checked against, once for every candidate of every chain."""
+    log_index()
+    known = _LOG_INDEX[PROJECTS][4].get(path)
+    return known if known is not None else file_version(path)
 
 
 def log_mtime(path: Path) -> float | None:
@@ -1438,6 +1513,20 @@ def log_mtime(path: Path) -> float | None:
         return None
 
 
+# Every log by the time it was written, to find the few written near a moment (a /clear) without asking all of them.
+_TIMELINE: dict[str, object] = {"written": None, "times": [], "logs": []}
+
+
+def log_timeline() -> tuple[list[float], list[tuple[int, Path]]]:
+    """The times logs were last written, ascending, and beside each (its place in the list of every log, the log)."""
+    logs, _, written = log_index()
+    if _TIMELINE["written"] is not written:
+        places = {log: place for place, log in enumerate(logs)}
+        ordered = sorted((written[log], places[log], log) for log in written if log in places)
+        _TIMELINE.update(written=written, times=[at for at, _, _ in ordered], logs=[(place, log) for _, place, log in ordered])
+    return _TIMELINE["times"], _TIMELINE["logs"]
+
+
 TAIL_BYTES = 256 * 1024
 _TAILS: dict[Path, tuple[tuple[int, int], float | None]] = {}
 
@@ -1449,7 +1538,7 @@ def last_record_time(path: Path) -> float | None:
     and monitors have no time and come when the process is touched again (a Herdr restart rewrites every one).
     Its modification time then names that late write, not the turn that ended the session.
     """
-    version = file_version(path)
+    version = listed_version(path)
     cached = _TAILS.get(path)
     if version and cached and cached[0] == version:
         return cached[1]
@@ -1483,7 +1572,7 @@ def written_at(path: Path) -> list[float]:
 def head_records(path: Path, limit: int = HEAD_RECORDS) -> list[dict]:
     """The first parseable records of a log, without reading the whole file, cut down to
     what cleared_at, bridge_id and first_time read (see head_fields)."""
-    version = file_version(path) if limit == HEAD_RECORDS else None
+    version = listed_version(path) if limit == HEAD_RECORDS else None
     cached = _HEADS.get(path)
     if version and cached and cached[0] == version:
         return cached[1]
@@ -1542,6 +1631,21 @@ def cleared_at(records: list[dict]) -> float | None:
     return None
 
 
+_CLEARED: dict[Path, tuple[tuple[int, int], float | None]] = {}
+
+
+def head_cleared_at(path: Path) -> float | None:
+    """cleared_at of a log's head, kept while the log is as the list of every log found it (a chain asks of every log written since)."""
+    version = listed_version(path)
+    cached = _CLEARED.get(path)
+    if version and cached and cached[0] == version:
+        return cached[1]
+    at = cleared_at(head_records(path))
+    if version:
+        _CLEARED[path] = (version, at)
+    return at
+
+
 def bridge_id(records: list[dict]) -> str:
     """The remote-control link a log names first, or "". A /clear keeps the process's link."""
     for record in records:
@@ -1553,7 +1657,7 @@ def bridge_id(records: list[dict]) -> str:
 def names_bridge(path: Path, bridge: str) -> bool:
     """Whether a log's own bridge-session records name this remote-control link. A turn that
     merely quotes the id (a search, a tool result) does not count."""
-    version = file_version(path)
+    version = listed_version(path)
     cached = _BRIDGES.get((path, bridge))
     if version and cached and cached[0] == version:
         return cached[1]
@@ -1592,8 +1696,9 @@ def late_linked(path: Path, clear_time: float, bridge: str) -> Path | None:
     the two minutes cleared_from allows: the clear may come long after the last turn.
     """
     found = []
+    written = log_index()[2]
     for other in all_logs():
-        if other == path or (log_mtime(other) or 0) < clear_time - LATE_LINK_WINDOW:
+        if other == path or (written.get(other) or 0) < clear_time - LATE_LINK_WINDOW:
             continue
         at = last_record_time(other)
         if at is not None and -30 <= clear_time - at <= LATE_LINK_WINDOW:
@@ -1612,33 +1717,69 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
     nearest log in the same folder, written at most 5 seconds after the clear. A linked log's last dated record
     counts too, when later records without a time moved its modification time past the clear.
     """
-    def nearest(candidates, late, keep=lambda other: True, written=lambda other: [log_mtime(other)]):
+    def nearest(candidates, late, keep=lambda other: True):
         best = None
         for other in candidates:
             if other == path:
                 continue
-            for at in written(other):
-                if at is None:
-                    continue
-                gap = clear_time - at
-                if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
-                    best = (abs(gap), other)
+            at = log_mtime(other)
+            if at is None:
+                continue
+            gap = clear_time - at
+            if -late <= gap <= 120 and (best is None or abs(gap) < best[0]) and keep(other):
+                best = (abs(gap), other)
         return best[1] if best else None
+
+    def nearest_anywhere(late, keep):
+        # The same choice over every log, from the logs written in the window alone (nearest first, the earlier in the list on a tie).
+        times, logs = log_timeline()
+        low, high = bisect.bisect_left(times, clear_time - 120 - 1e-3), bisect.bisect_right(times, clear_time + late + 1e-3)
+        near = sorted((abs(clear_time - times[i]), logs[i][0], logs[i][1]) for i in range(low, high) if -late <= clear_time - times[i] <= 120)
+        for _, _, other in near:
+            if other != path and keep(other):
+                return other
+        return None
+
     bridge = bridge_id(head_records(path))
     names = lambda other: names_bridge(other, bridge)
-    linked = nearest(all_logs(), 30, names) if bridge else None
+    linked = nearest_anywhere(30, names) if bridge else None
     # A linked log whose process was touched again long after the clear (see last_record_time) still ended with the clear.
     # It is asked before the nearest log in the folder, which may be another session's that merely ended nearby.
     linked = linked or (late_linked(path, clear_time, bridge) if bridge else None)
     return linked or nearest(logs_in(path.parent), 5)
 
 
+_FROZEN: dict[tuple[Path, int], list[Path]] | None = None
+
+
+@contextlib.contextmanager
+def chains_frozen():
+    """Within the block, each log's chain is worked out once. A rebuild asks for the same chains several times (which panes
+    closed, which session is newest, the page, the answer sheet), each of which must see the same sessions, and each of
+    which took about as long as the whole rest of the build."""
+    global _FROZEN
+    outer = _FROZEN
+    _FROZEN = {} if outer is None else outer
+    try:
+        yield
+    finally:
+        _FROZEN = outer
+
+
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
     """The sessions one Claude Code pane ran across /clear, or across Claude restarted in the
     same pane, oldest first, including <path>."""
+    if _FROZEN is not None:
+        if (path, limit) not in _FROZEN:
+            _FROZEN[(path, limit)] = chain_of(path, limit)
+        return list(_FROZEN[(path, limit)])
+    return chain_of(path, limit)
+
+
+def chain_of(path: Path, limit: int) -> list[Path]:
     chain = [path]
     while len(chain) < limit:
-        at = cleared_at(head_records(chain[0]))
+        at = head_cleared_at(chain[0])
         before = cleared_from(chain[0], at) if at else restarted_from(chain[0])
         if not before or before in chain:
             break
@@ -1706,11 +1847,14 @@ def cleared_into(chain: list[Path]) -> Path | None:
     recorded = last_record_time(chain[-1])
     # The next log may sit in another project folder (see cleared_from), and was written
     # to since; only those few are sorted and read.
-    recent = (other for other in {*logs_in(chain[-1].parent), *all_logs()} if (log_mtime(other) or 0) >= min(written) - 5)
-    for other in sorted(recent):
+    since = min(written) - 5
+    times, logs = log_timeline()
+    recent = {log for _, log in logs[bisect.bisect_left(times, since):]}
+    recent.update(other for other in logs_in(chain[-1].parent) if (log_mtime(other) or 0) >= since)
+    for other in sorted(recent, key=lambda log: log.parts):
         if other in chain:
             continue
-        at = cleared_at(head_records(other))
+        at = head_cleared_at(other)
         near = any(-30 <= at - when <= 120 for when in written) if at is not None else False
         # cleared_from decides which log a clear left; this only skips the clears no log of the chain could be before.
         if at is not None and (near or (recorded is not None and -30 <= at - recorded <= LATE_LINK_WINDOW)) and cleared_from(other, at) == chain[-1]:
@@ -1810,7 +1954,7 @@ def stats(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--main-home", default=str(MAIN_HOME))
     parser.add_argument("--home", action="append", help="secondmate home to include (default: the main home's registry)")
@@ -1819,7 +1963,7 @@ def main() -> int:
     parser.add_argument("--since-hours", type=float, help="fleet window (default 72, or from the earliest --session)")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--stats", action="store_true", help="print counts only; write no page")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     payload = build(args)
     if args.stats:

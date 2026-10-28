@@ -2208,6 +2208,8 @@ __HEAD_HOSTED__
     if (anchor && anchor.id) anchor.id = "ex-" + (Number(anchor.id.slice(3)) + shift);
     return keys;
   }
+  // One refresh at a time: the tick and the wait for a new build can both ask for one.
+  let refreshQueue = Promise.resolve();
   // The build the server describes by what changed since the one on screen (live.delta), merged into the page's own data: each
   // changed session keeps its first `from` turns and takes the tail, the fleet likewise, and unchanged sessions stay as they are.
   // Null when anything does not fit what the page holds (a session or turn count that disagrees), so the full page is read instead.
@@ -2235,7 +2237,14 @@ __HEAD_HOSTED__
     }
     return payload;
   }
-  async function refreshData(now = false) {
+  async function refreshData(now = false, stamp = null) {
+    // `stamp` is the build the caller heard of: when the build on screen is that one or newer by the time its turn comes, there is nothing to ask for.
+    const run = refreshQueue.then(() => takeBuild(now, stamp));
+    refreshQueue = run.catch(() => {});
+    return run;
+  }
+  async function takeBuild(now, stamp) {
+    if (!now && stamp !== null && stamp <= data.generated) return;
     const sel = window.getSelection();
     if (!now && sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
     const name = location.pathname.split("/").pop();
@@ -2336,11 +2345,13 @@ __HEAD_HOSTED__
     takeState(s);
     markRead();
     labelSessions();
-    if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData();
+    if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData(false, s.stamps.reader);
     applyFocus();
     renderLive();
     paintSync();
   });
+  // A new build is taken the moment the server publishes it, not at the next tick: the reply shows as soon as it is built.
+  if (!HOSTED) live.waitForBuilds(() => ({ reader: data.generated }), stamps => refreshData(false, stamps.reader));
   // The Sync button: take everything again now, not at the next poll. The local page asks the server to read
   // Herdr again and rebuild from the session logs and the fleet records (all read-only; it writes only out/),
   // then swaps in the list (a live Claude pane not yet on it is added first), each session's live or ended state and

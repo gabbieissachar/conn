@@ -54,7 +54,8 @@ function start({ root, port = DEFAULT_PORT, tailnet = null, ...options }) {
     tls = readCertificate(tailnet.https);
     if (tls.error) { httpsError = tls.error; tls = null; }
   }
-  const api = create({ root, port, ...(tailnet ? { tailnet: { ...tailnet, https: tls ? { host: tailnet.https.host.toLowerCase(), port: tailnet.https.port } : undefined } } : {}), ...options });
+  // The worker and the watch are what make a new reply show quickly (see api.js); a test of a plain server turns them off.
+  const api = create({ root, port, worker: true, watch: true, ...(tailnet ? { tailnet: { ...tailnet, https: tls ? { host: tailnet.https.host.toLowerCase(), port: tailnet.https.port } : undefined } } : {}), ...options });
   const copy = copyId(root);
   const onRequest = (listener) => (req, res) => {
     res.setHeader(COPY_HEADER, copy);
@@ -71,7 +72,7 @@ function start({ root, port = DEFAULT_PORT, tailnet = null, ...options }) {
     v4.listen(port, '127.0.0.1', () => {
       const bound = v4.address().port;
       const ready = (closeLoopback) => {
-        const done = (extra) => resolve({ port: bound, tailnet: null, tailnetError: null, httpsError, ...extra });
+        const done = (extra) => resolve({ port: bound, tailnet: null, tailnetError: null, httpsError, ...extra, close: () => { api.close(); extra.close(); } });
         if (!tailnet) { done({ close: closeLoopback }); return; }
         if (!api.tailnet.hasPasscode()) { done({ tailnetError: 'no passcode is set', httpsError: tailnet.https ? 'no passcode is set' : null, close: closeLoopback }); return; }
         const tn = http.createServer(onRequest('tailnet'));

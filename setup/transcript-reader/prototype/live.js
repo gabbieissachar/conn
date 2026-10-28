@@ -80,6 +80,46 @@
       document.addEventListener("visibilitychange", run);
       run();
     }
+    // A page waits on the server for a build newer than the one it holds, and takes it the moment the server publishes it instead
+    // of at its next tick. have() gives the build stamps the page holds ({ reader } and/or { sheet }, the build's `generated` time);
+    // onNewer(stamps) takes the newer one. The server answers at once when one is published, or after 25 seconds with the same
+    // stamps, and the wait starts again: one small request in all that time, nothing downloaded. A page that is hidden does not
+    // wait, and waits again when shown. A server without the route (404) leaves the page to its tick, which sees every build too.
+    function waitForBuilds(have, onNewer) {
+      if (!served) return;
+      let controller = null, waiting = false, gone = false;
+      const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const behind = (stamps, mine) => stamps.reader > mine.reader || stamps.sheet > mine.sheet;
+      async function loop() {
+        if (waiting || gone) return;
+        waiting = true;
+        let failures = 0;
+        try {
+          while (!document.hidden && !gone) {
+            controller = new AbortController();
+            const mine = have();
+            const query = ["reader", "sheet"].filter(key => Number.isFinite(mine[key])).map(key => key + "=" + encodeURIComponent(mine[key])).join("&");
+            try {
+              const answer = await call("events?" + query + "&wait=25000", { signal: controller.signal });
+              failures = 0;
+              const stamps = answer.stamps || {};
+              if (behind(stamps, mine)) {
+                await onNewer(stamps);
+                // A build the page did not take (a passage is being picked, a box is being typed in) is not asked about again at once.
+                if (behind(stamps, have())) await pause(1000);
+              }
+            } catch (e) {
+              if (e && e.name === "AbortError") break;
+              if (e && e.status === 404) { gone = true; break; }
+              failures += 1;
+              await pause(Math.min(30000, 1000 * 2 ** failures));
+            }
+          }
+        } finally { waiting = false; controller = null; }
+      }
+      document.addEventListener("visibilitychange", () => { if (document.hidden) { if (controller) controller.abort(); } else loop(); });
+      loop();
+    }
     // Quoted words come from an agent's reply. Should the line ever land in a shell, `$`,
     // backticks and backslashes are what could run or escape there, so quotes drop them.
     const clip = (text, max) => { const t = text.replace(/[`$\\]/g, "").replace(/\s+/g, " ").trim(); return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t; };
@@ -99,5 +139,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, poll, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, poll, waitForBuilds, pointer, clip };
   })();

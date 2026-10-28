@@ -17,6 +17,10 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude panes a Sync found
                                                              that are not listed), then rebuild only; one a person
                                                              closed or removed is skipped
+  python3 setup/transcript-reader/reader.py worker           stay running and take rebuild, follow, adopt, reopen and
+                                                             close from the reader's server on standard input, one JSON
+                                                             line each (the server starts this); what one build learns
+                                                             about the logs, the next uses
 
 <session> is a session id, its first 8 characters, a session log path, or a
 Herdr pane label (exact, or a unique part of the label or the pane's title).
@@ -50,14 +54,18 @@ session logs and Herdr's pane list are read, and only out/ is written.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
+import io
+import itertools
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -254,7 +262,38 @@ def drop_closed(ids: list[str]) -> list[str]:
     return kept + back
 
 
+def run_builders(page: list[str], sheet: list[str]) -> int:
+    """The two builders, each in its own interpreter (a command typed by hand, or the server without a worker)."""
+    if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *page]).returncode:
+        return 1
+    if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *sheet]).returncode:
+        return 1
+    return 0
+
+
+def run_in_process(page: list[str], sheet: list[str]) -> int:
+    """The two builders in this interpreter, which a worker keeps: the logs it has listed and read stay known to the next build."""
+    import build_questionnaire as questionnaire  # it imports the builder, so only here
+    for build, argv in ((builder.main, page), (questionnaire.main, sheet)):
+        try:
+            if build(argv):
+                return 1
+        except SystemExit as stop:  # a builder's way of saying why it cannot build
+            if stop.code not in (None, 0):
+                print(stop.code if isinstance(stop.code, str) else f"The build stopped ({stop.code})")
+                return 1
+    return 0
+
+
+BUILDERS = run_builders  # a worker sets run_in_process
+
+
 def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
+    with builder.chains_frozen():
+        return rebuild_frozen(ids, focus, serve_page)
+
+
+def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
     kept = drop_closed(ids)
     if kept != ids:
         if ids and not kept:
@@ -288,9 +327,7 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
     builder.make_private(OUT)  # out/ holds private transcript text: owner-only, like Claude's logs
     with builder.private_open(OUT / ".rebuild.lock", truncate=False) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_prototype.py"), *argv]).returncode:
-            return 1
-        if subprocess.run([sys.executable, "-I", str(HERE / "prototype" / "build_questionnaire.py"), *questions]).returncode:
+        if BUILDERS(argv, questions):
             return 1
     if serve_page:
         serve(focus)
@@ -424,11 +461,66 @@ def show(ids: list[str]) -> None:
         print(f"{sid[:8]}  {where}")
 
 
+# What the server may ask of a worker, with how many names each takes after it (None: one or more).
+WORKER_COMMANDS = {"rebuild": 0, "follow": 1, "adopt": None, "reopen": 1, "close": 1}
+SOURCES = (HERE / "reader.py", HERE / "prototype" / "build_prototype.py", HERE / "prototype" / "build_questionnaire.py")
+
+
+def worker_request(line: str) -> tuple[object, list[str]]:
+    """The id and arguments of one request line, or ValueError when it is not one the worker takes."""
+    try:
+        request = json.loads(line)
+        args, ident = request["args"], request["id"]
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("Not a request the worker takes.")
+    if not isinstance(args, list) or not args or not all(isinstance(arg, str) for arg in args) or args[0] not in WORKER_COMMANDS:
+        raise ValueError("Not a command the worker takes.")
+    count = WORKER_COMMANDS[args[0]]
+    if (len(args) < 2 if count is None else len(args) - 1 != count):
+        raise ValueError(f"{args[0]} does not take {len(args) - 1} names.")
+    return ident, args
+
+
+def worker(replay: str | None = None) -> int:
+    """Answer the server's requests on standard input, one JSON line each: {"id": n, "args": ["rebuild"]}, and on standard
+    output {"id": n, "code": 0, "output": "..."} each. It runs what the same command does by hand, in this one interpreter, so
+    that the session logs, folders and file heads one build has read are not read again by the next. Only the commands the
+    server runs for a page are taken; anything else is refused. When this program's own files change (an update of the repo)
+    it starts again from the new ones before it answers the next request, so no build runs half on old code."""
+    global BUILDERS
+    BUILDERS = run_in_process
+    reply = sys.stdout
+    version = tuple(builder.file_version(path) for path in SOURCES)
+    for line in itertools.chain([replay] if replay else [], sys.stdin):
+        if tuple(builder.file_version(path) for path in SOURCES) != version:
+            reply.flush()
+            os.execv(sys.executable, [sys.executable, "-I", str(HERE / "reader.py"), "worker", "--replay", line.rstrip("\n")])
+        try:
+            ident, args = worker_request(line)
+        except ValueError as refusal:
+            reply.write(json.dumps({"id": None, "code": 2, "output": str(refusal)}) + "\n")
+            reply.flush()
+            continue
+        output = io.StringIO()
+        builder._LOG_INDEX.clear()  # a log written since the last build is on the list
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                code = main(args)
+            except Exception:  # a build that fails says so, and the next request runs as usual
+                traceback.print_exc()
+                code = 1
+        reply.write(json.dumps({"id": ident, "code": code, "output": output.getvalue()[-8192:]}) + "\n")
+        reply.flush()
+    return 0
+
+
 def main(argv: list[str]) -> int:
     command, names = (argv[0], argv[1:]) if argv else ("refresh", [])
     if command in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
+    if command == "worker" and (not names or (len(names) == 2 and names[0] == "--replay")):
+        return worker(names[1] if names else None)
     ids = read_list()
     if command == "refresh":
         return rebuild(ids)

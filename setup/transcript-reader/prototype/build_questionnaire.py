@@ -17,6 +17,8 @@ private transcript text, so it is written to the gitignored out/ folder.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import re
 import sys
@@ -210,7 +212,7 @@ def table_card(key: str, get, header: list[str]) -> dict:
     return card
 
 
-def parse_questionnaire(reply: str) -> dict | None:
+def _parse_questionnaire(reply: str) -> dict | None:
     """The cards a reply asks to be answered, or None when it asks for no keyed answers.
 
     Cards come from keyed table rows, bold question leads with choice bullets, and keyed
@@ -329,6 +331,23 @@ def parse_questionnaire(reply: str) -> dict | None:
     }
 
 
+# A rebuild reads every reply again, and which cards a reply asks for depends on its text alone, so a process that builds more
+# than once keeps the answer by a digest of the text (never the text itself) and hands out a copy of it.
+_PARSED: dict[bytes, dict | None] = {}
+PARSED_KEPT = 20000
+
+
+def parse_questionnaire(reply: str) -> dict | None:
+    """The cards a reply asks to be answered (see _parse_questionnaire), or None when it asks for no keyed answers."""
+    key = hashlib.sha1(reply.encode("utf-8", "surrogatepass")).digest()
+    if key not in _PARSED:
+        if len(_PARSED) >= PARSED_KEPT:
+            _PARSED.clear()
+        _PARSED[key] = _parse_questionnaire(reply)
+    found = _PARSED[key]
+    return copy.deepcopy(found) if found else found
+
+
 def sent_answers(text: str) -> dict[str, str]:
     """Keyed answers in a message the captain sent, such as `A1=accept;A2=inline`."""
     return {key: value.strip() for key, value in KEYED_ANSWER.findall(text)}
@@ -378,11 +397,11 @@ def collect(session_names: list[str]) -> list[dict]:
     return found
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--session", action="append", help="session id or path (default: the reader's list)")
     parser.add_argument("--out", default=str(OUT / "questionnaire.html"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     names = args.session
     if not names:
         try:
