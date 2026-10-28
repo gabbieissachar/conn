@@ -204,6 +204,18 @@ async function until(fn, what, ms = 20000) {
   await page.click('#tab-reader');
   await until(async () => /Drafted the notes|Sent a short version/.test(await text('#main')), 'the reader tab');
 
+  // The answer sheet's page is stored too: it opens with the laptop away, and goes back to the reader.
+  await page.goto(`${base}/setup/transcript-reader/out/bucket/sheet.html`);
+  await until(async () => /No questionnaire found|asked/.test(await text('#main') + await text('#meta')), 'the answer sheet offline');
+  check(true, 'the answer sheet page opens from the stored shell with the laptop away');
+  await shot('08b-sheet-offline');
+  await page.goto(shell);
+  await until(async () => /Offline · copy from/.test(await text('#asof-text')), 'the reader again');
+  await page.click('#tab-reader');
+  await until(async () => /Drafted the notes|Sent a short version|Tidy the scratch folder/.test(await text('#main')), 'the reader conversation after the sheet');
+  await switchTo('alpha');
+  await until(async () => /Drafted the notes|Sent a short version/.test(await text('#main')), 'the main conversation again');
+
   // ------------------------------------------------------------------ Send while away
   await page.fill('#dock-text', 'Please also send it to the design team. Sent from the train.');
   await page.click('#dock-send');

@@ -326,9 +326,10 @@ __HEAD_HOSTED__
       if (HOSTED) {
         const queued = await hosted.enqueue(q.session, text);
         const label = (q.pane && q.pane.label) || q.session.slice(0, 8);
-        link.result = { ok: true, text: `Queued for ${label} at ${clock(queued.at * 1000)}. The laptop sends it when it is awake.` };
-        sendOnce.done(key, text, "Queued", clock(queued.at * 1000)); renderSend();
-        await watchReceipt(queued.id, label, clock, key, text);
+        // With the laptop not reachable the line is held on this phone and goes to the laptop's queue when it answers (hosted.flush).
+        link.result = { ok: true, text: queued.held ? `Held on this phone at ${clock(queued.at * 1000)}. It goes to the laptop when it is reachable.` : `Queued for ${label} at ${clock(queued.at * 1000)}. The laptop sends it when it is awake.` };
+        sendOnce.done(key, text, queued.held ? "Held" : "Queued", clock(queued.at * 1000)); renderSend();
+        await watchReceipt(queued.id, label, clock, key, text, Boolean(queued.held));
         return;
       }
       const sent = await live.send(q.session, text);
@@ -339,11 +340,27 @@ __HEAD_HOSTED__
     setTimeout(() => { link.result = null; renderSend(); }, 6000);
   }
   // The hosted copy: the laptop's receipt for a queued line, asked about every 4 seconds (up to a day) and shown in place.
-  async function watchReceipt(id, label, clock, key, text) {
+  async function watchReceipt(id, label, clock, key, text, held = false) {
     link.watching = id;
     for (let tries = 0; tries < 21600 && link.watching === id; tries += 1) {
       await new Promise(resolve => setTimeout(resolve, 4000));
       if (document.hidden) continue;
+      if (held) {
+        // Held on this phone: it goes to the laptop's queue once the laptop answers; one the laptop will not take (refused, or over
+        // 12 hours old) did not go, so it can be sent again.
+        const mine = (await hosted.flush()).find(x => x.id === id);
+        if (mine && mine.state !== "queued") {
+          sendOnce.forget(key, text);
+          link.result = { ok: false, text: mine.state === "expired" ? "Not sent: it was held on this phone for over 12 hours without the laptop being reachable. Send it again if it still matters." : `Not sent: ${mine.reason || "the laptop refused it."}` };
+          renderSend();
+          return;
+        }
+        if ((await hosted.heldIds()).has(id)) continue;
+        held = false;
+        sendOnce.relabel(key, text, "Queued");
+        link.result = { ok: true, text: "Queued for the laptop. It sends it when it is awake." };
+        renderSend();
+      }
       const receipt = await hosted.receipt(id).catch(() => null);
       if (!receipt || receipt.state === "sending" || link.watching !== id) continue;
       // A line the laptop refused did not go, so it can be sent again.
