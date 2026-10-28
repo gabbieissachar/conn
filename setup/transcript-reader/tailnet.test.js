@@ -10,6 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -47,7 +48,7 @@ function fakeHerdr() {
 
 // A reader server with its loopback listeners and, unless withTailnet is false, a tailnet listener.
 // sharedPasscodeFile: another boot's passcode file, so this server shares its passcode and sessions (a restart, or a second server).
-async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFile = null } = {}) {
+async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFile = null, secure = null } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-tailnet-'));
   const root = path.join(base, 'repo');
   const outDir = path.join(root, 'setup', 'transcript-reader', 'out');
@@ -68,8 +69,10 @@ async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFil
   let clock = Date.now();
   const port = await freePort();
   const tailnetPort = await freePort();
+  const httpsPort = await freePort();
+  // secure: { host, certFile, keyFile, recheckMs } turns the TLS listener on (certificate files made by makeCertificate).
   const server = await start({
-    root, port, tailnet: withTailnet ? { ip: '127.0.0.1', port: tailnetPort, passcodeFile } : null,
+    root, port, tailnet: withTailnet ? { ip: '127.0.0.1', port: tailnetPort, passcodeFile, ...(secure ? { https: { port: httpsPort, ...secure } } : {}) } : null,
     log: (line) => lines.push(line), runner: herdr.runner, env: {}, projectsDir, claudeSessionsDir: path.join(base, 'sessions'), pinsFile: path.join(base, 'config', 'pins.json'), now: () => clock, pause: async () => {},
   });
 
@@ -89,14 +92,40 @@ async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFil
   // Requests as the browser makes them, on the loopback listener and on the tailnet one.
   const onLoopback = (options) => request(port, { ...options, headers: { Host: loopback.host, ...options.headers } });
   const onTailnet = (options) => request(tailnetPort, { ...options, headers: { Host: phone.host, ...options.headers } });
+  // Requests as a phone makes them to the TLS listener: the machine's name in Host, the scratch certificate trusted.
+  const onHttps = (options) => new Promise((resolve, reject) => {
+    const host = HOST;
+    const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+    const req = https.request({ host: '127.0.0.1', port: httpsPort, servername: host, rejectUnauthorized: false, agent: false, method: options.method || 'GET', path: options.path,
+      headers: { Host: `${host}:${httpsPort}`, ...options.headers, ...(payload !== undefined ? { 'Content-Length': Buffer.byteLength(payload) } : {}) } }, (res) => {
+      let raw = '';
+      const cert = res.socket.getPeerCertificate();  // the scratch certificate is self-signed, so it is read, not verified
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => { let json = null; try { json = JSON.parse(raw); } catch { /* not json */ } resolve({ status: res.statusCode, headers: res.headers, raw, json, cert }); });
+    });
+    req.on('error', reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
   const signIn = (passcodeText, extra = {}) => onTailnet({ method: 'POST', path: '/transcript-reader/signin', headers: { Origin: phone.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', ...extra }, body: { passcode: passcodeText, next: PAGE } });
   const cookieFrom = (response) => String(response.headers['set-cookie'] || '').split(';')[0];
   const signedIn = async () => { const response = await signIn(PASSCODE); assert.equal(response.status, 200); return cookieFrom(response); };
   return {
-    base, server, herdr, lines, passcodeFile, port, tailnetPort, loopback, phone, onLoopback, onTailnet, signIn, cookieFrom, signedIn, request,
+    base, server, herdr, lines, passcodeFile, port, tailnetPort, httpsPort, loopback, phone, onLoopback, onTailnet, onHttps, signIn, cookieFrom, signedIn, request,
     tick: (ms) => { clock += ms; },
     close: () => { server.close(); },
   };
+}
+
+// A scratch self-signed certificate for <host> in <dir> (openssl), never a real one; null when openssl cannot make it.
+function makeCertificate(dir, host, days = 2) {
+  fs.mkdirSync(dir, { recursive: true });
+  const certFile = path.join(dir, host + '.crt');
+  const keyFile = path.join(dir, host + '.key');
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyFile, '-out', certFile, '-days', String(days), '-subj', '/CN=' + host, '-addext', 'subjectAltName=DNS:' + host], { stdio: 'ignore', timeout: 30000 });
+  } catch { return null; }
+  return { host, certFile, keyFile };
 }
 
 const tokenIn = (html) => (html.match(/<meta name="reader-token" content="([^"]*)">/) || [])[1];
@@ -868,4 +897,235 @@ test('the shared guard lets a cross-site GET through only when asked, and still 
   assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site', origin: 'null' }), loose).ok, false);
   assert.equal(guard.check({ method: 'POST', headers: { host: 'localhost:9000', origin: 'http://localhost:9000', 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' } }, loose).ok, false, 'never for a POST');
   assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site' }), { crossSite: true }).ok, false, 'the token is still required unless waived');
+});
+
+// ---------------------------------------------------------------- HTTPS on the tailnet address
+
+const HOST = 'reader-test.example.ts.net';
+async function bootSecure(t, extra = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-cert-'));
+  const cert = makeCertificate(dir, HOST);
+  if (!cert) { t.skip('openssl cannot make a scratch certificate here'); return null; }
+  const s = await boot({ secure: { ...cert, ...extra } });
+  t.after(s.close);
+  return { ...s, cert, dir };
+}
+const SECURE_ORIGIN = (s) => `https://${HOST}:${s.httpsPort}`;
+const signInSecure = (s, passcode = PASSCODE, headers = {}) => s.onHttps({ method: 'POST', path: '/transcript-reader/signin', headers: { Origin: SECURE_ORIGIN(s), 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', ...headers }, body: { passcode, next: PAGE } });
+
+test('the TLS listener serves the Tailscale name with the certificate it was given, beside the plain listener', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  assert.deepEqual(s.server.tailnet.https.host, HOST);
+  assert.equal(s.server.tailnet.https.port, s.httpsPort);
+  assert.equal(s.server.httpsError, null);
+  assert.ok(s.server.tailnet.https.expires > Date.now() / 1000);
+  const page = await s.onHttps({ path: PAGE, headers: NAVIGATE });
+  assert.equal(page.status, 401, 'the passcode page, over TLS');
+  assert.match(page.raw, /Passcode/);
+  assert.equal(page.cert.subject.CN, HOST);
+  // The plain tailnet listener keeps working until the owner switches.
+  assert.equal((await s.onTailnet({ path: PAGE, headers: NAVIGATE })).status, 401);
+  const plainCookie = await s.signedIn();
+  assert.equal((await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: plainCookie } })).status, 200);
+});
+
+test('the passcode gate holds on the TLS listener: no session, no page, no API, no probing', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  for (const [urlPath, headers] of [[PAGE, NAVIGATE], ['/', NAVIGATE], ['/setup/transcript-reader/out/hosted/index.html', NAVIGATE], ['/setup/transcript-reader/out/bucket/index.json.enc', {}],
+    ['/api/transcript-reader/state', {}], ['/api/transcript-reader/queue', {}], ['/api/transcript-reader/pins', {}], ['/api/transcript-reader/html-open', {}], ['/anything/else', {}]]) {
+    const response = await s.onHttps({ path: urlPath, headers });
+    assert.equal(response.status, 401, urlPath);
+    assert.ok(!/reader-token|content="[0-9a-f]{64}"/.test(response.raw), 'no token to anyone signed out: ' + urlPath);
+  }
+  for (const stale of ['pmos_session=AAAA', 'pmos_session=' + 'A'.repeat(43)]) {
+    assert.equal((await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, Cookie: stale } })).status, 401);
+  }
+  assert.equal(s.herdr.prompts().length, 0);
+  // A wrong passcode is refused and counted like on the plain listener.
+  const wrong = await signInSecure(s, 'wrong passcode here');
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.json.code, 'wrong_passcode');
+  assert.ok(!(wrong.headers['set-cookie'] || []).length);
+});
+
+test('a correct passcode over TLS sets a Secure session cookie, and the page, the API and Send then work', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const signIn = await signInSecure(s);
+  assert.equal(signIn.status, 200, signIn.raw);
+  const setCookie = signIn.headers['set-cookie'][0];
+  assert.match(setCookie, /^pmos_session=[A-Za-z0-9_-]{43};/);
+  assert.match(setCookie, /; HttpOnly/);
+  assert.match(setCookie, /; SameSite=Strict/);
+  assert.match(setCookie, /; Secure/);
+  const cookie = setCookie.split(';')[0];
+  const page = await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } });
+  assert.equal(page.status, 200);
+  const token = tokenIn(page.raw);
+  assert.match(token, /^[0-9a-f]{64}$/);
+  assert.equal((await s.onHttps({ path: '/api/transcript-reader/state', headers: { Cookie: cookie, [TOKEN_HEADER]: token } })).status, 200);
+  assert.equal((await s.onHttps({ path: '/api/transcript-reader/state', headers: { Cookie: cookie } })).status, 403, 'the session alone is not enough');
+  const sent = await s.onHttps({ method: 'POST', path: '/api/transcript-reader/send', headers: { Cookie: cookie, Origin: SECURE_ORIGIN(s), 'Content-Type': 'application/json', [TOKEN_HEADER]: token, 'Sec-Fetch-Site': 'same-origin' }, body: { session_id: A, text: 'over TLS' } });
+  assert.equal(sent.status, 200, sent.raw);
+  assert.deepEqual(s.herdr.prompts().map((call) => call.args[5]), ['over TLS']);
+  // The plain listener's cookie has no Secure flag, as before.
+  assert.ok(!/Secure/.test((await signIn_plain(s)).headers['set-cookie'][0]));
+});
+const signIn_plain = (s) => s.signIn(PASSCODE);
+
+test('the TLS listener refuses another Host, a plain-http Origin and Fetch-Metadata cross-site, signed in or not', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  for (const headers of [{ Host: `127.0.0.1:${s.httpsPort}` }, { Host: `evil.example:${s.httpsPort}` }, { Host: HOST }, { Host: s.phone.host }, { Host: s.loopback.host }]) {
+    for (const withCookie of [false, true]) {
+      assert.equal((await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, ...headers, ...(withCookie ? { Cookie: cookie } : {}) } })).status, 403, JSON.stringify(headers));
+    }
+  }
+  const post = (headers) => s.onHttps({ method: 'POST', path: '/transcript-reader/signin', headers: { 'Content-Type': 'application/json', ...headers }, body: { passcode: PASSCODE } });
+  assert.equal((await post({ Origin: `http://${HOST}:${s.httpsPort}` })).status, 403, 'an http origin is not the TLS listener\'s');
+  assert.equal((await post({ Origin: s.phone.origin })).status, 403, 'the plain listener\'s origin is not the TLS listener\'s');
+  assert.equal((await post({})).status, 403);
+  assert.equal((await post({ Origin: SECURE_ORIGIN(s), 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await post({ Origin: SECURE_ORIGIN(s) })).status, 200);
+  // And the plain listener does not take the TLS name.
+  assert.equal((await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Host: `${HOST}:${s.tailnetPort}` } })).status, 403);
+});
+
+test('a sign-out over TLS ends the session, and a new passcode signs the TLS device out too', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  assert.equal((await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } })).status, 200);
+  const out = await s.onHttps({ path: '/transcript-reader/signout', headers: { ...NAVIGATE, Cookie: cookie } });
+  assert.equal(out.status, 303);
+  assert.match(out.headers['set-cookie'][0], /Max-Age=0.*Secure/);
+  assert.equal((await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } })).status, 401);
+  const again = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  await tailnet.writePasscodeFile(s.passcodeFile, 'another passcode entirely');
+  assert.equal((await s.onHttps({ path: PAGE, headers: { ...NAVIGATE, Cookie: again } })).status, 401);
+});
+
+test('a missing, mismatched, unreadable or expired certificate leaves the plain listener serving and gives one plain reason', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-cert-'));
+  const good = makeCertificate(dir, HOST);
+  const other = makeCertificate(path.join(dir, 'other'), 'someone-else.example.ts.net');
+  if (!good || !other) { t.skip('openssl cannot make a scratch certificate here'); return; }
+  const expired = makeCertificate(path.join(dir, 'expired'), HOST, 0);
+  const cases = [
+    ['missing', { host: HOST, certFile: path.join(dir, 'none.crt'), keyFile: path.join(dir, 'none.key') }, /certificate is not there/],
+    ['another name', { host: HOST, certFile: other.certFile, keyFile: other.keyFile }, /not for reader-test\.example\.ts\.net/],
+    ['key of another certificate', { host: HOST, certFile: good.certFile, keyFile: other.keyFile }, /cannot be read/],
+    ['no machine name', { host: '', certFile: good.certFile, keyFile: good.keyFile }, /no Tailscale name/],
+    ['an address, not a name', { host: '100.97.27.50', certFile: good.certFile, keyFile: good.keyFile }, /no Tailscale name/],
+  ];
+  if (expired) cases.push(['expired', { host: HOST, certFile: expired.certFile, keyFile: expired.keyFile }, /expired/]);
+  for (const [name, secure, reason] of cases) {
+    const s = await boot({ secure });
+    t.after(s.close);
+    assert.match(s.server.httpsError, reason, name);
+    assert.equal(s.server.tailnet.https, undefined, name);
+    assert.equal((await s.onTailnet({ path: PAGE, headers: NAVIGATE })).status, 401, name + ': the plain listener serves as before');
+    await assert.rejects(s.onHttps({ path: PAGE, headers: NAVIGATE }), { code: 'ECONNREFUSED' }, name);
+  }
+});
+
+test('a TLS port that cannot be bound is said, and the plain listener keeps serving', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-cert-'));
+  const cert = makeCertificate(dir, HOST);
+  if (!cert) { t.skip('openssl cannot make a scratch certificate here'); return; }
+  const taken = await freePort();
+  const holder = net.createServer().listen(taken, '127.0.0.1');
+  await new Promise((resolve) => holder.once('listening', resolve));
+  t.after(() => holder.close());
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-tailnet-'));
+  const passcodeFile = path.join(base, 'passcode.json');
+  await tailnet.writePasscodeFile(passcodeFile, PASSCODE);
+  const root = path.join(base, 'repo');
+  fs.mkdirSync(path.join(root, 'setup', 'transcript-reader', 'out'), { recursive: true });
+  const server = await start({ root, port: await freePort(), tailnet: { ip: '127.0.0.1', port: await freePort(), passcodeFile, https: { ...cert, port: taken } }, env: {}, pinsFile: path.join(base, 'pins.json') });
+  t.after(() => server.close());
+  assert.ok(server.tailnet, 'the plain listener is up');
+  assert.equal(server.tailnet.https, undefined);
+  assert.match(server.httpsError, /could not be bound \(EADDRINUSE\)/);
+});
+
+test('no passcode set means no TLS listener either, with the same reason', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-cert-'));
+  const cert = makeCertificate(dir, HOST);
+  if (!cert) { t.skip('openssl cannot make a scratch certificate here'); return; }
+  const s = await boot({ passcode: null, secure: cert });
+  t.after(s.close);
+  assert.equal(s.server.tailnet, null);
+  assert.match(s.server.httpsError, /no passcode is set/);
+  await assert.rejects(s.onHttps({ path: PAGE, headers: NAVIGATE }), { code: 'ECONNREFUSED' });
+});
+
+test('a renewed certificate is served without a restart', async (t) => {
+  const s = await bootSecure(t, { recheckMs: 50 });
+  if (!s) return;
+  const first = (await s.onHttps({ path: PAGE, headers: NAVIGATE })).cert.serialNumber;
+  await new Promise((resolve) => setTimeout(resolve, 1200));  // file times have a coarse step on some systems
+  const renewed = makeCertificate(s.dir, HOST, 3);
+  fs.utimesSync(renewed.certFile, new Date(), new Date());
+  fs.utimesSync(renewed.keyFile, new Date(), new Date());
+  let second = first;
+  for (let i = 0; i < 40 && second === first; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    second = (await s.onHttps({ path: PAGE, headers: NAVIGATE })).cert.serialNumber;
+  }
+  assert.notEqual(second, first, 'the listener took the new certificate');
+});
+
+// ---------------------------------------------------- the offline copy's files on the TLS address
+
+test('the offline copy\'s worker, manifest and icons are served over TLS only to a signed-in phone, with their own types', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const outDir = path.join(s.base, 'repo', 'setup', 'transcript-reader', 'out');
+  for (const folder of ['bucket', 'hosted']) {
+    fs.mkdirSync(path.join(outDir, folder), { recursive: true });
+    fs.writeFileSync(path.join(outDir, folder, 'sw.js'), '// worker');
+    fs.writeFileSync(path.join(outDir, folder, 'manifest.webmanifest'), '{"name":"x"}');
+    fs.writeFileSync(path.join(outDir, folder, 'icon-180.png'), 'png-bytes');
+    fs.writeFileSync(path.join(outDir, folder, 'secret.txt'), 'not served');
+  }
+  const SAME = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'same-origin', 'Sec-Fetch-Dest': 'serviceworker' };
+  const base = '/setup/transcript-reader/out/bucket/';
+  assert.equal((await s.onHttps({ path: base + 'sw.js', headers: SAME })).status, 401, 'no session, no worker');
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  const worker = await s.onHttps({ path: base + 'sw.js', headers: { ...SAME, Cookie: cookie } });
+  assert.equal(worker.status, 200);
+  assert.match(worker.headers['content-type'], /^text\/javascript/);
+  assert.equal(worker.raw, '// worker');
+  assert.equal((await s.onHttps({ path: base + 'manifest.webmanifest', headers: { ...SAME, 'Sec-Fetch-Dest': 'manifest', Cookie: cookie } })).headers['content-type'].split(';')[0], 'application/manifest+json');
+  assert.equal((await s.onHttps({ path: '/setup/transcript-reader/out/hosted/icon-180.png', headers: { ...SAME, 'Sec-Fetch-Dest': 'image', Cookie: cookie } })).headers['content-type'], 'image/png');
+  const other = await s.onHttps({ path: base + 'secret.txt', headers: { ...SAME, Cookie: cookie } });
+  assert.ok([403, 404].includes(other.status) && !other.raw.includes('not served'), 'only those files');
+  assert.equal((await s.onHttps({ path: base + 'sw.js', headers: { ...SAME, 'Sec-Fetch-Site': 'cross-site', Cookie: cookie } })).status, 403);
+  assert.equal((await s.onHttps({ path: base + 'sw.js', headers: { ...SAME, Host: `evil.example:${s.httpsPort}`, Cookie: cookie } })).status, 403);
+});
+
+test('a shell page opens in a tab as before, and the page itself may fetch it for its cache only with the token it holds', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const outDir = path.join(s.base, 'repo', 'setup', 'transcript-reader', 'out', 'bucket');
+  fs.mkdirSync(outDir, { recursive: true });
+  for (const name of ['index.html', 'sheet.html']) fs.writeFileSync(path.join(outDir, name), `<!doctype html><head>${TOKEN_META}</head>${name}`);
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  const shell = '/setup/transcript-reader/out/bucket/index.html';
+  const tab = await s.onHttps({ path: shell, headers: { ...NAVIGATE, Cookie: cookie } });
+  assert.equal(tab.status, 200);
+  const token = tokenIn(tab.raw);
+  const FETCH = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
+  assert.equal((await s.onHttps({ path: shell, headers: { ...FETCH, Cookie: cookie } })).status, 403, 'a script\'s fetch with no token gets nothing');
+  assert.equal((await s.onHttps({ path: shell, headers: { ...FETCH, Cookie: cookie, [TOKEN_HEADER]: 'f'.repeat(64) } })).status, 403, 'nor with a wrong one');
+  const own = await s.onHttps({ path: '/setup/transcript-reader/out/bucket/sheet.html', headers: { ...FETCH, Cookie: cookie, [TOKEN_HEADER]: token } });
+  assert.equal(own.status, 200);
+  assert.equal(tokenIn(own.raw), token, 'the page gets the token it already held, nothing new');
+  assert.equal((await s.onHttps({ path: shell, headers: { ...FETCH, [TOKEN_HEADER]: token } })).status, 401, 'and never without the sign-in');
+  // The local reader page keeps the old rule: a script's fetch of it never gets it, even with the token.
+  assert.equal((await s.onHttps({ path: PAGE, headers: { ...FETCH, Cookie: cookie, [TOKEN_HEADER]: token } })).status, 403);
 });

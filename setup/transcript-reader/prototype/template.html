@@ -12,8 +12,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; __CSP_HOSTED__frame-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="reader-token" content="__READER_TOKEN__">
+__HEAD_HOSTED__
 <meta name="template" content="__TEMPLATE_HASH__">
 <title>Transcript reader (prototype)</title>
 <style>
@@ -85,6 +86,14 @@
   .asof button.sync { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 1px 9px; color: var(--ink); text-decoration: none; }
   .asof button.sync:disabled { opacity: .6; cursor: default; }
   .asof button.sync:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .asof a.offline-link { flex: none; font-size: 12px; color: var(--muted); }
+  /* What this device holds of a sealed copy, with the two actions: Download everything now, Forget this device. */
+  .offline { margin-top: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--wash); }
+  .offline-text { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .offline-text.bad { color: var(--open); }
+  .offline progress { display: block; width: 100%; height: 6px; margin-top: 6px; }
+  .offline-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  @media (hover: none) and (pointer: coarse) { .offline-acts .btn { min-height: 44px; padding: 4px 12px; font-size: 14px; } .asof a.offline-link { padding: 12px 4px; } }
   /* A sealed copy asks for its passphrase before anything else; the tabs wait until it opens. */
   .locked #bar-more, .locked .bar-toggle { display: none; }
   main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
@@ -346,7 +355,7 @@
 <header class="bar" id="bar">
   <div class="bar-inner">
     <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
-    <div class="asof" id="asof" hidden><span id="asof-text"></span><button class="sync" id="sync" type="button">Sync</button><button id="forget" type="button" hidden title="Forget the key this device keeps for this copy; the passphrase is asked again">Forget this device</button></div>
+    <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
         <input id="search-input" type="search" placeholder="Search" aria-label="Search" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
@@ -370,6 +379,11 @@
       <div class="search-results" id="search-results" hidden></div>
     </div>
     <div id="bar-more">
+      <div class="offline" id="offline" hidden>
+        <div class="offline-text" id="offline-text" aria-live="polite"></div>
+        <progress id="offline-progress" max="1" value="0" hidden aria-label="Download progress"></progress>
+        <div class="offline-acts"><button class="btn" id="offline-download" type="button" hidden>Download everything now</button><button class="btn" id="forget" type="button" title="Forget the key this device keeps for this copy, everything stored from it and any message held for the laptop; the passphrase is asked again">Forget this device</button></div>
+      </div>
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" id="tab-reader" aria-selected="true">Conversation</button>
         <button class="tab" role="tab" id="tab-fleet" aria-selected="false">Fleet timeline</button>
@@ -429,7 +443,7 @@
   const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
   try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
-  const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
+  const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id === "workspace" ? "Your own sessions" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
   const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtClock = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtDay = s => new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" }).format(new Date(s * 1000));
@@ -437,6 +451,8 @@
   const fmtWhen = s => s ? `${fmtDay(s)} ${fmtTime(s)}` : "";
   // When the hosted copy was built: the time alone today, with the day before that.
   const builtAt = s => fmtShortDay(s) === fmtShortDay(Date.now() / 1000) ? fmtTime(s) : fmtWhen(s);
+  // How long ago, in words that fit a phone's line: "5 min", "3 h", "2 days".
+  const ago = s => { const m = Math.max(0, Math.round((Date.now() / 1000 - s) / 60)); return m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
 
   // ---------------------------------------------------------------- markdown
   // The parsing and the safety of it (no raw HTML, only http(s) links) are in markdown.js; this draws its HTML into a box.
@@ -774,7 +790,7 @@
     const pane = session && session.pane;
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
-    const where = session ? `${homeName(session.home)} home${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
+    const where = session ? `${session.home === "workspace" ? "Your workspace" : homeName(session.home) + " home"}${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
     // The hosted copy has the agent's state as Herdr reported it when the laptop built the copy.
     const stated = HOSTED && pane && pane.live && session ? sessionStatus(session, true) : "";
     const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
@@ -1692,8 +1708,8 @@
       // The hosted copy queues it: the laptop sends it when it is awake and the pane is ready.
       const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
       const sent = HOSTED ? { label: (session.pane && session.pane.label) || paneName(sid) } : await live.send(sid, text);
-      link.result = { ok: true, text: HOSTED ? `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.` : `Sent to ${sent.label} at ${fmtTime(at)}.` };
-      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: "queued" } } : {}) });
+      link.result = { ok: true, text: HOSTED ? (queued.held ? `Held on this phone at ${fmtTime(at)}.` : `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.`) : `Sent to ${sent.label} at ${fmtTime(at)}.` };
+      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : {}) });
       keepQueued();
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
       const onScreen = dockSession();
@@ -1740,6 +1756,7 @@
       else if (queue.state === "refused") said = `Not sent · ${receipt.reason || "The laptop refused it."}`;
       else if (queue.state === "sent") said = late ? `Sent by the laptop at ${fmtTime(receipt.at)} · not in the log yet; check the pane` : `Sent by the laptop at ${fmtTime(receipt.at)} · waiting for ${p.label}`;
       else if (queue.state === "sending") said = `Queued ${fmtTime(p.at)} · the laptop is sending it now`;
+      else if (queue.state === "held") said = `Held on this phone since ${fmtTime(p.at)} · goes to the laptop's queue when it is reachable`;
       else said = `Queued ${fmtTime(p.at)} · waiting for the laptop to send it to ${p.label}`;
       who.append($("b", null, "You"), $("span", queue ? "note" : null, said));
       if (queue && queue.state === "refused") {
@@ -1755,13 +1772,29 @@
   // The laptop's receipts for the queued sends not yet answered, asked about every few seconds while
   // one waits (and with each 30-second refresh). A sent or refused one stops being asked about.
   let asking = false;
+  const refreshOfflineRow = () => { if (HOSTED) paintOffline(); };
   async function checkReceipts() {
     const open = link.pending.filter(p => p.queue && p.queue.state !== "sent" && p.queue.state !== "refused");
     if (asking || !open.length) return;
     asking = true;
     let changed = false;
     try {
-      for (const p of open) {
+      // Messages held on this phone (the laptop was not reachable) go to its queue now if it answers; one already there, or
+      // expired after 12 hours, or refused, is settled here.
+      if (open.some(p => p.queue.state === "held")) {
+        const settled = await hosted.flush();
+        const still = await hosted.heldIds();
+        for (const p of open.filter(x => x.queue.state === "held")) {
+          const done = settled.find(x => x.id === p.queue.id);
+          if (done && done.state !== "queued") {
+            p.queue.state = "refused";
+            p.queue.receipt = { state: "refused", at: Date.now() / 1000, reason: done.state === "expired" ? "This message was held on the phone for over 12 hours without the laptop being reachable, so it was not sent. Send it again if it still matters." : done.reason || "The laptop refused it." };
+            changed = true;
+          } else if (done || !still.has(p.queue.id)) { p.queue.state = "queued"; changed = true; }
+        }
+        refreshOfflineRow();
+      }
+      for (const p of open.filter(x => x.queue.state !== "held" && x.queue.state !== "refused")) {
         const receipt = await hosted.receipt(p.queue.id).catch(() => null);
         if (receipt && receipt.state !== p.queue.state) { p.queue.state = receipt.state; p.queue.receipt = receipt; changed = true; }
         // A request the laptop never picked up in a day is not coming: say so rather than wait for ever.
@@ -1899,7 +1932,7 @@
   function htmlDocView(key, d, status) {
     const node = $("div", "htmlview");
     const bar = $("div", "htmlbar");
-    const reload = $("button", "btn", "Reload"); reload.type = "button"; reload.title = "Read the file again from disk: the agent may have changed it since it was opened";
+    const reload = $("button", "btn", "Reload"); reload.type = "button"; reload.title = HOSTED ? "Show the file again from the copy" : "Read the file again from disk: the agent may have changed it since it was opened";
     const fit = $("button", "btn", "Desktop width"); fit.type = "button"; fit.setAttribute("aria-pressed", "false"); fit.title = "Lay the page out 1280 px wide and shrink it to fit the screen (otherwise it is laid out at the screen's width)";
     const full = $("button", "btn", "Full screen"); full.type = "button";
     const alone = $("a", "btn", "Open alone"); alone.target = "_blank"; alone.rel = "noopener noreferrer"; alone.hidden = true; alone.title = "The file by itself in a new tab, still sandboxed; the browser's own zoom and scrolling apply";
@@ -1920,16 +1953,20 @@
       const mine = ++view.load;
       note.textContent = "Opening…";
       try {
-        const info = await live.htmlOpen(d.id);
+        // The hosted copy has the file's text (folded into one document when it was built) and hands it to its worker, which answers the frame.
+        const info = HOSTED ? await hosted.htmlOpen(d) : await live.htmlOpen(d.id);
         if (mine !== view.load) return;
         const f = document.createElement("iframe");
-        f.setAttribute("sandbox", "allow-scripts");  // set before the address: no allow-same-origin, no navigation of the page, no popups, no forms
+        // set before the address: no allow-same-origin, no navigation of the page, no popups, no forms. The hosted copy's frame has no
+        // attribute, because a sandboxed frame is not controlled by the worker that answers it; the Content-Security-Policy the worker
+        // sends ("sandbox allow-scripts ...", sw.js) makes the document the same opaque origin with the same limits.
+        if (!HOSTED) f.setAttribute("sandbox", "allow-scripts");
         f.referrerPolicy = "no-referrer";
         f.title = `${d.name}, shown in a sandbox`;
         f.src = info.url;
         frame.replaceChildren(f); view.iframe = f; view.layout();
         alone.href = info.url; alone.hidden = false;
-        note.textContent = `As on disk now · changed ${fmtWhen(info.mtime)} · ${fmtSize(info.size)}`;
+        note.textContent = HOSTED ? `As of the laptop's build · changed ${fmtWhen(info.mtime)} · ${fmtSize(info.size)}` : `As on disk now · changed ${fmtWhen(info.mtime)} · ${fmtSize(info.size)}`;
         view.info = info; status(info);
       } catch (e) {
         if (mine !== view.load) return;
@@ -2234,6 +2271,62 @@
   }
   document.getElementById("sync").addEventListener("click", syncNow);
 
+  // ---------------------------------------------------------------- hosted copy: what this device keeps of it
+  // A sealed copy opened over a secure address (the phone, over the tailnet's HTTPS name) is kept on the device: the sealed objects
+  // and a worker that opens the shell, so it reads with the laptop shut. This row says what is stored, and has the two actions.
+  const offline = { index: null, busy: false, progress: null, outcome: null, held: 0 };
+  async function paintOffline() {
+    const box = document.getElementById("offline");
+    const kept = HOSTED && hosted.isSealed();
+    box.hidden = !kept;
+    if (!kept) return;
+    const capable = hosted.offline().capable;
+    const text = document.getElementById("offline-text"), download = document.getElementById("offline-download"), bar = document.getElementById("offline-progress");
+    download.hidden = !capable;
+    download.disabled = offline.busy || !offline.index;
+    bar.hidden = !offline.busy;
+    text.classList.toggle("bad", Boolean(offline.outcome && offline.outcome.bad));
+    if (!capable) { text.textContent = "This address cannot keep the copy for offline use. Open it from the laptop's https address (the README's \"Read it with the laptop shut\")."; return; }
+    if (offline.busy && offline.progress) {
+      const { done, total, bytes } = offline.progress;
+      bar.max = Math.max(1, total); bar.value = done;
+      text.textContent = `Downloading ${done} of ${total} · ${fmtSize(bytes)}`;
+      return;
+    }
+    if (offline.outcome) { text.textContent = offline.outcome.text; return; }
+    if (!offline.index) { text.textContent = ""; return; }
+    const have = await hosted.stored(offline.index);
+    offline.held = have.held;
+    const heldNote = have.held ? ` · ${have.held} message${have.held === 1 ? "" : "s"} held on this phone for the laptop` : "";
+    text.textContent = (have.have >= have.total ? `Everything is on this device (${fmtSize(have.bytes)}), as of the laptop's build at ${builtAt(offline.index.as_of)}.` + (have.all ? " It updates by itself while the laptop answers." : "")
+      : have.all ? `${have.have} of ${have.total} items are on this device (${fmtSize(have.bytes)}); the rest comes down when the laptop answers.`
+      : `${have.have} of ${have.total} items are on this device (${fmtSize(have.bytes)}). Download everything now to read with the laptop shut.`) + heldNote;
+  }
+  async function downloadAll() {
+    if (offline.busy || !offline.index) return;
+    offline.busy = true; offline.outcome = null; offline.progress = { done: 0, total: 0, bytes: 0 };
+    paintOffline();
+    try {
+      const result = await hosted.download(offline.index, progress => { offline.progress = progress; paintOffline(); });
+      const have = await hosted.stored(offline.index);
+      const problems = result.failed.length;
+      offline.outcome = result.stopped ? { bad: true, text: `The laptop stopped answering after ${result.fetched} of ${result.fetched + result.failed.length} items. What came down is kept (${fmtSize(have.bytes)}). Download again when it is back.` }
+        : problems ? { bad: true, text: `${problems} item${problems === 1 ? "" : "s"} could not be downloaded (${result.failed[0].object}: ${result.failed[0].message}). ${result.fetched} came down, ${result.kept} were already here. Try again.` }
+        : { bad: false, text: `Done: ${result.fetched} downloaded, ${result.kept} already here. ${fmtSize(have.bytes)} is stored on this device, as of the laptop's build at ${builtAt(offline.index.as_of)}.` };
+    } catch (e) { offline.outcome = { bad: true, text: e.message }; }
+    offline.busy = false; offline.progress = null;
+    await paintOffline();
+    // The result stays until the next index brings a change; then the usual line comes back.
+    setTimeout(() => { if (!offline.busy) { offline.outcome = null; paintOffline(); } }, 20000);
+  }
+  async function forgetDevice() {
+    const held = (await hosted.heldIds()).size;
+    const warn = held ? ` ${held} message${held === 1 ? " is" : "s are"} still held on this phone for the laptop and would be lost.` : "";
+    if (!confirm(`Forget this device? The key, everything stored from the copy and the page's offline worker are removed, and the passphrase is asked again.${warn}`)) return;
+    await hosted.forget();
+    location.reload();
+  }
+
   // ---------------------------------------------------------------- hosted copy: load what the view needs
   // Whether the view on screen needs an object not loaded yet: the conversation, its document or
   // the fleet records. Never on the local page, whose payload holds everything.
@@ -2273,14 +2366,21 @@
     if (HOSTED) {
       const old = hosted.stale(when), at = builtAt(when);
       const failing = syncFailing();
-      line.classList.toggle("stale", old || failing || Boolean(hosted.outdated()));
+      // The copy this device keeps, read with the laptop not reachable: say how old it is, rather than only that it is old.
+      const device = hosted.offline().fromDevice;
+      line.classList.toggle("stale", old || failing || device || Boolean(hosted.outdated()));
       text.setAttribute("aria-live", "polite");
-      text.textContent = (failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}`
+      text.textContent = device ? `Offline · copy from ${at} (${ago(when)} old)`
+        : (failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}`
         : hosted.outdated() || (old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`)) + (failing ? "" : ` · ${synced}`);
-      text.title = `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.`;
-      document.getElementById("forget").hidden = !hosted.isSealed();
+      text.title = device ? `${hosted.offline().why} This is the copy the laptop built at ${fmtWhen(when)}, kept on this device. It updates the next time the laptop answers.`
+        : `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.`;
+      paintOffline();
       return;
     }
+    // On a served page away from the laptop (the phone), the sealed copy is the one to keep and read with the laptop shut.
+    const away = !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    document.getElementById("offline-link").hidden = !(canLive && away);
     // The text changes with every poll, so it is not announced; the button says when a sync it asked for is under way.
     const failing = syncFailing();
     line.classList.toggle("stale", failing);
@@ -2293,7 +2393,10 @@
   async function refreshHosted(now = false) {
     const sel = window.getSelection();
     const next = sel && !sel.isCollapsed && !now ? null : await hosted.index();  // a passage is being picked: later
-    if (next) { link.syncedAt = Date.now() / 1000; link.syncFail = null; }
+    // Only an answer from the laptop is a sync; the copy this device keeps, read with the laptop away, is not.
+    if (next && !hosted.offline().fromDevice) { link.syncedAt = Date.now() / 1000; link.syncFail = null; }
+    if (next) offline.index = next;
+    if (next && !hosted.offline().fromDevice) hosted.keepFresh(next).then(paintOffline, () => {});
     if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.template); if (!hosted.outdated()) return; }
     if (next && next.as_of > data.generated) {
       const fresh = hosted.data(next, data);
@@ -2453,10 +2556,13 @@
     // index.json, then the conversation opened on.
     document.querySelector(".to-sheet").href = "sheet.html";  // the hosted copy's answer sheet
     dock("send").title = "Queue this for the laptop, which sends it to the session's Herdr pane when it is awake and the agent is ready (Enter; Shift+Enter for a new line)";
-    document.getElementById("forget").addEventListener("click", () => hosted.forget().then(() => location.reload()));
+    document.getElementById("forget").addEventListener("click", forgetDevice);
+    document.getElementById("offline-download").addEventListener("click", downloadAll);
+    window.addEventListener("online", () => { checkReceipts(); refreshHosted(true).catch(() => {}); });
     hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
-      link.syncedAt = Date.now() / 1000;
+      offline.index = index;
+      if (!hosted.offline().fromDevice) { link.syncedAt = Date.now() / 1000; hosted.keepFresh(index).then(paintOffline, () => {}); }
       paintSync();
       const saved = chooseOpening();
       whenReady(() => {

@@ -27,18 +27,26 @@ the run, unless --new-passphrase says to seal everything again under it.
 
 Scope: by default every Claude Code session log whose working directory lies inside a
 fleet home (the main home ~/fm-homes/pmos and each second mate its registry lists), workers'
-copies included, with a fleet timeline of the last 14 days. With --reading-list or --session
-the timeline starts at the earliest of those sessions, as on the local page.
+copies included, and every one whose working directory lies under ~/workspace (the owner's own
+working sessions, listed under their own heading in the picker; --workspace DIR names another
+folder, --no-workspace leaves them out), with a fleet timeline of the last 14 days. With
+--reading-list or --session the timeline starts at the earliest of those sessions, as on the
+local page. Every text goes through the same redaction as the rest.
 
 Output, in out/hosted/ (gitignored with the rest of out/; it embeds private transcripts):
   index.html           the shell: the reader page with no transcript in it, which loads the rest
   sheet.html           the answer sheet's shell, the same way (the local answer sheet's page)
+  sw.js, manifest.webmanifest, icon-180.png, icon-512.png
+                       the offline copy's service worker, web app manifest and icons (no transcript): a phone opens
+                       the sealed copy from the laptop's HTTPS address and keeps it (README, "Read it with the laptop
+                       shut")
   index.json           when it was built (as_of), the conversations (home, ids, the Herdr pane and
                        its state as of this build, last activity, asks waiting on you since your
                        last message, object, stamp), the documents and the fleet weeks
   s/<id>.json          one conversation (a pane's sessions across /clear) under its newest id,
                        exactly as the local page's payload holds it
-  d/<id>.json          one markdown document a message or reply names, as on disk at the build
+  d/<id>.json          one markdown or HTML document a message or reply names, as on disk at the build (an HTML
+                       file carries its own text with the pictures, styles and scripts beside it folded in)
   a/<id>.json          the questionnaires of one conversation (replies asking for keyed answers),
                        as the local answer sheet reads them; only for a conversation that has one
   f/<yyyy>-W<ww>.json  one week (UTC) of fleet records: status lines, steering messages, your
@@ -89,6 +97,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "prototype"))
 import build_prototype as builder  # noqa: E402
+import inline_html  # noqa: E402
 
 sys.path.insert(0, str(HERE))
 import build_questionnaire as questionnaires  # noqa: E402
@@ -97,12 +106,18 @@ import redact  # noqa: E402
 
 OUT = HERE / "out" / "hosted"
 BUCKET = HERE / "out" / "bucket"
+WORKSPACE = Path.home() / "workspace"  # the owner's own working sessions: logs whose working directory is under it are in scope
+WORKSPACE_ID = "workspace"  # the picker's group for them (the page names it "Your own sessions")
 LOCAL_PANES = HERE / "out" / "pane-labels.json"
 REOPENED = HERE / "out" / "reopened.txt"
 VERSION = 1
 FLEET_DAYS = 14
 RETENTION_DAYS = 90  # plan B3: the bucket keeps 90 days; the laptop keeps everything
 HEARTBEAT = 300  # seconds: the index is sealed again at least this often (the shell calls 10 minutes asleep)
+# What sits beside the shell pages and is not transcript: the offline copy's service worker (prototype/sw.js), the web app
+# manifest and its two icons (drawn here, no image file in the repo). The phone opens the shell, installs the worker and adds
+# the page to its Home Screen from these.
+STATIC_FILES = ("sw.js", "manifest.webmanifest", "icon-180.png", "icon-512.png")
 PASSPHRASE_ENV = "HOSTED_READER_PASSPHRASE"
 KEYCHAIN_SERVICE = "pmos-hosted-reader"
 
@@ -162,6 +177,49 @@ def first_cwd(path: Path) -> str:
     return first_record(path, lambda record: record.get("cwd")) or ""
 
 
+def icon_png(size: int) -> bytes:
+    """The app icon: a blue square with a white speech bubble and three lines in it, as a PNG (written with zlib alone)."""
+    import struct
+    import zlib
+
+    blue, white = (31, 95, 209), (255, 255, 255)
+
+    def inside_round_rect(x: float, y: float, left: float, top: float, right: float, bottom: float, radius: float) -> bool:
+        if not (left <= x <= right and top <= y <= bottom):
+            return False
+        cx = min(max(x, left + radius), right - radius)
+        cy = min(max(y, top + radius), bottom - radius)
+        return (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
+
+    rows = []
+    for row in range(size):
+        y = row / size
+        line = bytearray([0])
+        for column in range(size):
+            x = column / size
+            color = blue
+            bubble = inside_round_rect(x, y, 0.18, 0.22, 0.82, 0.66, 0.08)
+            tail = 0.26 <= x <= 0.42 and 0.62 <= y <= 0.62 + (0.42 - x) * 0.9 and y <= 0.80
+            if bubble or tail:
+                color = white
+                for top in (0.33, 0.43, 0.53):
+                    if 0.28 <= x <= (0.72 if top < 0.5 else 0.56) and top <= y <= top + 0.045:
+                        color = blue
+            line += bytes(color)
+        rows.append(bytes(line))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
+
+
+def static_file(name: str) -> bytes:
+    if name.startswith("icon-"):
+        return icon_png(int(name[len("icon-"):-len(".png")].split("x")[0]))
+    return (HERE / "prototype" / name).read_bytes()
+
+
 def week_of(at: float) -> str:
     year, week, _ = datetime.fromtimestamp(at, timezone.utc).isocalendar()
     return f"{year}-W{week:02d}"
@@ -172,7 +230,7 @@ def rules() -> str:
     threading (build_prototype.PARSE_RULES), the answer-sheet finder's and this file's. A
     record built under other rules is not fresh, so a fix to either reaches every object."""
     parts = [builder.PARSE_RULES] + [hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-                                     for path in (HERE / "prototype" / "build_questionnaire.py", Path(__file__).resolve())]
+                                     for path in (HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "inline_html.py", Path(__file__).resolve())]
     return stamp_of("|".join(parts).encode("utf-8"))
 
 
@@ -232,6 +290,9 @@ class Build:
             old = {}
         self.old = old if old.get("version") == VERSION else {}
         self.rules = rules()
+        # The owner's own sessions are a pseudo-home with no records of its own: the conversations get their group and
+        # their folder under it, and nothing is read from it for the fleet timeline.
+        self.workspace = {"id": WORKSPACE_ID, "home": Path(args.workspace).expanduser()} if getattr(args, "workspace", "") else None
         self.wrote: list[str] = []
         self.rebuilt: list[str] = []
 
@@ -263,7 +324,7 @@ class Build:
             if not ids:
                 raise SystemExit(f"the local reader's list ({reader.LIST}) is empty")
             return [path for path in (builder.find_session_file(sid) for sid in ids) if path]
-        roots = [str(home["home"]) for home in self.homes]
+        roots = [str(home["home"]) for home in self.homes + ([self.workspace] if self.workspace else [])]
         inside = lambda cwd: any(cwd == root or cwd.startswith(root + "/") for root in roots)  # noqa: E731
         logs = [path for path in builder.all_logs() if inside(first_cwd(path))]
         return sorted(logs, key=lambda path: (version(path) or [0])[0], reverse=True)
@@ -323,7 +384,7 @@ class Build:
                     if member in in_scope and member not in names:
                         todo.append(member)
             covered.update(names)
-            home = builder.session_home(self.homes, first_cwd(Path(seed)))
+            home = builder.session_home(self.homes + ([self.workspace] if self.workspace else []), first_cwd(Path(seed)))
             chains[chain[-1].stem] = (home, chain)
         for cid, (home, chain) in chains.items():
             kept[cid] = self.parse(cid, home, chain)
@@ -362,7 +423,7 @@ class Build:
             before_sheet = (((self.old.get("conversations") or {}).get(cid) or {}).get("sheet") or {}).get("stamp")
             sheet = {"object": sheet_rel, "stamp": self.put(sheet_rel, {"questionnaires": found_sheets}, before_sheet),
                      "list": [{"at": q["at"], "open": len(q["cards"]), "title": q["title"]} for q in found_sheets]}
-        documents = builder.attach_documents([session])
+        documents = builder.attach_documents([session], html=True)  # HTML files too: each is folded into one text (inline_html.py)
         rel = f"s/{cid}.json"
         before = ((self.old.get("conversations") or {}).get(cid) or {}).get("stamp")
         stamp = self.put(rel, session, before)
@@ -395,23 +456,35 @@ class Build:
                 continue
             # The spelling first seen stays, so parsing another conversation never rewrites the document.
             base = {key: (prior or doc)[key] if key == "mention" else (doc or prior)[key] for key in ("id", "name", "path", "dir", "mention")}
+            is_html = (doc or prior).get("kind") == "html"
+            if is_html:
+                base["kind"] = "html"
             path = Path(base["path"])
             now = version(path)
-            if now is None or now[1] > builder.MAX_DOCUMENT_BYTES:
+            limit = builder.MAX_HTML_BYTES if is_html else builder.MAX_DOCUMENT_BYTES
+            if now is None or now[1] > limit:
                 records[doc_id] = {**base, "gone": True}
                 continue
-            if doc is None and not self.args.full and not prior.get("gone") and prior.get("version") == now and (self.out / prior["object"]).is_file():
+            # An HTML file folds in what it loads from beside itself, so a change to one of those files is a change to it.
+            beside = {name: version(Path(name)) for name in (prior or {}).get("assets", {})} if is_html else {}
+            if doc is None and not self.args.full and not prior.get("gone") and prior.get("version") == now and (self.out / prior["object"]).is_file() \
+                    and (not is_html or (prior.get("rules") == self.rules and beside == prior.get("assets"))):
                 records[doc_id] = prior
                 continue
+            rel = f"d/{doc_id}.json"
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
                 mtime = path.stat().st_mtime
+                if is_html:
+                    folded = inline_html.fold(path, [Path.home(), *builder.TEMP_ROOTS])
+                    value = {**base, "mtime": mtime, "size": now[1], "text": folded["text"], "inlined": folded["inlined"], "skipped": folded["skipped"]}
+                    extra = {"size": now[1], "assets": folded["assets"], "rules": self.rules}
+                else:
+                    value, extra = {**base, "mtime": mtime, "text": path.read_text(encoding="utf-8", errors="replace")}, {}
             except OSError:
                 records[doc_id] = {**base, "gone": True}
                 continue
-            rel = f"d/{doc_id}.json"
-            stamp = self.put(rel, {**base, "mtime": mtime, "text": text}, (prior or {}).get("stamp"))
-            records[doc_id] = {**base, "version": now, "mtime": mtime, "object": rel, "stamp": stamp}
+            stamp = self.put(rel, value, (prior or {}).get("stamp"))
+            records[doc_id] = {**base, "version": now, "mtime": mtime, "object": rel, "stamp": stamp, **extra}
         return records
 
     def fleet(self, conversations: list[tuple[str, dict]], since: float) -> dict[str, dict]:
@@ -452,6 +525,8 @@ class Build:
         shell_stamp = self.put_page(page, self.old.get("shell"))
         sheet_page, sheet_template = builder.fill_template(questionnaires.TEMPLATE, "null", "hosted")
         sheet_stamp = self.put_page(sheet_page, self.old.get("sheet_shell"), "sheet.html")
+        for name in STATIC_FILES:
+            self.put_static(name)
         ids = [cid for cid, _ in conversations]
         labels = builder.pane_labels(ids, self.out / "pane-labels.json", live)
         reopened = set(builder.read_ids(REOPENED))
@@ -464,10 +539,10 @@ class Build:
         entries.sort(key=lambda entry: entry["order"], reverse=True)
         index = {
             "version": VERSION, "as_of": self.started, "since": since, "template": template, "sheet_template": sheet_template,
-            "homes": [home["id"] for home in self.homes],
+            "homes": [home["id"] for home in self.homes] + ([WORKSPACE_ID] if any(entry["home"] == WORKSPACE_ID for entry in entries) else []),
             "summaries": [summary for summary in (builder.home_summary(home) for home in self.homes) if summary],
             "conversations": entries,
-            "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp")}
+            "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp", "kind", "size") if key in record}
                           for doc_id, record in documents.items() if not record.get("gone")},
             "weeks": weeks,
             "sheets": {cid: record["sheet"] for cid, record in conversations if record.get("sheet")},
@@ -491,6 +566,12 @@ class Build:
             replace(self.out / name, data)
             self.wrote.append(name)
         return stamp
+
+    def put_static(self, name: str) -> None:
+        data = static_file(name)
+        if not (self.out / name).is_file() or (self.out / name).read_bytes() != data:
+            replace(self.out / name, data)
+            self.wrote.append(name)
 
     def sweep(self, kept: set[str]) -> int:
         """Delete objects no conversation, document or week uses any more, and what a stopped build left half written."""
@@ -546,7 +627,7 @@ class DryRun:
         index_text = json.dumps(redact.redact(bucket_index, index_counts), ensure_ascii=False, separators=(",", ":"))
         content = stamp_of(encode({**bucket_index, "as_of": 0, "since": 0}))
         # A shell page that changed (new page code) goes to the bucket now, with the index sealed again, not at the next heartbeat.
-        shell_moved = any(not (self.target / name).is_file() or (self.target / name).read_bytes() != (self.out / name).read_bytes() for name in ("index.html", "sheet.html"))
+        shell_moved = any(not (self.target / name).is_file() or (self.target / name).read_bytes() != (self.out / name).read_bytes() for name in ("index.html", "sheet.html", *STATIC_FILES))
         heartbeat = bool(todo) or self.new_key or self.state.get("index") != content or shell_moved \
             or time.time() - (self.state.get("index_at") or 0) >= HEARTBEAT or not (self.target / "index.json.enc").is_file()
         if not heartbeat:
@@ -559,6 +640,7 @@ class DryRun:
         if not ready.get("ready"):
             child.stdin.close()
             child.wait()
+            child.stdout.close()
             if ready.get("error") == "wrong-passphrase":
                 raise SystemExit("That passphrase does not open this bucket; nothing was sealed. To seal everything under it, add --new-passphrase.")
             raise SystemExit("upload.js did not start; nothing was sealed")
@@ -577,7 +659,9 @@ class DryRun:
         except BrokenPipeError:
             pass
         done = json.loads(child.stdout.readline() or "{}")
-        if child.wait() or "written" not in done:
+        code = child.wait()
+        child.stdout.close()
+        if code or "written" not in done:
             raise SystemExit("upload.js stopped before sealing every object; the bucket keeps what it had")
         for rel in todo:
             sealed[rel] = {"stamp": objects[rel], "redacted": counts[rel]}
@@ -606,7 +690,7 @@ class DryRun:
         return removed
 
     def copy_shell(self) -> None:
-        for name in ("index.html", "sheet.html"):
+        for name in ("index.html", "sheet.html", *STATIC_FILES):
             page = (self.out / name).read_bytes()
             shell = self.target / name
             if not shell.is_file() or shell.read_bytes() != page:
@@ -642,7 +726,7 @@ def drain(folder: Path, sealed: bool, state: Path, secret: str = "") -> None:
 def wipe(target: Path, out: Path) -> int:
     """Empty <target> of what the dry run writes there (and forget what was sealed); nothing else is touched."""
     removed = 0
-    for pattern in ("index.html", "sheet.html", "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
+    for pattern in ("index.html", "sheet.html", *STATIC_FILES, "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
                     "r/*.json.enc", "q/*.json.enc", "q/.drain.lock", "*/.*.partial", ".*.partial"):
         for path in target.glob(pattern):
             if path.is_file():
@@ -726,7 +810,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--since-hours", type=float, help="fleet timeline window (default 14 days, or from the earliest listed session)")
     parser.add_argument("--out", default=str(OUT))
     parser.add_argument("--main-home", default=str(builder.MAIN_HOME))
+    parser.add_argument("--workspace", default=str(WORKSPACE), help="the owner's own sessions: logs whose working directory is under this folder (default ~/workspace)")
+    parser.add_argument("--no-workspace", action="store_true", help="leave the owner's own sessions out")
     args = parser.parse_args(argv)
+    if args.no_workspace:
+        args.workspace = ""
     if not (args.build_only or args.dry_run or args.wipe or args.launch_agent):
         parser.error("say what to do: --build-only, --dry-run, --wipe or --launch-agent (nothing is ever uploaded: ship 3 is not built)")
     out = Path(args.out).expanduser()

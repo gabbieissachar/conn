@@ -7,6 +7,9 @@
 //                                                   only; each carries the per-start token
 //   GET  /setup/transcript-reader/out/hosted/index.html
 //                                                   the hosted copy's shell (sync.py), the same way
+//   GET  /setup/transcript-reader/out/{hosted,bucket}/{sw.js,manifest.webmanifest,icon-*.png}
+//                                                   the offline copy's service worker, web app manifest and icons
+//                                                   (no transcript), for the shell that installs them
 //   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*,a/*,r/*}
 //                                                   the objects that shell loads (r/ holds the receipts of
 //                                                   its queued sends), to its own token-bearing fetches only
@@ -99,6 +102,14 @@ const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.htm
 const OBJECTS = {
   hosted: { re: /^(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
   bucket: { re: /^(?:(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
+};
+// The shell pages of a copy: opened in a tab (and so given the token), or, for the offline copy's cache, fetched by the page itself
+// with the token it already holds (see servePage).
+const SHELL_PAGES = new Set(['hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
+// What sits beside a copy's shell pages and holds no transcript: the offline copy's service worker, its manifest and icons (sync.py).
+const STATIC_TYPES = {
+  'sw.js': 'text/javascript; charset=utf-8', 'manifest.webmanifest': 'application/manifest+json; charset=utf-8',
+  'icon-180.png': 'image/png', 'icon-512.png': 'image/png',
 };
 const TOKEN_HEADER = 'x-transcript-reader-token';
 const HTML_ROUTE = API + 'html/';
@@ -266,14 +277,18 @@ function create({
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
   // conversations of the hosted copy it drains.
   sendable = null,
-  // { ip, port, passcodeFile } when server.js also listens on the Mac's Tailscale address
-  // (tailnet.js); handle() then takes the listener a request came in on.
+  // { ip, port, passcodeFile[, https: { host, port }] } when server.js also listens on the Mac's Tailscale address
+  // (tailnet.js), and with https on a TLS listener there too under the machine's Tailscale name (host); handle()
+  // then takes the listener a request came in on.
   tailnet = null,
   // Where the tailnet listener writes its sign-in record (a line of text each); the server's stderr when left out.
   log = undefined,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
-  const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) });
+  const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
+  const lane = tailnet && tailnetLane.create({ ...laneOptions, ip: tailnet.ip, port: tailnet.port || port });
+  // The TLS listener's lane: the same passcode file, sessions and token, its own Host and Origin (https://<name>:<port>).
+  const httpsLane = tailnet && tailnet.https && tailnetLane.create({ ...laneOptions, ip: tailnet.ip, host: tailnet.https.host, scheme: 'https', port: tailnet.https.port });
   // The guard that holds for a request: the loopback one, or the tailnet listener's (its own
   // Host and Origin, the same token). Set by handle().
   const guards = new WeakMap();
@@ -726,8 +741,10 @@ function create({
     const mode = req.headers['sec-fetch-mode'];
     const dest = req.headers['sec-fetch-dest'];
     if ((mode !== undefined && mode !== 'navigate') || (dest !== undefined && dest !== 'document')) {
-      text(403, 'Open this page in its own browser tab.');
-      return;
+      // One exception, for the offline copy: its page keeps the shell pages in a cache for the service worker, and asks for them
+      // with the token it holds. Whoever holds the token already has what the page would tell it, so nothing more is given away.
+      const own = SHELL_PAGES.has(name) && guardFor(req).check(req).ok;
+      if (!own) { text(403, 'Open this page in its own browser tab.'); return; }
     }
     if (!PAGES.has(name)) { text(404, 'Not found'); return; }
     fs.readFile(path.join(outDir, name), 'utf8', (error, html) => {
@@ -738,6 +755,18 @@ function create({
         [COPY_HEADER]: copy,
       });
       res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
+    });
+  }
+
+  // The service worker, manifest and icons beside a copy's shell pages: not secret, but behind the same Host, Origin and (on the tailnet) sign-in checks.
+  function serveStatic(req, res, folder, name) {
+    const verdict = guardFor(req).check(req, { requireToken: false });
+    if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
+    fs.readFile(path.join(outDir, folder, name), (error, body) => {
+      if (error) { fail(res, 404, 'not_built', 'Not built yet.'); return; }
+      res.writeHead(200, { 'Content-Type': STATIC_TYPES[name], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+      res.end(body);
     });
   }
 
@@ -808,7 +837,7 @@ function create({
   const insideOut = (req, url) => requestsOut(root, outDir, req, url);
 
   // Returns true when the request belongs to this module (and is handled here). listener is
-  // 'tailnet' for a request that came in on the Tailscale address, which must be signed in
+  // 'tailnet' (plain HTTP) or 'tailnet-https' for a request that came in on the Tailscale address, which must be signed in
   // first (tailnet.js); anything else is a loopback request, handled as it always was.
   function handle(req, res, listener = 'loopback') {
     let url;
@@ -821,15 +850,17 @@ function create({
     }
     const page = insideOut(req, url);
     const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
-    if (listener === 'tailnet') {
-      if (!lane) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
-      if (lane.intercept(req, res, url, page.inside && page.name.endsWith('.html'), viewing)) return true;
-      guards.set(req, lane.guard);
+    if (listener === 'tailnet' || listener === 'tailnet-https') {
+      const lanes = listener === 'tailnet' ? lane : httpsLane;
+      if (!lanes) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
+      if (lanes.intercept(req, res, url, page.inside && page.name.endsWith('.html'), viewing)) return true;
+      guards.set(req, lanes.guard);
     }
     if (viewing) { serveView(req, res); return true; }
     if (page.inside) {
       const folder = Object.keys(OBJECTS).find((name) => page.name.startsWith(name + path.sep));
-      if (folder && !PAGES.has(page.name)) serveObject(req, res, folder, page.name.slice(folder.length + 1));
+      if (folder && Object.hasOwn(STATIC_TYPES, page.name.slice(folder.length + 1))) serveStatic(req, res, folder, page.name.slice(folder.length + 1));
+      else if (folder && !PAGES.has(page.name)) serveObject(req, res, folder, page.name.slice(folder.length + 1));
       else servePage(req, res, page.name);
       return true;
     }
@@ -842,7 +873,7 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan, sendPrompt, tailnet: lane };
+  return { handle, guard, scan, sendPrompt, tailnet: lane, tailnetHttps: httpsLane };
 }
 
 module.exports = { create, checkText, copyId, namesReaderOut, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };

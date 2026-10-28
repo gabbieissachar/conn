@@ -53,6 +53,14 @@ test('a Tailscale address alone is not enough: a page without the server token s
   assert.equal(load({ hostname: '100.97.27.50', token: 'ab'.repeat(31) }).live.served, false, 'a token of the wrong length');
 });
 
+test('the machine\'s Tailscale name is served over https with the server token, and over nothing else', () => {
+  const name = 'some-machine.some-tailnet.ts.net';
+  assert.equal(load({ protocol: 'https:', hostname: name }).live.served, true);
+  assert.equal(load({ protocol: 'https:', hostname: name, token: '' }).live.served, false, 'no token');
+  assert.equal(load({ protocol: 'http:', hostname: name }).live.served, false, 'the name is the TLS listener\'s, not the plain one\'s');
+  for (const other of ['some-machine.ts.net.example.com', 'ts.net', 'evilts.net', 'some-machine.tsxnet']) assert.equal(load({ protocol: 'https:', hostname: other }).live.served, false, other);
+});
+
 test('any other address stays read-only, token or not', () => {
   for (const hostname of ['100.63.255.255', '100.128.0.1', '10.0.0.5', '192.168.1.20', '172.16.0.9', '100.97.27', '100.97.27.50.1', 'example.com', 'localhost.example.com', 'foo.100.97.27.50', '']) {
     assert.equal(load({ hostname }).live.served, false, hostname);

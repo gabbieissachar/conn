@@ -1714,6 +1714,11 @@ def payload_json(payload) -> str:
     return data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
+HOSTED_HEAD = ('<link rel="manifest" href="manifest.webmanifest">\n<link rel="apple-touch-icon" href="icon-180.png">\n'
+               '<meta name="theme-color" content="#1f5fd1">\n<meta name="mobile-web-app-capable" content="yes">\n'
+               '<meta name="apple-mobile-web-app-capable" content="yes">\n<meta name="apple-mobile-web-app-title" content="Transcripts">')
+
+
 def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, str]:
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
@@ -1731,6 +1736,10 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)
+    # The hosted shell is also installed on a phone (a worker keeps it, a manifest and icon add it to the Home Screen), which its content
+    # policy must allow; the local page needs none of it.
+    page = page.replace("__CSP_HOSTED__", "worker-src 'self'; manifest-src 'self'; img-src 'self'; " if mode == "hosted" else "")
+    page = page.replace("__HEAD_HOSTED__", HOSTED_HEAD if mode == "hosted" else "")
     if page.count("__PAYLOAD__") != 1:
         # A second mention (a comment, say) would carry the whole payload into the page again.
         raise ValueError(f"{template.name} must name __PAYLOAD__ exactly once, in its payload slot")

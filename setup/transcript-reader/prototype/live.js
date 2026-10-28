@@ -8,11 +8,16 @@
     // The server writes its per-start token into the page as it serves it (api.js);
     // no endpoint hands it out, so other pages on this origin cannot get it.
     const token = (document.querySelector('meta[name="reader-token"]') || {}).content || "";
-    // Loopback is the reader's own server. Beyond it, only a Tailscale address (100.64.0.0/10, the one
-    // other address the server listens on) counts, and only for a page that carries the token: a file
-    // copy has none, and a page some other server hands out has no token the reader would accept.
-    const served = location.protocol === "http:" && (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
-      || (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(location.hostname) && /^[0-9a-f]{64}$/.test(token)));
+    // Loopback is the reader's own server. Beyond it, only the addresses the server listens on for the phone count: a Tailscale
+    // address (100.64.0.0/10) or the machine's Tailscale name (<machine>.<tailnet>.ts.net, the https address that can keep the
+    // offline copy), and only for a page that carries the token: a file copy has none, and a page some other server hands out
+    // has no token the reader would accept.
+    const loopbackHost = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    const tokened = /^[0-9a-f]{64}$/.test(token);
+    // Each phone address has its own scheme: the Tailscale address is plain http, the machine's name is https.
+    const served = (location.protocol === "http:" || location.protocol === "https:") && (loopbackHost
+      || (location.protocol === "http:" && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(location.hostname) && tokened)
+      || (location.protocol === "https:" && /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net$/i.test(location.hostname) && tokened));
     // A restarted server has a new token, which only a fresh load of the page brings:
     // reload once, unless a text box is being typed in or the last try was under a minute ago.
     function reloadForToken() {

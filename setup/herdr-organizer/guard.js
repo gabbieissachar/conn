@@ -21,13 +21,15 @@ const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 // tokenHeader lets another module behind the same server (the transcript reader)
 // use the same checks with its own token and header name. hosts replaces the loopback
 // names the Host and Origin must carry: the reader's tailnet listener passes its one
-// Tailscale address, so that listener accepts nothing else. Left out, loopback as before.
-function createGuard({ port, token, tokenHeader = TOKEN_HEADER, hosts = LOOPBACK_HOSTS } = {}) {
+// Tailscale address, so that listener accepts nothing else. Left out, loopback as before. scheme is
+// the one the served origin uses: "https" for the reader's TLS listener, whose Origin is https://<name>:<port>.
+function createGuard({ port, token, tokenHeader = TOKEN_HEADER, hosts = LOOPBACK_HOSTS, scheme = 'http' } = {}) {
+  if (scheme !== 'http' && scheme !== 'https') throw new Error('guard scheme is http or https');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('guard needs the served port');
   const serverToken = token || crypto.randomBytes(32).toString('hex');
   if (!Array.isArray(hosts) || !hosts.length) throw new Error('guard needs at least one host');
   const allowedHosts = new Set(hosts.map((host) => String(host).toLowerCase() + ':' + port));
-  const allowedOrigins = new Set(hosts.map((host) => 'http://' + String(host).toLowerCase() + ':' + port));
+  const allowedOrigins = new Set(hosts.map((host) => scheme + '://' + String(host).toLowerCase() + ':' + port));
   const tokenBuffer = Buffer.from(serverToken, 'utf8');
 
   function tokenMatches(candidate) {

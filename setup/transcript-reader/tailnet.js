@@ -363,12 +363,13 @@ function cookieOfName(req, name) {
 // Only a same-origin path: a leading slash, and not "//host" or "/\host".
 const safeNext = (value, site = READER_SITE) => (typeof value === 'string' && value.length <= 2048 && /^\/(?![/\\])[^\s\\]*$/.test(value) && !value.startsWith(site.signin) && !value.startsWith(site.signout) ? value : site.landing);
 
-// ip and port are where the listener is bound; passcodeFile holds the hash; token is the
+// ip and port are where the listener is bound (host, the name the browser types, is the ip unless the listener is
+// the TLS one: scheme "https" and the machine's Tailscale name, whose cookie then carries Secure); passcodeFile holds the hash; token is the
 // server's per-start token, shared with the loopback guard so pages carry one token. log takes
 // one line of text, the sign-in record (the server's own log by default). site: see READER_SITE. sessionsDir: where
 // sessions are kept; every server given the same passcode file shares it (see createSessions).
-function create({ ip, port, token, tokenHeader, passcodeFile, sessionsDir = `${passcodeFile}.sessions`, site = READER_SITE, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
-  const guard = createGuard({ port, token, tokenHeader, hosts: [ip] });
+function create({ ip, host = ip, scheme = 'http', port, token, tokenHeader, passcodeFile, sessionsDir = `${passcodeFile}.sessions`, site = READER_SITE, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
+  const guard = createGuard({ port, token, tokenHeader, hosts: [host], scheme });
   const pages = pagesFor(site);
   const cookieOf = (req) => cookieOfName(req, COOKIE);
   const currentRecord = recordSource(passcodeFile);
@@ -376,7 +377,7 @@ function create({ ip, port, token, tokenHeader, passcodeFile, sessionsDir = `${p
   const throttle = createThrottle(now);
   let verifying = 0;
 
-  const setCookie = (value, maxAge) => `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`;
+  const setCookie = (value, maxAge) => `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${scheme === 'https' ? '; Secure' : ''}`;
   const signedIn = (req) => { const record = currentRecord(); return Boolean(record) && sessions.valid(cookieOf(req), record.hash); };
   // One line per sign-in attempt: when, which address, what came of it. Never the passcode.
   const note = (req, outcome) => log(`${new Date(now()).toISOString()} Tailnet: sign-in from ${req.socket.remoteAddress || 'unknown address'}: ${outcome}`);

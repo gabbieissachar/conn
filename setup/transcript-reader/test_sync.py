@@ -8,6 +8,7 @@ dry run needs Node (upload.js); the passphrase is made up.
 """
 
 import argparse
+import base64
 import io
 import json
 import os
@@ -509,6 +510,246 @@ const seal = require(process.argv[1]);
 """
 
 
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63640000000600055a7ba4c70000000049454e44ae426082")
+
+
+class HtmlDocumentsTest(unittest.TestCase):
+    """An HTML file a reply names is in the copy with the same name, location and size rules as the local viewer, folded into
+    one text that the page shows in its sandboxed viewer (inline_html.py holds the rules; the page's viewer is tested in hosted.test.js)."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        main = self.lab.main
+        (main / "img").mkdir()
+        (main / "img" / "dot.png").write_bytes(PNG)
+        (main / ".private").mkdir()
+        (main / ".private" / "secret.png").write_bytes(PNG)
+        (main / "site.css").write_text("body { background: url(img/dot.png); } h1 { color: #123456; }", encoding="utf-8")
+        (main / "app.js").write_text("document.title = 'sketch ran';", encoding="utf-8")
+        (main / "sketch.html").write_text(
+            '<!doctype html><html><head><link rel="stylesheet" href="site.css"><script src="app.js"></script></head><body><h1>Sketch</h1>'
+            '<img src="img/dot.png"><img src=".private/secret.png"><img src="https://cdn.example/x.png"><img src="../escape.png"></body></html>', encoding="utf-8")
+        (main / "escape.png").write_bytes(PNG)
+        append_log(self.lab.logs[A], [user("Show me.", T0 + 800, str(main)), say("The sketch is `sketch.html`, and the notes are `notes.md`.", T0 + 810, str(main))])
+        self.assertEqual(self.lab.build(), 0)
+
+    def doc(self):
+        index = self.lab.index()
+        meta = next(m for m in index["documents"].values() if m["name"] == "sketch.html")
+        return meta, self.lab.object(meta["object"])
+
+    def test_the_html_file_is_a_document_of_kind_html_with_its_text_folded_into_one_file(self):
+        meta, doc = self.doc()
+        self.assertEqual((meta["kind"], meta["name"]), ("html", "sketch.html"))
+        self.assertEqual(meta["size"], (self.lab.main / "sketch.html").stat().st_size)
+        self.assertEqual(doc["kind"], "html")
+        text = doc["text"]
+        self.assertIn("sketch ran", text)  # the script, inline
+        self.assertIn("#123456", text)  # the stylesheet, inline
+        self.assertNotIn("<link", text)
+        self.assertNotIn('src="app.js"', text)
+        self.assertEqual(text.count("data:image/png;base64,"), 2, "the picture in the page and the one the stylesheet names")
+        self.assertEqual(doc["inlined"], 3 + 0, "the stylesheet, the script and the picture, once each")
+        # The markdown document beside it is unchanged.
+        notes = next(m for m in self.lab.index()["documents"].values() if m["name"] == "notes.md")
+        self.assertNotIn("kind", notes)
+
+    def test_what_the_viewer_would_not_serve_is_left_out(self):
+        _, doc = self.doc()
+        text = doc["text"]
+        self.assertIn('src=".private/secret.png"', text, "a dot folder is left as written, and so loads nothing")
+        self.assertIn('src="../escape.png"', text, "a path out of the file's folder too")
+        self.assertIn('src="https://cdn.example/x.png"', text, "and an address outside is left for the frame's own no-network rule")
+        reasons = {item["ref"]: item["why"] for item in doc["skipped"]}
+        self.assertEqual(reasons[".private/secret.png"], "a hidden file or folder")
+        self.assertEqual(reasons["../escape.png"], "outside the file's folder")
+        self.assertNotIn("https://cdn.example/x.png", reasons, "an absolute address is not a refusal, it is just not folded")
+
+    def test_the_object_is_the_same_document_the_local_page_lists(self):
+        local = self.lab.local_payload([str(self.lab.logs[A])])
+        local_html = [d for d in local["documents"].values() if d.get("kind") == "html"]
+        meta, _ = self.doc()
+        self.assertEqual([(d["id"], d["name"], d["dir"]) for d in local_html], [(meta["id"], meta["name"], meta["dir"])])
+        conversation = self.lab.object(f"s/{A}.json")
+        named = [doc_id for e in conversation["exchanges"] for doc_id in e.get("documents", [])]
+        self.assertIn(meta["id"], named)
+
+    def test_a_change_to_a_file_beside_it_writes_the_document_again_and_nothing_else(self):
+        before = self.lab.mtimes()
+        wait_a_tick()
+        self.assertEqual(self.lab.build(), 0)
+        self.assertEqual(self.lab.mtimes(), before, "nothing changed, nothing written")
+        meta, _ = self.doc()
+        wait_a_tick()
+        (self.lab.main / "site.css").write_text("h1 { color: #abcdef; }", encoding="utf-8")
+        self.assertEqual(self.lab.build(), 0)
+        changed = self.lab.mtimes()
+        self.assertEqual([key for key in changed if changed[key] != before.get(key)], [meta["object"]])
+        self.assertIn("#abcdef", self.lab.object(meta["object"])["text"])
+        self.assertNotEqual(self.doc()[0]["stamp"], meta["stamp"])
+
+    def test_a_file_over_the_viewers_limit_or_gone_leaves_the_index(self):
+        (self.lab.main / "sketch.html").write_text("<p>" + "x" * (builder.MAX_HTML_BYTES + 1), encoding="utf-8")
+        self.assertEqual(self.lab.build(), 0)
+        self.assertNotIn("sketch.html", [m["name"] for m in self.lab.index()["documents"].values()])
+
+    def test_a_file_directly_in_a_temp_folder_gets_only_its_own_folder(self):
+        folder = Path(tempfile.mkdtemp(dir=tempfile.gettempdir()))
+        self.addCleanup(lambda: shutil.rmtree(folder, ignore_errors=True))
+        (folder / "deep").mkdir()
+        (folder / "deep" / "x.png").write_bytes(PNG)
+        (folder / "near.png").write_bytes(PNG)
+        # A real temp root is flat: patch the roots so this folder is one.
+        (folder / "flat.html").write_text('<img src="near.png"><img src="deep/x.png">', encoding="utf-8")
+        with mock.patch.object(builder, "TEMP_ROOTS", (folder,)):
+            folded = sync.inline_html.fold(folder / "flat.html", [folder])
+        self.assertEqual(folded["text"].count("data:image/png"), 1)
+        self.assertEqual([item["ref"] for item in folded["skipped"]], ["deep/x.png"])
+
+    def test_a_sealed_copy_carries_the_html_document_redacted_and_the_laptop_keeps_the_original(self):
+        secret = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        (self.lab.main / "app.js").write_text(f"var key = '{secret}'; document.title = 'sketch ran';", encoding="utf-8")
+        target = self.lab.root / "out" / "bucket"
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            self.assertEqual(self.lab.build_only_args("--dry-run", str(target)), 0)
+            meta, _ = self.doc()
+            done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), meta["object"]], capture_output=True, text=True, env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
+        sealed = json.loads(done.stdout)[meta["object"]]
+        self.assertEqual(sealed["kind"], "html")
+        self.assertIn("[redacted:github-token]", sealed["text"])
+        self.assertNotIn(secret, sealed["text"])
+        self.assertIn(secret, self.lab.object(meta["object"])["text"])
+
+    def test_a_large_picture_goes_through_redaction_in_good_time(self):
+        picture = bytes(range(256)) * (3 * 1024 * 1024 // 256)  # 3 MB of bytes that are not a picture, as base64 a long unbroken line
+        (self.lab.main / "img" / "big.png").write_bytes(picture)
+        (self.lab.main / "sketch.html").write_text('<img src="img/big.png">', encoding="utf-8")
+        target = self.lab.root / "out" / "bucket"
+        started = time.time()
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            self.assertEqual(self.lab.build_only_args("--dry-run", str(target)), 0)
+        self.assertLess(time.time() - started, 60)
+        meta, _ = self.doc()
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), meta["object"]], capture_output=True, text=True, env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
+        text = json.loads(done.stdout)[meta["object"]]["text"]
+        self.assertIn(base64.b64encode(picture).decode("ascii"), text, "the picture itself comes through redaction whole")
+
+
+S = "ffffffff-6666-4666-8666-666666666666"  # the owner's own session, in a folder under the workspace
+S2 = "99999999-7777-4777-8777-777777777777"  # another of theirs, in a deeper folder
+
+
+class WorkspaceTest(unittest.TestCase):
+    """The owner's own working sessions (a working directory under ~/workspace) are in the default scope beside the
+    fleet homes, grouped under their own heading, and everything still goes through redaction."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        self.workspace = self.lab.root / "workspace"
+        project = self.workspace / "pmos"
+        deeper = self.workspace / "pmos" / "setup" / "tools"
+        deeper.mkdir(parents=True)
+        self.secret = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        write_log(self.lab.projects / "ws" / f"{S}.jsonl", [
+            user("Draft the release note.", T0 + 400, str(project)), say(f"Drafted. The token {self.secret} was in your notes.", T0 + 410, str(project))], T0 + 420)
+        write_log(self.lab.projects / "ws2" / f"{S2}.jsonl", [user("Check the tools.", T0 + 500, str(deeper)), say("Looks fine.", T0 + 510, str(deeper))], T0 + 520)
+        # A folder that only starts with the same letters is not under the workspace.
+        sibling = self.lab.root / "workspace-old"
+        sibling.mkdir()
+        write_log(self.lab.projects / "old" / f"{N}.jsonl", [user("Old things.", T0 + 600, str(sibling)), say("Done.", T0 + 610, str(sibling))], T0 + 620)
+
+    def build(self, *extra):
+        return self.lab.build("--workspace", str(self.workspace), *extra)
+
+    def test_sessions_under_the_workspace_join_the_fleet_ones_under_their_own_group(self):
+        self.assertEqual(self.build(), 0)
+        index = self.lab.index()
+        by_id = {e["id"]: e for e in index["conversations"]}
+        self.assertEqual(sorted(by_id), sorted([A, W, M, S, S2]))
+        self.assertEqual((by_id[S]["home"], by_id[S]["where"]), ("workspace", "pmos"))
+        self.assertEqual((by_id[S2]["home"], by_id[S2]["where"]), ("workspace", "pmos/setup/tools"))
+        self.assertEqual(by_id[A]["home"], "main", "a fleet session keeps its home")
+        self.assertEqual(index["homes"][-1], "workspace")
+        self.assertNotIn(X, by_id, "a session outside both is still out")
+        self.assertNotIn(N, by_id, "so is a folder that merely starts with the workspace's name")
+        session = self.lab.object(f"s/{S}.json")
+        self.assertEqual(session["home"], "workspace")
+        self.assertEqual([e["input"] for e in session["exchanges"]][:1], ["Draft the release note."])
+
+    def test_a_workspace_session_shows_in_the_fleet_timeline_as_you_and_its_group(self):
+        self.build()
+        events = [e for f in self.lab.index()["weeks"].values() for e in self.lab.object(f["object"])["events"]]
+        mine = [e for e in events if e.get("session") == S]
+        self.assertTrue(any(e["kind"] == "captain" and e["to"] == "workspace" for e in mine), mine)
+
+    def test_without_the_workspace_only_the_fleet_is_read(self):
+        self.assertEqual(self.lab.build("--workspace", str(self.workspace), "--no-workspace"), 0)
+        index = self.lab.index()
+        self.assertEqual(sorted(e["id"] for e in index["conversations"]), sorted([A, W, M]))
+        self.assertNotIn("workspace", index["homes"])
+
+    def test_the_default_scope_is_the_workspace_folder_in_the_home_folder(self):
+        self.assertEqual(sync.WORKSPACE, Path.home() / "workspace")
+        with mock.patch.object(sync, "WORKSPACE", self.workspace):  # main() reads the default when it runs
+            self.assertEqual(self.lab.build(), 0)
+        self.assertIn(S, [e["id"] for e in self.lab.index()["conversations"]])
+
+    def test_everything_from_the_workspace_is_redacted_before_it_is_sealed(self):
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            target = self.lab.root / "out" / "bucket"
+            self.assertEqual(self.lab.build_only_args("--dry-run", str(target), "--workspace", str(self.workspace)), 0)
+            done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), f"s/{S}.json", "index.json"], capture_output=True, text=True,
+                                  env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
+        sealed = json.loads(done.stdout)
+        text = json.dumps(sealed)
+        self.assertIn("[redacted:github-token]", text)
+        self.assertNotIn(self.secret, text)
+        self.assertIn(self.secret, json.dumps(self.lab.object(f"s/{S}.json")), "the laptop keeps the original")
+        self.assertIn(S, [e["id"] for e in sealed["index.json"]["conversations"]])
+
+
+class StaticFilesTest(unittest.TestCase):
+    """The offline copy's worker, manifest and icons sit beside the shell pages in the hosted copy and in the sealed bucket."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        self.target = self.lab.root / "out" / "bucket"
+        env = mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_the_hosted_copy_has_the_worker_the_manifest_and_two_icons_and_a_sealed_run_copies_them(self):
+        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        for folder in (self.lab.out, self.target):
+            self.assertEqual((folder / "sw.js").read_bytes(), (Path(sync.__file__).parent / "prototype" / "sw.js").read_bytes())
+            manifest = json.loads((folder / "manifest.webmanifest").read_text(encoding="utf-8"))
+            self.assertEqual((manifest["display"], manifest["start_url"], manifest["scope"]), ("standalone", "index.html", "./"))
+            for name, size in (("icon-180.png", 180), ("icon-512.png", 512)):
+                data = (folder / name).read_bytes()
+                self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n", name)
+                self.assertEqual(int.from_bytes(data[16:20], "big"), size, name)
+            self.assertEqual({icon["src"] for icon in manifest["icons"]}, {"icon-180.png", "icon-512.png"})
+
+    def test_a_changed_worker_reaches_the_bucket_at_once_and_wipe_takes_these_files_too(self):
+        self.lab.build_only_args("--dry-run", str(self.target))
+        (self.target / "sw.js").write_text("// an older worker", encoding="utf-8")
+        self.lab.build_only_args("--dry-run", str(self.target))
+        self.assertEqual((self.target / "sw.js").read_bytes(), (self.lab.out / "sw.js").read_bytes())
+        self.lab.build_only_args("--wipe", str(self.target))
+        self.assertEqual([path.name for path in self.target.iterdir() if path.is_file()], [])
+
+    def test_the_shell_pages_allow_the_worker_and_the_manifest_in_their_policy_and_the_local_page_does_not(self):
+        self.assertEqual(self.lab.build(), 0)
+        hosted = (self.lab.out / "index.html").read_text(encoding="utf-8")
+        self.assertIn("worker-src 'self'", hosted)
+        self.assertIn('<link rel="manifest" href="manifest.webmanifest">', hosted)
+        self.assertIn("worker-src 'self'", (self.lab.out / "sheet.html").read_text(encoding="utf-8"))
+        local, _ = builder.fill_template(builder.TEMPLATE, "{}", "local")
+        self.assertNotIn("worker-src", local)
+        self.assertNotIn("manifest", local.split("</head>")[0])
+
+
 class DryRunTest(unittest.TestCase):
     def setUp(self):
         self.lab = Lab(self)
@@ -533,7 +774,7 @@ class DryRunTest(unittest.TestCase):
         index = self.lab.index()
         names = ["index.json"] + [e["object"] for e in index["conversations"]] + [m["object"] for m in index["documents"].values()] \
             + [m["object"] for m in index["weeks"].values()] + [m["object"] for m in index["sheets"].values()]
-        self.assertEqual(sorted(self.sealed_times()), sorted(["index.html", "sheet.html", "k/params.json"] + [n + ".enc" for n in names]))
+        self.assertEqual(sorted(self.sealed_times()), sorted(["index.html", "sheet.html", *sync.STATIC_FILES, "k/params.json"] + [n + ".enc" for n in names]))
         self.assertIn(f"a/{M}.json", names)
         opened = self.opened(*names)
         self.assertEqual([e["id"] for e in opened["index.json"]["conversations"]], [e["id"] for e in index["conversations"]])

@@ -209,3 +209,80 @@ test('serve.sh passcode takes the passcode only from a terminal and leaves no fi
   assert.match(result.stderr, /terminal/);
   assert.ok(!fs.existsSync(passcodeFile));
 });
+
+// --tailnet-https: the machine's Tailscale name comes from `tailscale status --json` (never typed in), the certificate
+// from `tailscale cert`, and every way that can fail ends in one plain line with the plain address still serving.
+// A fake `tailscale` stands in for the real one, so nothing here asks Tailscale for a certificate.
+test('serve.sh --tailnet-https takes the name from Tailscale, fetches the certificate, and says plainly why it stays off', { timeout: 90000 }, async (t) => {
+  const { execFile, execFileSync } = require('child_process');
+  const root = serverCopy();
+  const here = path.join(root, 'setup', 'transcript-reader');
+  const script = path.join(here, 'serve.sh');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-fake-tailscale-'));
+  const certDir = path.join(root, 'certs');
+  const passcodeFile = path.join(root, 'passcode.json');
+  const NAME = 'scratch-mac.scratch-net.ts.net';
+  const real = (() => { try { return execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n')[0].trim(); } catch { return ''; } })();
+  const ip = real || '100.64.0.9';
+  // The fake answers `ip -4`, `status --json` and `cert`, which it records and makes from a scratch certificate in $FAKE_CERT.
+  fs.writeFileSync(path.join(bin, 'tailscale'), `#!/bin/sh
+case "$1" in
+  ip) echo ${ip} ;;
+  status) printf '%s' "$FAKE_STATUS" ;;
+  cert) echo "$@" >> "$FAKE_LOG"
+    case "$FAKE_CERT_MODE" in
+      off) echo "500 Internal Server Error: your Tailscale account does not support getting TLS certs" >&2; exit 1 ;;
+      other) echo "dial tcp: lookup failed" >&2; exit 1 ;;
+    esac
+    while [ $# -gt 0 ]; do case "$1" in --cert-file) cp "$FAKE_CERT/c.pem" "$2"; shift ;; --key-file) cp "$FAKE_CERT/k.pem" "$2"; shift ;; esac; shift; done ;;
+esac
+`, { mode: 0o755 });
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-fake-cert-'));
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(scratch, 'k.pem'), '-out', path.join(scratch, 'c.pem'), '-days', '5', '-subj', '/CN=' + NAME, '-addext', 'subjectAltName=DNS:' + NAME], { stdio: 'ignore', timeout: 30000 });
+  } catch { t.skip('openssl cannot make a scratch certificate here'); return; }
+  const log = path.join(scratch, 'cert-calls.txt');
+  const status = JSON.stringify({ Self: { DNSName: NAME + '.' } });
+  const run = (env, ...args) => new Promise((resolve) => execFile('bash', [script, ...args], { timeout: 30000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, PMOS_READER_PORT: '', PMOS_READER_TAILNET: '', PMOS_READER_TAILNET_HTTPS: '', PMOS_READER_HTTPS_PORT: '', PMOS_READER_PASSCODE_FILE: passcodeFile, PMOS_READER_CERT_DIR: certDir, FAKE_STATUS: status, FAKE_LOG: log, FAKE_CERT: scratch, FAKE_CERT_MODE: '', ...env } }, (error, stdout) => resolve({ code: error ? error.code : 0, stdout })));
+  const port = String(await freePort());
+  const httpsPort = String(await freePort());
+  try {
+    await require('./tailnet').writePasscodeFile(passcodeFile, 'a test passcode');
+    // HTTPS certificates off for the tailnet: one plain reason, the plain tailnet address as before.
+    const off = await run({ FAKE_CERT_MODE: 'off' }, 'start', '--port', port, '--tailnet-https');
+    assert.match(off.stdout, /HTTPS address not served: HTTPS certificates are not turned on for this tailnet[\s\S]*Tailscale admin console/);
+    assert.strictEqual((off.stdout.match(/HTTPS address not served/g) || []).length, 1, 'one line, not several');
+    assert.match(off.stdout, /Reader server started/);
+    await run({}, 'stop', '--port', port);
+    // Some other failure: its last line, shortened.
+    assert.match((await run({ FAKE_CERT_MODE: 'other' }, 'start', '--port', port, '--tailnet-https')).stdout, /HTTPS address not served: Could not get a Tailscale certificate: dial tcp: lookup failed/);
+    await run({}, 'stop', '--port', port);
+    // No machine name (MagicDNS off): nothing to serve HTTPS under, and nothing is asked of Tailscale.
+    fs.writeFileSync(log, '');
+    assert.match((await run({ FAKE_STATUS: '{"Self":{}}' }, 'start', '--port', port, '--tailnet-https')).stdout, /HTTPS address not served: this machine has no Tailscale name/);
+    assert.strictEqual(fs.readFileSync(log, 'utf8'), '', 'tailscale cert was not run without a name');
+    await run({}, 'stop', '--port', port);
+    // The HTTPS switch itself is also an environment variable, and says the same.
+    assert.match((await run({ PMOS_READER_TAILNET_HTTPS: '1', FAKE_CERT_MODE: 'off' }, 'start', '--port', port)).stdout, /HTTPS address not served/);
+    await run({}, 'stop', '--port', port);
+    // A bad HTTPS port is refused up front.
+    for (const bad of ['80', '443', port, '8765', 'abc']) assert.strictEqual((await run({}, 'start', '--port', port, '--tailnet-https', '--https-port', bad)).code, 2, bad);
+
+    if (!real) { t.diagnostic('no Tailscale address on this machine: the served-HTTPS path was not run'); return; }
+    // The certificate is there: HTTPS is served under the name Tailscale reported, the cert files are owner-only, the
+    // plain address still serves, and `status` says both.
+    const ok = await run({}, 'start', '--port', port, '--tailnet-https', '--https-port', httpsPort);
+    assert.match(ok.stdout, new RegExp(`Tailnet address served: http://${ip.replace(/\./g, '\\.')}:${port}`), ok.stdout);
+    assert.match(ok.stdout, new RegExp(`HTTPS address served: https://${NAME.replace(/\./g, '\\.')}:${httpsPort} \\(passcode required\\)`), ok.stdout);
+    assert.match(fs.readFileSync(log, 'utf8'), new RegExp(`cert --cert-file ${certDir}/${NAME}\\.crt --key-file ${certDir}/${NAME}\\.key ${NAME}`));
+    assert.strictEqual(fs.statSync(certDir).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(path.join(certDir, NAME + '.key')).mode & 0o777, 0o600);
+    const state = await run({}, 'status', '--port', port, '--tailnet-https', '--https-port', httpsPort);
+    assert.match(state.stdout, new RegExp(`HTTPS address served: https://${NAME.replace(/\./g, '\\.')}:${httpsPort}`));
+    assert.match(fs.readFileSync(path.join(here, 'out', `server-${port}.log`), 'utf8'), /Tailnet HTTPS: https:\/\/scratch-mac\.scratch-net\.ts\.net:\d+, passcode required, certificate valid until \d{4}-\d{2}-\d{2}/);
+    // serve.sh cert renews it by hand and says until when.
+    assert.match((await run({}, 'cert')).stdout, new RegExp(`Certificate for ${NAME.replace(/\./g, '\\.')} is valid until \\d{4}-\\d{2}-\\d{2}`));
+  } finally {
+    await run({}, 'stop', '--port', port);
+  }
+});
