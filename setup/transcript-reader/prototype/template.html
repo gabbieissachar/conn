@@ -2208,15 +2208,56 @@ __HEAD_HOSTED__
     if (anchor && anchor.id) anchor.id = "ex-" + (Number(anchor.id.slice(3)) + shift);
     return keys;
   }
+  // The build the server describes by what changed since the one on screen (live.delta), merged into the page's own data: each
+  // changed session keeps its first `from` turns and takes the tail, the fleet likewise, and unchanged sessions stay as they are.
+  // Null when anything does not fit what the page holds (a session or turn count that disagrees), so the full page is read instead.
+  function mergeDelta(base, d) {
+    const held = new Map(base.sessions.filter(s => !s.kept).map(s => [s.id, s]));  // a conversation kept after its pane closed is not on the build
+    const sessions = [];
+    for (const id of d.sessions.order) {
+      const c = d.sessions.changed[id], old = held.get(id);
+      if (!c) { if (!old) return null; sessions.push(old); continue; }
+      const { count, from, exchanges, ...rest } = c;
+      if (from > 0 && (!old || old.exchanges.length < from)) return null;
+      const merged = { ...rest, exchanges: from > 0 ? old.exchanges.slice(0, from).concat(exchanges) : exchanges };
+      if (merged.exchanges.length !== count) return null;
+      sessions.push(merged);
+    }
+    const payload = { ...base, ...(d.whole || {}), generated: d.generated, sessions };
+    if (d.fleet) {
+      if (d.fleet.from > base.fleet.length) return null;
+      payload.fleet = base.fleet.slice(0, d.fleet.from).concat(d.fleet.items);
+      if (payload.fleet.length !== d.fleet.count) return null;
+    }
+    if (d.documents) {
+      payload.documents = { ...base.documents, ...d.documents.set };
+      for (const id of d.documents.drop) delete payload.documents[id];
+    }
+    return payload;
+  }
   async function refreshData(now = false) {
     const sel = window.getSelection();
     if (!now && sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
-    const html = await live.page(location.pathname.split("/").pop());
-    const next = new DOMParser().parseFromString(html, "text/html");
+    const name = location.pathname.split("/").pop();
     const template = doc => (doc.querySelector('meta[name="template"]') || {}).content;
-    // A different template hash means the page's own code or styles changed: load it fresh.
-    if (template(next) !== template(document)) { location.reload(); return; }
-    const payload = JSON.parse(next.getElementById("payload").textContent);
+    let payload = null;
+    // Only what changed, when the server still holds the build on screen: a new reply is a few kilobytes, not the whole page.
+    try {
+      const d = await live.delta(name, data.generated);
+      // A different template hash means the page's own code or styles changed: load it fresh.
+      if (d.delta && d.template !== template(document)) { location.reload(); return; }
+      if (d.unchanged) return;
+      if (d.delta && d.base === data.generated) payload = mergeDelta(data, d);
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) throw e;  // a restarted server or a signed-out phone, handled as for any call
+      payload = null;  // a server without the route, or any other failure: the full page below
+    }
+    if (!payload) {
+      const html = await live.page(name);
+      const next = new DOMParser().parseFromString(html, "text/html");
+      if (template(next) !== template(document)) { location.reload(); return; }
+      payload = JSON.parse(next.getElementById("payload").textContent);
+    }
     if (payload.generated <= data.generated) return;
     applyPayload(payload);
   }
@@ -2477,9 +2518,14 @@ __HEAD_HOSTED__
     data.sessions = rest;
     state.session = Math.max(0, rest.indexOf(current));
   }
+  // The build leaves the fleet timeline out unless its owner switched it on (PMOS_READER_FLEET_TIMELINE, README): then its tab is
+  // hidden, and a page left on it goes back to the conversation. The hosted copy's data does not say, and keeps its tab.
+  const fleetOn = () => data.fleet_timeline !== false;
   function render() {
     if (missing()) { whenReady(render); return; }  // the hosted copy loads first
     pruneKept();
+    document.getElementById("tab-fleet").hidden = !fleetOn();
+    if (!fleetOn() && state.view === "fleet") state.view = "reader";
     reveals.clear();
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
     document.body.classList.toggle("wide", state.view === "fleet");

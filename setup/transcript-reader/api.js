@@ -95,6 +95,7 @@ const os = require('os');
 const path = require('path');
 const { createGuard } = require('../herdr-organizer/guard');
 const tailnetLane = require('./tailnet');
+const deltaStore = require('./delta');
 const pinstore = require('./pinstore');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
@@ -312,6 +313,8 @@ function create({
   let sending = false;
   const pins = pinstore.create({ file: pinsFile, now });
   const stars = pinstore.createStars({ file: starsFile, now });
+  // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
+  const deltas = deltaStore.create();
 
   // ------------------------------------------------------------- local records
 
@@ -760,6 +763,8 @@ function create({
         [COPY_HEADER]: copy,
       });
       res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
+      // The build this page holds is what its first update is measured from.
+      if (name === 'prototype.html') setImmediate(() => deltas.note(html));
     });
   }
 
@@ -800,6 +805,18 @@ function create({
       let html;
       try { html = fs.readFileSync(path.join(outDir, name), 'utf8'); } catch { fail(res, 404, 'not_built', 'Not built yet.'); return; }
       send(res, 200, { status: 'ok', html });
+      if (name === 'prototype.html') setImmediate(() => deltas.note(html));
+      return;
+    }
+    // What changed since the build the page holds (`have`, its generated time), in place of the whole page: only the reader
+    // page has one. { delta: false } sends the page to the full text above.
+    if (pathname === API + 'delta' && req.method === 'GET') {
+      const have = Number(query.get('have'));
+      if (query.get('name') !== 'prototype.html') { fail(res, 404, 'not_found', 'Not found.'); return; }
+      if (!Number.isFinite(have)) { fail(res, 400, 'bad_request', 'Invalid build.'); return; }
+      let html;
+      try { html = fs.readFileSync(path.join(outDir, 'prototype.html'), 'utf8'); } catch { fail(res, 404, 'not_built', 'Not built yet.'); return; }
+      send(res, 200, { status: 'ok', ...deltas.since(html, have) });
       return;
     }
     if (pathname === API + 'state' && req.method === 'GET') {

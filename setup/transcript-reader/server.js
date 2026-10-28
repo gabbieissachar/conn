@@ -17,6 +17,8 @@
 // (serve.sh --tailnet-https fetches the certificate with tailscale cert), with the same passcode gate: the phone
 // needs a secure address for an offline copy. The plain listener keeps serving beside it.
 //
+// Text and JSON answers are compressed (compress.js) when the browser accepts br or gzip, on every listener.
+//
 // Every answer, 404s included, carries the copy header api.js puts on the pages, plus
 // x-transcript-reader-server, so serve.sh and reader.py can tell which copy of the repo
 // answers on a port (and that it is a reader server at all).
@@ -29,6 +31,7 @@ const tls = require('tls');
 const net = require('net');
 const path = require('path');
 const { create, COPY_HEADER, copyId } = require('./api');
+const { compression } = require('./compress');
 const { isTailnetAddress } = require('./tailnet');
 
 const DEFAULT_PORT = 8768;
@@ -56,6 +59,7 @@ function start({ root, port = DEFAULT_PORT, tailnet = null, ...options }) {
   const onRequest = (listener) => (req, res) => {
     res.setHeader(COPY_HEADER, copy);
     res.setHeader(SERVER_HEADER, '1');
+    compression(req, res);
     if (api.handle(req, res, listener)) return;
     res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
     res.end('Not found');

@@ -218,6 +218,10 @@ class ParityTest(unittest.TestCase):
     """The objects hold what the local page's payload holds for the same sessions."""
 
     def test_conversations_documents_and_fleet_match_the_local_payload(self):
+        # The local page leaves the fleet timeline out unless it is switched on; the hosted copy's weeks are compared with it on.
+        patcher = mock.patch.dict(os.environ, {builder.FLEET_TIMELINE_ENV: "on"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         lab = Lab(self)
         (lab.root / "out").mkdir(exist_ok=True)
         (lab.root / "out" / "sessions.txt").write_text(f"{A}\n{W}\n{M}\n", encoding="utf-8")
@@ -236,6 +240,40 @@ class ParityTest(unittest.TestCase):
         trimmed = [{**e, "text": sync.first_line(e["text"])} if e["kind"] in ("captain", "reply") else e for e in payload["fleet"]]
         self.assertEqual(fleet, json.loads(json.dumps(trimmed)))
         self.assertEqual(index["summaries"], payload["summaries"])
+
+
+class FleetTimelineSwitchTest(unittest.TestCase):
+    """PMOS_READER_FLEET_TIMELINE decides whether the local build collects the fleet timeline; nothing else about the payload moves."""
+
+    def lab(self):
+        lab = Lab(self)
+        (lab.root / "out").mkdir(exist_ok=True)
+        (lab.root / "out" / "sessions.txt").write_text(f"{A}\n{W}\n{M}\n", encoding="utf-8")
+        return lab
+
+    def payload(self, lab, value):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(builder.FLEET_TIMELINE_ENV, None)
+            if value is not None:
+                os.environ[builder.FLEET_TIMELINE_ENV] = value
+            return lab.local_payload([A, W, M])
+
+    def test_off_by_default_the_build_collects_no_fleet_records_and_says_so(self):
+        lab = self.lab()
+        for value in (None, "", "off", "0", "no"):
+            off = self.payload(lab, value)
+            self.assertEqual(off["fleet"], [], value)
+            self.assertIs(off["fleet_timeline"], False, value)
+
+    def test_on_restores_the_timeline_exactly_and_the_rest_of_the_payload_is_the_same(self):
+        lab = self.lab()
+        off = self.payload(lab, None)
+        for value in ("1", "on", "ON", "true", "yes"):
+            on = self.payload(lab, value)
+            self.assertTrue(on["fleet"], value)
+            self.assertIs(on["fleet_timeline"], True, value)
+            self.assertEqual({k: v for k, v in on.items() if k not in ("fleet", "fleet_timeline", "generated")},
+                             {k: v for k, v in off.items() if k not in ("fleet", "fleet_timeline", "generated")}, value)
 
 
 class AnswerSheetTest(unittest.TestCase):

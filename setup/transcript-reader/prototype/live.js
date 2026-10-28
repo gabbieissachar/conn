@@ -34,12 +34,12 @@
       const r = await fetch(API + path, { cache: "no-store", ...options, headers: { ...(options.headers || {}), "x-transcript-reader-token": token } });
       let j = null; try { j = await r.json(); } catch (e) { j = null; }
       if (r.status === 403 && j && /token/i.test(j.message || "")) {
-        throw new Error(reloadForToken() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
+        throw Object.assign(new Error(reloadForToken() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect."), { status: r.status });
       }
       // The tailnet listener signs a phone out when the server restarts or the passcode changes: a fresh load
       // of the page brings the sign-in page, and signing in comes back to this address (drafts survive a reload).
       if (r.status === 401 && j && j.code === "sign_in_required") {
-        throw new Error(reloadForToken() ? "Signed out: opening the sign-in page…" : "Signed out: reload the page to sign in again.");
+        throw Object.assign(new Error(reloadForToken() ? "Signed out: opening the sign-in page…" : "Signed out: reload the page to sign in again."), { status: r.status });
       }
       if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; throw error; }
       return j;
@@ -51,6 +51,9 @@
     const state = follow => call("state" + (follow ? "?follow=1" : ""));
     // The built page's current text, for a page that swaps in new turns without reloading.
     const page = name => call("page?name=" + encodeURIComponent(name)).then(j => j.html);
+    // What changed since the build the page holds (its `generated` time), in place of the whole page: the turns after the ones it
+    // has, the fleet events and documents that differ, and the order of the sessions. { delta: false } means fetch the page.
+    const delta = (name, have) => call("delta?name=" + encodeURIComponent(name) + "&have=" + encodeURIComponent(have));
     const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
@@ -96,5 +99,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, send, changeList, htmlOpen, poll, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, poll, pointer, clip };
   })();

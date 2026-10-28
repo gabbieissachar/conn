@@ -598,6 +598,15 @@ def attach_inbox_bodies(exchanges: list[dict], homes: list[Path]) -> None:
         exchange["undelivered"] = not delivered and not exchange["repeat"]
 
 
+# The fleet timeline is built and shown only when this is set to on (1, on, true or yes) in the environment that runs the build;
+# unset, the build skips collecting the fleet records and the page hides the tab. Everything the timeline is made of stays in place.
+FLEET_TIMELINE_ENV = "PMOS_READER_FLEET_TIMELINE"
+
+
+def fleet_timeline_on() -> bool:
+    return os.environ.get(FLEET_TIMELINE_ENV, "").strip().lower() in {"1", "on", "true", "yes"}
+
+
 def collect_fleet(homes: list[dict], since: float) -> list[dict]:
     """Structured spine: status lines (child to parent) and inbox messages (parent to child)."""
     events = []
@@ -773,11 +782,12 @@ def build(args) -> dict:
     prune_parsed(cache)
 
     sessions = []
-    fleet = collect_fleet(homes, since)
+    timeline = fleet_timeline_on()
+    fleet = collect_fleet(homes, since) if timeline else []
     for home, chain, loaded in threads:
         session = thread_session(home, chain, loaded, parent_of.get(home["id"]))
         sessions.append(session)
-        for event in captain_events(home, session["exchanges"], since):
+        for event in captain_events(home, session["exchanges"], since) if timeline else []:
             event["session"] = session["id"]
             fleet.append(event)
     link_turns(fleet, sessions)
@@ -795,7 +805,7 @@ def build(args) -> dict:
         sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)
     summaries = [summary for summary in (home_summary(home) for home in homes) if summary]
     return {"generated": started, "since": since, "homes": [h["id"] for h in homes], "sessions": sessions, "fleet": fleet,
-            "summaries": summaries, "chosen": listed, "documents": documents, "closed": closed}
+            "summaries": summaries, "chosen": listed, "documents": documents, "closed": closed, "fleet_timeline": timeline}
 
 
 CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
