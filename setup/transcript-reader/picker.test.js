@@ -24,7 +24,48 @@ test('sections: a session no pane runs leaves the running part, keeping its inde
   assert.deepEqual(up.map(([, i]) => i), [0, 2]);
   assert.deepEqual(ids(idle), ['b', 'd']);
   assert.deepEqual(idle.map(([, i]) => i), [1, 3], 'a session never seen in a pane runs nowhere');
-  assert.equal(JSON.stringify(picker.sections([], () => true)), '{"running":[],"idle":[]}');
+  assert.equal(JSON.stringify(picker.sections([], () => true)), '{"starred":[],"running":[],"idle":[]}');
+  assert.deepEqual(up.concat(idle).map(([, i]) => i), [0, 2, 1, 3], 'with no star the order is what it was');
+});
+
+test('sections: starred sessions form the top group, once each, in list order, keeping their index', () => {
+  const list = [session('a', 'alpha'), session('b', 'beta'), session('c', 'gamma'), session('d', null), session('e', 'epsilon')];
+  const running = new Set(['a', 'c']);
+  const stars = new Set(['c', 'd']);
+  const { starred, running: up, idle } = picker.sections(list, (s) => running.has(s.id), (s) => stars.has(s.id));
+  assert.deepEqual(ids(starred), ['c', 'd'], 'a running one and a closed one are both starred');
+  assert.deepEqual(starred.map(([, i]) => i), [2, 3]);
+  assert.deepEqual(ids(up), ['a'], 'a starred session is not listed again under running');
+  assert.deepEqual(ids(idle), ['b', 'e'], 'nor under closed panes');
+  assert.equal(starred.length + up.length + idle.length, list.length);
+  assert.deepEqual(ids(picker.sections(list, () => true, () => true).starred), ['a', 'b', 'c', 'd', 'e']);
+});
+
+test('part: starred wins over running, running over idle', () => {
+  const s = session('a', 'alpha');
+  assert.equal(picker.part(s, () => true, () => true), 'starred');
+  assert.equal(picker.part(s, () => true, () => false), 'running');
+  assert.equal(picker.part(s, () => false, () => false), 'idle');
+  assert.equal(picker.part(s, () => false), 'idle', 'no star rule means none starred');
+});
+
+test('starOf: a star names a conversation, so it finds the session under any id the conversation has had', () => {
+  const moved = session('new-id', 'alpha', { ids: ['new-id', 'old-id'] });
+  const plain = session('solo', 'beta');
+  assert.equal(picker.starOf(moved, [{ conv: 'old-id', starred: 1 }]), 'old-id', 'starred before a /clear moved it');
+  assert.equal(picker.starOf(moved, [{ conv: 'new-id', starred: 1 }]), 'new-id');
+  assert.equal(picker.starOf(plain, [{ conv: 'solo', starred: 1 }]), 'solo', 'a session with no id history is its own');
+  assert.equal(picker.starOf(plain, [{ conv: 'old-id', starred: 1 }]), null);
+  assert.equal(picker.starOf(moved, []), null);
+});
+
+test('label: a starred session and an unstarred one with the same label are in different parts, so neither shows its title', () => {
+  const list = [session('a', 'dup'), session('b', 'dup')];
+  const part = (s) => picker.part(s, () => true, (x) => x.id === 'a');
+  assert.equal(picker.label(list[0], list, part, titled), 'dup');
+  assert.equal(picker.label(list[1], list, part, titled), 'dup');
+  const both = (s) => picker.part(s, () => true, () => true);
+  assert.equal(picker.label(list[0], list, both, titled), 'dup · a title for a', 'two in the starred group tell apart again');
 });
 
 test('label: a running session shows its Herdr label alone, whatever closed sessions share the label', () => {
@@ -69,4 +110,16 @@ test('page: the template repaints the tab title where the picker names change', 
   assert.match(body('paintBar'), /paintTitle\(\)/, 'a switch, Follow Herdr or a view change draws the bar');
   assert.match(body('labelSessions'), /paintTitle\(\)/, 'a poll, a rebuild or a Sync relabels the sessions');
   assert.match(body('paintTitle'), /picker\.pageTitle\(state\.view, session \? pickerName\(session\) : null\)/);
+});
+
+test('page: both pickers lead with the Starred group, the option text carries the star, and a star change redraws them', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+  assert.match(body('fillSessions'), /picker\.sections\(data\.sessions, paneLive, starred\)[\s\S]*Starred · /, 'the local picker');
+  assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, \(\) => false, starred\)[\s\S]*Starred · /, 'the hosted copy\'s picker');
+  assert.match(page, /const optionText = s => \(starred\(s\) \? "★ " : ""\)/, 'every option, labelSessions\' redraw included');
+  assert.match(page, /const pickerSection = s => picker\.part\(s, [^)]*\)?[^;]*starred\)/, 'twins in different parts are not told apart by title');
+  assert.match(page, /stars\.onChange\(paintStars\)/);
+  assert.match(page, /stars\.refresh\(s\.stamps && s\.stamps\.stars\)/, 'the state poll carries the revision');
+  assert.match(body('toggleStar'), /picker\.starOf\(session, stars\.all\(\)\) \|\| session\.id/, 'unstar by the conversation the star was made under');
 });

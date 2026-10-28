@@ -59,6 +59,9 @@
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    // The starred sessions of the picker, kept the same way, and one change to them.
+    const starsList = () => call("stars");
+    const starsChange = change => call("stars", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
     // Reopen a session whose pane has closed, to read it again, or close one; both answer once the page is rebuilt.
     const changeList = (command, sessionId) => call(command, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
     // tick runs every 2 seconds while the page is visible, and at once when it is shown again.
@@ -93,5 +96,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, page, send, changeList, htmlOpen, poll, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, send, changeList, htmlOpen, poll, pointer, clip };
   })();

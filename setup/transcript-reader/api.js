@@ -27,6 +27,9 @@
 //   GET  /api/transcript-reader/pins                the pinned messages (pinstore.js: a small owner-only file
 //                                                   outside the repo) and their revision
 //   POST /api/transcript-reader/pins                { op: "pin", key, conv, at } or { op: "unpin", key }
+//   GET  /api/transcript-reader/stars               the starred sessions of the picker (the same store, in a file
+//                                                   beside the pins) and their revision
+//   POST /api/transcript-reader/stars               { op: "star", conv } or { op: "unstar", conv }
 //   POST /api/transcript-reader/send                { session_id, text }: empties the input box
 //                                                   of the one live Herdr pane running that
 //                                                   session, then sends the text there
@@ -80,7 +83,7 @@
 // session's pane closes (dropping it from the reading list), and adds the session
 // Herdr has focused to the reading list while a page follows focus. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
-// every live Claude pane's session not yet listed, except one a person closed or removed. The pins file is the only thing written outside out/, and only on a pin or an unpin.
+// every live Claude pane's session not yet listed, except one a person closed or removed. The pins and stars files are the only things written outside out/, and only on a pin, an unpin, a star or an unstar.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
@@ -272,6 +275,7 @@ function create({
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
   pinsFile = pinstore.defaultFile(env),
+  starsFile = pinstore.defaultStarsFile(env),
   // Where an HTML file may be shown from, as in build_prototype.resolve_mention: the home folder and the temp folders.
   homeDir = os.homedir(), tempRoots = ['/tmp', os.tmpdir()],
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
@@ -307,6 +311,7 @@ function create({
   const seenLive = new Set();
   let sending = false;
   const pins = pinstore.create({ file: pinsFile, now });
+  const stars = pinstore.createStars({ file: starsFile, now });
 
   // ------------------------------------------------------------- local records
 
@@ -504,7 +509,7 @@ function create({
       }
     }
     return {
-      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev },
+      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev, stars: stars.read().rev },
       focus: focused && {
         ...focused,
         listed: focused.session_id ? ids.includes(focused.session_id) : false,
@@ -811,6 +816,14 @@ function create({
     }
     if (pathname === API + 'pins' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...pins.change(await readJsonBody(req)) });
+      return;
+    }
+    if (pathname === API + 'stars' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...stars.read() });
+      return;
+    }
+    if (pathname === API + 'stars' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...stars.change(await readJsonBody(req)) });
       return;
     }
     if (pathname === API + 'send' && req.method === 'POST') {

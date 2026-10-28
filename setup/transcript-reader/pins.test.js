@@ -1,6 +1,6 @@
 'use strict';
 
-// Tests for the page's pin store (prototype/pins.js). Run from the repo root:
+// Tests for the page's pin and star stores (prototype/pins.js). Run from the repo root:
 //   node --test setup/transcript-reader/pins.test.js
 // The file runs in a sandbox with a fake server, storage and window, as the page's script would run it.
 
@@ -16,7 +16,7 @@ const K2 = 'abcdef12-3456-4789-8abc-def012345678:reply';
 const CONV = 'cccccccc-3333-4333-8333-333333333333';
 
 // server: null for a page that cannot reach one, else { pins, rev, fail } the fake server keeps.
-function load({ hosted = false, served = true, server = null, storage = new Map(), storageBroken = false } = {}) {
+function load({ hosted = false, served = true, server = null, starServer = null, storage = new Map(), storageBroken = false } = {}) {
   const calls = [];
   const listeners = {};
   const live = {
@@ -33,9 +33,22 @@ function load({ hosted = false, served = true, server = null, storage = new Map(
       server.rev += 1;
       return { status: 'ok', rev: server.rev, pins: server.pins.map((p) => ({ ...p })) };
     },
+    starsList: async () => {
+      calls.push(['stars']);
+      if (!starServer || starServer.down) { const e = new Error('The server answered 404.'); e.status = 404; throw e; }
+      return { status: 'ok', rev: starServer.rev, stars: starServer.stars.map((p) => ({ ...p })) };
+    },
+    starsChange: async (change) => {
+      calls.push(['stars-change', JSON.parse(JSON.stringify(change))]);
+      if (starServer.fail) throw new Error(starServer.fail);
+      if (change.op === 'star' && !starServer.stars.some((p) => p.conv === change.conv)) starServer.stars.push({ conv: change.conv, starred: 99 });
+      if (change.op === 'unstar') starServer.stars = starServer.stars.filter((p) => p.conv !== change.conv);
+      starServer.rev += 1;
+      return { status: 'ok', rev: starServer.rev, stars: starServer.stars.map((p) => ({ ...p })) };
+    },
   };
   const sandbox = {
-    HOSTED: hosted, canLive: served && !hosted && Boolean(server), live, Date, JSON, Math, Number, Array, Promise, Error, Set,
+    HOSTED: hosted, canLive: served && !hosted && Boolean(server || starServer), live, Date, JSON, Math, Number, Array, Promise, Error, Set,
     window: { addEventListener: (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); } },
     localStorage: {
       getItem: (key) => { if (storageBroken) throw new Error('blocked'); return storage.has(key) ? storage.get(key) : null; },
@@ -43,8 +56,8 @@ function load({ hosted = false, served = true, server = null, storage = new Map(
     },
   };
   vm.createContext(sandbox);
-  const pins = vm.runInContext(SOURCE + '\npins;', sandbox);
-  return { pins, calls, storage, listeners };
+  const { pins, stars } = vm.runInContext(SOURCE + '\n({ pins, stars });', sandbox);
+  return { pins, stars, calls, storage, listeners };
 }
 
 const serverWith = (pins = [], rev = 0) => ({ pins, rev, fail: '', down: false });
@@ -164,4 +177,90 @@ test('another tab\'s change to this browser\'s pins shows up', async () => {
   assert.equal(changes, 1);
   t.listeners.storage.forEach((fn) => fn({ key: 'something-else' }));
   assert.equal(changes, 1);
+});
+
+// ---- stars: the same store, one list of conversations
+
+const starServerWith = (stars = [], rev = 0) => ({ stars, rev, fail: '', down: false });
+const star = (conv, extra = {}) => ({ conv, starred: 9, ...extra });
+const OTHER = 'dddddddd-4444-4444-8444-444444444444';
+
+test('stars: kept in the server\'s file when it answers, and starring a second session keeps the first', async () => {
+  const starServer = starServerWith();
+  const t = load({ starServer });
+  await t.stars.load();
+  assert.equal(t.stars.where(), 'file');
+  await t.stars.toggle(CONV);
+  await t.stars.toggle(OTHER);
+  assert.deepEqual(t.stars.all().map((s) => s.conv), [CONV, OTHER]);
+  assert.deepEqual(starServer.stars.map((s) => s.conv), [CONV, OTHER]);
+  assert.deepEqual(t.calls.filter((c) => c[0] === 'stars-change').map((c) => c[1]), [{ op: 'star', conv: CONV }, { op: 'star', conv: OTHER }]);
+  await t.stars.toggle(CONV);
+  assert.deepEqual(t.calls.at(-1), ['stars-change', { op: 'unstar', conv: CONV }]);
+  assert.deepEqual(t.stars.all().map((s) => s.conv), [OTHER]);
+  assert.equal(t.stars.has(CONV), false);
+  assert.equal(t.stars.has(OTHER), true);
+  assert.equal(t.pins.count(), 0, 'a star is not a pin');
+});
+
+test('stars: with no server they live in this browser under their own key, and a new load finds them', async () => {
+  const storage = new Map();
+  const first = load({ served: false, storage });
+  await first.stars.load();
+  assert.equal(first.stars.where(), 'browser');
+  await first.stars.toggle(CONV);
+  assert.deepEqual(Object.keys(Object.fromEntries(storage)), ['tr-stars']);
+  const again = load({ served: false, storage });
+  await again.stars.load();
+  assert.deepEqual(again.stars.all().map((s) => s.conv), [CONV]);
+  const hosted = load({ hosted: true, storage });
+  await hosted.stars.load();
+  assert.deepEqual(hosted.stars.all(), [], 'the hosted copy has its own key');
+  await hosted.stars.toggle(OTHER);
+  assert.ok(storage.has('tr-hosted-stars'));
+});
+
+test('stars: a server too old to have the route leaves them in the browser, and a later load moves them into the file', async () => {
+  const storage = new Map([['tr-stars', JSON.stringify([star(CONV)])]]);
+  const old = load({ server: serverWith(), storage });  // the pins route answers; the stars route does not
+  await old.stars.load();
+  assert.equal(old.stars.where(), 'browser');
+  assert.deepEqual(old.stars.all().map((s) => s.conv), [CONV]);
+  const starServer = starServerWith([star(OTHER)]);
+  const now = load({ starServer, storage });
+  await now.stars.load();
+  assert.equal(now.stars.where(), 'file');
+  assert.deepEqual(now.stars.all().map((s) => s.conv).sort(), [CONV, OTHER].sort());
+  assert.deepEqual(JSON.parse(storage.get('tr-stars')), []);
+  assert.deepEqual(now.calls.filter((c) => c[0] === 'stars-change').map((c) => c[1]), [{ op: 'star', conv: CONV }], 'only the time the server stamps stays out of the add');
+});
+
+test('stars: a refused save puts the list back and says why; the cap says to unstar', async () => {
+  const starServer = starServerWith();
+  const t = load({ starServer });
+  await t.stars.load();
+  starServer.fail = 'The server refused.';
+  await assert.rejects(() => t.stars.toggle(CONV), /refused/);
+  assert.deepEqual(t.stars.all(), []);
+  const full = load({ starServer: starServerWith(Array.from({ length: 200 }, (_, i) => star('conv-' + i))) });
+  await full.stars.load();
+  await assert.rejects(() => full.stars.toggle(CONV), /200 stars already: unstar some first/);
+  await full.stars.toggle('conv-0');
+  assert.equal(full.stars.count(), 199, 'unstarring needs no room');
+});
+
+test('stars: another tab\'s change arrives through the revision the poll carries, and a listener hears of it', async () => {
+  const starServer = starServerWith([], 4);
+  const t = load({ starServer });
+  await t.stars.load();
+  let heard = 0;
+  t.stars.onChange(() => { heard += 1; });
+  starServer.stars.push(star(CONV)); starServer.rev = 5;
+  await t.stars.refresh(4);  // the poll's stamp is the revision it already has: nothing to read
+  assert.equal(heard, 0);
+  await t.stars.refresh(5);
+  assert.deepEqual(t.stars.all().map((s) => s.conv), [CONV]);
+  assert.equal(heard, 1);
+  await t.stars.refresh(undefined);  // a server that does not report stars
+  assert.equal(heard, 1);
 });

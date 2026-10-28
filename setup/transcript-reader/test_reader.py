@@ -950,7 +950,9 @@ class PageShellTest(unittest.TestCase):
 
     def test_both_copies_carry_pins_and_sync(self):
         for mode, page in self.pages():
-            self.assertIn("const pins = (() => {", page, mode)
+            self.assertIn("const kept = ({", page, mode)
+            self.assertIn("const pins = {", page, mode)
+            self.assertIn("const stars = kept({", page, mode)
             self.assertIn('id="sync"', page, mode)
             self.assertIn("async function syncNow()", page, mode)
 
@@ -959,7 +961,7 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("const picker = (() => {", page, mode)
             self.assertNotIn("/*__PICKER__*/", page, mode)
             self.assertIn("picker.label(s, data.sessions, pickerSection, sessionName)", page, mode)
-            self.assertIn("picker.sections(data.sessions, paneLive)", page, mode)
+            self.assertIn("picker.sections(data.sessions, paneLive, starred)", page, mode)
 
     def test_the_answer_sheet_carries_the_send_once_rules_that_sendonce_test_js_runs(self):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")

@@ -23,7 +23,7 @@ __HEAD_HOSTED__
     --ink: #1d2433; --muted: #5d6779; --faint: #8b93a3; --line: #dfe3ea; --paper: #ffffff; --wash: #f4f5f8;
     --you: #1f5fd1; --you-wash: #e9f0fd; --mate: #6b3fc4; --mate-wash: #f1ecfb;
     --ask: #8a5a00; --ask-wash: #fff3d6; --ask-line: #f0c45c; --ok: #2f6b45; --ok-wash: #e8f3ec;
-    --open: #b4232d; --code: #f1f3f6;
+    --open: #b4232d; --code: #f1f3f6; --star: #a86a00;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
@@ -32,7 +32,7 @@ __HEAD_HOSTED__
       --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
       --you: #8db4ff; --you-wash: #1d2a44; --mate: #c3a6ff; --mate-wash: #2a2340;
       --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e; --ok: #8fd3a8; --ok-wash: #1b3024;
-      --open: #ff8a8a; --code: #252a34;
+      --open: #ff8a8a; --code: #252a34; --star: #f2c14e;
     }
   }
   * { box-sizing: border-box; }
@@ -67,11 +67,22 @@ __HEAD_HOSTED__
   .crumb-session { display: none; flex: 1 1 auto; min-width: 0; max-width: 100%; height: 28px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); text-overflow: ellipsis; }
   .bar.collapsed.pick .crumb { display: none; }
   .bar.collapsed.pick .crumb-session { display: block; }
+  /* The star beside a session picker: outline when the session on screen is not starred, filled when it is. */
+  .star-btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: none; place-items: center; }
+  .star-btn svg { fill: none; }
+  .star-btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); color: var(--star); }
+  .star-btn[aria-pressed="true"] svg { fill: currentColor; }
+  .star-btn:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .bar.collapsed.pick .crumb-star:not([hidden]), .pick-row .star-btn:not([hidden]) { display: grid; }
+  /* In the folded title row the picker needs every pixel: the star is narrower there and sits close to it. */
+  .crumb-star { width: 26px; margin-left: -4px; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   .tabs { display: flex; gap: 4px; margin-top: 6px; }
   .tab { flex: 1 1 auto; white-space: nowrap; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
   .tab[aria-selected="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
   .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  .pick-row { flex: 1 1 100%; min-width: 0; display: flex; gap: 6px; align-items: stretch; }
+  .pick-row select { flex: 1 1 auto; }
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   .btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
@@ -354,7 +365,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -672,27 +683,31 @@ __HEAD_HOSTED__
   // The picker names a session by its Herdr tab or pane label alone; the session's own title
   // comes back only to tell apart two sessions of the same section with the same label, so a
   // closed or kept session never makes a running one show its title.
-  const pickerSection = s => HOSTED ? Boolean(s.reopened) : paneLive(s);
+  const pickerSection = s => picker.part(s, HOSTED ? x => !x.reopened : paneLive, starred);
   const pickerName = s => picker.label(s, data.sessions, pickerSection, sessionName);
   // A session whose pane was seen but no longer runs it says so in the picker, as the header does, so it does not read as running.
   const sessionOption = s => [sessionStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) || (!HOSTED && s.pane && !paneLive(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
   // The hosted list starts each name with the asks waiting on you (hosted.asks) and the last
   // activity, so a phone shows them before the name is cut off.
   const lastSeen = at => !at ? "" : fmtShortDay(at) === fmtShortDay(Date.now() / 1000) ? fmtTime(at) : fmtShortDay(at);
-  const optionText = s => !HOSTED ? sessionOption(s)
-    : [hosted.asks(s), lastSeen(lastTurnAt(s)), sessionOption(s)].filter(Boolean).join(" · ");
+  const optionText = s => (starred(s) ? "★ " : "") + (!HOSTED ? sessionOption(s)
+    : [hosted.asks(s), lastSeen(lastTurnAt(s)), sessionOption(s)].filter(Boolean).join(" · "));
   // The hosted copy lists every conversation it holds, grouped by home, newest first in each.
   function fillHostedSessions(select) {
     const homes = [...new Set([...(data.homes || []), ...data.sessions.map(s => s.home)])];
-    select.replaceChildren(...homes.map(home => {
-      const mine = data.sessions.map((s, i) => [s, i]).filter(([s]) => s.home === home);
+    const option = ([s, i]) => { const opt = $("option", null, optionText(s)); opt.value = i; opt.selected = i === state.session; return opt; };
+    const { starred: top, idle: rest } = picker.sections(data.sessions, () => false, starred);
+    const starredGroup = top.length ? $("optgroup") : null;
+    if (starredGroup) { starredGroup.label = `Starred · ${top.length}`; starredGroup.append(...top.map(option)); }
+    select.replaceChildren(...[starredGroup, ...homes.map(home => {
+      const mine = rest.filter(([s]) => s.home === home);
       if (!mine.length) return null;
       const group = $("optgroup"); group.label = `${homeName(home)} · ${mine.length}`;
-      group.append(...mine.map(([s, i]) => { const opt = $("option", null, optionText(s)); opt.value = i; opt.selected = i === state.session; return opt; }));
+      group.append(...mine.map(option));
       return group;
-    }).filter(Boolean));
+    })].filter(Boolean));
   }
-  // The picker lists the sessions an agent runs now. Under Closed panes come the listed sessions no pane runs (kept
+  // The picker lists the sessions a person starred first, in their own group, then the sessions an agent runs now. Under Closed panes come the listed sessions no pane runs (kept
   // after the pane closed, reopened by hand, never seen in a pane: still readable), then the sessions of panes
   // closed in the last two weeks, which open again for reading (with their documents) until closed.
   function fillSessions(select) {
@@ -701,8 +716,10 @@ __HEAD_HOSTED__
       const opt = $("option", null, sessionOption(s));
       opt.value = i; opt.selected = i === state.session; return opt;
     };
-    const { running, idle } = picker.sections(data.sessions, paneLive);
-    select.replaceChildren(...running.map(option));
+    const { starred: top, running, idle } = picker.sections(data.sessions, paneLive, starred);
+    const starredGroup = $("optgroup"); starredGroup.label = `Starred · ${top.length}`;
+    starredGroup.append(...top.map(option));
+    select.replaceChildren(...(top.length ? [starredGroup] : []), ...running.map(option));
     const offered = canLive ? (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id))) : [];
     if (!idle.length && !offered.length) return;
     const group = $("optgroup"); group.label = "Closed panes";
@@ -753,10 +770,12 @@ __HEAD_HOSTED__
     const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
     fillSessions(select);
     select.addEventListener("change", () => pickSession(select.value));
+    const pickRow = $("div", "pick-row"), star = starButton();
+    pickRow.append(select, star);
     if (!session) {  // nothing on the reading list: every pane closed, or the last one was closed by hand
       const none = $("option", null, "No conversation on the reader"); none.value = ""; none.disabled = none.selected = true;
       select.prepend(none);
-      row.append(select);
+      row.append(select);  // nothing to star
       const note = $("div", "follow-note"); note.id = "follow-note";
       const offered = select.options.length > 1;
       controls.append(row, $("div", "summary", offered ? "Open one again under Closed panes, or add one with reader.py add." : "Add one with reader.py add."), note);
@@ -784,7 +803,8 @@ __HEAD_HOSTED__
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
-    row.append(select, prev, next, needs, wakes, pinned, shut, follow, pinHost);
+    row.append(pickRow, prev, next, needs, wakes, pinned, shut, follow, pinHost);
+    paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.source === "peer") ? count(e => e.source === "peer") + " from other sessions · " : ""}${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
     const pane = session && session.pane;
@@ -898,6 +918,41 @@ __HEAD_HOSTED__
     setAddress();
     whenReady(() => { render(); show(); });
   }
+
+  // ---------------------------------------------------------------- stars: the picker's favourite sessions
+  // A star names a conversation (stars.js keeps them, in the same two places as pins), so it holds across rebuilds, Sync
+  // and a /clear that moves the conversation under a new session id. Starred sessions head the picker.
+  const starred = s => picker.starOf(s, stars.all()) !== null;
+  const STAR_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+  function starButton() {
+    const btn = $("button", "star-btn"); btn.type = "button"; btn.setAttribute("aria-label", "Star this session"); btn.innerHTML = STAR_ICON;
+    btn.addEventListener("click", toggleStar);
+    return btn;
+  }
+  function paintStar(btn) {
+    const session = state.view === "reader" && data.sessions[state.session];
+    btn.hidden = !session;
+    if (!session) return;
+    const on = starred(session);
+    btn.setAttribute("aria-pressed", String(on));
+    btn.title = on ? "Unstar this session: it leaves the Starred group at the top of the picker" : "Star this session: keep it at the top of the picker";
+  }
+  async function toggleStar() {
+    const session = data.sessions[state.session];
+    if (!session) return;
+    try { await stars.toggle(picker.starOf(session, stars.all()) || session.id); }
+    catch (e) { link.listing = { text: `Could not change the star: ${e.message}` }; renderLive(); }
+  }
+  // A star changed here or in another tab: both pickers and both buttons draw again, and the names pick up the star.
+  function paintStars() {
+    const controls = document.querySelector("select[name=session]");
+    if (controls && data.sessions[state.session]) fillSessions(controls);
+    fillSessions(document.getElementById("crumb-session"));
+    document.querySelectorAll(".star-btn").forEach(paintStar);
+    labelSessions();
+  }
+  stars.onChange(paintStars);
+  document.getElementById("crumb-star").addEventListener("click", toggleStar);
 
   // ---------------------------------------------------------------- pins: a button on each message and reply, and their list
   // A pin names a message by its turn's id (ex.uid, the session log's own record id) and its part, so it holds
@@ -2226,6 +2281,7 @@ __HEAD_HOSTED__
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
     link.syncedAt = Date.now() / 1000; link.syncFail = null;
     pins.refresh(s.stamps && s.stamps.pins);
+    stars.refresh(s.stamps && s.stamps.stars);
   }
   // The server (or the hosted copy's folder) stopped answering: after a few seconds the page says so, with since when.
   const syncFailing = () => Boolean(link.syncFail) && Date.now() - link.syncFail.since > 8000;
@@ -2468,6 +2524,7 @@ __HEAD_HOSTED__
     quick.setAttribute("aria-pressed", String(state.follow));
     quick.title = "Follow Herdr: show the session of the pane Herdr has focused (the same switch as Follow Herdr in the controls)";
     if (pick && folded) fillSessions(document.getElementById("crumb-session"));
+    paintStar(document.getElementById("crumb-star"));
     const crumb = document.getElementById("crumb");
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
       : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
@@ -2550,6 +2607,7 @@ __HEAD_HOSTED__
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
   pins.load().then(paintPins);
+  stars.load().then(paintStars);
   if (!HOSTED) openReading(chooseOpening());
   else {
     // The shell holds no transcript: a sealed copy is opened first, then the list comes from

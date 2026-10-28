@@ -44,7 +44,8 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   for (const id of [A, B, C]) fs.utimesSync(path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), old, old);
   // The pins file lives outside the repo; a test gets one inside its own temporary folder, never the owner's.
   const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
-  return { root, outDir, projectsDir, claudeSessionsDir, pinsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  const starsFile = path.join(base, 'config', 'pmos-transcript-reader', 'stars.json');
+  return { root, outDir, projectsDir, claudeSessionsDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -111,7 +112,7 @@ async function start({ env = {}, outParts } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, now: () => clock, pause: async () => {} });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {} });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -843,6 +844,53 @@ test('pins: bad input and foreign pages are refused, and no message text is ever
     assert.equal(fs.existsSync(t.tree.pinsFile), false, 'nothing was written');
     assert.equal((await t.post('pins', { op: 'pin', key, conv: A, at: 1 })).status, 200);
     assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(t.tree.pinsFile, 'utf8')).pins[0]).sort(), ['at', 'conv', 'key', 'pinned']);
+  } finally { await t.close(); }
+});
+
+test('stars: written beside the pins in their own owner-only file, one change at a time, and the state carries the revision', async () => {
+  const t = await start();
+  try {
+    assert.deepEqual((await t.get('stars')).json, { status: 'ok', rev: 0, stars: [] });
+    assert.equal((await t.state()).json.stamps.stars, 0);
+    const starred = await t.post('stars', { op: 'star', conv: A });
+    assert.equal(starred.status, 200, starred.raw);
+    assert.equal(starred.json.rev, 1);
+    assert.deepEqual(starred.json.stars.map(({ conv }) => conv), [A]);
+    assert.equal((await t.post('stars', { op: 'star', conv: A })).json.rev, 1, 'starring again changes nothing');
+    assert.equal((await t.state()).json.stamps.stars, 1);
+    assert.equal((await t.state()).json.stamps.pins, 0, 'a star is not a pin');
+    assert.deepEqual((await t.get('stars')).json.stars.map((star) => star.conv), [A]);
+    const mode = (file) => fs.statSync(file).mode & 0o777;
+    assert.equal(mode(t.tree.starsFile), 0o600);
+    assert.equal(mode(path.dirname(t.tree.starsFile)), 0o700);
+    assert.ok(!t.tree.starsFile.startsWith(t.tree.outDir), 'not under out/, which a fresh copy of the repo starts without');
+    assert.equal(fs.existsSync(t.tree.pinsFile), false, 'the pins file is left alone');
+    assert.equal((await t.post('stars', { op: 'unstar', conv: A })).json.rev, 2);
+    assert.deepEqual((await t.get('stars')).json.stars, []);
+    assert.equal(t.herdr.agentCalls().length, 0);
+    assert.equal(t.herdr.readerRuns().length, 0, 'a star rebuilds nothing');
+  } finally { await t.close(); }
+});
+
+test('stars: bad input and foreign pages are refused, and only the conversation and the time are stored', async () => {
+  const t = await start();
+  try {
+    const refused = [
+      [{ op: 'star' }, 400],
+      [{ op: 'star', conv: '../x' }, 400],
+      [{ op: 'star', conv: A, label: 'a session name' }, 400],
+      [{ op: 'unstar', conv: A, at: 1 }, 400],
+      [{ op: 'pin', conv: A }, 400],
+      [{ op: 'toggle', conv: A }, 400],
+      [{}, 400],
+    ];
+    for (const [body, status] of refused) assert.equal((await t.post('stars', body)).status, status, JSON.stringify(body));
+    assert.equal((await t.post('stars', { op: 'star', conv: A }, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await t.post('stars', { op: 'star', conv: A }, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.equal((await t.get('stars', { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.equal(fs.existsSync(t.tree.starsFile), false, 'nothing was written');
+    assert.equal((await t.post('stars', { op: 'star', conv: A })).status, 200);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(t.tree.starsFile, 'utf8')).stars[0]).sort(), ['conv', 'starred']);
   } finally { await t.close(); }
 });
 
