@@ -108,8 +108,8 @@ You need a ShopBack Replit workspace, and an OpenID Connect client for the app. 
 
 Things to know:
 
-- `push.py` seals into its own folder (`out/bucket-hosted/`), apart from the local review bucket (`out/bucket/`). `sync.py` remembers what it sealed for one folder at a time, so running `sync.py --dry-run` into another folder between two pushes makes the next push seal and send everything again.
-- Changing the passphrase (`sync.py --dry-run FOLDER --new-passphrase`, with the folder `push.py` uses) seals everything again under it, and the next push sends the lot. Devices that remember the old key must open the page again and enter the new passphrase.
+- `push.py` seals into its own folder (`out/bucket-hosted/`), apart from the local review bucket (`out/bucket/`). `sync.py` remembers what it sealed for one folder at a time, so running `sync.py --seal` into another folder between two pushes makes the next push seal and send everything again.
+- Changing the passphrase (`sync.py --seal FOLDER --new-passphrase`, with the folder `push.py` uses) seals everything again under it, and the next push sends the lot. Devices that remember the old key must open the page again and enter the new passphrase.
 - The shell pages are the ones `sync.py` puts in the sealed folder, but they reach the app only by your hand (step 7). `push.py` says so after a run whenever the folder's pages differ from the ones you last copied out. A page not yet updated keeps working against the sealed objects it can read; a new page needs the new copy.
 - If the laptop seals with newer page code than the shell pages you deployed, an open page reloads once, and when the reloaded page is still older it says "The app's page is older than the laptop's: deploy the new shell pages" in its as-of line instead of reloading every minute. Copy the pages out again (step 7).
 - If the app's `shell/` folder is empty, the owner sees a note that nothing is deployed instead of the page.

@@ -64,7 +64,7 @@ The offline copy (`sync.py`) follows the same switch (one reader of the variable
 
 ### Which conversations the offline copy holds: `--panes`
 
-By default the copy holds every conversation in scope, closed Herdr panes included (`--panes all`, as before). `--panes open` narrows it to conversations running in a live Herdr pane plus those you reopened (the page's Reopen, `reopened.txt`). It works with `--build-only`, `--dry-run`, `--launch-agent` and `--preview`:
+By default the copy holds every conversation in scope, closed Herdr panes included (`--panes all`, as before). `--panes open` narrows it to conversations running in a live Herdr pane plus those you reopened (the page's Reopen, `reopened.txt`). It works with `--build-only`, `--seal`, `--launch-agent` and `--preview`:
 
 ```bash
 python3 setup/transcript-reader/sync.py --preview --panes open              # what it would include and leave out; nothing is written
@@ -73,7 +73,7 @@ python3 setup/transcript-reader/sync.py --launch-agent --panes open         # th
 ```
 
 - **Default is `all`.** The copy's job is reading history with the Mac shut, and most of that history is in closed panes (on one fleet: 30 open or reopened conversations of 594). `open` is for a small copy of what is running now.
-- **Narrowing prunes.** A conversation the scope drops is not parsed, its object, its documents (unless a kept conversation names them) and its answer sheet are removed from `out/hosted/` by the next build, and from the sealed bucket by the next `--dry-run`'s existing prune. Widening brings them back at the next build.
+- **Narrowing prunes.** A conversation the scope drops is not parsed, its object, its documents (unless a kept conversation names them) and its answer sheet are removed from `out/hosted/` by the next build, and from the sealed bucket by the next `--seal`'s existing prune. Widening brings them back at the next build.
 - **Your own `~/workspace` sessions have no Herdr pane,** so `open` leaves them out unless you reopened them.
 - **With no live pane at all** (Herdr not running) `open` would leave nothing and the prune would empty the copy, so the run stops with a message and changes nothing.
 - **`--preview`** builds, seals and writes nothing and asks for no passphrase. It prints counts (live pane, reopened, closed; how many fall in the sealed copy's 90 days), an estimate of the conversations' size (scaled from what a build here already wrote, else a rough 2% of the logs' size; documents, answer sheets, fleet weeks and the page are extra), how many conversations an earlier build wrote that this scope would remove, then a table of the included conversations only (Herdr label, home, pane open / reopened / closed, last activity) and the count of those left out. The label is the one Herdr shows: the pane's label, else its tab's label, remembered in `pane-labels.json` for a pane that has closed; the terminal title or an 8-character id stands in only when no label is known. `--show-left-out` also lists the left-out conversations. It takes the same options as a build (`--panes`, `--reading-list`, `--session`, `--no-workspace`, `--main-home`).
@@ -107,7 +107,7 @@ The phone can keep the sealed copy (below, "The sealed copy") and read it with t
 
 ### Your steps, in order
 
-1. **Keep a sealed copy.** Once: `python3 setup/transcript-reader/sync.py --dry-run` (it asks for a passphrase; `--launch-agent` prints a LaunchAgent that keeps the copy fresh while the Mac is awake, see "The sealed copy"). The passphrase is the phone's key; the passcode is the sign-in.
+1. **Keep a sealed copy.** Once: `python3 setup/transcript-reader/sync.py --seal` (it asks for a passphrase; `--launch-agent` prints a LaunchAgent that keeps the copy fresh while the Mac is awake, see "The sealed copy"). The passphrase is the phone's key; the passcode is the sign-in.
 2. **Turn on Tailscale HTTPS certificates** for the tailnet: Tailscale admin console, DNS page, HTTPS Certificates. It is off until you do this.
 3. **Restart the reader with the new switch** (a passcode must be set, `serve.sh passcode`):
 
@@ -124,7 +124,7 @@ The port is 8443 because macOS lets only root listen below 1024, so the address 
 
 ### What the copy holds, and how fresh it is
 
-- **What is in it.** The conversations active in the last 90 days, the markdown and HTML files they name, the fleet timeline weeks (when the timeline is switched on), and the answer sheet's questionnaires: everything `sync.py --dry-run` seals (the sealed copy section). By default that is every fleet session (the main home, the second mates and their workers) and the owner's own sessions, the Claude Code sessions whose working directory is under `~/workspace` (their own heading in the picker, "Your own sessions"; `--workspace DIR` or `--no-workspace` change it). Everything is redacted before it is sealed.
+- **What is in it.** The conversations active in the last 90 days, the markdown and HTML files they name, the fleet timeline weeks (when the timeline is switched on), and the answer sheet's questionnaires: everything `sync.py --seal` seals (the sealed copy section). By default that is every fleet session (the main home, the second mates and their workers) and the owner's own sessions, the Claude Code sessions whose working directory is under `~/workspace` (their own heading in the picker, "Your own sessions"; `--workspace DIR` or `--no-workspace` change it). Everything is redacted before it is sealed.
 - **Freshness.** The phone's copy is as new as the last time the phone could reach this Mac, and that is as new as the Mac's last sync (every minute with the LaunchAgent while the Mac is awake; a sleeping Mac builds nothing). With the Mac away the page says `Offline · copy from 14:02 (3 h old)` and Herdr states are as of then. Replies to turns after that are not on the phone until the Mac is back. The copy keeps 90 days, so what the Mac drops from them leaves the phone at its next download.
 - **What the phone holds.** Sealed bytes and the key (not extractable), never the passphrase and never any text in the clear. The shell page, a manifest and an icon are cached so the Home Screen app opens. **Forget this device** clears the key, everything stored, the cache, the worker and any message still held, and asks the passphrase again.
 - **Not offline.** Search, pins, the Fleet timeline (when switched on) and documents all work from the stored copy. Follow, Sync from Herdr, reopening a closed pane and the local page's live state need the Mac (and the local reader page itself is not stored).
@@ -191,22 +191,22 @@ The shell is the same page as the local reader, loading `index.json` and then on
 The hosted page cannot reach Herdr, so Send is a request the laptop carries out when it is awake (plan section 8). All of it is local: no network, and every test and lab run uses a fake Herdr.
 
 1. **The page queues it.** Send writes a request, `{id, session_id, text, at}`, through the reader's own server (`POST /api/transcript-reader/queue`, behind the same guard and token as Send) into `q/<uuid>.json` in the copy's folder. A sealed copy's page gzips and seals the request itself, under the key it holds and with its own path bound in, so the server stores `q/<uuid>.json.enc` bytes it cannot read. Nothing is sent to Herdr, and the bar says "Queued for <pane> at 14:05. The laptop sends it when it is awake." The faded message in the conversation reads "Queued … waiting for the laptop to send it".
-2. **The sync sends it.** Every `sync.py` run (`--build-only`, which drains `out/hosted/`, or `--dry-run`, which drains that and the bucket) first runs `drain.js` on each folder that has a request waiting. For each one it asks the local reader's own send (`api.js` `sendPrompt`, the same code as the local Send) whether the session is a conversation of this copy, whether one live Herdr pane runs it, whether that pane's agent is Claude running that very session in the foreground (not suspended to a shell) and not at a permission prompt or question; then it empties the pane's input box and sends the text as one message. Nothing starts when no request waits.
+2. **The sync sends it.** Every `sync.py` run (`--build-only`, which drains `out/hosted/`, or `--seal`, which drains that and the bucket) first runs `drain.js` on each folder that has a request waiting. For each one it asks the local reader's own send (`api.js` `sendPrompt`, the same code as the local Send) whether the session is a conversation of this copy, whether one live Herdr pane runs it, whether that pane's agent is Claude running that very session in the foreground (not suspended to a shell) and not at a permission prompt or question; then it empties the pane's input box and sends the text as one message. Nothing starts when no request waits.
 3. **A receipt comes back.** `r/<uuid>.json` (sealed: `.json.enc`) says `sent` with the pane's name, or `refused` with the reason in the same words the local Send uses. The page asks for it every 4 seconds while one is waiting, and shows "Sent by the laptop at 14:06 · waiting for <pane>" or "Not sent · <reason>" with Dismiss. A reload keeps the queued messages of that tab.
 
 Rules the drain keeps: a refusal is final (nothing retries by itself; you send again); a request whose own time, sealed inside it, is over 12 hours old is refused as expired, and one dated more than 10 minutes ahead (a wrong clock on the device) is refused; a request is never sent twice (a "sending" receipt is written first, a run that stopped midway turns it into "refused: interrupted", and the ids handled are also kept on the laptop only, in `out/`, for as long as a copy could still be fresh); a sealed bucket takes only requests sealed under its key and a plain copy only plain ones, as the caller says and never as the folder looks; receipts older than a week go; at most 50 requests wait. Wipe takes `q/` and `r/` with the rest.
 
 ```bash
 python3 setup/transcript-reader/sync.py --build-only      # drains out/hosted/q
-HOSTED_READER_PASSPHRASE=... python3 setup/transcript-reader/sync.py --dry-run   # drains it and out/bucket/q
+HOSTED_READER_PASSPHRASE=... python3 setup/transcript-reader/sync.py --seal   # drains it and out/bucket/q
 HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js out/bucket --sealed   # or just the drain
 ```
 
 `HOSTED_READER_HERDR` names the Herdr binary (default `herdr` on PATH); the printed LaunchAgent carries the folders of `node`, `python3` and `herdr`. To try it without touching a real pane, point that variable at a script that records its arguments (the tests do).
 
-### The sealed copy (a dry run of the sync)
+### The sealed copy (`--seal`)
 
-`--dry-run` is the sync agent of ship 2 with its one target, a local folder (`out/bucket/` by default) laid out as the bucket would be. Each run builds as above, then takes the conversations active in the last 90 days, the documents they name and the fleet weeks of the last 90 days, and:
+`--seal` is the sync agent of ship 2 with its one target, a local folder (`out/bucket/` by default) laid out as the bucket would be. Each run builds as above, then takes the conversations active in the last 90 days, the documents they name and the fleet weeks of the last 90 days, and:
 
 - **Redacts.** Every text in every object goes through `redact.py`: AWS keys, `sk-` API keys, GitHub, GitLab and Slack tokens, JWTs, bearer tokens, private keys (also one cut off before its END line), passwords and secrets in URLs, any secret given a value (`PASSWORD=...`, `db_password = ...`, `"token": "..."`, `old token=... is dead`; a name like `TOKEN_HEADER`, a `$reference` or a placeholder stays), and 64-hex tokens become `[redacted:<kind>]`. It looks for secrets, not personal data. The counts, never the text, go to `out/hosted/redactions.json`. The laptop's own copy keeps the original.
 - **Encrypts.** Each object is gzipped and sealed with AES-256-GCM under a key derived from your passphrase (PBKDF2-SHA256, 600,000 rounds; the salt is in `k/params.json`, which holds no secret), its own path bound in, so the host could neither read one nor pass one off as another. The page opens them in the browser.
@@ -214,9 +214,9 @@ HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/drain.js out/bucket --
 
 ```bash
 export HOSTED_READER_PASSPHRASE='YOUR_PASSPHRASE_HERE'   # or leave it unset to be asked in the terminal
-python3 setup/transcript-reader/sync.py --dry-run
-python3 setup/transcript-reader/sync.py --wipe                  # empty out/bucket/ of what the dry run wrote
-python3 setup/transcript-reader/sync.py --launch-agent          # print a LaunchAgent that runs the dry run every minute
+python3 setup/transcript-reader/sync.py --seal
+python3 setup/transcript-reader/sync.py --wipe                  # empty out/bucket/ of what --seal wrote
+python3 setup/transcript-reader/sync.py --launch-agent          # print a LaunchAgent that runs --seal every minute
 ```
 
 The passphrase is read from the environment or the terminal only, and never written or printed. A passphrase the bucket does not know stops the run; `--new-passphrase` seals everything again under it (losing the passphrase loses nothing). The LaunchAgent is only printed, to install yourself if you want it: it reads the passphrase from your login keychain at each run (`security add-generic-password -s pmos-hosted-reader -a "$USER" -w` stores it, asking for it), and it runs while the Mac is awake.

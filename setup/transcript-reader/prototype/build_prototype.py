@@ -880,7 +880,7 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     """
     def call(*argv):
         try:
-            # The sync's passphrase (sync.py --dry-run) is for sealing only; a Herdr that starts its server from
+            # The sync's passphrase (sync.py --seal) is for sealing only; a Herdr that starts its server from
             # this call must not hand it to every pane's shell.
             env = {name: value for name, value in os.environ.items() if name != "HOSTED_READER_PASSPHRASE"}
             done = subprocess.run(["herdr", *argv], capture_output=True, text=True, timeout=10, env=env)

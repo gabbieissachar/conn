@@ -5,7 +5,7 @@
 
 Under <folder> it makes a home folder (HOME for everything it runs) holding made-up Claude Code session logs: a main
 Firstmate home's conversation that names a markdown file and an HTML sketch (with a stylesheet, a script and a picture beside
-it), and one of the owner's own sessions under ~/workspace; then runs sync.py --dry-run against it with a fake Herdr. No real
+it), and one of the owner's own sessions under ~/workspace; then runs sync.py --seal against it with a fake Herdr. No real
 session log, record or passphrase is read: HOME points at the folder, and the passphrase is the argument.
 
 Prints one JSON line: the ids and paths the driver needs.
@@ -89,7 +89,7 @@ def main(folder: Path, passphrase: str) -> None:
     herdr.write_text(f"#!/bin/sh\nexec node {HERE / 'fake-herdr.js'} \"$@\"\n", encoding="utf-8")
     herdr.chmod(0o755)
     out = folder / "out"
-    done = subprocess.run([sys.executable, str(READER / "sync.py"), "--dry-run", str(out / "bucket"), "--out", str(out / "hosted"), "--main-home", str(main_home), "--workspace", str(home / "workspace")],
+    done = subprocess.run([sys.executable, str(READER / "sync.py"), "--seal", str(out / "bucket"), "--out", str(out / "hosted"), "--main-home", str(main_home), "--workspace", str(home / "workspace")],
                           capture_output=True, text=True, env=env, cwd=str(READER.parent.parent))
     if done.returncode:
         sys.stderr.write(done.stdout + done.stderr)

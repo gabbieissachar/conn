@@ -2,24 +2,24 @@
 """Build the hosted copy of the transcript reader, and seal it into a local bucket folder.
 
 Ships 1 and 2 of the hosted reader plan, on this laptop only. Nothing is hosted and nothing
-is uploaded anywhere: the sync agent's one target is a local folder (a dry run).
+is uploaded anywhere: the sync agent's one target is a local folder (the sealed copy).
 
 Usage (from the repo root):
   python3 setup/transcript-reader/sync.py --build-only                 every fleet session (see Scope)
   python3 setup/transcript-reader/sync.py --build-only --reading-list  the local reader's list, to set the two pages side by side
   python3 setup/transcript-reader/sync.py --build-only --session ID    exactly these sessions (repeatable; id, 8-char prefix or log path)
-  python3 setup/transcript-reader/sync.py --dry-run [FOLDER]           build, then redact, encrypt and write the bucket (default out/bucket/);
+  python3 setup/transcript-reader/sync.py --seal [FOLDER]              build, then redact, encrypt and write the bucket (default out/bucket/);
                                                                        --new-passphrase seals it all again under another passphrase
-  python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote (receipts and waiting sends too)
-  python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs the dry run every minute
+  python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what --seal wrote (receipts and waiting sends too)
+  python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs --seal every minute
   python3 setup/transcript-reader/sync.py --preview                    list what a build would include, named by Herdr label, and count what it leaves out;
                                                                        writes nothing, needs no passphrase (--show-left-out lists those too)
   Scope: --panes all (default: every conversation in scope, closed panes too) or --panes open (only those in a live Herdr pane,
   plus those you reopened; a conversation dropped by narrowing is pruned from the build and the bucket); with --build-only,
-  --dry-run, --launch-agent (the printed plist carries it) and --preview.
+  --seal, --launch-agent (the printed plist carries it) and --preview.
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
 
-The dry run takes the passphrase from HOSTED_READER_PASSPHRASE, or asks for it in a terminal;
+--seal takes the passphrase from HOSTED_READER_PASSPHRASE, or asks for it in a terminal;
 it is never written or printed. Each run builds incrementally (below), then, for the
 conversations active in the last 90 days, the documents they name and the fleet weeks of the
 last 90 days: redacts every text (redact.py; the counts go to out/hosted/redactions.json, never
@@ -77,7 +77,7 @@ up the local page's refresh.
 Send (plan section 8): the page writes a request to q/<uuid>.json (plain copy) or q/<uuid>.json.enc
 (sealed bucket), and every run, before it builds, sends what waits there (drain.js: the local
 reader's own send, with all its pane checks) and writes a receipt to r/<uuid>.json(.enc) for the page.
---build-only drains out/hosted/; --dry-run drains it and the bucket. Herdr is the one on PATH,
+--build-only drains out/hosted/; --seal drains it and the bucket. Herdr is the one on PATH,
 or HOSTED_READER_HERDR's. Nothing is started when q/ is empty.
 
 The reader's own server serves it beside the local page, at
@@ -612,9 +612,9 @@ class Build:
         return removed
 
 
-# ------------------------------------------------------- the dry run (ship 2)
+# ------------------------------------------------------- the sealed copy (ship 2)
 
-class DryRun:
+class Seal:
     """The sync agent, writing to a local bucket folder only: redact, seal, prune, heartbeat.
 
     What it sealed is recorded in out/hosted/upload.json (each object's build stamp, its
@@ -658,7 +658,7 @@ class DryRun:
             or time.time() - (self.state.get("index_at") or 0) >= HEARTBEAT or not (self.target / "index.json.enc").is_file()
         if not heartbeat:
             removed = self.prune(set(objects))
-            print(f"Dry run into {self.target}: nothing changed, the index was sealed under {HEARTBEAT // 60} minutes ago; removed {removed}")
+            print(f"Sealed copy in {self.target}: nothing changed, the index was sealed under {HEARTBEAT // 60} minutes ago; removed {removed}")
             return 0
         child = subprocess.Popen(["node", str(HERE / "upload.js"), str(self.target), *(["--new-key"] if self.new_key else [])],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, PASSPHRASE_ENV: self.passphrase})
@@ -699,7 +699,7 @@ class DryRun:
                       "index_redacted": index_counts}
         replace(self.state_file, encode(self.state))
         self.log_redactions()
-        print(f"Dry run into {self.target}: sealed {len(todo)} objects{' and the index' if heartbeat else ''}, removed {removed}; "
+        print(f"Sealed copy in {self.target}: sealed {len(todo)} objects{' and the index' if heartbeat else ''}, removed {removed}; "
               f"{len(objects)} objects for {len(bucket_index['conversations'])} conversations of the last {RETENTION_DAYS} days"
               f"{'; a new passphrase or bucket, so every object was sealed again' if ready['rekeyed'] else ''}")
         return 0
@@ -750,7 +750,7 @@ def drain(folder: Path, sealed: bool, state: Path, secret: str = "") -> None:
 
 
 def wipe(target: Path, out: Path) -> int:
-    """Empty <target> of what the dry run writes there (and forget what was sealed); nothing else is touched."""
+    """Empty <target> of what --seal writes there (and forget what was sealed); nothing else is touched."""
     removed = 0
     for pattern in ("index.html", "sheet.html", *STATIC_FILES, "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
                     "r/*.json.enc", "q/*.json.enc", "q/.drain.lock", "*/.*.partial", ".*.partial"):
@@ -782,10 +782,10 @@ def passphrase(target: Path) -> str:
 
 
 def launch_agent(target: Path, panes: str = "all") -> str:
-    """A LaunchAgent (plan 4.2) that runs the dry run every minute while the Mac is awake. It is only
+    """A LaunchAgent (plan 4.2) that runs --seal every minute while the Mac is awake. It is only
     printed: install it yourself. The passphrase comes from the login keychain at each run."""
     command = (f'{PASSPHRASE_ENV}="$(/usr/bin/security find-generic-password -w -s {KEYCHAIN_SERVICE})" '
-               f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --dry-run "{target.resolve()}"'
+               f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --seal "{target.resolve()}"'
                + (" --panes open" if panes == "open" else ""))
     log = HERE / "out" / "sync-agent.log"
     from xml.sax.saxutils import escape
@@ -908,14 +908,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--build-only", action="store_true", help="build the hosted copy in the output folder")
-    mode.add_argument("--dry-run", nargs="?", const=str(BUCKET), metavar="FOLDER", help="build, then redact, seal and write the local bucket (default out/bucket/)")
-    mode.add_argument("--wipe", nargs="?", const=str(BUCKET), metavar="FOLDER", help="empty the local bucket of what the dry run wrote")
-    mode.add_argument("--launch-agent", nargs="?", const=str(BUCKET), metavar="FOLDER", help="print a LaunchAgent that runs the dry run every minute")
+    mode.add_argument("--seal", nargs="?", const=str(BUCKET), metavar="FOLDER", help="build, then redact, seal and write the local bucket (default out/bucket/)")
+    mode.add_argument("--wipe", nargs="?", const=str(BUCKET), metavar="FOLDER", help="empty the local bucket of what --seal wrote")
+    mode.add_argument("--launch-agent", nargs="?", const=str(BUCKET), metavar="FOLDER", help="print a LaunchAgent that runs --seal every minute")
     mode.add_argument("--preview", action="store_true", help="list the conversations the options would include and leave out, with counts and a size estimate; builds, seals and writes nothing")
     parser.add_argument("--panes", choices=("all", "open"), default="all",
                         help="which conversations: all (default; every one in scope, closed panes too) or open (only those in a live Herdr pane, plus those you reopened)")
     parser.add_argument("--show-left-out", action="store_true", help="with --preview: also list the conversations left out (by default only their count is printed)")
-    parser.add_argument("--new-passphrase", action="store_true", help="with --dry-run: seal everything again under a passphrase the bucket does not know yet")
+    parser.add_argument("--new-passphrase", action="store_true", help="with --seal: seal everything again under a passphrase the bucket does not know yet")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--reading-list", action="store_true", help="build the local reader's list (out/sessions.txt)")
     scope.add_argument("--session", action="append", help="session id, 8-char prefix or log path (repeatable)")
@@ -928,16 +928,16 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.no_workspace:
         args.workspace = ""
-    if not (args.build_only or args.dry_run or args.wipe or args.launch_agent or args.preview):
-        parser.error("say what to do: --build-only, --dry-run, --wipe, --launch-agent or --preview (nothing is ever uploaded: ship 3 is not built)")
+    if not (args.build_only or args.seal or args.wipe or args.launch_agent or args.preview):
+        parser.error("say what to do: --build-only, --seal, --wipe, --launch-agent or --preview (nothing is ever uploaded: ship 3 is not built)")
     out = Path(args.out).expanduser()
     if args.preview:
         return preview(args)
     if args.launch_agent:
         print(launch_agent(Path(args.launch_agent).expanduser(), args.panes), end="")
         return 0
-    target = Path(args.dry_run or args.wipe or BUCKET).expanduser()
-    secret = passphrase(target) if args.dry_run else ""
+    target = Path(args.seal or args.wipe or BUCKET).expanduser()
+    secret = passphrase(target) if args.seal else ""
     builder.private_folder(out)
     with builder.private_open(out / ".lock", truncate=False) as lock:
         try:
@@ -954,13 +954,13 @@ def main(argv: list[str]) -> int:
         if args.wipe:
             return wipe(target, out)
         drain(out, False, out.parent)
-        if args.dry_run:
+        if args.seal:
             drain(target, True, out.parent, secret)
         code = Build(args).run()
-        if args.dry_run and not code:
-            code = DryRun(out, target, secret, args.new_passphrase).run()
+        if args.seal and not code:
+            code = Seal(out, target, secret, args.new_passphrase).run()
     print(f"Hosted shell: {shell_link(out)}")
-    if args.dry_run:
+    if args.seal:
         print(f"Sealed copy:  {shell_link(target, BUCKET)}")
     return code
 

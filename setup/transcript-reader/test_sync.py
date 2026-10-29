@@ -1,10 +1,10 @@
 """Tests for sync.py: --build-only, the hosted copy's incremental build (its objects, its
 manifest: what a run builds again and what it leaves, and that the objects hold what the
-local page's payload holds), and --dry-run, the sync agent sealing a local bucket folder.
+local page's payload holds), and --seal, the sync agent sealing a local bucket folder.
 
 Run from the repo root: python3 -m unittest setup/transcript-reader/test_sync.py
 Fixtures are synthetic logs and fleet records in a temporary folder; Herdr is faked. The
-dry run needs Node (upload.js); the passphrase is made up.
+sealing needs Node (upload.js); the passphrase is made up.
 """
 
 import argparse
@@ -354,7 +354,7 @@ class OfflineFleetTimelineSwitchTest(unittest.TestCase):
         lab = Lab(self)
         self.build(lab, None)
         index, manifest = lab.index(), lab.manifest()
-        bucket_index, objects = sync.DryRun(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
+        bucket_index, objects = sync.Seal(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
         self.assertEqual(bucket_index["weeks"], {})
         self.assertFalse([rel for rel in objects if rel.startswith("f/")])
         self.assertIs(bucket_index["fleet_timeline"], False)
@@ -418,7 +418,7 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual([rel for rel in self.objects(lab) if rel[0] in "sda"], [f"a/{M}.json", f"s/{M}.json"], "A's conversation and its document are gone")
         index, manifest = lab.index(), lab.manifest()
         self.assertEqual((sorted(manifest["conversations"]), index["documents"]), ([M], {}))
-        bucket_index, objects = sync.DryRun(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
+        bucket_index, objects = sync.Seal(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
         self.assertEqual({rel for rel in objects if rel[0] in "sda"}, {f"a/{M}.json", f"s/{M}.json"})
         self.assertEqual([entry["id"] for entry in bucket_index["conversations"]], [M])
         self.assertEqual(lab.build("--panes", "all"), 0)
@@ -434,9 +434,9 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual({rel: (lab.out / rel).read_bytes() for rel in self.objects(lab)}, before)
 
     def test_the_printed_launch_agent_carries_the_scope(self):
-        self.assertIn("--dry-run", sync.launch_agent(Path("/tmp/x")))
+        self.assertIn("--seal", sync.launch_agent(Path("/tmp/x")))
         self.assertNotIn("--panes", sync.launch_agent(Path("/tmp/x")))
-        self.assertIn(f'--dry-run "{Path("/tmp/x").resolve()}" --panes open', sync.launch_agent(Path("/tmp/x"), "open"))
+        self.assertIn(f'--seal "{Path("/tmp/x").resolve()}" --panes open', sync.launch_agent(Path("/tmp/x"), "open"))
         with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
             sync.main(["--launch-agent", "/tmp/x", "--panes", "open"])
         self.assertIn("--panes open", printed.getvalue())
@@ -671,7 +671,7 @@ class PrivateTest(unittest.TestCase):
         before = os.umask(0o022)
         self.addCleanup(os.umask, before)
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
-            self.assertEqual(lab.build_only_args("--dry-run", str(target)), 0)
+            self.assertEqual(lab.build_only_args("--seal", str(target)), 0)
         seen = 0
         for top in (lab.out, target):
             for path in [top, *top.rglob("*")]:
@@ -870,7 +870,7 @@ class HtmlDocumentsTest(unittest.TestCase):
         (self.lab.main / "app.js").write_text(f"var key = '{secret}'; document.title = 'sketch ran';", encoding="utf-8")
         target = self.lab.root / "out" / "bucket"
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
-            self.assertEqual(self.lab.build_only_args("--dry-run", str(target)), 0)
+            self.assertEqual(self.lab.build_only_args("--seal", str(target)), 0)
             meta, _ = self.doc()
             done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), meta["object"]], capture_output=True, text=True, env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
         sealed = json.loads(done.stdout)[meta["object"]]
@@ -886,7 +886,7 @@ class HtmlDocumentsTest(unittest.TestCase):
         target = self.lab.root / "out" / "bucket"
         started = time.time()
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
-            self.assertEqual(self.lab.build_only_args("--dry-run", str(target)), 0)
+            self.assertEqual(self.lab.build_only_args("--seal", str(target)), 0)
         self.assertLess(time.time() - started, 60)
         meta, _ = self.doc()
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
@@ -957,7 +957,7 @@ class WorkspaceTest(unittest.TestCase):
     def test_everything_from_the_workspace_is_redacted_before_it_is_sealed(self):
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
             target = self.lab.root / "out" / "bucket"
-            self.assertEqual(self.lab.build_only_args("--dry-run", str(target), "--workspace", str(self.workspace)), 0)
+            self.assertEqual(self.lab.build_only_args("--seal", str(target), "--workspace", str(self.workspace)), 0)
             done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), f"s/{S}.json", "index.json"], capture_output=True, text=True,
                                   env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
         sealed = json.loads(done.stdout)
@@ -979,7 +979,7 @@ class StaticFilesTest(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def test_the_hosted_copy_has_the_worker_the_manifest_and_two_icons_and_a_sealed_run_copies_them(self):
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         for folder in (self.lab.out, self.target):
             self.assertEqual((folder / "sw.js").read_bytes(), (Path(sync.__file__).parent / "prototype" / "sw.js").read_bytes())
             manifest = json.loads((folder / "manifest.webmanifest").read_text(encoding="utf-8"))
@@ -991,9 +991,9 @@ class StaticFilesTest(unittest.TestCase):
             self.assertEqual({icon["src"] for icon in manifest["icons"]}, {"icon-180.png", "icon-512.png"})
 
     def test_a_changed_worker_reaches_the_bucket_at_once_and_wipe_takes_these_files_too(self):
-        self.lab.build_only_args("--dry-run", str(self.target))
+        self.lab.build_only_args("--seal", str(self.target))
         (self.target / "sw.js").write_text("// an older worker", encoding="utf-8")
-        self.lab.build_only_args("--dry-run", str(self.target))
+        self.lab.build_only_args("--seal", str(self.target))
         self.assertEqual((self.target / "sw.js").read_bytes(), (self.lab.out / "sw.js").read_bytes())
         self.lab.build_only_args("--wipe", str(self.target))
         self.assertEqual([path.name for path in self.target.iterdir() if path.is_file()], [])
@@ -1009,7 +1009,7 @@ class StaticFilesTest(unittest.TestCase):
         self.assertNotIn("manifest", local.split("</head>")[0])
 
 
-class DryRunTest(unittest.TestCase):
+class SealTest(unittest.TestCase):
     def setUp(self):
         self.lab = Lab(self)
         self.target = self.lab.root / "out" / "bucket"
@@ -1017,8 +1017,8 @@ class DryRunTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def dry_run(self, *extra):
-        return self.lab.build_only_args("--dry-run", str(self.target), *extra)
+    def seal(self, *extra):
+        return self.lab.build_only_args("--seal", str(self.target), *extra)
 
     def opened(self, *names, passphrase=PASS):
         done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), *names], capture_output=True, text=True,
@@ -1029,7 +1029,7 @@ class DryRunTest(unittest.TestCase):
         return {str(p.relative_to(self.target)): p.stat().st_mtime_ns for p in self.target.rglob("*") if p.is_file()}
 
     def test_every_object_is_sealed_into_the_folder_with_the_shell_and_the_params(self):
-        self.assertEqual(self.dry_run(), 0)
+        self.assertEqual(self.seal(), 0)
         index = self.lab.index()
         names = ["index.json"] + [e["object"] for e in index["conversations"]] + [m["object"] for m in index["documents"].values()] \
             + [m["object"] for m in index["weeks"].values()] + [m["object"] for m in index["sheets"].values()]
@@ -1050,7 +1050,7 @@ class DryRunTest(unittest.TestCase):
     def test_a_secret_is_redacted_before_it_is_sealed_and_only_counted(self):
         secret = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
         append_log(self.lab.logs[M], [user("The deploy key?", T0 + 900, str(self.lab.mate)), say(f"It is {secret} for now.", T0 + 910, str(self.lab.mate))])
-        self.dry_run()
+        self.seal()
         sealed = json.dumps(self.opened(f"s/{M}.json", "index.json"))
         self.assertIn("It is [redacted:github-token] for now.", sealed)
         self.assertNotIn(secret, sealed)
@@ -1061,39 +1061,39 @@ class DryRunTest(unittest.TestCase):
         self.assertNotIn(secret, (self.lab.out / "redactions.json").read_text(encoding="utf-8"))
 
     def test_a_run_with_nothing_new_seals_nothing_and_starts_no_node(self):
-        self.dry_run()
+        self.seal()
         before = self.sealed_times()
         with mock.patch.object(sync.subprocess, "Popen", wraps=sync.subprocess.Popen) as started:
-            self.dry_run()
+            self.seal()
         self.assertEqual(started.call_count, 0)
         self.assertEqual(self.sealed_times(), before)
 
     def test_a_changed_shell_page_reaches_the_bucket_at_once(self):
-        self.dry_run()
+        self.seal()
         page = self.lab.out / "index.html"
         page.write_bytes(page.read_bytes() + b"<!-- new page code -->")
-        self.dry_run()
+        self.seal()
         self.assertEqual((self.target / "index.html").read_bytes(), page.read_bytes())
 
     def test_a_change_seals_its_object_and_the_index_alone(self):
-        self.dry_run()
+        self.seal()
         before = self.sealed_times()
         wait_a_tick()
         append_log(self.lab.logs[M], [user("And the changelog?", T0 + 900, str(self.lab.mate)), say("Updated.", T0 + 910, str(self.lab.mate))])
-        self.dry_run()
+        self.seal()
         after = self.sealed_times()
         changed = sorted(name for name in after if after[name] != before.get(name))
         week = [m["object"] + ".enc" for m in self.lab.index()["weeks"].values()]
         self.assertEqual(changed, sorted([f"s/{M}.json.enc", "index.json.enc", *week]))
 
     def test_the_index_is_sealed_again_for_the_heartbeat(self):
-        self.dry_run()
+        self.seal()
         state = json.loads((self.lab.out / "upload.json").read_text(encoding="utf-8"))
         state["index_at"] -= sync.HEARTBEAT + 1
         (self.lab.out / "upload.json").write_text(json.dumps(state), encoding="utf-8")
         before = self.sealed_times()
         wait_a_tick()
-        self.dry_run()
+        self.seal()
         after = self.sealed_times()
         self.assertEqual(sorted(name for name in after if after[name] != before[name]), ["index.json.enc"])
 
@@ -1102,7 +1102,7 @@ class DryRunTest(unittest.TestCase):
         (self.lab.main / "old-plan.md").write_text("# Old plan\n", encoding="utf-8")
         long_ago = NOW - 100 * 86400
         write_log(self.lab.projects / "main" / f"{old}.jsonl", [user("An old task.", long_ago, main), say("See `old-plan.md`.", long_ago + 5, main)], long_ago + 10)
-        self.dry_run()
+        self.seal()
         local = self.lab.index()
         self.assertIn(old, [e["id"] for e in local["conversations"]])
         sealed = self.opened("index.json")["index.json"]
@@ -1112,29 +1112,29 @@ class DryRunTest(unittest.TestCase):
         self.assertFalse((self.target / f"s/{old}.json.enc").exists())
 
     def test_a_conversation_that_ages_out_is_deleted_from_the_bucket(self):
-        self.dry_run()
+        self.seal()
         self.assertTrue((self.target / f"s/{W}.json.enc").is_file())
         with mock.patch.object(sync, "RETENTION_DAYS", 0.0001):
-            self.dry_run()
+            self.seal()
         self.assertFalse((self.target / f"s/{W}.json.enc").exists())
         self.assertEqual(self.opened("index.json")["index.json"]["conversations"], [])
 
     def test_a_wrong_passphrase_stops_and_a_new_one_seals_everything_again(self):
-        self.dry_run()
+        self.seal()
         before = self.sealed_times()
         append_log(self.lab.logs[M], [user("More?", T0 + 900, str(self.lab.mate))])
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "not it"}), self.assertRaises(SystemExit) as stop:
-            self.dry_run()
+            self.seal()
         self.assertIn("does not open this bucket", str(stop.exception))
         self.assertEqual(self.sealed_times(), before)
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "a new one"}):
-            self.dry_run("--new-passphrase")
+            self.seal("--new-passphrase")
         self.assertEqual(self.opened("index.json")["index.json"], None)
         self.assertEqual(len(self.opened("index.json", passphrase="a new one")["index.json"]["conversations"]), 3)
 
-    def test_wipe_empties_what_the_dry_run_wrote_and_nothing_else(self):
-        self.dry_run()
-        (self.target / "notes.txt").write_text("not the dry run's", encoding="utf-8")
+    def test_wipe_empties_what_the_seal_wrote_and_nothing_else(self):
+        self.seal()
+        (self.target / "notes.txt").write_text("not the seal's", encoding="utf-8")
         self.lab.build_only_args("--wipe", str(self.target))
         self.assertEqual([str(p.relative_to(self.target)) for p in self.target.rglob("*") if p.is_file()], ["notes.txt"])
         self.assertFalse((self.lab.out / "upload.json").exists())
@@ -1143,7 +1143,7 @@ class DryRunTest(unittest.TestCase):
     def test_without_a_passphrase_or_a_terminal_it_stops_before_building(self):
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: ""}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
                 self.assertRaises(SystemExit) as stop:
-            self.dry_run()
+            self.seal()
         self.assertIn(sync.PASSPHRASE_ENV, str(stop.exception))
         self.assertFalse(self.lab.out.exists())
 
@@ -1153,7 +1153,7 @@ class DryRunTest(unittest.TestCase):
         plist = printed.getvalue()
         self.assertIn("<key>StartInterval</key><integer>60</integer>", plist)
         self.assertIn(f"security find-generic-password -w -s {sync.KEYCHAIN_SERVICE}", plist)
-        self.assertIn(f'--dry-run "{self.target.resolve()}"', plist)
+        self.assertIn(f'--seal "{self.target.resolve()}"', plist)
         # launchd's own PATH holds none of the tools a run uses, so the agent carries the folders of node and python3.
         self.assertIn("<key>EnvironmentVariables</key>", plist)
         path = plist.split("<key>PATH</key><string>")[1].split("</string>")[0].split(":")
@@ -1245,11 +1245,11 @@ class SendTest(unittest.TestCase):
         self.assertEqual((receipt["state"], receipt["code"]), ("refused", "agent_blocked"))
         self.assertEqual(self.prompts(), [])
 
-    def test_a_dry_run_sends_what_the_sealed_page_queued_and_seals_the_receipt(self):
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+    def test_a_seal_sends_what_the_sealed_page_queued_and_seals_the_receipt(self):
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         request = json.dumps({"id": Q2, "session_id": A, "text": "A1=keep", "at": time.time()})
         subprocess.run(["node", "-e", SEAL_REQUEST_JS, str(SEAL), str(self.target), Q2, request], check=True, env=os.environ)
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         self.assertEqual(self.prompts(), ["A1=keep"])
         done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), f"r/{Q2}.json"], capture_output=True, text=True, check=True, env=os.environ)
         self.assertEqual(json.loads(done.stdout)[f"r/{Q2}.json"]["state"], "sent")
@@ -1258,20 +1258,20 @@ class SendTest(unittest.TestCase):
         self.assertEqual(len([p for p in (self.lab.root / "out").iterdir() if p.name.startswith(".drain-handled")]), 1)
         self.assertEqual([p.name for p in self.target.iterdir() if p.name.startswith(".drain-handled")], [])
         # The receipt and the queue are not objects of the bucket: the next run neither prunes nor reseals them.
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         self.assertTrue((self.target / "r" / f"{Q2}.json.enc").is_file())
         self.assertEqual(self.prompts(), ["A1=keep"])
 
     def test_a_run_with_nothing_queued_starts_no_node_and_asks_no_herdr(self):
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         before = len(self.calls())
         with mock.patch.object(sync.subprocess, "run", wraps=sync.subprocess.run) as ran:
-            self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+            self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         self.assertEqual(ran.call_count, 0)
         self.assertEqual(len(self.calls()), before)
 
     def test_wipe_takes_the_sealed_queue_and_receipts_with_the_rest(self):
-        self.assertEqual(self.lab.build_only_args("--dry-run", str(self.target)), 0)
+        self.assertEqual(self.lab.build_only_args("--seal", str(self.target)), 0)
         for folder, name in (("q", f"{Q1}.json.enc"), ("r", f"{Q2}.json.enc")):
             (self.target / folder).mkdir(exist_ok=True)
             (self.target / folder / name).write_bytes(b"HRC1" + b"x" * 40)

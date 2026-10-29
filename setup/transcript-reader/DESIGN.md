@@ -95,7 +95,7 @@ The owner asked for a hosted transcript reader to browse from anywhere, even wit
 
 The owner then said "we can do a local review first, just build it": ship 2 of the plan, all on the laptop. How to run and review it: README.md, "The sealed copy". Nothing is hosted; ship 3 waits on the written exemption or the Replit alternative.
 
-What it is: `sync.py --dry-run` (redact with `redact.py`, seal with `upload.js` and `prototype/seal.js`, prune, heartbeat) into a local folder laid out as the bucket; the same shell opens it after asking for the passphrase. Changes from the plan, and why:
+What it is: `sync.py --seal` (redact with `redact.py`, seal with `upload.js` and `prototype/seal.js`, prune, heartbeat) into a local folder laid out as the bucket; the same shell opens it after asking for the passphrase. Changes from the plan, and why:
 
 - **No upload code at all.** The plan's ship 2 has an `rclone` upload with a dry-run mode; here the local folder is the only target, so nothing can reach a remote by mistake. Ship 3 adds the R2 target behind the same step.
 - **Encryption in Node, through WebCrypto.** Python here has no AES library, and adding one is not this build's call; Node, which the reader's server already needs, has the same WebCrypto the browser uses, so one file (`seal.js`) seals in the sync and opens in the page.

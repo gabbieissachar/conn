@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The hosted reader's second sync target: the app in the ShopBack Replit workspace (replit/README.md).
 
-sync.py --dry-run seals the hosted copy into a local folder. This runs that, then sends what changed in
+sync.py --seal seals the hosted copy into a local folder. This runs that, then sends what changed in
 the folder to the app's upload endpoint, so the folder stays the one source of truth and the app is
 a copy of it. Only sealed bytes leave this laptop: the objects, the index and the key parameters
 the app's endpoint accepts. The shell pages (index.html, sheet.html) are code, and the endpoint
@@ -9,7 +9,7 @@ takes no code: they are deployed with the app by hand (--copy-shell, below), so 
 cannot swap the page that asks for the passphrase.
 
 Usage (from the repo root):
-  python3 setup/transcript-reader/push.py URL                 build and seal (sync.py --dry-run), then upload what changed
+  python3 setup/transcript-reader/push.py URL                 build and seal (sync.py --seal), then upload what changed
   python3 setup/transcript-reader/push.py URL --push-only     upload what changed in the folder as it is
   python3 setup/transcript-reader/push.py URL --launch-agent  print a LaunchAgent that runs this every minute
   python3 setup/transcript-reader/push.py URL --copy-shell DIR  copy the shell pages from the folder into DIR, to put in the app's shell/ folder
@@ -326,7 +326,7 @@ def main(argv: list[str]) -> int:
         remote = Remote(url, key)
         if not args.push_only:
             pull_queue(folder, remote)
-            code = subprocess.run([sys.executable, str(HERE / "sync.py"), "--dry-run", str(folder)], env={k: v for k, v in os.environ.items() if k != KEY_ENV}).returncode
+            code = subprocess.run([sys.executable, str(HERE / "sync.py"), "--seal", str(folder)], env={k: v for k, v in os.environ.items() if k != KEY_ENV}).returncode
             if code:
                 print("The sync stopped, so nothing was uploaded.", file=sys.stderr)
                 return code

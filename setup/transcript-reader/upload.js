@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Seals the hosted copy's objects into a local folder: the bucket of a dry run (sync.py
-// --dry-run runs this; ship 2 writes nowhere else). The format is prototype/seal.js's, which the
+// Seals the hosted copy's objects into a local folder: the bucket --seal writes (sync.py
+// --seal runs this; ship 2 writes nowhere else). The format is prototype/seal.js's, which the
 // hosted shell uses to open them.
 //
 //   HOSTED_READER_PASSPHRASE=... node setup/transcript-reader/upload.js <folder>

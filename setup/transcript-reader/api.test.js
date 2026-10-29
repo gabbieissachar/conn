@@ -353,7 +353,7 @@ test('hosted: the manifest, the pane cache and any other name or spelling are ne
   } finally { await t.close(); }
 });
 
-test('bucket: the sealed copy of a dry run is served like the hosted copy: its shell to a tab, its params and sealed objects to the shell', async () => {
+test('bucket: the sealed copy of a seal run is served like the hosted copy: its shell to a tab, its params and sealed objects to the shell', async () => {
   const t = await start();
   try {
     const bucket = path.join(t.tree.outDir, 'bucket');

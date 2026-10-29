@@ -13,8 +13,8 @@
 //   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*,a/*,r/*}
 //                                                   the objects that shell loads (r/ holds the receipts of
 //                                                   its queued sends), to its own token-bearing fetches only
-//   GET  /setup/transcript-reader/out/bucket/...    the sealed copy a dry run writes (sync.py
-//                                                   --dry-run): its shell, k/params.json and the
+//   GET  /setup/transcript-reader/out/bucket/...    the sealed copy (sync.py --seal):
+//                                                   its shell, k/params.json and the
 //                                                   *.enc objects, the same ways
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
@@ -907,7 +907,7 @@ function create({
     }
     if (!PAGES.has(name)) { text(404, 'Not found'); return; }
     fs.readFile(path.join(outDir, name), 'utf8', (error, html) => {
-      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/' + (name.startsWith('hosted/') ? 'sync.py --build-only' : name.startsWith('bucket/') ? 'sync.py --dry-run' : 'reader.py')); return; }
+      if (error) { text(404, 'Not built yet: run python3 setup/transcript-reader/' + (name.startsWith('hosted/') ? 'sync.py --build-only' : name.startsWith('bucket/') ? 'sync.py --seal' : 'reader.py')); return; }
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',

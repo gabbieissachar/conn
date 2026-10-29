@@ -4,7 +4,7 @@
 // reaches the object store goes through classify(): a name that is not one of these never touches
 // storage, which is what refuses traversal ("..", encoded dots, backslashes, a leading slash).
 //
-// The layout is the bucket sync.py --dry-run writes (README.md "The sealed copy"):
+// The layout is the bucket sync.py --seal writes (README.md "The sealed copy"):
 //   index.html           the shell page (no transcript in it); sheet.html, the answer sheet's shell.
 //                        These two are code: they are served from files deployed with the app (config.shellDir)
 //                        and never accepted as an upload, so an upload key cannot change the page that asks for the passphrase.

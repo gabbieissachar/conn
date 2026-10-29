@@ -3,7 +3,7 @@
   // The shell holds no transcript: it loads index.json from its own folder, then one conversation
   // (s/), document (d/) or week of fleet records (f/) when the view needs it, and loads one again
   // only once its stamp in a newer index.json has changed (sync.py writes them; see its help).
-  // A folder with k/params.json is a sealed bucket (sync.py --dry-run): every object is <name>.enc,
+  // A folder with k/params.json is a sealed bucket (sync.py --seal): every object is <name>.enc,
   // opened with the passphrase's key (seal.js), which this device may remember.
   //
   // A sealed copy also stays on the device (the phone, over the tailnet's HTTPS address) so it opens with the laptop
