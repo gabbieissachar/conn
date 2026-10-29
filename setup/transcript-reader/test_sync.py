@@ -375,6 +375,110 @@ class OfflineFleetTimelineSwitchTest(unittest.TestCase):
             self.assertNotIn(builder.FLEET_TIMELINE_ENV, plist, value)
 
 
+class PanesScopeTest(unittest.TestCase):
+    """--panes: all (today's scope, the default) or open (a live Herdr pane, or reopened by the owner)."""
+
+    def lab(self):
+        lab = Lab(self)
+        (lab.root / "out").mkdir(exist_ok=True)
+        return lab
+
+    def ids(self, lab):
+        return sorted(entry["id"] for entry in lab.index()["conversations"])
+
+    def objects(self, lab):
+        return sorted(str(p.relative_to(lab.out)) for folder in ("s", "d", "a", "f") for p in (lab.out / folder).glob("*"))
+
+    def test_all_is_the_default_and_keeps_closed_panes(self):
+        lab = self.lab()
+        self.assertEqual(lab.build(), 0)  # only A has a live pane
+        self.assertEqual(self.ids(lab), sorted([A, W, M]))
+        self.assertEqual(lab.build("--panes", "all"), 0)
+        self.assertEqual(self.ids(lab), sorted([A, W, M]))
+
+    def test_open_keeps_live_panes_and_reopened_ones_and_parses_nothing_else(self):
+        lab = self.lab()
+        with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as parsed:
+            self.assertEqual(lab.build("--panes", "open"), 0)
+        self.assertEqual(self.ids(lab), [A])
+        self.assertEqual({call.args[0] for call in parsed.call_args_list}, {lab.logs[A]})
+        (lab.root / "out" / "reopened.txt").write_text(f"{M}\n", encoding="utf-8")
+        self.assertEqual(lab.build("--panes", "open"), 0)
+        self.assertEqual(self.ids(lab), sorted([A, M]))
+
+    def test_narrowing_prunes_the_dropped_objects_documents_and_sheets_and_widening_brings_them_back(self):
+        lab = self.lab()
+        lab.build()
+        everything = self.objects(lab)
+        self.assertTrue(any(rel.startswith("a/") for rel in everything) and any(rel.startswith("d/") for rel in everything))
+        lab.panes = {M: {"label": "mate", "title": "Mate work", "herdr": "lab", "pane": "w1:p2", "status": "working"}}
+        self.assertEqual(lab.build("--panes", "open"), 0)
+        self.assertEqual(self.ids(lab), [M])
+        self.assertEqual(self.objects(lab), [rel for rel in self.objects(lab) if rel in everything])
+        self.assertEqual([rel for rel in self.objects(lab) if rel[0] in "sda"], [f"a/{M}.json", f"s/{M}.json"], "A's conversation and its document are gone")
+        index, manifest = lab.index(), lab.manifest()
+        self.assertEqual((sorted(manifest["conversations"]), index["documents"]), ([M], {}))
+        bucket_index, objects = sync.DryRun(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
+        self.assertEqual({rel for rel in objects if rel[0] in "sda"}, {f"a/{M}.json", f"s/{M}.json"})
+        self.assertEqual([entry["id"] for entry in bucket_index["conversations"]], [M])
+        self.assertEqual(lab.build("--panes", "all"), 0)
+        self.assertEqual(self.objects(lab), everything)
+
+    def test_open_with_no_live_pane_stops_and_leaves_the_copy_as_it_is(self):
+        lab = self.lab()
+        lab.build()
+        before = {rel: (lab.out / rel).read_bytes() for rel in self.objects(lab)}
+        lab.panes = {}
+        self.assertEqual(lab.build("--panes", "open"), 1)
+        self.assertEqual(self.ids(lab), sorted([A, W, M]))
+        self.assertEqual({rel: (lab.out / rel).read_bytes() for rel in self.objects(lab)}, before)
+
+    def test_the_printed_launch_agent_carries_the_scope(self):
+        self.assertIn("--dry-run", sync.launch_agent(Path("/tmp/x")))
+        self.assertNotIn("--panes", sync.launch_agent(Path("/tmp/x")))
+        self.assertIn(f'--dry-run "{Path("/tmp/x").resolve()}" --panes open', sync.launch_agent(Path("/tmp/x"), "open"))
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+            sync.main(["--launch-agent", "/tmp/x", "--panes", "open"])
+        self.assertIn("--panes open", printed.getvalue())
+
+    def run_preview(self, lab, *extra):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as printed, mock.patch("getpass.getpass", side_effect=AssertionError("asked for a passphrase")):
+            code = sync.main(["--preview", *extra, "--out", str(lab.out), "--main-home", str(lab.main)])
+        return code, printed.getvalue()
+
+    def test_the_preview_lists_what_is_in_and_out_and_writes_nothing(self):
+        lab = self.lab()
+        lab.build()
+        (lab.root / "out" / "reopened.txt").write_text(f"{W}\n", encoding="utf-8")
+
+        def snapshot():
+            return {str(p.relative_to(lab.root)): (p.stat().st_mtime_ns, p.stat().st_size) for p in lab.root.rglob("*") if p.is_file()}
+        before = snapshot()
+        code, text = self.run_preview(lab, "--panes", "open")
+        self.assertEqual(code, 0)
+        self.assertEqual(snapshot(), before, "nothing is written, not even a cache")
+        included, left = text.split("Included (")[1].split("Left out (")
+        self.assertIn("Would build 2 of 3 conversations (1 with a live pane, 1 reopened, 0 closed)", text)
+        self.assertIn("Alpha work", included)
+        self.assertIn("open", included)
+        self.assertIn("reopened", included)
+        self.assertIn("Left out (1)", text)
+        self.assertIn("secondmate-mate", left)
+        self.assertIn("closed", left)
+        self.assertIn("Estimated size", text)
+        self.assertIn("Would remove 1 conversations", text)
+        code, text = self.run_preview(lab)
+        self.assertIn("Would build 3 of 3 conversations", text)
+        self.assertIn("Left out (0): none", text)
+
+    def test_the_preview_with_no_live_pane_says_why_it_stops(self):
+        lab = self.lab()
+        lab.panes = {}
+        code, text = self.run_preview(lab, "--panes", "open")
+        self.assertEqual(code, 1)
+        self.assertIn("no live pane", text)
+
+
 class AnswerSheetTest(unittest.TestCase):
     """The hosted copy's answer sheet holds what the local answer sheet holds for the same sessions."""
 

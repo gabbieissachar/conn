@@ -12,6 +12,10 @@ Usage (from the repo root):
                                                                        --new-passphrase seals it all again under another passphrase
   python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote (receipts and waiting sends too)
   python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs the dry run every minute
+  python3 setup/transcript-reader/sync.py --preview                    list what a build would include and leave out; writes nothing, needs no passphrase
+  Scope: --panes all (default: every conversation in scope, closed panes too) or --panes open (only those in a live Herdr pane,
+  plus those you reopened; a conversation dropped by narrowing is pruned from the build and the bucket); with --build-only,
+  --dry-run, --launch-agent (the printed plist carries it) and --preview.
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
 
 The dry run takes the passphrase from HOSTED_READER_PASSPHRASE, or asks for it in a terminal;
@@ -299,6 +303,13 @@ class Build:
         self.workspace = {"id": WORKSPACE_ID, "home": Path(args.workspace).expanduser()} if getattr(args, "workspace", "") else None
         self.wrote: list[str] = []
         self.rebuilt: list[str] = []
+        self.live: dict[str, dict] = {}  # Herdr's live panes, set by run() before any conversation is chosen
+        self.reopened: set[str] = set(builder.read_ids(REOPENED))
+
+    def wanted(self, cid: str, ids: list[str]) -> bool:
+        """Whether the scope takes this conversation: all of them, or (--panes open) those running in a live Herdr pane
+        and those the owner reopened. Decided before a conversation is parsed, so one left out costs nothing each run."""
+        return getattr(self.args, "panes", "all") == "all" or cid in self.live or bool(self.reopened & set(ids))
 
     # Every object goes through here: written only when its bytes changed since the last build.
     def put(self, rel: str, value, before: str | None) -> str:
@@ -369,7 +380,8 @@ class Build:
             for cid, record in (self.old.get("conversations") or {}).items():
                 fresh = record.get("rules") == self.rules and record.get("timeline", True) == self.timeline and all(version(Path(member)) == record["versions"].get(member) for member in record["members"]) \
                     and record.get("inputs") == inputs_stamp(record["sources"])
-                if fresh and in_scope & set(record["members"]) and (self.out / record["object"]).is_file():
+                if fresh and in_scope & set(record["members"]) and (self.out / record["object"]).is_file() \
+                        and self.wanted(cid, record["entry"]["ids"]):
                     kept[cid] = record
         covered = {member for record in kept.values() for member in record["members"]}
         chains: dict[str, tuple[dict, list[Path]]] = {}
@@ -389,7 +401,8 @@ class Build:
                         todo.append(member)
             covered.update(names)
             home = builder.session_home(self.homes + ([self.workspace] if self.workspace else []), first_cwd(Path(seed)))
-            chains[chain[-1].stem] = (home, chain)
+            if self.wanted(chain[-1].stem, [member.stem for member in chain]):
+                chains[chain[-1].stem] = (home, chain)
         for cid, (home, chain) in chains.items():
             kept[cid] = self.parse(cid, home, chain)
             self.rebuilt.append(cid)
@@ -522,7 +535,11 @@ class Build:
 
     def run(self) -> int:
         builder.private_folder(self.out)
-        live = self.panes()
+        live = self.live = self.panes()
+        if getattr(self.args, "panes", "all") == "open" and not live:
+            # Herdr is not running (or lists no pane): this scope would leave nothing, and the prune would empty the copy and the bucket.
+            print("Herdr lists no live pane, so --panes open would build nothing; this run stops and leaves the copy as it is.")
+            return 1
         seeds = self.seeds()
         since = self.since(seeds)
         conversations = self.conversations(seeds)
@@ -536,7 +553,7 @@ class Build:
             self.put_static(name)
         ids = [cid for cid, _ in conversations]
         labels = builder.pane_labels(ids, self.out / "pane-labels.json", live)
-        reopened = set(builder.read_ids(REOPENED))
+        reopened = self.reopened
         entries = []
         for cid, record in conversations:
             entry = {**record["entry"], "pane": labels.get(cid), "reopened": bool(reopened & set(record["entry"]["ids"])),
@@ -763,11 +780,12 @@ def passphrase(target: Path) -> str:
     return first
 
 
-def launch_agent(target: Path) -> str:
+def launch_agent(target: Path, panes: str = "all") -> str:
     """A LaunchAgent (plan 4.2) that runs the dry run every minute while the Mac is awake. It is only
     printed: install it yourself. The passphrase comes from the login keychain at each run."""
     command = (f'{PASSPHRASE_ENV}="$(/usr/bin/security find-generic-password -w -s {KEYCHAIN_SERVICE})" '
-               f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --dry-run "{target.resolve()}"')
+               f'exec /usr/bin/env python3 "{Path(__file__).resolve()}" --dry-run "{target.resolve()}"'
+               + (" --panes open" if panes == "open" else ""))
     log = HERE / "out" / "sync-agent.log"
     from xml.sax.saxutils import escape
     # launchd's own PATH holds none of the tools a run uses (node seals and sends, python3 builds,
@@ -798,6 +816,78 @@ def launch_agent(target: Path) -> str:
 """
 
 
+def preview(args) -> int:
+    """What a build with these options would include, built, sealed and written nowhere: needs no passphrase, takes no lock and
+    touches no file (Herdr and the logs are only read). The estimate scales the logs' size by what this machine's last build
+    wrote for the conversations it has already built (their total), or by a rough default."""
+    build = Build(args)
+    live = builder.herdr_panes()
+    cache: dict[str, dict] = {}
+    for path in (LOCAL_PANES, build.out / "pane-labels.json"):
+        try:
+            cache.update(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    cache.update(live)
+    builder._PANE_HISTORY.clear()
+    builder._PANE_HISTORY.update(cache)  # session_chain joins a pane's sessions across a restart with it
+    build.live = live
+    if args.panes == "open" and not live:
+        print("Herdr lists no live pane, so --panes open would build nothing: a real run stops and leaves the copy as it is.")
+        return 1
+    found: dict[str, dict] = {}
+    covered: set[str] = set()
+    for seed in build.seeds():
+        if str(seed) in covered:
+            continue
+        chain = builder.session_chain(seed)
+        covered.update(str(member) for member in chain)
+        cid, ids = chain[-1].stem, [member.stem for member in chain]
+        home = builder.session_home(build.homes + ([build.workspace] if build.workspace else []), first_cwd(seed))
+        pane = cache.get(cid) or {}
+        sizes = [member.stat().st_size for member in chain if member.is_file()]
+        last = max((member.stat().st_mtime for member in chain if member.is_file()), default=0)
+        found[cid] = {"id": cid, "name": pane.get("title") or pane.get("label") or cid[:8], "home": home["id"], "open": cid in live,
+                      "reopened": bool(build.reopened & set(ids)), "last": last, "log": sum(sizes), "in": build.wanted(cid, ids)}
+    built = {}
+    for cid, record in (build.old.get("conversations") or {}).items():
+        try:
+            built[cid] = (build.out / record["object"]).stat().st_size
+        except OSError:
+            continue
+    known = [(built[cid], item["log"]) for cid, item in found.items() if cid in built and item["log"]]
+    # Logs are mostly tool output the copy drops: on one real fleet the conversations came to about 2% of their logs' size.
+    ratio, basis = (sum(o for o, _ in known) / sum(l for _, l in known), f"from {len(known)} conversations already built") if known else (0.02, "a rough default: nothing built here yet")
+    included = [item for item in found.values() if item["in"]]
+    left = [item for item in found.values() if not item["in"]]
+    guess = lambda item: built.get(item["id"], item["log"] * ratio)  # noqa: E731
+    recent = [item for item in included if item["last"] >= time.time() - RETENTION_DAYS * 86400]
+
+    def row(item):
+        pane = "open" if item["open"] else "reopened" if item["reopened"] else "closed"
+        when = datetime.fromtimestamp(item["last"]).strftime("%Y-%m-%d %H:%M") if item["last"] else "-"
+        return f"  {item['name'][:40]:<40}  {item['home'][:24]:<24}  {pane:<8}  {when}"
+
+    mb = lambda n: f"{n / 1e6:.1f} MB"  # noqa: E731
+    print(f"Preview (nothing is built, sealed or written). Scope: --panes {args.panes}.")
+    print(f"Would build {len(included)} of {len(found)} conversations ({sum(item['open'] for item in included)} with a live pane, "
+          f"{sum(item['reopened'] and not item['open'] for item in included)} reopened, {sum(not (item['open'] or item['reopened']) for item in included)} closed); "
+          f"{len(recent)} were active in the last {RETENTION_DAYS} days, which is all the sealed copy keeps.")
+    print(f"Estimated size of the conversations: {mb(sum(guess(item) for item in included))} built, {mb(sum(guess(item) for item in recent))} sealed "
+          f"(estimate {basis}; documents, answer sheets, fleet weeks and the page itself are extra).")
+    gone = [cid for cid in built if cid in found and not found[cid]["in"]]
+    if gone:
+        print(f"Would remove {len(gone)} conversations a build here already wrote ({mb(sum(built[cid] for cid in gone))}), with their documents and answer sheets.")
+    heading = f"  {'conversation':<40}  {'home':<24}  {'pane':<8}  last activity"
+    print(f"\nIncluded ({len(included)}):\n{heading}")
+    for item in sorted(included, key=lambda item: -item["last"]):
+        print(row(item))
+    print(f"\nLeft out ({len(left)}):" + (f"\n{heading}" if left else " none"))
+    for item in sorted(left, key=lambda item: -item["last"]):
+        print(row(item))
+    return 0
+
+
 def shell_link(out: Path, default: Path = OUT) -> str:
     """The shell's address on the reader's own server, and what to do when that port does not serve this copy."""
     port = os.environ.get("PMOS_READER_PORT", reader.DEFAULT_PORT)
@@ -815,6 +905,9 @@ def main(argv: list[str]) -> int:
     mode.add_argument("--dry-run", nargs="?", const=str(BUCKET), metavar="FOLDER", help="build, then redact, seal and write the local bucket (default out/bucket/)")
     mode.add_argument("--wipe", nargs="?", const=str(BUCKET), metavar="FOLDER", help="empty the local bucket of what the dry run wrote")
     mode.add_argument("--launch-agent", nargs="?", const=str(BUCKET), metavar="FOLDER", help="print a LaunchAgent that runs the dry run every minute")
+    mode.add_argument("--preview", action="store_true", help="list the conversations the options would include and leave out, with counts and a size estimate; builds, seals and writes nothing")
+    parser.add_argument("--panes", choices=("all", "open"), default="all",
+                        help="which conversations: all (default; every one in scope, closed panes too) or open (only those in a live Herdr pane, plus those you reopened)")
     parser.add_argument("--new-passphrase", action="store_true", help="with --dry-run: seal everything again under a passphrase the bucket does not know yet")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--reading-list", action="store_true", help="build the local reader's list (out/sessions.txt)")
@@ -828,11 +921,13 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.no_workspace:
         args.workspace = ""
-    if not (args.build_only or args.dry_run or args.wipe or args.launch_agent):
-        parser.error("say what to do: --build-only, --dry-run, --wipe or --launch-agent (nothing is ever uploaded: ship 3 is not built)")
+    if not (args.build_only or args.dry_run or args.wipe or args.launch_agent or args.preview):
+        parser.error("say what to do: --build-only, --dry-run, --wipe, --launch-agent or --preview (nothing is ever uploaded: ship 3 is not built)")
     out = Path(args.out).expanduser()
+    if args.preview:
+        return preview(args)
     if args.launch_agent:
-        print(launch_agent(Path(args.launch_agent).expanduser()), end="")
+        print(launch_agent(Path(args.launch_agent).expanduser(), args.panes), end="")
         return 0
     target = Path(args.dry_run or args.wipe or BUCKET).expanduser()
     secret = passphrase(target) if args.dry_run else ""

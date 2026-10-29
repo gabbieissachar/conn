@@ -62,6 +62,22 @@ PMOS_READER_FLEET_TIMELINE=on serve.sh restart      # on, 1, true or yes; unset 
 
 The offline copy (`sync.py`) follows the same switch (one reader of the variable, `fleet_timeline_on()` in `build_prototype.py`). Off, a build collects no fleet records, writes no `f/<yyyy>-W<ww>.json` week and lists none in `index.json` or the manifest, the next build removes weeks an earlier build wrote, and the offline page hides the tab (`index.json` carries `"fleet_timeline": false`; an index without it, from before the switch, keeps the tab). On, the output is what it was before the switch. A build run with the switch changed parses the conversations again, so it takes effect at once.
 
+### Which conversations the offline copy holds: `--panes`
+
+By default the copy holds every conversation in scope, closed Herdr panes included (`--panes all`, as before). `--panes open` narrows it to conversations running in a live Herdr pane plus those you reopened (the page's Reopen, `reopened.txt`). It works with `--build-only`, `--dry-run`, `--launch-agent` and `--preview`:
+
+```bash
+python3 setup/transcript-reader/sync.py --preview --panes open              # what it would include and leave out; nothing is written
+python3 setup/transcript-reader/sync.py --build-only --panes open
+python3 setup/transcript-reader/sync.py --launch-agent --panes open         # the printed command carries --panes open
+```
+
+- **Default is `all`.** The copy's job is reading history with the Mac shut, and most of that history is in closed panes (on one fleet: 30 open or reopened conversations of 594). `open` is for a small copy of what is running now.
+- **Narrowing prunes.** A conversation the scope drops is not parsed, its object, its documents (unless a kept conversation names them) and its answer sheet are removed from `out/hosted/` by the next build, and from the sealed bucket by the next `--dry-run`'s existing prune. Widening brings them back at the next build.
+- **Your own `~/workspace` sessions have no Herdr pane,** so `open` leaves them out unless you reopened them.
+- **With no live pane at all** (Herdr not running) `open` would leave nothing and the prune would empty the copy, so the run stops with a message and changes nothing.
+- **`--preview`** builds, seals and writes nothing and asks for no passphrase. It prints counts (live pane, reopened, closed; how many fall in the sealed copy's 90 days), an estimate of the conversations' size (scaled from what a build here already wrote, else a rough 2% of the logs' size; documents, answer sheets, fleet weeks and the page are extra), how many conversations an earlier build wrote that this scope would remove, then a table of the included and the left-out conversations (picker name, home, pane open / reopened / closed, last activity). It takes the same options as a build (`--panes`, `--reading-list`, `--session`, `--no-workspace`, `--main-home`).
+
 The LaunchAgent that `sync.py --launch-agent` prints runs the build from launchd's own environment, which holds none of your shell's variables, so the printed plist carries the switch: print it with the variable set (`PMOS_READER_FLEET_TIMELINE=on python3 setup/transcript-reader/sync.py --launch-agent`) and its `EnvironmentVariables` holds `PMOS_READER_FLEET_TIMELINE=on`; print it without and the agent builds without the timeline. Install the printed plist again after changing the switch.
 
 ## Open it from the phone
