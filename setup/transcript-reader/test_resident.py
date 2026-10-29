@@ -53,7 +53,7 @@ def ref_cleared_from(path, clear_time):
     bridge = builder.bridge_id(builder.head_records(path))
     linked = nearest(builder.all_logs(), 30, lambda other: builder.names_bridge(other, bridge)) if bridge else None
     linked = linked or (builder.late_linked(path, clear_time, bridge) if bridge else None)
-    return linked or nearest(builder.logs_in(path.parent), 5)
+    return linked or builder.pane_cleared_from(path, clear_time) or nearest(builder.logs_in(path.parent), 5)
 
 
 def ref_cleared_into(chain):

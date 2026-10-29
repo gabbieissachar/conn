@@ -1244,6 +1244,31 @@ class LateWritesTest(unittest.TestCase):
         with mock.patch.dict(builder._PANE_HISTORY, {"haiku": pane, "sonnet": pane}, clear=True):
             self.assertEqual(self.stems("sonnet"), ["haiku", "sonnet"])
 
+    def test_a_clear_then_exit_and_resume_joins_the_log_the_pane_ran_before_it(self):
+        # /clear, then Claude exited (which wrote undated records into the old log about 20 s later, past the 5 s a log of the
+        # folder may be written after the clear), then `claude --resume <new id>`: no link names either log.
+        f = self.folder
+        log(f / "earlier.jsonl", [prompt("an earlier task", iso(T0 + 7000))], T0 + 7400)
+        log(f / "before.jsonl", [prompt("the runbook", iso(T0 + 7500)), reply("done", T0 + 7549.3), {"type": "cost-state"}], T0 + 7584)
+        log(f / "after.jsonl", [prompt(CLEAR, iso(T0 + 7561)), prompt("go on", iso(T0 + 7700))], T0 + 7800)
+        # A log of the folder that ended right at the clear but ran in another pane, and one in no pane that ended within the 5 s
+        # a log of the folder may be written after it (the pane's own log is asked before that guess).
+        log(f / "decoy.jsonl", [prompt("busy nearby", iso(T0 + 7540)), reply("ok", T0 + 7559)], T0 + 7559)
+        log(f / "bystander.jsonl", [prompt("nobody knows", iso(T0 + 7530)), reply("ok", T0 + 7560)], T0 + 7560)
+        pane = {"herdr": "work", "pane": "w1:p2", "label": "fm-task", "life": "1"}
+        history = {"earlier": pane, "before": pane, "after": pane, "decoy": {**pane, "pane": "w1:p3", "label": "fm-other"}}
+        with mock.patch.dict(builder._PANE_HISTORY, history, clear=True):
+            self.assertEqual(self.stems("after"), ["earlier", "before", "after"], "the pane's log nearest before the clear, not the decoy")
+            self.assertEqual(self.stems("before"), ["earlier", "before", "after"])
+            self.assertEqual(self.stems("decoy"), ["decoy"])
+            self.assertEqual(self.stems("bystander"), ["bystander"])
+        self.assertEqual(self.stems("after"), ["bystander", "after"], "no pane history, the nearest log of the folder")
+        # Another pane, or a Herdr session made again, is not this pane; and a log of the pane last written long before the
+        # clear ("earlier") is not the one it left.
+        for other in ({**pane, "pane": "w1:p9"}, {**pane, "life": "2"}):
+            with mock.patch.dict(builder._PANE_HISTORY, {**history, "before": other}, clear=True):
+                self.assertEqual(self.stems("after"), ["bystander", "after"])
+
     def test_last_record_time_is_the_newest_dated_record_of_the_end_of_the_file(self):
         path = self.folder / "tail.jsonl"
         log(path, [prompt("a", iso(T0 + 10)), {"type": "assistant", "timestamp": iso(T0 + 20)}, {"type": "cost-state"}, self.link("cse_01X")], T0 + 99)

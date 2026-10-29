@@ -1714,8 +1714,9 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
     resumed from another directory keeps its old folder, but its /clear starts the new log
     under the current one. Only that process writes the link, so its old log may also get
     its last records up to 30 seconds after the clear. Without a link to match, it is the
-    nearest log in the same folder, written at most 5 seconds after the clear. A linked log's last dated record
-    counts too, when later records without a time moved its modification time past the clear.
+    nearest log in the same folder, written at most 5 seconds after the clear, unless the pane's own log is known
+    (pane_cleared_from). A linked log's last dated record counts too, when later records without a time moved its
+    modification time past the clear.
     """
     def nearest(candidates, late, keep=lambda other: True):
         best = None
@@ -1746,7 +1747,7 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
     # A linked log whose process was touched again long after the clear (see last_record_time) still ended with the clear.
     # It is asked before the nearest log in the folder, which may be another session's that merely ended nearby.
     linked = linked or (late_linked(path, clear_time, bridge) if bridge else None)
-    return linked or nearest(logs_in(path.parent), 5)
+    return linked or pane_cleared_from(path, clear_time) or nearest(logs_in(path.parent), 5)
 
 
 _FROZEN: dict[tuple[Path, int], list[Path]] | None = None
@@ -1829,6 +1830,24 @@ def pane_neighbours(path: Path) -> list[Path]:
         return []
     found = (find_session_file(sid) for sid, entry in _PANE_HISTORY.items() if sid != path.stem and same_pane(mine, entry))
     return [log for log in found if log]
+
+
+def pane_cleared_from(path: Path, clear_time: float) -> Path | None:
+    """The log the same Herdr pane ran before a /clear at <clear_time>: of the pane's other logs, the one whose last dated
+    record is nearest before the clear, within LATE_LINK_WINDOW, and which was written at the clear or after it.
+
+    Exiting Claude after a /clear (the way to resume the new session) writes records without a time into the old log well past
+    the clear, and a session cleared and resumed has no link to name it, so neither the 5 seconds a log of the folder may be
+    written after the clear nor a link finds the log. Which pane ran it does, and its last dated record says which of the
+    pane's logs the clear came after. A log last written long before the clear is not the one the clear left.
+    """
+    found = []
+    for other in pane_neighbours(path):
+        at = last_record_time(other)
+        written = log_mtime(other)
+        if at is not None and written is not None and -30 <= clear_time - at <= LATE_LINK_WINDOW and written >= clear_time - 30:
+            found.append((abs(clear_time - at), other.parts, other))
+    return min(found)[2] if found else None
 
 
 def restarted_from(path: Path) -> Path | None:
