@@ -457,19 +457,37 @@ class PanesScopeTest(unittest.TestCase):
         code, text = self.run_preview(lab, "--panes", "open")
         self.assertEqual(code, 0)
         self.assertEqual(snapshot(), before, "nothing is written, not even a cache")
-        included, left = text.split("Included (")[1].split("Left out (")
+        included = text.split("Included (")[1].split("Left out: ")[0]
         self.assertIn("Would build 2 of 3 conversations (1 with a live pane, 1 reopened, 0 closed)", text)
-        self.assertIn("Alpha work", included)
+        self.assertIn("alpha", included)
+        self.assertNotIn("Alpha work", text, "named by the Herdr label, not the picker title")
         self.assertIn("open", included)
         self.assertIn("reopened", included)
-        self.assertIn("Left out (1)", text)
+        self.assertIn("Left out: 1", text)
+        self.assertNotIn("secondmate-mate", text, "the left-out list is opt-in")
+        self.assertIn("--show-left-out", text)
+        code, text = self.run_preview(lab, "--panes", "open", "--show-left-out")
+        left = text.split("Left out (")[1]
         self.assertIn("secondmate-mate", left)
         self.assertIn("closed", left)
         self.assertIn("Estimated size", text)
         self.assertIn("Would remove 1 conversations", text)
         code, text = self.run_preview(lab)
         self.assertIn("Would build 3 of 3 conversations", text)
-        self.assertIn("Left out (0): none", text)
+        self.assertIn("Left out: 0", text)
+
+    def test_the_preview_names_a_closed_pane_by_its_cached_label_and_does_not_cut_it(self):
+        lab = self.lab()
+        label = "fm-2026-10-27-esim-flag-test-dogfood-runbook"
+        lab.panes = {A: {**lab.panes[A], "label": label}}
+        code, text = self.run_preview(lab)
+        self.assertIn(label, text)
+        lab.panes = {}
+        (lab.root / "out").mkdir(exist_ok=True)
+        (lab.root / "out" / "pane-labels.json").write_text(json.dumps({A: {"label": label, "title": "x", "herdr": "lab", "pane": "w1:p1"}}), encoding="utf-8")
+        code, text = self.run_preview(lab)
+        self.assertIn(label, text)
+        self.assertIn("closed", text)
 
     def test_the_preview_with_no_live_pane_says_why_it_stops(self):
         lab = self.lab()

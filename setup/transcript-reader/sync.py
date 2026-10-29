@@ -12,7 +12,8 @@ Usage (from the repo root):
                                                                        --new-passphrase seals it all again under another passphrase
   python3 setup/transcript-reader/sync.py --wipe [FOLDER]              empty that bucket folder of what the dry run wrote (receipts and waiting sends too)
   python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs the dry run every minute
-  python3 setup/transcript-reader/sync.py --preview                    list what a build would include and leave out; writes nothing, needs no passphrase
+  python3 setup/transcript-reader/sync.py --preview                    list what a build would include, named by Herdr label, and count what it leaves out;
+                                                                       writes nothing, needs no passphrase (--show-left-out lists those too)
   Scope: --panes all (default: every conversation in scope, closed panes too) or --panes open (only those in a live Herdr pane,
   plus those you reopened; a conversation dropped by narrowing is pruned from the build and the bucket); with --build-only,
   --dry-run, --launch-agent (the printed plist carries it) and --preview.
@@ -847,7 +848,7 @@ def preview(args) -> int:
         pane = cache.get(cid) or {}
         sizes = [member.stat().st_size for member in chain if member.is_file()]
         last = max((member.stat().st_mtime for member in chain if member.is_file()), default=0)
-        found[cid] = {"id": cid, "name": pane.get("title") or pane.get("label") or cid[:8], "home": home["id"], "open": cid in live,
+        found[cid] = {"id": cid, "name": pane.get("label") or pane.get("title") or cid[:8], "home": home["id"], "open": cid in live,
                       "reopened": bool(build.reopened & set(ids)), "last": last, "log": sum(sizes), "in": build.wanted(cid, ids)}
     built = {}
     for cid, record in (build.old.get("conversations") or {}).items():
@@ -863,10 +864,12 @@ def preview(args) -> int:
     guess = lambda item: built.get(item["id"], item["log"] * ratio)  # noqa: E731
     recent = [item for item in included if item["last"] >= time.time() - RETENTION_DAYS * 86400]
 
+    width = max([len("conversation")] + [len(item["name"]) for item in included + (left if args.show_left_out else [])])
+
     def row(item):
         pane = "open" if item["open"] else "reopened" if item["reopened"] else "closed"
         when = datetime.fromtimestamp(item["last"]).strftime("%Y-%m-%d %H:%M") if item["last"] else "-"
-        return f"  {item['name'][:40]:<40}  {item['home'][:24]:<24}  {pane:<8}  {when}"
+        return f"  {item['name']:<{width}}  {item['home'][:24]:<24}  {pane:<8}  {when}"
 
     mb = lambda n: f"{n / 1e6:.1f} MB"  # noqa: E731
     print(f"Preview (nothing is built, sealed or written). Scope: --panes {args.panes}.")
@@ -878,13 +881,16 @@ def preview(args) -> int:
     gone = [cid for cid in built if cid in found and not found[cid]["in"]]
     if gone:
         print(f"Would remove {len(gone)} conversations a build here already wrote ({mb(sum(built[cid] for cid in gone))}), with their documents and answer sheets.")
-    heading = f"  {'conversation':<40}  {'home':<24}  {'pane':<8}  last activity"
+    heading = f"  {'conversation':<{width}}  {'home':<24}  {'pane':<8}  last activity"
     print(f"\nIncluded ({len(included)}):\n{heading}")
     for item in sorted(included, key=lambda item: -item["last"]):
         print(row(item))
-    print(f"\nLeft out ({len(left)}):" + (f"\n{heading}" if left else " none"))
-    for item in sorted(left, key=lambda item: -item["last"]):
-        print(row(item))
+    if args.show_left_out:
+        print(f"\nLeft out ({len(left)}):" + (f"\n{heading}" if left else " none"))
+        for item in sorted(left, key=lambda item: -item["last"]):
+            print(row(item))
+    else:
+        print(f"\nLeft out: {len(left)}" + (" (add --show-left-out to list them)" if left else ""))
     return 0
 
 
@@ -908,6 +914,7 @@ def main(argv: list[str]) -> int:
     mode.add_argument("--preview", action="store_true", help="list the conversations the options would include and leave out, with counts and a size estimate; builds, seals and writes nothing")
     parser.add_argument("--panes", choices=("all", "open"), default="all",
                         help="which conversations: all (default; every one in scope, closed panes too) or open (only those in a live Herdr pane, plus those you reopened)")
+    parser.add_argument("--show-left-out", action="store_true", help="with --preview: also list the conversations left out (by default only their count is printed)")
     parser.add_argument("--new-passphrase", action="store_true", help="with --dry-run: seal everything again under a passphrase the bucket does not know yet")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--reading-list", action="store_true", help="build the local reader's list (out/sessions.txt)")
