@@ -89,6 +89,14 @@ test('a shell on a static host, with the token tag unfilled, sends no token', as
   assert.deepEqual(Object.keys(calls[0].options.headers), []);
 });
 
+test('an index built without the fleet timeline says so, and one that says nothing keeps it', async () => {
+  const { hosted } = load({ objects: OBJECTS });
+  assert.equal(hosted.data(INDEX, null).fleet_timeline, true);
+  const off = hosted.data({ ...INDEX, weeks: {}, fleet_timeline: false }, null);
+  assert.equal(off.fleet_timeline, false);
+  assert.deepEqual(await hosted.fleet(off), []);
+});
+
 test('the list comes from the index with no turns, which load one conversation at a time', async () => {
   const { hosted, calls } = load({ objects: OBJECTS });
   const data = hosted.data(INDEX, null);

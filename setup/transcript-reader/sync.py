@@ -29,7 +29,9 @@ Scope: by default every Claude Code session log whose working directory lies ins
 fleet home (the main home ~/fm-homes/pmos and each second mate its registry lists), workers'
 copies included, and every one whose working directory lies under ~/workspace (the owner's own
 working sessions, listed under their own heading in the picker; --workspace DIR names another
-folder, --no-workspace leaves them out), with a fleet timeline of the last 14 days. With
+folder, --no-workspace leaves them out), with a fleet timeline of the last 14 days when
+PMOS_READER_FLEET_TIMELINE is on (off unless set: no fleet records are collected, no f/ week is
+written and the page hides the tab; README, "The fleet timeline is off for now"). With
 --reading-list or --session the timeline starts at the earliest of those sessions, as on the
 local page. Every text goes through the same redaction as the rest.
 
@@ -290,6 +292,8 @@ class Build:
             old = {}
         self.old = old if old.get("version") == VERSION else {}
         self.rules = rules()
+        # The fleet timeline is built only when the owner switched it on, as for the local page (build_prototype.fleet_timeline_on).
+        self.timeline = builder.fleet_timeline_on()
         # The owner's own sessions are a pseudo-home with no records of its own: the conversations get their group and
         # their folder under it, and nothing is read from it for the fleet timeline.
         self.workspace = {"id": WORKSPACE_ID, "home": Path(args.workspace).expanduser()} if getattr(args, "workspace", "") else None
@@ -363,7 +367,7 @@ class Build:
         kept: dict[str, dict] = {}
         if not self.args.full:
             for cid, record in (self.old.get("conversations") or {}).items():
-                fresh = record.get("rules") == self.rules and all(version(Path(member)) == record["versions"].get(member) for member in record["members"]) \
+                fresh = record.get("rules") == self.rules and record.get("timeline", True) == self.timeline and all(version(Path(member)) == record["versions"].get(member) for member in record["members"]) \
                     and record.get("inputs") == inputs_stamp(record["sources"])
                 if fresh and in_scope & set(record["members"]) and (self.out / record["object"]).is_file():
                     kept[cid] = record
@@ -409,7 +413,7 @@ class Build:
         # you, kept with every turn's time and wake-up tasks so later builds can link and window
         # them without parsing the logs again.
         events = []
-        for event in builder.captain_events(home, exchanges, 0):
+        for event in builder.captain_events(home, exchanges, 0) if self.timeline else []:
             event["session"] = cid
             event["text"] = first_line(event["text"])
             events.append(event)
@@ -438,7 +442,7 @@ class Build:
         )
         return {"members": list(versions), "versions": versions, "rules": self.rules, "sources": found, "inputs": inputs,
                 "object": rel, "stamp": stamp, "entry": entry, "sheet": sheet,
-                "events": events, "turns": turns, "documents": sorted(documents), "found": documents}
+                "timeline": self.timeline, "events": events, "turns": turns, "documents": sorted(documents), "found": documents}
 
     def documents(self, conversations: list[tuple[str, dict]]) -> dict[str, dict]:
         """Every document a conversation names: written again when its file changed (or a
@@ -489,7 +493,10 @@ class Build:
 
     def fleet(self, conversations: list[tuple[str, dict]], since: float) -> dict[str, dict]:
         """The fleet records of the window (and older items never settled), with your messages and
-        the replies to you, linked to the turns that handled them, one object per week."""
+        the replies to you, linked to the turns that handled them, one object per week. With the
+        timeline switched off, none is collected and no week is written."""
+        if not self.timeline:
+            return {}
         fleet = builder.collect_fleet(self.homes, since)
         sessions = []
         for cid, record in conversations:
@@ -545,6 +552,7 @@ class Build:
             "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp", "kind", "size") if key in record}
                           for doc_id, record in documents.items() if not record.get("gone")},
             "weeks": weeks,
+            **({} if self.timeline else {"fleet_timeline": False}),
             "sheets": {cid: record["sheet"] for cid, record in conversations if record.get("sheet")},
         }
         replace(self.out / "index.json", encode(index))
@@ -766,6 +774,9 @@ def launch_agent(target: Path) -> str:
     # herdr is the pane a send reaches), so the agent gets the folders they are in now.
     found = [str(Path(shutil.which(tool)).resolve().parent) for tool in ("node", "python3", "herdr") if shutil.which(tool)]
     path = ":".join(dict.fromkeys([*found, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
+    # launchd starts the run with none of this shell's environment: the fleet timeline's switch goes along when it is on now,
+    # so the agent builds what a build run by hand here would.
+    switch = f"\n    <key>{builder.FLEET_TIMELINE_ENV}</key><string>on</string>" if builder.fleet_timeline_on() else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -775,7 +786,9 @@ def launch_agent(target: Path) -> str:
   <array><string>/bin/sh</string><string>-c</string><string>{escape(command)}</string></array>
   <key>WorkingDirectory</key><string>{escape(str(reader.REPO.resolve()))}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>{escape(path)}</string></dict>
+  <dict>
+    <key>PATH</key><string>{escape(path)}</string>{switch}
+  </dict>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>{escape(str(log))}</string>

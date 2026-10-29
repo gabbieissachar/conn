@@ -60,7 +60,9 @@ The page's **Fleet timeline** tab is switched off: the build skips collecting th
 PMOS_READER_FLEET_TIMELINE=on serve.sh restart      # on, 1, true or yes; unset or anything else is off
 ```
 
-The offline copy (`sync.py`) is not affected: it builds its own fleet weeks and keeps its tab.
+The offline copy (`sync.py`) follows the same switch (one reader of the variable, `fleet_timeline_on()` in `build_prototype.py`). Off, a build collects no fleet records, writes no `f/<yyyy>-W<ww>.json` week and lists none in `index.json` or the manifest, the next build removes weeks an earlier build wrote, and the offline page hides the tab (`index.json` carries `"fleet_timeline": false`; an index without it, from before the switch, keeps the tab). On, the output is what it was before the switch. A build run with the switch changed parses the conversations again, so it takes effect at once.
+
+The LaunchAgent that `sync.py --launch-agent` prints runs the build from launchd's own environment, which holds none of your shell's variables, so the printed plist carries the switch: print it with the variable set (`PMOS_READER_FLEET_TIMELINE=on python3 setup/transcript-reader/sync.py --launch-agent`) and its `EnvironmentVariables` holds `PMOS_READER_FLEET_TIMELINE=on`; print it without and the agent builds without the timeline. Install the printed plist again after changing the switch.
 
 ## Open it from the phone
 
@@ -106,10 +108,10 @@ The port is 8443 because macOS lets only root listen below 1024, so the address 
 
 ### What the copy holds, and how fresh it is
 
-- **What is in it.** The conversations active in the last 90 days, the markdown and HTML files they name, the fleet timeline weeks, and the answer sheet's questionnaires: everything `sync.py --dry-run` seals (the sealed copy section). By default that is every fleet session (the main home, the second mates and their workers) and the owner's own sessions, the Claude Code sessions whose working directory is under `~/workspace` (their own heading in the picker, "Your own sessions"; `--workspace DIR` or `--no-workspace` change it). Everything is redacted before it is sealed.
+- **What is in it.** The conversations active in the last 90 days, the markdown and HTML files they name, the fleet timeline weeks (when the timeline is switched on), and the answer sheet's questionnaires: everything `sync.py --dry-run` seals (the sealed copy section). By default that is every fleet session (the main home, the second mates and their workers) and the owner's own sessions, the Claude Code sessions whose working directory is under `~/workspace` (their own heading in the picker, "Your own sessions"; `--workspace DIR` or `--no-workspace` change it). Everything is redacted before it is sealed.
 - **Freshness.** The phone's copy is as new as the last time the phone could reach this Mac, and that is as new as the Mac's last sync (every minute with the LaunchAgent while the Mac is awake; a sleeping Mac builds nothing). With the Mac away the page says `Offline · copy from 14:02 (3 h old)` and Herdr states are as of then. Replies to turns after that are not on the phone until the Mac is back. The copy keeps 90 days, so what the Mac drops from them leaves the phone at its next download.
 - **What the phone holds.** Sealed bytes and the key (not extractable), never the passphrase and never any text in the clear. The shell page, a manifest and an icon are cached so the Home Screen app opens. **Forget this device** clears the key, everything stored, the cache, the worker and any message still held, and asks the passphrase again.
-- **Not offline.** Search, pins, the Fleet timeline and documents all work from the stored copy. Follow, Sync from Herdr, reopening a closed pane and the local page's live state need the Mac (and the local reader page itself is not stored).
+- **Not offline.** Search, pins, the Fleet timeline (when switched on) and documents all work from the stored copy. Follow, Sync from Herdr, reopening a closed pane and the local page's live state need the Mac (and the local reader page itself is not stored).
 
 ### Send with the laptop shut
 

@@ -79,6 +79,10 @@ class Lab:
     def __init__(self, test):
         self.tmp = tempfile.TemporaryDirectory()
         test.addCleanup(self.tmp.cleanup)
+        # The fleet timeline is off unless switched on; the lab builds with it on, and a test of the switch sets it as it needs.
+        env = mock.patch.dict(os.environ, {builder.FLEET_TIMELINE_ENV: "on"})
+        env.start()
+        test.addCleanup(env.stop)
         root = Path(self.tmp.name).resolve()
         self.root, self.projects, self.out = root, root / "projects", root / "out" / "hosted"
         self.main, self.mate = root / "homes" / "main", root / "homes" / "mate" / "firstmate"
@@ -274,6 +278,101 @@ class FleetTimelineSwitchTest(unittest.TestCase):
             self.assertIs(on["fleet_timeline"], True, value)
             self.assertEqual({k: v for k, v in on.items() if k not in ("fleet", "fleet_timeline", "generated")},
                              {k: v for k, v in off.items() if k not in ("fleet", "fleet_timeline", "generated")}, value)
+
+
+class OfflineFleetTimelineSwitchTest(unittest.TestCase):
+    """PMOS_READER_FLEET_TIMELINE decides whether the offline copy carries the fleet timeline: on is the copy as it was, off leaves it out."""
+
+    def build(self, lab, value, *extra):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(builder.FLEET_TIMELINE_ENV, None)
+            if value is not None:
+                os.environ[builder.FLEET_TIMELINE_ENV] = value
+            return lab.build(*extra)
+
+    def weeks_on_disk(self, lab):
+        return sorted(path.name for path in (lab.out / "f").glob("*"))
+
+    def test_off_by_default_nothing_of_the_timeline_is_collected_written_or_listed(self):
+        for value in (None, "", "off", "0", "no"):
+            lab = Lab(self)
+            with mock.patch.object(builder, "collect_fleet", wraps=builder.collect_fleet) as collect:
+                self.assertEqual(self.build(lab, value), 0)
+            self.assertEqual(collect.call_count, 0, value)
+            index, manifest = lab.index(), lab.manifest()
+            self.assertEqual((index["weeks"], manifest["weeks"], self.weeks_on_disk(lab)), ({}, {}, []), value)
+            self.assertIs(index["fleet_timeline"], False, value)
+            self.assertTrue(all(not record["events"] for record in manifest["conversations"].values()), value)
+            self.assertEqual(sorted(entry["id"] for entry in index["conversations"]), sorted([A, W, M]), value)
+
+    def test_on_is_the_copy_it_was_and_says_nothing_extra_in_the_index(self):
+        for value in ("1", "on", "ON", "true", "yes"):
+            lab = Lab(self)
+            self.assertEqual(self.build(lab, value), 0)
+            index = lab.index()
+            self.assertNotIn("fleet_timeline", index, value)
+            self.assertTrue(index["weeks"] and self.weeks_on_disk(lab), value)
+
+    def test_off_changes_nothing_but_the_weeks_and_the_flag(self):
+        lab = Lab(self)
+        on_out, off_out = lab.out, lab.root / "out" / "hosted-off"
+        self.build(lab, "on")
+        lab.out = off_out  # one lab, two output folders: the patches of a second lab would replace the first's
+        self.build(lab, None)
+        keep = lambda index: {k: v for k, v in index.items() if k not in ("weeks", "fleet_timeline", "as_of", "since")}  # noqa: E731
+        lab.out = on_out
+        on = lab.index()
+        lab.out = off_out
+        self.assertEqual(keep(on), keep(lab.index()))
+        for entry in on["conversations"]:
+            lab.out = on_out
+            was = lab.object(entry["object"])
+            lab.out = off_out
+            self.assertEqual(was, lab.object(entry["object"]))
+
+    def test_switching_on_again_restores_the_weeks_exactly_and_off_removes_them(self):
+        lab = Lab(self)
+        home = lab.out
+        lab.out = lab.root / "out" / "hosted-fresh"  # the same lab, built once straight with the timeline on
+        self.build(lab, "on")
+        weeks_fresh, index_fresh = self.weeks_on_disk(lab), lab.index()["weeks"]
+        fresh_objects = {name: lab.object(f"f/{name}") for name in weeks_fresh}
+        lab.out = home
+        self.assertEqual(self.build(lab, None), 0)
+        self.assertEqual(self.weeks_on_disk(lab), [])
+        self.assertEqual(self.build(lab, "on"), 0)  # a build that kept the conversations parsed with the switch off would lose their events
+        self.assertEqual(self.weeks_on_disk(lab), weeks_fresh)
+        self.assertTrue(weeks_fresh)
+        self.assertEqual(lab.index()["weeks"], index_fresh)
+        self.assertNotIn("fleet_timeline", lab.index())
+        for name in weeks_fresh:
+            self.assertEqual(lab.object(f"f/{name}"), fresh_objects[name])
+        self.assertEqual(self.build(lab, None), 0)
+        self.assertEqual((self.weeks_on_disk(lab), lab.index()["weeks"]), ([], {}))
+
+    def test_the_sealed_copy_of_an_off_build_holds_no_week(self):
+        lab = Lab(self)
+        self.build(lab, None)
+        index, manifest = lab.index(), lab.manifest()
+        bucket_index, objects = sync.DryRun(lab.out, lab.root / "bucket", PASS).retained(index, manifest)
+        self.assertEqual(bucket_index["weeks"], {})
+        self.assertFalse([rel for rel in objects if rel.startswith("f/")])
+        self.assertIs(bucket_index["fleet_timeline"], False)
+
+    def test_the_printed_launch_agent_carries_the_switch_when_it_is_on(self):
+        env = lambda plist: plist.split("<key>EnvironmentVariables</key>")[1].split("</dict>")[0]  # noqa: E731
+        for value in ("on", "1", "TRUE", "yes"):
+            with mock.patch.dict(os.environ, {builder.FLEET_TIMELINE_ENV: value}):
+                plist = sync.launch_agent(Path("/tmp/x"))
+            self.assertIn(f"<key>{builder.FLEET_TIMELINE_ENV}</key><string>on</string>", env(plist), value)
+            self.assertIn("<key>PATH</key>", env(plist))
+        for value in (None, "", "off", "0"):
+            with mock.patch.dict(os.environ):
+                os.environ.pop(builder.FLEET_TIMELINE_ENV, None)
+                if value is not None:
+                    os.environ[builder.FLEET_TIMELINE_ENV] = value
+                plist = sync.launch_agent(Path("/tmp/x"))
+            self.assertNotIn(builder.FLEET_TIMELINE_ENV, plist, value)
 
 
 class AnswerSheetTest(unittest.TestCase):

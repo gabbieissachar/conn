@@ -255,7 +255,7 @@
       if (!kept.has(key)) kept.set(key, get(entry.object, entry.stamp).catch(e => { kept.delete(key); throw e; }));
       return kept.get(key);
     }
-    // The weeks of fleet records the timeline shows: those reaching into its window, and older
+    // The weeks of fleet records the timeline shows (none when the build left the timeline out): those reaching into its window, and older
     // ones holding items never marked settled.
     const weeks = idx => Object.keys(idx.weeks || {}).sort().filter(key => idx.weeks[key].to >= idx.since || idx.weeks[key].open > 0);
     const weeksSig = idx => JSON.stringify(weeks(idx).map(key => [key, idx.weeks[key].stamp]));
@@ -276,7 +276,7 @@
       const sig = weeksSig(idx);
       return {
         generated: idx.as_of || 0, since: idx.since || 0, homes: idx.homes || [], summaries: idx.summaries || [],
-        template: idx.template, sheetTemplate: idx.sheet_template, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
+        template: idx.template, sheetTemplate: idx.sheet_template, fleet_timeline: idx.fleet_timeline !== false, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
         fleet: previous && previous.weeksSig === sig ? previous.fleet : null,
       };
     }

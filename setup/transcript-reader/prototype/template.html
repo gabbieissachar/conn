@@ -2440,7 +2440,7 @@ __HEAD_HOSTED__
   // the fleet records. Never on the local page, whose payload holds everything.
   function missing() {
     if (!HOSTED) return false;
-    if (state.view === "fleet") return !data.fleet;
+    if (state.view === "fleet" && fleetOn()) return !data.fleet;
     const session = data.sessions[state.session];
     if (!session) return false;
     if (!session.exchanges) return true;
@@ -2448,7 +2448,7 @@ __HEAD_HOSTED__
     return Boolean(id && data.documents[id].text == null);
   }
   async function ensure() {
-    if (state.view === "fleet") { await hosted.fleet(data); return; }
+    if (state.view === "fleet" && fleetOn()) { await hosted.fleet(data); return; }
     const session = data.sessions[state.session];
     if (!session) return;
     await hosted.conversation(session);
@@ -2530,7 +2530,8 @@ __HEAD_HOSTED__
     state.session = Math.max(0, rest.indexOf(current));
   }
   // The build leaves the fleet timeline out unless its owner switched it on (PMOS_READER_FLEET_TIMELINE, README): then its tab is
-  // hidden, and a page left on it goes back to the conversation. The hosted copy's data does not say, and keeps its tab.
+  // hidden, and a page left on it goes back to the conversation. The hosted copy's index says so when it was built without it
+  // (and an index from before the switch says nothing, and keeps its tab).
   const fleetOn = () => data.fleet_timeline !== false;
   function render() {
     if (missing()) { whenReady(render); return; }  // the hosted copy loads first
