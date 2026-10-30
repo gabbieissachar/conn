@@ -1480,7 +1480,7 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: true, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -1600,8 +1600,8 @@ __HEAD_HOSTED__
     // An edited comment goes back to its place.
     items.splice(boxPlace(session.id, items.length), 0, item);
     saveBatch(session.id, items);
-    // On a phone the list folds after each Add, so the batch does not take the conversation's room.
-    link.editing = null; link.batchOpen = !narrow.matches;
+    // The list stays as the reader left it (folded unless they opened it), so the batch does not take the conversation's room.
+    link.editing = null;
     dock("text").value = ""; saveDraft(); growDock();
     link.target = null; markTarget();
     link.result = { ok: true, text: `Added to the batch (${items.length}). Send sends them all.` };
@@ -1630,6 +1630,7 @@ __HEAD_HOSTED__
   function renderBatch(session) {
     const items = batchOf(session.id);
     dock("batch").hidden = !items.length;
+    if (!items.length) link.batchOpen = false;
     const sig = JSON.stringify([session.id, link.batchOpen, items]);
     if (!items.length || sig === link.batchSig) return;
     link.batchSig = sig;
@@ -1677,7 +1678,7 @@ __HEAD_HOSTED__
     if (bar.hidden) { main.style.paddingBottom = ""; placeNewReply(); return; }
     adopt(session);
     if (link.dockSid !== session.id) {
-      link.dockSid = session.id; link.result = null;
+      link.dockSid = session.id; link.result = null; link.batchOpen = false;
       const draft = draftOf(session.id) || { text: "" };
       if (link.target && link.target.sid !== session.id) { link.target = null; markTarget(); }
       if (!link.target && draft.target) { link.target = frozenTarget(session.id, draft.target, draft.sid); markTarget(); }

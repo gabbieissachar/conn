@@ -123,3 +123,14 @@ test('page: both pickers lead with the Starred group, the option text carries th
   assert.match(page, /stars\.refresh\(s\.stamps && s\.stamps\.stars\)/, 'the state poll carries the revision');
   assert.match(body('toggleStar'), /picker\.starOf\(session, stars\.all\(\)\) \|\| session\.id/, 'unstar by the conversation the star was made under');
 });
+
+test('page: the batch list starts folded on every screen and Add leaves it as the reader left it', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+  assert.match(page, /const link = \{[^\n]*batchOpen: false,/, 'folded at load');
+  assert.match(page, /link\.dockSid = session\.id;[^\n]*link\.batchOpen = false;/, 'folded again on a switch of session');
+  assert.match(body('renderBatch'), /if \(!items\.length\) link\.batchOpen = false;/, 'an emptied batch folds');
+  assert.doesNotMatch(page, /link\.batchOpen = !narrow\.matches/, 'no screen size opens or folds it on Add');
+  assert.doesNotMatch(body('addToBatch') || page.slice(page.indexOf('Added to the batch') - 900, page.indexOf('Added to the batch')), /batchOpen/, 'Add does not touch it');
+  assert.match(page, /dock\("batch-toggle"\)\.addEventListener\("click", \(\) => \{ link\.batchOpen = !link\.batchOpen; renderDock\(\); \}\)/, 'the heading still toggles it');
+});
