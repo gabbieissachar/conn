@@ -215,6 +215,106 @@ for (const sealed of [false, true]) {
     assert.equal(fs.existsSync(file), false);
     assert.equal((await lab.receipt(Q2)).state, 'sent');
   });
+
+  // Taking a message back (api.js unqueue) and the drain's claim are the same rename of the same file, so exactly one has it.
+  const name = (id) => id + (sealed ? '.json.enc' : '.json');
+  const tombstone = (lab, id) => path.join(lab.folder, 'q', '.cancelled-' + id);
+  const takeBack = (lab, id) => fs.renameSync(path.join(lab.folder, 'q', name(id)), tombstone(lab, id));
+
+  test(`${kind}: a message taken back before the drain claims it is never sent, and gets no receipt`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    await lab.queue(Q1, { session_id: A, text: 'I changed my mind' });
+    await lab.queue(Q2, { session_id: A, text: 'this one stays' });
+    takeBack(lab, Q1);
+    const result = await lab.drain();
+    assert.deepEqual(result, { sent: 1, refused: 0, interrupted: 0, expired: 0 });
+    assert.deepEqual(lab.herdr.prompts().map((call) => call.args[5]), ['this one stays']);
+    assert.equal(await lab.receipt(Q1), null, 'a taken-back message has no receipt: nothing happened to it');
+    assert.equal((await lab.receipt(Q2)).state, 'sent');
+    assert.deepEqual(lab.queued(), ['.cancelled-' + Q1], 'only the tombstone is left');
+  });
+
+  test(`${kind}: once the drain has claimed a message it cannot be taken back, and it is sent exactly once`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    await lab.queue(Q1, { session_id: A, text: 'too late to take back' });
+    const seen = [];
+    const runner = async (file, args) => {
+      if (args[2] === 'agent' && args[3] === 'prompt') {
+        // Typing the message into the pane is under way: the request is claimed, and a take-back finds the file gone.
+        seen.push({ queued: lab.queued().filter((entry) => entry !== '.drain.lock') });
+        assert.throws(() => takeBack(lab, Q1), { code: 'ENOENT' });
+        seen.push({ receipt: await lab.receipt(Q1) });
+      }
+      return lab.herdr.runner(file, args);
+    };
+    assert.deepEqual(await lab.drain({ runner }), { sent: 1, refused: 0, interrupted: 0, expired: 0 });
+    assert.deepEqual(seen[0].queued, [name(Q1) + '.claimed']);
+    assert.equal(seen[1].receipt.state, 'sending');
+    assert.equal(lab.herdr.prompts().length, 1);
+    assert.equal(fs.existsSync(tombstone(lab, Q1)), false);
+    assert.equal((await lab.receipt(Q1)).state, 'sent');
+  });
+
+  test(`${kind}: a message taken back while the drain is busy with another one is skipped, not sent`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    await lab.queue(Q1, { session_id: A, text: 'first', }, { age: 20000 });
+    await lab.queue(Q2, { session_id: A, text: 'second, taken back meanwhile' });
+    let taken = false;
+    const runner = async (file, args) => {
+      if (args[2] === 'agent' && args[3] === 'prompt' && !taken) { taken = true; takeBack(lab, Q2); }
+      return lab.herdr.runner(file, args);
+    };
+    assert.deepEqual(await lab.drain({ runner }), { sent: 1, refused: 0, interrupted: 0, expired: 0 });
+    assert.deepEqual(lab.herdr.prompts().map((call) => call.args[5]), ['first']);
+    assert.equal(await lab.receipt(Q2), null);
+  });
+
+  test(`${kind}: a claim left by a drain that died before typing anything is picked up and sent once; one that died while typing is not sent again`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    await lab.queue(Q1, { session_id: A, text: 'claimed, then the drain died' });
+    await lab.queue(Q2, { session_id: A, text: 'sending, then the drain died' });
+    for (const id of [Q1, Q2]) fs.renameSync(path.join(lab.folder, 'q', name(id)), path.join(lab.folder, 'q', name(id) + '.claimed'));
+    // Q2 got as far as its "sending" receipt, which is written before anything is typed.
+    fs.mkdirSync(path.join(lab.folder, 'r'), { recursive: true });
+    const sendingText = Buffer.from(JSON.stringify({ id: Q2, session_id: A, state: 'sending', at: Math.floor(Date.now() / 1000) }));
+    fs.writeFileSync(path.join(lab.folder, 'r', name(Q2)), sealed ? await seal.close(lab.key, `r/${Q2}.json`, zlib.gzipSync(sendingText)) : sendingText);
+    const result = await lab.drain();
+    assert.deepEqual(result, { sent: 1, refused: 0, interrupted: 1, expired: 0 });
+    assert.deepEqual(lab.herdr.prompts().map((call) => call.args[5]), ['claimed, then the drain died']);
+    assert.equal((await lab.receipt(Q1)).state, 'sent');
+    assert.equal((await lab.receipt(Q2)).code, 'interrupted');
+    assert.deepEqual(lab.queued(), []);
+  });
+
+  test(`${kind}: tombstones of messages taken back are forgotten after two days, and not before`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    fs.mkdirSync(path.join(lab.folder, 'q'), { recursive: true });
+    const old = tombstone(lab, Q1), fresh = tombstone(lab, Q2);
+    fs.writeFileSync(old, ''); fs.writeFileSync(fresh, '');
+    const then = new Date(Date.now() - 2 * 86400 * 1000 - 60000);
+    fs.utimesSync(old, then, then);
+    await lab.drain();
+    assert.equal(fs.existsSync(old), false);
+    assert.equal(fs.existsSync(fresh), true);
+  });
+
+  test(`${kind}: the receipt says what Herdr reported the agent doing when the message went in`, async (t) => {
+    const lab = await copy({ sealed });
+    t.after(lab.cleanup);
+    await lab.queue(Q1, { session_id: A, text: 'while it works' });
+    lab.herdr.panes[0].agent_status = 'working';
+    await lab.drain();
+    assert.equal((await lab.receipt(Q1)).agent, 'working');
+    await lab.queue(Q2, { session_id: A, text: 'while it waits' });
+    lab.herdr.panes[0].agent_status = 'idle';
+    await lab.drain();
+    assert.equal((await lab.receipt(Q2)).agent, 'idle');
+  });
 }
 
 test('the caller says whether the folder is sealed; a bucket that lost its params is not read as a plain copy', async (t) => {

@@ -43,7 +43,12 @@
 //                                                   page made (base64) to out/bucket/q/<id>.json.enc, so the
 //                                                   server never sees the text. Nothing is sent to Herdr:
 //                                                   drain.js (run by the sync agent) delivers it later.
-//   POST /api/transcript-reader/html-open           { id }: an HTML file the page offers (listed beside it in
+//   POST /api/transcript-reader/unqueue             takes a queued message back: { copy, id }. { state: "cancelled" } when it
+//                                                   was waiting (now never sent) or this server never had it (and now refuses
+//                                                   it), { state: "too_late" } when the drain has it, which the receipt then
+//                                                   says. The rename the drain claims with and this route's are the same
+//                                                   atomic step, so exactly one of them has the message.
+//   POST /api/transcript-reader/html-open          { id }: an HTML file the page offers (listed beside it in
 //                                                   out/html-files.json) is checked now (still there, under the
 //                                                   home or a temp folder, not over the size limit) and given an
 //                                                   address: { url, name, size, mtime }
@@ -187,6 +192,9 @@ const MAX_BODY_BYTES = 16 * 1024;
 // A queued send carries up to MAX_TEXT characters, sealed and in base64, so its route takes a larger body.
 const MAX_QUEUE_BODY_BYTES = 64 * 1024;
 const MAX_QUEUED = 50;
+// Messages taken back leave an empty .cancelled-<id> file in q/ for drain.js to forget after two days.
+const MAX_TOMBSTONES = 200;
+const cancelledName = (id) => '.cancelled-' + id;
 const QUEUE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SEALED_MAGIC = Buffer.from('HRC1');
 const SCAN_TTL_MS = 700;
@@ -816,6 +824,8 @@ function create({
       name = body.id + '.json.enc';
     }
     const directory = path.join(outDir, folder, 'q');
+    // A request taken back (unqueue) is never queued after that, whenever the post that carries it turns up.
+    if (fs.existsSync(path.join(directory, cancelledName(body.id)))) throw new RequestError('That request was taken back, so it was not queued.', 409, 'cancelled');
     let waiting = 0;
     try { waiting = fs.readdirSync(directory).filter((entry) => !entry.startsWith('.')).length; } catch { waiting = 0; }
     if (waiting >= MAX_QUEUED) throw new RequestError('Too many messages are waiting for the laptop. Wait for them to be sent.', 429, 'queue_full');
@@ -825,6 +835,45 @@ function create({
       throw new RequestError('The request could not be queued.', 500, 'queue_failed');
     }
     return { id: body.id, queued: waiting + 1 };
+  }
+
+  // Taking a queued message back. The request waits in q/<id>.json (plain) or q/<id>.json.enc (sealed), and the drain
+  // takes it by renaming that file to <name>.claimed (drain.js), so a rename is the one atomic step both sides use: whoever
+  // renames first has the message, and the other finds the file gone. This route renames it to a tombstone, .cancelled-<id>,
+  // and empties that, so:
+  //   cancelled  the message was waiting and is now taken back, or this server never had it (a send held on a phone whose
+  //              post, or only its answer, was lost) and now refuses it if it still turns up. Either way no drain will send it.
+  //   too_late   the drain has it (claimed, or its receipt is written): it is being sent, was sent, or was refused, and the
+  //              receipt says which. Nothing is changed.
+  // Nothing here can read a sealed request: it is never opened, only renamed.
+  function unqueue(body) {
+    for (const key of Object.keys(body)) if (key !== 'copy' && key !== 'id') throw new RequestError('Unknown field.');
+    const folder = body.copy;
+    if (folder !== 'hosted' && folder !== 'bucket') throw new RequestError('Unknown copy.');
+    if (typeof body.id !== 'string' || !QUEUE_ID_RE.test(body.id)) throw new RequestError('Invalid request id.');
+    const ext = folder === 'bucket' ? '.json.enc' : '.json';
+    const directory = path.join(outDir, folder, 'q');
+    const waiting = path.join(directory, body.id + ext);
+    const tombstone = path.join(directory, cancelledName(body.id));
+    const there = (file) => { try { fs.statSync(file); return true; } catch { return false; } };
+    let renamed = false;
+    try { fs.renameSync(waiting, tombstone); renamed = true; } catch (error) {
+      if (error.code !== 'ENOENT') throw new RequestError('The message could not be taken back.', 500, 'unqueue_failed');
+    }
+    if (renamed) {
+      // Taken back already; the tombstone only has to say so, so the request's text is not kept.
+      try { fs.writeFileSync(tombstone, '', { mode: 0o600 }); } catch { /* the rename was the cancel */ }
+      return { state: 'cancelled' };
+    }
+    if (there(tombstone)) return { state: 'cancelled' };
+    if (there(waiting + '.claimed') || there(path.join(outDir, folder, 'r', body.id + ext))) return { state: 'too_late' };
+    // Nothing here has ever had it. A tombstone makes sure a late copy of the same post is refused.
+    let tombstones = 0;
+    try { tombstones = fs.readdirSync(directory).filter((entry) => entry.startsWith('.cancelled-')).length; } catch { tombstones = 0; }
+    if (tombstones >= MAX_TOMBSTONES) throw new RequestError('Too many messages were taken back recently. Try again later.', 429, 'queue_full');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(tombstone, '', { mode: 0o600 });
+    return { state: 'cancelled' };
   }
 
   // -------------------------------------------------------------- HTML files
@@ -1027,6 +1076,10 @@ function create({
     }
     if (pathname === API + 'queue' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...queueWrite(await readJsonBody(req, MAX_QUEUE_BODY_BYTES)) });
+      return;
+    }
+    if (pathname === API + 'unqueue' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...unqueue(await readJsonBody(req)) });
       return;
     }
     for (const command of ['reopen', 'close']) {

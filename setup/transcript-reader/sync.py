@@ -791,7 +791,7 @@ def wipe(target: Path, out: Path) -> int:
     """Empty <target> of what --seal writes there (and forget what was sealed); nothing else is touched."""
     removed = 0
     for pattern in ("index.html", "sheet.html", *STATIC_FILES, "index.json.enc", "k/params.json", "s/*.json.enc", "d/*.json.enc", "f/*.json.enc", "a/*.json.enc",
-                    "r/*.json.enc", "q/*.json.enc", "q/.drain.lock", "*/.*.partial", ".*.partial"):
+                    "r/*.json.enc", "q/*.json.enc", "q/*.json.enc.claimed", "q/.cancelled-*", "q/.drain.lock", "*/.*.partial", ".*.partial"):
         for path in target.glob(pattern):
             if path.is_file():
                 path.unlink()

@@ -474,6 +474,117 @@ test('queue: a full queue takes no more until drain.js has sent what is in it', 
   } finally { await t.close(); }
 });
 
+// Taking a queued message back (the page's Undo). The request waits in q/, and the drain claims it by renaming it to
+// <name>.claimed; unqueue renames the same file to a tombstone, so exactly one of them has it.
+const waitingFile = (t, copy, id = Q) => path.join(t.tree.outDir, copy, 'q', id + (copy === 'bucket' ? '.json.enc' : '.json'));
+const tombstoneFile = (t, copy, id = Q) => path.join(t.tree.outDir, copy, 'q', '.cancelled-' + id);
+const queuePlain = (t, id = Q, text = 'hello') => t.post('queue', { copy: 'hosted', id, object: { session_id: A, text, at: 1761441000.5 } });
+
+test('unqueue: a message still waiting is taken out of the queue, so no drain can send it, and its text is not kept', async () => {
+  const t = await start();
+  try {
+    assert.equal((await queuePlain(t, Q, 'a message I will take back')).status, 200);
+    const gone = await t.post('unqueue', { copy: 'hosted', id: Q });
+    assert.equal(gone.status, 200, gone.raw);
+    assert.deepEqual(gone.json, { status: 'ok', state: 'cancelled' });
+    assert.equal(fs.existsSync(waitingFile(t, 'hosted')), false, 'nothing waits for the drain');
+    assert.equal(fs.readFileSync(tombstoneFile(t, 'hosted'), 'utf8'), '', 'the tombstone holds no text');
+    assert.equal(fs.statSync(tombstoneFile(t, 'hosted')).mode & 0o777, 0o600);
+    assert.equal(t.herdr.calls.length, 0, 'taking back never reaches Herdr');
+    assert.deepEqual((await t.post('unqueue', { copy: 'hosted', id: Q })).json, { status: 'ok', state: 'cancelled' }, 'asking again says the same');
+  } finally { await t.close(); }
+});
+
+test('unqueue: a sealed request is taken back without being opened', async () => {
+  const t = await start();
+  try {
+    const bytes = sealedBytes();
+    assert.equal((await t.post('queue', { copy: 'bucket', id: Q, data: bytes.toString('base64') })).status, 200);
+    const gone = await t.post('unqueue', { copy: 'bucket', id: Q });
+    assert.deepEqual(gone.json, { status: 'ok', state: 'cancelled' });
+    assert.equal(fs.existsSync(waitingFile(t, 'bucket')), false);
+    assert.equal(fs.readFileSync(tombstoneFile(t, 'bucket'), 'utf8'), '');
+  } finally { await t.close(); }
+});
+
+test('unqueue: too late once the drain has the message (claimed, or its receipt is written), and nothing is changed', async () => {
+  const t = await start();
+  try {
+    assert.equal((await queuePlain(t)).status, 200);
+    // The drain's claim: the same rename, to the name drain.js uses.
+    fs.renameSync(waitingFile(t, 'hosted'), waitingFile(t, 'hosted') + '.claimed');
+    const late = await t.post('unqueue', { copy: 'hosted', id: Q });
+    assert.deepEqual(late.json, { status: 'ok', state: 'too_late' });
+    assert.equal(fs.existsSync(waitingFile(t, 'hosted') + '.claimed'), true, 'the claimed request is left alone');
+    assert.equal(fs.existsSync(tombstoneFile(t, 'hosted')), false, 'no tombstone: the message is not taken back');
+    // After the drain is done the request is gone and the receipt is what is left.
+    fs.unlinkSync(waitingFile(t, 'hosted') + '.claimed');
+    fs.mkdirSync(path.join(t.tree.outDir, 'hosted', 'r'), { recursive: true });
+    fs.writeFileSync(path.join(t.tree.outDir, 'hosted', 'r', Q + '.json'), '{"state":"sent"}');
+    assert.deepEqual((await t.post('unqueue', { copy: 'hosted', id: Q })).json, { status: 'ok', state: 'too_late' });
+    // A sealed copy's receipt is r/<id>.json.enc.
+    const S = '55555555-aaaa-4aaa-8aaa-aaaaaaaaaaa5';
+    fs.mkdirSync(path.join(t.tree.outDir, 'bucket', 'r'), { recursive: true });
+    fs.writeFileSync(path.join(t.tree.outDir, 'bucket', 'r', S + '.json.enc'), sealedBytes());
+    assert.deepEqual((await t.post('unqueue', { copy: 'bucket', id: S })).json, { status: 'ok', state: 'too_late' });
+    assert.equal(fs.existsSync(tombstoneFile(t, 'bucket', S)), false);
+  } finally { await t.close(); }
+});
+
+test('unqueue: a message this server never had (a held send whose post was lost) is refused if it turns up later', async () => {
+  const t = await start();
+  try {
+    const first = await t.post('unqueue', { copy: 'hosted', id: Q });
+    assert.deepEqual(first.json, { status: 'ok', state: 'cancelled' });
+    assert.equal(fs.existsSync(tombstoneFile(t, 'hosted')), true);
+    const late = await queuePlain(t, Q, 'the post that was delayed');
+    assert.equal(late.status, 409);
+    assert.equal(late.json.code, 'cancelled');
+    assert.equal(fs.existsSync(waitingFile(t, 'hosted')), false, 'it is not queued');
+    // The same for a sealed copy.
+    assert.equal((await t.post('unqueue', { copy: 'bucket', id: Q })).json.state, 'cancelled');
+    const sealedLate = await t.post('queue', { copy: 'bucket', id: Q, data: sealedBytes().toString('base64') });
+    assert.equal(sealedLate.status, 409);
+    assert.equal(sealedLate.json.code, 'cancelled');
+    // Another id is not affected.
+    assert.equal((await queuePlain(t, '66666666-aaaa-4aaa-8aaa-aaaaaaaaaaa6')).status, 200);
+  } finally { await t.close(); }
+});
+
+test('unqueue: bad requests are refused, behind the same guard as every route, and change nothing', async () => {
+  const t = await start();
+  try {
+    assert.equal((await queuePlain(t)).status, 200);
+    for (const body of [{ copy: 'elsewhere', id: Q }, { copy: 'hosted', id: 'not-a-uuid' }, { copy: 'hosted', id: '../../etc/passwd' }, { copy: 'hosted' }, { id: Q },
+      { copy: 'hosted', id: Q, extra: 1 }, { copy: 'hosted', id: Q, object: {} }]) {
+      assert.equal((await t.post('unqueue', body)).status, 400, JSON.stringify(body));
+    }
+    const ok = { copy: 'hosted', id: Q };
+    assert.equal((await t.post('unqueue', ok, { [TOKEN_HEADER]: 'b'.repeat(64) })).status, 403);
+    assert.equal((await t.post('unqueue', ok, { Origin: 'http://evil.example' })).status, 403);
+    assert.equal((await t.post('unqueue', ok, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    assert.equal((await t.request({ method: 'GET', path: '/api/transcript-reader/unqueue', headers: { [TOKEN_HEADER]: t.token } })).status, 404);
+    assert.equal(fs.existsSync(waitingFile(t, 'hosted')), true, 'the message is still waiting');
+    assert.equal(fs.existsSync(tombstoneFile(t, 'hosted')), false);
+  } finally { await t.close(); }
+});
+
+test('unqueue: a message taken back leaves room in the queue, and the tombstones are capped', async () => {
+  const t = await start();
+  try {
+    const id = (n) => `${String(n).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
+    for (let n = 1; n <= 50; n += 1) assert.equal((await queuePlain(t, id(n), 'm' + n)).status, 200);
+    assert.equal((await queuePlain(t, id(51))).status, 429);
+    assert.equal((await t.post('unqueue', { copy: 'hosted', id: id(7) })).json.state, 'cancelled');
+    assert.equal((await queuePlain(t, id(51))).status, 200, 'the slot it held is free again');
+    // Tombstones for messages never seen are bounded.
+    const ghost = (n) => `${String(n).padStart(8, '0')}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`;
+    let refused = 0;
+    for (let n = 1; n <= 210; n += 1) if ((await t.post('unqueue', { copy: 'bucket', id: ghost(n) })).status === 429) refused += 1;
+    assert.ok(refused >= 1 && refused <= 11, 'about 200 are kept, then it says to try later: ' + refused);
+  } finally { await t.close(); }
+});
+
 test('send: the drain\'s own list of sendable sessions replaces the reading list, and nothing else in the checks', async () => {
   const tree = fixtureTree();
   const herdr = fakeHerdr();

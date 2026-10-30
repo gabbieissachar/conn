@@ -456,10 +456,12 @@
     }
     // The ids of the sends held on this device, not yet at the laptop.
     const heldIds = async () => new Set((await safe(dbAll("outbox")) || []).map(item => item.key));
-    // Posts what is held, oldest first, while the laptop answers: [{ id, state: "queued" | "refused" | "expired", reason }] for
-    // each one settled. A send already queued (409) counts as queued, so none goes twice; one the laptop refuses outright is
-    // dropped with its reason; one older than the laptop would accept (12 hours) is dropped and said so; the laptop being
-    // unreachable, signed out or full stops the run and leaves the rest held.
+    // Posts what is held, oldest first, while the laptop answers: [{ id, state: "queued" | "refused" | "expired" | "cancelled" |
+    // "too_late", reason }] for each one settled. A send already queued (409) counts as queued, so none goes twice; one the laptop
+    // refuses outright is dropped with its reason; one older than the laptop would accept (12 hours) is dropped and said so; the
+    // laptop being unreachable, signed out or full stops the run and leaves the rest held. A held send that was taken back (cancel)
+    // posts its unqueue instead of its body: the laptop then says whether it had the message after all (too_late) or has now
+    // made sure it never sends it (cancelled).
     let flushing = null;
     function flush() {
       if (!sealed.params || !sealed.key) return Promise.resolve([]);
@@ -467,9 +469,22 @@
         const settled = [];
         const items = ((await safe(dbAll("outbox"))) || []).map(item => item.value).sort((x, y) => x.at - y.at);
         for (const item of items) {
-          if (nowSeconds() - item.at > EXPIRY) { await safe(dbDel("outbox", item.id)); settled.push({ id: item.id, state: "expired" }); continue; }
+          // Past 12 hours no laptop sends it, so a send taken back needs no word to the laptop.
+          if (nowSeconds() - item.at > EXPIRY) { await safe(dbDel("outbox", item.id)); settled.push({ id: item.id, state: item.cancel ? "cancelled" : "expired" }); continue; }
+          if (item.cancel) {
+            try {
+              const answer = await post("unqueue", { copy: "bucket", id: item.id });
+              await safe(dbDel("outbox", item.id));
+              settled.push({ id: item.id, state: answer.state === "too_late" ? "too_late" : "cancelled" });
+            } catch (e) {
+              if (e.network || e.status === 401 || e.status === 403 || e.status === 429 || e.status >= 500 || !e.status) break;
+              await safe(dbDel("outbox", item.id)); settled.push({ id: item.id, state: "refused", reason: e.message });
+            }
+            continue;
+          }
           try { await post("queue", item.body); } catch (e) {
             if (e.status === 409 && e.code === "exists") { /* it got there before: queued */ }
+            else if (e.status === 409 && e.code === "cancelled") { await safe(dbDel("outbox", item.id)); settled.push({ id: item.id, state: "cancelled" }); continue; }
             else if (e.network || e.status === 401 || e.status === 403 || e.status === 429 || e.status >= 500 || !e.status) break;
             else { await safe(dbDel("outbox", item.id)); settled.push({ id: item.id, state: "refused", reason: e.message }); continue; }
           }
@@ -479,6 +494,29 @@
         return settled;
       })().finally(() => { flushing = null; });
       return flushing;
+    }
+    // Take a message back that was queued or held (the page's Undo). Whoever holds the message decides, and the answer is only
+    // ever one of: { state: "cancelled" } (it will not be sent: it was waiting and the laptop took it out, or the laptop never
+    // had it and now refuses it), { state: "too_late" } (the laptop has it: sending, sent or refused, its receipt says which) or
+    // { state: "cancelling" } (a send held on this device while the laptop cannot be reached: the cancel waits in the outbox with
+    // it and goes to the laptop with the next flush; the message is not claimed as taken back until then, because a post may have
+    // got there with only its answer lost). Anything else is an error, and the message is still where it was.
+    async function cancel(id) {
+      if (flushing) await safe(flushing);
+      const held = sealed.params ? await safe(dbGet("outbox", id)) : null;
+      try {
+        const answer = await post("unqueue", { copy: sealed.params ? "bucket" : "hosted", id });
+        if (held) await safe(dbDel("outbox", id));
+        return { state: answer.state === "too_late" ? "too_late" : "cancelled" };
+      } catch (e) {
+        if (e.network && held) {
+          try { await dbPut("outbox", id, { ...held, cancel: true }); } catch (storage) { throw new Error("The laptop is not reachable, and this device could not note the cancel, so the message is still held."); }
+          return { state: "cancelling" };
+        }
+        if (e.network) throw new Error("The laptop is not reachable, so the message was not taken back. It is still waiting for it.");
+        if (e.status === 404 || e.status === 405) throw new Error("This host cannot take back a queued message, so it will still be sent.");
+        throw e;
+      }
     }
     // What the laptop did with a queued message: { state: "sending" | "sent" | "refused", reason, label, at, ... },
     // or null while no receipt is written yet.
@@ -510,6 +548,6 @@
     // Where the list came from: the laptop, or this device's copy of it (with why, and when the device took it).
     const offline = () => ({ fromDevice: local.fromDevice, why: local.why, at: local.indexAt, capable: offlineCapable() });
     return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, pageChanged, outdated: () => outdated, prepare, unlock, forget, askPassphrase, enqueue, receipt,
-      flush, heldIds, offline, stored, download, keepFresh, htmlOpen, registerWorker,
+      cancel, flush, heldIds, offline, stored, download, keepFresh, htmlOpen, registerWorker,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();

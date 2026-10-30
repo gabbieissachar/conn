@@ -232,7 +232,9 @@ async function until(fn, what, ms = 20000) {
   // ------------------------------------------------------------------ Send while away
   await page.fill('#dock-text', 'Please also send it to the design team. Sent from the train.');
   await page.click('#dock-send');
-  await until(async () => /Held on this phone/.test(await text('#dock-status') + await text('#main')), 'the held message');
+  // Send holds the message for the Undo window (5 s, nothing leaves the page) before the page tries the laptop.
+  await until(async () => /Sending in \d s/.test(await text('#main')), 'the Undo window');
+  await until(async () => /Held on this phone/.test(await text('#dock-status') + await text('#main')), 'the held message', 40000);
   check(/Held on this phone/.test(await text('#main')), 'a Send with the laptop away is held on the phone and says so');
   await shot('09-held');
   const queueFolder = path.join(folder, 'out', 'bucket', 'q');

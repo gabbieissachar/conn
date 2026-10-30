@@ -1125,6 +1125,44 @@ class PageShellTest(unittest.TestCase):
             self.assertEqual(done.returncode, 0, f"{mode}: {done.stderr}")
             self.assertNotIn("/*__", script, f"{mode}: a slot was left unfilled")
 
+    def test_send_goes_through_the_undo_window_and_only_the_delivery_reaches_the_server_or_the_queue(self):
+        for mode, page in self.pages():
+            # The click holds the message (sendHold.begin) and deliverDock is the one thing the window's end runs.
+            self.assertEqual(page.count("sendHold.begin("), 1, mode)
+            self.assertEqual(page.count("deliverDock("), 2, "its definition and the one call the window makes: " + mode)
+            self.assertIn("const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed }); }, UNDO_SECONDS, hold);", page, mode)
+            send = re.search(r"  function sendDock\(\) \{.*?\n  \}\n", page, re.S).group(0)
+            self.assertNotIn("live.send(", send, mode)
+            self.assertNotIn("hosted.enqueue(", send, mode)
+            # Nothing but the delivery asks the server (local) or the queue (hosted) to send.
+            self.assertEqual(page.count("live.send("), 1, mode)
+            self.assertEqual(page.count("hosted.enqueue("), 1, mode)
+            delivery = re.search(r"  async function deliverDock\(.*?\n  \}\n", page, re.S).group(0)
+            self.assertIn("live.send(sid, text)", delivery, mode)
+            self.assertIn("hosted.enqueue(sid, text)", delivery, mode)
+            # The Undo window locks the box, Send turns into Undo and Esc takes the message back.
+            self.assertIn('dock("text").readOnly = held;', page, mode)
+            self.assertIn("`Undo ${sendHold.left()}`", page, mode)
+            self.assertIn('if (e.key === "Escape") { e.preventDefault(); undoHold(); }', page, mode)
+            # Undo on a message waiting in the queue asks the laptop, and only "cancelled" gives the text back.
+            self.assertIn("await hosted.cancel(id)", page, mode)
+            self.assertIn('if (answer.state === "cancelled") takeBack(p, "Undone: it was never sent.");', page, mode)
+        local, hosted = (page for _, page in self.pages())
+        self.assertIn('const hosted = null;', local)
+        self.assertNotIn("function cancel(id)", local, "the local page has no queue to take a message back from")
+        self.assertIn("async function cancel(id)", hosted)
+
+    def test_a_session_switched_to_during_another_sessions_undo_window_cannot_send_and_says_why(self):
+        for mode, page in self.pages():
+            # One message is in its window at a time, so the other session's Send is off with a reason on screen (never a dead click),
+            # decided before the button's state is set from it; Add is off too.
+            self.assertIn("const elsewhere = Boolean(link.hold && link.hold.sid !== session.id);", page, mode)
+            self.assertLess(page.index("if (!reason && elsewhere) reason ="), page.index('dock("send").disabled = held ? false : Boolean(reason)'), mode)
+            self.assertIn('dock("add").disabled = held || elsewhere ||', page, mode)
+            # Esc, Enter and the Undo click belong to the session whose message is held: not to a box switched to meanwhile.
+            self.assertIn('if (heldHere()) { if (e.key === "Escape")', page, mode)
+            self.assertIn("if (heldHere()) undoHold(); else sendDock();", page, mode)
+
     def test_follow_herdr_is_in_the_folded_header_and_is_the_same_switch_as_the_one_in_the_controls(self):
         for mode, page in self.pages():
             title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)

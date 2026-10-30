@@ -36,8 +36,9 @@ function fakeHerdr() {
   return herdr;
 }
 
-test('a Send queued from a phone with the laptop away is carried out once when it is back, and its receipt reaches the phone', async (t) => {
-  // The reader's own server, serving a sealed bucket folder it also takes queued requests into.
+// The reader's own server serving a sealed bucket folder it also takes queued requests into, and a phone page that reaches it
+// through a laptop that can be made unreachable (laptop.down).
+async function world(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-phonequeue-'));
   const root = path.join(base, 'repo');
   const bucket = path.join(root, 'setup', 'transcript-reader', 'out', 'bucket');
@@ -65,7 +66,7 @@ test('a Send queued from a phone with the laptop away is carried out once when i
   // The phone's connection to the laptop: the queue and the receipts go to the real server, the rest is the sealed copy in memory.
   const memory = laptop.respond;
   laptop.respond = async (url, options = {}) => {
-    const forwarded = url.startsWith('/api/transcript-reader/queue') || /^r\//.test(url);
+    const forwarded = url.startsWith('/api/transcript-reader/queue') || url.startsWith('/api/transcript-reader/unqueue') || /^r\//.test(url);
     if (!forwarded) return memory(url, options);
     laptop.requests.push({ url, method: options.method || 'GET', headers: options.headers });
     if (laptop.down) throw new TypeError('Load failed');
@@ -78,6 +79,11 @@ test('a Send queued from a phone with the laptop away is carried out once when i
   const tokened = phone.page({ laptop, device, token });
   await tokened.hosted.prepare();
   await tokened.hosted.unlock(phone.PASSPHRASE, true);
+  return { base, bucket, laptop, device, tokened, call, token, port };
+}
+
+test('a Send queued from a phone with the laptop away is carried out once when it is back, and its receipt reaches the phone', async (t) => {
+  const { base, bucket, laptop, device, tokened, call, token, port } = await world(t);
 
   // 1. The laptop is away: the Send is held on the phone and nothing reached the server.
   laptop.down = true;
@@ -121,3 +127,121 @@ const TOKEN_HEADER = 'x-transcript-reader-token';
 async function outboxBody(device, id) {
   return device.indexedDB.dump('hosted-reader').get('outbox').get(id).body;
 }
+
+// ---------------------------------------------------------------------------- Undo (taking a queued or held message back)
+
+const waiting = (bucket) => (fs.existsSync(path.join(bucket, 'q')) ? fs.readdirSync(path.join(bucket, 'q')).filter((name) => !name.startsWith('.')) : []);
+const tombstones = (bucket) => (fs.existsSync(path.join(bucket, 'q')) ? fs.readdirSync(path.join(bucket, 'q')).filter((name) => name.startsWith('.cancelled-')) : []);
+const drainOptions = (w, herdr) => ({ folder: w.bucket, sealed: true, stateFolder: path.join(w.base, 'state'), passphrase: phone.PASSPHRASE, runner: herdr.runner, claudeSessionsDir: path.join(w.base, 'no-sessions'), pause: async () => {} });
+
+test('undo: a message waiting in the laptop\'s queue is taken back, the drain never sends it, and the phone is told so', async (t) => {
+  const w = await world(t);
+  const queued = await w.tokened.hosted.enqueue(SESSION, 'send this, no wait, do not');
+  assert.deepEqual(waiting(w.bucket), [`${queued.id}.json.enc`]);
+  assert.deepEqual(plain(await w.tokened.hosted.cancel(queued.id)), { state: 'cancelled' });
+  assert.deepEqual(waiting(w.bucket), [], 'nothing waits for the drain');
+  assert.deepEqual(tombstones(w.bucket), [`.cancelled-${queued.id}`]);
+  const herdr = fakeHerdr();
+  assert.deepEqual(plain(await drain(drainOptions(w, herdr))), { sent: 0, refused: 0, interrupted: 0, expired: 0 });
+  assert.equal(herdr.calls.filter((call) => call.args[2] === 'agent').length, 0, 'no key and no prompt reached any pane');
+  assert.equal(await w.tokened.hosted.receipt(queued.id), null, 'there is no receipt: nothing happened to it');
+  assert.deepEqual(plain(await w.tokened.hosted.cancel(queued.id)), { state: 'cancelled' }, 'asking again says the same');
+});
+
+test('undo: once the laptop has sent it, Undo says too late and the receipt says sent', async (t) => {
+  const w = await world(t);
+  const queued = await w.tokened.hosted.enqueue(SESSION, 'this one goes');
+  const herdr = fakeHerdr();
+  assert.equal((await drain(drainOptions(w, herdr))).sent, 1);
+  assert.deepEqual(plain(await w.tokened.hosted.cancel(queued.id)), { state: 'too_late' });
+  assert.equal(herdr.prompts().length, 1);
+  assert.equal(plain(await w.tokened.hosted.receipt(queued.id)).state, 'sent');
+  assert.deepEqual(tombstones(w.bucket), [], 'nothing was taken back');
+});
+
+test('undo: a message held on the phone while the laptop is away is only claimed as undone once the laptop confirms it never sent it', async (t) => {
+  const w = await world(t);
+  const hosted = w.tokened.hosted;
+  w.laptop.down = true;
+  const held = await hosted.enqueue(SESSION, 'held in a tunnel');
+  assert.equal(held.held, true);
+  // Undo with the laptop still away: the phone cannot know, so it says so, and keeps the cancel with the message.
+  assert.deepEqual(plain(await hosted.cancel(held.id)), { state: 'cancelling' });
+  assert.deepEqual(waiting(w.bucket), []);
+  assert.equal(device(w).outbox.get(held.id).cancel, true);
+  assert.deepEqual([...await hosted.heldIds()], [held.id], 'still held until the laptop answers');
+  // The laptop is back: the cancel goes instead of the message, which is never posted.
+  w.laptop.down = false;
+  assert.deepEqual(plain(await hosted.flush()), [{ id: held.id, state: 'cancelled' }]);
+  assert.deepEqual([...await hosted.heldIds()], []);
+  assert.deepEqual(waiting(w.bucket), [], 'the message itself never reached the queue');
+  assert.deepEqual(tombstones(w.bucket), [`.cancelled-${held.id}`]);
+  assert.deepEqual(plain(await hosted.flush()), [], 'nothing left to post');
+  const herdr = fakeHerdr();
+  assert.equal((await drain(drainOptions(w, herdr))).sent, 0);
+  assert.equal(herdr.calls.filter((call) => call.args[2] === 'agent').length, 0);
+});
+
+test('undo: a held message whose post got through with only its answer lost is found at the laptop and taken back, or reported too late', async (t) => {
+  const w = await world(t);
+  const hosted = w.tokened.hosted;
+  const post = async (id) => w.call({ method: 'POST', path: '/api/transcript-reader/queue', headers: { 'Content-Type': 'application/json', [TOKEN_HEADER]: w.token, Origin: `http://localhost:${w.port}`, 'Sec-Fetch-Site': 'same-origin' }, body: JSON.stringify(plain(await outboxBody(w.device, id))) });
+  // One: the post landed, the phone never heard. Undo while the laptop is away, then back.
+  w.laptop.down = true;
+  const first = await hosted.enqueue(SESSION, 'landed, answer lost');
+  w.laptop.down = false;
+  assert.equal((await post(first.id)).status, 200);
+  w.laptop.down = true;
+  assert.deepEqual(plain(await hosted.cancel(first.id)), { state: 'cancelling' });
+  w.laptop.down = false;
+  assert.deepEqual(plain(await hosted.flush()), [{ id: first.id, state: 'cancelled' }]);
+  assert.deepEqual(waiting(w.bucket), [], 'the copy that did get there was taken out of the queue');
+  // Two: the same, but the laptop's sync sent it before the phone could say anything.
+  w.laptop.down = true;
+  const second = await hosted.enqueue(SESSION, 'landed and sent');
+  w.laptop.down = false;
+  assert.equal((await post(second.id)).status, 200);
+  const herdr = fakeHerdr();
+  assert.equal((await drain(drainOptions(w, herdr))).sent, 1);
+  w.laptop.down = true;
+  assert.deepEqual(plain(await hosted.cancel(second.id)), { state: 'cancelling' });
+  w.laptop.down = false;
+  assert.deepEqual(plain(await hosted.flush()), [{ id: second.id, state: 'too_late' }]);
+  assert.equal(herdr.prompts().length, 1);
+  assert.equal(plain(await hosted.receipt(second.id)).state, 'sent', 'the receipt, not a guess, says what happened');
+});
+
+test('undo: a held message that is not taken back but reaches a laptop that was told to drop it is settled as cancelled, not queued', async (t) => {
+  const w = await world(t);
+  const hosted = w.tokened.hosted;
+  w.laptop.down = true;
+  const held = await hosted.enqueue(SESSION, 'its post is delayed');
+  w.laptop.down = false;
+  // Another device (or an earlier cancel whose answer was lost) took this id back at the laptop first.
+  const gone = await w.call({ method: 'POST', path: '/api/transcript-reader/unqueue', headers: { 'Content-Type': 'application/json', [TOKEN_HEADER]: w.token, Origin: `http://localhost:${w.port}`, 'Sec-Fetch-Site': 'same-origin' }, body: JSON.stringify({ copy: 'bucket', id: held.id }) });
+  assert.equal(gone.status, 200);
+  assert.deepEqual(plain(await hosted.flush()), [{ id: held.id, state: 'cancelled' }]);
+  assert.deepEqual(waiting(w.bucket), []);
+});
+
+test('undo: a laptop or relay with no way to take a message back says so, and the message stays where it was', async (t) => {
+  const w = await world(t);
+  const hosted = w.tokened.hosted;
+  const queued = await hosted.enqueue(SESSION, 'on a relay that cannot cancel');
+  const forward = w.laptop.respond;
+  w.laptop.respond = async (url, options = {}) => {
+    if (url.startsWith('/api/transcript-reader/unqueue')) return { ok: false, status: 404, json: async () => ({ error: 'not found' }), arrayBuffer: async () => new ArrayBuffer(0) };
+    return forward(url, options);
+  };
+  await assert.rejects(hosted.cancel(queued.id), /cannot take back a queued message/);
+  assert.deepEqual(waiting(w.bucket), [`${queued.id}.json.enc`]);
+  // The laptop away and the message not held on the phone: Undo cannot be answered, and says the message is still waiting.
+  w.laptop.respond = forward;
+  w.laptop.down = true;
+  await assert.rejects(hosted.cancel(queued.id), /not reachable.*still waiting/);
+  w.laptop.down = false;
+  assert.deepEqual(waiting(w.bucket), [`${queued.id}.json.enc`]);
+});
+
+// What the phone's own storage holds, as plain objects, for the tests that look at the outbox.
+const device = (w) => ({ outbox: new Map([...w.device.indexedDB.dump('hosted-reader').get('outbox')].map(([key, value]) => [key, plain(value)])) });

@@ -34,7 +34,15 @@
 // HOSTED_READER_HERDR names the Herdr binary (default `herdr`); tests give it a fake. With no
 // request in q/, nothing is read, unlocked or sent.
 //
-// Receipt: { id, session_id, state: "sending" | "sent" | "refused", code, reason, label, queued_at, at }.
+// Taking a message back (api.js unqueue, the page's Undo): the drain takes each request by renaming q/<id>.json(.enc) to
+// q/<id>.json(.enc).claimed before it reads it, and unqueue renames the same file to a tombstone. A rename is atomic, so exactly
+// one of them gets the message and the other finds the file gone: a message the drain did not claim is never sent, and one it
+// claimed cannot be taken back. A claim left by a drain that died is picked up by the next run like any request (the
+// "sending" receipt, written before anything is typed, tells a run that stopped midway from one that never started).
+// Tombstones (q/.cancelled-<id>, empty) are forgotten after two days.
+//
+// Receipt: { id, session_id, state: "sending" | "sent" | "refused", code, reason, label, agent, queued_at, at }; agent is what Herdr said
+// the agent was doing when the message went in, which the page uses to say Claude Code may hold it while the agent works.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -85,7 +93,7 @@ function ledger(folder, at, stateFolder) {
 async function drain({ folder, sealed, stateFolder = DEFAULT_STATE, passphrase = '', root = path.join(__dirname, '..', '..'), runner, herdrBin = 'herdr', claudeSessionsDir, pause, now = () => Date.now(), env } = {}) {
   if (typeof sealed !== 'boolean') throw new Error('Say whether the folder is a sealed bucket or a plain copy.');
   const queue = path.join(folder, 'q');
-  const entries = listing(queue, new RegExp('^' + ID + (sealed ? '\\.json\\.enc$' : '\\.json$')));
+  const entries = listing(queue, new RegExp('^' + ID + (sealed ? '\\.json\\.enc' : '\\.json') + '(?:\\.claimed)?$'));
   const result = { sent: 0, refused: 0, interrupted: 0, expired: 0 };
   if (!entries.length) { prune(folder, sealed, now()); return result; }
   let key = null;
@@ -125,8 +133,10 @@ async function drain({ folder, sealed, stateFolder = DEFAULT_STATE, passphrase =
       } catch { return null; }
     };
     for (const name of entries.sort((a, b) => mtimeMs(path.join(queue, a)) - mtimeMs(path.join(queue, b)))) {
-      const file = path.join(queue, name);
       const id = name.slice(0, 36);
+      // The claim: the request is this run's from here on, or it was taken back first and is not sent.
+      const file = path.join(queue, name.endsWith('.claimed') ? name : name + '.claimed');
+      if (!name.endsWith('.claimed')) { try { fs.renameSync(path.join(queue, name), file); } catch { continue; } }
       const waited = now() - mtimeMs(file);
       const done = async (state, fields) => {
         await write({ id, session_id: null, ...fields, state, at: Math.floor(now() / 1000) });
@@ -162,7 +172,7 @@ async function drain({ folder, sealed, stateFolder = DEFAULT_STATE, passphrase =
       await write({ id, ...fields, state: 'sending', at: Math.floor(now() / 1000) });
       try {
         const sent = await api.sendPrompt({ session_id: request.session_id, text: request.text });
-        await done('sent', { ...fields, label: sent.label });
+        await done('sent', { ...fields, label: sent.label, agent: sent.status });
       } catch (error) {
         const known = error && typeof error.code === 'string' && typeof error.status === 'number';
         await done('refused', { ...fields, code: known ? error.code : 'failed', reason: known ? error.message : 'The laptop could not send it.' });
@@ -173,11 +183,16 @@ async function drain({ folder, sealed, stateFolder = DEFAULT_STATE, passphrase =
   } finally { try { fs.unlinkSync(lock); } catch { /* gone already */ } }
 }
 
-// Receipts the page has had a week to read.
+// Receipts the page has had a week to read, and the tombstones of messages taken back, which only have to outlast a late copy of
+// the same post (a request older than 12 hours is refused anyway).
 function prune(folder, sealed, at) {
   const directory = path.join(folder, 'r');
   for (const name of listing(directory, new RegExp('^' + ID + (sealed ? '\\.json\\.enc$' : '\\.json$')))) {
     if (at - mtimeMs(path.join(directory, name)) > RECEIPT_KEEP_MS) { try { fs.unlinkSync(path.join(directory, name)); } catch { /* gone already */ } }
+  }
+  const queue = path.join(folder, 'q');
+  for (const name of listing(queue, new RegExp('^\\.cancelled-' + ID + '$'))) {
+    if (at - mtimeMs(path.join(queue, name)) > HANDLED_KEEP_MS) { try { fs.unlinkSync(path.join(queue, name)); } catch { /* gone already */ } }
   }
 }
 

@@ -350,6 +350,14 @@ __HEAD_HOSTED__
   .dock button:disabled { opacity: .45; cursor: default; }
   .input.pending { opacity: .6; border-style: dashed; }
   .input.pending.refused { opacity: 1; border-color: var(--open); }
+  /* A message the owner can still take back, or is being asked about, reads at full strength: it is waiting on them. */
+  .input.pending.undoable { opacity: 1; }
+  .input.pending.noted { opacity: .85; }
+  .input.pending .hint { font-size: 12px; color: var(--muted); margin: 0 0 3px; }
+  .input.pending .who > button.undo { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
+  .input.pending .who > button:disabled { opacity: .5; }
+  .dock textarea:read-only { opacity: .6; }
+  .dock-row button.undo { background: var(--paper); color: var(--you); min-width: 5.2em; font-variant-numeric: tabular-nums; }
   .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
 
   /* Search: the button in the title row, the row under it and the list of matches. Opening it folds the tabs and controls,
@@ -1549,12 +1557,13 @@ __HEAD_HOSTED__
     return s && s.exchanges ? s.exchanges[ev.ref] : null;
   }
 
+/*__UNDOSEND__*/
   // ---------------------------------------------------------------- replying to a reply
   // The served page sends a short message to the session's own Herdr pane. It points at
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
   function selectedPassage(card) {
     const sel = window.getSelection();
@@ -1582,12 +1591,15 @@ __HEAD_HOSTED__
   const dockMessage = () => { const typed = dockTyped(); return !typed ? "" : link.target && !typed.startsWith("/") ? dockPointer() + typed : typed; };
   // The bar always writes to the session on screen; the Fleet timeline mixes sessions, so it has none.
   const dockSession = () => state.view !== "fleet" ? data.sessions[state.session] : null;
+  // The message in its Undo window belongs to the session on screen (its box is locked), as opposed to one switched away from meanwhile.
+  const heldHere = () => { const here = dockSession(); return Boolean(link.hold && here && link.hold.sid === here.id); };
   const SENDABLE = new Set(["idle", "working", "done"]);
   const MAX_SEND = 4000;
   // Reply and "Comment on this" attach a pointer to the bar and keep what is already typed.
   // A comment already written against another pointer goes into the batch first, so
   // commenting on one passage after another collects them all.
   function openDock(target) {
+    if (link.hold) { link.result = { ok: false, text: heldHere() ? "The message is in its Undo window. Undo it first, or wait a moment." : "Another message is in its Undo window. Wait a moment." }; renderDock(); return; }
     const typed = dockTyped();
     const queued = Boolean(link.target && typed && !typed.startsWith("/")) && addToBatch();
     link.target = target; link.foldOpen = false;
@@ -1598,7 +1610,7 @@ __HEAD_HOSTED__
     dock("text").focus();
   }
   const useTarget = (target, button) => openDock(target);
-  function dropTarget() { link.target = null; markTarget(); saveDraft(); renderDock(); }
+  function dropTarget() { if (heldHere()) return; link.target = null; markTarget(); saveDraft(); renderDock(); }
   function markTarget() {
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
     if (link.target && link.target.card) link.target.card.classList.add("is-target-reply");
@@ -1665,7 +1677,7 @@ __HEAD_HOSTED__
   }
   function addToBatch() {
     const session = dockSession(), typed = dockTyped();
-    if (!session || !typed) return false;
+    if (!session || !typed || link.hold) return false;
     if (typed.startsWith("/")) { link.result = { ok: false, text: "A command goes on its own, so it cannot join a batch." }; renderDock(); return false; }
     const target = link.target;
     const item = { sid: session.id, title: target ? target.title : "Message", passage: target ? target.passage : "", typed,
@@ -1683,7 +1695,7 @@ __HEAD_HOSTED__
     return true;
   }
   function editItem(index) {
-    const session = dockSession(); if (!session) return;
+    const session = dockSession(); if (!session || link.hold) return;
     if (dockTyped()) { link.result = { ok: false, text: "Add or clear what is in the box first." }; renderDock(); return; }
     const items = batchOf(session.id).slice();
     const [item] = items.splice(index, 1);
@@ -1695,7 +1707,7 @@ __HEAD_HOSTED__
     link.result = null; renderDock(); dock("text").focus();
   }
   function removeItem(index) {
-    const session = dockSession(); if (!session) return;
+    const session = dockSession(); if (!session || link.hold) return;
     const items = batchOf(session.id).slice(); items.splice(index, 1);
     saveBatch(session.id, items);
     if (link.editing && link.editing.sid === session.id && link.editing.index > index) link.editing.index -= 1;
@@ -1705,7 +1717,7 @@ __HEAD_HOSTED__
     const items = batchOf(session.id);
     dock("batch").hidden = !items.length;
     if (!items.length) link.batchOpen = false;
-    const sig = JSON.stringify([session.id, link.batchOpen, items]);
+    const sig = JSON.stringify([session.id, link.batchOpen, items, Boolean(link.hold)]);
     if (!items.length || sig === link.batchSig) return;
     link.batchSig = sig;
     const toggle = dock("batch-toggle");
@@ -1719,9 +1731,9 @@ __HEAD_HOSTED__
       what.append($("small", null, item.pointer ? item.pointer.replace(/^\[From [^\]]*\]\s*/, "").replace(/:\s*$/, "") : "Plain message"), $("span", null, item.typed));
       what.title = itemText(item);
       const edit = $("button", null, "Edit"); edit.type = "button"; edit.title = "Put this comment back in the box";
-      edit.addEventListener("click", () => editItem(i));
+      edit.addEventListener("click", () => editItem(i)); edit.disabled = Boolean(link.hold);
       const drop = $("button", null, "✕"); drop.type = "button"; drop.setAttribute("aria-label", `Remove comment ${i + 1}`);
-      drop.addEventListener("click", () => removeItem(i));
+      drop.addEventListener("click", () => removeItem(i)); drop.disabled = Boolean(link.hold);
       li.append($("span", "n", `${i + 1}.`), what, edit, drop);
       return li;
     }));
@@ -1793,22 +1805,30 @@ __HEAD_HOSTED__
     else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
     const command = dockTyped().startsWith("/");
     if (!reason && batch.length && command) reason = "A command goes on its own: send the batch first, or clear it.";
+    // One message at a time is in its Undo window, so a session switched to meanwhile cannot send until it ends (a few seconds).
+    const elsewhere = Boolean(link.hold && link.hold.sid !== session.id);
+    if (!reason && elsewhere) reason = `Send is back when ${paneName(link.hold.sid)}'s Undo window ends.`;
     const over = out.length > MAX_SEND;
-    dock("send").disabled = Boolean(reason) || link.sending || !out || over;
+    // While the message is in its Undo window the box is locked (what is in it is what will be sent) and Send turns into Undo.
+    const held = Boolean(link.hold && link.hold.sid === session.id);
+    dock("text").readOnly = held;
+    dock("send").disabled = held ? false : Boolean(reason) || link.sending || !out || over;
+    dock("send").classList.toggle("undo", held);
+    dock("send").title = held ? "Take the message back before it is sent (Esc)" : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
     const total = batch.length + (dockTyped() ? 1 : 0);
     // A batch sends one numbered message that the box and the pointer do not show whole, so say where it is.
     dock("note").hidden = !batch.length || link.preview;
     dock("note").textContent = `${total} comment${total === 1 ? "" : "s"} - Exact text shows what Send types`;
-    dock("send").textContent = batch.length ? `Send ${total}` : "Send";
-    dock("add").disabled = !dockTyped() || command;
+    dock("send").textContent = held ? `Undo ${sendHold.left()}` : batch.length ? `Send ${total}` : "Send";
+    dock("add").disabled = held || elsewhere || !dockTyped() || command;
     dock("copy").disabled = !out;
     const count = dock("count");
     count.hidden = out.length <= 3500;
     count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
     count.classList.toggle("bad", over);
     const status = dock("status");
-    status.classList.toggle("bad", Boolean(link.result && !link.result.ok) || Boolean(reason && pane));
-    status.textContent = link.result ? link.result.text : reason || (HOSTED
+    status.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane)));
+    status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : link.result ? link.result.text : reason || (HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
       : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
@@ -1821,25 +1841,64 @@ __HEAD_HOSTED__
     "/compact": "replaces that session's earlier turns with a summary", "/logout": "signs that agent out",
     "/rewind": "opens a menu in the pane to roll that session back",
   };
-  async function sendDock() {
+  // Send does not send at once: it holds the message in the page for UNDO_SECONDS (undosend.js), with the box locked, and only then
+  // asks the server or the queue. Until that moment nothing has left the page, so Undo can say plainly that it was never sent.
+  const sendHold = makeSendHold({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) });
+  let holdTimer = 0;
+  const holdMessage = hold => ({ text: hold.text, label: paneName(hold.sid), at: Date.now() / 1000 });
+  function paintHold() {
+    if (!link.hold) return;
+    renderDock();
+    const say = describeSend(holdMessage(link.hold), { hold: { left: sendHold.left() }, t: fmtTime, now: () => Date.now() / 1000 }).say;
+    document.querySelectorAll("[data-hold-say]").forEach(el => { el.textContent = say; });
+  }
+  function endHold() { link.hold = null; clearInterval(holdTimer); holdTimer = 0; }
+  // Redraws the conversation (the faded message lives in it) and keeps the reader where they were.
+  function redrawPending(keepPlace = false) {
+    if (state.view !== "reader") { renderDock(); return; }
+    const anchor = readingAnchor();
+    render();
+    if (keepPlace && !anchor.bottom) restoreAnchor(anchor); else window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+  function undoHold() {
+    if (!sendHold.undo()) return;
+    endHold();
+    link.result = { ok: true, text: "Undone: it was never sent. Your message is still in the box." };
+    setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 6000);
+    redrawPending(true);
+    dock("text").focus();
+  }
+  function sendNow() { sendHold.release(); }
+  function sendDock() {
+    if (link.hold) return;
     const text = outgoing(); if (!text || dock("send").disabled) return;
     const session = dockSession();
     // These end, reset, shrink or sign out the session, so they ask first.
     const command = (text.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
     if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${SESSION_COMMANDS[command]}.`)) return;
-    // What this send carries. The box stays open while it runs (emptying the pane's input box
-    // first takes a second or more), so only these are removed when it returns.
+    // What this send carries. The box stays as it is (locked) through the window and while the send runs (emptying the pane's
+    // input box first takes a second or more), so only these are removed when it has gone.
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
-    // Taken before the send: the log stamps the message when the pane receives it, which is
+    const hold = { sid, text };
+    const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed }); }, UNDO_SECONDS, hold);
+    if (!begun) { link.result = { ok: false, text: "Another message is still in its Undo window. Wait a moment." }; renderDock(); return; }
+    link.hold = hold; link.result = null;
+    holdTimer = setInterval(paintHold, 500);
+    renderDock();
+    redrawPending(pointed);
+  }
+  async function deliverDock({ sid, text, sentItems, sentBox, pointed }) {
+    // Taken when the send starts: the log stamps the message when the pane receives it, which is
     // before Herdr answers (emptying the pane's input box first takes a second or more).
     const at = Date.now() / 1000;
-    link.sending = true; link.result = null; renderDock();
+    link.sending = true; link.result = null; link.flight = { sid, text }; redrawPending(pointed);
     try {
       // The hosted copy queues it: the laptop sends it when it is awake and the pane is ready.
       const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
-      const sent = HOSTED ? { label: (session.pane && session.pane.label) || paneName(sid) } : await live.send(sid, text);
+      const sent = HOSTED ? { label: (sessionOf(sid) && sessionOf(sid).pane && sessionOf(sid).pane.label) || paneName(sid) } : await live.send(sid, text);
       link.result = { ok: true, text: HOSTED ? (queued.held ? `Held on this phone at ${fmtTime(at)}.` : `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.`) : `Sent to ${sent.label} at ${fmtTime(at)}.` };
-      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : {}) });
+      // agent: what Herdr said the agent was doing when the message went in (a working agent holds it as a queued message).
+      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
       keepQueued();
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
       const onScreen = dockSession();
@@ -1852,12 +1911,9 @@ __HEAD_HOSTED__
       setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, HOSTED ? 8000 : 4000);
       // A plain message shows at the end, where its reply will come. A reply to an older turn
       // keeps your place there; the faded message waits at the end.
-      if (state.view === "reader") {
-        const anchor = readingAnchor();
-        render();
-        if (pointed && !anchor.bottom) restoreAnchor(anchor); else window.scrollTo(0, document.documentElement.scrollHeight);
-      }
-    } catch (e) { link.result = { ok: false, text: e.message }; }
+      link.flight = null;
+      redrawPending(pointed);
+    } catch (e) { link.flight = null; link.result = { ok: false, text: e.message }; redrawPending(true); }
     link.sending = false; renderDock();
   }
   // A sent message shows at once, faded, until the session's log has it: one of your messages
@@ -1871,33 +1927,86 @@ __HEAD_HOSTED__
     if (!HOSTED) return;
     keep("tr-queued", link.pending.filter(p => p.queue));
   }
+  // The faded message for each send of the session on screen: what it says and which buttons it has come from describeSend
+  // (undosend.js), so the owner can see whether Undo is still possible.
   function pendingNodes(session) {
     const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2
       && (p.text.startsWith("/") || opening(e.input || "") === opening(p.text)));
     const before = link.pending.length;
     link.pending = link.pending.filter(p => p.sid !== session.id || !landed(p));
     if (link.pending.length !== before) keepQueued();
-    return link.pending.filter(p => p.sid === session.id).map(p => {
-      const block = $("div", "input captain pending"), who = $("div", "who");
-      const queue = p.queue, receipt = queue && queue.receipt;
-      const late = (queue ? (receipt && receipt.state === "sent" ? Date.now() / 1000 - receipt.at : 0) : Date.now() / 1000 - p.at) > 60;
-      let said;
-      if (!queue) said = late ? `Sent ${fmtTime(p.at)} · not in the log yet; check the pane` : `Sent ${fmtTime(p.at)} · waiting for ${p.label}`;
-      else if (queue.state === "refused") said = `Not sent · ${receipt.reason || "The laptop refused it."}`;
-      else if (queue.state === "sent") said = late ? `Sent by the laptop at ${fmtTime(receipt.at)} · not in the log yet; check the pane` : `Sent by the laptop at ${fmtTime(receipt.at)} · waiting for ${p.label}`;
-      else if (queue.state === "sending") said = `Queued ${fmtTime(p.at)} · the laptop is sending it now`;
-      else if (queue.state === "held") said = `Held on this phone since ${fmtTime(p.at)} · goes to the laptop's queue when it is reachable`;
-      else said = `Queued ${fmtTime(p.at)} · waiting for the laptop to send it to ${p.label}`;
-      who.append($("b", null, "You"), $("span", queue ? "note" : null, said));
-      if (queue && queue.state === "refused") {
-        block.classList.add("refused");
-        const dismiss = $("button", "reply-to", "Dismiss"); dismiss.type = "button";
-        dismiss.addEventListener("click", () => { link.pending = link.pending.filter(x => x !== p); keepQueued(); render(); });
-        who.append(dismiss);
+    const nodes = link.pending.filter(p => p.sid === session.id).map(p => pendingNode(p, null));
+    if (link.hold && link.hold.sid === session.id) nodes.push(pendingNode(holdMessage(link.hold), { left: sendHold.left() }));
+    else if (link.flight && link.flight.sid === session.id) nodes.push(pendingNode(holdMessage(link.flight), null, HOSTED ? "queue" : "pane"));
+    return nodes;
+  }
+  function pendingNode(p, hold, flight = null) {
+    const d = describeSend(p, { hold, flight, t: fmtTime, now: () => Date.now() / 1000 });
+    const block = $("div", "input captain pending"), who = $("div", "who");
+    if (d.stage === "refused") block.classList.add("refused");
+    if (d.actions.includes("undo") || d.stage === "cancelling") block.classList.add("undoable");
+    else if (d.hint) block.classList.add("noted");
+    const say = $("span", "note", d.say);
+    if (hold) say.setAttribute("data-hold-say", "");
+    who.append($("b", null, "You"), say);
+    const button = (label, cls, run, title) => {
+      const b = $("button", "reply-to" + (cls ? " " + cls : ""), label); b.type = "button";
+      if (title) b.title = title;
+      b.addEventListener("click", run); who.append(b);
+      return b;
+    };
+    if (d.actions.includes("undo")) {
+      const b = button("Undo", "undo", () => hold ? undoHold() : undoQueued(p), hold ? "Take it back before it is sent (Esc)" : "Ask the laptop to drop it, and put it back in the box");
+      if (p.queue && undoing.has(p.queue.id)) b.disabled = true;
+    }
+    if (d.actions.includes("now")) button("Send now", "", sendNow, "Skip the wait and send it");
+    if (d.actions.includes("edit")) button("Edit", "", () => takeBack(p, "It was not sent."), "Put it back in the box");
+    if (d.actions.includes("dismiss")) button("Dismiss", "", () => { link.pending = link.pending.filter(x => x !== p); keepQueued(); render(); });
+    block.append(who);
+    if (d.hint) block.append($("div", "hint", d.hint));
+    block.append($("div", null, p.text));
+    return block;
+  }
+  // Gives a message back that provably never reached the pane: into the box when it is empty, else into the batch, so nothing the
+  // owner has typed meanwhile is overwritten.
+  function takeBack(p, said) {
+    link.pending = link.pending.filter(x => x !== p); keepQueued();
+    const sid = p.sid, session = dockSession(), here = Boolean(session && (session.ids || [session.id]).includes(sid));
+    const draft = draftOf(sid), boxText = here ? dock("text").value : draft ? draft.text : "", pointed = here ? Boolean(link.target) : Boolean(draft && draft.target);
+    let where;
+    if (!boxText.trim() && !pointed) {
+      if (here) { dock("text").value = p.text; link.editing = null; saveDraft(); growDock(); }
+      else { drafts[sid] = { text: p.text, sid: (draft || {}).sid || sid, target: null, editing: null }; keep("tr-drafts", drafts); }
+      where = "box";
+    } else {
+      saveBatch(sid, batchOf(sid).concat({ sid, title: "Message", passage: "", typed: p.text, pointer: "", bare: "" }));
+      where = "batch";
+    }
+    if (here) { link.result = { ok: true, text: `${said} It is in the ${where}.` }; setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 8000); }
+    redrawPending(true);
+  }
+  // Undo on a message the laptop has not sent. The laptop (or, for a message still held on the phone, this device and then the
+  // laptop) answers, and only "cancelled" brings the message back: it is never claimed as undone otherwise.
+  const undoing = new Set();
+  async function undoQueued(p) {
+    const id = p.queue && p.queue.id;
+    if (!id || undoing.has(id)) return;
+    undoing.add(id);
+    link.result = { ok: true, text: "Asking the laptop to take it back…" }; redrawPending(true);
+    try {
+      const answer = await hosted.cancel(id);
+      if (answer.state === "cancelled") takeBack(p, "Undone: it was never sent.");
+      else if (answer.state === "cancelling") {
+        p.queue.cancelling = true; keepQueued();
+        link.result = { ok: true, text: "Undoing: waiting for the laptop to confirm." };
+      } else {
+        p.queue.tooLate = true; keepQueued();
+        link.result = { ok: false, text: "Too late to undo: the laptop already has this message." };
       }
-      block.append(who, $("div", null, p.text));
-      return block;
-    });
+    } catch (e) { link.result = { ok: false, text: e.message }; }
+    undoing.delete(id);
+    redrawPending(true);
+    if (p.queue && p.queue.tooLate) checkReceipts();
   }
   // The laptop's receipts for the queued sends not yet answered, asked about every few seconds while
   // one waits (and with each 30-second refresh). A sent or refused one stops being asked about.
@@ -1916,7 +2025,17 @@ __HEAD_HOSTED__
         const still = await hosted.heldIds();
         for (const p of open.filter(x => x.queue.state === "held")) {
           const done = settled.find(x => x.id === p.queue.id);
-          if (done && done.state !== "queued") {
+          if (p.queue.cancelling) {
+            // A held message that was taken back while the laptop was away: the laptop's answer decides, never the phone's guess.
+            const answer = done || (still.has(p.queue.id) ? null : await hosted.cancel(p.queue.id).catch(() => null));
+            if (answer && answer.state === "cancelled") { takeBack(p, "Undone: the laptop confirmed it never sent this."); changed = true; }
+            else if (answer && answer.state === "too_late") { p.queue.cancelling = false; p.queue.tooLate = true; p.queue.state = "queued"; changed = true; }
+            else if (answer && answer.state !== "queued") { p.queue.cancelling = false; p.queue.state = "refused"; p.queue.receipt = { state: "refused", at: Date.now() / 1000, reason: answer.reason || "The laptop refused it." }; changed = true; }
+            continue;
+          }
+          if (done && done.state === "cancelled") {
+            p.queue.state = "refused"; p.queue.receipt = { state: "refused", at: Date.now() / 1000, reason: "The laptop had been told to drop this message, so it was not sent." }; changed = true;
+          } else if (done && done.state !== "queued") {
             p.queue.state = "refused";
             p.queue.receipt = { state: "refused", at: Date.now() / 1000, reason: done.state === "expired" ? "This message was held on the phone for over 12 hours without the laptop being reachable, so it was not sent. Send it again if it still matters." : done.reason || "The laptop refused it." };
             changed = true;
@@ -1933,7 +2052,7 @@ __HEAD_HOSTED__
     } finally { asking = false; }
     if (changed) {
       keepQueued();
-      if (state.view === "reader") { const anchor = readingAnchor(); render(); if (anchor.bottom) window.scrollTo(0, document.documentElement.scrollHeight); else restoreAnchor(anchor); } else renderDock();
+      redrawPending(true);
     }
   }
   // "New reply ↓" sits above the bar while new turns arrive below where you are reading.
@@ -1980,22 +2099,24 @@ __HEAD_HOSTED__
   const touch = matchMedia("(pointer: coarse)");
   const narrow = matchMedia("(max-width: 440px)");
   dock("text").addEventListener("keydown", e => {
+    // In the Undo window the box is locked: Esc takes the message back, and Enter must not send it twice or skip the wait.
+    if (heldHere()) { if (e.key === "Escape") { e.preventDefault(); undoHold(); } else if (e.key === "Enter") e.preventDefault(); return; }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); addToBatch(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); sendDock(); }
     if (e.key === "Escape" && link.target) dropTarget();
   });
-  dock("send").addEventListener("click", sendDock);
+  dock("send").addEventListener("click", () => { if (heldHere()) undoHold(); else sendDock(); });
   dock("add").addEventListener("click", () => { addToBatch(); dock("text").focus(); });
   dock("batch-toggle").addEventListener("click", () => { link.batchOpen = !link.batchOpen; renderDock(); });
   dock("batch-clear").addEventListener("click", () => {
     const session = dockSession(), n = session ? batchOf(session.id).length : 0;
-    if (!n || !confirm(`Remove all ${n} comment${n === 1 ? "" : "s"} from the batch?`)) return;
+    if (link.hold || !n || !confirm(`Remove all ${n} comment${n === 1 ? "" : "s"} from the batch?`)) return;
     saveBatch(session.id, []); link.editing = null; saveDraft(); renderDock();
   });
   dock("preview-toggle").addEventListener("click", () => { link.preview = !link.preview; renderDock(); });
   dock("copy").addEventListener("click", copyDock);
   dock("chip-drop").addEventListener("click", () => { dropTarget(); dock("text").focus(); });
-  dock("passage-drop").addEventListener("click", () => { link.target.passage = ""; dock("passage").hidden = true; saveDraft(); renderDock(); });
+  dock("passage-drop").addEventListener("click", () => { if (heldHere()) return; link.target.passage = ""; dock("passage").hidden = true; saveDraft(); renderDock(); });
 
   // Selecting text inside a reply offers "Comment on this" beside the selection.
   const floatButton = document.getElementById("float-comment");
