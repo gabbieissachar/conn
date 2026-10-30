@@ -895,6 +895,74 @@ class HtmlDocumentsTest(unittest.TestCase):
         self.assertIn(base64.b64encode(picture).decode("ascii"), text, "the picture itself comes through redaction whole")
 
 
+class ImageDocumentsTest(unittest.TestCase):
+    """An image a reply names is in the copy as its bytes in base64 (a document of kind image), within a limit for each image and for all
+    of them; one the copy leaves out is listed with why and has no object, so the page can say so."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        main = self.lab.main
+        (main / "shot.png").write_bytes(PNG)
+        (main / "mark.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script></svg>', encoding="utf-8")
+        (main / "big.png").write_bytes(PNG + b"\0" * 4096)
+        (main / "huge.jpg").write_bytes(b"\0" * 4096)
+        os.utime(main / "huge.jpg", (T0, T0))  # the oldest
+        append_log(self.lab.logs[A], [user("Show me.", T0 + 800, str(main)), say("See `shot.png`, `mark.svg`, `big.png` and `huge.jpg`.", T0 + 810, str(main))])
+
+    def metas(self):
+        return {m["name"]: m for m in self.lab.index()["documents"].values() if m.get("kind") == "image"}
+
+    def test_an_image_is_a_document_whose_text_is_its_bytes_in_base64(self):
+        self.assertEqual(self.lab.build(), 0)
+        metas = self.metas()
+        self.assertEqual(sorted(metas), ["big.png", "huge.jpg", "mark.svg", "shot.png"])
+        shot = metas["shot.png"]
+        self.assertEqual((shot["mime"], shot["size"]), ("image/png", len(PNG)))
+        doc = self.lab.object(shot["object"])
+        self.assertEqual(base64.b64decode(doc["text"]), PNG)
+        self.assertEqual((doc["kind"], doc["mime"]), ("image", "image/png"))
+        self.assertEqual(metas["mark.svg"]["mime"], "image/svg+xml", "an SVG is carried as bytes, and shown only in an <img> (the page)")
+        self.assertEqual(self.lab.object(metas["mark.svg"]["object"])["text"], base64.b64encode((self.lab.main / "mark.svg").read_bytes()).decode("ascii"))
+
+    def test_one_over_the_copys_limit_is_listed_as_left_out_with_no_object(self):
+        with mock.patch.object(sync, "IMAGE_COPY_BYTES", 4000):
+            self.assertEqual(self.lab.build(), 0)
+        metas = self.metas()
+        for name in ("big.png", "huge.jpg"):
+            self.assertIn("one image", metas[name]["left_out"], name)
+            self.assertNotIn("object", metas[name], name)
+            self.assertFalse((self.lab.out / "d" / f"{metas[name]['id']}.json").exists(), name)
+        self.assertNotIn("left_out", metas["shot.png"])
+        # It comes back when the limit allows it, and the page's other objects are untouched.
+        self.assertEqual(self.lab.build(), 0)
+        self.assertIn("object", self.metas()["big.png"])
+
+    def test_past_the_total_the_newest_files_are_carried_first(self):
+        total = len(PNG) + (self.lab.main / "mark.svg").stat().st_size + (self.lab.main / "big.png").stat().st_size
+        with mock.patch.object(sync, "IMAGE_COPY_TOTAL", total):
+            self.assertEqual(self.lab.build(), 0)
+        metas = self.metas()
+        self.assertEqual(sorted(name for name, m in metas.items() if m.get("left_out")), ["huge.jpg"], "the oldest file is the one that does not fit")
+        self.assertIn("all its images", metas["huge.jpg"]["left_out"])
+
+    def test_a_sealed_copy_keeps_a_left_out_image_in_its_index_and_seals_no_object_for_it(self):
+        target = self.lab.root / "out" / "bucket"
+        with mock.patch.object(sync, "IMAGE_COPY_BYTES", 4000), mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS}):
+            self.assertEqual(self.lab.build_only_args("--seal", str(target)), 0)
+            done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(target), "index.json"], capture_output=True, text=True, env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
+        index = json.loads(done.stdout)["index.json"]
+        left = [m for m in index["documents"].values() if m.get("left_out")]
+        self.assertEqual(sorted(m["name"] for m in left), ["big.png", "huge.jpg"])
+        self.assertEqual([m for m in left if "object" in m], [])
+        self.assertTrue(list(target.glob("d/*.enc")), "the other documents are sealed")
+
+    def test_the_local_page_lists_the_same_images_without_text(self):
+        local = self.lab.local_payload([str(self.lab.logs[A])])
+        found = {d["name"]: d for d in local["documents"].values() if d.get("kind") == "image"}
+        self.assertEqual(sorted(found), ["big.png", "huge.jpg", "mark.svg", "shot.png"])
+        self.assertNotIn("text", found["shot.png"])
+
+
 S = "ffffffff-6666-4666-8666-666666666666"  # the owner's own session, in a folder under the workspace
 S2 = "99999999-7777-4777-8777-777777777777"  # another of theirs, in a deeper folder
 

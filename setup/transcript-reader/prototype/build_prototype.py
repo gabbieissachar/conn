@@ -57,6 +57,7 @@ MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see ven
 SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
+IMAGE_FILES = "image-files.json"  # the same for each image file it offers to show (api.js reads it)
 # Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
 # that must not touch the real logs.
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
@@ -796,7 +797,7 @@ def build(args) -> dict:
     link_turns(fleet, sessions)
     fleet.sort(key=lambda event: event["at"])
     mark_sheets(sessions)
-    documents = attach_documents(sessions, html=True)
+    documents = attach_documents(sessions, html=True, images=True)
     labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
     reopened = set(read_ids(out_dir / "reopened.txt"))
     for session in sessions:
@@ -1073,28 +1074,41 @@ def link_turns(fleet: list[dict], sessions: list[dict], window: float = 1800) ->
 # off); a file:// URL is read as the path it names. HTML files (.html, .htm) are named the same way.
 MD_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.md(?![\w/-])")
 HTML_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.html?(?![\w/-])")
+# Image files are named the same way, in any case (a camera's IMG_1.JPG): the types a browser shows in an <img>.
+IMAGE_MENTION = re.compile(r"[\w.~/@+-]*[\w-]\.(?:png|jpe?g|gif|webp|svg)(?![\w/-])", re.I)
 NAME_RUN = re.compile(r"[\w.~/@+-]+")  # the characters the mention regexes' names are made of
 NAME_END = re.compile(r"[\w-]\.md(?![\w/-])")
 HTML_NAME_END = re.compile(r"[\w-]\.html?(?![\w/-])")
+IMAGE_SUFFIX = re.compile(r"\.(?:png|jpe?g|gif|webp|svg)", re.I)
+IMAGE_NAME_END = re.compile(r"[\w-]\.(?:png|jpe?g|gif|webp|svg)(?![\w/-])", re.I)
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
 
 
-def file_mentions(text: str, suffix: str, name_end: re.Pattern):
-    """(start, name) for each match the mention regex (MD_MENTION for ".md", HTML_MENTION for ".htm") gives, in the same order, in linear time.
+def file_mentions(text: str, suffix, name_end: re.Pattern):
+    """(start, name) for each match the mention regex (MD_MENTION for ".md", HTML_MENTION for ".htm", IMAGE_MENTION for IMAGE_SUFFIX) gives, in the same order, in linear time.
 
     A match cannot leave a run of name characters, and within one it runs from the run's
     start to its last place where a name can end, so each run holds one match at most. The
     regex itself backtracks over a long run with no .md in it, and a pasted log or blob
-    made one turn take minutes.
+    made one turn take minutes. <suffix> is the text every name ends in, or a pattern for
+    the several endings of one kind of file.
     """
     for run in NAME_RUN.finditer(text):
         start, end = run.span()
-        at = text.rfind(suffix, start, end)
-        while at > start:
-            found = name_end.match(text, at - 1)
-            if found:
-                yield start, text[start:found.end()]
-                break
-            at = text.rfind(suffix, start, at + len(suffix) - 1)
+        if isinstance(suffix, str):
+            at = text.rfind(suffix, start, end)
+            while at > start:
+                found = name_end.match(text, at - 1)
+                if found:
+                    yield start, text[start:found.end()]
+                    break
+                at = text.rfind(suffix, start, at + len(suffix) - 1)
+        else:
+            for at in reversed([m.start() for m in suffix.finditer(text, start, end)]):
+                found = name_end.match(text, at - 1) if at > start else None
+                if found:
+                    yield start, text[start:found.end()]
+                    break
 
 
 # A rebuild scans every reply and message again for the file names it mentions, though almost none changed since the last one.
@@ -1104,7 +1118,7 @@ _MENTIONS: dict[tuple[bytes, str], tuple] = {}
 MENTIONS_KEPT = 20000
 
 
-def kept_mentions(text: str, suffix: str, name_end: re.Pattern):
+def kept_mentions(text: str, suffix, name_end: re.Pattern):
     key = (hashlib.sha1(text.encode("utf-8", "surrogatepass")).digest(), suffix)
     found = _MENTIONS.get(key)
     if found is None:
@@ -1122,18 +1136,24 @@ def html_mentions(text: str):
     return kept_mentions(text, ".htm", HTML_NAME_END)
 
 
+def image_mentions(text: str):
+    return kept_mentions(text, IMAGE_SUFFIX, IMAGE_NAME_END)
+
+
 FILE_URL = re.compile(r"\bfile://(?=/)")
 CD_LINE = re.compile(r"^\s*cd\s+(\"[^\"\n]+\"|'[^'\n]+'|[^\s;&|]+)", re.M)
 MAX_DOCUMENT_BYTES = 512 * 1024
 # An HTML file is not embedded, only served on request (api.js), so its limit is about what a browser takes comfortably.
 MAX_HTML_BYTES = 8 * 1024 * 1024
+# An image is served the same way (api.js), and a full-page screenshot of a long page or a Retina display is several MB of PNG.
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Besides the home folder, the temp folders agents write reports and scratch notes to. Agents
 # quote paths from untrusted material, so a named file anywhere else is never embedded.
 TEMP_ROOTS = (Path("/tmp"), Path(tempfile.gettempdir()))
 
 
 def tool_documents(tool_input, cwd: str) -> list[str]:
-    """Markdown and HTML files a tool call names, as absolute paths that may not exist.
+    """Markdown, HTML and image files a tool call names, as absolute paths that may not exist.
 
     A path field (Read, Edit and Write give `file_path`) is taken whole. A shell
     command's file names start from its latest `cd` before them, else from the
@@ -1145,10 +1165,10 @@ def tool_documents(tool_input, cwd: str) -> list[str]:
     for key, value in tool_input.items():
         if not isinstance(value, str):
             continue
-        if key.endswith("path") and (MD_MENTION.fullmatch(value) or HTML_MENTION.fullmatch(value)):
+        if key.endswith("path") and (MD_MENTION.fullmatch(value) or HTML_MENTION.fullmatch(value) or IMAGE_MENTION.fullmatch(value)):
             tokens, cds = [(0, value)], []
         elif key == "command":
-            tokens = [(at, token) for at, token in [*md_mentions(value), *html_mentions(value)] if not token.startswith("//")]
+            tokens = [(at, token) for at, token in [*md_mentions(value), *html_mentions(value), *image_mentions(value)] if not token.startswith("//")]
             cds = [(m.start(), os.path.expanduser(m.group(1).strip("\"'"))) for m in CD_LINE.finditer(value)]
         else:
             continue
@@ -1261,12 +1281,17 @@ def named_html(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int, 
     return named_files(text, cwd, touched, html_mentions, MAX_HTML_BYTES)
 
 
+def named_images(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int, str, Path]]:
+    """(where in the text, as written, file) for each existing image file a message names, in order, once each."""
+    return named_files(text, cwd, touched, image_mentions, MAX_IMAGE_BYTES)
+
+
 # Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
 # notice is the fleet's own record and folds away, and a session event has no author.
 DOCUMENT_INPUTS = ("captain", "firstmate", "peer")
 
 
-def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict]:
+def attach_documents(sessions: list[dict], html: bool = False, images: bool = False) -> dict[str, dict]:
     """Give each exchange the ids of the documents its reply names (`documents`) and its message
     names (`input_documents`, for a message from you, Firstmate or another session); return
     the documents.
@@ -1275,7 +1300,8 @@ def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict
     A short name can match a file the session's tool calls named in this turn or an earlier one.
     With <html>, the HTML files they name are listed too, in the order named, as documents of
     kind "html" with no text: the page shows one from the server (api.js), as the file is when
-    opened. The hosted copy builds without them.
+    opened. With <images>, so are the image files, as documents of kind "image" with no text, shown
+    the same way. The hosted copy (sync.py) carries both in its own way.
     """
     documents: dict[str, dict] = {}
 
@@ -1287,21 +1313,23 @@ def attach_documents(sessions: list[dict], html: bool = False) -> dict[str, dict
         return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
 
     def ids_for(text: str, cwd: str, touched: Touched) -> list[str]:
-        found = [(start, token, path, False) for start, token, path in named_files(text, cwd, touched)]
+        found = [(start, token, path, "") for start, token, path in named_files(text, cwd, touched)]
         if html:
-            found += [(start, token, path, True) for start, token, path in named_html(text, cwd, touched)]
+            found += [(start, token, path, "html") for start, token, path in named_html(text, cwd, touched)]
+        if images:
+            found += [(start, token, path, "image") for start, token, path in named_images(text, cwd, touched)]
         ids = []
-        for _, token, path, is_html in sorted(found, key=lambda item: item[0]):
+        for _, token, path, kind in sorted(found, key=lambda item: item[0]):
             key = doc_key(path)
             if key not in documents:
                 try:
                     stat = path.stat()
-                    body = None if is_html else path.read_text(encoding="utf-8", errors="replace")
+                    body = path.read_text(encoding="utf-8", errors="replace") if not kind else None
                 except OSError:
                     continue
                 documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": token, "mtime": stat.st_mtime}
-                if is_html:
-                    documents[key].update(kind="html", size=stat.st_size)
+                if kind:
+                    documents[key].update(kind=kind, size=stat.st_size)
                 else:
                     documents[key]["text"] = body
             ids.append(key)
@@ -1910,8 +1938,11 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)
     # The hosted shell is also installed on a phone (a worker keeps it, a manifest and icon add it to the Home Screen), which its content
-    # policy must allow; the local page needs none of it.
-    page = page.replace("__CSP_HOSTED__", "worker-src 'self'; manifest-src 'self'; img-src 'self'; " if mode == "hosted" else "")
+    # policy must allow. The reader page also shows an image a reply names in an <img>: from its own server, or in the copy from the image's
+    # bytes in the document (a data: address, which loads nothing and runs nothing); the answer sheet shows none.
+    reader_page = template.name == TEMPLATE.name
+    csp = "worker-src 'self'; manifest-src 'self'; img-src 'self'" + (" data:" if reader_page else "") + "; " if mode == "hosted" else "img-src 'self'; " if reader_page else ""
+    page = page.replace("__CSP_HOSTED__", csp)
     page = page.replace("__HEAD_HOSTED__", HOSTED_HEAD if mode == "hosted" else "")
     if page.count("__PAYLOAD__") != 1:
         # A second mention (a comment, say) would carry the whole payload into the page again.
@@ -1945,9 +1976,10 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
                 return
         except (OSError, ValueError):
             pass
-        # The HTML files the page offers to open, which the server reads to find a file by the id the page asks for
+        # The HTML and image files the page offers to open, which the server reads to find a file by the id the page asks for
         # (api.js), written first so no page is served whose files the server does not know. The sheet has no documents.
-        files = [(out.with_name(HTML_FILES), json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == "html"}))] if "documents" in payload else []
+        listed = lambda kind: json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == kind})
+        files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image"))] if "documents" in payload else []
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)

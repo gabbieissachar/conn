@@ -59,6 +59,8 @@
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
     // An HTML file a reply names: the server checks it again and answers with the address to show it from, { url, name, size, mtime }.
     const htmlOpen = id => call("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    // The same for an image file a reply names.
+    const imageOpen = id => call("image-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
@@ -139,5 +141,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, poll, waitForBuilds, pointer, clip };
   })();

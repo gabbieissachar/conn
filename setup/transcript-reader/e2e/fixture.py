@@ -4,8 +4,8 @@
   python3 setup/transcript-reader/e2e/fixture.py <folder> <passphrase>
 
 Under <folder> it makes a home folder (HOME for everything it runs) holding made-up Claude Code session logs: a main
-Firstmate home's conversation that names a markdown file and an HTML sketch (with a stylesheet, a script and a picture beside
-it), and one of the owner's own sessions under ~/workspace; then runs sync.py --seal against it with a fake Herdr. No real
+Firstmate home's conversation that names a markdown file, an HTML sketch (with a stylesheet, a script and a picture beside
+it) and that picture as an image file, and one of the owner's own sessions under ~/workspace; then runs sync.py --seal against it with a fake Herdr. No real
 session log, record or passphrase is read: HOME points at the folder, and the passphrase is the argument.
 
 Prints one JSON line: the ids and paths the driver needs.
@@ -74,7 +74,7 @@ def main(folder: Path, passphrase: str) -> None:
     pointer = f"{main_home / 'notes.md'}"
     write_log(home / ".claude" / "projects" / "main" / f"{MAIN}.jsonl", [
         user("Can you draft the release notes and a sketch of the new screen?", T0, main_cwd),
-        say(f"Drafted the notes in `~/fm-homes/pmos/notes.md` and a sketch at `~/workspace/pmos/scratch/sketch.html`.\n\n| Part | State |\n| --- | --- |\n| Notes | **done** |\n| Sketch | done |\n\nShould I send the notes to the team?", T0 + 60, main_cwd),
+        say(f"Drafted the notes in `~/fm-homes/pmos/notes.md` and a sketch at `~/workspace/pmos/scratch/sketch.html`, with its picture at `~/workspace/pmos/scratch/dot.png`.\n\n| Part | State |\n| --- | --- |\n| Notes | **done** |\n| Sketch | done |\n\nShould I send the notes to the team?", T0 + 60, main_cwd),
         user("Yes, but keep it short.", T0 + 300, main_cwd),
         say("Sent a short version.\n\n```\nsent: release-notes-short\n```", T0 + 330, main_cwd),
     ])

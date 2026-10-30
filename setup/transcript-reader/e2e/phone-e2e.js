@@ -141,12 +141,13 @@ async function until(fn, what, ms = 20000) {
   const stored = await page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => { const r = indexedDB.open('hosted-reader'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
     const count = (store) => new Promise((resolve) => { const r = db.transaction(store).objectStore(store).count(); r.onsuccess = () => resolve(r.result); });
-    return { objects: await count('objects'), keys: await count('keys'), cache: (await caches.keys()).join() };
+    const names = await new Promise((resolve) => { const r = db.transaction('objects').objectStore('objects').getAllKeys(); r.onsuccess = () => resolve(r.result); });
+    return { objects: await count('objects'), names, keys: await count('keys'), cache: (await caches.keys()).join() };
   });
-  check(stored.objects === 5 && stored.keys === 1 && /reader-shell/.test(stored.cache), 'the device holds the 5 sealed objects, the key and the shell cache', JSON.stringify(stored));
+  check(stored.objects === 5 && stored.keys === 1 && /reader-shell/.test(stored.cache), 'the device holds the 5 sealed objects (2 conversations, the markdown file, the sketch and the picture), the key and the shell cache', JSON.stringify(stored));
 
   // ------------------------------------------------------------------ documents: markdown and the HTML sketch, online
-  const openDocuments = async () => { await page.click('#tab-doc'); await until(async () => (await page.locator('#main .docview, #main .htmlview').count()) > 0, 'a document'); };
+  const openDocuments = async () => { await page.click('#tab-doc'); await until(async () => (await page.locator('#main .docview, #main .htmlview, #main .imgview').count()) > 0, 'a document'); };
   const pickDocument = async (name) => {
     await until(() => page.evaluate((wanted) => { const s = [...document.querySelectorAll('#controls select')].find((x) => [...x.options].some((o) => o.textContent.startsWith(wanted))); if (!s) return false; s.value = [...s.options].find((o) => o.textContent.startsWith(wanted)).value; s.dispatchEvent(new Event('change')); return true; }, name), 'the ' + name + ' entry');
   };
@@ -178,6 +179,14 @@ async function until(fn, what, ms = 20000) {
   check(attribute && attribute.attribute === null && /\/view\/[0-9a-f]{32}\/sketch\.html$/.test(attribute.src), 'the frame loads the worker\'s address and sandboxes through the response\'s policy', JSON.stringify(attribute));
   await shot('06-sketch-online');
 
+  // The picture the reply names is an image document: shown in an <img> from the copy's own bytes, never in a frame.
+  const picture = () => page.evaluate(() => { const i = document.querySelector('#main .imgframe img'); return i ? { src: i.src.slice(0, 22), width: i.naturalWidth, frames: document.querySelectorAll('#main iframe').length, note: document.querySelector('#main .imgbar .when').textContent } : null; });
+  await pickDocument('dot.png');
+  await until(async () => (await picture()) && (await picture()).width > 0, 'the picture');
+  const shown = await picture();
+  check(shown.src === 'data:image/png;base64,' && shown.width === 48 && shown.frames === 0 && /48 × 48 px/.test(shown.note), 'the picture opens in an <img> from the copy\'s bytes, not in a frame', JSON.stringify(shown));
+  await shot('06b-picture-online');
+
   // ------------------------------------------------------------------ the laptop away
   await stopServer();
   const refused = await context.request.get(`${base}/api/transcript-reader/state`).then(() => 'answered', () => 'no answer');
@@ -199,6 +208,10 @@ async function until(fn, what, ms = 20000) {
   check(away.script.startsWith('The sketch ran its own script.') && away.origin === 'null' && away.pic === 48 && away.style === 'rgb(180, 35, 45)', 'the HTML sketch opens offline in its sandbox, script, stylesheet and picture included', JSON.stringify(away));
   check(away.net === 'Network check: blocked' && away.parent === 'blocked' && away.storage === 'blocked', 'and is just as sandboxed offline', JSON.stringify(away));
   await shot('08-sketch-offline');
+  await pickDocument('dot.png');
+  await until(async () => (await picture()) && (await picture()).width > 0, 'the picture offline');
+  check((await picture()).width === 48, 'the picture opens offline too');
+  await shot('08c-picture-offline');
   await pickDocument('notes.md');
   await until(async () => /Release notes/.test(await text('#main')), 'the markdown document offline');
   await page.click('#tab-reader');

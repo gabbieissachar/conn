@@ -157,6 +157,23 @@ test('a document loads its text on demand', async () => {
   assert.equal(data.documents.d1.text, '# Notes');
 });
 
+test('an image document loads its bytes on demand as its text, and one the copy left out has no object to load', async () => {
+  const index = { ...INDEX, documents: {
+    ...INDEX.documents,
+    i1: { id: 'i1', name: 'shot.png', dir: '~/x', mtime: 1, kind: 'image', mime: 'image/png', size: 3, object: 'd/i1.json', stamp: 'i1s' },
+    i2: { id: 'i2', name: 'big.png', dir: '~/x', mtime: 1, kind: 'image', mime: 'image/png', size: 3000000, left_out: 'over the 2 MB the copy carries for one image' },
+  } };
+  const { hosted, calls } = load({ objects: { ...OBJECTS, 'd/i1.json': { id: 'i1', kind: 'image', mime: 'image/png', text: 'AAEC' } } });
+  const data = hosted.data(index, null);
+  assert.equal(data.documents.i1.text, null, 'not loaded until the picture is opened');
+  assert.equal(data.documents.i2.text, '', 'nothing to load: the page says why it is not shown');
+  await hosted.documentText(data.documents.i1);
+  assert.equal(data.documents.i1.text, 'AAEC');
+  assert.equal(data.documents.i1.mime, 'image/png');
+  assert.deepEqual(calls.map((c) => c.url), ['d/i1.json']);
+  assert.equal(data.documents.i2.left_out, 'over the 2 MB the copy carries for one image');
+});
+
 test('an object that is not built says so, and is tried again next time', async () => {
   const objects = { ...OBJECTS };
   delete objects['s/b.json'];

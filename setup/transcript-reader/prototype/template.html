@@ -176,13 +176,24 @@ __HEAD_HOSTED__
   /* An HTML file a reply names, shown from the server in a sandboxed frame (api.js) */
   .htmlview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .htmlbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .htmlbar a.btn { text-decoration: none; color: inherit; }
+  .htmlbar a.btn, .imgbar a.btn { text-decoration: none; color: inherit; }
   .htmlbar .when { flex: 1 1 10rem; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .htmlframe { position: relative; height: 72vh; height: 72dvh; min-height: 18rem; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
   .htmlframe iframe { display: block; border: 0; width: 100%; height: 100%; background: #fff; transform-origin: 0 0; }
   .htmlnote { padding: 18px 14px; font-size: 14px; color: var(--muted); background: var(--paper); height: 100%; }
   .htmlview.full { position: fixed; inset: 0; z-index: 20; background: var(--wash); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); overscroll-behavior: contain; }
   .htmlview.full .htmlframe { flex: 1; height: auto; min-height: 0; border-radius: 8px; }
+
+  /* An image file a reply names, in an <img>: fitted to the width, or at its own size inside a frame that scrolls */
+  .imgview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .imgbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .imgbar .when { flex: 1 1 14rem; min-width: 0; font-size: 12px; color: var(--muted); }
+  .imgframe { border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: auto; padding: 8px; text-align: center; overscroll-behavior: contain; }
+  .imgframe img { display: inline-block; vertical-align: top; max-width: 100%; height: auto; cursor: zoom-in; }
+  .imgframe.vector img { width: 100%; }
+  .imgframe.actual { max-height: 78vh; max-height: 78dvh; text-align: left; }
+  .imgframe.actual img { max-width: none; width: auto; cursor: zoom-out; }
+  .imgframe.nozoom img { cursor: default; }
 
   /* Documents: a file a message names, beside its contents list */
   .docmode .bar-inner, .docmode main { max-width: 76rem; }
@@ -553,15 +564,15 @@ __HEAD_HOSTED__
     }
     return card;
   }
-  // Markdown and HTML files a message names that exist on this machine open in the Documents view: markdown beside its contents list, HTML rendered in a sandbox.
+  // Markdown, HTML and image files a message names that exist on this machine open in the Documents view: markdown beside its contents list, HTML rendered in a sandbox, an image fitted to the width.
   function docChips(ids, key) {
     const docs = (ids || []).filter(id => data.documents && data.documents[id]);
     if (!docs.length) return null;
     const row = $("div", "doc-chips");
     docs.forEach(id => {
       const d = data.documents[id];
-      const chip = $("button", "doc-chip"); chip.type = "button"; chip.title = `Open ${d.dir}/${d.name}` + (d.kind === "html" ? ", shown rendered in a sandbox" : "");
-      chip.append($("span", "doc-icon", d.kind === "html" ? "◧" : "▤"), $("span", null, d.name));
+      const chip = $("button", "doc-chip"); chip.type = "button"; chip.title = `Open ${d.dir}/${d.name}` + (d.kind === "html" ? ", shown rendered in a sandbox" : d.kind === "image" ? ", shown as a picture" : "");
+      chip.append($("span", "doc-icon", d.kind === "html" ? "◧" : d.kind === "image" ? "▣" : "▤"), $("span", null, d.name));
       chip.addEventListener("click", () => openDocument(id, Number(key.split(":").pop())));
       row.append(chip);
     });
@@ -1978,9 +1989,9 @@ __HEAD_HOSTED__
     if (passage) text += `, the part "${live.clip(passage, 100)}"`;
     return text + ": ";
   }
-  // The HTML file on screen, kept across redraws (a new build redraws the view every few seconds) so its frame is not reloaded
-  // and the sketch keeps its state: { key, node, frame, iframe, desk, full, load, layout }.
-  let htmlView = null;
+  // The HTML file or image on screen, kept across redraws (a new build redraws the view every few seconds) so its frame is not reloaded
+  // and the sketch keeps its state (an image, its zoom): { key, node, frame, iframe, desk, full, load, layout } for a file, { key, node, load, info } for an image.
+  let fileView = null;
   const DESKTOP_WIDTH = 1280;
   const fmtSize = n => n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
   // The file, shown by the server (api.js) in an iframe with sandbox="allow-scripts" and no allow-same-origin: its scripts run
@@ -2043,7 +2054,83 @@ __HEAD_HOSTED__
     open();
     return view;
   }
-  window.addEventListener("keydown", e => { if (e.key === "Escape" && htmlView && htmlView.full && !e.defaultPrevented) htmlView.setFull(false); });
+  // An image file, shown in an <img> of this page: from the server (api.js, an address of its own for that one file) or, in the copy, from the
+  // bytes the document holds (a data: address). An <img> never runs an SVG's scripts, and the server's answer is sandboxed too. Fitted to the
+  // width by default; "Full size" shows it at its own size in a frame that scrolls both ways (a click on the picture does the same), and
+  // "Open alone" (the local page) shows the file by itself in a tab, with the browser's own zoom.
+  function imageDocView(key, d, status) {
+    const node = $("div", "imgview");
+    const bar = $("div", "imgbar");
+    const reload = $("button", "btn", "Reload"); reload.type = "button"; reload.title = HOSTED ? "Show the picture again from the copy" : "Read the file again from disk: the agent may have changed it since it was opened";
+    const zoom = $("button", "btn", "Full size"); zoom.type = "button"; zoom.setAttribute("aria-pressed", "false"); zoom.title = "Show the picture at its own size, scrolling both ways";
+    const alone = $("a", "btn", "Open alone"); alone.target = "_blank"; alone.rel = "noopener noreferrer"; alone.hidden = true; alone.title = "The file by itself in a new tab; the browser's own zoom and scrolling apply";
+    const note = $("span", "when");
+    bar.append(reload, zoom, ...(HOSTED ? [] : [alone]), note);
+    const frame = $("div", "imgframe" + (/\.svg$/i.test(d.name) ? " vector" : ""));
+    node.append(bar, frame);
+    const view = { key, node, frame, img: null, actual: false, load: 0, info: null };
+    // Fitted, a picture smaller than the frame is already at its own size (and a picture is never made larger than itself): nothing to zoom to.
+    view.layout = () => {
+      const img = view.img;
+      if (!img || !img.naturalWidth) return;
+      const same = !view.actual && !frame.classList.contains("vector") && img.clientWidth >= img.naturalWidth;
+      frame.classList.toggle("nozoom", same);
+      zoom.disabled = same;
+      zoom.title = same ? "The picture is already at its own size" : view.actual ? "Fit the picture to the width of the screen" : "Show the picture at its own size, scrolling both ways";
+    };
+    view.toggle = () => {
+      if (zoom.disabled) return;
+      view.actual = !view.actual; frame.classList.toggle("actual", view.actual);
+      zoom.textContent = view.actual ? "Fit width" : "Full size"; zoom.setAttribute("aria-pressed", String(view.actual));
+      view.layout();
+    };
+    const describe = () => {
+      const info = view.info, img = view.img;
+      if (!info) return;
+      const size = img && img.naturalWidth ? ` · ${img.naturalWidth} × ${img.naturalHeight} px` : "";
+      note.textContent = (HOSTED ? "As of the laptop's build" : "As on disk now") + ` · changed ${fmtWhen(info.mtime)} · ${fmtSize(info.size)}${size}`;
+    };
+    const open = async () => {
+      const mine = ++view.load;
+      note.textContent = "Opening…";
+      try {
+        let info;
+        if (HOSTED) {
+          if (d.left_out) throw new Error(`This picture is not in the copy: it is ${fmtSize(d.size)}, ${d.left_out}. Open it on the laptop.`);
+          if (d.text == null) throw new Error("The picture is not loaded yet.");
+          info = { url: `data:${d.mime || "image/png"};base64,${d.text}`, name: d.name, size: d.size, mtime: d.mtime };
+        } else info = await live.imageOpen(d.id);
+        if (mine !== view.load) return;
+        const img = document.createElement("img");
+        img.alt = d.name; img.decoding = "async"; img.referrerPolicy = "no-referrer";
+        img.addEventListener("load", () => { if (mine === view.load) { describe(); view.layout(); } });
+        img.addEventListener("error", () => {
+          if (mine !== view.load) return;
+          view.img = null; alone.hidden = true; zoom.disabled = true;
+          frame.replaceChildren($("div", "htmlnote", "The picture could not be shown: the file may be damaged, or no longer there."));
+          note.textContent = "";
+        });
+        img.addEventListener("click", view.toggle);
+        img.src = info.url;
+        frame.replaceChildren(img); view.img = img; view.info = info;
+        alone.href = info.url; alone.hidden = HOSTED;
+        describe(); view.layout();
+        status(info);
+      } catch (e) {
+        if (mine !== view.load) return;
+        view.img = null; alone.hidden = true; zoom.disabled = true;
+        frame.replaceChildren($("div", "htmlnote", e.message));
+        note.textContent = "";
+      }
+    };
+    reload.addEventListener("click", open);
+    zoom.addEventListener("click", view.toggle);
+    if (window.ResizeObserver) new ResizeObserver(() => view.layout()).observe(frame);
+    // Not at once: the copy has the bytes already and would call status before the caller has the view it compares with.
+    queueMicrotask(open);
+    return view;
+  }
+  window.addEventListener("keydown", e => { if (e.key === "Escape" && fileView && fileView.full && !e.defaultPrevented) fileView.setFull(false); });
   function renderDocView() {
     const session = data.sessions[state.session];
     const docs = sessionDocuments(session);
@@ -2052,12 +2139,12 @@ __HEAD_HOSTED__
     const controls = document.getElementById("controls"); controls.replaceChildren();
     const main = document.getElementById("main");
     const d = entry && data.documents[entry.id];
-    // The same HTML file still on screen keeps its frame, so a redraw does not reload it.
-    const keep = Boolean(d && d.kind === "html" && htmlView && htmlView.key === session.id + ":" + d.id && htmlView.node.parentNode === main);
-    if (!keep) { htmlView = null; main.replaceChildren(); }
+    // The same HTML file or image still on screen keeps its frame, so a redraw does not reload it.
+    const keep = Boolean(d && (d.kind === "html" || d.kind === "image") && fileView && fileView.key === session.id + ":" + d.id && fileView.node.parentNode === main);
+    if (!keep) { fileView = null; main.replaceChildren(); }
     if (!entry) {
-      controls.append($("div", "summary", "No message or reply in this session names a markdown or HTML file that is on this machine."));
-      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, or a sketch's `.html`) open here: markdown beside its contents list, HTML rendered."));
+      controls.append($("div", "summary", "No message or reply in this session names a markdown, HTML or image file that is on this machine."));
+      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown beside its contents list, HTML rendered, an image fitted to the width."));
       return;
     }
     const row = $("div", "controls");
@@ -2076,24 +2163,24 @@ __HEAD_HOSTED__
       if (el) el.scrollIntoView({ block: "start" });
     });
     const message = $("button", "btn", "Message about this file");
-    message.title = d.kind === "html" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
+    message.title = d.kind === "html" || d.kind === "image" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
     row.append(select, back, message);
-    const shown = keep && htmlView.info;  // the frame's own reading of the file, newer than the build's
+    const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
     controls.append(row, meta);
     const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
       pointer: p => docPointer(d, section, p) });
 
-    if (d.kind === "html") {
+    if (d.kind === "html" || d.kind === "image") {
       if (!keep) {
         // Once the frame has the file, the line above says when it last changed on disk, not as of the last rebuild.
-        const view = htmlDocView(session.id + ":" + d.id, d, info => {
-          if (htmlView !== view) return;
+        const view = (d.kind === "image" ? imageDocView : htmlDocView)(session.id + ":" + d.id, d, info => {
+          if (fileView !== view) return;
           meta.textContent = `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(info.mtime)}`;
           meta.title = `${d.dir}/${d.name}, as on disk when it was opened`;
         });
-        htmlView = view;
+        fileView = view;
         main.append(view.node);
       }
       message.addEventListener("click", () => useTarget(target("", ""), message));

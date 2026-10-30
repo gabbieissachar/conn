@@ -271,7 +271,8 @@
       const documents = {};
       for (const [id, meta] of Object.entries(idx.documents || {})) {
         const old = previous && previous.documents[id];
-        documents[id] = { ...meta, text: old && old.stamp === meta.stamp ? old.text : null };
+        // A picture the copy leaves out (sync.py) has no object to load: its text stays empty and the page says why.
+        documents[id] = { ...meta, text: meta.left_out ? "" : old && old.stamp === meta.stamp ? old.text : null };
       }
       const sig = weeksSig(idx);
       return {
@@ -307,7 +308,7 @@
     }
     // Whether the copy can be kept for offline: a sealed copy, in a browser with storage and a worker, on a secure address.
     const offlineCapable = () => Boolean(sealed.params) && hasWorker() && typeof indexedDB !== "undefined";
-    // The entries of an index that are objects to fetch: conversations, documents (HTML files too), fleet weeks, answer sheets.
+    // The entries of an index that are objects to fetch: conversations, documents (HTML files and pictures too, less the pictures left out), fleet weeks, answer sheets.
     const entriesOf = idx => [...(idx.conversations || []), ...Object.values(idx.documents || {}), ...Object.values(idx.weeks || {}), ...Object.values(idx.sheets || {})].filter(entry => entry && entry.object && entry.stamp);
     const stampsOf = async () => new Map(((await safe(dbAll("stamps"))) || []).map(({ key, value }) => [key, value]));
     // What this device holds of the copy the index names: { total, have, bytes, all, held }, total and have in objects.

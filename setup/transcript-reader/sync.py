@@ -52,8 +52,9 @@ Output, in out/hosted/ (gitignored with the rest of out/; it embeds private tran
                        last message, object, stamp), the documents and the fleet weeks
   s/<id>.json          one conversation (a pane's sessions across /clear) under its newest id,
                        exactly as the local page's payload holds it
-  d/<id>.json          one markdown or HTML document a message or reply names, as on disk at the build (an HTML
-                       file carries its own text with the pictures, styles and scripts beside it folded in)
+  d/<id>.json          one markdown, HTML or image document a message or reply names, as on disk at the build (an HTML
+                       file carries its own text with the pictures, styles and scripts beside it folded in; an image
+                       carries its bytes in base64 as its text, within IMAGE_COPY_BYTES each and IMAGE_COPY_TOTAL in all)
   a/<id>.json          the questionnaires of one conversation (replies asking for keyed answers),
                        as the local answer sheet reads them; only for a conversation that has one
   f/<yyyy>-W<ww>.json  one week (UTC) of fleet records: status lines, steering messages, your
@@ -90,6 +91,7 @@ the output folder and the parsed-log cache are written.
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -125,6 +127,11 @@ HEARTBEAT = 300  # seconds: the index is sealed again at least this often (the s
 # manifest and its two icons (drawn here, no image file in the repo). The phone opens the shell, installs the worker and adds
 # the page to its Home Screen from these.
 STATIC_FILES = ("sw.js", "manifest.webmanifest", "icon-180.png", "icon-512.png")
+# An image a reply names is carried in the copy as it is on disk (base64, in its own object), so the copy keeps a limit for each and for
+# all of them, which the local viewer (api.js, 10 MB each) does not need. One over the first, or past the second (the newest files
+# first), is listed in the index as left out, with why, and the page says so where it would have shown the picture.
+IMAGE_COPY_BYTES = 2 * 1024 * 1024
+IMAGE_COPY_TOTAL = 12 * 1024 * 1024
 PASSPHRASE_ENV = "HOSTED_READER_PASSPHRASE"
 KEYCHAIN_SERVICE = "pmos-hosted-reader"
 
@@ -441,7 +448,7 @@ class Build:
             before_sheet = (((self.old.get("conversations") or {}).get(cid) or {}).get("sheet") or {}).get("stamp")
             sheet = {"object": sheet_rel, "stamp": self.put(sheet_rel, {"questionnaires": found_sheets}, before_sheet),
                      "list": [{"at": q["at"], "open": len(q["cards"]), "title": q["title"]} for q in found_sheets]}
-        documents = builder.attach_documents([session], html=True)  # HTML files too: each is folded into one text (inline_html.py)
+        documents = builder.attach_documents([session], html=True, images=True)  # HTML files too (each folded into one text, inline_html.py) and images
         rel = f"s/{cid}.json"
         before = ((self.old.get("conversations") or {}).get(cid) or {}).get("stamp")
         stamp = self.put(rel, session, before)
@@ -468,24 +475,32 @@ class Build:
             for doc_id, doc in record.pop("found", {}).items():
                 found.setdefault(doc_id, doc)  # the first conversation's spelling, as one local build keeps it
         records = {}
+        wanted = []
         for doc_id in sorted({doc_id for _, record in conversations for doc_id in record["documents"]}):
             prior, doc = old.get(doc_id), found.get(doc_id)
             if doc is None and prior is None:
                 continue
             # The spelling first seen stays, so parsing another conversation never rewrites the document.
             base = {key: (prior or doc)[key] if key == "mention" else (doc or prior)[key] for key in ("id", "name", "path", "dir", "mention")}
-            is_html = (doc or prior).get("kind") == "html"
-            if is_html:
-                base["kind"] = "html"
+            kind = (doc or prior).get("kind")
+            if kind:
+                base["kind"] = kind
+            wanted.append((doc_id, prior, doc, base, kind))
+        left_out = self.images_left_out([(doc_id, Path(base["path"])) for doc_id, _, _, base, kind in wanted if kind == "image"])
+        for doc_id, prior, doc, base, kind in wanted:
+            is_html = kind == "html"
             path = Path(base["path"])
             now = version(path)
-            limit = builder.MAX_HTML_BYTES if is_html else builder.MAX_DOCUMENT_BYTES
+            limit = builder.MAX_HTML_BYTES if is_html else builder.MAX_IMAGE_BYTES if kind == "image" else builder.MAX_DOCUMENT_BYTES
             if now is None or now[1] > limit:
                 records[doc_id] = {**base, "gone": True}
                 continue
+            if doc_id in left_out:
+                records[doc_id] = {**base, "version": now, "mtime": now[0] / 1e9, "size": now[1], "left_out": left_out[doc_id]}
+                continue
             # An HTML file folds in what it loads from beside itself, so a change to one of those files is a change to it.
             beside = {name: version(Path(name)) for name in (prior or {}).get("assets", {})} if is_html else {}
-            if doc is None and not self.args.full and not prior.get("gone") and prior.get("version") == now and (self.out / prior["object"]).is_file() \
+            if doc is None and not self.args.full and not prior.get("gone") and prior.get("version") == now and prior.get("object") and (self.out / prior["object"]).is_file() \
                     and (not is_html or (prior.get("rules") == self.rules and beside == prior.get("assets"))):
                 records[doc_id] = prior
                 continue
@@ -496,6 +511,10 @@ class Build:
                     folded = inline_html.fold(path, [Path.home(), *builder.TEMP_ROOTS])
                     value = {**base, "mtime": mtime, "size": now[1], "text": folded["text"], "inlined": folded["inlined"], "skipped": folded["skipped"]}
                     extra = {"size": now[1], "assets": folded["assets"], "rules": self.rules}
+                elif kind == "image":
+                    mime = builder.IMAGE_TYPES.get(path.suffix.lower(), "application/octet-stream")
+                    value = {**base, "mtime": mtime, "size": now[1], "mime": mime, "text": base64.b64encode(path.read_bytes()).decode("ascii")}
+                    extra = {"size": now[1], "mime": mime}
                 else:
                     value, extra = {**base, "mtime": mtime, "text": path.read_text(encoding="utf-8", errors="replace")}, {}
             except OSError:
@@ -504,6 +523,25 @@ class Build:
             stamp = self.put(rel, value, (prior or {}).get("stamp"))
             records[doc_id] = {**base, "version": now, "mtime": mtime, "object": rel, "stamp": stamp, **extra}
         return records
+
+    def images_left_out(self, images: list[tuple[str, Path]]) -> dict[str, str]:
+        """doc id -> why, for each image the copy does not carry: one over IMAGE_COPY_BYTES, or past IMAGE_COPY_TOTAL (the newest
+        files are carried first). A file that is gone is not counted: the build marks it so."""
+        sized = []
+        for doc_id, path in images:
+            found = version(path)
+            if found and found[1] <= builder.MAX_IMAGE_BYTES:
+                sized.append((doc_id, found))
+        mb = lambda n: f"{n // (1024 * 1024)} MB"  # noqa: E731
+        left_out, used = {}, 0
+        for doc_id, (mtime, size) in sorted(sized, key=lambda item: (-item[1][0], item[0])):
+            if size > IMAGE_COPY_BYTES:
+                left_out[doc_id] = f"over the {mb(IMAGE_COPY_BYTES)} the copy carries for one image"
+            elif used + size > IMAGE_COPY_TOTAL:
+                left_out[doc_id] = f"past the {mb(IMAGE_COPY_TOTAL)} the copy carries for all its images"
+            else:
+                used += size
+        return left_out
 
     def fleet(self, conversations: list[tuple[str, dict]], since: float) -> dict[str, dict]:
         """The fleet records of the window (and older items never settled), with your messages and
@@ -567,7 +605,7 @@ class Build:
             "homes": [home["id"] for home in self.homes] + ([WORKSPACE_ID] if any(entry["home"] == WORKSPACE_ID for entry in entries) else []),
             "summaries": [summary for summary in (builder.home_summary(home) for home in self.homes) if summary],
             "conversations": entries,
-            "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp", "kind", "size") if key in record}
+            "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp", "kind", "size", "mime", "left_out") if key in record}
                           for doc_id, record in documents.items() if not record.get("gone")},
             "weeks": weeks,
             **({} if self.timeline else {"fleet_timeline": False}),
@@ -576,7 +614,7 @@ class Build:
         replace(self.out / "index.json", encode(index))
         kept = {record["object"] for _, record in conversations} | {record["object"] for record in weeks.values()} \
             | {record["sheet"]["object"] for _, record in conversations if record.get("sheet")} \
-            | {record["object"] for record in documents.values() if not record.get("gone")}
+            | {record["object"] for record in documents.values() if record.get("object")}
         removed = self.sweep(kept)
         manifest = {"version": VERSION, "built": self.started, "shell": shell_stamp, "sheet_shell": sheet_stamp,
                     "conversations": dict(conversations), "documents": documents, "weeks": weeks}
@@ -638,7 +676,7 @@ class Seal:
         documents = {doc_id: meta for doc_id, meta in index["documents"].items() if doc_id in named}
         weeks = {key: meta for key, meta in index["weeks"].items() if meta["to"] >= cutoff}
         sheets = {cid: meta for cid, meta in (index.get("sheets") or {}).items() if any(entry["id"] == cid for entry in conversations)}
-        objects = {item["object"]: item["stamp"] for item in [*conversations, *documents.values(), *weeks.values(), *sheets.values()]}
+        objects = {item["object"]: item["stamp"] for item in [*conversations, *documents.values(), *weeks.values(), *sheets.values()] if item.get("object")}
         return {**index, "conversations": conversations, "documents": documents, "weeks": weeks, "sheets": sheets}, objects
 
     def run(self) -> int:

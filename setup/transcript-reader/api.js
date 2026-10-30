@@ -47,9 +47,12 @@
 //                                                   out/html-files.json) is checked now (still there, under the
 //                                                   home or a temp folder, not over the size limit) and given an
 //                                                   address: { url, name, size, mtime }
+//   POST /api/transcript-reader/image-open          { id }: the same for an image file the page offers (listed in
+//                                                   out/image-files.json): { url, name, size, mtime }
 //   GET  /api/transcript-reader/html/<key>/<file>   that file, and the files beside it and below it that it names, as
 //                                                   they are on disk now, for the page to show in a sandboxed frame
-//                                                   (see "HTML files" below); the key in the address is the credential
+//                                                   (see "HTML files" below); the key in the address is the credential.
+//                                                   An image's address serves that image and nothing else.
 //   POST /api/transcript-reader/reopen              { session_id }: lists a session whose pane
 //                                                   has closed, to read again, and rebuilds
 //   POST /api/transcript-reader/close               { session_id }: takes a session off the
@@ -72,6 +75,11 @@
 // and temp folders are served, only those the page offers, and beside one only files below its own
 // folder (never a dot file or folder, never a link out of it, and only the types in ASSET_TYPES);
 // an HTML file directly in the home or a temp folder gets its own folder's files and no deeper.
+//
+// Image files (.png .jpg .jpeg .gif .webp .svg) a reply names are offered the same way (image-open, the same kind of address,
+// the same folder and link rules), but the page shows one in an <img> of its own, not a frame, so an SVG's scripts never run
+// (an image document runs none), and the address serves that one file and nothing beside it. The response is sandboxed by its own
+// policy too, so an SVG opened alone in a tab runs no script either.
 //
 // A request that came in on the Tailscale listener (server.js, opt-in) first goes through
 // tailnet.js: a passcode and a session cookie on top of all of this, with that listener's own
@@ -126,10 +134,13 @@ const STATIC_TYPES = {
 const TOKEN_HEADER = 'x-transcript-reader-token';
 const HTML_ROUTE = API + 'html/';
 const HTML_FILES = 'html-files.json';  // beside the page: id -> path (build_prototype.write_page)
+const IMAGE_FILES = 'image-files.json';  // the same for the images the page offers
 const HTML_ID_RE = /^[0-9a-f]{10}$/;
 const HTML_PAGE_RE = /\.html?$/i;
-// build_prototype.MAX_HTML_BYTES: what the page offers. A file beside it may be larger (a picture).
+const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+// build_prototype.MAX_HTML_BYTES and MAX_IMAGE_BYTES: what the page offers. A file beside an HTML page may be larger (a picture).
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 const VIEW_IDLE_MS = 60 * 60 * 1000;
 const MAX_VIEWS = 64;
@@ -818,8 +829,9 @@ function create({
 
   // -------------------------------------------------------------- HTML files
 
-  // key -> { dir, entry, flat, expires } for each file shown: the folder it is in, its name, whether that folder is
-  // itself an allowed root (so only its own files may load, nothing below), and when the key lapses from disuse.
+  // key -> { dir, entry, flat, only, expires } for each file shown: the folder it is in, its name, whether that folder is
+  // itself an allowed root (so only its own files may load, nothing below), whether the file is all the key opens (an image),
+  // and when the key lapses from disuse.
   const views = new Map();
 
   const within = (real, base) => real === base || real.startsWith(base + path.sep);
@@ -830,25 +842,30 @@ function create({
     while (views.size > MAX_VIEWS) views.delete(views.keys().next().value);
   }
 
-  // What the Open button of an HTML file asks: the file as the last build listed it, checked now. The listing
+  // What the Open button of an HTML file or an image asks: the file as the last build listed it, checked now. The listing
   // comes from the page's own build (never from the request), so only a file a listed conversation named opens.
-  function htmlOpen(body) {
+  const OPENABLE = {
+    html: { listing: HTML_FILES, type: HTML_PAGE_RE, limit: MAX_HTML_BYTES, not: ['That is not an HTML file.', 'not_html'] },
+    image: { listing: IMAGE_FILES, type: IMAGE_FILE_RE, limit: MAX_IMAGE_BYTES, not: ['That is not an image file.', 'not_image'] },
+  };
+  function fileOpen(body, kind) {
+    const rules = OPENABLE[kind];
     for (const key of Object.keys(body)) if (key !== 'id') throw new RequestError('Unknown field.');
     if (typeof body.id !== 'string' || !HTML_ID_RE.test(body.id)) throw new RequestError('Invalid file id.');
     let listing = null;
-    try { listing = parseJson(fs.readFileSync(path.join(outDir, HTML_FILES), 'utf8')); } catch { listing = null; }
+    try { listing = parseJson(fs.readFileSync(path.join(outDir, rules.listing), 'utf8')); } catch { listing = null; }
     const named = listing && typeof listing === 'object' && Object.hasOwn(listing, body.id) ? listing[body.id] : null;
     if (typeof named !== 'string' || !path.isAbsolute(named)) throw new RequestError('That file is not on the page. Sync to rebuild it.', 404, 'not_listed');
     let real;
     let stat;
     try { real = fs.realpathSync.native(named); stat = fs.statSync(real); } catch { throw new RequestError('That file is gone.', 404, 'gone'); }
     if (!stat.isFile()) throw new RequestError('That file is gone.', 404, 'gone');
-    if (!HTML_PAGE_RE.test(real)) throw new RequestError('That is not an HTML file.', 404, 'not_html');
+    if (!rules.type.test(real)) throw new RequestError(rules.not[0], 404, rules.not[1]);
     if (!roots().some((root) => within(real, root))) throw new RequestError('That file is outside the home and temp folders.', 403, 'outside');
-    if (stat.size > MAX_HTML_BYTES) throw new RequestError('That file is over ' + MAX_HTML_BYTES / 1024 / 1024 + ' MB.', 413, 'too_big');
+    if (stat.size > rules.limit) throw new RequestError('That file is over ' + rules.limit / 1024 / 1024 + ' MB.', 413, 'too_big');
     const key = crypto.randomBytes(16).toString('base64url');
     const dir = path.dirname(real);
-    views.set(key, { dir, entry: path.basename(real), flat: roots().includes(dir), expires: now() + VIEW_IDLE_MS });
+    views.set(key, { dir, entry: path.basename(real), flat: roots().includes(dir), only: kind === 'image', expires: now() + VIEW_IDLE_MS });
     pruneViews();
     return { url: HTML_ROUTE + key + '/' + encodeURIComponent(path.basename(real)), name: path.basename(real), size: stat.size, mtime: stat.mtimeMs / 1000 };
   }
@@ -869,12 +886,12 @@ function create({
     const valid = parts.length > 0 && parts.every((part) => part && part !== '.' && part !== '..' && !/[\\/\u0000]/.test(part));
     const entry = valid && parts.length === 1 && parts[0] === view?.entry;
     const type = valid && ASSET_TYPES[path.extname(parts[parts.length - 1]).toLowerCase()];
-    if (!view || !valid || !type || (!entry && (parts.some((part) => part.startsWith('.')) || (view.flat && parts.length > 1)))) { text(404, 'Not found'); return; }
+    if (!view || !valid || !type || (!entry && (view.only || parts.some((part) => part.startsWith('.')) || (view.flat && parts.length > 1)))) { text(404, 'Not found'); return; }
     let real;
     let stat;
     try { real = fs.realpathSync.native(path.join(view.dir, ...parts)); stat = fs.statSync(real); } catch { text(404, 'Not found'); return; }
     if (!stat.isFile() || !within(real, view.dir) || !roots().some((root) => within(real, root))) { text(404, 'Not found'); return; }
-    if (stat.size > (HTML_PAGE_RE.test(real) ? MAX_HTML_BYTES : MAX_ASSET_BYTES)) { text(413, 'Too big'); return; }
+    if (stat.size > (view.only ? MAX_IMAGE_BYTES : HTML_PAGE_RE.test(real) ? MAX_HTML_BYTES : MAX_ASSET_BYTES)) { text(413, 'Too big'); return; }
     view.expires = now() + VIEW_IDLE_MS;
     const stream = fs.createReadStream(real);
     stream.on('error', () => { if (!res.headersSent) text(404, 'Not found'); else res.end(); });
@@ -1002,9 +1019,11 @@ function create({
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
     }
-    if (pathname === API + 'html-open' && req.method === 'POST') {
-      send(res, 200, { status: 'ok', ...htmlOpen(await readJsonBody(req)) });
-      return;
+    for (const kind of ['html', 'image']) {
+      if (pathname === API + kind + '-open' && req.method === 'POST') {
+        send(res, 200, { status: 'ok', ...fileOpen(await readJsonBody(req), kind) });
+        return;
+      }
     }
     if (pathname === API + 'queue' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...queueWrite(await readJsonBody(req, MAX_QUEUE_BODY_BYTES)) });
