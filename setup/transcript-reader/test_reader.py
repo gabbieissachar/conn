@@ -900,6 +900,94 @@ class ImageFilesTest(unittest.TestCase):
         self.assertEqual([documents[i]["path"] for i in sessions[0]["exchanges"][0]["documents"]], [str(far)])
 
 
+class EmbeddedImagesTest(unittest.TestCase):
+    """A markdown document that shows a picture (`![](path)` or `<img src>`, from its own folder) lists it in Documents, though no reply names the file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name).resolve()
+        self.prd = self.home / "prds" / "bc49"
+        (self.prd / "screens").mkdir(parents=True)
+        for name in ("l2.png", "l3.png", "my esim.PNG", "flow.svg", "old.bmp"):
+            (self.prd / "screens" / name).write_bytes(b"x" * 10)
+        (self.home / "banner.jpg").write_bytes(b"x" * 10)
+        self.doc = self.prd / "release-1.md"
+        self.write_doc("# R1\n\n<table><tr><td><img src=\"screens/l2.png\" width=\"280\" alt=\"L2\"></td></tr></table>\n\n![L3](screens/l3.png)\n")
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write_doc(self, text):
+        self.doc.write_text(text, encoding="utf-8")
+
+    def listed(self, reply="Updated `release-1.md`.", cwd=None, images=True):
+        sessions = [{"exchanges": [{"reply": reply, "cwd": str(cwd or self.home)}]}]
+        documents = builder.attach_documents(sessions, html=True, images=images)
+        return [(documents[i]["name"], documents[i].get("kind", "")) for i in sessions[0]["exchanges"][0].get("documents", [])], documents
+
+    def test_the_pictures_follow_the_document_in_the_order_it_shows_them(self):
+        listed, documents = self.listed(cwd=self.prd)
+        self.assertEqual(listed, [("release-1.md", ""), ("l2.png", "image"), ("l3.png", "image")])
+        l2 = next(d for d in documents.values() if d["name"] == "l2.png")
+        self.assertEqual((l2["kind"], l2["size"], l2["path"], l2["dir"], l2["mention"]), ("image", 10, str(self.prd / "screens" / "l2.png"), "~/prds/bc49/screens", "screens/l2.png"))
+        self.assertNotIn("text", l2)
+
+    def test_the_path_starts_at_the_documents_folder_not_the_turns_working_directory(self):
+        self.assertEqual(self.listed(f"Updated {self.doc}.", cwd="/elsewhere")[0], [("release-1.md", ""), ("l2.png", "image"), ("l3.png", "image")])
+
+    def test_off_unless_images_are_asked_for(self):
+        self.assertEqual(self.listed(cwd=self.prd, images=False)[0], [("release-1.md", "")])
+
+    def test_only_files_that_exist_under_the_home_or_temp_folders_and_are_images_count(self):
+        outside = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "secret.png").write_bytes(b"x")
+        self.write_doc("\n".join([
+            "![a](https://example.com/a.png) ![b](//example.com/b.png) ![c](data:image/png;base64,AAAA)",
+            "![gone](screens/gone.png) ![bmp](screens/old.bmp) ![doc](release-1.md) [link](screens/l2.png)",
+            f"![out]({outside}/secret.png) <img src=\"/no/such/dir/x.png\"> <img alt=\"no source\">",
+        ]))
+        with mock.patch.object(builder, "TEMP_ROOTS", ()):
+            self.assertEqual(self.listed(cwd=self.prd)[0], [("release-1.md", "")], "a plain link is not a picture")
+        self.assertEqual(self.listed(cwd=self.prd)[0], [("release-1.md", ""), ("secret.png", "image")], "a temp folder is allowed")
+
+    def test_absolute_and_home_paths_parent_folders_spaces_queries_and_titles_resolve(self):
+        self.write_doc("\n".join([
+            f"![a]({self.prd}/screens/l2.png)", "![b](~/banner.jpg)", "![c](../../banner.jpg)", "![d](screens/my%20esim.PNG)",
+            "![e](<screens/my esim.PNG>)", "![f](screens/flow.svg?v=2#top \"a title\")", "<img SRC='screens/l3.png'>",
+        ]))
+        self.assertEqual([name for name, _ in self.listed(cwd=self.prd)[0]], ["release-1.md", "l2.png", "banner.jpg", "my esim.PNG", "flow.svg", "l3.png"], "each file once")
+
+    def test_the_size_limit_is_the_image_one(self):
+        (self.prd / "screens" / "big.png").write_bytes(b"x" * (builder.MAX_HTML_BYTES + 1))
+        self.write_doc("![big](screens/big.png) ![l2](screens/l2.png)")
+        self.assertEqual([name for name, _ in self.listed(cwd=self.prd)[0]], ["release-1.md", "big.png", "l2.png"])
+        with mock.patch.object(builder, "MAX_IMAGE_BYTES", 100):
+            (self.prd / "screens" / "big.png").write_bytes(b"x" * 101)
+            self.assertEqual([name for name, _ in self.listed(cwd=self.prd)[0]], ["release-1.md", "l2.png"])
+
+    def test_a_picture_the_reply_also_names_is_listed_once_and_later_turns_get_the_pictures_too(self):
+        sessions = [{"exchanges": [{"reply": f"See {self.doc} and screens/l3.png.", "cwd": str(self.prd)}, {"reply": "Again `release-1.md`.", "cwd": str(self.prd)}]}]
+        documents = builder.attach_documents(sessions, images=True)
+        first, second = (exchange["documents"] for exchange in sessions[0]["exchanges"])
+        self.assertEqual([documents[i]["name"] for i in first], ["release-1.md", "l2.png", "l3.png"], "the document's pictures follow it, the one the reply also names included")
+        self.assertEqual([documents[i]["name"] for i in second], ["release-1.md", "l2.png", "l3.png"])
+
+    def test_a_message_naming_the_document_gets_its_pictures_too(self):
+        records = [prompt(f"Check {self.doc} please", iso(T0)), reply("Looking.", T0 + 1)]
+        sessions = [{"exchanges": builder.session_exchanges(records)}]
+        documents = builder.attach_documents(sessions, images=True)
+        self.assertEqual([documents[i]["name"] for i in sessions[0]["exchanges"][0]["input_documents"]], ["release-1.md", "l2.png", "l3.png"])
+
+    def test_a_document_with_thousands_of_pictures_names_is_quick(self):
+        import time
+        self.write_doc("![x](" + "a" * 200_000 + ".png) " + "<img " * 20_000 + "![](screens/l2.png)")
+        started = time.monotonic()
+        self.assertEqual([name for name, _ in self.listed(cwd=self.prd)[0]], ["release-1.md", "l2.png"])
+        self.assertLess(time.monotonic() - started, 2.0)
+
+
 class ImageNamesTest(unittest.TestCase):
     """image_mentions finds what the IMAGE_MENTION regex finds, without the regex's backtracking, and the md and html ones are as they were."""
 

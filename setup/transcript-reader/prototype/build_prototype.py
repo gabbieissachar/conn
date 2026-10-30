@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1286,6 +1287,28 @@ def named_images(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int
     return named_files(text, cwd, touched, image_mentions, MAX_IMAGE_BYTES)
 
 
+# A markdown document that shows a picture says so with `![alt](path)` or `<img src="path">`, the path from the document's own folder
+# (a PRD's `release-1-screens/l2.png`). No reply need name that file, so the document's own text is where it is found.
+EMBEDDED_IMAGE = re.compile(r"!\[[^\]\n]*\]\(\s*<?([^)\s>]+)|<img\b[^<>]*?\bsrc\s*=\s*[\"']([^\"']+)", re.I)
+
+
+def embedded_images(text: str, folder: Path) -> list[tuple[str, Path]]:
+    """(as written, file) for each existing image a markdown text shows, in order, once each.
+
+    Addresses (`https:`, `data:`) are not files. A relative path starts at <folder>, the document's own; the file
+    must be under the home folder or a temp folder, and within MAX_IMAGE_BYTES, as for any image a reply names.
+    """
+    found: list[tuple[str, Path]] = []
+    for match in EMBEDDED_IMAGE.finditer(text):
+        token = urllib.parse.unquote((match.group(1) or match.group(2)).split("#")[0].split("?")[0])
+        if token.startswith("//") or re.match(r"[a-z][a-z0-9+.-]*:", token, re.I) or not re.search(r"\.(?:png|jpe?g|gif|webp|svg)$", token, re.I):
+            continue
+        path = resolve_mention(token, [folder], "", (), MAX_IMAGE_BYTES)
+        if path and all(path != known for _, known in found):
+            found.append((token, path))
+    return found
+
+
 # Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
 # notice is the fleet's own record and folds away, and a session event has no author.
 DOCUMENT_INPUTS = ("captain", "firstmate", "peer")
@@ -1312,6 +1335,24 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
         home = Path.home()
         return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
 
+    shown: dict[str, list[tuple[str, Path]]] = {}  # markdown id -> the images its text shows, found once per document
+
+    def add(path: Path, token: str, kind: str) -> str | None:
+        key = doc_key(path)
+        if key not in documents:
+            try:
+                stat = path.stat()
+                body = path.read_text(encoding="utf-8", errors="replace") if not kind else None
+            except OSError:
+                return None
+            documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": token, "mtime": stat.st_mtime}
+            if kind:
+                documents[key].update(kind=kind, size=stat.st_size)
+            else:
+                documents[key]["text"] = body
+                shown[key] = embedded_images(body, path.parent) if images else []
+        return key
+
     def ids_for(text: str, cwd: str, touched: Touched) -> list[str]:
         found = [(start, token, path, "") for start, token, path in named_files(text, cwd, touched)]
         if html:
@@ -1320,19 +1361,15 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
             found += [(start, token, path, "image") for start, token, path in named_images(text, cwd, touched)]
         ids = []
         for _, token, path, kind in sorted(found, key=lambda item: item[0]):
-            key = doc_key(path)
-            if key not in documents:
-                try:
-                    stat = path.stat()
-                    body = path.read_text(encoding="utf-8", errors="replace") if not kind else None
-                except OSError:
-                    continue
-                documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": token, "mtime": stat.st_mtime}
-                if kind:
-                    documents[key].update(kind=kind, size=stat.st_size)
-                else:
-                    documents[key]["text"] = body
+            key = add(path, token, kind)
+            if key is None or key in ids:
+                continue
             ids.append(key)
+            # A document's own pictures follow it, as if the reply had named them (a PRD's mock screens).
+            for shown_token, shown_path in shown.get(key, ()):
+                picture = add(shown_path, shown_token, "image")
+                if picture is not None and picture not in ids:
+                    ids.append(picture)
         return ids
 
     for session in sessions:
