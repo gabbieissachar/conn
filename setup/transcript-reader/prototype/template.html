@@ -686,10 +686,7 @@ __HEAD_HOSTED__
   // Statuses change between rebuilds and reads, so the pickers' names follow them.
   function labelSessions() {
     paintTitle();
-    document.querySelectorAll("select[name=session] option, #crumb-session option").forEach(opt => {
-      const session = /^\d+$/.test(opt.value) && data.sessions[Number(opt.value)];
-      if (session && opt.textContent !== optionText(session)) opt.textContent = optionText(session);
-    });
+    document.querySelectorAll("select[name=session], #crumb-session").forEach(select => { if (select.dataset.sig) fillSessions(select); });
   }
   // The picker names a session by its Herdr tab or pane label alone; the session's own title
   // comes back only to tell apart two sessions of the same section with the same label, so a
@@ -721,10 +718,37 @@ __HEAD_HOSTED__
   // The picker lists the sessions a person starred first, in their own group, then the sessions an agent runs now. Under Closed panes come the listed sessions no pane runs (kept
   // after the pane closed, reopened by hand, never seen in a pane: still readable), then the sessions of panes
   // closed in the last two weeks, which open again for reading (with their documents) until closed.
+  // A native list closes when its select leaves the page and is drawn again when its options change, and a build lands every
+  // second or two while agents write. So the picker is built aside, the select is changed only when what it would show
+  // differs, and not while its list is open: the change waits until the list is closed (a list open for good is checked
+  // every 0.4 s). Where :open is not known, a focused select counts as open.
+  const pickerOpen = select => { try { return select.matches(":open"); } catch (e) { return document.activeElement === select; } };
+  const pickerWaiting = new Set();
   function fillSessions(select) {
+    const aside = $("select");
+    fillSessionsInto(aside);
+    const sig = aside.innerHTML + "|" + aside.selectedIndex;
+    if (select.dataset.sig === sig) return;
+    if (pickerOpen(select)) {
+      if (pickerWaiting.has(select)) return;
+      pickerWaiting.add(select);
+      const retry = () => {
+        if (pickerOpen(select)) { setTimeout(retry, 400); return; }
+        pickerWaiting.delete(select);
+        if (select.isConnected && select.dataset.sig) fillSessions(select);
+      };
+      setTimeout(retry, 400);
+      return;
+    }
+    const chosen = aside.options[aside.selectedIndex];  // moved options do not carry their choice over
+    select.replaceChildren(...aside.childNodes);
+    if (chosen) select.value = chosen.value;
+    select.dataset.sig = sig;
+  }
+  function fillSessionsInto(select) {
     if (HOSTED) { fillHostedSessions(select); return; }
     const option = ([s, i]) => {
-      const opt = $("option", null, sessionOption(s));
+      const opt = $("option", null, optionText(s));
       opt.value = i; opt.selected = i === state.session; return opt;
     };
     const { starred: top, running, idle } = picker.sections(data.sessions, paneLive, starred);
@@ -740,6 +764,7 @@ __HEAD_HOSTED__
     }));
     select.append(group);
   }
+  const pick = { row: null, select: null, star: null };  // the session picker kept across renders (renderReader)
   function pickSession(value) {
     link.listing = null;  // a notice about the conversation before (see the load code) goes with it
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
@@ -776,16 +801,29 @@ __HEAD_HOSTED__
     }
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
-    const controls = document.getElementById("controls"); controls.replaceChildren();
-    const row = $("div", "controls");
-    const select = $("select"); select.name = "session"; select.setAttribute("aria-label", "Session");
+    const controls = document.getElementById("controls");
+    // The picker row, with its select and star, is kept from one render to the next (the controls around it are drawn again),
+    // so a list the owner has open stays open and keeps its place however often a build lands.
+    const kept = session && pick.row && pick.row.parentNode && pick.row.parentNode.parentNode === controls ? pick.row.parentNode : null;
+    let row;
+    if (kept) {
+      for (const child of [...controls.children]) if (child !== kept) child.remove();
+      for (const child of [...kept.children]) if (child !== pick.row) child.remove();
+      row = kept;
+    } else { controls.replaceChildren(); row = $("div", "controls"); }
+    if (session && !pick.row) {
+      const made = $("select"); made.name = "session"; made.setAttribute("aria-label", "Session");
+      made.addEventListener("change", () => pickSession(made.value));
+      pick.select = made; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, pick.star);
+    }
+    const select = session ? pick.select : $("select"), star = session ? pick.star : starButton();
+    const pickRow = session ? pick.row : $("div", "pick-row");
     fillSessions(select);
-    select.addEventListener("change", () => pickSession(select.value));
-    const pickRow = $("div", "pick-row"), star = starButton();
-    pickRow.append(select, star);
     if (!session) {  // nothing on the reading list: every pane closed, or the last one was closed by hand
+      delete select.dataset.sig;
       const none = $("option", null, "No conversation on the reader"); none.value = ""; none.disabled = none.selected = true;
       select.prepend(none);
+      select.addEventListener("change", () => pickSession(select.value));
       row.append(select);  // nothing to star
       const note = $("div", "follow-note"); note.id = "follow-note";
       const offered = select.options.length > 1;
@@ -814,7 +852,8 @@ __HEAD_HOSTED__
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
-    row.append(pickRow, prev, next, needs, wakes, pinned, shut, follow, pinHost);
+    if (pickRow.parentNode !== row) row.append(pickRow);
+    row.append(prev, next, needs, wakes, pinned, shut, follow, pinHost);
     paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.source === "peer") ? count(e => e.source === "peer") + " from other sessions · " : ""}${count(e => e.folded)} wake-ups folded · ${count(e => e.verdict === "needs-you")} need you`);
@@ -827,7 +866,8 @@ __HEAD_HOSTED__
     const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
     const origin = $("div", "summary", pane ? `${paneLive(session) ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
     const note = $("div", "follow-note"); note.id = "follow-note";
-    controls.append(row, origin, summary, note);
+    if (row.parentNode !== controls) controls.append(row);
+    controls.append(origin, summary, note);
     if (session && session.kept) {
       const closed = $("div", "kept-note", `Its Herdr pane has closed. Shown as it was at ${fmtTime(session.kept)}; Send is off. `);
       const keepIt = $("button", "btn", "Keep it on the reader"); keepIt.hidden = !canLive;

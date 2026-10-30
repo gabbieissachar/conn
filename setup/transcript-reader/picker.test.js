@@ -115,10 +115,11 @@ test('page: the template repaints the tab title where the picker names change', 
 test('page: both pickers lead with the Starred group, the option text carries the star, and a star change redraws them', () => {
   const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
-  assert.match(body('fillSessions'), /picker\.sections\(data\.sessions, paneLive, starred\)[\s\S]*Starred · /, 'the local picker');
+  assert.match(body('fillSessionsInto'), /picker\.sections\(data\.sessions, paneLive, starred\)[\s\S]*Starred · /, 'the local picker');
   assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, \(\) => false, starred\)[\s\S]*Starred · /, 'the hosted copy\'s picker');
   assert.match(page, /const optionText = s => \(starred\(s\) \? "★ " : ""\)/, 'every option, labelSessions\' redraw included');
   assert.match(page, /const pickerSection = s => picker\.part\(s, [^)]*\)?[^;]*starred\)/, 'twins in different parts are not told apart by title');
+  assert.match(body('fillSessionsInto'), /\$\("option", null, optionText\(s\)\)/, 'the local picker draws the star and status itself: nothing rewrites its option text afterwards');
   assert.match(page, /stars\.onChange\(paintStars\)/);
   assert.match(page, /stars\.refresh\(s\.stamps && s\.stamps\.stars\)/, 'the state poll carries the revision');
   assert.match(body('toggleStar'), /picker\.starOf\(session, stars\.all\(\)\) \|\| session\.id/, 'unstar by the conversation the star was made under');
@@ -133,4 +134,109 @@ test('page: the batch list starts folded on every screen and Add leaves it as th
   assert.doesNotMatch(page, /link\.batchOpen = !narrow\.matches/, 'no screen size opens or folds it on Add');
   assert.doesNotMatch(body('addToBatch') || page.slice(page.indexOf('Added to the batch') - 900, page.indexOf('Added to the batch')), /batchOpen/, 'Add does not touch it');
   assert.match(page, /dock\("batch-toggle"\)\.addEventListener\("click", \(\) => \{ link\.batchOpen = !link\.batchOpen; renderDock\(\); \}\)/, 'the heading still toggles it');
+});
+
+// ---- an open list stays open: the page's own fillSessions, run on a stand-in for the page's elements ----
+// A native list closes when its select leaves the page, and a build lands every second or two while agents write, so the page
+// draws the picker aside, changes the select only when what it would show differs, and not while its list is open.
+
+class El {
+  constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.isConnected = true; this.text = ''; this.sets = 0; this.chosen = -1; this.opened = false; }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; this.sets += 1; }
+  get childNodes() { return this.children; }
+  get options() { return this.children.flatMap((c) => (c.tagName === 'OPTGROUP' ? c.children : [c])); }
+  get innerHTML() { return this.children.map((c) => (c.tagName === 'OPTGROUP' ? `<g>${c.innerHTML}</g>` : `<o ${c.value}>${c.text}</o>`)).join(''); }
+  // Like the browser's: a select built option by option has its last-set choice; moved options carry none, so the
+  // select starts from its first option unless the page sets the value.
+  get selectedIndex() { return this.fromBuild !== undefined ? this.fromBuild : this.chosen; }
+  set value(v) { this.chosen = this.options.findIndex((o) => o.value === v); }
+  get value() { return this.options[this.chosen] ? this.options[this.chosen].value : ''; }
+  matches(query) { if (query !== ':open') throw new Error('unsupported'); if (this.noOpenSupport) throw new SyntaxError('not a selector'); return this.opened; }
+}
+
+function pickerPage({ openSupport = true } = {}) {
+  const timers = [];
+  const world = { list: [['a', 'Alpha'], ['b', 'Beta']], chosen: 'a', active: null };
+  // What the page's fillSessionsInto makes: the options for the sessions it lists, one of them chosen.
+  const build = (select) => {
+    select.children = world.list.map(([value, text]) => { return { tagName: 'OPTION', value, text }; });
+    select.fromBuild = world.list.findIndex(([value]) => value === world.chosen);
+  };
+  const source = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const from = source.indexOf('const pickerOpen = ');
+  const to = source.indexOf('  function fillSessionsInto(');
+  const sandbox = { $: (tag) => { const e = new El(tag); if (!openSupport) e.noOpenSupport = true; return e; }, fillSessionsInto: build, document: { get activeElement() { return world.active; } }, setTimeout: (fn) => timers.push(fn), Set };
+  const fillSessions = vm.runInNewContext(source.slice(from, to) + '\nfillSessions;', sandbox);
+  const select = new El('select');
+  if (!openSupport) select.noOpenSupport = true;
+  return { world, select, fillSessions, timers, tick: () => { const due = timers.splice(0); due.forEach((fn) => fn()); } };
+}
+
+test('page: a build that changes nothing the picker shows leaves the select alone, open or not', () => {
+  const page = pickerPage();
+  page.fillSessions(page.select);
+  assert.equal(page.select.sets, 1, 'drawn the first time');
+  page.fillSessions(page.select);
+  page.select.opened = true;
+  page.fillSessions(page.select);
+  assert.equal(page.select.sets, 1, 'drawn again, nothing replaced');
+  assert.equal(page.timers.length, 0, 'and nothing waits');
+});
+
+test('page: a change that arrives while the list is open waits for it to close, then shows, with the choice kept', () => {
+  const page = pickerPage();
+  page.fillSessions(page.select);
+  page.select.opened = true;
+  page.world.list.push(['c', 'Gamma']);  // a fresh session
+  page.world.chosen = 'b';
+  page.fillSessions(page.select);
+  page.fillSessions(page.select);
+  assert.equal(page.select.options.length, 2, 'the open list is not touched');
+  assert.equal(page.timers.length, 1, 'one check is waiting, however many builds land');
+  page.tick();
+  assert.equal(page.select.options.length, 2, 'still open at the check: it asks again');
+  assert.equal(page.timers.length, 1);
+  page.select.opened = false;
+  page.tick();
+  assert.deepEqual(page.select.options.map((o) => o.value), ['a', 'b', 'c'], 'the fresh session shows once the list is closed');
+  assert.equal(page.select.value, 'b', 'the choice is set by value, as moved options carry none');
+  assert.equal(page.timers.length, 0);
+  page.fillSessions(page.select);
+  assert.equal(page.select.sets, 2, 'and the next build with nothing new replaces nothing');
+});
+
+test('page: a change with the list closed shows at once, and the chosen session is the one the page chose', () => {
+  const page = pickerPage();
+  page.fillSessions(page.select);
+  page.world.chosen = 'b';
+  page.fillSessions(page.select);
+  assert.equal(page.select.value, 'b');
+  page.world.list = [['b', 'Beta renamed']];
+  page.fillSessions(page.select);
+  assert.deepEqual(page.select.options.map((o) => o.text), ['Beta renamed']);
+});
+
+test('page: where the browser has no :open, a focused select counts as open', () => {
+  const page = pickerPage({ openSupport: false });
+  page.fillSessions(page.select);
+  page.world.active = page.select;
+  page.world.list = [['a', 'Alpha'], ['b', 'Beta renamed']];
+  page.fillSessions(page.select);
+  assert.equal(page.select.options[1].text, 'Beta', 'not touched while it has the focus');
+  page.world.active = null;
+  page.tick();
+  assert.equal(page.select.options[1].text, 'Beta renamed');
+});
+
+test('page: the picker is one element kept across renders, and a poll relabels through the same guarded fill', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+  const render = body('renderReader');
+  assert.match(render, /const kept = session && pick\.row && pick\.row\.parentNode && pick\.row\.parentNode\.parentNode === controls/, 'the row around the picker is found again');
+  assert.match(render, /if \(child !== pick\.row\) child\.remove\(\)/, 'the controls around it are drawn again, not it');
+  assert.match(render, /if \(pickRow\.parentNode !== row\) row\.append\(pickRow\);/, 'moving it would close an open list');
+  assert.match(render, /if \(row\.parentNode !== controls\) controls\.append\(row\);/);
+  assert.doesNotMatch(render, /const select = \$\("select"\); select\.name = "session"/, 'no new select for every build');
+  assert.match(body('labelSessions'), /fillSessions\(select\)/, 'no option text rewritten under an open list');
 });
