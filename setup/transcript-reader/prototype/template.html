@@ -48,6 +48,18 @@ __HEAD_HOSTED__
   .to-sheet .short { display: none; }
   /* At phone width the title row also holds the search button, and folded to one line the session picker needs the room too: the link is short. */
   @media (max-width: 440px) { .to-sheet .long { display: none; } .to-sheet .short { display: inline; } }
+  /* Folded to one line, the tabs and the answer sheet link are icons of one size: Conversation (on the other views), Documents
+     (lit on the Documents view) and the answer sheet. Unfolded, the tabs and the text link are there instead. Each icon's tap area reaches past its box. */
+  .view-btn, .to-sheet .sheet-ico { display: none; }
+  .view-btn { position: relative; flex: none; width: 30px; height: 28px; padding: 0; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; color: var(--muted); place-items: center; }
+  .view-btn[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
+  .bar.collapsed .view-btn:not([hidden]) { display: grid; }
+  .bar.collapsed .to-sheet { position: relative; flex: none; width: 30px; height: 28px; margin-left: 0; display: grid; place-items: center; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; color: var(--muted); }
+  .bar.collapsed .to-sheet .txt { display: none; }
+  .bar.collapsed .to-sheet .sheet-ico { display: block; }
+  .bar.collapsed .view-btn::after, .bar.collapsed .to-sheet::after { content: ""; position: absolute; inset: -8px -3px; }
+  .view-btn:focus-visible, .to-sheet:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .locked .view-btn { display: none !important; }
   .bar-toggle { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: grid; place-items: center; }
   /* A chevron drawn with borders: up while the controls show, down once they are hidden. */
   .bar-toggle::before { content: ""; width: 7px; height: 7px; border: solid currentColor; border-width: 2px 0 0 2px; transform: translateY(2px) rotate(45deg); }
@@ -67,6 +79,12 @@ __HEAD_HOSTED__
   .crumb-session { display: none; flex: 1 1 auto; min-width: 0; max-width: 100%; height: 28px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); text-overflow: ellipsis; }
   .bar.collapsed.pick .crumb { display: none; }
   .bar.collapsed.pick .crumb-session { display: block; }
+  /* The Documents view is wide, so its folded line keeps the document's name beside the picker (picker and star first, then the name). */
+  @media (min-width: 820px) {
+    .docmode .bar.collapsed.pick .crumb-session { flex: 0 1 22rem; order: -2; }
+    .docmode .bar.collapsed.pick .crumb-star { order: -1; }
+    .docmode .bar.collapsed.pick .crumb { display: block; }
+  }
   /* The star beside a session picker: outline when the session on screen is not starred, filled when it is. */
   .star-btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: none; place-items: center; }
   .star-btn svg { fill: none; }
@@ -376,7 +394,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><a class="to-sheet" href="questionnaire.html" title="Answer sheet"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -764,13 +782,33 @@ __HEAD_HOSTED__
     }));
     select.append(group);
   }
-  const pick = { row: null, select: null, star: null };  // the session picker kept across renders (renderReader)
+  const pick = { row: null, select: null, star: null };  // the session picker kept across renders (renderReader, renderDocView)
+  // The controls' first row, with the session picker and its star, for the Conversation and the Documents view alike. The picker row is kept
+  // from one render to the next (the controls around it are drawn again), so a list the owner has open stays open and keeps its place however
+  // often a build lands, and moving from one view to the other does not draw it again either.
+  function pickerRow(controls, session) {
+    const kept = session && pick.row && pick.row.parentNode && pick.row.parentNode.parentNode === controls ? pick.row.parentNode : null;
+    let row;
+    if (kept) {
+      for (const child of [...controls.children]) if (child !== kept) child.remove();
+      for (const child of [...kept.children]) if (child !== pick.row) child.remove();
+      row = kept;
+    } else { controls.replaceChildren(); row = $("div", "controls"); }
+    if (session && !pick.row) {
+      const made = $("select"); made.name = "session"; made.setAttribute("aria-label", "Session");
+      made.addEventListener("change", () => pickSession(made.value));
+      pick.select = made; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, pick.star);
+    }
+    return { row, select: session ? pick.select : $("select"), star: session ? pick.star : starButton(), pickRow: session ? pick.row : $("div", "pick-row") };
+  }
   function pickSession(value) {
     link.listing = null;  // a notice about the conversation before (see the load code) goes with it
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
     state.session = Number(value);
     setAddress();
-    whenReady(() => { render(); showLatest(); });
+    // On the Documents view the other session's files show instead: its newest one (render's pickDoc), or the empty note when it names none.
+    const docs = state.view === "doc";
+    whenReady(() => { render(); if (docs) { setAddress(); window.scrollTo(0, 0); } else showLatest(); });
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
   async function changeList(command, sid, stay = false) {
@@ -802,22 +840,7 @@ __HEAD_HOSTED__
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
     const controls = document.getElementById("controls");
-    // The picker row, with its select and star, is kept from one render to the next (the controls around it are drawn again),
-    // so a list the owner has open stays open and keeps its place however often a build lands.
-    const kept = session && pick.row && pick.row.parentNode && pick.row.parentNode.parentNode === controls ? pick.row.parentNode : null;
-    let row;
-    if (kept) {
-      for (const child of [...controls.children]) if (child !== kept) child.remove();
-      for (const child of [...kept.children]) if (child !== pick.row) child.remove();
-      row = kept;
-    } else { controls.replaceChildren(); row = $("div", "controls"); }
-    if (session && !pick.row) {
-      const made = $("select"); made.name = "session"; made.setAttribute("aria-label", "Session");
-      made.addEventListener("change", () => pickSession(made.value));
-      pick.select = made; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, pick.star);
-    }
-    const select = session ? pick.select : $("select"), star = session ? pick.star : starButton();
-    const pickRow = session ? pick.row : $("div", "pick-row");
+    const { row, select, star, pickRow } = pickerRow(controls, session);
     fillSessions(select);
     if (!session) {  // nothing on the reading list: every pane closed, or the last one was closed by hand
       delete select.dataset.sig;
@@ -981,7 +1004,7 @@ __HEAD_HOSTED__
     return btn;
   }
   function paintStar(btn) {
-    const session = state.view === "reader" && data.sessions[state.session];
+    const session = (state.view === "reader" || state.view === "doc") && data.sessions[state.session];
     btn.hidden = !session;
     if (!session) return;
     const on = starred(session);
@@ -2176,7 +2199,11 @@ __HEAD_HOSTED__
     const docs = sessionDocuments(session);
     pickDoc(session);
     const entry = docs.find(d => d.id === state.doc);
-    const controls = document.getElementById("controls"); controls.replaceChildren();
+    // The same header as the Conversation's: the session picker first (kept, never drawn again), then the controls of this view.
+    const controls = document.getElementById("controls");
+    const { row, select: sessions, star, pickRow } = pickerRow(controls, session);
+    if (session) { fillSessions(sessions); if (pickRow.parentNode !== row) row.append(pickRow); paintStar(star); }
+    if (row.parentNode !== controls) controls.append(row);
     const main = document.getElementById("main");
     const d = entry && data.documents[entry.id];
     // The same HTML file or image still on screen keeps its frame, so a redraw does not reload it.
@@ -2187,7 +2214,6 @@ __HEAD_HOSTED__
       main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown beside its contents list, HTML rendered, an image fitted to the width."));
       return;
     }
-    const row = $("div", "controls");
     const select = $("select"); select.setAttribute("aria-label", "Document");
     docs.forEach(x => {
       const doc = data.documents[x.id];
@@ -2208,7 +2234,7 @@ __HEAD_HOSTED__
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
-    controls.append(row, meta);
+    controls.append(meta);  // the row is in the controls already: appending it again would move the picker
     const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
       pointer: p => docPointer(d, section, p) });
 
@@ -2671,14 +2697,18 @@ __HEAD_HOSTED__
     document.body.classList.toggle("wide", state.view === "fleet");
     document.body.classList.toggle("docmode", state.view === "doc");
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
-    const docCount = sessionDocuments(data.sessions[state.session]).length;
-    document.getElementById("tab-doc").textContent = docCount ? `Documents (${docCount})` : "Documents";
+    document.getElementById("tab-doc").textContent = docsLabel(data.sessions[state.session]);
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
     if (state.view === "reader") renderReader(); else { if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
     refreshSearch();  // the page was drawn again: the query runs on it as it is now
     markRead();
     renderDock();
+  }
+  // "Documents (3)": the tab's text, and the name of the Documents icon in the folded header.
+  function docsLabel(session) {
+    const count = sessionDocuments(session).length;
+    return count ? `Documents (${count})` : "Documents";
   }
   // The tab's title names the open conversation as the picker does, so tabs of several conversations tell apart.
   function paintTitle() {
@@ -2703,7 +2733,7 @@ __HEAD_HOSTED__
     find.setAttribute("aria-expanded", String(look.open));
     document.getElementById("search").hidden = !look.open;
     const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
-    const pick = state.view === "reader" && data.sessions.length > 1;
+    const pick = (state.view === "reader" || state.view === "doc") && data.sessions.length > 1;
     bar.classList.toggle("pick", pick);
     const quick = document.getElementById("follow-quick");
     quick.hidden = !canLive || state.view !== "reader";
@@ -2715,7 +2745,18 @@ __HEAD_HOSTED__
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
       : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
+    paintViewIcons(session);
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
+  }
+  // The icons that stand for the tabs while the header is folded: Documents (lit on that view) and, on any other view, Conversation. Only
+  // attributes change here: the title row, with the session picker in it, is never drawn again.
+  function paintViewIcons(session) {
+    const conv = document.getElementById("view-conv"), docs = document.getElementById("view-doc");
+    conv.hidden = state.view === "reader";
+    const label = docsLabel(session);
+    docs.setAttribute("aria-pressed", String(state.view === "doc"));
+    docs.setAttribute("aria-label", label);
+    docs.title = state.view === "doc" ? `${label} (on screen)` : label;
   }
   // The search row and its list change the header's height without a call to paintBar.
   if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px")).observe(document.getElementById("bar"));
@@ -2728,13 +2769,18 @@ __HEAD_HOSTED__
   document.getElementById("bar-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(!state.barOpen); });
   document.getElementById("crumb").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(true); });
   document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
-  document.getElementById("tab-reader").addEventListener("click", () => {
+  // The tabs and the icons that stand for them in the folded header go to a view by the same two functions.
+  function showReaderView() {
     const opening = state.view !== "reader";
     state.view = "reader";
     whenReady(() => { render(); if (opening) showLatest(); });
-  });
+  }
+  function showDocView() { state.view = "doc"; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); }
+  document.getElementById("tab-reader").addEventListener("click", showReaderView);
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; whenReady(render); });
-  document.getElementById("tab-doc").addEventListener("click", () => { state.view = "doc"; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); });
+  document.getElementById("tab-doc").addEventListener("click", showDocView);
+  document.getElementById("view-conv").addEventListener("click", showReaderView);
+  document.getElementById("view-doc").addEventListener("click", () => { if (state.view !== "doc") showDocView(); });
   document.addEventListener("keydown", e => {
     if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);

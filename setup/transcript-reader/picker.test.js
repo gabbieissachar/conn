@@ -232,11 +232,114 @@ test('page: where the browser has no :open, a focused select counts as open', ()
 test('page: the picker is one element kept across renders, and a poll relabels through the same guarded fill', () => {
   const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+  // Both views draw their controls through pickerRow, which keeps the row around the picker.
   const render = body('renderReader');
-  assert.match(render, /const kept = session && pick\.row && pick\.row\.parentNode && pick\.row\.parentNode\.parentNode === controls/, 'the row around the picker is found again');
-  assert.match(render, /if \(child !== pick\.row\) child\.remove\(\)/, 'the controls around it are drawn again, not it');
+  const keeper = body('pickerRow');
+  assert.match(render, /pickerRow\(controls, session\)/);
+  assert.match(keeper, /const kept = session && pick\.row && pick\.row\.parentNode && pick\.row\.parentNode\.parentNode === controls/, 'the row around the picker is found again');
+  assert.match(keeper, /if \(child !== pick\.row\) child\.remove\(\)/, 'the controls around it are drawn again, not it');
   assert.match(render, /if \(pickRow\.parentNode !== row\) row\.append\(pickRow\);/, 'moving it would close an open list');
   assert.match(render, /if \(row\.parentNode !== controls\) controls\.append\(row\);/);
   assert.doesNotMatch(render, /const select = \$\("select"\); select\.name = "session"/, 'no new select for every build');
+  assert.match(keeper, /made\.name = "session"/, 'the one select is made once, by pickerRow');
   assert.match(body('labelSessions'), /fillSessions\(select\)/, 'no option text rewritten under an open list');
+});
+
+// ---- the folded header's view switch: icons for Conversation, Documents and the answer sheet, and the same picker on both views ----
+
+const pageSource = () => fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+const fnBody = (page, fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
+
+// The page's own docsLabel and paintViewIcons, run on stand-ins for the elements and the state.
+function iconPage() {
+  const page = pageSource();
+  const make = () => ({ hidden: false, attrs: {}, title: '', setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
+  const conv = make(), docs = make();
+  const world = { state: { view: 'reader' }, count: 0 };
+  const sandbox = { state: world.state, document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs })[id] }, sessionDocuments: () => new Array(world.count).fill(0), String };
+  const run = vm.runInNewContext(fnBody(page, 'docsLabel') + '\n  }\n' + fnBody(page, 'paintViewIcons') + '\n  }\n({ docsLabel, paintViewIcons })', sandbox);
+  return { conv, docs, world, ...run };
+}
+
+test('icons: Documents is lit on the Documents view and Conversation is offered on every other view', () => {
+  const page = iconPage();
+  page.paintViewIcons({});
+  assert.equal(page.conv.hidden, true, 'on the Conversation view the picker is the conversation: no icon for it');
+  assert.equal(page.docs.attrs['aria-pressed'], 'false');
+  page.world.state.view = 'doc';
+  page.paintViewIcons({});
+  assert.equal(page.conv.hidden, false);
+  assert.equal(page.docs.attrs['aria-pressed'], 'true');
+  page.world.state.view = 'fleet';
+  page.paintViewIcons({});
+  assert.equal(page.conv.hidden, false, 'the fleet timeline can go back to the conversation too');
+  assert.equal(page.docs.attrs['aria-pressed'], 'false');
+});
+
+test('icons: the Documents icon is named like its tab, with the count', () => {
+  const page = iconPage();
+  page.paintViewIcons({});
+  assert.equal(page.docs.attrs['aria-label'], 'Documents');
+  assert.equal(page.docs.title, 'Documents');
+  page.world.count = 3;
+  page.world.state.view = 'doc';
+  page.paintViewIcons({});
+  assert.equal(page.docs.attrs['aria-label'], 'Documents (3)');
+  assert.equal(page.docs.title, 'Documents (3) (on screen)', 'the tooltip says it is the view on screen');
+  assert.equal(page.docsLabel({}), 'Documents (3)');
+});
+
+test('page: the icons and the tabs go to a view by the same functions, and the Documents icon on its own view does nothing', () => {
+  const page = pageSource();
+  assert.match(page, /document\.getElementById\("tab-reader"\)\.addEventListener\("click", showReaderView\);/);
+  assert.match(page, /document\.getElementById\("tab-doc"\)\.addEventListener\("click", showDocView\);/);
+  assert.match(page, /document\.getElementById\("view-conv"\)\.addEventListener\("click", showReaderView\);/);
+  assert.match(page, /document\.getElementById\("view-doc"\)\.addEventListener\("click", \(\) => \{ if \(state\.view !== "doc"\) showDocView\(\); \}\);/);
+  assert.match(fnBody(page, 'showReaderView'), /if \(opening\) showLatest\(\)/, 'back to the conversation opens at its latest turn, as the tab does');
+  assert.match(fnBody(page, 'paintBar'), /paintViewIcons\(session\);/, 'every draw of the bar keeps the icons right');
+  assert.match(fnBody(page, 'render'), /docsLabel\(data\.sessions\[state\.session\]\)/, 'tab and icon share one label');
+});
+
+test('page: paintViewIcons only changes attributes, so the title row and the picker in it are never drawn again', () => {
+  const body = fnBody(pageSource(), 'paintViewIcons');
+  assert.doesNotMatch(body, /replaceChildren|innerHTML|\.append\(|\.remove\(|fillSessions/);
+});
+
+test('page: the folded header shows the icons, the answer sheet link turns into one, and the unfolded header keeps its tabs and its text link', () => {
+  const page = pageSource();
+  assert.match(page, /\.view-btn, \.to-sheet \.sheet-ico \{ display: none; \}/, 'not in the unfolded header, where the tabs are');
+  assert.match(page, /\.bar\.collapsed \.view-btn:not\(\[hidden\]\) \{ display: grid; \}/);
+  assert.match(page, /\.bar\.collapsed \.to-sheet \.txt \{ display: none; \}/, 'the words go, the link stays');
+  assert.match(page, /\.bar\.collapsed \.to-sheet \{[^}]*width: 30px; height: 28px;/, 'as big as the Documents icon, no bigger');
+  assert.match(page, /\.view-btn \{[^}]*width: 30px; height: 28px;/);
+  assert.match(page, /\.bar\.collapsed \.view-btn::after, \.bar\.collapsed \.to-sheet::after \{ content: ""; position: absolute; inset: -8px -3px; \}/, 'a tap area past the box');
+  assert.match(page, /\.locked \.view-btn \{ display: none !important; \}/, 'a sealed copy waits for its passphrase first');
+  const title = page.match(/<div class="title">([\s\S]*?)<\/div>/)[1];
+  assert.match(title, /id="view-conv"[^>]*aria-label="Conversation"[^>]*title="Conversation"[^>]*hidden/);
+  assert.match(title, /id="view-doc"[^>]*aria-label="Documents"[^>]*aria-pressed="false"/);
+  assert.match(title, /<a class="to-sheet" href="questionnaire\.html" title="Answer sheet" aria-label="Answer sheet">/);
+  assert.ok(title.indexOf('id="view-conv"') < title.indexOf('id="view-doc"') && title.indexOf('id="view-doc"') < title.indexOf('class="to-sheet"') && title.indexOf('class="to-sheet"') < title.indexOf('id="follow-quick"'));
+  assert.doesNotMatch(page.match(/<div id="bar-more">[\s\S]*?<div id="controls">/)[0], /view-btn|to-sheet/, 'the unfolded controls are untouched');
+});
+
+test('page: the Documents view has the Conversation\'s header, the one session picker kept across renders', () => {
+  const page = pageSource();
+  const render = fnBody(page, 'renderDocView');
+  assert.match(render, /pickerRow\(controls, session\)/, 'the same helper as the Conversation');
+  assert.match(fnBody(page, 'renderReader'), /pickerRow\(controls, session\)/);
+  assert.doesNotMatch(render, /controls\.replaceChildren\(\)/, 'the controls are not emptied: that would take the picker out of the page and close its open list');
+  assert.doesNotMatch(render, /controls\.append\(row, /, 'nor is its row appended again');
+  assert.match(render, /if \(session\) \{ fillSessions\(sessions\); if \(pickRow\.parentNode !== row\) row\.append\(pickRow\); paintStar\(star\); \}/, 'filled through the guarded fill, moved only when it is not in the row');
+  assert.match(render, /if \(row\.parentNode !== controls\) controls\.append\(row\);/);
+  assert.match(fnBody(page, 'pickerRow'), /if \(child !== pick\.row\) child\.remove\(\)/, 'the row around the picker is kept, the rest drawn again');
+  assert.match(fnBody(page, 'paintBar'), /const pick = \(state\.view === "reader" \|\| state\.view === "doc"\) && data\.sessions\.length > 1;/, 'the folded line has the picker on both views');
+  assert.match(fnBody(page, 'paintStar'), /\(state\.view === "reader" \|\| state\.view === "doc"\)/, 'and its star');
+});
+
+test('page: a switch of session on the Documents view stays there and shows the new session\'s files', () => {
+  const page = pageSource();
+  const body = fnBody(page, 'pickSession');
+  assert.match(body, /const docs = state\.view === "doc";/);
+  assert.match(body, /if \(docs\) \{ setAddress\(\); window\.scrollTo\(0, 0\); \} else showLatest\(\);/, 'no jump to the latest turn of a view that has none; the address names the file it landed on');
+  assert.match(fnBody(page, 'pickDoc'), /state\.doc = docs\.length \? docs\[docs\.length - 1\]\.id : null/, 'the newest file, or none (the empty note)');
 });

@@ -1141,6 +1141,33 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('quick.setAttribute("aria-pressed", String(state.follow));', page)
             self.assertIn('quick.hidden = !canLive || state.view !== "reader";', page)
 
+    def test_the_folded_header_has_icons_for_conversation_documents_and_the_answer_sheet_in_every_copy(self):
+        for mode, page in self.pages():
+            title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)
+            # Conversation (hidden on its own view), Documents and the answer sheet, in that order, ahead of Follow.
+            order = [title.index(mark) for mark in ('id="view-conv"', 'id="view-doc"', 'class="to-sheet"', 'id="follow-quick"')]
+            self.assertEqual(order, sorted(order), mode)
+            self.assertRegex(title, r'<button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden>', mode)
+            self.assertRegex(title, r'<button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false">', mode)
+            # The answer sheet stays one link (the hosted copy aims it at sheet.html by its class); folded it shows as an icon, with a name.
+            self.assertRegex(title, r'<a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">.*?</span><svg class="sheet-ico"', mode)
+            self.assertIn('document.querySelector(".to-sheet").href = "sheet.html"', page)
+            # The unfolded header keeps its tabs: the icons are not among the controls the fold hides.
+            controls = re.search(r'<div id="bar-more">.*?<div id="controls">', page, re.S).group(0)
+            self.assertNotIn("view-btn", controls, mode)
+            self.assertIn('<button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>', controls, mode)
+            self.assertIn(".bar.collapsed .view-btn:not([hidden]) { display: grid; }", page)
+            self.assertIn("  .view-btn, .to-sheet .sheet-ico { display: none; }", page)
+
+    def test_the_documents_view_has_the_conversations_header_with_its_session_picker(self):
+        for mode, page in self.pages():
+            self.assertEqual(page.count("function pickerRow("), 1, mode)
+            self.assertEqual(page.count("} = pickerRow(controls, session);"), 2, "the Conversation and the Documents view draw it the same way")
+            self.assertIn('const pick = (state.view === "reader" || state.view === "doc") && data.sessions.length > 1;', page)
+            doc = page[page.index("function renderDocView("):page.index("// The heading above the selection")]
+            self.assertNotIn("controls.replaceChildren()", doc, "the picker is kept, never taken out of the page")
+            self.assertIn("controls.append(meta);", doc)
+
     def test_an_image_is_shown_in_an_img_never_a_frame_and_only_the_reader_page_may_load_images(self):
         policies = {}
         for mode, page in self.pages():
