@@ -54,6 +54,7 @@ PICKER_SCRIPT = HERE / "picker.js"
 SENDONCE_SCRIPT = HERE / "sendonce.js"
 UNDOSEND_SCRIPT = HERE / "undosend.js"
 FIND_SCRIPT = HERE / "find.js"
+DOCFILES_SCRIPT = HERE / "docfiles.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
 SEAL_SCRIPT = HERE / "seal.js"
@@ -1962,7 +1963,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
     The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, the vendored markdown-it with markdown.js,
-    and find.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
+    find.js and docfiles.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
@@ -1973,6 +1974,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__MARKDOWN_IT__*/", MARKDOWN_IT_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__MARKDOWN__*/", MARKDOWN_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__FIND__*/", FIND_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
     page = page.replace("__MODE__", mode)

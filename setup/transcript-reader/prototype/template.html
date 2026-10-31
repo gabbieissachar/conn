@@ -75,16 +75,10 @@ __HEAD_HOSTED__
   /* The tab title already says prototype; at phone width the badge would push the title onto two lines. */
   @media (max-width: 440px) { .proto { display: none; } }
   .bar.collapsed .crumb { display: block; }
-  /* Collapsed on a conversation, the one line is a session picker instead of a plain name. */
-  .crumb-session { display: none; flex: 1 1 auto; min-width: 0; max-width: 100%; height: 28px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); text-overflow: ellipsis; }
+  /* Collapsed on a conversation, the one line is a session picker instead of a plain name; on the Documents view it is a document picker. */
+  .crumb-session, .crumb-doc { display: none; flex: 1 1 auto; min-width: 0; max-width: 100%; height: 28px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); text-overflow: ellipsis; }
   .bar.collapsed.pick .crumb { display: none; }
-  .bar.collapsed.pick .crumb-session { display: block; }
-  /* The Documents view is wide, so its folded line keeps the document's name beside the picker (picker and star first, then the name). */
-  @media (min-width: 820px) {
-    .docmode .bar.collapsed.pick .crumb-session { flex: 0 1 22rem; order: -2; }
-    .docmode .bar.collapsed.pick .crumb-star { order: -1; }
-    .docmode .bar.collapsed.pick .crumb { display: block; }
-  }
+  .bar.collapsed.pick .crumb-session, .bar.collapsed.docpick .crumb-doc { display: block; }
   /* The star beside a session picker: outline when the session on screen is not starred, filled when it is. */
   .star-btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: none; place-items: center; }
   .star-btn svg { fill: none; }
@@ -232,11 +226,56 @@ __HEAD_HOSTED__
   .doc-md h2 { font-size: 20px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
   .doc-md h3 { font-size: 17px; }
   .doc-md h4, .doc-md h5, .doc-md h6 { font-size: 15px; }
+  /* The session's files (folders, a find box and a type filter) beside the open file; on a phone one page at a time, the list first */
+  .docshell { display: block; }
+  .filespane { min-width: 0; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+  @supports (overflow: clip) { .filespane { overflow: clip; } }  /* the folder headings' grey stops at the rounded corners, and the find box still sticks */
+  .docshell.view-list .docpane, .docshell.view-file .filespane { display: none; }
+  .docpane { min-width: 0; }
+  .fp-filter { position: sticky; top: var(--bar-h, 110px); z-index: 2; background: var(--paper); padding: 9px 12px 8px; border-bottom: 1px solid var(--line); border-radius: 12px 12px 0 0; }
+  .qbox { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 0 8px; }
+  .qbox:focus-within { outline: 2px solid var(--you); outline-offset: -1px; }
+  .qbox input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--ink); font: 16px/1.4 var(--sans); padding: 8px 2px; -webkit-appearance: none; appearance: none; }
+  .qbox input::-webkit-search-cancel-button { display: none; }
+  .qbox .mag { display: flex; color: var(--faint); }
+  .qbox button { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 6px; }
+  .fp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+  .fp-chips .btn { padding: 3px 10px; }
+  .fp-chips .btn b { font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 3px; color: var(--muted); }
+  .fp-count { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 7px 12px 5px; }
+  .fp-count button { margin-left: auto; border: 0; background: none; padding: 0; font-size: 12px; color: var(--you); }
+  .fp-list > .frow, .gbody .frow { border-top: 1px solid var(--line); }
+  .ghead { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); background: var(--wash); padding: 8px 12px; min-height: 46px; }
+  .ghead:hover { background: var(--you-wash); }
+  .ghead:focus-visible, .frow:focus-visible, .fp-count button:focus-visible, .qbox button:focus-visible { outline: 2px solid var(--you); outline-offset: -2px; }
+  .gchev { width: 7px; height: 7px; border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(-45deg); justify-self: center; }
+  .ghead[aria-expanded="true"] .gchev { transform: rotate(45deg); }
+  .gmain { min-width: 0; display: block; }
+  .gtitle { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 14px; font-weight: 700; line-height: 1.3; overflow: hidden; overflow-wrap: anywhere; }
+  .ghead.has-current .gtitle { color: var(--you); }
+  /* The folders above the group's own, clipped on the left: the end of a path is the part nearest the title */
+  .gpath { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .gpath bdi { direction: ltr; unicode-bidi: isolate; }
+  .gwhen { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .gcount { font-size: 11px; line-height: 1; padding: 3px 6px; border-radius: 99px; background: var(--wash); border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ghead:hover .gcount { background: var(--paper); }
+  .frow { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: center; width: 100%; text-align: left; border: 0; background: none; padding: 7px 12px; min-height: 40px; }
+  .frow:hover { background: var(--wash); }
+  .frow[aria-current="true"] { background: var(--you-wash); box-shadow: inset 3px 0 0 var(--you); }
+  .frow .ic { font-size: 14px; color: var(--muted); text-align: center; }
+  .frow[aria-current="true"] .ic, .frow[aria-current="true"] .nm { color: var(--you); }
+  .frow .nmwrap { min-width: 0; }
+  .frow .nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 14px; font-weight: 600; line-height: 1.3; overflow: hidden; overflow-wrap: anywhere; }
+  .frow .sb { display: block; font-size: 12px; font-weight: 400; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gbody .frow { padding-left: 26px; }
+  .frow mark { background: var(--hit); color: inherit; border-radius: 3px; }
+  .fp-empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 14px; }
+  @media (max-width: 819.98px) { .frow, .ghead { min-height: 46px; } .frow { padding: 8px 12px; } .frow .nm { font-size: 15px; } .gbody .frow { padding-left: 26px; } }
   @media (min-width: 820px) {
-    .docview { display: grid; grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr); gap: 16px; align-items: start; }
-    .toc { margin: 0; background: none; }
-    .toc summary { display: none; }
-    .toc nav { margin: 0; max-height: calc(100vh - var(--bar-h, 120px) - 24px); }
+    .docshell { display: grid; grid-template-columns: minmax(17rem, 21rem) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .docshell.view-list .docpane, .docshell.view-file .filespane { display: block; }
+    .filespane { position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); overflow-y: auto; overscroll-behavior: contain; }
+    .fp-filter { top: 0; }
   }
   .btn.sheet { display: inline-block; margin: 6px 0 2px; text-decoration: none; color: var(--you); border-color: var(--you); font-weight: 600; }
   .notes { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
@@ -402,7 +441,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -478,6 +517,7 @@ __HEAD_HOSTED__
 /*__MARKDOWN_IT__*/
 /*__MARKDOWN__*/
 /*__FIND__*/
+/*__DOCFILES__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -488,7 +528,7 @@ __HEAD_HOSTED__
   // { open(), close(), shown() }
   const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here" };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here", docPage: "list" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
   try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
   const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id === "workspace" ? "Your own sessions" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
@@ -750,9 +790,11 @@ __HEAD_HOSTED__
   // every 0.4 s). Where :open is not known, a focused select counts as open.
   const pickerOpen = select => { try { return select.matches(":open"); } catch (e) { return document.activeElement === select; } };
   const pickerWaiting = new Set();
-  function fillSessions(select) {
+  // Fills a picker with what <into> puts in a select of its own, unless the picker's content is the same already; a picker the owner has open is left
+  // alone and filled when it closes.
+  function fillSelect(select, into) {
     const aside = $("select");
-    fillSessionsInto(aside);
+    into(aside);
     const sig = aside.innerHTML + "|" + aside.selectedIndex;
     if (select.dataset.sig === sig) return;
     if (pickerOpen(select)) {
@@ -761,7 +803,7 @@ __HEAD_HOSTED__
       const retry = () => {
         if (pickerOpen(select)) { setTimeout(retry, 400); return; }
         pickerWaiting.delete(select);
-        if (select.isConnected && select.dataset.sig) fillSessions(select);
+        if (select.isConnected && select.dataset.sig) fillSelect(select, into);
       };
       setTimeout(retry, 400);
       return;
@@ -771,6 +813,8 @@ __HEAD_HOSTED__
     if (chosen) select.value = chosen.value;
     select.dataset.sig = sig;
   }
+  const fillSessions = select => fillSelect(select, fillSessionsInto);
+  const fillDocuments = select => fillSelect(select, fillDocumentsInto);
   function fillSessionsInto(select) {
     if (HOSTED) { fillHostedSessions(select); return; }
     const option = ([s, i]) => {
@@ -790,10 +834,32 @@ __HEAD_HOSTED__
     }));
     select.append(group);
   }
-  const pick = { row: null, select: null, star: null };  // the session picker kept across renders (renderReader, renderDocView)
-  // The controls' first row, with the session picker and its star, for the Conversation and the Documents view alike. The picker row is kept
-  // from one render to the next (the controls around it are drawn again), so a list the owner has open stays open and keeps its place however
-  // often a build lands, and moving from one view to the other does not draw it again either.
+  // The Documents view's picker: this session's files, a group for each folder in the order of the list, so two files with one name are told
+  // apart by their folder. A file alone in its folder is in the group of lone files, so it carries its folder after its name.
+  function fillDocumentsInto(select) {
+    const entries = sessionDocuments(data.sessions[state.session]);
+    if (!entries.length) {
+      const none = $("option", null, "No file named"); none.value = ""; none.disabled = none.selected = true;
+      select.append(none);
+      return;
+    }
+    for (const g of docfiles.groups(entries, data.documents)) {
+      const group = $("optgroup");
+      group.label = g.single ? `Single files · ${g.files.length}` : `${docfiles.title(g.dir)} · ${docfiles.above(g.dir, 34)}`;
+      group.append(...g.files.map(x => {
+        const d = data.documents[x.id];
+        const opt = $("option", null, g.single ? `${d.name} · ${docfiles.tail(d.dir, 30)}` : d.name);
+        opt.value = x.id; opt.selected = x.id === state.doc;
+        return opt;
+      }));
+      select.append(group);
+    }
+  }
+  const pick = { row: null, select: null, docs: null, star: null };  // the pickers kept across renders (renderReader, renderDocView)
+  // The controls' first row, for the Conversation and the Documents view alike: the session picker and its star on the Conversation, the
+  // document picker on the Documents view (a session is chosen from the Conversation only). The row is kept from one render to the next (the
+  // controls around it are drawn again), so a list the owner has open stays open and keeps its place however often a build lands, and moving
+  // from one view to the other does not draw it again either.
   function pickerRow(controls, session) {
     const kept = session && pick.row && pick.row.parentNode && pick.row.parentNode.parentNode === controls ? pick.row.parentNode : null;
     let row;
@@ -805,8 +871,11 @@ __HEAD_HOSTED__
     if (session && !pick.row) {
       const made = $("select"); made.name = "session"; made.setAttribute("aria-label", "Session");
       made.addEventListener("change", () => pickSession(made.value));
-      pick.select = made; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, pick.star);
+      const docs = $("select"); docs.name = "doc"; docs.setAttribute("aria-label", "Document");
+      docs.addEventListener("change", () => chooseDocument(docs.value));
+      pick.select = made; pick.docs = docs; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, docs, pick.star);
     }
+    if (session) { pick.select.hidden = state.view === "doc"; pick.docs.hidden = state.view !== "doc"; }
     return { row, select: session ? pick.select : $("select"), star: session ? pick.star : starButton(), pickRow: session ? pick.row : $("div", "pick-row") };
   }
   function pickSession(value) {
@@ -814,9 +883,7 @@ __HEAD_HOSTED__
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
     state.session = Number(value);
     setAddress();
-    // On the Documents view the other session's files show instead: its newest one (render's pickDoc), or the empty note when it names none.
-    const docs = state.view === "doc";
-    whenReady(() => { render(); if (docs) { setAddress(); window.scrollTo(0, 0); } else showLatest(); });
+    whenReady(() => { render(); showLatest(); });
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
   async function changeList(command, sid, stay = false) {
@@ -1012,7 +1079,7 @@ __HEAD_HOSTED__
     return btn;
   }
   function paintStar(btn) {
-    const session = (state.view === "reader" || state.view === "doc") && data.sessions[state.session];
+    const session = state.view === "reader" && data.sessions[state.session];  // a star is for a session, chosen from the Conversation
     btn.hidden = !session;
     if (!session) return;
     const on = starred(session);
@@ -1761,7 +1828,7 @@ __HEAD_HOSTED__
     const bar = document.getElementById("dock"), main = document.getElementById("main");
     const session = link.opening ? null : dockSession();  // no bar until the conversation being opened again is back
     bar.hidden = !session;
-    if (bar.hidden) { main.style.paddingBottom = ""; placeNewReply(); return; }
+    if (bar.hidden) { main.style.paddingBottom = ""; document.documentElement.style.setProperty("--dock-h", "0px"); placeNewReply(); return; }
     adopt(session);
     if (link.dockSid !== session.id) {
       link.dockSid = session.id; link.result = null; link.batchOpen = false;
@@ -1834,6 +1901,7 @@ __HEAD_HOSTED__
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
+    document.documentElement.style.setProperty("--dock-h", bar.offsetHeight + "px");
     placeNewReply();
   }
   const SESSION_COMMANDS = {
@@ -2145,7 +2213,7 @@ __HEAD_HOSTED__
   function setAddress() {
     const session = data.sessions[state.session];
     if (!session) { history.replaceState(null, "", location.pathname + location.search); return; }
-    history.replaceState(null, "", "#s=" + session.id.slice(0, 8) + (state.view === "doc" && state.doc ? "&d=" + state.doc : ""));
+    history.replaceState(null, "", "#s=" + session.id.slice(0, 8) + (state.view === "doc" && state.doc && onFilePage(session) ? "&d=" + state.doc : ""));
   }
   // The documents the session's messages and replies name, each with the last turn that named it.
   function sessionDocuments(session) {
@@ -2163,10 +2231,13 @@ __HEAD_HOSTED__
     return state.doc;
   }
   function openDocument(id, index) {
-    state.view = "doc"; state.doc = id; state.docFrom = index;
+    state.view = "doc"; state.doc = id; state.docFrom = index; state.docPage = "file"; docReveal = id;
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   const wideDoc = () => matchMedia("(min-width: 820px)").matches;
+  // Whether the Documents view shows the file: always where the list fits beside it, and on a phone once a file is opened (the tab brings the
+  // list first). A session with one file has no list worth a page, so its file shows at once.
+  const onFilePage = session => wideDoc() || state.docPage === "file" || sessionDocuments(session).length < 2;
   function docPointer(d, section, passage) {
     let text = `Re the file ${d.dir}/${d.name}`;
     if (section) text += `, section "${live.clip(section, 60)}"`;
@@ -2315,33 +2386,168 @@ __HEAD_HOSTED__
     return view;
   }
   window.addEventListener("keydown", e => { if (e.key === "Escape" && fileView && fileView.full && !e.defaultPrevented) fileView.setFull(false); });
+
+  // ---------------------------------------------------------------- documents: the session's files, by folder, with a find box
+  // docfiles.js holds the rules. The list is kept across redraws, as the open file is (a build redraws the view every few seconds), so the
+  // words typed, the folders opened and the place in the list stay. Folders are not kept across sessions: each opens its own list.
+  const docList = { sid: null, q: "", kind: "all", open: null, shell: null, scroll: 0 };
+  let docReveal = null;  // a file opened from outside the list: its folder opens when the list is next drawn
+  const DOC_ICON = { md: "▤", html: "◧", image: "▣" };
+  const DOC_KINDS = [["all", "All"], ["md", "Docs"], ["html", "Pages"], ["image", "Pictures"]];
+  // A list's time: the clock alone today, else the day and the clock.
+  const fmtListed = s => fmtShortDay(s) === fmtShortDay(Date.now() / 1000) ? fmtTime(s) : `${fmtShortDay(s)} ${fmtTime(s)}`;
+  // <text> with the words of the query marked, appended to <node>.
+  function appendMarked(node, text, query) {
+    let at = 0;
+    for (const [from, to] of docfiles.marks(text, query)) {
+      if (from > at) node.append(text.slice(at, from));
+      node.append($("mark", null, text.slice(from, to)));
+      at = to;
+    }
+    if (at < text.length) node.append(text.slice(at));
+    return node;
+  }
+  function chooseDocument(id) {
+    if (!wideDoc()) docList.scroll = window.scrollY;
+    state.doc = id; state.docFrom = null; state.docPage = "file"; docReveal = id;
+    setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
+  }
+  // One file as a row: its name (two lines before it is cut), then when a message or reply last named it and, in a list of matches, where it is.
+  function fileRow(x, query, where) {
+    const d = data.documents[x.id];
+    const row = $("button", "frow"); row.type = "button";
+    if (x.id === state.doc) row.setAttribute("aria-current", "true");
+    const text = $("span", "nmwrap"), sub = $("span", "sb");
+    sub.append(fmtListed(x.at) + (where ? " · " : ""));
+    if (where) appendMarked(sub, where, query);
+    text.append(appendMarked($("span", "nm"), d.name, query), sub);
+    row.append($("span", "ic", DOC_ICON[docfiles.kindOf(d)]), text);
+    row.title = `${d.dir}/${d.name}`;
+    row.addEventListener("click", () => chooseDocument(x.id));
+    return row;
+  }
+  function groupNode(g, current) {
+    const wrap = $("div", "group");
+    const head = $("button", "ghead" + (g.files.some(f => f.id === current) ? " has-current" : "")); head.type = "button"; head.dataset.key = g.key;
+    const main = $("span", "gmain"), path = $("span", "gpath");
+    path.append($("bdi", null, g.single ? "one file from each of its own folders" : docfiles.above(g.dir, 90)));
+    main.append($("span", "gtitle", g.single ? "Single files" : docfiles.title(g.dir)), path);
+    head.append($("span", "gchev"), main, $("span", "gcount", String(g.files.length)), $("span", "gwhen", fmtListed(g.at)));
+    if (!g.single) head.title = g.dir;
+    const body = $("div", "gbody");
+    const fill = () => {
+      const open = docList.open.has(g.key);
+      head.setAttribute("aria-expanded", String(open));
+      body.hidden = !open;
+      if (open && !body.firstChild) g.files.forEach(x => body.append(fileRow(x, "", g.single ? docfiles.tail(data.documents[x.id].dir, 28) : "")));
+    };
+    head.addEventListener("click", () => { docList.open.has(g.key) ? docList.open.delete(g.key) : docList.open.add(g.key); fill(); paintFolding(docList.shell); });
+    fill();
+    wrap.append(head, body);
+    return wrap;
+  }
+  // The count line's button: fold or unfold every folder, or leave the matches for the folders.
+  function paintFolding(shell) {
+    if (shell.matching) { shell.act.textContent = "Show folders"; return; }
+    shell.act.textContent = shell.groups.every(g => docList.open.has(g.key)) ? "Fold all" : "Unfold all";
+  }
+  function paintFiles(shell) {
+    const entries = sessionDocuments(data.sessions[state.session]), docs = data.documents;
+    const groups = docfiles.groups(entries, docs);
+    shell.groups = groups;
+    if (!docList.open) docList.open = docfiles.opened(groups, wideDoc() ? state.doc : docReveal, wideDoc());
+    if (docReveal) { const home = groups.find(g => g.files.some(f => f.id === docReveal)); if (home) docList.open.add(home.key); docReveal = null; }
+    const counts = docfiles.counts(entries, docs);
+    if (docList.kind !== "all" && !counts[docList.kind]) docList.kind = "all";
+    // The type filter is for a conversation that mixes types; the buttons are kept while the same ones are there, so a click keeps its focus.
+    const kinds = DOC_KINDS.filter(([k]) => k === "all" || counts[k]);
+    const sign = kinds.map(([k]) => `${k}:${counts[k]}`).join(",");
+    shell.chips.hidden = kinds.length < 3;
+    if (shell.sign !== sign) {
+      shell.sign = sign;
+      shell.chips.replaceChildren(...kinds.map(([k, label]) => {
+        const b = $("button", "btn", label); b.type = "button"; b.dataset.kind = k; b.append($("b", null, String(counts[k])));
+        b.addEventListener("click", () => { docList.kind = k; paintFiles(shell); });
+        return b;
+      }));
+    }
+    for (const b of shell.chips.children) b.setAttribute("aria-pressed", String(docList.kind === b.dataset.kind));
+    shell.clear.hidden = !docList.q;
+    const scroll = shell.files.scrollTop;
+    shell.matching = docfiles.narrowing(docList.q, docList.kind);
+    if (shell.matching) {
+      // Matches as one flat list, newest first, each with the end of its folder.
+      const rows = docfiles.find(entries, docs, docList.q, docList.kind);
+      shell.count.textContent = `${rows.length} of ${entries.length} files`;
+      shell.list.replaceChildren(...(rows.length ? rows.map(x => fileRow(x, docList.q, docfiles.tail(docs[x.id].dir, 30))) : [$("div", "fp-empty", "No file matches. Try fewer words, or All.")]));
+    } else {
+      shell.count.textContent = `${entries.length} files in ${groups.length} ${groups.length === 1 ? "group" : "groups"}`;
+      shell.list.replaceChildren(...groups.map(g => groupNode(g, state.doc)));
+    }
+    paintFolding(shell);
+    shell.files.scrollTop = scroll;
+  }
+  function docShell() {
+    const node = $("div", "docshell");
+    const files = $("nav", "filespane"); files.setAttribute("aria-label", "Files");
+    const bar = $("div", "fp-filter");
+    const box = $("label", "qbox"), input = $("input"), clear = $("button", null, "×");
+    input.type = "search"; input.name = "docfind"; input.placeholder = "Find a file or folder"; input.autocomplete = "off"; input.spellcheck = false;
+    input.setAttribute("aria-label", "Find a file or folder"); input.setAttribute("autocapitalize", "off"); input.value = docList.q;
+    clear.type = "button"; clear.setAttribute("aria-label", "Clear the search");
+    const mag = $("span", "mag");  // the search button's own icon
+    mag.innerHTML = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+    box.append(mag, input, clear);
+    const chips = $("div", "fp-chips"); chips.setAttribute("role", "group"); chips.setAttribute("aria-label", "Type of file");
+    const info = $("div", "fp-count"), count = $("span"), act = $("button"); act.type = "button";
+    info.append(count, act);
+    const list = $("div", "fp-list"), pane = $("section", "docpane"); pane.setAttribute("aria-label", "Document");
+    bar.append(box, chips);
+    files.append(bar, info, list);
+    node.append(files, pane);
+    const shell = { node, files, pane, chips, clear, count, act, list, groups: [], matching: false, sign: "" };
+    input.addEventListener("input", () => { docList.q = input.value; paintFiles(shell); });
+    input.addEventListener("keydown", e => { if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; docList.q = ""; paintFiles(shell); } });
+    clear.addEventListener("click", () => { input.value = ""; docList.q = ""; paintFiles(shell); input.focus(); });
+    act.addEventListener("click", () => {
+      if (shell.matching) { input.value = ""; docList.q = ""; docList.kind = "all"; paintFiles(shell); return; }
+      const all = shell.groups.every(g => docList.open.has(g.key));
+      docList.open = all ? new Set() : new Set(shell.groups.map(g => g.key));
+      paintFiles(shell);
+    });
+    return shell;
+  }
   function renderDocView() {
     const session = data.sessions[state.session];
     const docs = sessionDocuments(session);
     pickDoc(session);
     const entry = docs.find(d => d.id === state.doc);
-    // The same header as the Conversation's: the session picker first (kept, never drawn again), then the controls of this view.
+    // The same header as the Conversation's, with the document picker where the session picker is (a session is chosen from the Conversation):
+    // the picker first (kept, never drawn again), then the controls of this view.
     const controls = document.getElementById("controls");
-    const { row, select: sessions, star, pickRow } = pickerRow(controls, session);
-    if (session) { fillSessions(sessions); if (pickRow.parentNode !== row) row.append(pickRow); paintStar(star); }
+    const { row, star, pickRow } = pickerRow(controls, session);
+    if (session) { fillDocuments(pick.docs); if (pickRow.parentNode !== row) row.append(pickRow); paintStar(star); }
     if (row.parentNode !== controls) controls.append(row);
     const main = document.getElementById("main");
     const d = entry && data.documents[entry.id];
-    // The same HTML file or image still on screen keeps its frame, so a redraw does not reload it.
-    const keep = Boolean(d && (d.kind === "html" || d.kind === "image") && fileView && fileView.key === session.id + ":" + d.id && fileView.node.parentNode === main);
-    if (!keep) { fileView = null; main.replaceChildren(); }
     if (!entry) {
+      docList.shell = null; fileView = null; main.replaceChildren();
       controls.append($("div", "summary", "No message or reply in this session names a markdown, HTML or image file that is on this machine."));
-      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown beside its contents list, HTML rendered, an image fitted to the width."));
+      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown with its contents list folded above it, HTML rendered, an image fitted to the width."));
       return;
     }
-    const select = $("select"); select.setAttribute("aria-label", "Document");
-    docs.forEach(x => {
-      const doc = data.documents[x.id];
-      const opt = $("option", null, `${doc.name} · ${doc.dir.split("/").slice(-2).join("/")} · ${fmtWhen(x.at)}`);
-      opt.value = x.id; if (x.id === entry.id) opt.selected = true; select.append(opt);
-    });
-    select.addEventListener("change", () => { state.doc = select.value; state.docFrom = null; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); });
+    // The session's files (a page of their own on a phone) and the open file. Both stay across a redraw: the list keeps the words typed and the
+    // folders opened, and the same HTML file or image keeps its frame, so a redraw does not reload it.
+    if (docList.sid !== session.id) Object.assign(docList, { sid: session.id, q: "", kind: "all", open: null, shell: null });
+    let shell = docList.shell;
+    if (!shell || shell.node.parentNode !== main) { fileView = null; main.replaceChildren(); shell = docList.shell = docShell(); main.append(shell.node); }
+    const onFile = onFilePage(session);
+    shell.node.className = "docshell " + (onFile ? "view-file" : "view-list");
+    paintFiles(shell);
+    const pane = shell.pane;
+    const keep = Boolean(onFile && (d.kind === "html" || d.kind === "image") && fileView && fileView.key === session.id + ":" + d.id && fileView.node.parentNode === pane);
+    if (!keep) { fileView = null; pane.replaceChildren(); }
+    if (!onFile) { docSpy.headings = []; return; }  // the list alone: the header is the session picker
     const back = $("button", "btn", "← Back to the turn"); back.title = "The turn whose reply named this file";
     back.addEventListener("click", () => {
       const index = state.docFrom != null ? state.docFrom : entry.index;
@@ -2351,7 +2557,13 @@ __HEAD_HOSTED__
     });
     const message = $("button", "btn", "Message about this file");
     message.title = d.kind === "html" || d.kind === "image" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
-    row.append(select, back, message);
+    // On a phone the list is a page of its own, and this is the way back to it, to the folder the file is in.
+    if (!wideDoc() && docs.length > 1) {
+      const files = $("button", "btn", `‹ Files (${docs.length})`); files.title = "The files this session names";
+      files.addEventListener("click", () => { state.docPage = "list"; docReveal = state.doc; setAddress(); render(); window.scrollTo(0, docList.scroll || 0); });
+      row.append(files);
+    }
+    row.append(back, message);
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
@@ -2368,7 +2580,7 @@ __HEAD_HOSTED__
           meta.title = `${d.dir}/${d.name}, as on disk when it was opened`;
         });
         fileView = view;
-        main.append(view.node);
+        pane.append(view.node);
       }
       message.addEventListener("click", () => useTarget(target("", ""), message));
       docSpy.headings = [];
@@ -2390,15 +2602,15 @@ __HEAD_HOSTED__
       a.addEventListener("click", e => {
         e.preventDefault();
         h.el.scrollIntoView({ block: "start" });
-        if (!wideDoc()) toc.open = false;
+        toc.open = false;
       });
       h.toc = a; list.append(a);
     });
     if (!md.headings.length) list.append($("div", "notes", "This file has no headings."));
     toc.append(list);
-    toc.open = wideDoc();
+    toc.open = false;  // folded above the file, on a wide screen too: the list of files has the column
     view.append(toc, body);
-    main.append(view);
+    pane.append(view);
     docSpy.headings = md.headings;
     spyDoc();
   }
@@ -2427,7 +2639,8 @@ __HEAD_HOSTED__
     }
   }
   window.addEventListener("scroll", () => { if (!docSpy.frame) docSpy.frame = requestAnimationFrame(spyDoc); }, { passive: true });
-  window.addEventListener("resize", () => { const toc = document.querySelector(".toc"); if (toc && wideDoc()) toc.open = true; });
+  // Crossing the width where the list sits beside the file (a window resized, a phone turned) draws the view for the new layout.
+  matchMedia("(min-width: 820px)").addEventListener("change", () => { if (state.view === "doc") { setAddress(); render(); } });
 
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
@@ -2719,7 +2932,7 @@ __HEAD_HOSTED__
     const session = data.sessions[state.session];
     if (!session) return false;
     if (!session.exchanges) return true;
-    const id = state.view === "doc" ? pickDoc(session) : null;
+    const id = state.view === "doc" && onFilePage(session) ? pickDoc(session) : null;  // the list alone needs no file's text
     return Boolean(id && data.documents[id].text == null);
   }
   async function ensure() {
@@ -2727,7 +2940,7 @@ __HEAD_HOSTED__
     const session = data.sessions[state.session];
     if (!session) return;
     await hosted.conversation(session);
-    const id = state.view === "doc" ? pickDoc(session) : null;
+    const id = state.view === "doc" && onFilePage(session) ? pickDoc(session) : null;
     if (id) await hosted.documentText(data.documents[id]);
   }
   // Runs show once the view has what it needs: at once when it has (always on the local page).
@@ -2854,17 +3067,21 @@ __HEAD_HOSTED__
     find.setAttribute("aria-expanded", String(look.open));
     document.getElementById("search").hidden = !look.open;
     const doc = state.view === "doc" && state.doc && data.documents && data.documents[state.doc];
-    const pick = (state.view === "reader" || state.view === "doc") && data.sessions.length > 1;
+    const pick = state.view === "reader" && data.sessions.length > 1;
+    const docPick = state.view === "doc" && Boolean(session);  // folded, the Documents view's line is a document picker, and a session is chosen from the Conversation
     bar.classList.toggle("pick", pick);
+    bar.classList.toggle("docpick", docPick);
     const quick = document.getElementById("follow-quick");
     quick.hidden = !canLive || state.view !== "reader";
     quick.setAttribute("aria-pressed", String(state.follow));
     quick.title = "Follow Herdr: show the session of the pane Herdr has focused (the same switch as Follow Herdr in the controls)";
     if (pick && folded) fillSessions(document.getElementById("crumb-session"));
+    if (docPick && folded) fillDocuments(document.getElementById("crumb-doc"));
     paintStar(document.getElementById("crumb-star"));
     const crumb = document.getElementById("crumb");
     crumb.textContent = state.view === "fleet" ? "Fleet timeline"
       : doc ? `Documents · ${doc.name}` : session ? sessionName(session) : "Conversation";
+    crumb.hidden = docPick;
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
     paintViewIcons(session);
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
@@ -2890,13 +3107,14 @@ __HEAD_HOSTED__
   document.getElementById("bar-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(!state.barOpen); });
   document.getElementById("crumb").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(true); });
   document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
+  document.getElementById("crumb-doc").addEventListener("change", e => chooseDocument(e.target.value));
   // The tabs and the icons that stand for them in the folded header go to a view by the same two functions.
   function showReaderView() {
     const opening = state.view !== "reader";
     state.view = "reader";
     whenReady(() => { render(); if (opening) showLatest(); });
   }
-  function showDocView() { state.view = "doc"; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); }
+  function showDocView() { state.view = "doc"; state.docPage = "list"; setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); }); }
   document.getElementById("tab-reader").addEventListener("click", showReaderView);
   document.getElementById("tab-fleet").addEventListener("click", () => { state.view = "fleet"; whenReady(render); });
   document.getElementById("tab-doc").addEventListener("click", showDocView);
@@ -2933,7 +3151,7 @@ __HEAD_HOSTED__
     link.opening = lost && live.served && !HOSTED && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
     if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
     state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : HOSTED ? waitingFirst() : data.chosen ? 0 : biggest();
-    if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; }
+    if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; state.docPage = "file"; docReveal = wantedDoc; }
     // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
     // Decided here, before the page writes its own address below.
     link.keepOpening = fromHash >= 0 || fromSaved >= 0;

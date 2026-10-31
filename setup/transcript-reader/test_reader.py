@@ -1197,11 +1197,12 @@ class PageShellTest(unittest.TestCase):
             self.assertIn(".bar.collapsed .view-btn:not([hidden]) { display: grid; }", page)
             self.assertIn("  .view-btn, .to-sheet .sheet-ico { display: none; }", page)
 
-    def test_the_documents_view_has_the_conversations_header_with_its_session_picker(self):
+    def test_the_documents_view_has_the_conversations_header_with_a_document_picker_in_place_of_the_session_picker(self):
         for mode, page in self.pages():
             self.assertEqual(page.count("function pickerRow("), 1, mode)
             self.assertEqual(page.count("} = pickerRow(controls, session);"), 2, "the Conversation and the Documents view draw it the same way")
-            self.assertIn('const pick = (state.view === "reader" || state.view === "doc") && data.sessions.length > 1;', page)
+            self.assertIn('const pick = state.view === "reader" && data.sessions.length > 1;', page, "the session picker is the Conversation's")
+            self.assertIn('const docPick = state.view === "doc" && Boolean(session);', page, "the Documents view's is the document picker")
             doc = page[page.index("function renderDocView("):page.index("// The heading above the selection")]
             self.assertNotIn("controls.replaceChildren()", doc, "the picker is kept, never taken out of the page")
             self.assertIn("controls.append(meta);", doc)
@@ -1272,6 +1273,26 @@ class PageShellTest(unittest.TestCase):
             self.assertNotRegex(re.search(r"const finder = \(\(\) => \{.*?\n  \}\)\(\);", script, re.S).group(0), r"fetch\(|XMLHttpRequest|WebSocket|sendBeacon|import\(", mode)
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("const finder", sheet)
+
+    def test_both_copies_list_documents_by_folder_with_a_find_box_and_the_answer_sheet_does_not(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            # The rules docfiles.test.js runs are in the hashed script, once, before the page code that calls them.
+            self.assertEqual(script.count("const docfiles = (() => {"), 1, mode)
+            self.assertNotIn("/*__DOCFILES__*/", page, mode)
+            self.assertLess(script.index("const docfiles = (() => {"), script.index("docfiles.groups(entries, docs)"), mode)
+            self.assertNotRegex(re.search(r"const docfiles = \(\(\) => \{.*?\n  \}\)\(\);", script, re.S).group(0), r"fetch\(|XMLHttpRequest|WebSocket|sendBeacon|import\(|document\.|window\.", mode)
+            # The list, its find box and type filter, and the one-page-at-a-time phone layout replace the Document dropdown.
+            for needle in ('input.placeholder = "Find a file or folder"', 'shell.node.className = "docshell "', "const onFilePage = session =>"):
+                self.assertIn(needle, script, mode)
+            self.assertNotIn('select.setAttribute("aria-label", "Document")', script, mode)
+            # The header's picker is the document picker on that view (grouped by folder), the folded line's too, and neither switches session there.
+            for needle in ("fillDocuments(pick.docs)", "fillDocuments(document.getElementById(\"crumb-doc\"))", "docs.addEventListener(\"change\", () => chooseDocument(docs.value))"):
+                self.assertIn(needle, script, mode)
+            self.assertIn('id="crumb-doc"', page, mode)
+            self.assertNotIn("if (docs) state.docPage", script, mode)
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        self.assertNotIn("const docfiles", sheet)
 
     def test_both_copies_draw_markdown_through_the_vendored_parser_and_the_answer_sheet_keeps_its_own(self):
         for mode, page in self.pages():

@@ -147,7 +147,9 @@ async function until(fn, what, ms = 20000) {
   check(stored.objects === 5 && stored.keys === 1 && /reader-shell/.test(stored.cache), 'the device holds the 5 sealed objects (2 conversations, the markdown file, the sketch and the picture), the key and the shell cache', JSON.stringify(stored));
 
   // ------------------------------------------------------------------ documents: markdown and the HTML sketch, online
-  const openDocuments = async () => { await page.click('#tab-doc'); await until(async () => (await page.locator('#main .docview, #main .htmlview, #main .imgview').count()) > 0, 'a document'); };
+  // On a phone the Documents tab opens the session's file list (one page at a time); the header's document picker, which takes the
+  // place of the session picker on this view, then opens a file.
+  const openDocuments = async () => { await page.click('#tab-doc'); await until(async () => (await page.locator('#main .docshell.view-list .ghead, #main .docshell.view-list .frow').count()) > 0, 'the file list'); };
   const pickDocument = async (name) => {
     await until(() => page.evaluate((wanted) => { const s = [...document.querySelectorAll('#controls select')].find((x) => [...x.options].some((o) => o.textContent.startsWith(wanted))); if (!s) return false; s.value = [...s.options].find((o) => o.textContent.startsWith(wanted)).value; s.dispatchEvent(new Event('change')); return true; }, name), 'the ' + name + ' entry');
   };
@@ -165,6 +167,7 @@ async function until(fn, what, ms = 20000) {
   };
   const frameSandbox = () => page.evaluate(() => { const f = document.querySelector('.htmlframe iframe'); return f ? { attribute: f.getAttribute('sandbox'), src: f.getAttribute('src') } : null; });
   await openDocuments();
+  check(await page.locator('#main .docshell.view-list .docpane > *').count() === 0 && /^\d+ files in \d+ groups?/.test(await text('#main .fp-count')), 'Documents opens on the file list, with no file drawn yet', await text('#main .fp-count'));
   await pickDocument('notes.md');
   await until(async () => /Release notes|Plan/.test(await text('#main')), 'the markdown document');
   check(await page.locator('#main table').count() === 1, 'the markdown document is drawn, table included');

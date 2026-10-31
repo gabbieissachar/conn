@@ -322,24 +322,31 @@ test('page: the folded header shows the icons, the answer sheet link turns into 
   assert.doesNotMatch(page.match(/<div id="bar-more">[\s\S]*?<div id="controls">/)[0], /view-btn|to-sheet/, 'the unfolded controls are untouched');
 });
 
-test('page: the Documents view has the Conversation\'s header, the one session picker kept across renders', () => {
+test('page: the Documents view has the Conversation\'s header row, with the document picker where the session picker is, kept across renders', () => {
   const page = pageSource();
   const render = fnBody(page, 'renderDocView');
   assert.match(render, /pickerRow\(controls, session\)/, 'the same helper as the Conversation');
   assert.match(fnBody(page, 'renderReader'), /pickerRow\(controls, session\)/);
   assert.doesNotMatch(render, /controls\.replaceChildren\(\)/, 'the controls are not emptied: that would take the picker out of the page and close its open list');
   assert.doesNotMatch(render, /controls\.append\(row, /, 'nor is its row appended again');
-  assert.match(render, /if \(session\) \{ fillSessions\(sessions\); if \(pickRow\.parentNode !== row\) row\.append\(pickRow\); paintStar\(star\); \}/, 'filled through the guarded fill, moved only when it is not in the row');
+  assert.match(render, /if \(session\) \{ fillDocuments\(pick\.docs\); if \(pickRow\.parentNode !== row\) row\.append\(pickRow\); paintStar\(star\); \}/, 'filled through the guarded fill, moved only when it is not in the row');
   assert.match(render, /if \(row\.parentNode !== controls\) controls\.append\(row\);/);
   assert.match(fnBody(page, 'pickerRow'), /if \(child !== pick\.row\) child\.remove\(\)/, 'the row around the picker is kept, the rest drawn again');
-  assert.match(fnBody(page, 'paintBar'), /const pick = \(state\.view === "reader" \|\| state\.view === "doc"\) && data\.sessions\.length > 1;/, 'the folded line has the picker on both views');
-  assert.match(fnBody(page, 'paintStar'), /\(state\.view === "reader" \|\| state\.view === "doc"\)/, 'and its star');
+  // One element per job in the one row: the view shows the session picker or the document picker, never both.
+  assert.match(fnBody(page, 'pickerRow'), /pick\.row\.append\(made, docs, pick\.star\)/);
+  assert.match(fnBody(page, 'pickerRow'), /pick\.select\.hidden = state\.view === "doc"; pick\.docs\.hidden = state\.view !== "doc";/);
+  assert.match(fnBody(page, 'paintBar'), /const pick = state\.view === "reader" && data\.sessions\.length > 1;/, 'the folded line has the session picker on the Conversation only');
+  assert.match(fnBody(page, 'paintBar'), /const docPick = state\.view === "doc" && Boolean\(session\);/, 'and the document picker on the Documents view');
+  assert.match(fnBody(page, 'paintBar'), /if \(docPick && folded\) fillDocuments\(document\.getElementById\("crumb-doc"\)\);/);
+  assert.match(fnBody(page, 'paintStar'), /state\.view === "reader" && data\.sessions\[state\.session\]/, 'a star is for a session, chosen on the Conversation');
 });
 
-test('page: a switch of session on the Documents view stays there and shows the new session\'s files', () => {
+test('page: a session is chosen on the Conversation only, so pickSession has no Documents branch, and the document picker takes its place on that view', () => {
   const page = pageSource();
   const body = fnBody(page, 'pickSession');
-  assert.match(body, /const docs = state\.view === "doc";/);
-  assert.match(body, /if \(docs\) \{ setAddress\(\); window\.scrollTo\(0, 0\); \} else showLatest\(\);/, 'no jump to the latest turn of a view that has none; the address names the file it landed on');
+  assert.doesNotMatch(body, /state\.view === "doc"|docPage|setAddress\(\); window\.scrollTo/, 'nothing left to do for a session chosen on the Documents view');
+  assert.match(body, /whenReady\(\(\) => \{ render\(\); showLatest\(\); \}\);/);
+  assert.match(page, /document\.getElementById\("crumb-doc"\)\.addEventListener\("change", e => chooseDocument\(e\.target\.value\)\);/, 'the folded picker chooses a file as a row in the list does');
+  assert.match(page, /docs\.addEventListener\("change", \(\) => chooseDocument\(docs\.value\)\);/);
   assert.match(fnBody(page, 'pickDoc'), /state\.doc = docs\.length \? docs\[docs\.length - 1\]\.id : null/, 'the newest file, or none (the empty note)');
 });
