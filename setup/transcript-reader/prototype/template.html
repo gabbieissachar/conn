@@ -338,6 +338,7 @@ __HEAD_HOSTED__
   .follow-note { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .kept-note { font-size: 12px; margin-top: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
   .kept-note .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
+  .float-comment-key { margin-left: 7px; font-weight: 400; font-size: 11px; opacity: .8; }
   .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
   .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
   .dock-inner { max-width: 27rem; margin: 0 auto; padding: 6px 12px 8px; }
@@ -1625,6 +1626,7 @@ __HEAD_HOSTED__
   }
 
 /*__UNDOSEND__*/
+/*__COMMENTKEY__*/
   // ---------------------------------------------------------------- replying to a reply
   // The served page sends a short message to the session's own Herdr pane. It points at
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
@@ -2207,6 +2209,22 @@ __HEAD_HOSTED__
     const card = floatButton.card;
     if (card && replyTargets.has(card)) useTarget(replyTargets.get(card)(selectedPassage(card)), floatButton);
   });
+  // Cmd+Enter (Ctrl+Enter off the Mac) with a commentable passage selected does what the button does, box focus included. The button's
+  // own state is recomputed first, since a selection made by the keyboard (Cmd+A) draws no button yet. A touch screen has no such key to hint.
+  document.addEventListener("keydown", e => {
+    if (!commentKey.pressed(e)) return;
+    placeFloat();
+    if (floatButton.hidden) return;
+    e.preventDefault();
+    floatButton.click();
+  });
+  if (!matchMedia("(pointer: coarse)").matches) {
+    const keys = commentKey.label(navigator.platform);
+    floatButton.title = `Comment on this (${keys})`;
+    const hint = document.createElement("span");
+    hint.className = "float-comment-key"; hint.textContent = keys;
+    floatButton.append(hint);
+  }
 
   // ---------------------------------------------------------------- documents: a named file beside its contents
   // The address keeps the session and, in the document view, the document, so a reload reopens both.
