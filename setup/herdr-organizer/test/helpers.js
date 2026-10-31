@@ -68,7 +68,7 @@ function fakeRunner(overrides = {}) {
   const runner = async (file, args, options = {}) => {
     calls.push({ file, args: args.slice(), input: options.input, env: options.env });
     if (overrides.handle) {
-      const custom = await overrides.handle(file, args);
+      const custom = await overrides.handle(file, args, options);
       if (custom !== undefined) return custom;
     }
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });

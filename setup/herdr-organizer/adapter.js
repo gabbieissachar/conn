@@ -1179,10 +1179,21 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const byModel = body.breakdown === 'model';
       const seen = new Set();
       let through = null;
+      // The backend lists a model on every day only when that model has usage somewhere in the requested range, so a range
+      // with no usage at all (the week after the last credits were spent, once the month has just rolled over) comes back
+      // with an empty `series` and an empty `values` on every day. That whole-range answer is a real zero, but only while
+      // the backend vouches for it: `series` is an empty list, every row has an empty `values`, and its data is fresh
+      // through at least the day before the last requested day. One empty day beside days with amounts stays unknown.
+      const lastRequired = query.get('end_date') < utcToday ? query.get('end_date') : utcToday;
+      const dayBefore = new Date(Date.parse(`${lastRequired}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+      const freshAt = typeof body.data_freshness_ts === 'string' ? Date.parse(body.data_freshness_ts) : NaN;
+      const noUsage = Array.isArray(body.series) && body.series.length === 0
+        && Number.isFinite(freshAt) && new Date(freshAt).toISOString().slice(0, 10) >= dayBefore
+        && body.data.length > 0 && body.data.every((row) => row && row.values && typeof row.values === 'object' && !Array.isArray(row.values) && Object.keys(row.values).length === 0);
       for (const row of body.data) {
         if (!row || typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !row.values || typeof row.values !== 'object' || Array.isArray(row.values)) throw incomplete();
         const credits = Object.entries(row.values);
-        if (credits.length === 0 || credits.some(([, value]) => number(value) === null)) throw incomplete();
+        if ((credits.length === 0 && !noUsage) || credits.some(([, value]) => number(value) === null)) throw incomplete();
         if (seen.has(row.date)) throw incomplete();
         seen.add(row.date);
         if (through === null || row.date > through) through = row.date;
@@ -1195,8 +1206,7 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       }
       // Every UTC day from the first requested day through today (UTC) must be present: a missing day is unknown, not zero.
       // A later local-only day the service has not started yet is not required.
-      const lastDay = query.get('end_date') < utcToday ? query.get('end_date') : utcToday;
-      for (let day = query.get('start_date'); day <= lastDay; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) {
+      for (let day = query.get('start_date'); day <= lastRequired; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) {
         if (!seen.has(day)) throw incomplete();
       }
       return {

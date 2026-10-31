@@ -860,6 +860,12 @@ const codexDays = (from, to, usage = {}) => {
   for (let day = from; day <= to; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) days.push(codexDay(day, ...(usage[day] || [0])));
   return days;
 };
+// Days with an empty `values`, the way the backend lists every day of a range in which no model has any usage.
+const codexEmptyDays = (from, to) => {
+  const days = [];
+  for (let day = from; day <= to; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) days.push({ date: day, values: {} });
+  return days;
+};
 const curlRunner = (body, status = 200, code = 0) => fakeRunner({ handle: (file) => (file === 'curl' ? { code, stdout: `${typeof body === 'string' ? body : JSON.stringify(body)}\n${status}`, stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
 
 test('codex-credits: sums week to date (from Monday) and month to date, and never puts the token on a command line', async () => {
@@ -908,6 +914,14 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
     { name: 'a model with a text amount', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-01', 1), { date: '2026-10-02', values: { m: '5' } }] }), expect: /incomplete/ },
     { name: 'no days at all', home: codexHome(good), runner: curlRunner({ data: [] }), expect: /incomplete/ },
     { name: 'the first requested day is missing', home: codexHome(good), runner: curlRunner({ data: [codexDay('2026-10-05', 1)] }), expect: /incomplete/ },
+    // The whole-range zero (empty series and empty values everywhere) is only believed with the backend's own evidence.
+    { name: 'empty days while the series lists a model', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [{ key: 'm', label: 'm', total: 1 }], data_freshness_ts: '2026-10-21T00:00:00Z', data: codexEmptyDays('2026-10-01', '2026-10-21') }), expect: /incomplete/ },
+    { name: 'empty days with no series at all', home: codexHome(good), runner: curlRunner({ breakdown: 'model', data_freshness_ts: '2026-10-21T00:00:00Z', data: codexEmptyDays('2026-10-01', '2026-10-21') }), expect: /incomplete/ },
+    { name: 'empty days from a backend that has not caught up', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [], data_freshness_ts: '2026-10-10T00:00:00Z', data: codexEmptyDays('2026-10-01', '2026-10-21') }), expect: /incomplete/ },
+    { name: 'empty days with no freshness stamp', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [], data: codexEmptyDays('2026-10-01', '2026-10-21') }), expect: /incomplete/ },
+    { name: 'empty days with an unreadable freshness stamp', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [], data_freshness_ts: 'yesterday', data: codexEmptyDays('2026-10-01', '2026-10-21') }), expect: /incomplete/ },
+    { name: 'an empty series but one day still carries an amount', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [], data_freshness_ts: '2026-10-21T00:00:00Z', data: [codexDay('2026-10-01', 1), ...codexEmptyDays('2026-10-02', '2026-10-21')] }), expect: /incomplete/ },
+    { name: 'an empty series and empty days that stop short of the last day', home: codexHome(good), runner: curlRunner({ breakdown: 'model', series: [], data_freshness_ts: '2026-10-21T00:00:00Z', data: codexEmptyDays('2026-10-01', '2026-10-20') }), expect: /incomplete/ },
     { name: 'curl missing', home: codexHome(good), runner: curlRunner('', 0, 127), expect: /curl/ },
   ];
   for (const item of cases) {
@@ -920,6 +934,31 @@ test('codex-credits: says what is missing instead of showing zeros', async () =>
       assert.equal(response.raw.includes('/secret/path'), false, `${item.name}: no stderr leaks`);
     } finally { await server.close(); fs.rmSync(item.home, { recursive: true, force: true }); }
   }
+});
+
+// 2026-11-01 (a Sunday, the first of the month): the week and the month both start after the last day with any usage, so
+// the backend answered 200 with `series: []` and `values: {}` on every day. Shape recorded from the real answer; the rows
+// follow whatever range was requested, so the test holds in any time zone (the real read was 06:23 at +07, when UTC was
+// still 31 October and the request ran to the later local day).
+test('codex-credits: a range with no usage at all (empty series, empty values on every day) reads as zero, not as incomplete', async () => {
+  const home = codexHome({ access_token: 'tok', account_id: 'acct' });
+  const fake = fakeRunner({ handle: (file, args, options) => {
+    if (file !== 'curl') return undefined;
+    const [, start, end] = /start_date=(\d{4}-\d{2}-\d{2})&end_date=(\d{4}-\d{2}-\d{2})/.exec(options.input);
+    const body = { breakdown: 'model', series: [], data_freshness_ts: `${end}T00:00:00Z`, data: codexEmptyDays(start, end) };
+    return { code: 0, stdout: `${JSON.stringify(body)}\n200`, stderr: '', timedOut: false, truncated: false };
+  } });
+  const server = await startServer({ runner: fake.runner, env: { CODEX_HOME: home }, now: () => new Date(2026, 10, 1, 6, 23) });
+  try {
+    const { post } = await client(server);
+    const response = await post('codex-credits');
+    assert.equal(response.status, 200, response.raw);
+    const data = response.json.data;
+    assert.deepEqual(data.week, { since: '2026-10-26', credits: 0, usd: 0 }, 'the week that began Monday 26 October has no usage');
+    assert.deepEqual(data.month, { since: '2026-11-01', credits: 0, usd: 0 });
+    assert.deepEqual(data.models, []);
+    assert.equal(data.month_limit, 3000);
+  } finally { await server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('codex-credits: a breakdown that is not by model still totals, but never labels its keys as models', async () => {
