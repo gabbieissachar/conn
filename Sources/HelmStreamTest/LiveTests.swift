@@ -33,7 +33,8 @@ enum LiveTests {
         let engine = GridEngine()
         let q = DispatchQueue(label: "lag")
         let lock = NSLock()
-        var pollStates: [(t: UInt64, text: String)] = []
+        var pollStates: [(t: UInt64, text: String, prev: UInt64)] = []
+        var lastPollReply: UInt64 = 0
         var engineStates: [(t: UInt64, text: String)] = []
         var lastEngine = ""
         var frames = 0, fullFrames = 0, bytes = 0
@@ -57,7 +58,8 @@ enum LiveTests {
                     lock.lock()
                     pollCount += 1
                     pollMillis.append(Double(t1 - t0) / 1e6)
-                    if n != last { last = n; pollStates.append((t1, n)) }
+                    if n != last { last = n; pollStates.append((t1, n, lastPollReply)) }
+                    lastPollReply = t1
                     lock.unlock()
                 } else { lock.lock(); pollFailures += 1; lock.unlock() }
                 Thread.sleep(forTimeInterval: pollInterval)
@@ -83,13 +85,25 @@ enum LiveTests {
         Thread.sleep(forTimeInterval: pollInterval * 2)
         lock.lock(); defer { lock.unlock() }
 
-        // Match each distinct screen the stream showed with the first poll that saw the same text.
-        var pollFirstSeen: [String: UInt64] = [:]
-        for s in pollStates where pollFirstSeen[s.text] == nil { pollFirstSeen[s.text] = s.t }
-        var lags: [Double] = []
+        // Match each screen the stream showed with the latest poll sighting of the same text that is not later than the
+        // frame (plus a 150 ms tolerance for poll noise). Panes with a spinner repeat the same few screens, so "first
+        // sighting ever" would pair a screen with an earlier cycle: only sightings within 1.5 s before the frame count.
+        var lags: [Double] = [], lagsUpper: [Double] = []
         var unmatchedEngine = 0
+        let tolerance: UInt64 = 150_000_000, window: UInt64 = 1_500_000_000
         for s in engineStates.dropFirst() {
-            if let tp = pollFirstSeen[s.text] { lags.append((Double(s.t) - Double(tp)) / 1e6) } else { unmatchedEngine += 1 }
+            var hit: (t: UInt64, prev: UInt64)?
+            for p in pollStates.reversed() {
+                if p.t > s.t &+ tolerance { continue }
+                if s.t > p.t && s.t - p.t > window { break }
+                if p.text == s.text { hit = (p.t, p.prev); break }
+            }
+            if let h = hit {
+                // The state changed on the server somewhere between the poll before and the poll that saw it, so the true
+                // lag lies between (frame - first poll that saw it) and (frame - last poll that had not yet).
+                lags.append((Double(s.t) - Double(h.t)) / 1e6)
+                if h.prev > 0 { lagsUpper.append((Double(s.t) - Double(h.prev)) / 1e6) }
+            } else { unmatchedEngine += 1 }
         }
         let engineSet = Set(engineStates.map(\.text))
         let pollOnly = pollStates.dropFirst().filter { !engineSet.contains($0.text) }.count
@@ -103,7 +117,8 @@ enum LiveTests {
             "engineScreenChanges": engineStates.count, "pollScreenChanges": pollStates.count,
             "pollSamples": pollCount, "pollFailures": pollFailures, "pollRequestMillis": Distribution(values: pollMillis).json,
             "matchedStates": lags.count, "streamStatesNeverSeenByPoll": unmatchedEngine, "pollStatesNeverShownByStream": pollOnly,
-            "streamLagBehindPaneReadMillis": Distribution(values: lags).json,
+            "streamLagBehindPaneReadMillis(lowerBound)": Distribution(values: lags).json,
+            "streamLagBehindPaneReadMillis(upperBound)": Distribution(values: lagsUpper).json,
             "frameInterArrivalMillis": Distribution(values: gaps).json,
             "decodeAndApplyMillis": Distribution(values: applyNanos).json,
             "unhandledSequences": engine.unhandledSequenceCount,
@@ -222,5 +237,40 @@ enum LiveTests {
         return ["pausedSeconds": pausedSeconds, "processAliveAfterPause": stillAliveWhileStopped, "framesAfterResume": afterResume,
                 "streamEndedByServer": endState ?? "no", "caughtUpToPaneReadMillis": catchUpMillis ?? -1,
                 "caughtUp": catchUpMillis != nil]
+    }
+}
+
+extension LiveTests {
+    /// Diagnostic for the lag test's screen matching: how does the engine's screen differ from `pane.read`?
+    /// Prints row indexes, lengths and the code point at the first difference, never row text.
+    static func rowDiff(_ endpoint: HerdrEndpoint, pane: Agent, size: PaneSize) -> [String: Any] {
+        let client = HerdrClient(endpoint: endpoint)
+        let engine = GridEngine()
+        let q = DispatchQueue(label: "diff")
+        let source = ObserveProcessSource(endpoint: endpoint)
+        var frames = 0
+        source.start(pane: pane.id, cols: size.cols, rows: size.rows, queue: q, onFrame: { f, _ in engine.apply(f); frames += 1 }, onEnd: { _ in })
+        _ = sleepUntil(5, { q.sync { frames > 0 } })
+        Thread.sleep(forTimeInterval: 1.5)
+        let text = (try? client.readPane(pane.id, source: .visible, ansi: false)) ?? ""
+        let (gridRows, readRows): ([String], [String]) = q.sync {
+            ((0..<engine.rows).map { engine.rowText($0) }, text.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) })
+        }
+        source.stop()
+        var differing: [[String: Any]] = []
+        for i in 0..<max(gridRows.count, readRows.count) {
+            let a = i < gridRows.count ? gridRows[i] : "<none>"
+            let b = i < readRows.count ? normalizedText(readRows[i]) : "<none>"
+            if a != b {
+                let ua = Array(a.unicodeScalars), ub = Array(b.unicodeScalars)
+                var k = 0
+                while k < min(ua.count, ub.count), ua[k] == ub[k] { k += 1 }
+                differing.append(["row": i, "gridLen": ua.count, "readLen": ub.count, "firstDiffAt": k,
+                                  "gridScalar": k < ua.count ? Int(ua[k].value) : -1, "readScalar": k < ub.count ? Int(ub[k].value) : -1])
+            }
+            if differing.count >= 12 { break }
+        }
+        return ["gridRows": gridRows.count, "readRows": readRows.count, "gridNonBlank": gridRows.filter { !$0.isEmpty }.count,
+                "readNonBlank": readRows.filter { !normalizedText($0).isEmpty }.count, "differingRows(first12)": differing]
     }
 }

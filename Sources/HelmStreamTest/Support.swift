@@ -33,17 +33,20 @@ func option(_ name: String, _ args: [String]) -> String? {
 
 /// The text of a terminal screen with trailing spaces and trailing blank rows removed, for comparing two renderings.
 func normalizedScreen(_ e: TerminalEngine) -> String {
-    var rows = (0..<e.rows).map { e.rowText($0) }
+    var rows = (0..<e.rows).map { trimRight(e.rowText($0)) }
     while let last = rows.last, last.isEmpty { rows.removeLast() }
     return rows.joined(separator: "\n")
 }
 
+/// Trailing whitespace including no-break spaces (the grid keeps one where Herdr's text read drops it).
+func trimRight(_ s: String) -> String {
+    var u = Substring(s)
+    while let l = u.unicodeScalars.last, CharacterSet.whitespaces.contains(l) || l == "\u{00A0}" { u = u.dropLast() }
+    return String(u)
+}
+
 func normalizedText(_ s: String) -> String {
-    var rows = s.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-        var l = String(line)
-        while l.hasSuffix(" ") { l.removeLast() }
-        return l
-    }
+    var rows = s.split(separator: "\n", omittingEmptySubsequences: false).map { trimRight(String($0)) }
     while let last = rows.last, last.isEmpty { rows.removeLast() }
     return rows.joined(separator: "\n")
 }

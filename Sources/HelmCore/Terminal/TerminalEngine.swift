@@ -24,6 +24,7 @@ public protocol TerminalEngine: AnyObject {
 public extension TerminalEngine {
     /// Apply one stream frame: a full frame carries the pane's geometry and repaints everything.
     func apply(_ frame: TerminalFrame) {
+        guard frame.isSane else { return }
         if frame.full {
             resize(cols: frame.width, rows: frame.height)
             reset()
@@ -41,7 +42,7 @@ public final class GridEngine: TerminalEngine {
 
     public init(cols: Int = 80, rows: Int = 24) { screen = VTScreen(cols: cols, rows: rows) }
 
-    public func resize(cols: Int, rows: Int) { screen.resize(cols: max(1, cols), rows: max(1, rows)) }
+    public func resize(cols: Int, rows: Int) { screen.resize(cols: min(max(1, cols), TerminalFrame.maxCols), rows: min(max(1, rows), TerminalFrame.maxRows)) }
     public func reset() { screen.clearAll() }
     public func feed(_ bytes: [UInt8]) { screen.feed(bytes) }
     public func rowText(_ row: Int) -> String { row >= 0 && row < screen.rows ? screen.rowText(row) : "" }

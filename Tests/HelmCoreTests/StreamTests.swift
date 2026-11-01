@@ -157,3 +157,50 @@ import FakeHerdrKit
         #expect(e.rowText(0).contains("ok"))
     }
 }
+
+@Suite("Frame sanity and observer registry", .serialized) struct SanityTests {
+    @Test func framesWithAbsurdGeometryAreRejectedAndCounted() {
+        let huge = TerminalFrame(full: true, width: 65535, height: 65535, seq: 1, bytes: Array("x".utf8))
+        #expect(!huge.isSane)
+        #expect(!TerminalFrame(full: true, width: 0, height: 10, seq: 1, bytes: []).isSane)
+        #expect(TerminalFrame(full: true, width: 66, height: 59, seq: 1, bytes: []).isSane)
+        #expect(TerminalFrame(full: false, width: 0, height: 0, seq: 2, bytes: []).isSane)
+        // The engine refuses to resize for such a frame, and a session counts it.
+        let e = GridEngine(cols: 10, rows: 5)
+        e.apply(huge)
+        #expect(e.cols == 10 && e.rows == 5)
+        final class OneFrame: PaneStreamSource {
+            var processID: Int32? { nil }
+            func start(pane: String, cols: Int, rows: Int, queue: DispatchQueue, onFrame: @escaping (TerminalFrame, UInt64) -> Void, onEnd: @escaping (StreamEnd) -> Void) {
+                queue.async { onFrame(TerminalFrame(full: true, width: 65535, height: 65535, seq: 1, bytes: Array("x".utf8)), 0) }
+            }
+            func stop() {}
+        }
+        let session = PaneSession(engine: GridEngine(cols: 10, rows: 5), source: OneFrame(), queue: testQueue)
+        session.configure(pane: "w1:p1", size: PaneSize(cols: 66, rows: 59))
+        #expect(waitUntil { session.stats.rejectedFrames == 1 })
+        #expect(session.stats.frames == 0)
+        session.stop()
+    }
+
+    @Test func registryRecognisesOnlyItsOwnCommandLineAndSparesLiveChildren() throws {
+        let dir = shortSocketDir()
+        setenv("HELM_STATE_DIR", dir, 1)
+        defer { unsetenv("HELM_STATE_DIR") }
+        #expect(ObserverRegistry.looksLikeOurObserver(" /Users/x/.local/bin/herdr --session esim terminal session observe w1:p3 --cols 66 --rows 59"))
+        #expect(!ObserverRegistry.looksLikeOurObserver(" /bin/sleep 30"))
+        #expect(!ObserverRegistry.looksLikeOurObserver(" herdr session attach esim"))
+        // A child that still has its parent is not an orphan and must not be signalled.
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["30"]
+        try child.run()
+        defer { child.terminate() }
+        ObserverRegistry.record(child.processIdentifier)
+        #expect(ObserverRegistry.reapOrphans().isEmpty)
+        #expect(child.isRunning)
+        ObserverRegistry.record(child.processIdentifier)
+        ObserverRegistry.forget(child.processIdentifier)
+        #expect(ObserverRegistry.reapOrphans().isEmpty)
+    }
+}

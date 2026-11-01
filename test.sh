@@ -2,6 +2,7 @@
 # Run the unit tests. The Command Line Tools ship Swift Testing but SwiftPM does not point at it on its own.
 set -euo pipefail
 cd "$(dirname "$0")"
+tools/fetch-deps.sh
 CLT=/Library/Developer/CommandLineTools
 exec swift test \
   -Xswiftc -F"$CLT/Library/Developer/Frameworks" -Xswiftc -plugin-path -Xswiftc "$CLT/usr/lib/swift/host/plugins/testing" \

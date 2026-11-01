@@ -24,7 +24,7 @@ public final class HerdrStore: ObservableObject {
     public let client: HerdrClient
     public let isFixture: Bool
     public var backoffInitial: TimeInterval = 0.5
-    public var backoffMax: TimeInterval = 8
+    public var backoffMax: TimeInterval = 2
     public var pingInterval: TimeInterval = 20
 
     private var stopped = false

@@ -23,8 +23,10 @@ func liveSnapshot() -> Snapshot {
 
 func chosenPane(_ snap: Snapshot) -> Agent {
     if let id = option("--pane", args), let a = snap.agent(id) { return a }
-    guard let a = LiveTests.pickPanes(snap, count: 1).first else { log("no panes"); exit(1) }
-    return a
+    let n = Int(option("--index", args) ?? "0") ?? 0
+    let picks = LiveTests.pickPanes(snap, count: n + 1)
+    guard n < picks.count else { log("no pane at index \(n)"); exit(1) }
+    return picks[n]
 }
 
 switch cmd {
@@ -44,6 +46,10 @@ case "slow":
     let snap = liveSnapshot()
     let pane = chosenPane(snap)
     emit(LiveTests.slowConsumer(endpoint, pane: pane, size: snap.paneSizes[pane.id] ?? PaneSize(cols: 66, rows: 59), pausedSeconds: Double(option("--pause", args) ?? "20") ?? 20))
+case "rowdiff":
+    let snap = liveSnapshot()
+    let pane = chosenPane(snap)
+    emit(LiveTests.rowDiff(endpoint, pane: pane, size: snap.paneSizes[pane.id] ?? PaneSize(cols: 66, rows: 59)))
 case "fake-suite":
     guard let bin = option("--fake-bin", args) else { log("--fake-bin required"); exit(2) }
     emit(FakeSuite.run(fakeBin: bin))

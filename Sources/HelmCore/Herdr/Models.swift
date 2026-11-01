@@ -44,7 +44,7 @@ public struct Workspace: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct Tab: Identifiable, Equatable, Sendable {
+public struct HerdrTab: Identifiable, Equatable, Sendable {
     public var id: String
     public var workspaceID: String
     public var label: String
@@ -81,7 +81,7 @@ public struct PaneSize: Equatable, Sendable {
 public struct Snapshot: Equatable, Sendable {
     public var paneSizes: [String: PaneSize] = [:]
     public var workspaces: [Workspace] = []
-    public var tabs: [Tab] = []
+    public var tabs: [HerdrTab] = []
     public var agents: [Agent] = []
     public var paneIDs: [String] = []
     public var focusedPaneID: String?
@@ -114,7 +114,7 @@ public struct Snapshot: Equatable, Sendable {
         }
         tabs = ((snap["tabs"] as? [[String: Any]]) ?? []).compactMap { t in
             guard let id = t["tab_id"] as? String, let ws = t["workspace_id"] as? String else { return nil }
-            return Tab(id: id, workspaceID: ws, label: (t["label"] as? String) ?? id, number: (t["number"] as? Int) ?? 0,
+            return HerdrTab(id: id, workspaceID: ws, label: (t["label"] as? String) ?? id, number: (t["number"] as? Int) ?? 0,
                        state: AgentState(raw: (t["agent_status"] as? String) ?? ""), paneCount: (t["pane_count"] as? Int) ?? 1)
         }
         let tabLabel = Dictionary(tabs.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
@@ -135,7 +135,7 @@ public struct Snapshot: Equatable, Sendable {
 
     public func workspace(_ id: String?) -> Workspace? { workspaces.first { $0.id == id } }
     public func agent(_ paneID: String?) -> Agent? { agents.first { $0.id == paneID } }
-    public func tabs(in workspaceID: String?) -> [Tab] { tabs.filter { $0.workspaceID == workspaceID } }
+    public func tabs(in workspaceID: String?) -> [HerdrTab] { tabs.filter { $0.workspaceID == workspaceID } }
     public func agents(in workspaceID: String?) -> [Agent] { agents.filter { $0.workspaceID == workspaceID } }
     public func agent(inTab tabID: String) -> Agent? { agents.first { $0.tabID == tabID } }
 

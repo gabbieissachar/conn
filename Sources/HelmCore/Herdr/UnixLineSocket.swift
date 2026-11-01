@@ -7,6 +7,8 @@ public final class UnixLineSocket {
     private var buffer = Data()
     private let lock = NSLock()
     private var closed = false
+    /// A line longer than this is a protocol error, not something to buffer: the real snapshot is under 100 KB.
+    public var maxLineBytes = 32 << 20
 
     /// Connects to a listening socket. Returns nil if the path is too long for `sockaddr_un` or nothing listens there.
     public init?(path: String) {
@@ -81,6 +83,7 @@ public final class UnixLineSocket {
             let n = read(fd, &chunk, chunk.count)
             if n <= 0 { return nil }
             buffer.append(chunk, count: n)
+            if buffer.count > maxLineBytes && !buffer.contains(0x0a) { buffer.removeAll(); return nil }
         }
     }
 

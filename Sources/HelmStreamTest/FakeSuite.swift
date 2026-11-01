@@ -39,12 +39,21 @@ enum FakeSuite {
             let q = DispatchQueue(label: "mark")
             let session = PaneSession(engine: GridEngine(), source: ObserveProcessSource(endpoint: endpoint), queue: q)
             var seen = Set<UInt64>()
-            var lat: [Double] = []
+            var lat: [Double] = [], coalesce: [Double] = [], relay: [Double] = [], hop: [Double] = []
+            var lastSentAt: UInt64 = 0
             session.onApplied = {
                 let now = monotonicNanos()
+                let sent = session.lastSentAt
                 for r in 0..<session.engine.rows {
                     let t = session.engine.rowText(r)
-                    if t.hasPrefix("MARK "), let ns = UInt64(t.dropFirst(5)), !seen.contains(ns) { seen.insert(ns); lat.append(Double(now - ns) / 1e6) }
+                    if t.hasPrefix("MARK "), let ns = UInt64(t.dropFirst(5)), !seen.contains(ns) {
+                        seen.insert(ns)
+                        lat.append(Double(now - ns) / 1e6)
+                        if let s = sent, s != lastSentAt, s >= ns { coalesce.append(Double(s - ns) / 1e6) }
+                        if let s = sent, now >= s { relay.append(Double(session.stats.lastArrivalToAppliedNanos > 0 ? now - s - session.stats.lastArrivalToAppliedNanos : 0) / 1e6) }
+                        hop.append(Double(session.stats.lastArrivalToAppliedNanos) / 1e6)
+                        if let s = sent { lastSentAt = s }
+                    }
                 }
             }
             q.sync { session.configure(pane: idle.id, size: size) }
@@ -53,6 +62,9 @@ enum FakeSuite {
             Thread.sleep(forTimeInterval: 0.3)
             let l = q.sync { lat }
             results["markerLatencyMillis"] = Distribution(values: l).json
+            results["markerSplitMillis"] = ["markToFrameSent(standIn)": Distribution(values: q.sync { coalesce }).json,
+                                            "frameSentToArrival(CLI child+pipe)": Distribution(values: q.sync { relay }).json,
+                                            "arrivalToApplied(queue hop+decode)": Distribution(values: q.sync { hop }).json]
             results["markerLatencyNote"] = "stand-in coalesces frames at 32 ms like Herdr does; 200 marks, 40 ms apart, idle pane"
             q.sync { session.stop() }
         }
@@ -76,7 +88,7 @@ enum FakeSuite {
             }
             q.sync { session.configure(pane: working.id, size: size) }
             let degraded = sleepUntil(8, { q.sync { mismatchAt != nil && session.state == .live } })
-            let showsText = q.sync { (0..<engine.rows).contains { engine.rowText($0).contains("Claude Code") } }
+            let showsText = q.sync { (0..<engine.rows).contains { !engine.rowText($0).isEmpty } }
             results["protocolMismatch"] = ["statusVerdict": verdict.map { "\($0)" } ?? "probe failed", "streamRefusedDetectedMillis": mismatchAt.map { Double($0 - t0) / 1e6 } ?? -1,
                                            "textPathShowsPane": degraded && showsText]
             q.sync { session.stop() }

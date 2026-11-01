@@ -3,8 +3,9 @@
 #
 # Why not a plain SwiftPM URL dependency: SwiftPM keeps dependency clones as bare repositories, and a git
 # configuration with safe.bareRepository=explicit (this Mac's) refuses to run inside them, so `swift build` cannot
-# resolve a URL dependency. A normal clone in .deps/ plus a path dependency has the same pin and needs no
-# git configuration change. If that setting is ever relaxed, Package.swift can go back to a URL dependency.
+# resolve a URL dependency (or SwiftTerm's own manifest dependencies). A normal clone in .deps/, compiled as a plain
+# target through the Sources/SwiftTermVendored/Upstream symlink, has the same pin and needs no git configuration
+# change. If that setting is ever relaxed, Package.swift can go back to a URL dependency.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .deps

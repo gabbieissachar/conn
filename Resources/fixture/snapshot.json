@@ -1,0 +1,1213 @@
+{
+ "id": "fixture_1",
+ "result": {
+  "type": "session_snapshot",
+  "snapshot": {
+   "agents": [
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000001"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": true,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p1",
+     "revision": 1,
+     "state_change_seq": 1,
+     "tab_id": "w01:t1",
+     "terminal_id": "term_demo0001",
+     "terminal_title": "checkout-flow-fix",
+     "terminal_title_stripped": "checkout-flow-fix",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000002"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p2",
+     "revision": 1,
+     "state_change_seq": 2,
+     "tab_id": "w01:t2",
+     "terminal_id": "term_demo0002",
+     "terminal_title": "cart-empty-state",
+     "terminal_title_stripped": "cart-empty-state",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000003"
+     },
+     "agent_status": "done",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p3",
+     "revision": 1,
+     "state_change_seq": 3,
+     "tab_id": "w01:t3",
+     "terminal_id": "term_demo0003",
+     "terminal_title": "promo-banner-copy",
+     "terminal_title_stripped": "promo-banner-copy",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000004"
+     },
+     "agent_status": "blocked",
+     "cwd": "/Users/demo/projects/payments-api",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/payments-api",
+     "pane_id": "w02:p1",
+     "revision": 1,
+     "state_change_seq": 4,
+     "tab_id": "w02:t1",
+     "terminal_id": "term_demo0004",
+     "terminal_title": "ledger-reconcile",
+     "terminal_title_stripped": "ledger-reconcile",
+     "workspace_id": "w02"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000005"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/payments-api",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/payments-api",
+     "pane_id": "w02:p2",
+     "revision": 1,
+     "state_change_seq": 5,
+     "tab_id": "w02:t2",
+     "terminal_id": "term_demo0005",
+     "terminal_title": "refund-webhook-retry",
+     "terminal_title_stripped": "refund-webhook-retry",
+     "workspace_id": "w02"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000006"
+     },
+     "agent_status": "done",
+     "cwd": "/Users/demo/projects/docs-site",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/docs-site",
+     "pane_id": "w03:p1",
+     "revision": 1,
+     "state_change_seq": 6,
+     "tab_id": "w03:t1",
+     "terminal_id": "term_demo0006",
+     "terminal_title": "changelog-draft",
+     "terminal_title_stripped": "changelog-draft",
+     "workspace_id": "w03"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000007"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/docs-site",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/docs-site",
+     "pane_id": "w03:p2",
+     "revision": 1,
+     "state_change_seq": 7,
+     "tab_id": "w03:t2",
+     "terminal_id": "term_demo0007",
+     "terminal_title": "search-index-audit",
+     "terminal_title_stripped": "search-index-audit",
+     "workspace_id": "w03"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000008"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/mobile-app",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/mobile-app",
+     "pane_id": "w04:p1",
+     "revision": 1,
+     "state_change_seq": 8,
+     "tab_id": "w04:t1",
+     "terminal_id": "term_demo0008",
+     "terminal_title": "onboarding-copy-review",
+     "terminal_title_stripped": "onboarding-copy-review",
+     "workspace_id": "w04"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000009"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/mobile-app",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/mobile-app",
+     "pane_id": "w04:p2",
+     "revision": 1,
+     "state_change_seq": 9,
+     "tab_id": "w04:t2",
+     "terminal_id": "term_demo0009",
+     "terminal_title": "push-opt-in-test",
+     "terminal_title_stripped": "push-opt-in-test",
+     "workspace_id": "w04"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000010"
+     },
+     "agent_status": "blocked",
+     "cwd": "/Users/demo/projects/infra",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/infra",
+     "pane_id": "w05:p1",
+     "revision": 1,
+     "state_change_seq": 10,
+     "tab_id": "w05:t1",
+     "terminal_id": "term_demo0010",
+     "terminal_title": "staging-cert-rotation",
+     "terminal_title_stripped": "staging-cert-rotation",
+     "workspace_id": "w05"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000011"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/infra",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/infra",
+     "pane_id": "w05:p2",
+     "revision": 1,
+     "state_change_seq": 11,
+     "tab_id": "w05:t2",
+     "terminal_id": "term_demo0011",
+     "terminal_title": "cost-report",
+     "terminal_title_stripped": "cost-report",
+     "workspace_id": "w05"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000012"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/research",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/research",
+     "pane_id": "w06:p1",
+     "revision": 1,
+     "state_change_seq": 12,
+     "tab_id": "w06:t1",
+     "terminal_id": "term_demo0012",
+     "terminal_title": "pricing-survey-notes",
+     "terminal_title_stripped": "pricing-survey-notes",
+     "workspace_id": "w06"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000013"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/research",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/research",
+     "pane_id": "w06:p2",
+     "revision": 1,
+     "state_change_seq": 13,
+     "tab_id": "w06:t2",
+     "terminal_id": "term_demo0013",
+     "terminal_title": "competitor-teardown",
+     "terminal_title_stripped": "competitor-teardown",
+     "workspace_id": "w06"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000014"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/design-lab",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/design-lab",
+     "pane_id": "w07:p1",
+     "revision": 1,
+     "state_change_seq": 14,
+     "tab_id": "w07:t1",
+     "terminal_id": "term_demo0014",
+     "terminal_title": "icon-set-cleanup",
+     "terminal_title_stripped": "icon-set-cleanup",
+     "workspace_id": "w07"
+    }
+   ],
+   "focused_pane_id": "w01:p1",
+   "focused_tab_id": "w01:t1",
+   "focused_workspace_id": "w01",
+   "layouts": [
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w01:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w01:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w01:t1",
+     "workspace_id": "w01",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w01:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w01:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w01:t2",
+     "workspace_id": "w01",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w01:p3",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w01:p3",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w01:t3",
+     "workspace_id": "w01",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w02:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w02:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w02:t1",
+     "workspace_id": "w02",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w02:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w02:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w02:t2",
+     "workspace_id": "w02",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w03:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w03:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w03:t1",
+     "workspace_id": "w03",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w03:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w03:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w03:t2",
+     "workspace_id": "w03",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w04:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w04:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w04:t1",
+     "workspace_id": "w04",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w04:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w04:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w04:t2",
+     "workspace_id": "w04",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w05:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w05:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w05:t1",
+     "workspace_id": "w05",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w05:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w05:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w05:t2",
+     "workspace_id": "w05",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w06:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w06:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w06:t1",
+     "workspace_id": "w06",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w06:p2",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w06:p2",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w06:t2",
+     "workspace_id": "w06",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 59,
+      "width": 66,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w07:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w07:p1",
+       "rect": {
+        "height": 59,
+        "width": 66,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w07:t1",
+     "workspace_id": "w07",
+     "zoomed": false
+    }
+   ],
+   "panes": [
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000001"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": true,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w01:t1",
+     "terminal_id": "term_demo0001",
+     "terminal_title": "checkout-flow-fix",
+     "terminal_title_stripped": "checkout-flow-fix",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000002"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w01:t2",
+     "terminal_id": "term_demo0002",
+     "terminal_title": "cart-empty-state",
+     "terminal_title_stripped": "cart-empty-state",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000003"
+     },
+     "agent_status": "done",
+     "cwd": "/Users/demo/projects/storefront",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/storefront",
+     "pane_id": "w01:p3",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w01:t3",
+     "terminal_id": "term_demo0003",
+     "terminal_title": "promo-banner-copy",
+     "terminal_title_stripped": "promo-banner-copy",
+     "workspace_id": "w01"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000004"
+     },
+     "agent_status": "blocked",
+     "cwd": "/Users/demo/projects/payments-api",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/payments-api",
+     "pane_id": "w02:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w02:t1",
+     "terminal_id": "term_demo0004",
+     "terminal_title": "ledger-reconcile",
+     "terminal_title_stripped": "ledger-reconcile",
+     "workspace_id": "w02"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000005"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/payments-api",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/payments-api",
+     "pane_id": "w02:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w02:t2",
+     "terminal_id": "term_demo0005",
+     "terminal_title": "refund-webhook-retry",
+     "terminal_title_stripped": "refund-webhook-retry",
+     "workspace_id": "w02"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000006"
+     },
+     "agent_status": "done",
+     "cwd": "/Users/demo/projects/docs-site",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/docs-site",
+     "pane_id": "w03:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w03:t1",
+     "terminal_id": "term_demo0006",
+     "terminal_title": "changelog-draft",
+     "terminal_title_stripped": "changelog-draft",
+     "workspace_id": "w03"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000007"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/docs-site",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/docs-site",
+     "pane_id": "w03:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w03:t2",
+     "terminal_id": "term_demo0007",
+     "terminal_title": "search-index-audit",
+     "terminal_title_stripped": "search-index-audit",
+     "workspace_id": "w03"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000008"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/mobile-app",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/mobile-app",
+     "pane_id": "w04:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w04:t1",
+     "terminal_id": "term_demo0008",
+     "terminal_title": "onboarding-copy-review",
+     "terminal_title_stripped": "onboarding-copy-review",
+     "workspace_id": "w04"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000009"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/mobile-app",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/mobile-app",
+     "pane_id": "w04:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w04:t2",
+     "terminal_id": "term_demo0009",
+     "terminal_title": "push-opt-in-test",
+     "terminal_title_stripped": "push-opt-in-test",
+     "workspace_id": "w04"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000010"
+     },
+     "agent_status": "blocked",
+     "cwd": "/Users/demo/projects/infra",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/infra",
+     "pane_id": "w05:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w05:t1",
+     "terminal_id": "term_demo0010",
+     "terminal_title": "staging-cert-rotation",
+     "terminal_title_stripped": "staging-cert-rotation",
+     "workspace_id": "w05"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000011"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/infra",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/infra",
+     "pane_id": "w05:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w05:t2",
+     "terminal_id": "term_demo0011",
+     "terminal_title": "cost-report",
+     "terminal_title_stripped": "cost-report",
+     "workspace_id": "w05"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000012"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/research",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/research",
+     "pane_id": "w06:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w06:t1",
+     "terminal_id": "term_demo0012",
+     "terminal_title": "pricing-survey-notes",
+     "terminal_title_stripped": "pricing-survey-notes",
+     "workspace_id": "w06"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000013"
+     },
+     "agent_status": "working",
+     "cwd": "/Users/demo/projects/research",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/research",
+     "pane_id": "w06:p2",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w06:t2",
+     "terminal_id": "term_demo0013",
+     "terminal_title": "competitor-teardown",
+     "terminal_title_stripped": "competitor-teardown",
+     "workspace_id": "w06"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "00000000-0000-4000-8000-000000000014"
+     },
+     "agent_status": "idle",
+     "cwd": "/Users/demo/projects/design-lab",
+     "focused": false,
+     "foreground_cwd": "/Users/demo/projects/design-lab",
+     "pane_id": "w07:p1",
+     "revision": 1,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 59
+     },
+     "tab_id": "w07:t1",
+     "terminal_id": "term_demo0014",
+     "terminal_title": "icon-set-cleanup",
+     "terminal_title_stripped": "icon-set-cleanup",
+     "workspace_id": "w07"
+    }
+   ],
+   "protocol": 22,
+   "tabs": [
+    {
+     "agent_status": "working",
+     "focused": true,
+     "label": "checkout-flow-fix",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w01:t1",
+     "workspace_id": "w01"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "cart-empty-state",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w01:t2",
+     "workspace_id": "w01"
+    },
+    {
+     "agent_status": "done",
+     "focused": false,
+     "label": "promo-banner-copy",
+     "number": 3,
+     "pane_count": 1,
+     "tab_id": "w01:t3",
+     "workspace_id": "w01"
+    },
+    {
+     "agent_status": "blocked",
+     "focused": true,
+     "label": "ledger-reconcile",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w02:t1",
+     "workspace_id": "w02"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "refund-webhook-retry",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w02:t2",
+     "workspace_id": "w02"
+    },
+    {
+     "agent_status": "done",
+     "focused": true,
+     "label": "changelog-draft",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w03:t1",
+     "workspace_id": "w03"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "search-index-audit",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w03:t2",
+     "workspace_id": "w03"
+    },
+    {
+     "agent_status": "working",
+     "focused": true,
+     "label": "onboarding-copy-review",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w04:t1",
+     "workspace_id": "w04"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "push-opt-in-test",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w04:t2",
+     "workspace_id": "w04"
+    },
+    {
+     "agent_status": "blocked",
+     "focused": true,
+     "label": "staging-cert-rotation",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w05:t1",
+     "workspace_id": "w05"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "cost-report",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w05:t2",
+     "workspace_id": "w05"
+    },
+    {
+     "agent_status": "idle",
+     "focused": true,
+     "label": "pricing-survey-notes",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w06:t1",
+     "workspace_id": "w06"
+    },
+    {
+     "agent_status": "working",
+     "focused": false,
+     "label": "competitor-teardown",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w06:t2",
+     "workspace_id": "w06"
+    },
+    {
+     "agent_status": "idle",
+     "focused": true,
+     "label": "icon-set-cleanup",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w07:t1",
+     "workspace_id": "w07"
+    }
+   ],
+   "version": "0.9.5",
+   "workspaces": [
+    {
+     "active_tab_id": "w01:t1",
+     "agent_status": "done",
+     "focused": true,
+     "label": "storefront",
+     "number": 1,
+     "pane_count": 3,
+     "tab_count": 3,
+     "workspace_id": "w01"
+    },
+    {
+     "active_tab_id": "w02:t1",
+     "agent_status": "blocked",
+     "focused": false,
+     "label": "payments-api",
+     "number": 2,
+     "pane_count": 2,
+     "tab_count": 2,
+     "workspace_id": "w02"
+    },
+    {
+     "active_tab_id": "w03:t1",
+     "agent_status": "done",
+     "focused": false,
+     "label": "docs-site",
+     "number": 3,
+     "pane_count": 2,
+     "tab_count": 2,
+     "workspace_id": "w03"
+    },
+    {
+     "active_tab_id": "w04:t1",
+     "agent_status": "working",
+     "focused": false,
+     "label": "mobile-app",
+     "number": 4,
+     "pane_count": 2,
+     "tab_count": 2,
+     "workspace_id": "w04"
+    },
+    {
+     "active_tab_id": "w05:t1",
+     "agent_status": "blocked",
+     "focused": false,
+     "label": "infra",
+     "number": 5,
+     "pane_count": 2,
+     "tab_count": 2,
+     "workspace_id": "w05"
+    },
+    {
+     "active_tab_id": "w06:t1",
+     "agent_status": "working",
+     "focused": false,
+     "label": "research",
+     "number": 6,
+     "pane_count": 2,
+     "tab_count": 2,
+     "workspace_id": "w06"
+    },
+    {
+     "active_tab_id": "w07:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "design-lab",
+     "number": 7,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w07"
+    }
+   ]
+  }
+ }
+}

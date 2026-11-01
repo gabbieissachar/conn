@@ -10,8 +10,18 @@ public struct TerminalFrame: Equatable, Sendable {
     public var height: Int
     public var seq: UInt64
     public var bytes: [UInt8]
-    public init(full: Bool, width: Int, height: Int, seq: UInt64, bytes: [UInt8]) {
-        self.full = full; self.width = width; self.height = height; self.seq = seq; self.bytes = bytes
+    /// Server clock (monotonic nanoseconds) when the stand-in sent the frame. Real Herdr frames carry none.
+    public var sentAt: UInt64?
+    /// Frames come from another program, so their geometry is checked before anything allocates for it: the largest pane
+    /// the app asks Herdr for is 500 by 300 cells (a 65535 by 65535 grid would need about 69 GB).
+    public static let maxCols = 500, maxRows = 300
+    public var isSane: Bool {
+        full ? (1...Self.maxCols).contains(width) && (1...Self.maxRows).contains(height)
+             : (width == 0 || (1...Self.maxCols).contains(width)) && (height == 0 || (1...Self.maxRows).contains(height))
+    }
+
+    public init(full: Bool, width: Int, height: Int, seq: UInt64, bytes: [UInt8], sentAt: UInt64? = nil) {
+        self.full = full; self.width = width; self.height = height; self.seq = seq; self.bytes = bytes; self.sentAt = sentAt
     }
 }
 
@@ -24,12 +34,14 @@ public enum FrameCodec {
               let b64 = obj["bytes"] as? String, let data = Data(base64Encoded: b64) else { return nil }
         let w = (obj["width"] as? Int) ?? 0, h = (obj["height"] as? Int) ?? 0
         return TerminalFrame(full: (obj["full"] as? Bool) ?? false, width: w, height: h,
-                             seq: (obj["seq"] as? NSNumber)?.uint64Value ?? 0, bytes: [UInt8](data))
+                             seq: (obj["seq"] as? NSNumber)?.uint64Value ?? 0, bytes: [UInt8](data),
+                             sentAt: (obj["sent_ns"] as? NSNumber)?.uint64Value)
     }
 
     public static func encode(_ f: TerminalFrame) -> Data {
-        let obj: [String: Any] = ["type": "terminal.frame", "encoding": "ansi", "full": f.full, "width": f.width,
+        var obj: [String: Any] = ["type": "terminal.frame", "encoding": "ansi", "full": f.full, "width": f.width,
                                   "height": f.height, "seq": f.seq, "bytes": Data(f.bytes).base64EncodedString()]
+        if let t = f.sentAt { obj["sent_ns"] = t }
         return (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
     }
 }
@@ -138,6 +150,7 @@ public final class ObserveProcessSource: PaneStreamSource {
             self.lock.unlock()
         }
         p.terminationHandler = { [weak self] proc in
+            ObserverRegistry.forget(proc.processIdentifier)
             // Let the readers drain what the process wrote before it exited, then report.
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
                 var tail = ""
@@ -146,6 +159,7 @@ public final class ObserveProcessSource: PaneStreamSource {
             }
         }
         do { try p.run() } catch { finish(.failedToStart("\(error)")); return }
+        ObserverRegistry.record(p.processIdentifier)
         lock.lock(); process = p; outPipe = out; errPipe = err; stderrTail = ""; lock.unlock()
     }
 
@@ -157,7 +171,10 @@ public final class ObserveProcessSource: PaneStreamSource {
         o?.fileHandleForReading.readabilityHandler = nil
         e?.fileHandleForReading.readabilityHandler = nil
         p?.terminationHandler = nil
-        if let p = p, p.isRunning { p.terminate() }
+        if let p = p {
+            if p.isRunning { p.terminate() }
+            ObserverRegistry.forget(p.processIdentifier)
+        }
     }
 }
 

@@ -191,8 +191,10 @@ public final class FakeHerdrServer: @unchecked Sendable {
                 return
             case "pane.read":
                 guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }
-                lock.lock(); let text = p.lines.joined(separator: "\n"); let rev = p.revision; lock.unlock()
-                reply(["result": ["type": "pane_read", "read": ["pane_id": p.id, "source": "visible", "format": "ansi", "text": text, "revision": rev, "truncated": false]]])
+                lock.lock(); var text = p.lines.joined(separator: "\n"); let rev = p.revision; lock.unlock()
+                let ansi = (params["format"] as? String) == "ansi"
+                if !ansi { text = text.replacingOccurrences(of: "\u{1b}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression) }
+                reply(["result": ["type": "pane_read", "read": ["pane_id": p.id, "source": "visible", "format": ansi ? "ansi" : "text", "text": text, "revision": rev, "truncated": false]]])
             case "pane.send_input":
                 guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }
                 let text = params["text"] as? String ?? ""
@@ -280,7 +282,7 @@ public final class FakeHerdrServer: @unchecked Sendable {
             bytes += "\u{1b}[?2026l"
             sent = visible
             seq += 1
-            let frame = TerminalFrame(full: full, width: cols, height: rows, seq: seq, bytes: Array(bytes.utf8))
+            let frame = TerminalFrame(full: full, width: cols, height: rows, seq: seq, bytes: Array(bytes.utf8), sentAt: monotonicNanos())
             if !c.writeRawLine(FrameCodec.encode(frame)) { return }
         }
     }

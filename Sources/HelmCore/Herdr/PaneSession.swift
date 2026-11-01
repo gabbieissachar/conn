@@ -20,6 +20,8 @@ public final class PaneSession: ObservableObject {
         public var applyNanosTotal: UInt64 = 0
         public var applyNanosMax: UInt64 = 0
         public var reconnects = 0
+        /// Frames dropped because their geometry was outside what the app asks Herdr for.
+        public var rejectedFrames = 0
         /// arrival-to-applied (queue hop plus decode into the engine), nanoseconds, for the last frame.
         public var lastArrivalToAppliedNanos: UInt64 = 0
     }
@@ -31,6 +33,8 @@ public final class PaneSession: ObservableObject {
     @Published public private(set) var rows = 0
     public private(set) var stats = Stats()
     public private(set) var framesSinceStart = 0
+    /// Stand-in only: the server clock stamp of the last applied frame.
+    public private(set) var lastSentAt: UInt64?
     /// Called on the main queue after every frame is applied (the view invalidates itself here).
     public var onApplied: (() -> Void)?
     /// Called when the process says the stream protocol is refused; the owner can switch to the text source.
@@ -39,7 +43,7 @@ public final class PaneSession: ObservableObject {
     public var source: PaneStreamSource
     public var processID: Int32? { source.processID }
     public var backoffInitial: TimeInterval = 0.5
-    public var backoffMax: TimeInterval = 8
+    public var backoffMax: TimeInterval = 2
 
     private var generation = 0
     private var expectedSeq: UInt64?
@@ -90,6 +94,13 @@ public final class PaneSession: ObservableObject {
         })
     }
 
+    /// Reopen the stream only if it is not delivering (the sidebar noticed Herdr is back: do not wait out the backoff).
+    public func restartIfNotLive() {
+        guard paneID != nil, state != .live else { return }
+        attempt = 0
+        restart()
+    }
+
     public func stop() {
         generation += 1
         source.stop()
@@ -97,6 +108,7 @@ public final class PaneSession: ObservableObject {
     }
 
     private func apply(_ f: TerminalFrame, arrivedAt: UInt64) {
+        guard f.isSane else { stats.rejectedFrames += 1; return }
         let t0 = monotonicNanos()
         if f.full {
             expectedSeq = f.seq &+ 1
@@ -105,6 +117,7 @@ public final class PaneSession: ObservableObject {
             expectedSeq = f.seq &+ 1
         }
         engine.apply(f)
+        lastSentAt = f.sentAt
         let t1 = monotonicNanos()
         stats.frames += 1
         if f.full { stats.fullFrames += 1 }

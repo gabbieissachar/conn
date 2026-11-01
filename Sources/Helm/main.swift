@@ -1,2 +1,1 @@
-import HelmCore
-print("helm", HelmCoreVersion.string)
+HelmApp.main()

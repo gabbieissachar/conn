@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reader (fixture)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#fbf8ef; --card:#ffffff; --ink:#26241f; --muted:#7a7566; --line:#e6dfcb; --accent:#e0a82e; --blue:#2d68ad; --btn:#f1ebd9; --user:#efe9d6; --codebg:#f4efe1; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#17181c; --card:#202228; --ink:#e6e7ea; --muted:#9a9ca5; --line:#2e3038; --accent:#d9a73a; --blue:#7aa8f0; --btn:#2a2c34; --user:#2a2c34; --codebg:#262830; } }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { display:flex; flex-direction:column; }
+  header { padding:10px 14px 8px; border-bottom:1px solid var(--line); background:var(--bg); }
+  .bar { display:flex; align-items:center; gap:8px; }
+  select, .btn { font:inherit; font-size:13px; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:9px; padding:6px 10px; }
+  .btn { background:var(--btn); cursor:default; }
+  .star { color:var(--accent); font-size:15px; padding:5px 9px; }
+  .live { color:var(--muted); font-size:12px; margin:0 2px; }
+  .live::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:#3c9a50; margin-right:5px; }
+  .synced { color:var(--muted); font-size:12px; margin:6px 2px 0; }
+  main { flex:1; overflow:auto; padding:14px 16px 6px; }
+  .user { background:var(--user); border-radius:14px 14px 4px 14px; padding:9px 13px; margin:0 0 12px 36px; }
+  .reply { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:12px; padding:10px 14px; margin:0 0 14px; box-shadow:0 1px 0 rgba(0,0,0,.02); }
+  .reply p { margin:0 0 8px; } .reply p:last-child { margin:0; }
+  .reply h4 { margin:2px 0 6px; font-size:14px; }
+  .reply ol, .reply ul { margin:4px 0 8px; padding-left:22px; }
+  code { font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--codebg); border-radius:5px; padding:1px 5px; }
+  .tools { color:var(--blue); font-size:12.5px; text-decoration:underline; text-decoration-style:dotted; }
+  .wait { border-left-color:#e0613a; } .wait h4 { color:#c4412e; }
+  .compose { border-top:1px solid var(--line); padding:8px 14px 12px; background:var(--bg); }
+  .to { color:var(--muted); font-size:12px; margin:0 2px 6px; display:flex; justify-content:space-between; }
+  .row { display:flex; gap:8px; }
+  .row input { flex:1; font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:10px; padding:9px 12px; }
+  .send { background:#7fa6e6; color:#fff; border-color:#7fa6e6; font-weight:600; }
+  .add { color:var(--blue); border-color:var(--blue); background:transparent; font-weight:600; }
+  @media (max-width: 470px) { .bar { flex-wrap: wrap; } select { max-width: 100%; flex: 1 1 100%; } header { padding-bottom: 6px; } main { padding: 12px; } .user { margin-left: 18px; } }
+  .fixture { color:var(--muted); font-size:11px; text-align:center; padding:2px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <select id="picker"></select>
+    <span class="btn star">★</span>
+    <span class="live">live</span>
+    <span class="btn">Follow</span>
+    <span class="btn">⌕</span>
+    <span class="btn">⌄</span>
+  </div>
+  <div class="synced">Synced 09:41:07 · fixture data</div>
+</header>
+<main id="convo"></main>
+<div class="compose">
+  <div class="to"><span id="to"></span><span>Copy</span></div>
+  <div class="row"><input placeholder="Message" disabled><span class="btn add">Add</span><span class="btn send">Send</span></div>
+  <div class="fixture">Invented page for the Helm prototype. No real conversation.</div>
+</div>
+<script>
+const S = [
+ ["checkout-flow-fix","working","The checkout page shows a stale total after a promo code is removed.","I'm tracing where the total is recalculated.","The total is cached against the item list only. I key it on the items and the applied codes now, and added a remove-then-add test."],
+ ["cart-empty-state","idle","The empty cart screen looks unfinished.","I compared it with the other empty states.","Done. The empty cart now shows an illustration, one line of copy and a single button back to the store list."],
+ ["promo-banner-copy","done","Draft three banner options under 40 characters.","Here are three options.","I would pick option 2: it names the deadline and the benefit."],
+ ["ledger-reconcile","blocked","Reconcile September against the bank export.","I'll run the script in dry-run mode first.","I need your OK to run the reconcile script once. It writes nothing."],
+ ["refund-webhook-retry","idle","Why do refund webhooks retry twice?","I read the retry policy and the last 40 deliveries.","The second retry comes from a timeout set below the endpoint's p99. Raising it to 8s stops the duplicate."],
+ ["changelog-draft","done","Draft this week's changelog.","I grouped the merged pull requests.","The draft has 11 entries in Added, Changed and Fixed. Two need a product owner's wording."],
+ ["search-index-audit","idle","Audit the search index for stale entries.","I sampled 500 entries.","3% of entries point to removed pages. A nightly cleanup job would remove them."],
+ ["onboarding-copy-review","working","Review the onboarding copy for length.","I measured every string at the default width.","Seven of nine strings fit in two lines. I'm drafting shorter versions of the other two."],
+ ["push-opt-in-test","idle","Write the test for the push opt-in sheet.","I added three cases.","The tests cover accept, decline and later. All pass."],
+ ["staging-cert-rotation","blocked","Check when the staging certificate expires.","I'll read the validity dates.","I need your OK to print the certificate dates."],
+ ["cost-report","idle","Summarise last month's cloud cost.","I read the billing export.","Compute is up 6%, storage is flat. One idle cluster explains most of the rise."],
+ ["pricing-survey-notes","idle","Turn the survey notes into themes.","I clustered 120 comments.","Four themes: clarity, trust, timing and reward size."],
+ ["competitor-teardown","working","Compare three competitor product pages.","I'm reading the saved notes.","App A shows the rate as a badge, B hides it behind a tap, C repeats it twice."],
+ ["icon-set-cleanup","idle","Remove duplicate icons from the set.","I hashed every file.","Nine duplicates removed. The manifest is updated."]
+];
+const picker = document.getElementById('picker'), convo = document.getElementById('convo'), to = document.getElementById('to');
+S.forEach((s,i)=>{ const o=document.createElement('option'); o.value=String(i+1).padStart(12,'0'); o.textContent=`${s[1]==='blocked'?'Waiting for you':s[1][0].toUpperCase()+s[1].slice(1)} · ${s[0]}`; picker.appendChild(o); });
+function render() {
+  const m = location.hash.match(/s=([0-9a-f-]+)/);
+  let i = 0;
+  if (m) { const tail = m[1].split('-').pop(); const n = parseInt(tail, 10); if (n >= 1 && n <= S.length) i = n - 1; }
+  const s = S[i]; picker.selectedIndex = i;
+  to.textContent = `To ${s[0]} · ${s[1] === 'blocked' ? 'waiting for you' : s[1]}`;
+  const wait = s[1] === 'blocked';
+  convo.innerHTML = `
+    <div class="user">Summarise what changed since yesterday.</div>
+    <div class="reply"><p>Two commits landed on the working branch: one tightens input validation, one renames a helper. Tests pass on both.</p></div>
+    <div class="user">${s[2]}</div>
+    <div class="reply"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>
+    <div class="reply ${wait?'wait':''}">${wait?'<h4>Waiting on you</h4>':''}<p>${s[4]}</p>${s[1]==='working'?'<p style="color:var(--muted)">Still working…</p>':''}${wait?'<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>':''}</div>`;
+  convo.scrollTop = convo.scrollHeight;
+}
+addEventListener('hashchange', render); render();
+</script>
+</body>
+</html>
