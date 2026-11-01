@@ -11,7 +11,7 @@ trap 'kill $FAKE 2>/dev/null' EXIT
 sleep 1
 launch() { HELM_STATE_DIR="$S" HELM_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off $1" build/Helm.app/Contents/MacOS/Helm >/dev/null 2>&1 & echo $!; }
 child_of() { ps -axo pid=,ppid=,command= | awk -v p="$1" '$2==p && /terminal session observe/ {print $1}'; }
-APP=$(launch ""); sleep 6
+APP=$(launch "--select 0"); sleep 6   # a static pane: no output after the first frame, so the child never sees EPIPE
 KID=$(child_of $APP)
 echo "app=$APP observer child=$KID"
 [ -n "$KID" ] || { echo "FAIL: no observer child"; kill $APP; exit 1; }
