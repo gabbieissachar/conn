@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let file = cfg.editorTest {
             Task { @MainActor in await EditorSelfTest.run(file: file, model: model) }
         }
+        if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
         }

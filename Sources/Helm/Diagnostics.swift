@@ -75,3 +75,42 @@ enum EditorSelfTest {
         print("editor-test: saved dirty=\(doc.isDirty) diskStartsWithTyped=\(after.hasPrefix("TYPED-BY-TEST ")) diskGrewBy=\(after.count - before.count)")
     }
 }
+
+/// Measures how long after a pane's first frame SwiftTerm actually draws, from its own draw hook.
+/// If the display is asleep AppKit and the display link may never draw: the probe says so rather than guessing.
+@MainActor
+enum DrawProbe {
+    static func run(model: AppModel) async {
+        guard model.primary.engine is SwiftTermEngine else { print("draw-probe: primary is not SwiftTerm"); return }
+        let t0 = monotonicNanos()
+        var firstFrame: UInt64?
+        for _ in 0..<300 {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            if firstFrame == nil, model.primary.stats.frames > 0 { firstFrame = monotonicNanos() }
+        }
+        let all = DrawLog.shared.snapshot
+        let after = firstFrame.flatMap { f in all.first { $0 >= f } }
+        let engine = model.primary.engine as! SwiftTermEngine
+        func ms(_ t: UInt64?, from: UInt64?) -> String { guard let t = t, let f = from else { return "never" }; return String(format: "%.0f ms", Double(t - f) / 1e6) }
+        // Render the view's layer the way Core Animation would present it, and count what is on it.
+        if let layer = engine.view.layer {
+            let w = Int(layer.bounds.width * 2), h = Int(layer.bounds.height * 2)
+            if w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                // Over the theme background, as the view's own layer colour sits behind its contents.
+                ctx.setFillColor(model.terminalTheme.bg.cgColor); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                ctx.scaleBy(x: 2, y: 2)
+                layer.render(in: ctx)
+                let px = ctx.data!.assumingMemoryBound(to: UInt8.self)
+                var colours = Set<UInt32>(); var nonUniform = 0
+                let first = (UInt32(px[0]) << 24) | (UInt32(px[1]) << 16) | (UInt32(px[2]) << 8) | UInt32(px[3])
+                var i = 0
+                while i < w * h * 4 { let c = (UInt32(px[i]) << 24) | (UInt32(px[i + 1]) << 16) | (UInt32(px[i + 2]) << 8) | UInt32(px[i + 3]); colours.insert(c); if c != first { nonUniform += 1 }; i += 4 * 7 }
+                if let path = ProcessInfo.processInfo.environment["HELM_LAYER_PNG"], let cg = ctx.makeImage() {
+                    Capture.writePNG(NSBitmapImageRep(cgImage: cg), to: URL(fileURLWithPath: path))
+                }
+                print(String(format: "layer-render: %dx%d corner=%08x distinctColours=%d pixelsDifferentFromCorner=%d (sampled)", w, h, first, colours.count, nonUniform))
+            }
+        }
+        print("draw-probe: frameAt=\(String(format: "%.2f", Double((firstFrame ?? t0) - t0) / 1e9))s draws=\(all.count) firstDrawAfterFirstFrame=\(ms(after, from: firstFrame)) nudges=\(engine.displayNudges)")
+    }
+}

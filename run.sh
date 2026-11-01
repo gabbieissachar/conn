@@ -5,7 +5,7 @@
 #   ./run.sh --write NAME         allow the compose box to send to that session (default: none)
 #   ./run.sh --fixture            a stand-in Herdr with invented agents, invented web pages; safe to screen-share,
 #                                 and the one place the compose box is exercised
-#   ./run.sh --renderer grid      the cell-grid pane view instead of SwiftTerm (the default)
+#   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)
 #   ./run.sh --mode agent|editor|herdr   --web on|off   --select N   --dark   --privacy   --open FILE
 #   ./run.sh --selftest 10 | --shot FILE | --tour DIR | --quit-after N
 cd "$(dirname "$0")"

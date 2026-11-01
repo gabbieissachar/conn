@@ -102,6 +102,16 @@ public final class HelmTerminalView: TerminalView {
         setFrameSize(NSSize(width: opt.width + 0.5, height: opt.height + 0.5))
     }
 
+    /// Asks AppKit to draw the view now. SwiftTerm normally draws from a display-link tick that follows its own dirty
+    /// mark; a pane that gets one burst of output and then nothing depended on that single tick (a static "needs you"
+    /// or "done" pane stayed blank for a while on the captain's screen). Setting the frame to its current size makes
+    /// SwiftTerm invalidate its contents and mark the view for display through AppKit's own cycle, which does not wait
+    /// for a tick.
+    public func nudgeDisplay() {
+        setFrameSize(frame.size)
+        needsDisplay = true
+    }
+
     /// Width of one cell at the current font (for choosing the font that fits a host).
     public static func cellWidth(forPoints points: CGFloat) -> CGFloat {
         let f = NSFont.monospacedSystemFont(ofSize: points, weight: .regular)
@@ -109,13 +119,33 @@ public final class HelmTerminalView: TerminalView {
     }
 }
 
+/// Every time any SwiftTerm view finishes drawing (its own hook, `TerminalView.onFramePresented`), the monotonic time.
+public final class DrawLog: @unchecked Sendable {
+    public static let shared = DrawLog()
+    private let lock = NSLock()
+    private var times: [UInt64] = []
+    private init() {}
+    func record() { lock.lock(); if times.count < 100_000 { times.append(monotonicNanos()) }; lock.unlock() }
+    public var snapshot: [UInt64] { lock.lock(); defer { lock.unlock() }; return times }
+    public func firstDraw(after t: UInt64) -> UInt64? { snapshot.first { $0 >= t } }
+}
+
 public final class SwiftTermEngine: TerminalEngine {
     public let view: HelmTerminalView
+    /// How many forced draws were issued (tests and the self test read it).
+    public private(set) var displayNudges = 0
+    private var earlyNudge: DispatchWorkItem?
+    private var settleNudge: DispatchWorkItem?
+    /// Quick draw after a full frame, and a final draw once the stream has been quiet this long.
+    static let earlyDelay: TimeInterval = 0.06, settleDelay: TimeInterval = 0.25
     public var name: String { "swiftterm" }
     /// SwiftTerm does not report unhandled sequences; the cell-grid engine is the one that counts them.
     public var unhandledSequenceCount: Int { 0 }
 
-    public init() { view = MainActor.assumeIsolated { HelmTerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 400)) } }
+    public init() {
+        view = MainActor.assumeIsolated { HelmTerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 400)) }
+        TerminalView.onFramePresented = { DrawLog.shared.record() }
+    }
 
     public var cols: Int { view.terminalDimensions.cols }
     public var rows: Int { view.terminalDimensions.rows }
@@ -129,9 +159,27 @@ public final class SwiftTermEngine: TerminalEngine {
         view.softReset()
         view.feed(text: "\u{1b}[0m\u{1b}[2J\u{1b}[H")
         MainActor.assumeIsolated { view.reapplyTheme() }
+        scheduleNudge(early: true)
     }
 
-    public func feed(_ bytes: [UInt8]) { view.feed(byteArray: bytes[...]) }
+    public func feed(_ bytes: [UInt8]) {
+        view.feed(byteArray: bytes[...])
+        scheduleNudge(early: false)
+    }
+
+    /// A debounced nudge: `settleDelay` after the last bytes (one extra draw per burst, so a stream that keeps going
+    /// is not slowed), and `earlyDelay` after a reset (the first draw of a new pane).
+    private func scheduleNudge(early: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let delay = early ? Self.earlyDelay : Self.settleDelay
+            let w = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { guard let self = self else { return }; self.view.nudgeDisplay(); self.displayNudges += 1 }
+            }
+            if early { self.earlyNudge?.cancel(); self.earlyNudge = w } else { self.settleNudge?.cancel(); self.settleNudge = w }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
+        }
+    }
 
     public func rowText(_ row: Int) -> String {
         guard row >= 0, row < rows else { return "" }

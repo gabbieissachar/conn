@@ -33,5 +33,6 @@ let package = Package(
         // The Herdr stream test (decision D2): latency, reconnect, CPU, compatibility.
         .executableTarget(name: "HelmStreamTest", dependencies: ["HelmCore"]),
         .testTarget(name: "HelmCoreTests", dependencies: ["HelmCore", "FakeHerdrKit"]),
+        .testTarget(name: "HelmTerminalTests", dependencies: ["HelmCore", "HelmTerminal"]),
     ]
 )

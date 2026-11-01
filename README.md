@@ -6,6 +6,8 @@ Helm is a client of `herdr server`: Herdr stays the backend and keeps every agen
 
 **What draws the panes.** Decision B2: SwiftTerm is the terminal engine, behind a protocol (`TerminalEngine`). It is the default pane view. A second engine, a 450-line cell grid ported from the prototype, stays selectable with `./run.sh --renderer grid`; it is the one whose output the agents that built this could see in screenshots, so it is the reference when a SwiftTerm pane looks wrong. SwiftTerm also runs the Herdr-screen fallback pane.
 
+SwiftTerm normally draws from a display-link tick that follows its own dirty mark. A pane that gets one burst of output and then nothing (a "needs you" or "done" agent) was slow to draw its first screen on the captain's display, so the engine forces a draw 60 ms after a full frame and 250 ms after the last bytes (`SwiftTermEngine.scheduleNudge`, `HelmTerminalView.nudgeDisplay`). In the one environment it could be measured (no display link ticks at all), the first draw lands 55 to 67 ms after the first frame; whether that matches the delay on a real screen is for the captain to confirm.
+
 ## Build and run
 
 Command Line Tools and SwiftPM only. No Xcode.
