@@ -161,3 +161,17 @@ extension HerdrClient {
         #expect(((sent["result"] as? [String: Any])?["sent"] as? [String]) == ["one line <Enter>"])
     }
 }
+
+@Suite("Real-shaped snapshot") struct FixtureSnapshotTests {
+    @Test func theInventedFixtureSnapshotParsesLikeARealOne() throws {
+        // Resources/fixture/snapshot.json has the shape of a 0.9.5 reply (14 agents in 7 spaces, names invented).
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Resources/fixture/snapshot.json"))
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let snap = try #require(Snapshot(response: obj))
+        #expect(snap.agents.count == 14 && snap.workspaces.count == 7)
+        #expect(snap.paneSizes.count == snap.paneIDs.count)
+        #expect(snap.prioritized.first?.state.waitsOnCaptain == true)
+        #expect(snap.agents.allSatisfy { !$0.name.isEmpty })
+    }
+}
