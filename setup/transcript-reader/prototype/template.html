@@ -296,6 +296,58 @@ __HEAD_HOSTED__
   .notes { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
   .notes button { border: 0; background: none; color: var(--muted); padding: 0; text-decoration: underline; font-size: 12px; }
   .note-body { font-size: 14px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Tool steps: the row on a reply, its list of one-line steps in runs with the working notes between them, and the sheet that
+     opens one step. Rows are 44 px on a phone width or a touch screen. A failed step is red in words too (the "failed" label),
+     never by colour alone. */
+  .steps-box { margin: 2px 0 0; }
+  .steps-row { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; border: 0; background: none; padding: 0; text-align: left; font-size: 12px; color: var(--muted); }
+  .steps-row .chev { flex: none; width: 10px; font-size: 10px; transition: transform .12s; }
+  .steps-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .steps-row .what { text-decoration: underline; }
+  .steps-failed { color: var(--open); font-weight: 700; text-decoration: none; }
+  .steps-row:focus-visible, .step:focus-visible, .steps-more:focus-visible, .step-sheet button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .step-group { border: 1px solid var(--line); border-radius: 10px; margin: 4px 0 8px; overflow: hidden; background: var(--paper); }
+  .step { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; border: 0; border-top: 1px solid var(--line); background: none; padding: 4px 10px; text-align: left; font-size: 13px; color: var(--ink); }
+  .step:first-child { border-top: 0; }
+  .step .k { flex: none; width: 5.4em; font-size: 11px; font-weight: 700; color: var(--muted); }
+  .step .s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .step .n { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .step .n b { font-weight: 600; }
+  .step .n .plus { color: var(--ok); }
+  .step .n .minus { color: var(--open); }
+  .step.failed { border-left: 3px solid var(--open); padding-left: 7px; background: color-mix(in srgb, var(--open) 7%, var(--paper)); }
+  .step.failed .k, .step.failed .bad { color: var(--open); }
+  .step .bad { flex: none; font-size: 11px; font-weight: 700; }
+  .steps-more { display: block; width: 100%; min-height: 32px; border: 1px dashed var(--line); border-radius: 10px; background: none; padding: 4px 10px; margin: 0 0 8px; font-size: 13px; color: var(--you); }
+  @media (max-width: 440px), (pointer: coarse) { .steps-row, .steps-more { min-height: 44px; } .step { min-height: 44px; } }
+  .scrim { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .4); }
+  .step-sheet { position: fixed; z-index: 31; left: 0; right: 0; bottom: 0; max-height: 86vh; display: flex; flex-direction: column; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: 0 -6px 24px rgb(0 0 0 / .25); padding-bottom: env(safe-area-inset-bottom); }
+  @media (min-width: 640px) { .step-sheet { left: 50%; right: auto; bottom: auto; top: 50%; transform: translate(-50%, -50%); width: min(42rem, calc(100vw - 32px)); max-height: 80vh; border-radius: 16px; } }
+  .step-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px 14px; border-bottom: 1px solid var(--line); }
+  .step-head .pos { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .step-head button, .step-foot button, .step-sheet .step-copy { min-height: 36px; min-width: 36px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 2px 10px; font-size: 13px; }
+  .step-head button:disabled { opacity: .4; cursor: default; }
+  .step-body { padding: 10px 14px 6px; overflow-y: auto; overscroll-behavior: contain; }
+  .step-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; }
+  .step-title .k { color: var(--muted); font-weight: 700; margin-right: 6px; }
+  .step-title.failed .k, .step-title .bad { color: var(--open); }
+  .step-meta { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  .step-sec { margin: 10px 0 0; }
+  .step-sec > .lab { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
+  .step-code { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px; font: 12.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
+  .step-code.failed { border-left: 3px solid var(--open); }
+  .diff { margin: 0; border-radius: 8px; background: var(--code); font: 12.5px/1.45 var(--mono); overflow-x: auto; }
+  .diff div { padding: 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .diff .add { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+  .diff .del { background: color-mix(in srgb, var(--open) 14%, transparent); }
+  .diff .gap { color: var(--faint); text-align: center; }
+  .diff .add::before { content: "+ "; color: var(--ok); }
+  .diff .del::before { content: "\2212 "; color: var(--open); }
+  .diff .ctx::before { content: "  "; }
+  .step-note { font-size: 13px; color: var(--muted); margin: 4px 0 0; }
+  .step-foot { display: flex; gap: 8px; padding: 8px 14px 10px; border-top: 1px solid var(--line); }
+  .step-foot .primary { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
+  @media (max-width: 440px), (pointer: coarse) { .step-head button, .step-foot button, .step-sheet .step-copy, .step-sec .btn { min-height: 44px; min-width: 44px; } }
   .fold { display: flex; width: 100%; gap: 6px; align-items: baseline; text-align: left; border: 0; border-top: 1px dashed var(--line); background: none; padding: 5px 2px; font-size: 13px; color: var(--muted); }
   .fold .t { color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
   .fold .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -533,6 +585,7 @@ __HEAD_HOSTED__
 /*__ASKS__*/
 /*__MARKDOWN_IT__*/
 /*__MARKDOWN__*/
+/*__STEPS__*/
 /*__FIND__*/
 /*__DOCFILES__*/
   // The hosted shell starts empty until its index.json arrives.
@@ -660,7 +713,9 @@ __HEAD_HOSTED__
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);
     if (sheetLink && !boxed) card.append(sheetLink);
-    if (ex.narration && ex.narration.length || ex.tools) {
+    if (stepsView.list(ex).length) card.append(notesNode = stepsBlock(ex, key, sid));
+    else if (ex.narration && ex.narration.length || ex.tools) {
+      // A turn from a copy built before steps were kept: the notes and a count of the steps.
       const notes = notesNode = $("div", "notes");
       const parts = [];
       if (ex.narration.length) parts.push(`${ex.narration.length} working note${ex.narration.length === 1 ? "" : "s"}`);
@@ -677,6 +732,259 @@ __HEAD_HOSTED__
       notes.append(btn, body); card.append(notes);
     }
     return card;
+  }
+  // ---------------------------------------------------------------- tool steps: the row on a reply and its list
+  // The row says what the turn did ("7 steps · edited 2 files · 1 failed"); it opens a list of one-line steps in runs of consecutive
+  // calls with the agent's working notes between the runs, the first 10 and then "N more". A step opens the sheet below. The
+  // rules (the grouping, the counts) are steps.js; the steps themselves come with the turn (tool_steps.py).
+  function stepsBlock(ex, key, sid) {
+    const box = $("div", "steps-box");
+    const sum = stepsView.summary(ex);
+    const row = $("button", "steps-row"); row.type = "button";
+    const what = $("span", "what", sum.parts.join(" \u00b7 "));
+    const chev = $("span", "chev", "\u25b6"); chev.setAttribute("aria-hidden", "true");
+    row.append(chev, what);
+    if (sum.failed) what.append(document.createTextNode(" \u00b7 "), $("span", "steps-failed", sum.failedText));
+    const body = $("div", "steps-body");
+    let hidden = 0;
+    const draw = () => {
+      const all = state.open.has(key + ":steps-all");
+      const view = stepsView.visible(stepsView.plan(ex), all ? Infinity : stepsView.FIRST_ROWS);
+      hidden = view.hidden;
+      const frag = document.createDocumentFragment();
+      view.blocks.forEach(block => {
+        if (block.type === "note") {
+          const note = $("div", "note-body", block.text);
+          if (sid && ex.uid) note.dataset.find = `${ex.uid}:notes`;
+          frag.append(note);
+          return;
+        }
+        const group = $("div", "step-group");
+        if (sid && ex.uid) group.dataset.find = `${ex.uid}:steps`;
+        block.steps.forEach(i => group.append(stepRow(ex, i, sid)));
+        frag.append(group);
+      });
+      if (hidden) {
+        const more = $("button", "steps-more", `${hidden} more step${hidden === 1 ? "" : "s"}`); more.type = "button";
+        more.addEventListener("click", () => { state.open.add(key + ":steps-all"); draw(); });
+        frag.append(more);
+      }
+      body.replaceChildren(frag);
+    };
+    const isOpen = () => body.childElementCount > 0;
+    const fold = () => { body.replaceChildren(); row.setAttribute("aria-expanded", "false"); state.open.delete(key + ":notes"); state.open.delete(key + ":steps-all"); };
+    // A search match inside a step beyond the first rows opens them all.
+    const unfold = (all = false) => { if (all) state.open.add(key + ":steps-all"); state.open.add(key + ":notes"); row.setAttribute("aria-expanded", "true"); draw(); };
+    row.addEventListener("click", () => { if (isOpen()) fold(); else unfold(); });
+    row.setAttribute("aria-expanded", "false");
+    if (state.open.has(key + ":notes")) unfold();
+    reveals.set(key + ":notes", { open: () => unfold(true), close: fold, shown: () => isOpen() && !hidden });
+    box.append(row, body);
+    return box;
+  }
+  function stepRow(ex, i, sid) {
+    const step = ex.steps[i];
+    const row = $("button", "step" + (step.f ? " failed" : "")); row.type = "button";
+    row.title = step.s;
+    row.append($("span", "k", stepsView.KIND[step.k] || "Tool"), $("span", "s", step.s));
+    const counts = stepsView.counts(step);
+    if (counts) { const n = $("span", "n"); n.append($("b", "plus", `+${step.a || 0}`), " ", $("b", "minus", `\u2212${step.r || 0}`)); row.append(n); }
+    if (step.f) row.append($("span", "bad", "failed"));
+    row.addEventListener("click", () => openStep(ex, i, sid, row));
+    return row;
+  }
+  // ---------------------------------------------------------------- tool steps: the sheet
+  // One step on a sheet (a bottom sheet on a phone, a dialog on a wide screen): its command or file, a diff for an edit or a write, its
+  // output as the last lines with "Show all N lines", Prev and Next through the turn's steps, and "Ask about this", which is Reply
+  // with a pointer naming the step. A failed step shows the last 400 characters it kept at once; the rest of its output (the output of
+  // every step) is the conversation's object, fetched when the sheet needs it. The laptop's page asks the server; the sealed copy has
+  // it on the device for the last 7 days and offers "Download this conversation's outputs" for older steps (hosted.steps).
+  const stepOutputs = new Map();  // conversation id -> { state: "idle" | "loading" | "ready" | "failed", map, error, kept }
+  const sheet = { ex: null, index: 0, sid: null, opener: null, node: null, all: { diff: false, out: false }, build: null };
+  function outputEntry(sid) {
+    if (!stepOutputs.has(sid)) stepOutputs.set(sid, { state: "idle", map: null, error: null, kept: undefined, gen: 0 });
+    return stepOutputs.get(sid);
+  }
+  // The conversation's outputs: from the laptop's server on the laptop's page, from the object the sealed copy holds (on the device, or
+  // from the laptop) on the phone. Only called when the sheet needs it, or when the person asks for the older ones.
+  async function loadOutputs(session) {
+    const entry = outputEntry(session.id);
+    if (entry.state === "loading") return entry.waiting;
+    entry.state = "loading"; entry.error = null;
+    entry.waiting = (async () => {
+      try {
+        const got = HOSTED ? await hosted.steps(session) : await live.steps(session.id);
+        entry.map = (got && got.outputs) || {}; entry.state = "ready"; entry.gen = data.generated;
+      } catch (e) { entry.state = "failed"; entry.error = e; }
+      if (sheet.ex) paintSheet();
+    })();
+    return entry.waiting;
+  }
+  function sheetNode() {
+    if (sheet.node) return sheet.node;
+    const scrim = $("div", "scrim"); scrim.hidden = true; scrim.addEventListener("click", closeStep);
+    const dialog = $("section", "step-sheet"); dialog.hidden = true; dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); dialog.setAttribute("aria-label", "Step");
+    const head = $("div", "step-head");
+    const prev = $("button", null, "‹ Prev"); prev.type = "button"; prev.dataset.act = "prev";
+    const pos = $("span", "pos"); pos.dataset.act = "pos";
+    const next = $("button", null, "Next ›"); next.type = "button"; next.dataset.act = "next";
+    const close = $("button", null, "Close"); close.type = "button"; close.dataset.act = "close";
+    head.append(prev, pos, next, close);
+    const body = $("div", "step-body"); body.dataset.act = "body";
+    const foot = $("div", "step-foot");
+    const ask = $("button", "primary", "Ask about this"); ask.type = "button"; ask.dataset.act = "ask";
+    foot.append(ask);
+    dialog.append(head, body, foot);
+    prev.addEventListener("click", () => moveStep(-1));
+    next.addEventListener("click", () => moveStep(1));
+    close.addEventListener("click", closeStep);
+    ask.addEventListener("click", askAboutStep);
+    dialog.addEventListener("keydown", e => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeStep(); return; }
+      if (e.key === "ArrowLeft" && !e.target.closest("pre")) { e.preventDefault(); moveStep(-1); return; }
+      if (e.key === "ArrowRight" && !e.target.closest("pre")) { e.preventDefault(); moveStep(1); return; }
+      if (e.key !== "Tab") return;
+      const items = [...dialog.querySelectorAll("button:not([disabled])")];
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+    document.body.append(scrim, dialog);
+    sheet.node = { scrim, dialog, prev, next, pos, body, ask };
+    return sheet.node;
+  }
+  function openStep(ex, index, sid, opener) {
+    const node = sheetNode();
+    Object.assign(sheet, { ex, index, sid, opener: opener || sheet.opener, all: { diff: false, out: false } });
+    node.scrim.hidden = false; node.dialog.hidden = false;
+    document.body.style.overflow = "hidden";
+    paintSheet();
+    const session = sid && sessionOf(sid);
+    const entry = session ? outputEntry(session.id) : null;
+    // What the device already holds of the outputs counts as downloaded: the older steps then read from it with no ask.
+    if (HOSTED && session && entry.kept === undefined) { entry.kept = false; hosted.stepsHeld(session).then(kept => { entry.kept = kept; if (sheet.ex) paintSheet(); }); }
+    node.dialog.querySelector('[data-act="close"]').focus();
+  }
+  function closeStep() {
+    if (!sheet.node || sheet.node.dialog.hidden) return;
+    sheet.node.dialog.hidden = true; sheet.node.scrim.hidden = true;
+    document.body.style.overflow = "";
+    const opener = sheet.opener;
+    sheet.ex = null;
+    if (opener && opener.isConnected) opener.focus();
+  }
+  function moveStep(by) {
+    const list = stepsView.list(sheet.ex), at = sheet.index + by;
+    if (at < 0 || at >= list.length) return;
+    sheet.index = at; sheet.all = { diff: false, out: false };
+    paintSheet();
+    sheet.node.body.scrollTop = 0;
+  }
+  function stepContext(session) {
+    const entry = session ? outputEntry(session.id) : null;
+    return { sealed: HOSTED, from: data.steps_from || 0, loaded: Boolean(entry && (entry.state === "ready" || entry.kept)) };
+  }
+  function section(title, ...nodes) {
+    const sec = $("div", "step-sec"), lab = $("div", "lab");
+    lab.append($("span", null, title));
+    sec.append(lab, ...nodes.filter(Boolean));
+    return { sec, lab };
+  }
+  function copyButton(text) {
+    const btn = $("button", "step-copy", "Copy"); btn.type = "button";
+    btn.addEventListener("click", async () => { const ok = await copyText(text); btn.textContent = ok ? "Copied" : "Copy failed"; setTimeout(() => { btn.textContent = "Copy"; }, 1500); });
+    return btn;
+  }
+  function paintSheet() {
+    const { ex, index, sid } = sheet;
+    if (!ex || !sheet.node) return;
+    const step = ex.steps[index], list = ex.steps, node = sheet.node;
+    const session = sid ? sessionOf(sid) : null;
+    node.prev.disabled = index === 0; node.next.disabled = index === list.length - 1;
+    node.pos.textContent = `Step ${index + 1} of ${list.length}`;
+    const body = node.body, frag = document.createDocumentFragment();
+    const title = $("h2", "step-title" + (step.f ? " failed" : ""));
+    title.append($("span", "k", stepsView.KIND[step.k] || "Tool"), document.createTextNode(step.s));
+    if (step.f) title.append(document.createTextNode(" "), $("span", "bad", "· failed"));
+    frag.append(title, $("p", "step-meta", [fmtWhen(step.at), step.n].filter(Boolean).join(" · ")));
+    const input = step.c || step.p || (step.k === "read" || step.k === "edited" || step.k === "wrote" ? step.s : "");
+    if (input) {
+      const label = step.k === "ran" ? "Command" : step.p ? "File" : "Input";
+      const pre = $("pre", "step-code", input);
+      const { sec, lab } = section(label, pre);
+      lab.append(copyButton(input));
+      frag.append(sec);
+    }
+    if (step.d) {
+      const all = stepsView.diffRows(step.d), shown = sheet.all.diff ? { rows: all, hidden: 0 } : stepsView.clipRows(all);
+      const box = $("div", "diff");
+      shown.rows.forEach(r => box.append($("div", r.type, r.type === "gap" ? "⋯" : r.text)));
+      const { sec, lab } = section("Change", box);
+      lab.append($("span", "n", stepsView.counts(step)));
+      if (shown.hidden) {
+        const more = $("button", "more", `Show full diff (${shown.hidden} more line${shown.hidden === 1 ? "" : "s"})`); more.type = "button";
+        more.addEventListener("click", () => { sheet.all.diff = true; paintSheet(); });
+        sec.append(more);
+      }
+      if (step.x) sec.append($("p", "step-note", "The copy keeps the first 1,500 characters of this change."));
+      frag.append(sec);
+    }
+    // Output: what a failure kept comes at once; the rest as the output plan says.
+    const plan = stepsView.outputPlan(step, stepContext(session));
+    const outBox = [];
+    const entry = session ? outputEntry(session.id) : null;
+    const fullText = entry && entry.map ? entry.map[stepsView.key(ex, index)] : null;
+    // What a failure kept with the step is there before anything loads, and while nothing can (offline); the output itself replaces it.
+    if (step.f && step.t && !fullText) outBox.push($("pre", "step-code failed", step.t), $("p", "step-note", "The last 400 characters of the output, kept with the step."));
+    if (!session && plan.kind === "fetch") outBox.push($("p", "step-note", "Open this conversation to read the output."));
+    else if (plan.kind === "kept") outBox.push($("p", "step-note", plan.note));
+    else if (plan.kind === "fetch" || plan.kind === "show") {
+      if (entry.state === "ready") {
+        if (fullText) {
+          const t = stepsView.tail(fullText, sheet.all.out ? Infinity : stepsView.TAIL_LINES);
+          outBox.push($("pre", "step-code" + (step.f ? " failed" : ""), t.text));
+          if (t.hidden) {
+            const more = $("button", "more", `Show all ${t.total} lines`); more.type = "button";
+            more.addEventListener("click", () => { sheet.all.out = true; paintSheet(); });
+            outBox.push(more);
+          }
+          if (step.z && step.z > fullText.length + 1) outBox.push($("p", "step-note", `The copy keeps ${step.k === "ran" || step.f ? "the last" : "the first"} ${fullText.length.toLocaleString()} of ${step.z.toLocaleString()} characters.`));
+        } else if (!(step.f && step.t)) outBox.push($("p", "step-note", "No output was kept for this step."));
+      } else if (entry.state === "failed") {
+        outBox.push($("p", "step-note", HOSTED && entry.error && entry.error.network ? "No output is stored on this device for this step, and the laptop is not reachable." : `Could not load the output: ${entry.error ? entry.error.message : "unknown error"}`));
+        outBox.push(downloadButton(session, "Try again"));
+      } else {
+        outBox.push($("p", "step-note", "Loading the output…"));
+        if (entry.state === "idle") loadOutputs(session);
+      }
+    } else if (plan.kind === "offer") {
+      outBox.push($("p", "step-note", `${plan.note} Older output waits at the laptop.`), downloadButton(session, "Download this conversation’s outputs"));
+    }
+    if (outBox.length) frag.append(section("Output", ...outBox).sec);
+    body.replaceChildren(frag);
+    node.ask.hidden = !sid;
+  }
+  function downloadButton(session, label) {
+    const btn = $("button", "btn", label); btn.type = "button";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "Downloading…";
+      outputEntry(session.id).state = "idle";
+      await loadOutputs(session);
+      if (sheet.ex) paintSheet();
+    });
+    return btn;
+  }
+  // Reply, about a step: the bar gets a pointer that names it, the way a reply's does.
+  function askAboutStep() {
+    const { ex, index, sid } = sheet;
+    if (!ex || !sid) return;
+    const step = ex.steps[index], at = step.at || ex.reply_at || ex.at;
+    const target = { sid, card: null, passage: "", title: `About a step · ${paneName(sid)} · ${fmtWhen(at)}`,
+      pointer: () => `Re your step at ${fmtTime(at)} (${stepsView.KIND[step.k] || "Tool"} "${live.clip(step.s, 80)}"): ` };
+    const opener = sheet.opener;
+    closeStep();
+    useTarget(target, opener);
   }
   // Markdown, HTML and image files a message names that exist on this machine open in the Documents view: markdown beside its contents list, HTML rendered in a sandbox, an image fitted to the width.
   function docChips(ids, key) {

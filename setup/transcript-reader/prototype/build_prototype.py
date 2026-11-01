@@ -46,6 +46,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+import tool_steps  # noqa: E402
+
 TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
 HOSTED_SCRIPT = HERE / "hosted.js"
@@ -56,6 +60,7 @@ UNDOSEND_SCRIPT = HERE / "undosend.js"
 COMMENTKEY_SCRIPT = HERE / "commentkey.js"
 ASKS_SCRIPT = HERE / "asks.js"
 FIND_SCRIPT = HERE / "find.js"
+STEPS_SCRIPT = HERE / "steps.js"
 DOCFILES_SCRIPT = HERE / "docfiles.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
@@ -64,6 +69,7 @@ DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
 IMAGE_FILES = "image-files.json"  # the same for each image file it offers to show (api.js reads it)
 MD_FILES = "md-files.json"  # the same for each markdown file it lists without its text, which the page asks for when it opens one (api.js reads it)
+STEP_OUTPUTS = "steps"  # beside the page: one <conversation id>.json of each conversation's tool output, which the page asks the server for when a step opens (api.js reads it)
 # Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
 # that must not touch the real logs.
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
@@ -360,7 +366,7 @@ def new_exchange(source, kind, label, text, timestamp, absorbed=False, uid=None)
     return {
         "source": source, "kind": kind, "label": label, "input": text,
         "at": iso_to_epoch(timestamp), "absorbed": absorbed, "uid": uid,
-        "events": [], "tools": 0, "notices": [],
+        "events": [], "tools": 0, "texts": 0, "notices": [],
     }
 
 
@@ -373,9 +379,15 @@ def session_exchanges(records: list[dict]) -> list[dict]:
     """
     exchanges: list[dict] = []
     current = None
+    calls: dict[str, dict] = {}  # tool_use id -> its step, so a result finds it even once a message has started another turn
     for record in records:
         kind = record.get("type")
-        if kind == "user" and not is_tool_result(record):
+        if kind == "user" and is_tool_result(record):
+            for block in (record.get("message") or {}).get("content") or []:
+                step = calls.get(block.get("tool_use_id")) if isinstance(block, dict) and block.get("type") == "tool_result" else None
+                if step is not None:
+                    tool_steps.apply_result(step, block)  # message.content only; the record's toolUseResult is never read
+        elif kind == "user":
             text = block_text((record.get("message") or {}).get("content"))
             if not text.strip():
                 continue
@@ -411,9 +423,14 @@ def session_exchanges(records: list[dict]) -> list[dict]:
                     continue
                 if block.get("type") == "text" and (block.get("text") or "").strip():
                     current["events"].append(("text", block["text"], iso_to_epoch(record.get("timestamp"))))
+                    current["texts"] += 1
                 elif block.get("type") == "tool_use":
                     current["events"].append(("tool", block.get("name") or "tool", None))
                     current["tools"] += 1
+                    step = tool_steps.make_step(block, iso_to_epoch(record.get("timestamp")), current["texts"])
+                    current.setdefault("steps", []).append(step)
+                    if isinstance(block.get("id"), str):
+                        calls[block["id"]] = step
                     current.setdefault("touched", []).extend(tool_documents(block.get("input"), record.get("cwd") or ""))
     for exchange in exchanges:
         finish_exchange(exchange)
@@ -436,6 +453,7 @@ def session_exchanges(records: list[dict]) -> list[dict]:
 
 def finish_exchange(exchange: dict) -> None:
     events = exchange.pop("events")
+    exchange.pop("texts", None)
     last_tool = max((i for i, event in enumerate(events) if event[0] == "tool"), default=-1)
     tail = [event for event in events[last_tool + 1:] if event[0] == "text"]
     narration = [event[1] for event in events[: last_tool + 1] if event[0] == "text"]
@@ -1754,7 +1772,7 @@ def make_private(folder: Path) -> None:
 # A rebuild reads every listed log, but between two rebuilds most logs have not changed.
 # Each log's turns are kept parsed on disk, under the version of the log and of this file
 # (its rules decide the turns), and a log is parsed again only once either changes.
-PARSE_RULES = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+PARSE_RULES = hashlib.sha256(Path(__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()).hexdigest()[:16]
 PARSED_KEEP_DAYS = 7  # a parsed log no build has used for this long is removed
 
 
@@ -2265,7 +2283,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
     The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, commentkey.js, the vendored markdown-it with markdown.js,
-    find.js and docfiles.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
+    steps.js, find.js and docfiles.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
@@ -2277,6 +2295,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__COMMENTKEY__*/", COMMENTKEY_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__MARKDOWN_IT__*/", MARKDOWN_IT_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__MARKDOWN__*/", MARKDOWN_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__STEPS__*/", STEPS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__FIND__*/", FIND_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
@@ -2301,6 +2320,22 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     return page, template_hash
 
 
+def write_step_outputs(sessions: list[dict], folder: Path) -> None:
+    """Move each conversation's tool output out of its turns (the page never holds it) into <folder>/<conversation id>.json, and
+    drop the files of conversations the page no longer lists. The page asks the server for one when a step opens (api.js)."""
+    private_folder(folder)
+    listed = set()
+    for session in sessions:
+        outputs = tool_steps.take_outputs(session["exchanges"])
+        if outputs:
+            listed.add(f"{session['id']}.json")
+            write_private(folder / f".{session['id']}.json.{os.getpid()}.partial", json.dumps({"outputs": outputs}, ensure_ascii=False, separators=(",", ":")))
+            os.replace(folder / f".{session['id']}.json.{os.getpid()}.partial", folder / f"{session['id']}.json")
+    for old in folder.glob("*.json"):
+        if old.name not in listed:
+            old.unlink(missing_ok=True)
+
+
 def write_page(template: Path, payload: dict, out: Path) -> None:
     """Fill a template with the payload and the shared live.js, then write the page and its stamp.
 
@@ -2308,7 +2343,6 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
     stamp beside it (<page>.stamp) holds the payload's build time; the served page
     compares it with its own to know a newer build exists.
     """
-    page, _ = fill_template(template, payload_json(payload))
     private_folder(out.parent)
     stamp = out.with_suffix(".stamp")
     # A rebuild started by hand can overlap the server's own. Each writes its own file, and the
@@ -2326,6 +2360,9 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
         listed = lambda kind: json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == kind})
         lazy = json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("lazy")}) if "documents" in payload else ""
         files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image")), (out.with_name(MD_FILES), lazy)] if "documents" in payload else []
+        if "sessions" in payload:
+            write_step_outputs(payload["sessions"], out.with_name(STEP_OUTPUTS))  # before the page: no page is served whose outputs are not there
+        page, _ = fill_template(template, payload_json(payload))
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)

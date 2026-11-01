@@ -18,6 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reader import builder  # noqa: E402
 
+tool_steps = builder.tool_steps
+
 classify_input = builder.classify_input
 classify_reply = builder.classify_reply
 
@@ -263,6 +265,172 @@ class SessionExchangesTest(unittest.TestCase):
         self.assertEqual((handback["source"], handback["label"], handback["folded"]), ("wake", "Hand-back from doc-checker", True))
         [queued_handback] = self.exchanges([user("Check", 0), tool(1), queued("report", 2, HANDBACK), say("Done.", 3)])
         self.assertEqual(queued_handback["notices"], [{"label": "Hand-back from doc-checker", "signal_task": None}])
+
+
+def call(second, name, tool_input, call_id, text=None):
+    """An assistant record with one tool_use block (and optionally narration before it)."""
+    content = ([{"type": "text", "text": text}] if text else []) + [{"type": "tool_use", "id": call_id, "name": name, "input": tool_input}]
+    return {"type": "assistant", "timestamp": stamp(second), "cwd": "/repo", "message": {"role": "assistant", "content": content}}
+
+
+def result(second, call_id, text, error=False, copy=None):
+    """A tool_result record; copy is the `toolUseResult` Claude Code writes beside it, which the parser must never read."""
+    record = {"type": "user", "timestamp": stamp(second),
+              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": text, **({"is_error": True} if error else {})}]}}
+    if copy is not None:
+        record["toolUseResult"] = copy
+    return record
+
+
+class ToolStepsTest(unittest.TestCase):
+    """Slice 5 and 6 of the tool-step view: one step per call, with the summary, the command, a failure marker, the diff of an edit,
+    and no text a person did not write or an agent did not say."""
+
+    def turn(self, *records):
+        [turn] = builder.session_exchanges([user("Go", 0), *records])
+        return turn
+
+    def test_consecutive_calls_a_failure_and_the_notes_between_them(self):
+        turn = self.turn(
+            say("Looking around first.", 1),
+            call(2, "Bash", {"command": "ls -la /repo", "description": "List the repo"}, "a"),
+            call(3, "Read", {"file_path": "/repo/setup/notes.md"}, "b"),
+            result(4, "a", "total 8\nREADME.md"), result(5, "b", "FILE TEXT THE AGENT READ", copy={"file": {"content": "COPY OF FILE TEXT"}}),
+            say("Now the change.", 6),
+            call(7, "Edit", {"file_path": "/repo/app.py", "old_string": "a = 1\nb = 2\nc = 3\n", "new_string": "a = 1\nb = 20\nc = 3\n"}, "c"),
+            call(8, "Bash", {"command": "pytest -x"}, "d"),
+            result(9, "c", "The file /repo/app.py has been updated."),
+            result(10, "d", "setup noise\n" * 100 + "FAILED test_x - assert 1 == 2", error=True, copy={"stdout": "COPY OF OUTPUT"}),
+            say("The test fails.", 11),
+        )
+        steps = turn["steps"]
+        self.assertEqual([(s["k"], s["o"]) for s in steps], [("ran", 1), ("read", 1), ("edited", 2), ("ran", 2)])
+        self.assertEqual(turn["tools"], 4)
+        self.assertEqual(turn["narration"], ["Looking around first.", "Now the change."])
+        self.assertEqual(turn["reply"], "The test fails.")
+        ran, read, edit, bad = steps
+        self.assertEqual((ran["s"], ran["c"]), ("List the repo", "ls -la /repo"))
+        self.assertEqual(bad["s"], "pytest -x", "without a description a command's first line is its summary")
+        self.assertEqual(read["s"], "/repo/setup/notes.md")
+        self.assertTrue(bad["f"] == 1 and "f" not in ran, "only the failed call is marked")
+        self.assertTrue(bad["t"].endswith("FAILED test_x - assert 1 == 2") and len(bad["t"]) <= 400, "a failure keeps the end of its output")
+        self.assertEqual((ran["l"], bad["l"]), (2, 101))
+        self.assertEqual(ran["out"], "total 8\nREADME.md")
+        self.assertNotIn("out", read, "the text of a file the agent read is never kept")
+        self.assertNotIn("out", edit, "an edit that worked has only a confirmation to show")
+        everything = json.dumps(turn)
+        for secret in ("FILE TEXT THE AGENT READ", "COPY OF FILE TEXT", "COPY OF OUTPUT"):
+            self.assertNotIn(secret, everything)
+
+    def test_a_result_that_comes_after_a_message_started_another_turn_still_finds_its_step(self):
+        first, second = builder.session_exchanges([
+            user("Go", 0), call(1, "Bash", {"command": "sleep 5"}, "slow"), queued("Also check signup", 2), result(3, "slow", "done", error=True), say("Both done.", 4),
+        ])
+        self.assertEqual(first["steps"][0]["f"], 1)
+        self.assertNotIn("steps", second)
+
+    def test_a_turn_with_no_tool_call_has_no_steps(self):
+        [turn] = builder.session_exchanges([user("Hi", 0), say("Hello.", 1)])
+        self.assertNotIn("steps", turn)
+
+    def test_summaries_say_what_was_asked(self):
+        cases = [
+            ("Grep", {"pattern": "TODO", "path": "/repo/src"}, "searched", "TODO in /repo/src"),
+            ("Glob", {"pattern": "**/*.py"}, "searched", "**/*.py"),
+            ("WebFetch", {"url": "https://example.com/a", "prompt": "summarise"}, "searched", "https://example.com/a"),
+            ("WebSearch", {"query": "reader tool steps"}, "searched", "reader tool steps"),
+            ("Agent", {"description": "Check the links", "prompt": "Check all links"}, "agent", "Check the links"),
+            ("Skill", {"skill": "commit"}, "skill", "commit"),
+            ("mcp__claude_ai_Slack__slack_send_message", {"channel": "C1", "text": "hi"}, "asked", "Slack: slack send message"),
+            ("TodoWrite", {"todos": []}, "other", "TodoWrite"),
+        ]
+        for name, tool_input, kind, summary in cases:
+            with self.subTest(name=name):
+                [step] = self.turn(call(1, name, tool_input, "x"), say("ok", 2))["steps"]
+                self.assertEqual((step["k"], step["s"]), (kind, summary))
+
+    def test_a_long_command_is_cut_for_the_row_and_for_the_sheet(self):
+        [step] = self.turn(call(1, "Bash", {"command": "echo " + "x" * 2000}, "x"), say("ok", 2))["steps"]
+        self.assertEqual(len(step["s"]), tool_steps.SUMMARY_CHARS)
+        self.assertEqual(len(step["c"]), tool_steps.COMMAND_CHARS)
+        self.assertTrue(step["c"].endswith("\u2026"))
+
+    def test_an_edit_is_its_changed_lines_with_two_lines_around_them_and_the_counts(self):
+        old = "".join(f"line {n}\n" for n in range(1, 11))
+        new = old.replace("line 5\n", "line five\nline 5b\n")
+        [step] = self.turn(call(1, "Edit", {"file_path": "/repo/a.txt", "old_string": old, "new_string": new}, "e"), say("ok", 2))["steps"]
+        self.assertEqual((step["a"], step["r"]), (2, 1))
+        self.assertEqual(step["d"].split("\n"), ["~", " line 3", " line 4", "-line 5", "+line five", "+line 5b", " line 6", " line 7", "~"])
+        self.assertNotIn("x", step)
+        self.assertNotIn("c", step)
+
+    def test_a_multi_edit_joins_its_edits(self):
+        edits = [{"old_string": "a", "new_string": "b"}, {"old_string": "c", "new_string": "d\ne"}]
+        [step] = self.turn(call(1, "MultiEdit", {"file_path": "/repo/a.txt", "edits": edits}, "m"), say("ok", 2))["steps"]
+        self.assertEqual((step["a"], step["r"]), (3, 2))
+        self.assertEqual(step["d"].split("\n"), ["-a", "+b", "~", "-c", "+d", "+e"])
+
+    def test_a_written_file_is_capped_at_1500_characters_and_says_so(self):
+        content = "".join(f"row {n:04d} {'y' * 40}\n" for n in range(200))
+        [step] = self.turn(call(1, "Write", {"file_path": "/repo/big.txt", "content": content}, "w"), say("ok", 2))["steps"]
+        self.assertEqual(step["a"], 200, "the count is of the whole file")
+        self.assertLessEqual(len(step["d"]), tool_steps.DIFF_CHARS)
+        self.assertTrue(step["d"].startswith("+row 0000") and step["x"] == 1)
+        [small] = self.turn(call(1, "Write", {"file_path": "/repo/small.txt", "content": "one\ntwo\n"}, "w"), say("ok", 2))["steps"]
+        self.assertEqual((small["a"], small["d"]), (2, "+one\n+two"))
+        self.assertNotIn("x", small)
+
+    def test_an_edit_with_nothing_changed_has_no_diff(self):
+        [step] = self.turn(call(1, "Edit", {"file_path": "/repo/a.txt", "old_string": "same", "new_string": "same"}, "e"), say("ok", 2))["steps"]
+        self.assertNotIn("d", step)
+        self.assertNotIn("a", step)
+
+    def test_a_dotfile_or_credential_path_keeps_its_row_and_nothing_of_its_text(self):
+        cases = [
+            ("Read", {"file_path": "/home/me/.env"}),
+            ("Edit", {"file_path": "/home/me/.npmrc", "old_string": "token=old-value", "new_string": "token=new-value"}),
+            ("Write", {"file_path": "/home/me/.aws/credentials", "content": "aws_secret_access_key = SECRETVALUE"}),
+            ("Read", {"file_path": "/repo/service-account-credentials.json"}),
+            ("Bash", {"command": "cat ~/.ssh/id_rsa"}),
+            ("Bash", {"command": "cd /repo && cat secrets.yaml | head"}),
+            ("Grep", {"pattern": "key", "path": "/home/me/.config/gh/hosts.yml"}),
+        ]
+        for name, tool_input in cases:
+            with self.subTest(name=name, tool_input=tool_input):
+                turn = self.turn(call(1, name, tool_input, "x"), result(2, "x", "PRIVATE OUTPUT", error=True), say("ok", 3))
+                [step] = turn["steps"]
+                self.assertEqual(step["h"], 1)
+                self.assertTrue(step["s"], "the row still says what it touched")
+                self.assertTrue(step["f"] == 1, "the failure marker stays")
+                self.assertTrue(not {"out", "t", "d"} & set(step))
+                self.assertNotIn("PRIVATE OUTPUT", json.dumps(turn))
+                self.assertNotIn("SECRETVALUE", json.dumps(turn))
+
+    def test_an_ordinary_command_is_not_withheld(self):
+        for command in ("git status", "ls ./src/.venv/bin", "grep password notes.md | head", "echo done"):
+            with self.subTest(command=command):
+                [step] = self.turn(call(1, "Bash", {"command": command}, "x"), result(2, "x", "fine"), say("ok", 3))["steps"]
+                self.assertNotIn("h", step)
+                self.assertEqual(step["out"], "fine")
+
+    def test_output_is_cut_to_its_tail_for_a_command_and_its_head_for_anything_else(self):
+        text = "".join(f"line {n}\n" for n in range(400))
+        bash, grep = self.turn(call(1, "Bash", {"command": "make"}, "a"), call(2, "Grep", {"pattern": "line"}, "b"), result(3, "a", text), result(4, "b", text), say("ok", 5))["steps"]
+        self.assertLessEqual(len(bash["out"]), tool_steps.OUTPUT_CHARS)
+        self.assertTrue(bash["out"].endswith("line 399") and bash["out"].startswith("\u2026\nline "), "it starts on a whole line")
+        self.assertTrue(grep["out"].startswith("line 0\n") and grep["out"].endswith("\n\u2026"))
+        self.assertTrue(all(line.startswith("line ") for line in bash["out"].split("\n")[1:]), "no line is cut in half")
+        self.assertEqual((bash["l"], bash["z"]), (400, len(text)))
+
+    def test_take_outputs_moves_the_text_out_by_the_steps_key(self):
+        [turn] = builder.session_exchanges([user("Go", 0), call(1, "Bash", {"command": "a"}, "a"), call(2, "Bash", {"command": "b"}, "b"), result(3, "a", "first"), result(4, "b", ""), say("ok", 5)])
+        taken = tool_steps.take_outputs([turn])
+        self.assertEqual(taken, {f"{turn['uid']}:0": "first"})
+        self.assertTrue(all("out" not in step for step in turn["steps"]))
+        self.assertEqual(turn["steps"][0]["l"], 1, "the count stays with the step")
+
+    def test_steps_are_part_of_what_is_parsed_so_new_rules_parse_every_log_again(self):
+        self.assertEqual(builder.PARSE_RULES, __import__("hashlib").sha256(Path(builder.__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()).hexdigest()[:16])
 
 
 class TurnIdTest(unittest.TestCase):
