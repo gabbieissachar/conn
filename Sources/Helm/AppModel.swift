@@ -106,6 +106,7 @@ final class AppModel: ObservableObject {
         }.store(in: &cancellables)
         store.$link.removeDuplicates().sink { [weak self] link in DispatchQueue.main.async { self?.linkChanged(link) } }.store(in: &cancellables)
         store.start()
+        if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
         probeCompatibility()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateStats() } }
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -156,6 +157,8 @@ final class AppModel: ObservableObject {
     }
 
     private func applyVerdict(_ v: StreamVerdict) {
+        // `--text-panes` pins the text path whatever the status check says.
+        let v: StreamVerdict = config.textPanes ? .textOnly("Text panes were requested (--text-panes)") : v
         let changedKind = v.allowsStream != streamVerdict.allowsStream
         streamVerdict = v
         if changedKind {

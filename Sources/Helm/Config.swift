@@ -38,6 +38,8 @@ struct AppConfig {
     var startFallback = false
     var probeDraw = false
     var compare = false
+    /// Force the text path (`pane.read` polling) instead of the stream: for testing it against real Herdr, or if a stream misbehaves.
+    var textPanes = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
     var editorTest: String?
 
@@ -69,6 +71,7 @@ struct AppConfig {
             case "--start-fallback": c.startFallback = true
             case "--probe-draw": c.probeDraw = true
             case "--compare": c.compare = true
+            case "--text-panes": c.textPanes = true
             case "--editor-test": c.editorTest = next()
             default: break
             }
