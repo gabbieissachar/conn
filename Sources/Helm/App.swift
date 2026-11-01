@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model.shutdown(); NSApplication.shared.terminate(nil)
             }
         }
+        if let text = cfg.sendTest {
+            // End-to-end check of the compose path without clicking: type the text into the box and send it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { model.compose = text; model.send() }
+        }
         if let secs = cfg.selftest { Task { @MainActor in await SelfTest.run(after: secs, model: model) } }
         if let q = cfg.quitAfter { DispatchQueue.main.asyncAfter(deadline: .now() + q) { model.shutdown(); NSApplication.shared.terminate(nil) } }
         model.updateStats()

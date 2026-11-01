@@ -90,8 +90,13 @@ public final class HelmTerminalView: TerminalView {
             font = NSFont.monospacedSystemFont(ofSize: newPoints, weight: .regular)
         }
         // resize(cols:rows:) soft-resets the terminal: only do it when the grid really differs.
-        resize(cols: cols, rows: rows)
-        reapplyTheme()
+        // resize(cols:rows:) soft-resets the terminal (which also puts SwiftTerm's own palette back): only do it when the
+        // grid really differs, and install the theme again afterwards.
+        let dims = terminalDimensions
+        if dims.cols != cols || dims.rows != rows {
+            resize(cols: cols, rows: rows)
+            reapplyTheme()
+        }
         let opt = getOptimalFrameSize()
         // A half-point of slack keeps floor(width / cellWidth) from landing one cell short.
         setFrameSize(NSSize(width: opt.width + 0.5, height: opt.height + 0.5))

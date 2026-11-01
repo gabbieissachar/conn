@@ -40,6 +40,37 @@ def webkit_helpers():
         if m: out[pid] = m.group(1)
     return out
 
+def listening_pid(port):
+    out = subprocess.run(['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-t'], capture_output=True, text=True).stdout.split()
+    return int(out[0]) if out else None
+
+def descendants(root, rows):
+    kids = {}
+    for pid, ppid, _ in rows: kids.setdefault(ppid, []).append(pid)
+    out, stack = [], [root]
+    while stack:
+        for k in kids.get(stack.pop(), []): out.append(k); stack.append(k)
+    return out
+
+def server_targets():
+    """What keeps running next to the app: the Herdr server, the reader (and its worker) and the organizer. Measured in the
+    same window as the app, never borrowed from an earlier study. The Herdr server is required: its CPU is where pane
+    streams are paid for."""
+    rows = list(ps_rows())
+    t = {}
+    env_pid = os.environ.get('HELM_MEASURE_SERVER_PID')
+    herdr = [pid for pid, _, cmd in rows if cmd.rstrip().endswith('herdr server')]
+    pid = int(env_pid) if env_pid else (herdr[0] if len(herdr) == 1 else None)
+    if pid is None:
+        sys.exit(f'measure.py: cannot pick the Herdr server pid ({len(herdr)} candidates); set HELM_MEASURE_SERVER_PID')
+    t[f'server-herdr-{pid}'] = pid
+    for name, port in (('reader', 8768), ('organizer', 8765)):
+        p = listening_pid(port)
+        if p:
+            t[f'server-{name}-{p}'] = p
+            for d in descendants(p, rows): t[f'server-{name}-worker-{d}'] = d
+    return t
+
 def main():
     name, args, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
     settle = float(sys.argv[4]) if len(sys.argv) > 4 else 12
@@ -49,6 +80,7 @@ def main():
     p = subprocess.Popen([app], env={**os.environ, 'HELM_ARGS': args}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(settle)
     targets = {'app': p.pid}
+    if os.environ.get('HELM_MEASURE_SERVERS', '1') == '1': targets.update(server_targets())
     for pid, ppid, cmd in ps_rows():
         if ppid == p.pid and 'herdr' in cmd.lower() and 'observe' in cmd: targets[f'observer-{pid}'] = pid
     for pid, kind in webkit_helpers().items():
@@ -68,7 +100,7 @@ def main():
     span = rows[-1][0] - rows[0][0]
     groups = {}
     for k in targets:
-        g = 'app' if k == 'app' else 'observers' if k.startswith('observer') else 'webkit'
+        g = 'app' if k == 'app' else 'observers' if k.startswith('observer') else 'webkit' if k.startswith('webkit') else k.split('-')[0] + '-' + k.split('-')[1]
         groups.setdefault(g, []).append(k)
     result = {'name': name, 'args': args, 'seconds': round(span), 'samples': len(rows), 'groups': {}}
     tot_fp = [0.0] * len(rows); tot_cpu = 0.0
@@ -82,6 +114,9 @@ def main():
         for i, v in enumerate(fps): tot_fp[i] += v
         tot_cpu += cpu
     result['total'] = {'footprint_mb_mean': round(sum(tot_fp) / len(tot_fp), 1), 'footprint_mb_max': round(max(tot_fp), 1), 'cpu_percent': round(tot_cpu, 2)}
+    own = [g for g in result['groups'] if not g.startswith('server-')]
+    result['helm_only'] = {'footprint_mb_mean': round(sum(result['groups'][g]['footprint_mb_mean'] for g in own), 1),
+                           'cpu_percent': round(sum(result['groups'][g]['cpu_percent'] for g in own), 2)}
     print(json.dumps(result, indent=1))
     outdir = os.environ.get('HELM_MEASURE_DIR', os.path.join(here, '..', 'measurements'))
     os.makedirs(outdir, exist_ok=True)

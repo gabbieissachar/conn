@@ -33,6 +33,7 @@ struct AppConfig {
     var shotDelay = 8.0
     var tour: String?
     var holdSeconds = 3
+    var sendTest: String?
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -58,6 +59,7 @@ struct AppConfig {
             case "--shot-delay": c.shotDelay = next().flatMap(Double.init) ?? 8
             case "--tour": c.tour = next()
             case "--hold": c.holdSeconds = next().flatMap(Int.init) ?? 3
+            case "--send-test": c.sendTest = next()
             default: break
             }
             i += 1
