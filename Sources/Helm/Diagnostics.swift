@@ -131,6 +131,8 @@ enum UICheck {
         await wait(4)
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
+        let waitingNow = model.waiting.count
+        report("Dock badge counts the agents waiting on you", NSApp.dockTile.badgeLabel == (waitingNow > 0 ? "\(waitingNow)" : ""), "badge=\(NSApp.dockTile.badgeLabel ?? "nil") waiting=\(waitingNow)")
         model.select(list[list.count / 2].id); await wait(1.5)
         report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state)")
 
