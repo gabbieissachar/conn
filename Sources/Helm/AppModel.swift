@@ -44,7 +44,8 @@ final class AppModel: ObservableObject {
     @Published var webWidth: CGFloat = 480
     @Published var webTab: WebKind = .reader
     @Published var readerFollows = true
-    @Published var privacy = false
+    /// Privacy mode hides content for screen sharing; anything that shows pane history closes with it.
+    @Published var privacy = false { didSet { if privacy { recent = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
     @Published var compose = ""
@@ -278,14 +279,14 @@ final class AppModel: ObservableObject {
 
     /// Opens the history of the selected pane (`pane.read`, source recent, plain text, last 3000 lines). Read-only.
     func showRecentOutput() {
-        guard let a = selectedAgent else { return }
+        guard !privacy, let a = selectedAgent else { return }
         recent = RecentOutput(agentName: a.name, text: nil, error: nil)
         let c = HerdrClient(endpoint: endpoint)
         let id = recent!.id
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r: Result<String, Error> = Result { try c.readPane(a.id, source: .recent, ansi: false, lines: 3000) }
             DispatchQueue.main.async {
-                guard let self = self, self.recent?.id == id else { return }
+                guard let self = self, !self.privacy, self.recent?.id == id else { return }
                 switch r {
                 case .success(let t): self.recent?.text = t
                 case .failure(let e): self.recent?.error = "\(e)"
