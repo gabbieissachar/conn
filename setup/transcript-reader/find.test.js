@@ -140,6 +140,19 @@ test('every word must be in the same part: a word in the message and another in 
   assert.equal(finder.search([s], finder.parse('"apple banana"').terms, 'any', 'here').length, 0);
 });
 
+test('the Needs you filter finds only the asks still open', () => {
+  const finder = load();
+  const s = session('s1', [
+    turn({ input: 'one', reply: 'kilo should I merge it?', verdict: 'needs-you', ask_state: 'quiet' }),
+    turn({ input: 'two', reply: 'kilo which account?', verdict: 'needs-you', ask_state: 'settled' }),
+    turn({ input: 'three', reply: 'kilo shall I land it?', verdict: 'needs-you', ask_state: 'open' }),
+    turn({ input: 'four', reply: 'kilo any pick?', verdict: 'needs-you' }),
+  ]);
+  const terms = finder.parse('kilo').terms;
+  deepEqual(finder.search([s], terms, 'needs', 'here').map((h) => h.field.i), [2, 3], 'an ask with no state (an older copy) is open');
+  deepEqual(finder.search([s], terms, 'replies', 'here').map((h) => h.field.i), [0, 1, 2, 3], 'the others stay searchable as replies');
+});
+
 test('each Who filter', () => {
   const finder = load();
   const s = session('s1', [

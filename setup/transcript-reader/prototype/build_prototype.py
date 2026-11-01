@@ -54,6 +54,7 @@ PICKER_SCRIPT = HERE / "picker.js"
 SENDONCE_SCRIPT = HERE / "sendonce.js"
 UNDOSEND_SCRIPT = HERE / "undosend.js"
 COMMENTKEY_SCRIPT = HERE / "commentkey.js"
+ASKS_SCRIPT = HERE / "asks.js"
 FIND_SCRIPT = HERE / "find.js"
 DOCFILES_SCRIPT = HERE / "docfiles.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
@@ -742,7 +743,137 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     leader = leader_info(cwd)
     if leader:
         session["leader"] = leader
+    mark_asks(exchanges)
     return session
+
+
+# ------------------------------------------------- which asks still wait on you
+#
+# A reply that asks is open only while nothing from you came after it. Once you wrote anything later
+# the ask goes quiet (still drawn, no longer yellow); once you answered it, by a Reply pointer or a
+# keyed line (the answer sheet types one), it is settled. A later message that points at nothing and
+# answers no key leaves the ask quiet, never settled: quiet is a safe error, a wrong "settled" is not.
+
+# "Re your reply at 09:04", "Re your reply at Mon 3 Nov 09:04" (live.js pointer()), then ` ("opening words"`.
+POINTER = re.compile(
+    r"Re your reply at (?:(?P<weekday>[A-Z][a-z]{2,3}),? (?P<day>\d{1,2}) (?P<month>[A-Z][a-z]{2,3}) )?(?P<hour>\d{2}):(?P<minute>\d{2})"
+    r"(?: \(\"(?P<opening>.*?)\"\))?"
+)
+KEY_ANSWER = re.compile(r"\b([A-Z][0-9]{1,2})\s*=\s*([^;\n]*)")
+KEY_ASKED = re.compile(r"\b([A-Z][0-9]{1,2})\s*=")
+
+
+def reply_opening(reply: str, limit: int = 60) -> str:
+    """The words a Reply pointer quotes for a reply: its first line with markup stripped, clipped (live.js pointer())."""
+    first = next((re.sub(r"[*`_]", "", re.sub(r"^[\s#>*\-\d.)|]+", "", line)).strip() for line in reply.splitlines()
+                  if re.sub(r"^[\s#>*\-\d.)|]+", "", line).strip()), "")
+    first = re.sub(r"\s+", " ", re.sub(r"[`$\\]", "", first)).strip()
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
+
+
+def pointer_matches(exchange: dict, pointer: re.Match, sent_at: float | None) -> bool:
+    """Whether a Reply pointer names this exchange's reply: the same minute (and day, when the pointer says one;
+    otherwise the day the message was sent), and the quoted opening words when it quotes any."""
+    at = exchange["reply_at"] or exchange["at"]
+    if not exchange["reply"] or not at:
+        return False
+    when = time.localtime(at)
+    if (when.tm_hour, when.tm_min) != (int(pointer["hour"]), int(pointer["minute"])):
+        return False
+    if pointer["day"]:
+        if (when.tm_mday, time.strftime("%b", when)) != (int(pointer["day"]), pointer["month"][:3]):
+            return False
+    elif sent_at is not None and time.localtime(sent_at)[:3] != when[:3]:
+        return False  # no day means the reply was from the day it was sent
+    quoted = pointer["opening"]
+    return quoted is None or reply_opening(exchange["reply"]).startswith(quoted.rstrip("…").strip()[:40])
+
+
+def pointed_at(exchanges: list[dict], index: int, pointer: re.Match) -> dict | None:
+    """The one earlier reply a pointer names, or None when it names none or cannot tell two apart."""
+    sent_at = exchanges[index]["at"]
+    found = [e for e in exchanges[:index] if pointer_matches(e, pointer, sent_at)]
+    return found[0] if len(found) == 1 else None
+
+
+def asked_keys(reply: str) -> set[str]:
+    """The answer keys a reply asks for: its open cards (the answer sheet's) and the keys on its "reply with" line."""
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+    from build_questionnaire import parse_questionnaire  # it imports this module, so only here
+    keys: set[str] = set()
+    questionnaire = parse_questionnaire(reply)
+    if questionnaire:
+        keys |= {card["key"] for card in questionnaire["cards"]}
+        keys |= set(KEY_ASKED.findall(questionnaire["reply_line"]))
+    else:
+        for line in reply.splitlines():
+            if re.search(r"\breply with\b", line, re.I):
+                keys |= set(KEY_ASKED.findall(line))
+    return keys
+
+
+def answered_keys(text: str) -> set[str]:
+    """The keys a message of yours answers (`A1=accept;A2=inline`). A key with no value, or the format's own
+    placeholder (`A1=...`), answers nothing."""
+    return {key for key, value in KEY_ANSWER.findall(text) if value.strip().strip(".…")}
+
+
+def settle(exchange: dict, how: str, answer: dict) -> None:
+    if exchange.get("ask_state") == "quiet":
+        exchange.update(ask_state="settled", settled_by=how, answered_at=answer["at"])
+
+
+def mark_asks(exchanges: list[dict]) -> None:
+    """Give each reply that needs you an ask_state: open (nothing from you after it), quiet (you wrote
+    something later that did not answer it) or settled (you answered it; settled_by says how). Replies that
+    do not need you get none. Recomputed from the turns each time, never cached with the parsed log."""
+    mine = [i for i, e in enumerate(exchanges) if e["source"] == "captain"]
+    for index, exchange in enumerate(exchanges):
+        for field in ("ask_state", "settled_by", "answered_at"):
+            exchange.pop(field, None)
+        if exchange["verdict"] == "needs-you":
+            exchange["ask_state"] = "quiet" if any(m > index for m in mine) else "open"
+    for later in mine:
+        answer = exchanges[later]
+        for pointer in POINTER.finditer(answer["input"]):
+            target = pointed_at(exchanges, later, pointer)
+            if target:
+                settle(target, "reply", answer)
+        remaining = answered_keys(answer["input"])
+        asked: dict[int, set[str]] = {}
+        # Each key answers the nearest earlier reply that asked it, so a later round that asks the same
+        # key again takes the answer and an earlier round is settled only by keys it alone asked.
+        for earlier in range(later - 1, -1, -1):
+            if not remaining:
+                break
+            reply = exchanges[earlier]["reply"]
+            if not reply or not any(key in reply for key in remaining):
+                continue
+            keys = asked.setdefault(earlier, asked_keys(reply)) & remaining
+            if keys:
+                settle(exchanges[earlier], "keyed", answer)
+                remaining -= keys
+
+
+def clip_words(text: str, limit: int) -> str:
+    """One line of at most <limit> characters, markdown emphasis dropped; code spans stay (the page draws them) unless the cut left one open."""
+    text = re.sub(r"\s+", " ", text.replace("**", "")).strip()
+    if len(text) > limit:
+        cut = text[: limit - 1]
+        text = (cut.rsplit(" ", 1)[0] if " " in cut[limit // 2:] else cut).rstrip(" ,;:-") + "…"
+    return text.replace("`", "") if text.count("`") % 2 else text
+
+
+def sheet_cards(questionnaire: dict) -> list[dict]:
+    """The open cards of a reply's answer sheet, as the reply's ask box lists them: key, question, and the
+    recommended default when the card names one."""
+    cards = []
+    for card in questionnaire["cards"][:8]:
+        recommended = next((o["value"] for o in card["options"] if o["recommended"]), "") or card["recommended"]
+        cards.append({"key": card["key"], "q": clip_words(card["question"], 140),
+                      **({"rec": clip_words(recommended, 80)} if recommended.strip() else {})})
+    return cards
 
 
 def mark_sheets(sessions: list[dict]) -> None:
@@ -752,8 +883,10 @@ def mark_sheets(sessions: list[dict]) -> None:
     from build_questionnaire import parse_questionnaire  # it imports this module, so only here
     for session in sessions:
         for exchange in session["exchanges"]:
-            if exchange["reply"] and parse_questionnaire(exchange["reply"]):
+            questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
+            if questionnaire:
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
+                exchange["sheet_cards"] = sheet_cards(questionnaire)
 
 
 def build(args) -> dict:
@@ -2138,6 +2271,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PICKER__*/", PICKER_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__ASKS__*/", ASKS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SENDONCE__*/", SENDONCE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__UNDOSEND__*/", UNDOSEND_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__COMMENTKEY__*/", COMMENTKEY_SCRIPT.read_text(encoding="utf-8"))

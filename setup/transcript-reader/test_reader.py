@@ -1417,6 +1417,15 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("if (!commentKey.pressed(e)) return;", page, mode)
             self.assertIn("commentKey.label(navigator.platform)", page, mode)
 
+    def test_the_reader_pages_carry_the_ask_rules_that_asks_test_js_runs(self):
+        for mode, page in self.pages():
+            self.assertIn("const askRules = (() => {", page, mode)
+            self.assertNotIn("/*__ASKS__*/", page, mode)
+            # The header counts the same open set that the cards and the jump use.
+            self.assertIn("${askRules.count(exs)} need you", page, mode)
+            self.assertIn("isOpen(e) && !e.folded", page, mode)
+            self.assertNotIn('count(e => e.verdict === "needs-you")', page, mode)
+
     def test_the_answer_sheet_carries_the_send_once_rules_that_sendonce_test_js_runs(self):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         hosted_sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null", "hosted")

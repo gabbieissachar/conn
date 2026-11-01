@@ -435,5 +435,151 @@ class HeadFieldsTest(unittest.TestCase):
         self.assertNotIn("message", slim[4])
 
 
+def at(minute, second=0):
+    return f"2026-10-23T10:{minute:02d}:{second:02d}Z"
+
+
+def said(text, minute, second=0):
+    return {"type": "assistant", "timestamp": at(minute, second), "cwd": "/repo",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def wrote(text, minute, second=0):
+    return {"type": "user", "timestamp": at(minute, second), "message": {"role": "user", "content": text}}
+
+
+def clock(exchange):
+    """The time a Reply pointer writes for a turn's reply: its local hour and minute."""
+    return time.strftime("%H:%M", time.localtime(exchange["reply_at"]))
+
+
+GRILL = """Review group A (2 cards): two calls on the launch note.
+
+| ID | Decision | Depends on | Recommended default | Answer |
+| --- | --- | --- | --- | --- |
+| A1 | Which date goes in the note | none | The **later** date. | `later`, `earlier`, or `needs explanation` |
+| A2 | Who signs it off | A1 | Finance. | `finance` or `ops` |
+
+Reply with keyed answers: `A1=...; A2=...`
+"""
+GRILL_AGAIN = """Review group A again (1 card): the date changed.
+
+| ID | Decision | Depends on | Recommended default | Answer |
+| --- | --- | --- | --- | --- |
+| A1 | Which date goes in the note now | none | The **later** date. | `later`, `earlier`, or `needs explanation` |
+
+Reply with keyed answers: `A1=...`
+"""
+OTHER_GRILL = GRILL.replace("A1", "B1").replace("A2", "B2")
+
+
+class AskStateTest(unittest.TestCase):
+    """Which asks are open, quiet or settled (builder.mark_asks): the rule behind the yellow Needs you and the header count."""
+
+    def marked(self, records):
+        exchanges = builder.session_exchanges(records)
+        builder.mark_asks(exchanges)
+        return exchanges
+
+    def states(self, records):
+        return [(e.get("ask_state"), e.get("settled_by")) for e in self.marked(records)]
+
+    def test_an_ask_is_open_while_you_have_written_nothing_after_it(self):
+        self.assertEqual(self.states([wrote("Fix it", 0), said("Fixed. Shall I merge it?", 1)]), [("open", None)])
+
+    def test_only_the_newest_ask_is_open_when_none_was_answered(self):
+        states = self.states([wrote("Fix it", 0), said("Shall I merge it?", 1), wrote("Also fix signup", 2), said("Which account should I use?", 3)])
+        self.assertEqual(states, [("quiet", None), ("open", None)])
+
+    def test_a_later_message_that_answers_nothing_turns_the_ask_grey_not_settled(self):
+        states = self.states([wrote("Fix it", 0), said("Fixed. Shall I merge it?", 1), wrote("Unrelated: check the docs", 2), said("Docs are fine.", 3)])
+        self.assertEqual(states, [("quiet", None), (None, None)])
+
+    def test_a_reply_that_asks_nothing_has_no_ask_state(self):
+        self.assertEqual(self.states([wrote("Fix it", 0), said("Fixed.", 1)]), [(None, None)])
+
+    def test_a_command_or_a_wake_up_after_the_ask_does_not_close_it(self):
+        records = [wrote("Fix it", 0), said("Shall I merge it?", 1), wrote(WAKE, 2, ), said("Nothing new.", 3)]
+        records[2]["origin"] = {"kind": "task-notification"}
+        self.assertEqual([e["ask_state"] for e in self.marked(records)[:1]], ["open"])
+
+    def test_a_reply_pointer_settles_the_reply_it_names_and_only_that_one(self):
+        first_records = [wrote("Fix it", 0), said("Shall I merge it?", 1), wrote("And signup", 2), said("Which account should I use?", 5)]
+        first, second = builder.session_exchanges(first_records)
+        pointer = f"Re your reply at {clock(first)} (\"Shall I merge it?\"): yes"
+        states = self.states(first_records + [wrote(pointer, 7), said("Merging.", 8)])
+        self.assertEqual(states, [("settled", "reply"), ("quiet", None), (None, None)])
+
+    def test_a_pointer_to_a_minute_no_reply_has_settles_nothing(self):
+        states = self.states([wrote("Fix it", 0), said("Shall I merge it?", 1), wrote("Re your reply at 03:33 (\"Shall I merge it?\"): yes", 2), said("ok", 3)])
+        self.assertEqual(states[0], ("quiet", None))
+
+    def test_two_replies_in_one_minute_are_told_apart_by_the_words_the_pointer_quotes(self):
+        records = [wrote("Fix it", 0), said("Shall I merge the login fix?", 1, 5), wrote("Also fix signup", 1, 10), said("Which account should the signup test use?", 1, 40)]
+        first, second = builder.session_exchanges(records)
+        self.assertEqual(clock(first), clock(second))
+        pointer = f"Re your reply at {clock(second)} (\"Which account should the signup test use?\"): the shared one"
+        self.assertEqual(self.states(records + [wrote(pointer, 3), said("ok", 4)]), [("quiet", None), ("settled", "reply"), (None, None)])
+        # With no quoted words the pointer cannot say which one, so neither is settled.
+        bare = f"Re your reply at {clock(second)}: the shared one"
+        self.assertEqual(self.states(records + [wrote(bare, 3), said("ok", 4)]), [("quiet", None), ("quiet", None), (None, None)])
+
+    def test_a_pointer_with_a_day_names_that_day_only(self):
+        records = [wrote("Fix it", 0), said("Shall I merge it?", 1), wrote("later", 2), said("ok", 3)]
+        [ask, _] = builder.session_exchanges(records)
+        when = time.localtime(ask["reply_at"])
+        wrong_day = f"Re your reply at {when.tm_mday % 28 + 1} {time.strftime('%b', when)} {clock(ask)}: yes"
+        right_day = f"Re your reply at {time.strftime('%a', when)} {when.tm_mday} {time.strftime('%b', when)} {clock(ask)}: yes"
+        self.assertEqual(self.states(records + [wrote(wrong_day, 4), said("ok", 5)])[0], ("quiet", None))
+        self.assertEqual(self.states(records + [wrote(right_day, 4), said("ok", 5)])[0], ("settled", "reply"))
+
+    def test_a_keyed_line_settles_the_round_that_asked_those_keys(self):
+        records = [wrote("Review it", 0), said(GRILL, 1), wrote("A1=later;A2=finance", 2), said("Recorded.", 3)]
+        self.assertEqual(self.states(records), [("settled", "keyed"), (None, None)])
+
+    def test_a_keyed_line_does_not_settle_a_round_that_asked_other_keys(self):
+        records = [wrote("Review it", 0), said(GRILL, 1), wrote("B1=x;B2=y", 2), said("Recorded.", 3)]
+        self.assertEqual(self.states(records)[0], ("quiet", None))
+
+    def test_a_placeholder_or_an_empty_key_answers_nothing(self):
+        for text in ("A1=...; A2=...", "A1=; A2=", "A1=\u2026"):
+            with self.subTest(text=text):
+                self.assertEqual(self.states([wrote("Review it", 0), said(GRILL, 1), wrote(text, 2), said("?", 3)])[0], ("quiet", None))
+
+    def test_a_key_asked_again_in_a_later_round_settles_the_later_round_not_the_earlier(self):
+        records = [wrote("Review it", 0), said(GRILL, 1), wrote("Hold on, the date changed", 2), said(GRILL_AGAIN, 3), wrote("A1=earlier", 4), said("Recorded.", 5)]
+        self.assertEqual(self.states(records), [("quiet", None), ("settled", "keyed"), (None, None)])
+
+    def test_one_keyed_line_settles_every_round_whose_keys_it_answers(self):
+        records = [wrote("Review it", 0), said(GRILL, 1), wrote("Also", 2), said(OTHER_GRILL, 3), wrote("A1=later;A2=ops;B1=later;B2=ops", 4), said("ok", 5)]
+        self.assertEqual(self.states(records), [("settled", "keyed"), ("settled", "keyed"), (None, None)])
+
+    def test_a_key_answered_before_a_round_asked_it_does_not_settle_it(self):
+        records = [wrote("A1=later", 0), said("ok", 1), wrote("Review it", 2), said(GRILL, 3)]
+        self.assertEqual(self.states(records), [(None, None), ("open", None)])
+
+    def test_a_keyed_line_on_a_reply_that_asked_no_keys_settles_nothing(self):
+        records = [wrote("Fix it", 0), said("Shall I merge it?", 1), wrote("A1=later", 2), said("ok", 3)]
+        self.assertEqual(self.states(records)[0], ("quiet", None))
+
+    def test_asks_are_marked_again_from_the_turns_each_time(self):
+        exchanges = builder.session_exchanges([wrote("Fix it", 0), said("Shall I merge it?", 1)])
+        builder.mark_asks(exchanges)
+        self.assertEqual(exchanges[0]["ask_state"], "open")
+        exchanges.append(builder.session_exchanges([wrote("later", 5), said("ok", 6)])[0])
+        builder.mark_asks(exchanges)
+        self.assertEqual(exchanges[0]["ask_state"], "quiet")
+
+    def test_the_sheet_cards_list_the_questions_with_their_recommended_defaults(self):
+        from build_questionnaire import parse_questionnaire
+        cards = builder.sheet_cards(parse_questionnaire(GRILL))
+        self.assertEqual([c["key"] for c in cards], ["A1", "A2"])
+        self.assertEqual(cards[0]["q"], "Which date goes in the note")
+        self.assertIn("later", cards[0]["rec"].lower())
+        session = {"id": "abcdef12-0000", "exchanges": self.marked([wrote("Review it", 0), said(GRILL, 1)])}
+        builder.mark_sheets([session])
+        self.assertEqual([c["key"] for c in session["exchanges"][0]["sheet_cards"]], ["A1", "A2"])
+
+
 if __name__ == "__main__":
     unittest.main()

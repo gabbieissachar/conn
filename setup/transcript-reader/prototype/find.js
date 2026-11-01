@@ -41,9 +41,10 @@
       (session.exchanges || []).forEach((ex, i) => {
         if (ex.source === "session") return;
         const id = uid(ex, i);
+        // needs: an ask still open, as asks.js reads it (a copy built before ask_state has none, and reads as open).
         const add = (part, who, label, at) => {
           const low = fold(partText(ex, part));
-          if (low) fields.push({ i, part, key: `${id}:${part}`, who, label, at, needs: part === "reply" && ex.verdict === "needs-you", folded: ex.source === "wake" && Boolean(ex.folded), low, ex });
+          if (low) fields.push({ i, part, key: `${id}:${part}`, who, label, at, needs: part === "reply" && ex.verdict === "needs-you" && (ex.ask_state || "open") === "open", folded: ex.source === "wake" && Boolean(ex.folded), low, ex });
         };
         if (ex.source !== "wake" && !(ex.source === "firstmate" && ex.repeat)) add("in", ex.source === "captain" ? "you" : ex.source === "firstmate" ? "firstmate" : "peer", ex.source === "captain" ? "You" : ex.label, ex.at);
         if (ex.reply) add("reply", "reply", ex.source === "wake" ? "Wake-up reply" : "Reply", ex.reply_at || ex.at);

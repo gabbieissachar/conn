@@ -456,14 +456,13 @@ class Build:
         rel = f"s/{cid}.json"
         before = ((self.old.get("conversations") or {}).get(cid) or {}).get("stamp")
         stamp = self.put(rel, session, before)
-        # The replies that need you from your last message on (its own reply included) wait on you.
-        mine = max((i for i, e in enumerate(exchanges) if e["source"] == "captain"), default=0)
+        # The asks still open wait on you: the replies that need you with nothing from you after them.
         entry = {key: session[key] for key in ("home", "id", "ids", "file", "where")}
         entry.update(
             last=max((max(e["reply_at"] or 0, e["at"] or 0) for e in exchanges), default=0),
             order=max(((e["reply_at"] or e["at"] or 0) for e in exchanges), default=0),
             turns=len(exchanges),
-            needs=sum(1 for e in exchanges[mine:] if e["verdict"] == "needs-you"),
+            needs=sum(1 for e in exchanges if e.get("ask_state") == "open"),
         )
         return {"members": list(versions), "versions": versions, "rules": self.rules, "sources": found, "inputs": inputs,
                 "object": rel, "stamp": stamp, "entry": entry, "sheet": sheet,
