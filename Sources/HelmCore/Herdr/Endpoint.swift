@@ -38,7 +38,16 @@ public struct HerdrEndpoint: Equatable, Sendable {
     /// True only when BOTH the socket directory and the `herdr` executable are outside a real Herdr install, so nothing
     /// this endpoint does can reach a real session (an attach goes wherever the executable sends it, not where the socket
     /// directory points).
+    /// True if a session called `session` is answering in a real Herdr's socket directory. A wrapper script around the real
+    /// `herdr` executable passes the path checks below, but it still attaches to that session, so this one does not look at paths.
+    public static func realSessionAnswers(_ session: String, realSocketDirectory: String = NSHomeDirectory() + "/.config/herdr/sessions") -> Bool {
+        guard validSession(session), let probe = UnixLineSocket(path: "\(realSocketDirectory)/\(session)/herdr.sock") else { return false }
+        probe.close()
+        return true
+    }
+
     public var isStandIn: Bool {
+        if Self.realSessionAnswers(session) { return false }
         let real = (NSHomeDirectory() + "/.config/herdr") as NSString
         let dir = (socketDirectory as NSString).standardizingPath
         if dir == real.standardizingPath || dir.hasPrefix(real.standardizingPath + "/") { return false }

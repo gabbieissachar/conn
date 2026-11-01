@@ -29,7 +29,7 @@ More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+
 
 - Panes are drawn at the size Herdr's own screen gave them (an observer cannot resize a pane), so they are narrow in a wide window. Window-sized panes need control mode (decision D3, step 2), which is not built.
 - A stream pane has no scrollback: the history button in the pane header opens the pane's recent output as text, and the reader has the full conversation.
-- The compose box has only been exercised against the stand-in Herdr. Not yet tried on real Herdr: multi-line text (a newline may submit early), and an agent that is blocked on a question. Herdr's `agent.prompt` rejects a blocked agent, so it may be the better call for non-blocked agents; that needs a lab session.
+- The compose box has only been exercised against the stand-in Herdr. Multi-line messages are refused with a message (a newline may submit early on real Herdr). Not yet tried on real Herdr: an agent that is blocked on a question. Herdr's `agent.prompt` rejects a blocked agent, so it may be the better call for non-blocked agents; that needs a lab session.
 - Each visible working pane costs the Herdr server several points of CPU, so streams run only for panes on screen, and stop after 30 s in the background.
 - The reader reloads its 19 MB page when it follows a different agent (it only reads its address at load).
 

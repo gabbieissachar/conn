@@ -296,12 +296,15 @@ final class AppModel: ObservableObject {
     // MARK: compose: the one write path
 
     var composeText: String { compose.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Why the text in the box cannot be sent, if it cannot (shown under the box).
+    var composeProblem: String? { composeText.isEmpty ? nil : ComposePolicy.problem(for: composeText) }
 
     /// Moves the text into a short undo window, then delivers it with `pane.send_input` (text, then Enter).
     func send() {
         guard writesEnabled else { toast("Writes to \(endpoint.session) are off"); return }
         let text = composeText
-        guard !text.isEmpty, let a = selectedAgent else { return }
+        if let why = ComposePolicy.problem(for: text) { if !text.isEmpty { toast(why) }; return }
+        guard let a = selectedAgent else { return }
         compose = ""
         let h = HeldMessage(text: text, agentName: a.name, paneID: a.id, secondsLeft: holdSeconds, phase: .held)
         heldTimer?.invalidate()

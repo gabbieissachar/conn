@@ -82,6 +82,17 @@ import FakeHerdrKit
         #expect(HerdrEndpoint(session: "fake", socketDirectory: "/tmp/x", binaryPath: "/tmp/shim/herdr").isStandIn)
     }
 
+    @Test func aRealSessionOfTheSameNameMeansNotAStandInWhateverTheExecutableIs() throws {
+        let dir = shortSocketDir()
+        try FileManager.default.createDirectory(atPath: dir + "/esim", withIntermediateDirectories: true)
+        #expect(!HerdrEndpoint.realSessionAnswers("esim", realSocketDirectory: dir))
+        let listener = try #require(UnixListener(path: dir + "/esim/herdr.sock"))
+        Thread.detachNewThread { while let c = listener.accept() { c.close() } }
+        #expect(HerdrEndpoint.realSessionAnswers("esim", realSocketDirectory: dir))
+        #expect(!HerdrEndpoint.realSessionAnswers("other", realSocketDirectory: dir))
+        listener.close()
+    }
+
     @Test func unreachableSessionThrows() {
         let client = HerdrClient(endpoint: HerdrEndpoint(session: "nope", socketDirectory: shortSocketDir(), binaryPath: ""))
         #expect(throws: HerdrError.self) { try client.snapshot() }
@@ -128,5 +139,25 @@ extension HerdrClient {
         var none = s
         for a in s.agents { none.setState(a.id, to: .idle) }
         #expect(none.nextWaiting(after: nil) == nil)
+    }
+}
+
+@Suite("Compose policy") struct ComposePolicyTests {
+    @Test func singleLineTextIsAllowedAndEverythingElseIsExplained() {
+        #expect(ComposePolicy.problem(for: "run the wider checkout suite") == nil)
+        #expect(ComposePolicy.problem(for: "  trailing spaces and a final newline\n") == nil)   // trimmed first
+        #expect(ComposePolicy.problem(for: "") != nil && ComposePolicy.problem(for: " \n ") != nil)
+        for text in ["first line\nsecond line", "a\r\nb", "a\rb", "a\u{2028}b", "a\u{0085}b"] {
+            #expect(ComposePolicy.problem(for: text) == ComposePolicy.multiLineMessage)
+        }
+    }
+
+    @Test func theStandInReceivesOneLineAsOneSend() throws {
+        let (server, endpoint) = try makeServer(agents: 1)
+        defer { server.stop() }
+        let writer = HerdrClient(endpoint: endpoint, writePolicy: WritePolicy(writableSessions: ["fake1"]))
+        try writer.sendInput(pane: "w01:p1", text: "one line")
+        let sent = try writer.rawCall(method: "fake.dump", params: ["pane_id": "w01:p1"])
+        #expect(((sent["result"] as? [String: Any])?["sent"] as? [String]) == ["one line <Enter>"])
     }
 }

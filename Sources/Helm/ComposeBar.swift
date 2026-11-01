@@ -47,6 +47,9 @@ struct ComposeBar: View {
                             Button("Turn on…") { confirmEnable = true }.buttonStyle(.link).font(.system(size: 11))
                         }
                     }
+                    if app.writesEnabled, let why = app.composeProblem {
+                        Label(why, systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Color.orange)
+                    }
                     HStack(alignment: .bottom, spacing: 8) {
                         TextField(app.privacy ? "Message" : "Message \(a.name)", text: $app.compose, axis: .vertical)
                             .textFieldStyle(.plain).lineLimit(1...5).font(.system(size: 13))
@@ -58,7 +61,7 @@ struct ComposeBar: View {
                         Button("Send") { app.send() }
                             .fixedSize()
                             .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(app.composeText.isEmpty || !app.writesEnabled)
+                            .disabled(app.composeText.isEmpty || !app.writesEnabled || app.composeProblem != nil)
                             .help("⌘↩ sends the text and Enter to this agent after a short undo window")
                     }
                 }
