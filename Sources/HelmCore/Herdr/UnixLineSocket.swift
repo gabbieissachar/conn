@@ -93,7 +93,10 @@ public final class UnixLineSocket {
     }
 
     /// Safe to call from another thread: unblocks a pending read.
-    public func shutdown() { Darwin.shutdown(fd, SHUT_RDWR) }
+    public func shutdown() {
+        lock.lock(); defer { lock.unlock() }
+        if !closed { Darwin.shutdown(fd, SHUT_RDWR) }   // never touch a descriptor number that may have been reused
+    }
 
     public func close() {
         lock.lock(); defer { lock.unlock() }
@@ -111,8 +114,10 @@ public final class UnixListener {
     public let path: String
     private var fd: Int32 = -1
 
+    /// Refuses (returns nil) when something already answers at `path`: a listener must never take over a live socket.
     public init?(path: String) {
         self.path = path
+        if let probe = UnixLineSocket(path: path) { probe.close(); return nil }
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return nil }
         var addr = sockaddr_un()

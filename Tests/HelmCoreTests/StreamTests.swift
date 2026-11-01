@@ -76,7 +76,7 @@ import FakeHerdrKit
         final class Failing: PaneStreamSource {
             var processID: Int32? { nil }
             func start(pane: String, cols: Int, rows: Int, queue: DispatchQueue, onFrame: @escaping (TerminalFrame, UInt64) -> Void, onEnd: @escaping (StreamEnd) -> Void) {
-                queue.async { onEnd(.exited(status: 1, stderr: "error: protocol_mismatch: client 22, server 23")) }
+                queue.async { onEnd(.exited(status: 1, stderr: "herdr: server rejected handshake (version 22): client version 23 is newer than server version 22; please upgrade the herdr server")) }
             }
             func stop() {}
         }
@@ -202,5 +202,32 @@ import FakeHerdrKit
         ObserverRegistry.record(child.processIdentifier)
         ObserverRegistry.forget(child.processIdentifier)
         #expect(ObserverRegistry.reapOrphans().isEmpty)
+    }
+}
+
+@Suite("Protocol refusal text") struct RefusalTextTests {
+    @Test func recognisesHerdrsRealHandshakeErrors() {
+        #expect(PaneSession.isProtocolRefusal("herdr: server rejected handshake (version 22): client version 23 is newer than server version 22; please upgrade the herdr server"))
+        #expect(PaneSession.isProtocolRefusal("herdr: server rejected handshake (version 24): client version 23 is older than server version 24; please upgrade the herdr client"))
+        #expect(PaneSession.isProtocolRefusal("error: protocol_mismatch"))
+        #expect(!PaneSession.isProtocolRefusal("herdr: cannot connect to socket"))
+        #expect(!PaneSession.isProtocolRefusal(""))
+    }
+
+    @Test func anUnrecognisedEarlyExitAsksTheOwnerToRecheckCompatibility() {
+        final class Dying: PaneStreamSource {
+            var processID: Int32? { nil }
+            func start(pane: String, cols: Int, rows: Int, queue: DispatchQueue, onFrame: @escaping (TerminalFrame, UInt64) -> Void, onEnd: @escaping (StreamEnd) -> Void) {
+                queue.async { onEnd(.exited(status: 1, stderr: "herdr: something new went wrong")) }
+            }
+            func stop() {}
+        }
+        let session = PaneSession(engine: GridEngine(), source: Dying(), queue: testQueue)
+        session.backoffInitial = 5
+        var asked = false
+        session.onStreamFailedBeforeFrames = { _ in asked = true }
+        session.configure(pane: "w1:p1", size: nil)
+        #expect(waitUntil { asked })
+        session.stop()
     }
 }

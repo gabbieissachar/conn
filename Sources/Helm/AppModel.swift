@@ -83,6 +83,7 @@ final class AppModel: ObservableObject {
         showWeb = config.showWeb ?? true
         for p in [primary, secondary] {
             p.onProtocolMismatch = { [weak self] in self?.streamRefused() }
+            p.onStreamFailedBeforeFrames = { [weak self] _ in self?.probeCompatibility() }
         }
         store.objectWillChange.sink { [weak self] _ in
             // snapshot changes arrive on the main queue; react after the new value is stored

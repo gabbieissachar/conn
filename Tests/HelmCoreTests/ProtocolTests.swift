@@ -53,6 +53,22 @@ import FakeHerdrKit
         #expect(text.contains("Claude Code"))
     }
 
+    @Test func theStandInRefusesToReplaceALiveSocketOrRunInARealHerdrDirectory() throws {
+        // Something already listens at <dir>/fake1/herdr.sock: the stand-in must refuse and leave it reachable.
+        let dir = shortSocketDir()
+        try FileManager.default.createDirectory(atPath: dir + "/fake1", withIntermediateDirectories: true)
+        let existing = try #require(UnixListener(path: dir + "/fake1/herdr.sock"))
+        Thread.detachNewThread { while let c = existing.accept() { c.close() } }
+        let server = FakeHerdrServer(config: FakeHerdrServer.Config(directory: dir, session: "fake1"))
+        #expect(throws: (any Error).self) { try server.start() }
+        let probe = UnixLineSocket(path: dir + "/fake1/herdr.sock")
+        #expect(probe != nil)
+        probe?.close()
+        existing.close()
+        let real = FakeHerdrServer(config: FakeHerdrServer.Config(directory: NSHomeDirectory() + "/.config/herdr/sessions", session: "esim"))
+        #expect(throws: (any Error).self) { try real.start() }
+    }
+
     @Test func unreachableSessionThrows() {
         let client = HerdrClient(endpoint: HerdrEndpoint(session: "nope", socketDirectory: shortSocketDir(), binaryPath: ""))
         #expect(throws: HerdrError.self) { try client.snapshot() }

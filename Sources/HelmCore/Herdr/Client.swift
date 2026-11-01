@@ -74,7 +74,10 @@ public final class HerdrClient: @unchecked Sendable {
     }
 
     /// One request, one response, on its own connection (the docs: snapshot on a connection other than the subscription).
-    public func call(_ request: HerdrRequest) throws -> [String: Any] {
+    public func call(_ request: HerdrRequest) throws -> [String: Any] { try callCounting(request).0 }
+
+    /// Like `call`, also returning the size of the reply line in bytes.
+    public func callCounting(_ request: HerdrRequest) throws -> ([String: Any], Int) {
         if request.isWrite && !writePolicy.allowsWrites(to: endpoint.session) {
             throw HerdrError.writeRefused(session: endpoint.session, method: request.method)
         }
@@ -87,13 +90,14 @@ public final class HerdrClient: @unchecked Sendable {
         guard sock.writeLine(["id": "helm_\(request.method)", "method": request.method, "params": params]) else {
             throw HerdrError.unreachable("write failed")
         }
-        guard let obj = sock.readJSON(timeout: timeout) else {
+        guard let line = sock.readLine(timeout: timeout) else {
             throw sock.timedOut ? HerdrError.unreachable("no reply within \(Int(timeout)) s") : HerdrError.unreachable("connection closed")
         }
+        guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { throw HerdrError.malformed("reply is not a JSON object") }
         if let err = obj["error"] as? [String: Any] {
             throw HerdrError.rejected(code: (err["code"] as? String) ?? "error", message: (err["message"] as? String) ?? "")
         }
-        return obj
+        return (obj, line.count)
     }
 
     public func snapshot() throws -> Snapshot {

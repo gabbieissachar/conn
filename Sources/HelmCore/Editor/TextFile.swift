@@ -42,6 +42,10 @@ public final class TextFile: ObservableObject {
     @Published public private(set) var changedOnDisk = false
     public private(set) var revision = 0
     private var stamp: DiskStamp?
+    /// The file reads and writes go to: `url` with symlinks resolved, so saving a symlink edits its target and the link stays a link.
+    private var ioURL: URL?
+    private var hasBOM = false
+    private static let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
 
     public var isDirty: Bool { text != savedText }
     public var title: String { url?.lastPathComponent ?? "Untitled" }
@@ -58,14 +62,20 @@ public final class TextFile: ObservableObject {
     }
 
     public func load(_ url: URL) throws {
-        let data: Data
-        do { data = try Data(contentsOf: url) } catch { throw TextFileError.io("Could not read \(url.lastPathComponent): \(error.localizedDescription)") }
+        let real = url.resolvingSymlinksInPath()
+        var data: Data
+        do { data = try Data(contentsOf: real) } catch { throw TextFileError.io("Could not read \(url.lastPathComponent): \(error.localizedDescription)") }
         guard data.count <= Self.sizeLimit else { throw TextFileError.tooLarge(bytes: data.count, limit: Self.sizeLimit) }
+        // A UTF-8 byte order mark is kept out of the text and written back on save, so it is not lost.
+        let bom = data.starts(with: Self.bom)
+        if bom { data = data.dropFirst(3) }
         guard !data.contains(0), let s = String(data: data, encoding: .utf8) else { throw TextFileError.notText(url.lastPathComponent) }
         self.url = url
+        self.ioURL = real
+        self.hasBOM = bom
         self.text = s
         self.savedText = s
-        self.stamp = DiskStamp.read(url)
+        self.stamp = DiskStamp.read(real)
         self.changedOnDisk = false
         self.lastError = nil
     }
@@ -73,26 +83,33 @@ public final class TextFile: ObservableObject {
     /// Writes the text. Refuses when the file changed on disk since it was read, unless `overwrite` is set.
     public func save(overwrite: Bool = false) throws {
         guard let url = url else { throw TextFileError.noPath }
-        if !overwrite, let known = stamp, let now = DiskStamp.read(url), now != known {
+        let target = ioURL ?? url
+        if !overwrite, let known = stamp, let now = DiskStamp.read(target), now != known {
             changedOnDisk = true
             throw TextFileError.changedOnDisk
         }
-        do { try Data(text.utf8).write(to: url, options: .atomic) } catch { throw TextFileError.io("Could not save \(url.lastPathComponent): \(error.localizedDescription)") }
+        var data = Data(hasBOM ? Self.bom : [])
+        data.append(Data(text.utf8))
+        // An atomic write replaces the file (a new inode), which would split a hard link from its twin; a file with
+        // other links is rewritten in place instead. Everything else is written atomically, so a crash cannot truncate it.
+        let links = (try? FileManager.default.attributesOfItem(atPath: target.path)[.referenceCount] as? NSNumber)?.intValue ?? 1
+        do { try data.write(to: target, options: links > 1 ? [] : .atomic) } catch { throw TextFileError.io("Could not save \(url.lastPathComponent): \(error.localizedDescription)") }
         savedText = text
-        stamp = DiskStamp.read(url)
+        stamp = DiskStamp.read(target)
         changedOnDisk = false
         lastError = nil
     }
 
     public func saveAs(_ newURL: URL) throws {
         url = newURL
+        ioURL = newURL.resolvingSymlinksInPath()
         stamp = nil
         try save(overwrite: true)
     }
 
     /// Cheap poll for the "changed on disk" banner.
     public func checkDisk() {
-        guard let url = url, let known = stamp, let now = DiskStamp.read(url) else { return }
+        guard let url = ioURL ?? url, let known = stamp, let now = DiskStamp.read(url) else { return }
         let changed = now != known
         if changed != changedOnDisk { changedOnDisk = changed }
     }

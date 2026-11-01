@@ -1,4 +1,4 @@
-// FakeHerdr serve --dir DIR --session NAME [--agents N] [--working-rate R] [--protocol P]
+// FakeHerdr serve --dir DIR --session NAME   (--dir is required and is refused under ~/.config/herdr) [--agents N] [--working-rate R] [--protocol P]
 // FakeHerdr cli --session NAME status --json | terminal session observe PANE --cols C --rows R
 // `cli` is what a `herdr` shim script execs, so HELM_HERDR_BIN can point at a stand-in for the real executable.
 import Foundation
@@ -19,7 +19,7 @@ func option(_ name: String, in a: inout [String]) -> String? {
 switch mode {
 case "serve":
     guard let session = option("--session", in: &args) else { fail("--session required") }
-    let dir = option("--dir", in: &args) ?? HerdrEndpoint.defaultSocketDirectory
+    guard let dir = option("--dir", in: &args) else { fail("--dir is required (a scratch directory, never ~/.config/herdr)") }
     var cfg = FakeHerdrServer.Config(directory: dir, session: session)
     if let n = option("--agents", in: &args).flatMap(Int.init) { cfg.agents = n }
     if let r = option("--working-rate", in: &args).flatMap(Double.init) { cfg.workingRate = r }
@@ -60,7 +60,11 @@ case "cli":
         // A real client and server of different protocol versions refuse to talk: mimic the protocol_mismatch error.
         let client = HerdrClient(endpoint: endpoint)
         let serverProtocol = ((try? client.call(.snapshot))?["result"] as? [String: Any]).flatMap { ($0["snapshot"] as? [String: Any])?["protocol"] as? Int } ?? 0
-        if serverProtocol != 0 && serverProtocol != clientProtocol { fail("protocol_mismatch: client \(clientProtocol), server \(serverProtocol)") }
+        if serverProtocol != 0 && serverProtocol != clientProtocol {
+            // The text Herdr 0.9.5 prints (src/client/errors.rs), not an invented marker.
+            if clientProtocol > serverProtocol { fail("herdr: server rejected handshake (version \(serverProtocol)): client version \(clientProtocol) is newer than server version \(serverProtocol); please upgrade the herdr server") }
+            fail("herdr: server rejected handshake (version \(serverProtocol)): client version \(clientProtocol) is older than server version \(serverProtocol); please upgrade the herdr client")
+        }
         guard let sock = UnixLineSocket(path: endpoint.fakeStreamSocketPath) else { fail("cannot connect to \(endpoint.fakeStreamSocketPath)") }
         sock.writeLine(["pane": pane, "cols": cols, "rows": rows])
         let out = FileHandle.standardOutput

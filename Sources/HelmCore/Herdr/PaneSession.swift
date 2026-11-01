@@ -39,6 +39,9 @@ public final class PaneSession: ObservableObject {
     public var onApplied: (() -> Void)?
     /// Called when the process says the stream protocol is refused; the owner can switch to the text source.
     public var onProtocolMismatch: (() -> Void)?
+    /// Called when the stream ended before delivering a single frame for a reason that is not a recognised protocol
+    /// refusal: the owner should re-check `herdr status` (Herdr's own `compatible` answer) before the next retry.
+    public var onStreamFailedBeforeFrames: ((String) -> Void)?
 
     public var source: PaneStreamSource
     public var processID: Int32? { source.processID }
@@ -130,18 +133,28 @@ public final class PaneSession: ObservableObject {
         onApplied?()
     }
 
+    /// Herdr 0.9.5 prints `herdr: server rejected handshake (version N): client version M is newer than server version N;
+    /// please upgrade the herdr server` (or `older than ... upgrade the herdr client`) when the private protocol differs.
+    /// The JSON API's `protocol_mismatch` code is matched too.
+    public static func isProtocolRefusal(_ stderr: String) -> Bool {
+        let l = stderr.lowercased()
+        return l.contains("protocol_mismatch") || l.contains("protocol mismatch") || l.contains("rejected handshake")
+            || (l.contains("client version") && l.contains("server version"))
+            || (l.contains("please upgrade") && l.contains("herdr"))
+    }
+
     private func ended(_ end: StreamEnd) {
         var reason: String
         switch end {
         case .failedToStart(let r): reason = r
         case .exited(let status, let stderr): reason = stderr.isEmpty ? "stream ended (exit \(status))" : String(stderr.suffix(160))
         }
-        let lower = reason.lowercased()
-        if lower.contains("protocol_mismatch") || lower.contains("protocol mismatch") {
+        if Self.isProtocolRefusal(reason) {
             state = .failed(reason)
             onProtocolMismatch?()
             return
         }
+        if framesSinceStart == 0 { onStreamFailedBeforeFrames?(reason) }
         // A stream that ran for a while was healthy: start the backoff over.
         if framesSinceStart > 0 && Date().timeIntervalSince(startedAt) > 5 { attempt = 0 }
         attempt += 1

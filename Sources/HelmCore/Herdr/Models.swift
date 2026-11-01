@@ -85,6 +85,8 @@ public struct Snapshot: Equatable, Sendable {
     public var agents: [Agent] = []
     public var paneIDs: [String] = []
     public var focusedPaneID: String?
+    public var protocolVersion: Int?
+    public var herdrVersion: String?
 
     public static let empty = Snapshot()
 
@@ -93,7 +95,11 @@ public struct Snapshot: Equatable, Sendable {
     /// `root` is the decoded JSON of a full response line: {"id":..., "result": {"type":"session_snapshot","snapshot":{...}}}
     public init?(response root: [String: Any]) {
         guard let result = root["result"] as? [String: Any],
-              let snap = result["snapshot"] as? [String: Any] else { return nil }
+              let snap = result["snapshot"] as? [String: Any],
+              // A reply that has neither list is a schema this app does not know (renamed fields), not an empty session.
+              snap["workspaces"] != nil || snap["panes"] != nil else { return nil }
+        protocolVersion = snap["protocol"] as? Int
+        herdrVersion = snap["version"] as? String
         let panes = (snap["panes"] as? [[String: Any]]) ?? []
         var paneByID: [String: [String: Any]] = [:]
         for p in panes { if let id = p["pane_id"] as? String { paneByID[id] = p } }

@@ -86,6 +86,40 @@ import FakeHerdrKit
         #expect(throws: TextFileError.notText("l.txt")) { try TextFile(opening: latin) }
     }
 
+    @Test func savingThroughASymlinkEditsTheTargetAndKeepsTheLink() throws {
+        let target = try tempFile("AGENTS.md", "original\n")
+        let link = target.deletingLastPathComponent().appendingPathComponent("CLAUDE.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let doc = try TextFile(opening: link)
+        doc.text = "edited\n"
+        try doc.save()
+        #expect(try String(contentsOf: target, encoding: .utf8) == "edited\n")
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil)
+        #expect(try String(contentsOf: link, encoding: .utf8) == "edited\n")
+    }
+
+    @Test func savingAHardLinkedFileKeepsBothNamesInSync() throws {
+        let a = try tempFile("a.txt", "one\n")
+        let b = a.deletingLastPathComponent().appendingPathComponent("b.txt")
+        try FileManager.default.linkItem(at: a, to: b)
+        let doc = try TextFile(opening: b)
+        doc.text = "two\n"
+        try doc.save()
+        #expect(try String(contentsOf: a, encoding: .utf8) == "two\n")
+        #expect(try String(contentsOf: b, encoding: .utf8) == "two\n")
+    }
+
+    @Test func aByteOrderMarkSurvivesARoundTrip() throws {
+        let url = try tempFile("bom.txt", "")
+        try Data([0xEF, 0xBB, 0xBF] + Array("hello\n".utf8)).write(to: url)
+        let doc = try TextFile(opening: url)
+        #expect(doc.text == "hello\n")
+        doc.text = "hello world\n"
+        try doc.save()
+        #expect(try Data(contentsOf: url).starts(with: [0xEF, 0xBB, 0xBF]))
+        #expect(try String(contentsOf: url, encoding: .utf8).contains("hello world"))
+    }
+
     @Test func saveAsCreatesTheFileAndKeepsTheDocumentOpen() throws {
         let doc = TextFile(text: "draft")
         #expect(throws: TextFileError.noPath) { try doc.save() }
@@ -93,5 +127,34 @@ import FakeHerdrKit
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try doc.saveAs(dir.appendingPathComponent("new.md"))
         #expect(doc.title == "new.md" && !doc.isDirty && doc.isMarkdown)
+    }
+}
+
+@Suite("Store hardening") struct StoreHardeningTests {
+    @Test func aSnapshotWithUnknownFieldsIsMalformedNotAnEmptyLiveSession() {
+        let renamed = #"{"id":"x","result":{"type":"session_snapshot","snapshot":{"protocol":22,"pane_list":[],"status":"x"}}}"#
+        let obj = (try? JSONSerialization.jsonObject(with: Data(renamed.utf8))) as? [String: Any]
+        #expect(obj != nil && Snapshot(response: obj!) == nil)
+        let empty = #"{"id":"x","result":{"type":"session_snapshot","snapshot":{"protocol":22,"version":"0.9.5","workspaces":[],"panes":[]}}}"#
+        let e = (try? JSONSerialization.jsonObject(with: Data(empty.utf8))) as? [String: Any]
+        let snap = e.flatMap { Snapshot(response: $0) }
+        #expect(snap != nil && snap?.protocolVersion == 22 && snap?.herdrVersion == "0.9.5")
+    }
+
+    @Test func oneOutageCountsOnceAndNewPanesDoNotCountAtAll() throws {
+        let dir = shortSocketDir()
+        let (server, endpoint) = try makeServer(agents: 2, dir: dir)
+        let store = HerdrStore(client: HerdrClient(endpoint: endpoint), queue: testQueue)
+        store.backoffInitial = 0.1; store.backoffMax = 0.2; store.pingInterval = 5
+        store.start()
+        defer { store.stop() }
+        #expect(waitUntil { store.link == .live })
+        server.stop()
+        #expect(waitUntil { if case .reconnecting = store.link { return true } else { return false } })
+        Thread.sleep(forTimeInterval: 1.0)          // several failed retries inside one outage
+        let (server2, _) = try makeServer(agents: 3, dir: dir)   // a different pane set on return
+        defer { server2.stop() }
+        #expect(waitUntil(8) { store.link == .live && store.snapshot.agents.count == 3 })
+        #expect(store.reconnectCount == 1)
     }
 }

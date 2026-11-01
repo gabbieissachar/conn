@@ -33,6 +33,7 @@ public final class HerdrStore: ObservableObject {
     private var refreshPending = false
     private var generation = 0
     private var outageStartedAt: Date?
+    private var resubscribing = false
     /// Published state changes land on this queue (the main queue in the app).
     private let queue: DispatchQueue
 
@@ -88,17 +89,19 @@ public final class HerdrStore: ObservableObject {
 
     private func setLink(_ l: Link) {
         queue.async {
-            if case .reconnecting = l, self.outageStartedAt == nil { self.outageStartedAt = Date() }
-            if case .reconnecting = l { self.reconnectCount += 1 }
+            if case .reconnecting = l, self.outageStartedAt == nil {
+                // One outage is one count however many retries it takes.
+                self.outageStartedAt = Date()
+                self.reconnectCount += 1
+            }
             self.link = l
         }
     }
 
     private func fetchSnapshot() -> (Snapshot, Double, Int)? {
         let t0 = Date()
-        guard let obj = try? client.call(.snapshot), let snap = Snapshot(response: obj) else { return nil }
+        guard let (obj, bytes) = try? client.callCounting(.snapshot), let snap = Snapshot(response: obj) else { return nil }
         let ms = Date().timeIntervalSince(t0) * 1000
-        let bytes = (try? JSONSerialization.data(withJSONObject: obj).count) ?? 0
         return (snap, ms, bytes)
     }
 
@@ -136,11 +139,17 @@ public final class HerdrStore: ObservableObject {
                 scheduleRefresh { [weak self] snap, ms, bytes in
                     guard let self = self else { return }
                     self.publish(snap, millis: ms, bytes: bytes)
-                    if Set(snap.paneIDs) != subscribed { subscribed = Set(snap.paneIDs); sock.shutdown() } // pane set changed: resubscribe
+                    if Set(snap.paneIDs) != subscribed {
+                        // The pane set changed: per-pane status events need a new subscription. Not an outage.
+                        subscribed = Set(snap.paneIDs)
+                        self.lock.lock(); self.resubscribing = true; self.lock.unlock()
+                        sock.shutdown()
+                    }
                 }
             }
             sock.close()
-            if isCurrent(g) { setLink(.reconnecting("connection closed")); Thread.sleep(forTimeInterval: backoffInitial) }
+            lock.lock(); let planned = resubscribing; resubscribing = false; lock.unlock()
+            if isCurrent(g), !planned { setLink(.reconnecting("connection closed")); Thread.sleep(forTimeInterval: backoffInitial) }
         }
     }
 

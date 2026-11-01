@@ -77,6 +77,12 @@ public final class FakeHerdrServer: @unchecked Sendable {
     // MARK: lifecycle
 
     public func start() throws {
+        // The stand-in must never be placed in a real Herdr's socket directory.
+        let real = (NSHomeDirectory() + "/.config/herdr") as NSString
+        let target = (config.directory as NSString).standardizingPath
+        if target == real.standardizingPath || target.hasPrefix(real.standardizingPath + "/") {
+            throw NSError(domain: "FakeHerdr", code: 2, userInfo: [NSLocalizedDescriptionKey: "refusing to run inside \(real): that is where real Herdr sessions live"])
+        }
         let dir = "\(config.directory)/\(config.session)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         guard let api = UnixListener(path: "\(dir)/herdr.sock"), let stream = UnixListener(path: "\(dir)/stream.sock") else {
