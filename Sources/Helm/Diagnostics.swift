@@ -45,3 +45,33 @@ enum SelfTest {
         NSApplication.shared.terminate(nil)
     }
 }
+
+/// Drives the real editor the way a user would: opens a file, types into the NSTextView, saves through the model.
+@MainActor
+enum EditorSelfTest {
+    static func findTextView(in v: NSView) -> NSTextView? {
+        if let t = v as? NSTextView, t.isEditable { return t }
+        for s in v.subviews { if let t = findTextView(in: s) { return t } }
+        return nil
+    }
+
+    static func run(file: String, model: AppModel) async {
+        func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
+        let before = (try? String(contentsOfFile: file, encoding: .utf8)) ?? "<unreadable>"
+        await wait(2)
+        model.mode = .editor
+        model.editor.open(URL(fileURLWithPath: file))
+        await wait(1.5)
+        guard let doc = model.editor.current, let root = Capture.mainWindow()?.contentView, let tv = findTextView(in: root) else {
+            print("editor-test: no editor text view found"); return
+        }
+        print("editor-test: opened \(doc.title) chars=\(doc.text.count) dirty=\(doc.isDirty)")
+        tv.setSelectedRange(NSRange(location: 0, length: 0))
+        tv.insertText("TYPED-BY-TEST ", replacementRange: NSRange(location: 0, length: 0))
+        await wait(0.3)
+        print("editor-test: after typing dirty=\(doc.isDirty) modelStartsWithTyped=\(doc.text.hasPrefix("TYPED-BY-TEST "))")
+        model.editor.save(doc)
+        let after = (try? String(contentsOfFile: file, encoding: .utf8)) ?? "<unreadable>"
+        print("editor-test: saved dirty=\(doc.isDirty) diskStartsWithTyped=\(after.hasPrefix("TYPED-BY-TEST ")) diskGrewBy=\(after.count - before.count)")
+    }
+}

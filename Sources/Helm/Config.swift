@@ -36,6 +36,8 @@ struct AppConfig {
     var sendTest: String?
     /// Test hook: attach the Herdr-screen pane at launch (it never starts by itself otherwise).
     var startFallback = false
+    /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
+    var editorTest: String?
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -63,6 +65,7 @@ struct AppConfig {
             case "--hold": c.holdSeconds = next().flatMap(Int.init) ?? 3
             case "--send-test": c.sendTest = next()
             case "--start-fallback": c.startFallback = true
+            case "--editor-test": c.editorTest = next()
             default: break
             }
             i += 1
