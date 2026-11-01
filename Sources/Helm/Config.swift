@@ -37,6 +37,7 @@ struct AppConfig {
     /// Test hook: attach the Herdr-screen pane at launch (it never starts by itself otherwise).
     var startFallback = false
     var probeDraw = false
+    var compare = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
     var editorTest: String?
 
@@ -67,6 +68,7 @@ struct AppConfig {
             case "--send-test": c.sendTest = next()
             case "--start-fallback": c.startFallback = true
             case "--probe-draw": c.probeDraw = true
+            case "--compare": c.compare = true
             case "--editor-test": c.editorTest = next()
             default: break
             }

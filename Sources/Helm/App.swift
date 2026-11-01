@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             let list = model.snapshot.prioritized
             if let i = cfg.select, i < list.count { model.select(list[i].id) }
+            if cfg.compare, model.comparePaneID == nil { model.toggleCompare() }
         }
         if let dir = cfg.tour { Task { @MainActor in try? await Task.sleep(nanoseconds: 3_000_000_000); await Tour.run(dir: URL(fileURLWithPath: dir), model: model); model.shutdown(); NSApplication.shared.terminate(nil) } }
         if let path = cfg.shot {
@@ -110,7 +111,8 @@ struct HelmApp: App {
     private let app = MainActor.assumeIsolated { Runtime.model }
 
     var body: some Scene {
-        WindowGroup("Helm") {
+        // One window: the model and its terminal views are shared, and a second window would fight over them.
+        Window("Helm", id: "main") {
             MainView()
                 .environmentObject(app)
                 .frame(minWidth: 1000, minHeight: 600)
