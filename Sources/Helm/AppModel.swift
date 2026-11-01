@@ -158,7 +158,7 @@ final class AppModel: ObservableObject {
 
     private func applyVerdict(_ v: StreamVerdict) {
         // `--text-panes` pins the text path whatever the status check says.
-        let v: StreamVerdict = config.textPanes ? .textOnly("Text panes were requested (--text-panes)") : v
+        let v: StreamVerdict = config.textPanes ? .textOnly("requested with --text-panes") : v
         let changedKind = v.allowsStream != streamVerdict.allowsStream
         streamVerdict = v
         if changedKind {
