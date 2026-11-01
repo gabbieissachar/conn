@@ -203,6 +203,24 @@ import FakeHerdrKit
         ObserverRegistry.forget(child.processIdentifier)
         #expect(ObserverRegistry.reapOrphans().isEmpty)
     }
+
+    @Test func aLiveObserverOfAnotherRunningInstanceStaysOnTheList() throws {
+        let dir = shortSocketDir()
+        setenv("HELM_STATE_DIR", dir, 1)
+        defer { unsetenv("HELM_STATE_DIR") }
+        // A child whose command line looks like ours and whose parent (this process) is alive: not an orphan.
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "sleep 30", "sh", "--session", "esim", "terminal", "session", "observe", "w1:p1", "--cols", "66", "--rows", "59"]
+        try child.run()
+        defer { child.terminate() }
+        ObserverRegistry.record(child.processIdentifier)
+        #expect(ObserverRegistry.reapOrphans().isEmpty)
+        #expect(child.isRunning)
+        let file = try String(contentsOf: ObserverRegistry.fileURL, encoding: .utf8)
+        #expect(file.contains("\(child.processIdentifier)"))           // still remembered for the instance that owns it
+        ObserverRegistry.forget(child.processIdentifier)
+    }
 }
 
 @Suite("Protocol refusal text") struct RefusalTextTests {

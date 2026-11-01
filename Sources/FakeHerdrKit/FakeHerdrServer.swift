@@ -85,8 +85,14 @@ public final class FakeHerdrServer: @unchecked Sendable {
         }
         let dir = "\(config.directory)/\(config.session)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        // Say which reason it is: a live socket there, a path a Unix socket cannot hold, or something else.
+        for name in ["herdr.sock", "stream.sock"] {
+            let path = "\(dir)/\(name)"
+            if path.utf8.count > 100 { throw NSError(domain: "FakeHerdr", code: 3, userInfo: [NSLocalizedDescriptionKey: "refusing: \(path) is too long for a Unix socket (limit about 100 bytes); use a shorter --dir"]) }
+            if let probe = UnixLineSocket(path: path) { probe.close(); throw NSError(domain: "FakeHerdr", code: 4, userInfo: [NSLocalizedDescriptionKey: "refusing: something already answers at \(path); the stand-in never replaces a live socket"]) }
+        }
         guard let api = UnixListener(path: "\(dir)/herdr.sock"), let stream = UnixListener(path: "\(dir)/stream.sock") else {
-            throw NSError(domain: "FakeHerdr", code: 1, userInfo: [NSLocalizedDescriptionKey: "cannot listen in \(dir) (path too long?)"])
+            throw NSError(domain: "FakeHerdr", code: 1, userInfo: [NSLocalizedDescriptionKey: "cannot listen in \(dir): \(String(cString: strerror(errno)))"])
         }
         apiListener = api; streamListener = stream
         lock.lock(); running = true; lock.unlock()

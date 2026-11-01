@@ -43,15 +43,17 @@ public enum ObserverRegistry {
     }
 
     /// Terminates recorded observers that are orphans of a previous run. Returns the pids it signalled.
+    /// Entries of children that still have a live parent (another running instance of the app) stay on the list.
     @discardableResult
     public static func reapOrphans() -> [Int32] {
         lock.lock(); defer { lock.unlock() }
         var reaped: [Int32] = []
+        var keep: [Int32] = []
         for pid in read() {
-            guard let (ppid, command) = processInfo(pid), ppid == 1, looksLikeOurObserver(command) else { continue }
-            if kill(pid, SIGTERM) == 0 { reaped.append(pid) }
+            guard let (ppid, command) = processInfo(pid), looksLikeOurObserver(command) else { continue }   // gone, or pid reused
+            if ppid == 1 { if kill(pid, SIGTERM) == 0 { reaped.append(pid) } } else { keep.append(pid) }
         }
-        write([])
+        write(keep)
         return reaped
     }
 
