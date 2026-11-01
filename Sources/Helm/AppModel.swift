@@ -150,7 +150,9 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.probing = false
-                let verdict = status.map { HerdrCompatibility.verdict(for: $0) } ?? .textOnly("The herdr command was not found or did not answer; panes show text")
+                // No answer is not a protocol problem: say what is missing instead of blaming the stream.
+                let verdict = status.map { HerdrCompatibility.verdict(for: $0) }
+                    ?? (ep.binaryPath == nil ? .textOnly("The herdr command was not found; panes show text") : .down("The herdr command did not answer; is the Herdr server running?"))
                 self.applyVerdict(verdict)
             }
         }
