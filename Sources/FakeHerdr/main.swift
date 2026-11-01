@@ -26,7 +26,7 @@ case "serve":
     if let f = option("--working-fraction", in: &args).flatMap(Double.init) { cfg.workingFraction = f }
     if let p = option("--protocol", in: &args).flatMap(Int.init) { cfg.serverProtocol = p }
     let server = FakeHerdrServer(config: cfg)
-    do { try server.start() } catch { fail("\(error)") }
+    do { try server.start() } catch { fail((error as NSError).localizedDescription) }
     print("fake herdr listening: \(dir)/\(session)/herdr.sock")
     fflush(stdout)
     signal(SIGTERM) { _ in exit(0) }
