@@ -114,3 +114,58 @@ enum DrawProbe {
         print("draw-probe: frameAt=\(String(format: "%.2f", Double((firstFrame ?? t0) - t0) / 1e9))s draws=\(all.count) firstDrawAfterFirstFrame=\(ms(after, from: firstFrame)) nudges=\(engine.displayNudges)")
     }
 }
+
+/// Drives the UI paths a user would: modes, compare, privacy, tabs, switcher, background pause. Prints one line per check.
+@MainActor
+enum UICheck {
+    static func run(model: AppModel) async {
+        func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
+        func report(_ name: String, _ ok: Bool, _ detail: String = "") { print("ui-check: \(ok ? "PASS" : "FAIL") \(name) \(detail)") }
+        await wait(4)
+        let list = model.snapshot.prioritized
+        guard list.count > 3 else { print("ui-check: not enough agents"); return }
+        model.select(list[list.count / 2].id); await wait(1.5)
+        report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state)")
+
+        model.mode = .editor; await wait(0.5)
+        report("editor mode stops the pane stream", model.primary.paneID == nil && model.primary.processID == nil, "pane=\(model.primary.paneID ?? "nil")")
+        model.mode = .herdr; await wait(0.3)
+        report("herdr screen mode keeps streams stopped", model.primary.paneID == nil)
+        model.mode = .agent; await wait(2)
+        report("back in agent mode the stream restarts", model.primary.state == .live && model.primary.paneID == model.selectedPaneID, "state=\(model.primary.state)")
+
+        model.toggleCompare(); await wait(2)
+        report("compare opens a second live stream", model.comparePaneID != nil && model.secondary.state == .live, "state=\(model.secondary.state)")
+        model.toggleCompare(); await wait(0.5)
+        report("closing compare stops the second stream", model.comparePaneID == nil && model.secondary.paneID == nil)
+
+        model.privacy = true; model.showRecentOutput(); await wait(0.3)
+        report("privacy mode refuses the history sheet", model.recent == nil)
+        model.privacy = false
+        model.showRecentOutput(); await wait(2)
+        report("recent output loads as text", model.recent?.text != nil || model.recent?.error != nil, model.recent?.error ?? "chars=\(model.recent?.text?.count ?? 0)")
+        model.privacy = true; await wait(0.2)
+        report("turning privacy on closes the history sheet", model.recent == nil)
+        model.privacy = false
+
+        model.webTab = .organizer; await wait(2.5)
+        report("organizer tab loads", model.web.box(.organizer).phase == .ready, "phase=\(model.web.box(.organizer).phase)")
+        model.webTab = .reader; await wait(0.5)
+
+        model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)
+        report("quick switcher opens", model.showSwitcher)
+        model.showSwitcher = false; model.switcherQuery = ""
+
+        let before = model.selectedPaneID
+        model.cycle(1); await wait(0.3)
+        report("next agent changes the selection", model.selectedPaneID != before)
+
+        model.inactivePauseSeconds = 1
+        model.appResigned(); await wait(2.2)
+        report("background pause stops the stream", !model.attentive && model.primary.paneID == nil, "attentive=\(model.attentive)")
+        model.appBecameActive(); await wait(2)
+        report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
+        print("ui-check: done")
+        model.shutdown(); NSApplication.shared.terminate(nil)
+    }
+}

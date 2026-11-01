@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let file = cfg.editorTest {
             Task { @MainActor in await EditorSelfTest.run(file: file, model: model) }
         }
+        if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
             // The Herdr-screen pane is an interactive second client: this test hook may only run when both the socket

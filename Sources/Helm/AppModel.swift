@@ -63,7 +63,7 @@ final class AppModel: ObservableObject {
     /// False once the app has been in the background for `inactivePauseSeconds`: streams stop, the sidebar keeps running.
     @Published private(set) var attentive = true
     private var inactiveTimer: Timer?
-    let inactivePauseSeconds: TimeInterval = 30
+    var inactivePauseSeconds: TimeInterval = ProcessInfo.processInfo.environment["HELM_INACTIVE_PAUSE"].flatMap(Double.init) ?? 30
     @Published var confirmWrites = false
 
     private var cancellables = Set<AnyCancellable>()
@@ -186,14 +186,14 @@ final class AppModel: ObservableObject {
 
     /// The Herdr server pays for every observed working pane (about 3 to 8 points of a core each), so panes nobody is
     /// looking at do not stream: after 30 s in the background they stop, and they restart (one full frame, about 80 ms) on return.
-    private func appResigned() {
+    func appResigned() {
         inactiveTimer?.invalidate()
         inactiveTimer = Timer.scheduledTimer(withTimeInterval: inactivePauseSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { guard let self = self else { return }; self.attentive = false; self.syncSessions() }
         }
     }
 
-    private func appBecameActive() {
+    func appBecameActive() {
         inactiveTimer?.invalidate()
         if !attentive { attentive = true; syncSessions() }
     }
