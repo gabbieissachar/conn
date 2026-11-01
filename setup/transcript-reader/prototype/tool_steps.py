@@ -56,6 +56,8 @@ KINDS = {
 # or a file named like one.
 CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".gcloud", ".config", ".secrets", ".password-store"}
 CREDENTIAL_NAME = re.compile(r"(?i)^(?:id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore|kdbx)|.*(?:credential|secret|token|passw(?:or)?d)s?[^/]*)$")
+DOTFILE_NAME = re.compile(r"^\.[A-Za-z0-9_][A-Za-z0-9_.-]*$")  # .env, .npmrc, .lock-session: not .*run, .., ... or a bare method call
+KNOWN_DOTFILES = re.compile(r"^\.(?:env(?:\..*)?|npmrc|netrc|pypirc|git-credentials|gitconfig|bashrc|bash_profile|zshrc|zprofile|profile|aws|ssh|gnupg|kube|docker|azure|gcloud|config|secrets|password-store)$")
 PATH_TOKEN = re.compile(r"[^\s'\"=:;|&<>()`,]+")
 FILE_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 
@@ -97,12 +99,27 @@ def sensitive_path(path: str) -> bool:
     return bool(CREDENTIAL_NAME.match(parts[-1]))
 
 
+def command_path_is_sensitive(token: str) -> bool:
+    """Whether one word of a shell command names a dotfile or a credential path. A word with a slash is a path: a
+    dotfile name (`.env`, `state/.lock-session`), a file in a folder that holds credentials (`~/.ssh/id_rsa`) or one
+    named like one. A word with no slash only counts when it is a well-known dotfile (`.env`) or a file named like a
+    credential with an extension (`credentials.json`): a method call (`f.read()`), a regular expression (`.*run`) or a
+    jq path (`.items`) is not a file."""
+    parts = [part for part in token.replace("\\", "/").split("/") if part and part not in (".", "..", "~")]
+    if not parts:
+        return False
+    name = parts[-1]
+    if "/" in token:
+        return bool(DOTFILE_NAME.match(name)) or any(part in CREDENTIAL_DIRS for part in parts[:-1]) or bool(CREDENTIAL_NAME.match(name))
+    return bool(KNOWN_DOTFILES.match(name)) or bool(FILE_EXTENSION.search(name) and CREDENTIAL_NAME.match(name))
+
+
 def touches_secrets(command: str) -> bool:
     """Whether a shell command names a dotfile or a credential path (it may print one)."""
     for token in PATH_TOKEN.findall(command):
         if token.startswith("-") or "://" in token and "/." not in token:
             continue
-        if ("/" in token or token.startswith(".") or FILE_EXTENSION.search(token)) and sensitive_path(token):
+        if command_path_is_sensitive(token):
             return True
     return False
 

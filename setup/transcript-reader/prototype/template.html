@@ -318,6 +318,7 @@ __HEAD_HOSTED__
   .step.failed { border-left: 3px solid var(--open); padding-left: 7px; background: color-mix(in srgb, var(--open) 7%, var(--paper)); }
   .step.failed .k, .step.failed .bad { color: var(--open); }
   .step .bad { flex: none; font-size: 11px; font-weight: 700; }
+  .step.found { background: color-mix(in srgb, var(--hit) 40%, var(--paper)); box-shadow: inset 3px 0 0 var(--you); }
   .steps-more { display: block; width: 100%; min-height: 32px; border: 1px dashed var(--line); border-radius: 10px; background: none; padding: 4px 10px; margin: 0 0 8px; font-size: 13px; color: var(--you); }
   @media (max-width: 440px), (pointer: coarse) { .steps-row, .steps-more { min-height: 44px; } .step { min-height: 44px; } }
   .scrim { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .4); }
@@ -785,6 +786,8 @@ __HEAD_HOSTED__
     box.append(row, body);
     return box;
   }
+  // What a search reads of each step row on screen, so a row whose command or file (not drawn on the row) holds the words can be marked.
+  const stepTexts = new WeakMap();
   function stepRow(ex, i, sid) {
     const step = ex.steps[i];
     const row = $("button", "step" + (step.f ? " failed" : "")); row.type = "button";
@@ -793,6 +796,7 @@ __HEAD_HOSTED__
     const counts = stepsView.counts(step);
     if (counts) { const n = $("span", "n"); n.append($("b", "plus", `+${step.a || 0}`), " ", $("b", "minus", `\u2212${step.r || 0}`)); row.append(n); }
     if (step.f) row.append($("span", "bad", "failed"));
+    stepTexts.set(row, stepsView.searchText(step));
     row.addEventListener("click", () => openStep(ex, i, sid, row));
     return row;
   }
@@ -859,6 +863,9 @@ __HEAD_HOSTED__
   }
   function openStep(ex, index, sid, opener) {
     const node = sheetNode();
+    // A failed ask is not remembered: each time a sheet opens it asks again (a laptop that was away may be back).
+    const asked = sid && sessionOf(sid) && stepOutputs.get(sessionOf(sid).id);
+    if (asked && asked.state === "failed") asked.state = "idle";
     Object.assign(sheet, { ex, index, sid, opener: opener || sheet.opener, all: { diff: false, out: false } });
     node.scrim.hidden = false; node.dialog.hidden = false;
     document.body.style.overflow = "hidden";
@@ -955,19 +962,23 @@ __HEAD_HOSTED__
           if (step.z && step.z > fullText.length + 1) outBox.push($("p", "step-note", `The copy keeps ${step.k === "ran" || step.f ? "the last" : "the first"} ${fullText.length.toLocaleString()} of ${step.z.toLocaleString()} characters.`));
         } else if (!(step.f && step.t)) outBox.push($("p", "step-note", "No output was kept for this step."));
       } else if (entry.state === "failed") {
-        outBox.push($("p", "step-note", HOSTED && entry.error && entry.error.network ? "No output is stored on this device for this step, and the laptop is not reachable." : `Could not load the output: ${entry.error ? entry.error.message : "unknown error"}`));
-        outBox.push(downloadButton(session, "Try again"));
+        outBox.push($("p", "step-note", failureText(entry)), downloadButton(session, "Try again"));
       } else {
         outBox.push($("p", "step-note", "Loading the output…"));
         if (entry.state === "idle") loadOutputs(session);
       }
     } else if (plan.kind === "offer") {
-      outBox.push($("p", "step-note", plan.note), downloadButton(session, "Download this conversation’s outputs"));
+      // The person's own download: under way, or tried and not answered (the laptop is away).
+      if (entry.state === "loading") outBox.push($("p", "step-note", "Downloading the outputs\u2026"));
+      else if (entry.state === "failed") outBox.push($("p", "step-note", failureText(entry)), downloadButton(session, "Try again"));
+      else outBox.push($("p", "step-note", plan.note), downloadButton(session, "Download this conversation’s outputs"));
     }
     if (outBox.length) frag.append(section("Output", ...outBox).sec);
     body.replaceChildren(frag);
     node.ask.hidden = !sid;
   }
+  const failureText = entry => HOSTED && entry.error && (entry.error.network || /not reachable/.test(entry.error.message || "")) ? "No output is stored on this device for this step, and the laptop is not reachable. Try again when it answers."
+    : `Could not load the output: ${entry.error ? entry.error.message : "unknown error"}`;
   function downloadButton(session, label) {
     const btn = $("button", "btn", label); btn.type = "button";
     btn.addEventListener("click", async () => {
@@ -1741,7 +1752,23 @@ __HEAD_HOSTED__
     });
   }
   const canHighlight = () => Boolean(window.CSS && CSS.highlights && typeof Highlight !== "undefined");
+  // The step rows a search found: the rows of a matching run of steps that hold the words (all of them, else any), marked, since the words
+  // may sit in a command or a file the row does not draw. Under the Failed filter only failed rows count.
+  function markFoundSteps() {
+    document.querySelectorAll("#main .step.found").forEach(el => el.classList.remove("found"));
+    if (!look.open || !look.terms.length) return;
+    const wanted = new Set(look.hits.map(h => h.key));
+    for (const group of document.querySelectorAll("#main [data-find$=':steps']")) {
+      if (!wanted.has(group.dataset.find)) continue;
+      const rows = [...group.querySelectorAll(".step")].filter(row => look.who !== "failed" || row.classList.contains("failed"));
+      const low = rows.map(row => finder.fold(stepTexts.get(row) || ""));
+      let marked = rows.filter((row, n) => look.terms.every(t => low[n].includes(t)));
+      if (!marked.length) marked = rows.filter((row, n) => look.terms.some(t => low[n].includes(t)));
+      marked.forEach(row => row.classList.add("found"));
+    }
+  }
   function clearHighlights() {
+    markFoundSteps();
     look.ranges = [];
     if (canHighlight()) { CSS.highlights.delete("find-hit"); CSS.highlights.delete("find-current"); }
   }
@@ -1761,6 +1788,7 @@ __HEAD_HOSTED__
       if (!currentEls.includes(el) && wanted.has(el.dataset.find)) rest.push(...elementRanges(el, look.terms));
     }
     look.ranges = now;
+    markFoundSteps();
     if (rest.length) CSS.highlights.set("find-hit", new Highlight(...rest));
     if (now.length) { const h = new Highlight(...now); h.priority = 1; CSS.highlights.set("find-current", h); }
   }

@@ -133,3 +133,16 @@ test('page: the sheet\'s copy button does not use the class of the code blocks\'
   assert.match(PAGE, /\$\("button", "step-copy", "Copy"\)/);
   assert.doesNotMatch(PAGE, /\$\("button", "copy", "Copy"\)/);
 });
+
+test('page: a search marks the step rows that hold its words, since a command or file is not drawn on the row, and clears them when it closes', () => {
+  assert.match(PAGE, /function markFoundSteps\(\)/);
+  assert.match(PAGE, /function clearHighlights\(\) \{\s*markFoundSteps\(\);/, 'closing the search clears the marks (look.open is false by then)');
+  assert.match(PAGE, /look\.ranges = now;\s*markFoundSteps\(\);/, 'and every repaint of the highlights marks them');
+  assert.match(PAGE, /\.step\.found \{/);
+});
+
+test('page: a failed ask for output is asked again the next time a sheet opens, and a failed download says so with a way to try again', () => {
+  assert.match(PAGE, /if \(asked && asked\.state === "failed"\) asked\.state = "idle";/);
+  assert.match(PAGE, /else if \(entry\.state === "failed"\) outBox\.push\(\$\("p", "step-note", failureText\(entry\)\), downloadButton\(session, "Try again"\)\);/);
+  assert.match(PAGE, /hosted\.steps\(session, asked \? \{ probe: true \} : undefined\)/, 'the person\'s own download tries the laptop at once');
+});
