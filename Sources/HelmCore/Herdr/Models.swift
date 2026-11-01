@@ -96,8 +96,9 @@ public struct Snapshot: Equatable, Sendable {
     public init?(response root: [String: Any]) {
         guard let result = root["result"] as? [String: Any],
               let snap = result["snapshot"] as? [String: Any],
-              // A reply that has neither list is a schema this app does not know (renamed fields), not an empty session.
-              snap["workspaces"] != nil || snap["panes"] != nil else { return nil }
+              // The sidebar is built from `panes`: a reply without it is a schema this app does not know (renamed
+              // fields), not an empty session. A real session with no panes still carries the key, as an empty list.
+              snap["panes"] is [Any] else { return nil }
         protocolVersion = snap["protocol"] as? Int
         herdrVersion = snap["version"] as? String
         let panes = (snap["panes"] as? [[String: Any]]) ?? []

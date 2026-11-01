@@ -32,7 +32,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
+            // The Herdr-screen pane is an interactive second client: this test hook may only run against a stand-in
+            // (a socket directory outside ~/.config/herdr), never attach to a real session without a click.
+            let real = NSHomeDirectory() + "/.config/herdr"
+            let dir = (model.endpoint.socketDirectory as NSString).standardizingPath
+            if dir == real || dir.hasPrefix(real + "/") {
+                FileHandle.standardError.write("helm: --start-fallback refused: it would attach a second client to a real Herdr session\n".data(using: .utf8)!)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
+            }
         }
         if let text = cfg.sendTest {
             // End-to-end check of the compose path without clicking: type the text into the box and send it.

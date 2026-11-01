@@ -135,6 +135,10 @@ import FakeHerdrKit
         let renamed = #"{"id":"x","result":{"type":"session_snapshot","snapshot":{"protocol":22,"pane_list":[],"status":"x"}}}"#
         let obj = (try? JSONSerialization.jsonObject(with: Data(renamed.utf8))) as? [String: Any]
         #expect(obj != nil && Snapshot(response: obj!) == nil)
+        // The reviewer's proxy case: `panes` renamed, `workspaces` kept.
+        let partial = #"{"id":"x","result":{"type":"session_snapshot","snapshot":{"protocol":22,"workspaces":[{"workspace_id":"w1","label":"a"}],"pane_list":[],"agents":[]}}}"#
+        let p = (try? JSONSerialization.jsonObject(with: Data(partial.utf8))) as? [String: Any]
+        #expect(p != nil && Snapshot(response: p!) == nil)
         let empty = #"{"id":"x","result":{"type":"session_snapshot","snapshot":{"protocol":22,"version":"0.9.5","workspaces":[],"panes":[]}}}"#
         let e = (try? JSONSerialization.jsonObject(with: Data(empty.utf8))) as? [String: Any]
         let snap = e.flatMap { Snapshot(response: $0) }
