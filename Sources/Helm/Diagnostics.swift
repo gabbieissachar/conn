@@ -72,6 +72,13 @@ enum EditorSelfTest {
         print("editor-test: after typing dirty=\(doc.isDirty) modelStartsWithTyped=\(doc.text.hasPrefix("TYPED-BY-TEST "))")
         model.editor.save(doc)
         let after = (try? String(contentsOfFile: file, encoding: .utf8)) ?? "<unreadable>"
+        tv.window?.makeFirstResponder(tv)
+        let viaChain = TextFinderCommand.send(.showFindInterface)
+        await wait(0.4)
+        let visibleViaChain = tv.enclosingScrollView?.isFindBarVisible ?? false
+        let viaDirect = TextFinderCommand.send(.showFindInterface, to: tv)
+        await wait(0.4)
+        print("editor-test: Find through the responder chain handled=\(viaChain) barVisible=\(visibleViaChain); sent straight to the text view handled=\(viaDirect) barVisible=\(tv.enclosingScrollView?.isFindBarVisible ?? false) windowIsKey=\(tv.window?.isKeyWindow ?? false)")
         print("editor-test: saved dirty=\(doc.isDirty) diskStartsWithTyped=\(after.hasPrefix("TYPED-BY-TEST ")) diskGrewBy=\(after.count - before.count)")
     }
 }
@@ -165,6 +172,14 @@ enum UICheck {
         report("background pause stops the stream", !model.attentive && model.primary.paneID == nil, "attentive=\(model.attentive)")
         model.appBecameActive(); await wait(2)
         report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
+        // The menus SwiftUI built from the commands, with their shortcuts.
+        func dump(_ m: NSMenu, _ indent: String) {
+            for i in m.items where !i.isSeparatorItem {
+                let key = i.keyEquivalent.isEmpty ? "" : " [\(i.keyEquivalentModifierMask.contains(.control) ? "^" : "")\(i.keyEquivalentModifierMask.contains(.option) ? "~" : "")\(i.keyEquivalentModifierMask.contains(.shift) ? "$" : "")\(i.keyEquivalentModifierMask.contains(.command) ? "@" : "")\(i.keyEquivalent)]"
+                if let sub = i.submenu, !["Services"].contains(i.title) { print("ui-check: menu \(indent)\(i.title)"); dump(sub, indent + "  ") } else { print("ui-check: menu \(indent)\(i.title)\(key)\(i.isEnabled ? "" : " (disabled)")") }
+            }
+        }
+        if let main = NSApp.mainMenu { dump(main, "") }
         print("ui-check: done")
         model.shutdown(); NSApplication.shared.terminate(nil)
     }

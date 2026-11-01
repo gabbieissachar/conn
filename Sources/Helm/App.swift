@@ -66,6 +66,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+enum TextFinderCommand {
+    /// Sends the standard text-finder action down the responder chain, as the Find menu items of a text app do.
+    @MainActor @discardableResult
+    static func send(_ action: NSTextFinder.Action, to target: Any? = nil) -> Bool {
+        let item = NSMenuItem()
+        item.tag = action.rawValue
+        return NSApp.sendAction(#selector(NSResponder.performTextFinderAction(_:)), to: target, from: item)
+    }
+}
+
 struct HelmCommands: Commands {
     @ObservedObject var app: AppModel
 
@@ -80,6 +90,12 @@ struct HelmCommands: Commands {
                 }
                 if recents.isEmpty { Text("No recent files") }
             }
+        }
+        // The editor's text view has a find bar, but the Edit menu SwiftUI builds has no Find items to trigger it.
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { TextFinderCommand.send(.showFindInterface) }.keyboardShortcut("f")
+            Button("Find Next") { TextFinderCommand.send(.nextMatch) }.keyboardShortcut("g")
+            Button("Find Previous") { TextFinderCommand.send(.previousMatch) }.keyboardShortcut("g", modifiers: [.command, .shift])
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") { if let d = app.editor.current { app.editor.save(d) } }.keyboardShortcut("s").disabled(app.editor.current == nil)
