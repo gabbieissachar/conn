@@ -11,8 +11,8 @@ const path = require('path');
 const vm = require('vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'find.js'), 'utf8');
-// The page defines markdownView (the vendored parser and markdown.js) before find.js, which reads replies through it.
-const MARKDOWN = ['vendor/markdown-it.min.js', 'markdown.js'].map((file) => fs.readFileSync(path.join(__dirname, 'prototype', file), 'utf8'));
+// The page defines markdownView (the vendored parser and markdown.js) and stepsView (steps.js) before find.js, which reads replies and steps through them.
+const MARKDOWN = ['vendor/markdown-it.min.js', 'markdown.js', 'steps.js'].map((file) => fs.readFileSync(path.join(__dirname, 'prototype', file), 'utf8'));
 
 // What the sandbox builds has its own Array and Object, which a strict comparison tells apart: compare as data.
 const deepEqual = (actual, expected, message) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), JSON.parse(JSON.stringify(expected)), message);
@@ -168,7 +168,7 @@ test('each Who filter', () => {
   deepEqual(who('replies'), ['0:reply', '3:reply', '3:notes'], 'replies and the working notes are the agent\'s words');
   deepEqual(who('needs'), ['3:reply']);
   deepEqual(who('firstmate'), ['1:in']);
-  deepEqual(finder.filters.sort(), ['any', 'firstmate', 'needs', 'replies', 'you']);
+  deepEqual(finder.filters.sort(), ['any', 'failed', 'firstmate', 'needs', 'replies', 'tools', 'you']);
   assert.equal(finder.search([s], terms, 'nobody', 'here').length, 6, 'an unknown filter is Anyone');
 });
 
@@ -294,4 +294,74 @@ test('spans find the words over several text nodes, without touching them', () =
 
 test('the matching has no way out of the page', () => {
   assert.ok(!/\bfetch\b|XMLHttpRequest|WebSocket|sendBeacon|\bimport\b|\beval\b|new Function|innerHTML|document\./.test(SOURCE.replace(/\/\/.*$/gm, '')), 'find.js reads no page and writes none: it only holds functions over turns');
+});
+
+// ------------------------------------------------------------------------------------------------------------ tool steps
+// A turn's steps are a part of it ("steps"): what each says it did, its file and the first 100 characters of its command.
+
+const step = (extra) => ({ k: 'ran', n: 'Bash', s: 'Run the tests', at: 100, o: 0, ...extra });
+
+test('a command or a path that appears only in a step is found, as the Tools part of its turn', () => {
+  const finder = load();
+  const s = session('a', [
+    turn({ uid: 'u1', input: 'Run everything', reply: 'Done.', steps: [step({ c: 'pytest tests/billing/test_invoice.py -q', p: undefined }), step({ k: 'read', s: '\u2026/config/settings.toml', p: '/work/app/config/settings.toml' })] }),
+  ]);
+  const byCommand = finder.search([s], ['test_invoice'], 'any', 'here');
+  deepEqual(keys(byCommand), ['u1:steps']);
+  assert.equal(byCommand[0].field.label, 'Tool steps');
+  const byPath = finder.search([s], ['/work/app/config'], 'any', 'here');
+  deepEqual(keys(byPath), ['u1:steps'], 'the whole path, though the row shows its end');
+  deepEqual(keys(finder.search([s], ['run the tests'], 'any', 'here')), ['u1:steps'], 'the summary');
+  deepEqual(keys(finder.search([s], ['nothing like it'], 'any', 'here')), []);
+  // The snippet is cut from the same text.
+  const { pieces } = finder.snippet(byCommand[0].field, ['test_invoice']);
+  assert.equal(pieces.filter((p) => p.hit).map((p) => p.text).join(''), 'test_invoice');
+});
+
+test('only the start of a command is searched: the rest of it stays with the laptop', () => {
+  const finder = load();
+  const s = session('a', [turn({ uid: 'u1', steps: [step({ c: 'echo ' + 'x'.repeat(120) + ' needle-after-the-cut' })] })]);
+  deepEqual(keys(finder.search([s], ['needle-after-the-cut'], 'any', 'here')), []);
+  deepEqual(keys(finder.search([s], ['echo'], 'any', 'here')), ['u1:steps']);
+});
+
+test('the Tools chip reads the steps alone, Replies leaves them out, and Anyone reads everything', () => {
+  const finder = load();
+  const s = session('a', [turn({ uid: 'u1', input: 'deploy the app', reply: 'The deploy is done.', narration: ['starting the deploy'], narration_words: 3, steps: [step({ s: 'Run the deploy script' })] })]);
+  deepEqual(keys(finder.search([s], ['deploy'], 'any', 'here')).sort(), ['u1:in', 'u1:notes', 'u1:reply', 'u1:steps']);
+  deepEqual(keys(finder.search([s], ['deploy'], 'tools', 'here')), ['u1:steps']);
+  deepEqual(keys(finder.search([s], ['deploy'], 'replies', 'here')).sort(), ['u1:notes', 'u1:reply']);
+  deepEqual(keys(finder.search([s], ['deploy'], 'you', 'here')), ['u1:in']);
+  assert.ok(finder.filters.includes('tools') && finder.filters.includes('failed'));
+});
+
+test('the Failed chip finds only the failed steps: a word in a step that worked does not count', () => {
+  const finder = load();
+  const s = session('a', [
+    turn({ uid: 'u1', steps: [step({ s: 'Run the billing tests', f: 1 }), step({ s: 'List the folder' })] }),
+    turn({ uid: 'u2', steps: [step({ s: 'Run the billing tests' }), step({ s: 'Run the export check', f: 1 })] }),
+    turn({ uid: 'u3', steps: [step({ s: 'Run the billing tests' })] }),
+  ]);
+  deepEqual(keys(finder.search([s], ['billing'], 'failed', 'here')), ['u1:steps'], 'u2 failed on another step; u3 did not fail');
+  deepEqual(keys(finder.search([s], ['billing'], 'tools', 'here')), ['u1:steps', 'u2:steps', 'u3:steps']);
+  deepEqual(keys(finder.search([s], ['export'], 'failed', 'here')), ['u2:steps']);
+  deepEqual(keys(finder.search([s], ['list the folder'], 'failed', 'here')), [], 'it worked');
+  assert.equal(finder.search([s], ['billing'], 'failed', 'here')[0].count, 1, 'occurrences are counted in the failed steps\' words');
+});
+
+test('a turn that gains steps is searched again, and in a tie of time the steps are listed first', () => {
+  const finder = load();
+  const first = session('a', [turn({ uid: 'u1', reply: 'ok', reply_words: 1 })], { stamp: 's' });
+  deepEqual(keys(finder.search([first], ['tests'], 'any', 'here')), []);
+  const grown = session('a', [turn({ uid: 'u1', reply: 'ok', reply_words: 1, steps: [step()] })], { stamp: 's' });
+  deepEqual(keys(finder.search([grown], ['tests'], 'any', 'here')), ['u1:steps']);
+  const tie = session('b', [turn({ uid: 't1', at: 50, reply_at: 60, narration: ['run the tests'], narration_words: 3, reply: 'tests', reply_words: 1, steps: [step()] })]);
+  deepEqual(keys(finder.search([tie], ['tests'], 'any', 'all')), ['t1:steps', 't1:notes', 't1:reply'], 'one moment, three parts: the steps, then the notes, then the reply');
+});
+
+test('a turn from a copy built before steps were kept has none, and finds as it did', () => {
+  const finder = load();
+  const s = session('a', [turn({ uid: 'u1', reply: 'tests pass', reply_words: 2, tools: 4 })]);
+  deepEqual(keys(finder.search([s], ['tests'], 'any', 'here')), ['u1:reply']);
+  deepEqual(keys(finder.search([s], ['tests'], 'tools', 'here')), []);
 });

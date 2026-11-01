@@ -2,12 +2,13 @@
   // build_prototype.fill_template pastes this file into the reader page's script, after pins.js and markdown.js.
   // The matching behind the search row: plain functions over the turns the page already holds, with no DOM, no
   // network and no model, so a vm sandbox can run them (find.test.js). A match is a part of a turn: your message
-  // (or the instruction a Firstmate doorbell delivered), the reply, or the turn's working notes. A part is named the
+  // (or the instruction a Firstmate doorbell delivered), the reply, the turn's working notes, or its tool steps (steps.js: what each step says it did, its file and the
+  // start of its command). A part is named the
   // way a pin is, "<turn id>:<part>", so a match keeps its identity when a /clear joins earlier turns above it.
   // Matching is a case-insensitive substring over the part's text as the page draws it: every word must be in the
   // same part, in any order, and a "quoted phrase" stays together.
   const finder = (() => {
-    const RANK = { in: 0, reply: 1, notes: 2 };
+    const RANK = { in: 0, reply: 1, notes: 2, steps: 3 };
     const stats = { builds: 0 };
     const cache = new Map();
     // One character for one character, so an offset in the folded copy is an offset in the text it came from.
@@ -30,7 +31,10 @@
     const plainMarkdown = text => markdownView.plain(text);
     // The text each kind of part shows. A message and the working notes are drawn as written; only a reply is markdown.
     const instruction = ex => ex.source === "firstmate" && ex.delivered && ex.delivered.length ? ex.delivered.join("\n\n") : ex.input;
-    const partText = (ex, part) => part === "in" ? squash(instruction(ex) || "") : part === "reply" ? plainMarkdown(ex.reply || "") : squash((ex.narration || []).join("\n\n"));
+    const partText = (ex, part) => part === "in" ? squash(instruction(ex) || "") : part === "reply" ? plainMarkdown(ex.reply || "")
+      : part === "steps" ? squash(stepsView.list(ex).map(stepsView.searchText).join("\n")) : squash((ex.narration || []).join("\n\n"));
+    // Only the failed steps' words, which the Failed filter reads in place of the whole part's.
+    const failedText = ex => squash(stepsView.list(ex).filter(step => step.f).map(stepsView.searchText).join("\n"));
     const uid = (ex, i) => ex.uid || "n" + i;
     // The searchable parts of a conversation, in reading order. Dividers hold no words. A wake-up's own notice is not
     // a message, so only its reply is searched. A doorbell that rings again for a message already shown delivers
@@ -44,11 +48,12 @@
         // needs: an ask still open, as asks.js reads it (a copy built before ask_state has none, and reads as open).
         const add = (part, who, label, at) => {
           const low = fold(partText(ex, part));
-          if (low) fields.push({ i, part, key: `${id}:${part}`, who, label, at, needs: part === "reply" && ex.verdict === "needs-you" && (ex.ask_state || "open") === "open", folded: ex.source === "wake" && Boolean(ex.folded), low, ex });
+          if (low) fields.push({ i, part, key: `${id}:${part}`, who, label, at, needs: part === "reply" && ex.verdict === "needs-you" && (ex.ask_state || "open") === "open", folded: ex.source === "wake" && Boolean(ex.folded), low, failedLow: part === "steps" ? fold(failedText(ex)) : "", ex });
         };
         if (ex.source !== "wake" && !(ex.source === "firstmate" && ex.repeat)) add("in", ex.source === "captain" ? "you" : ex.source === "firstmate" ? "firstmate" : "peer", ex.source === "captain" ? "You" : ex.label, ex.at);
         if (ex.reply) add("reply", "reply", ex.source === "wake" ? "Wake-up reply" : "Reply", ex.reply_at || ex.at);
         if (ex.narration && ex.narration.length) add("notes", "notes", "Working notes", ex.reply_at || ex.at);
+        if (stepsView.list(ex).length) add("steps", "steps", "Tool steps", ex.reply_at || ex.at);
       });
       return fields;
     }
@@ -58,7 +63,7 @@
     function signature(session) {
       let words = 0, delivered = 0;
       for (const e of session.exchanges) {
-        words += (e.reply_words || 0) + (e.narration_words || 0);
+        words += (e.reply_words || 0) + (e.narration_words || 0) + stepsView.list(e).length;
         for (const d of e.delivered || []) delivered += d.length;
       }
       return `${session.stamp || ""}|${session.exchanges.length}|${words}|${delivered}`;
@@ -77,7 +82,11 @@
       replies: f => f.who === "reply" || f.who === "notes",
       needs: f => f.who === "reply" && f.needs,
       firstmate: f => f.who === "firstmate",
+      tools: f => f.who === "steps",
+      failed: f => f.who === "steps" && Boolean(f.failedLow),
     };
+    // The words a filter reads: the Failed filter reads only the failed steps'.
+    const lowOf = (f, who) => who === "failed" ? f.failedLow : f.low;
     function occurrences(low, terms) {
       let n = 0;
       for (const t of terms) for (let at = low.indexOf(t); at >= 0; at = low.indexOf(t, at + t.length)) n += 1;
@@ -91,7 +100,7 @@
       const pass = WHO[who] || WHO.any;
       const groups = [];
       for (const s of sessions) {
-        const hits = fieldsOf(s).filter(f => pass(f) && terms.every(t => f.low.includes(t))).map(field => ({ conv: s.id, key: field.key, field, count: occurrences(field.low, terms) }));
+        const hits = fieldsOf(s).filter(f => pass(f) && terms.every(t => lowOf(f, who).includes(t))).map(field => ({ conv: s.id, key: field.key, field, count: occurrences(lowOf(field, who), terms) }));
         if (hits.length) groups.push(hits);
       }
       if (scope !== "all") return groups.flat();
