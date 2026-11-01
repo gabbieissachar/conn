@@ -399,6 +399,20 @@ struct MainView: View {
             }
         }
         .background(OcclusionWatcher { app.setWindowVisible($0) })
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            // Files dropped on the window open in the editor. Only regular files; folders and apps are ignored.
+            var opened = false
+            for p in providers where p.hasItemConformingToTypeIdentifier("public.file-url") {
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url = url else { return }
+                    var isDir: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return }
+                    DispatchQueue.main.async { app.editor.open(url); app.mode = .editor }
+                }
+                opened = true
+            }
+            return opened
+        }
         .sheet(item: $app.recent) { item in RecentOutputSheet(item: item) { app.recent = nil } }
         .onChange(of: app.showWeb) { _, _ in app.pinReader() }
     }

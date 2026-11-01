@@ -41,8 +41,10 @@ final class EditorModel: ObservableObject {
         selectedID = d.id
     }
 
-    func showOpenPanel() {
+    /// `startingIn`: where the panel opens (the selected agent's working directory), if it exists.
+    func showOpenPanel(startingIn dir: String? = nil) {
         let panel = NSOpenPanel()
+        if let d = dir, !d.isEmpty, FileManager.default.fileExists(atPath: d) { panel.directoryURL = URL(fileURLWithPath: d) }
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.message = "Open a text or markdown file"
@@ -174,7 +176,7 @@ struct EditorArea: View {
                     Text("No file open").font(.system(size: 14, weight: .medium))
                     Text("Open a text or markdown file, or start a new one.").font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack {
-                        Button("Open…") { model.showOpenPanel() }.keyboardShortcut("o")
+                        Button("Open…") { model.showOpenPanel() }
                         Button("New") { model.newDocument() }
                     }
                 }

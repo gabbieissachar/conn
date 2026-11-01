@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let cfg = Runtime.config, model = Runtime.model
         if cfg.dark { model.appearance = .dark }
+        if let t = cfg.webTab { model.webTab = t }
         model.privacy = cfg.privacy
         if let m = cfg.mode { model.mode = m }
         model.editor.restoreSession()
@@ -70,7 +71,7 @@ struct HelmCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Document") { app.mode = .editor; app.editor.newDocument() }.keyboardShortcut("n")
-            Button("Open…") { app.mode = .editor; app.editor.showOpenPanel() }.keyboardShortcut("o")
+            Button("Open…") { app.mode = .editor; app.editor.showOpenPanel(startingIn: app.selectedAgent?.cwd) }.keyboardShortcut("o")
             Menu("Open Recent") {
                 let recents = NSDocumentController.shared.recentDocumentURLs
                 ForEach(recents, id: \.self) { url in

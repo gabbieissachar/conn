@@ -149,5 +149,10 @@ struct WebPaneRep: NSViewRepresentable {
         DispatchQueue.main.async { box.loadIfNeeded() }
         return v
     }
-    func updateNSView(_ v: WebHostView, context: Context) { v.attach(box.webView) }
+    func updateNSView(_ v: WebHostView, context: Context) {
+        v.attach(box.webView)
+        // Switching the tab swaps the box under the same view, so makeNSView does not run again: load here too
+        // (loadIfNeeded only acts on a box that has never loaded).
+        DispatchQueue.main.async { box.loadIfNeeded() }
+    }
 }

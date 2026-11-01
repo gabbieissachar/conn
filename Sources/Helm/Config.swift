@@ -38,6 +38,7 @@ struct AppConfig {
     var startFallback = false
     var probeDraw = false
     var compare = false
+    var webTab: WebKind?
     /// Force the text path (`pane.read` polling) instead of the stream: for testing it against real Herdr, or if a stream misbehaves.
     var textPanes = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
@@ -71,6 +72,7 @@ struct AppConfig {
             case "--start-fallback": c.startFallback = true
             case "--probe-draw": c.probeDraw = true
             case "--compare": c.compare = true
+            case "--web-tab": c.webTab = (next() ?? "") == "organizer" ? .organizer : .reader
             case "--text-panes": c.textPanes = true
             case "--editor-test": c.editorTest = next()
             default: break
