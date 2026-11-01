@@ -5,6 +5,14 @@ import Darwin
 import HelmCore
 import HelmTerminal
 
+/// What the "Recent output" sheet shows: a pane's recent history as plain text, because a stream pane has no scrollback.
+struct RecentOutput: Identifiable {
+    let id = UUID()
+    var agentName: String
+    var text: String?
+    var error: String?
+}
+
 struct HeldMessage: Equatable {
     enum Phase: Equatable { case held, sending, undone, sent, failed(String) }
     var text: String
@@ -41,6 +49,7 @@ final class AppModel: ObservableObject {
     @Published var switcherQuery = ""
     @Published var compose = ""
     @Published var held: HeldMessage?
+    @Published var recent: RecentOutput?
     /// nil follows the system. Applied to the whole app: SwiftUI's preferredColorScheme closes the window when it
     /// changes at runtime, NSApp.appearance does not.
     @Published var appearance: ColorScheme? = nil {
@@ -266,6 +275,24 @@ final class AppModel: ObservableObject {
     }
 
     func reloadWeb() { web.allBoxes.forEach { $0.reload() } }
+
+    /// Opens the history of the selected pane (`pane.read`, source recent, plain text, last 3000 lines). Read-only.
+    func showRecentOutput() {
+        guard let a = selectedAgent else { return }
+        recent = RecentOutput(agentName: a.name, text: nil, error: nil)
+        let c = HerdrClient(endpoint: endpoint)
+        let id = recent!.id
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let r: Result<String, Error> = Result { try c.readPane(a.id, source: .recent, ansi: false, lines: 3000) }
+            DispatchQueue.main.async {
+                guard let self = self, self.recent?.id == id else { return }
+                switch r {
+                case .success(let t): self.recent?.text = t
+                case .failure(let e): self.recent?.error = "\(e)"
+                }
+            }
+        }
+    }
 
     // MARK: compose: the one write path
 

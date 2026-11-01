@@ -19,8 +19,8 @@ struct AppConfig {
     var herdrBin: String?
     var writeSessions: String?
     var fixture = false
-    /// The cell-grid view is the default until the SwiftTerm pane has been seen on a real screen (see the handoff).
-    var renderer = RendererKind.grid
+    /// Decision B2: SwiftTerm. The captain looked at it on a real screen and it draws; `--renderer grid` selects the cell-grid view.
+    var renderer = RendererKind.swiftTerm
     var mode: CenterMode?
     var select: Int?
     var showWeb: Bool?

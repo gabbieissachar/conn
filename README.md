@@ -4,7 +4,7 @@ Native Mac workspace app: Herdr panes, the transcript reader, the organizer and 
 
 Helm is a client of `herdr server`: Herdr stays the backend and keeps every agent alive when the app quits. The app draws a native sidebar from Herdr's snapshot and events, streams visible panes into a terminal pane, shows the reader and the organizer as web views, edits text and markdown files, and keeps Herdr's own screen in a terminal pane as a fallback.
 
-**What draws the panes today.** Decision B2 is SwiftTerm as the terminal engine behind a protocol. Two engines implement that protocol: the cell-grid engine (about 450 lines, ported from the prototype) and SwiftTerm. **The default pane view is the cell-grid engine**, because it is the one whose output has been seen in screenshots. SwiftTerm panes are wired and selectable with `./run.sh --renderer swiftterm`; their decoded content matches the grid engine's, but their pixels have not been seen: every capture available to the agents that built this shows a blank pane (SwiftTerm draws on a layer from a display link, which the capture method does not see). SwiftTerm does run today in the Herdr-screen fallback pane. The default follows a look at `--renderer swiftterm` on a real screen.
+**What draws the panes.** Decision B2: SwiftTerm is the terminal engine, behind a protocol (`TerminalEngine`). It is the default pane view. A second engine, a 450-line cell grid ported from the prototype, stays selectable with `./run.sh --renderer grid`; it is the one whose output the agents that built this could see in screenshots, so it is the reference when a SwiftTerm pane looks wrong. SwiftTerm also runs the Herdr-screen fallback pane.
 
 ## Build and run
 
@@ -14,7 +14,7 @@ Command Line Tools and SwiftPM only. No Xcode.
 ./build.sh                 # build/Helm.app (release), about 5 minutes the first time (SwiftTerm dominates)
 ./run.sh                   # live: observe-only client of Herdr session "esim"
 ./run.sh --fixture         # stand-in Herdr with invented agents and pages: safe to screen-share, compose box enabled
-./run.sh --fixture --renderer swiftterm   # the same with SwiftTerm panes (look at it and say if the pane draws)
+./run.sh --fixture --renderer grid   # the same with the cell-grid pane view
 ./run.sh --session NAME    # another session
 ./run.sh --write NAME      # let the compose box send to that session (default: none)
 ./test.sh                  # unit tests (Swift Testing from the Command Line Tools)
@@ -27,7 +27,7 @@ More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+
 | Path | What |
 |---|---|
 | `Sources/HelmCore` | Everything that is not UI: Herdr JSON client with a write gate, store (snapshot + events, reconnect, health ping), pane stream sources, compatibility check, terminal protocol and the cell-grid engine, editor document |
-| `Sources/HelmTerminal` | SwiftTerm behind HelmCore's `TerminalEngine`: engine, observe-only view, theme, the fallback pane (the pane view is used only with `--renderer swiftterm`) |
+| `Sources/HelmTerminal` | SwiftTerm behind HelmCore's `TerminalEngine`: engine, observe-only view, theme, the fallback pane |
 | `Sources/Helm` | The SwiftUI app with AppKit views for the hot paths |
 | `Sources/FakeHerdrKit`, `Sources/FakeHerdr` | A stand-in Herdr (JSON socket, pane stream, `herdr` CLI subset) for fixtures, tests and measurements |
 | `Sources/HelmStreamTest` | The read-only Herdr stream test (latency, reconnect, load, version checks) |

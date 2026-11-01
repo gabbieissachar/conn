@@ -77,13 +77,14 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     app = os.path.join(here, '..', 'build/Helm.app/Contents/MacOS/Helm')
     before = webkit_helpers()
-    p = subprocess.Popen([app], env={**os.environ, 'HELM_ARGS': args}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(settle)
-    targets = {'app': p.pid}
+    noapp = os.environ.get('HELM_MEASURE_NOAPP') == '1'     # servers alone, for paired with/without windows
+    p = None if noapp else subprocess.Popen([app], env={**os.environ, 'HELM_ARGS': args}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1 if noapp else settle)
+    targets = {} if noapp else {'app': p.pid}
     if os.environ.get('HELM_MEASURE_SERVERS', '1') == '1': targets.update(server_targets())
-    for pid, ppid, cmd in ps_rows():
+    for pid, ppid, cmd in ([] if noapp else ps_rows()):
         if ppid == p.pid and 'herdr' in cmd.lower() and 'observe' in cmd: targets[f'observer-{pid}'] = pid
-    for pid, kind in webkit_helpers().items():
+    for pid, kind in ({} if noapp else webkit_helpers()).items():
         if pid not in before: targets[f'webkit-{kind}-{pid}'] = pid
     rows = []; t_end = time.time() + seconds; interval = 2.0
     while True:
@@ -94,9 +95,10 @@ def main():
         rows.append((t, snap))
         if t >= t_end: break
         time.sleep(max(0, interval - (time.time() - t)))
-    p.send_signal(signal.SIGTERM)
-    try: p.wait(10)
-    except Exception: p.kill()
+    if p:
+        p.send_signal(signal.SIGTERM)
+        try: p.wait(10)
+        except Exception: p.kill()
     span = rows[-1][0] - rows[0][0]
     groups = {}
     for k in targets:

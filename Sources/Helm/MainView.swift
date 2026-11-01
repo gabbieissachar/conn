@@ -399,6 +399,7 @@ struct MainView: View {
             }
         }
         .background(OcclusionWatcher { app.setWindowVisible($0) })
+        .sheet(item: $app.recent) { item in RecentOutputSheet(item: item) { app.recent = nil } }
         .onChange(of: app.showWeb) { _, _ in app.pinReader() }
     }
 

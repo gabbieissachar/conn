@@ -160,6 +160,10 @@ struct PaneColumn: View {
                     AccessBadge(writable: app.writesEnabled, compact: true)
                 }
                 .layoutPriority(1)
+                if !isCompare, agent != nil, !app.privacy {
+                    Button { app.showRecentOutput() } label: { Image(systemName: "text.alignleft") }
+                        .buttonStyle(.borderless).help("Recent output of this agent as text (a stream pane has no scrollback)")
+                }
                 if isCompare {
                     Button { app.toggleCompare() } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless).help("Close the comparison pane")
@@ -304,4 +308,51 @@ struct FallbackRep: NSViewRepresentable {
         let v = controller.view
         if v.superview !== host { v.removeFromSuperview(); v.frame = host.bounds; v.autoresizingMask = [.width, .height]; host.addSubview(v) }
     }
+}
+
+
+struct RecentOutputSheet: View {
+    let item: RecentOutput
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Recent output · \(item.agentName)").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Copy") {
+                    if let t = item.text { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(t, forType: .string) }
+                }.disabled(item.text == nil)
+                Button("Done", action: close).keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+            Divider()
+            if let t = item.text {
+                ReadOnlyText(text: t)
+            } else if let e = item.error {
+                Text(e).foregroundStyle(.secondary).padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 520)
+    }
+}
+
+/// Read-only text with the system find bar, scrolled to the end (the newest output).
+struct ReadOnlyText: NSViewRepresentable {
+    let text: String
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let tv = scroll.documentView as! NSTextView
+        tv.isEditable = false
+        tv.isRichText = false
+        tv.usesFindBar = true
+        tv.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.textContainerInset = NSSize(width: 10, height: 8)
+        tv.string = text
+        DispatchQueue.main.async { tv.scrollToEndOfDocument(nil) }
+        return scroll
+    }
+    func updateNSView(_ v: NSScrollView, context: Context) {}
 }

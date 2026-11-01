@@ -32,7 +32,7 @@ public enum ReadSource: String, Sendable { case visible, recent }
 public enum HerdrRequest: Sendable {
     case ping
     case snapshot
-    case readPane(pane: String, source: ReadSource, ansi: Bool)
+    case readPane(pane: String, source: ReadSource, ansi: Bool, lines: Int?)
     /// Text typed into a pane, then keys (for example ["Enter"]). The one write.
     case sendInput(pane: String, text: String, keys: [String])
 
@@ -50,9 +50,11 @@ public enum HerdrRequest: Sendable {
     func params() throws -> [String: Any] {
         switch self {
         case .ping, .snapshot: return [:]
-        case .readPane(let pane, let source, let ansi):
+        case .readPane(let pane, let source, let ansi, let lines):
             guard HerdrEndpoint.validPaneID(pane) else { throw HerdrError.invalidArgument("pane id") }
-            return ["pane_id": pane, "source": source.rawValue, "format": ansi ? "ansi" : "text", "strip_ansi": !ansi]
+            var p: [String: Any] = ["pane_id": pane, "source": source.rawValue, "format": ansi ? "ansi" : "text", "strip_ansi": !ansi]
+            if let n = lines, (1...20_000).contains(n) { p["lines"] = n }
+            return p
         case .sendInput(let pane, let text, let keys):
             guard HerdrEndpoint.validPaneID(pane) else { throw HerdrError.invalidArgument("pane id") }
             var p: [String: Any] = ["pane_id": pane]
@@ -107,8 +109,8 @@ public final class HerdrClient: @unchecked Sendable {
     }
 
     /// Text of a pane as the server sees it (the text fallback when the stream is unavailable).
-    public func readPane(_ pane: String, source: ReadSource = .visible, ansi: Bool = true) throws -> String {
-        let obj = try call(.readPane(pane: pane, source: source, ansi: ansi))
+    public func readPane(_ pane: String, source: ReadSource = .visible, ansi: Bool = true, lines: Int? = nil) throws -> String {
+        let obj = try call(.readPane(pane: pane, source: source, ansi: ansi, lines: lines))
         guard let result = obj["result"] as? [String: Any] else { throw HerdrError.malformed("no result") }
         if let read = result["read"] as? [String: Any], let text = read["text"] as? String { return text }
         if let text = result["text"] as? String { return text }
