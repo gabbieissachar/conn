@@ -394,6 +394,10 @@ class ToolStepsTest(unittest.TestCase):
             ("Bash", {"command": "cat ~/.ssh/id_rsa"}),
             ("Bash", {"command": "cd /repo && cat secrets.yaml | head"}),
             ("Bash", {"command": "source .env.local && echo done"}),
+            ("Bash", {"command": "cat .secrets.json"}),
+            ("Bash", {"command": "cd ~ && cat .mysecretfile | head -3"}),
+            ("Bash", {"command": "ls .ssh"}),
+            ("Bash", {"command": "jq .items data.json && cat .private-notes"}),
             ("Bash", {"command": "cat state/.lock-session"}),
             ("Bash", {"command": "cp ~/.npmrc /tmp/x"}),
             ("Grep", {"pattern": "key", "path": "/home/me/.config/gh/hosts.yml"}),
@@ -412,7 +416,7 @@ class ToolStepsTest(unittest.TestCase):
     def test_an_ordinary_command_is_not_withheld(self):
         for command in ("git status", "ls ./src/.venv/bin", "grep password notes.md | head", "echo done",
                         "python3 -c 'print(open(path).read())'", "jq .items notes.json", "sed -n 's/.*run//p' log.txt", "ls -la ... ..", "node -e \"el.click(); x.textContent\"",
-                        "git add .", "cd ~/work && ls"):
+                        "git add .", "cd ~/work && ls", "jq .items.name data.json", "python3 -c 'print(x[0].name, d.get(1).value)'", "grep -E '^\\.[a-z]+' notes.txt"):
             with self.subTest(command=command):
                 [step] = self.turn(call(1, "Bash", {"command": command}, "x"), result(2, "x", "fine"), say("ok", 3))["steps"]
                 self.assertNotIn("h", step)

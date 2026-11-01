@@ -57,6 +57,14 @@ KINDS = {
 CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".gcloud", ".config", ".secrets", ".password-store"}
 CREDENTIAL_NAME = re.compile(r"(?i)^(?:id_(?:rsa|dsa|ecdsa|ed25519)|.*\.(?:pem|key|p12|pfx|jks|keystore|kdbx)|.*(?:credential|secret|token|passw(?:or)?d)s?[^/]*)$")
 DOTFILE_NAME = re.compile(r"^\.[A-Za-z0-9_][A-Za-z0-9_.-]*$")  # .env, .npmrc, .lock-session: not .*run, .., ... or a bare method call
+# A word in a command that is a dotfile by its look: starts with a dot and a letter, digit or underscore, stands alone (not after a word, a
+# closing bracket, a dot, a dollar, a hyphen, a slash or a glob star: `f.read`, `open(x).read`, `x[0].name`, `*.md`, `a/.b`) and is no call or index
+# (`.get(`, `.items[`). A file extension on its own (`'.md'`, `".json"`) is not a dotfile.
+BARE_DOTFILE = re.compile(r"(?<![\w)\]}./$*?-])\.[A-Za-z0-9_][A-Za-z0-9_.-]*(?![\w(\[])")
+EXTENSIONS = {"md", "json", "jsonl", "sh", "py", "js", "cjs", "mjs", "ts", "tsx", "jsx", "html", "css", "png", "jpg", "jpeg", "gif", "svg", "sql", "txt", "log",
+              "msg", "meta", "status", "reply", "yml", "yaml", "toml", "csv", "lock", "pdf", "xml", "ini", "cfg", "conf", "tmp", "bak", "diff", "patch", "zip"}
+COMMAND_PARTS = re.compile(r"&&|\|\||[;|\n]")  # the commands a line chains
+FILTER_TOOL = re.compile(r"(?:^|[\s|;&(])(?:jq|yq|gojq)\b")  # a jq or yq filter (`.items`) names no file
 KNOWN_DOTFILES = re.compile(r"^\.(?:env(?:\..*)?|npmrc|netrc|pypirc|git-credentials|gitconfig|bashrc|bash_profile|zshrc|zprofile|profile|aws|ssh|gnupg|kube|docker|azure|gcloud|config|secrets|password-store)$")
 PATH_TOKEN = re.compile(r"[^\s'\"=:;|&<>()`,]+")
 FILE_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,8}$")
@@ -102,9 +110,10 @@ def sensitive_path(path: str) -> bool:
 def command_path_is_sensitive(token: str) -> bool:
     """Whether one word of a shell command names a dotfile or a credential path. A word with a slash is a path: a
     dotfile name (`.env`, `state/.lock-session`), a file in a folder that holds credentials (`~/.ssh/id_rsa`) or one
-    named like one. A word with no slash only counts when it is a well-known dotfile (`.env`) or a file named like a
-    credential with an extension (`credentials.json`): a method call (`f.read()`), a regular expression (`.*run`) or a
-    jq path (`.items`) is not a file."""
+    named like one. A word with no slash only counts here when it is a well-known dotfile (`.env`) or a file named like a
+    credential with an extension (`credentials.json`); any other bare dotfile name is found by BARE_DOTFILE in
+    touches_secrets, which sees what stands around it (a method call (`f.read()`), a regular expression (`.*run`) and a
+    jq path (`.items`) are not files)."""
     parts = [part for part in token.replace("\\", "/").split("/") if part and part not in (".", "..", "~")]
     if not parts:
         return False
@@ -121,7 +130,9 @@ def touches_secrets(command: str) -> bool:
             continue
         if command_path_is_sensitive(token):
             return True
-    return False
+    # A dotfile named on its own (`cat .secrets`): any such word, except in the part of a command that filters with jq or yq, where `.items`
+    # is a path into the data and only a well-known dotfile (above) still counts.
+    return any(m.group(0)[1:].lower() not in EXTENSIONS for part in COMMAND_PARTS.split(command) if not FILTER_TOOL.search(part) for m in BARE_DOTFILE.finditer(part))
 
 
 def short_path(path: str) -> str:
