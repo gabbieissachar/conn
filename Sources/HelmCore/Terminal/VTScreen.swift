@@ -84,7 +84,7 @@ public final class VTScreen {
         cells = Array(repeating: Cell(), count: cols * rows)
         dirtyRows = Array(repeating: true, count: rows)
         anyDirty = true
-        cursorRow = 0; cursorCol = 0; wrapPending = false
+        cursorRow = 0; cursorCol = 0; wrapPending = false; savedCursor = (0, 0)
         scrollTop = 0; scrollBottom = rows - 1
     }
 
@@ -148,7 +148,7 @@ public final class VTScreen {
             case 0x50, 0x58, 0x5e, 0x5f: state = .str
             case 0x28, 0x29, 0x2a, 0x2b, 0x23, 0x25: state = .escInter
             case 0x37: savedCursor = (cursorRow, cursorCol)
-            case 0x38: cursorRow = savedCursor.row; cursorCol = savedCursor.col; wrapPending = false
+            case 0x38: restoreCursor()
             case 0x44: lineFeed()
             case 0x45: cursorCol = 0; lineFeed()
             case 0x4d: reverseIndex()
@@ -180,8 +180,15 @@ public final class VTScreen {
         }
     }
 
+    /// A saved cursor can predate a resize, so it is clamped to the current grid when restored.
+    private func restoreCursor() {
+        cursorRow = min(rows - 1, max(0, savedCursor.row))
+        cursorCol = min(cols - 1, max(0, savedCursor.col))
+        wrapPending = false
+    }
+
     private func resetState() {
-        pen = Cell(); cursorRow = 0; cursorCol = 0; wrapPending = false
+        pen = Cell(); cursorRow = 0; cursorCol = 0; wrapPending = false; savedCursor = (0, 0)
         scrollTop = 0; scrollBottom = rows - 1
         clearAll()
     }
@@ -251,6 +258,7 @@ public final class VTScreen {
         if w == 0 { return }
         if wrapPending { cursorCol = 0; lineFeed(); wrapPending = false }
         if w == 2 && cursorCol == cols - 1 { cursorCol = 0; lineFeed() }
+        guard cursorRow >= 0, cursorRow < rows, cursorCol >= 0, cursorCol < cols else { return }
         let i = cursorRow * cols + cursorCol
         cells[i] = Cell(ch: ch, fg: pen.fg, bg: pen.bg, attrs: pen.attrs | (w == 2 ? Attr.wide : 0))
         if w == 2 && cursorCol + 1 < cols {
@@ -276,7 +284,8 @@ public final class VTScreen {
         let raw = text.split(separator: ";", omittingEmptySubsequences: false).map { String($0) }
         func p(_ i: Int, _ def: Int) -> Int {
             guard i < raw.count, let v = Int(raw[i].split(separator: ":").first ?? "") else { return def }
-            return v == 0 ? def : v
+            // Stream bytes are untrusted input: a huge parameter must not overflow later arithmetic.
+            return v == 0 ? def : min(max(v, 0), 65535)
         }
         wrapPending = false
         switch final {
@@ -304,7 +313,7 @@ public final class VTScreen {
                 }
             } else { count("SM/RM \(text)") }
         case 0x73: savedCursor = (cursorRow, cursorCol)
-        case 0x75: cursorRow = savedCursor.row; cursorCol = savedCursor.col
+        case 0x75: restoreCursor()
         case 0x4c: insertLines(p(0, 1))
         case 0x4d: deleteLines(p(0, 1))
         case 0x40: insertChars(p(0, 1))

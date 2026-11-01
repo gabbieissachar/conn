@@ -126,3 +126,34 @@ import FakeHerdrKit
         #expect(HerdrStatus(json: Data("garbage".utf8)) == nil)
     }
 }
+
+@Suite("Decoder robustness") struct DecoderRobustnessTests {
+    private func feed(_ s: String, cols: Int = 20, rows: Int = 6) -> GridEngine {
+        let e = GridEngine(cols: cols, rows: rows)
+        e.feed(Array(s.utf8))
+        return e
+    }
+
+    @Test func hugeParametersDoNotTrap() {
+        // 99999999999999999999 overflows Int; 70000 exceeds the clamp. Neither may crash or move the cursor out of the grid.
+        let e = feed("\u{1b}[99999999999999999999B\u{1b}[70000C\u{1b}[70000X\u{1b}[70000@\u{1b}[70000P\u{1b}[70000L\u{1b}[70000M\u{1b}[70000S\u{1b}[70000Thello")
+        #expect(e.rows == 6 && e.cols == 20)
+        #expect(e.screen.cursorRow >= 0 && e.screen.cursorRow < 6)
+        #expect(e.screen.cursorCol >= 0 && e.screen.cursorCol < 20)
+    }
+
+    @Test func aSavedCursorFromBeforeAResizeIsClamped() {
+        let e = GridEngine(cols: 80, rows: 40)
+        e.feed(Array("\u{1b}[39;79H\u{1b}7".utf8))        // save at row 39, column 79
+        e.resize(cols: 10, rows: 5)
+        e.feed(Array("\u{1b}8hello".utf8))                  // restore, then print: must stay inside the 10x5 grid
+        e.feed(Array("\u{1b}[s\u{1b}[1;1H\u{1b}[u".utf8))
+        #expect(e.screen.cursorRow < 5 && e.screen.cursorCol < 10)
+        #expect(e.unhandledSequenceCount == 0)
+    }
+
+    @Test func malformedSequencesAreCountedNotFatal() {
+        let e = feed("\u{1b}[38;2;1mx\u{1b}[?9999hy\u{1b}Zz\u{1b}[;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;m ok\u{1b}]8;;\u{1b}")
+        #expect(e.rowText(0).contains("ok"))
+    }
+}
