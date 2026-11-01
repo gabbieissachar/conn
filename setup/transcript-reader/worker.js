@@ -65,7 +65,8 @@ function create({ command, args, cwd, env, timeoutMs = 60000, idleMs = IDLE_MS, 
       if (child === current) child = null;
     };
     proc.on('error', (error) => gone(error.message));
-    proc.on('exit', () => gone('The worker stopped.'));
+    // 'close', not 'exit': 'exit' can come before the last of stderr has been read, which would leave the message empty.
+    proc.on('close', () => gone('The worker stopped.'));
     return current;
   }
 
