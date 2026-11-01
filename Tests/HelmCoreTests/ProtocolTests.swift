@@ -69,6 +69,19 @@ import FakeHerdrKit
         #expect(throws: (any Error).self) { try real.start() }
     }
 
+    @Test func onlyAnEndpointWithBothADifferentDirectoryAndADifferentBinaryIsAStandIn() {
+        let home = NSHomeDirectory()
+        let real = HerdrEndpoint(session: "esim", socketDirectory: home + "/.config/herdr/sessions", binaryPath: home + "/.local/bin/herdr")
+        #expect(!real.isStandIn)
+        // The reviewer's case: a scratch socket directory but the default, real executable.
+        #expect(!HerdrEndpoint(session: "esim", socketDirectory: "/tmp/x", binaryPath: home + "/.local/bin/herdr").isStandIn)
+        #expect(!HerdrEndpoint(session: "esim", socketDirectory: "/tmp/x", binaryPath: "/opt/homebrew/bin/herdr").isStandIn)
+        // A real executable with the real directory, and no executable at all.
+        #expect(!HerdrEndpoint(session: "esim", socketDirectory: home + "/.config/herdr/sessions", binaryPath: "/tmp/shim/herdr").isStandIn)
+        #expect(!HerdrEndpoint(session: "fake", socketDirectory: "/tmp/x", binaryPath: "").isStandIn)
+        #expect(HerdrEndpoint(session: "fake", socketDirectory: "/tmp/x", binaryPath: "/tmp/shim/herdr").isStandIn)
+    }
+
     @Test func unreachableSessionThrows() {
         let client = HerdrClient(endpoint: HerdrEndpoint(session: "nope", socketDirectory: shortSocketDir(), binaryPath: ""))
         #expect(throws: HerdrError.self) { try client.snapshot() }

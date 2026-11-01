@@ -32,6 +32,22 @@ public struct HerdrEndpoint: Equatable, Sendable {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    /// The executables a real Herdr install puts on this machine.
+    public static var realBinaryPaths: [String] { [NSHomeDirectory() + "/.local/bin/herdr", "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"] }
+
+    /// True only when BOTH the socket directory and the `herdr` executable are outside a real Herdr install, so nothing
+    /// this endpoint does can reach a real session (an attach goes wherever the executable sends it, not where the socket
+    /// directory points).
+    public var isStandIn: Bool {
+        let real = (NSHomeDirectory() + "/.config/herdr") as NSString
+        let dir = (socketDirectory as NSString).standardizingPath
+        if dir == real.standardizingPath || dir.hasPrefix(real.standardizingPath + "/") { return false }
+        guard let bin = binaryPath, !bin.isEmpty else { return false }
+        let resolved = URL(fileURLWithPath: bin).resolvingSymlinksInPath().path
+        let real2 = Self.realBinaryPaths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        return !real2.contains(resolved) && !Self.realBinaryPaths.contains(bin)
+    }
+
     public static func validPaneID(_ s: String) -> Bool {
         s.range(of: "^[A-Za-z0-9:_.-]{1,64}$", options: .regularExpression) != nil
     }
