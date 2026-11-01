@@ -45,6 +45,17 @@ function make(options = {}) {
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+// A process ends some time after the worker lets go of it, and how long depends on how busy the machine is (the whole suite
+// runs many files at once). So a test waits for the condition itself, up to a limit it can only reach when something is wrong,
+// rather than sleeping for a fixed time and looking once.
+async function until(condition, what, limitMs = 10000) {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > limitMs) assert.fail('still not true after ' + limitMs + ' ms: ' + what);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 test('a request is answered with the exit code and the output, as a one-shot run would give them', async () => {
   const worker = make();
   try {
@@ -75,8 +86,7 @@ test('a request that takes longer than allowed ends the worker, and the next req
     const slow = await worker.run(['slow', '5000'], { timeoutMs: 100 });
     assert.equal(slow.timedOut, true);
     assert.equal(slow.crashed, undefined, 'a timeout is the build\'s, reported as the one-shot run reports it');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(alive(first), false, 'the stuck process is gone');
+    await until(() => !alive(first), 'the stuck process is gone');
     const second = Number((await worker.run(['pid'])).stdout);
     assert.notEqual(second, first);
   } finally { worker.stop(); }
@@ -111,9 +121,8 @@ test('an idle worker is ended, and the next request starts another', async () =>
   try {
     const first = Number((await worker.run(['pid'])).stdout);
     assert.equal(worker.running(), true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    assert.equal(worker.running(), false);
-    assert.equal(alive(first), false);
+    await until(() => !worker.running(), 'the idle worker is let go');
+    await until(() => !alive(first), 'the idle process is gone');
     assert.notEqual(Number((await worker.run(['pid'])).stdout), first);
   } finally { worker.stop(); }
 });
@@ -137,7 +146,6 @@ test('stopping ends the process, answers what waits, and takes no more', async (
   worker.stop();
   const answer = await waiting;
   assert.equal(answer.crashed, true);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(alive(pid), false);
+  await until(() => !alive(pid), 'the stopped process is gone');
   assert.equal((await worker.run(['pid'])).crashed, true);
 });
