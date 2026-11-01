@@ -1,0 +1,128 @@
+import Testing
+import Foundation
+@testable import HelmCore
+import FakeHerdrKit
+
+@Suite("Pane stream") struct StreamTests {
+    @Test func frameCodecRoundTripsAndIgnoresOtherLines() {
+        let f = TerminalFrame(full: true, width: 66, height: 59, seq: 7, bytes: Array("\u{1b}[2Jhi".utf8))
+        #expect(FrameCodec.decode(FrameCodec.encode(f)) == f)
+        #expect(FrameCodec.decode(Data(#"{"type":"terminal.status","x":1}"#.utf8)) == nil)
+        #expect(FrameCodec.decode(Data("not json".utf8)) == nil)
+        #expect(FrameCodec.decode(Data(#"{"type":"terminal.frame","bytes":"%%%"}"#.utf8)) == nil)
+    }
+
+    @Test func lineBufferSplitsAcrossChunksAndDropsRunawayLines() {
+        var b = LineBuffer(limit: 32)
+        #expect(b.append(Data("ab".utf8)).isEmpty)
+        #expect(b.append(Data("c\nde".utf8)) == [Data("abc".utf8)])
+        #expect(b.append(Data("f\n\n".utf8)) == [Data("def".utf8)])
+        // A line past the limit is dropped, and the next one is read normally.
+        #expect(b.append(Data(String(repeating: "x", count: 40).utf8)).isEmpty)
+        #expect(b.append(Data("tail\nok\n".utf8)) == [Data("ok".utf8)])
+    }
+
+    @Test func gridEngineDrawsAHerdrStyleFrame() {
+        let e = GridEngine()
+        // Shape of a real frame: synchronized output, hidden cursor, clear, positioned rows, truecolour SGR, a hyperlink.
+        let ansi = "\u{1b}[?2026h\u{1b}[?25l\u{1b}[2J\u{1b}[1;1H\u{1b}[0;38;2;217;119;87m▐▛███▜▌\u{1b}[0m title"
+            + "\u{1b}[3;1H\u{1b}]8;;https://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\ ok\u{1b}[?2026l"
+        e.apply(TerminalFrame(full: true, width: 40, height: 6, seq: 1, bytes: Array(ansi.utf8)))
+        #expect(e.cols == 40 && e.rows == 6)
+        #expect(e.rowText(0) == "▐▛███▜▌ title")
+        #expect(e.rowText(2) == "link ok")
+        #expect(e.unhandledSequenceCount == 0)
+        // A partial frame touches only the rows it names.
+        e.apply(TerminalFrame(full: false, width: 40, height: 6, seq: 2, bytes: Array("\u{1b}[2;1H\u{1b}[2Ksecond".utf8)))
+        #expect(e.rowText(1) == "second")
+        #expect(e.rowText(0) == "▐▛███▜▌ title")
+    }
+
+    @Test func paneSessionStreamsFromTheStandIn() throws {
+        let (server, endpoint) = try makeServer(agents: 2)
+        defer { server.stop() }
+        let engine = GridEngine()
+        let session = PaneSession(engine: engine, source: DirectStreamSource(endpoint: endpoint), queue: testQueue)
+        session.configure(pane: "w01:p1", size: PaneSize(cols: 66, rows: 59))
+        #expect(waitUntil { session.state == .live })
+        #expect(engine.cols == 66 && engine.rows == 59)
+        #expect(waitUntil { (0..<59).contains { engine.rowText($0).contains("Claude Code") } })
+        #expect(engine.unhandledSequenceCount == 0)
+        // A marker line written on the server arrives as a partial frame within a moment.
+        _ = try HerdrClient(endpoint: endpoint).rawCall(method: "fake.mark", params: ["pane_id": "w01:p1"])
+        #expect(waitUntil { (0..<59).contains { engine.rowText($0).hasPrefix("MARK ") } })
+        #expect(session.stats.seqGaps == 0)
+        session.stop()
+    }
+
+    @Test func paneSessionReconnectsWithBackoffAfterTheStreamEnds() throws {
+        let dir = shortSocketDir()
+        let (server, endpoint) = try makeServer(agents: 1, dir: dir)
+        let engine = GridEngine()
+        let session = PaneSession(engine: engine, source: DirectStreamSource(endpoint: endpoint), queue: testQueue)
+        session.backoffInitial = 0.1
+        session.configure(pane: "w01:p1", size: PaneSize(cols: 66, rows: 59))
+        #expect(waitUntil { session.state == .live })
+        server.stop()
+        #expect(waitUntil { if case .reconnecting = session.state { return true } else { return false } })
+        let (server2, _) = try makeServer(agents: 1, dir: dir)
+        defer { server2.stop() }
+        #expect(waitUntil(8) { session.state == .live })
+        #expect(session.stats.reconnects >= 1)
+        session.stop()
+    }
+
+    @Test func protocolMismatchOnTheProcessIsReportedToTheOwner() {
+        final class Failing: PaneStreamSource {
+            var processID: Int32? { nil }
+            func start(pane: String, cols: Int, rows: Int, queue: DispatchQueue, onFrame: @escaping (TerminalFrame, UInt64) -> Void, onEnd: @escaping (StreamEnd) -> Void) {
+                queue.async { onEnd(.exited(status: 1, stderr: "error: protocol_mismatch: client 22, server 23")) }
+            }
+            func stop() {}
+        }
+        let session = PaneSession(engine: GridEngine(), source: Failing(), queue: testQueue)
+        var mismatch = false
+        session.onProtocolMismatch = { mismatch = true }
+        session.configure(pane: "w1:p1", size: nil)
+        #expect(waitUntil { mismatch })
+        if case .failed = session.state {} else { Issue.record("expected failed state, got \(session.state)") }
+    }
+
+    @Test func textSourceTurnsPaneReadIntoAFullFrame() throws {
+        let (server, endpoint) = try makeServer(agents: 1)
+        defer { server.stop() }
+        let engine = GridEngine()
+        let session = PaneSession(engine: engine, source: PaneReadSource(client: HerdrClient(endpoint: endpoint), interval: 0.1), queue: testQueue)
+        session.configure(pane: "w01:p1", size: PaneSize(cols: 66, rows: 59))
+        #expect(waitUntil { session.state == .live })
+        #expect(waitUntil { (0..<59).contains { engine.rowText($0).contains("Claude Code") } })
+        session.stop()
+    }
+}
+
+@Suite("Compatibility") struct CompatibilityTests {
+    private func status(client: Int, server: Int, running: Bool = true, stale: Bool = false) -> HerdrStatus {
+        let json = """
+        {"client":{"version":"0.9.5","protocol":\(client)},"server":{"running":\(running),"version":"0.9.5","protocol":\(server),
+         "compatible":\(client == server),"endpoint_compatible":true,"restart_needed":false,"server_binary_stale":\(stale)},"update":{}}
+        """
+        return HerdrStatus(json: Data(json.utf8))!
+    }
+
+    @Test func verdicts() {
+        #expect(HerdrCompatibility.verdict(for: status(client: 22, server: 22)) == .ok)
+        if case .untested = HerdrCompatibility.verdict(for: status(client: 23, server: 23)) {} else { Issue.record("23/23 should be untested") }
+        if case .textOnly = HerdrCompatibility.verdict(for: status(client: 23, server: 22)) {} else { Issue.record("23/22 should be text only") }
+        if case .textOnly = HerdrCompatibility.verdict(for: status(client: 22, server: 22, stale: true)) {} else { Issue.record("stale server should be text only") }
+        if case .down = HerdrCompatibility.verdict(for: status(client: 22, server: 22, running: false)) {} else { Issue.record("stopped server should be down") }
+        #expect(HerdrCompatibility.verdict(for: status(client: 22, server: 22)).allowsStream)
+        #expect(!HerdrCompatibility.verdict(for: status(client: 23, server: 22)).allowsStream)
+    }
+
+    @Test func parsesTheRealStatusShape() {
+        let real = #"{"client":{"version":"0.9.5","channel":"stable","protocol":22,"endpoint_protocol_generation":1},"server":{"status":"running","running":true,"version":"0.9.5","protocol":22,"compatible":true,"endpoint_compatible":true,"restart_needed":false,"server_binary_stale":false},"update":{"restart_needed":false,"server_binary_stale":false}}"#
+        let s = HerdrStatus(json: Data(real.utf8))
+        #expect(s?.serverProtocol == 22 && s?.clientVersion == "0.9.5")
+        #expect(HerdrStatus(json: Data("garbage".utf8)) == nil)
+    }
+}

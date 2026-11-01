@@ -26,10 +26,12 @@ let package = Package(
         .target(name: "HelmTerminal", dependencies: ["HelmCore", "SwiftTerm"]),
         // The Mac app.
         .executableTarget(name: "Helm", dependencies: ["HelmCore", "HelmTerminal"]),
-        // A stand-in Herdr (socket server + `herdr` CLI subset) for fixtures, tests and measurements.
-        .executableTarget(name: "FakeHerdr", dependencies: ["HelmCore"]),
+        // A stand-in Herdr (JSON socket server, pane stream, `herdr` CLI subset) for fixtures, tests and measurements.
+        // The real Herdr lab cannot be provisioned on this Mac, so everything that writes to a pane runs against this.
+        .target(name: "FakeHerdrKit", dependencies: ["HelmCore"]),
+        .executableTarget(name: "FakeHerdr", dependencies: ["FakeHerdrKit", "HelmCore"]),
         // The Herdr stream test (decision D2): latency, reconnect, CPU, compatibility.
         .executableTarget(name: "HelmStreamTest", dependencies: ["HelmCore"]),
-        .testTarget(name: "HelmCoreTests", dependencies: ["HelmCore"]),
+        .testTarget(name: "HelmCoreTests", dependencies: ["HelmCore", "FakeHerdrKit"]),
     ]
 )
