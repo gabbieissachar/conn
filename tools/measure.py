@@ -115,6 +115,7 @@ def main():
         result['groups'][g] = {'processes': len(keys), 'footprint_mb_mean': round(sum(fps) / len(fps), 1), 'footprint_mb_max': round(max(fps), 1), 'cpu_percent': round(cpu, 2)}
         for i, v in enumerate(fps): tot_fp[i] += v
         tot_cpu += cpu
+    result['app_footprint_series_mb'] = [round(r[1]['app'][0] / 1e6, 1) for r in rows if 'app' in r[1]]
     result['total'] = {'footprint_mb_mean': round(sum(tot_fp) / len(tot_fp), 1), 'footprint_mb_max': round(max(tot_fp), 1), 'cpu_percent': round(tot_cpu, 2)}
     own = [g for g in result['groups'] if not g.startswith('server-')]
     result['helm_only'] = {'footprint_mb_mean': round(sum(result['groups'][g]['footprint_mb_mean'] for g in own), 1),

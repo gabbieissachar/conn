@@ -73,6 +73,13 @@ struct HelmCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Document") { app.mode = .editor; app.editor.newDocument() }.keyboardShortcut("n")
             Button("Open…") { app.mode = .editor; app.editor.showOpenPanel() }.keyboardShortcut("o")
+            Menu("Open Recent") {
+                let recents = NSDocumentController.shared.recentDocumentURLs
+                ForEach(recents, id: \.self) { url in
+                    Button(url.lastPathComponent) { app.mode = .editor; app.editor.open(url) }.help(url.path)
+                }
+                if recents.isEmpty { Text("No recent files") }
+            }
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") { if let d = app.editor.current { app.editor.save(d) } }.keyboardShortcut("s").disabled(app.editor.current == nil)
