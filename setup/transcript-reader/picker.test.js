@@ -256,7 +256,7 @@ function iconPage() {
   const make = () => ({ hidden: false, attrs: {}, title: '', setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
   const conv = make(), docs = make();
   const world = { state: { view: 'reader' }, count: 0 };
-  const sandbox = { state: world.state, document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs })[id] }, sessionDocuments: () => new Array(world.count).fill(0), String };
+  const sandbox = { state: world.state, document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs })[id] }, listedDocuments: () => new Array(world.count).fill(0), String };
   const run = vm.runInNewContext(fnBody(page, 'docsLabel') + '\n  }\n' + fnBody(page, 'paintViewIcons') + '\n  }\n({ docsLabel, paintViewIcons })', sandbox);
   return { conv, docs, world, ...run };
 }

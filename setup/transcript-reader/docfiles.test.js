@@ -137,3 +137,112 @@ test('marks: where the words are, merged, in order, over the original letters', 
   assert.deepEqual(plain(docfiles.marks('anything', '')), []);
   assert.deepEqual(plain(docfiles.marks('İstanbul.md', 'md')), [], 'a letter that lowers to two characters moves the offsets: no marks rather than wrong ones');
 });
+
+// ------------------------------------------------------------------------------------------------------ by task (a leader's conversation)
+
+const HOME = '~/.treehouse/h/2/firstmate';
+const leader = (tasks = {}) => ({ dir: HOME, tasks });
+const session = (extra = {}) => ({ exchanges: [], ...extra });
+
+test('mode: by task only for a leader, by folder for every other conversation whatever was chosen', () => {
+  assert.equal(docfiles.mode(session({ leader: leader() }), null), 'task', 'a leader opens by task before anything is chosen');
+  assert.equal(docfiles.mode(session({ leader: leader() }), 'task'), 'task');
+  assert.equal(docfiles.mode(session({ leader: leader() }), 'folder'), 'folder', 'the choice is kept');
+  assert.equal(docfiles.mode(session({ leader: leader() }), 'junk'), 'task', 'a value nobody wrote is no choice');
+  assert.equal(docfiles.mode(session(), 'task'), 'folder', 'a worker has no tasks');
+  assert.equal(docfiles.mode(session({ leader: {} }), 'task'), 'folder', 'a leader record with no home names nothing');
+  assert.equal(docfiles.mode(null, 'task'), 'folder');
+  assert.equal(docfiles.isLeader(session({ leader: leader() })), true);
+  assert.equal(docfiles.isLeader(session()), false);
+  assert.equal(docfiles.pref('folder'), 'folder');
+  assert.equal(docfiles.pref(undefined), 'task');
+});
+
+test('taskOf and inside: the first folder under the home data folder is the task, and the folders below it are where the file is', () => {
+  const l = leader();
+  assert.equal(docfiles.taskOf(`${HOME}/data/reader-x`, l), 'reader-x');
+  assert.equal(docfiles.taskOf(`${HOME}/data/reader-x/ship/img`, l), 'reader-x');
+  assert.equal(docfiles.taskOf(`${HOME}/data`, l), null, 'a file directly in data/ is in no task');
+  assert.equal(docfiles.taskOf(`${HOME}/projects/pmos`, l), null);
+  assert.equal(docfiles.taskOf(`${HOME}/database/x`, l), null, 'a folder whose name only begins with data');
+  assert.equal(docfiles.taskOf('~/.treehouse/h/3/firstmate/data/reader-x', l), null, 'another home is not this leader\'s');
+  assert.equal(docfiles.taskOf(`${HOME}/data/reader-x`, null), null);
+  assert.equal(docfiles.inside(`${HOME}/data/reader-x`, l), '');
+  assert.equal(docfiles.inside(`${HOME}/data/reader-x/ship/img`, l), 'ship/img');
+  assert.equal(docfiles.inside(`${HOME}/projects/pmos`, l), '');
+});
+
+test('task: the backlog row gives the title and state, and a folder with no row shows by its id', () => {
+  const l = leader({ a: { title: 'Task A', state: 'In flight' }, b: { more: 3 } });
+  assert.deepEqual(plain(docfiles.task('a', l)), { id: 'a', title: 'Task A', state: 'In flight', known: true, more: 0 });
+  assert.deepEqual(plain(docfiles.task('b', l)), { id: 'b', title: 'b', state: '', known: false, more: 3 }, 'a record that only says it was cut is not a backlog row');
+  assert.deepEqual(plain(docfiles.task('c', l)), { id: 'c', title: 'c', state: '', known: false, more: 0 });
+  assert.deepEqual(plain(docfiles.task('d', leader())), { id: 'd', title: 'd', state: '', known: false, more: 0 });
+});
+
+test('taskGroups: files named or not, a task with no backlog row, files in no task, newest group first and Other files last', () => {
+  const l = leader({ a: { title: 'Task A', state: 'In flight' }, old: { title: 'Old', state: 'Done' } });
+  const { docs, entries } = world([
+    ['a1.md', `${HOME}/data/a`, 10],                  // named, then changed
+    ['a2.png', `${HOME}/data/a/shots`, 50, 'image'],   // never named: listed by its change time
+    ['o1.md', `${HOME}/data/old`, 90],
+    ['n1.md', `${HOME}/data/no-row`, 70],
+    ['x1.md', `${HOME}/projects/pmos`, 99],            // named, in no task: newest of all, still last
+    ['loose.md', `${HOME}/data`, 5],
+  ]);
+  const groups = docfiles.taskGroups(entries, docs, l);
+  assert.deepEqual(Array.from(groups, (g) => g.key), ['old', 'no-row', 'a', docfiles.OTHER], 'newest first whatever the state; Other files last');
+  assert.deepEqual(Array.from(groups, (g) => g.at), [90, 70, 50, 99]);
+  assert.deepEqual(names(groups[2].files, docs), ['a2.png', 'a1.md'], 'newest first inside a task');
+  assert.equal(groups[0].task.state, 'Done');
+  assert.equal(groups[1].task.known, false, 'a missing backlog row keeps its folder as a task, titled by its id');
+  assert.equal(groups[1].task.title, 'no-row');
+  assert.deepEqual([groups[3].other, groups[3].task, names(groups[3].files, docs)], [true, null, ['x1.md', 'loose.md']]);
+  assert.equal(groups.every((g) => g.single === false), true);
+});
+
+test('taskGroups: a conversation with no file in a task has only Other files, and no entry means no group', () => {
+  const l = leader();
+  const { docs, entries } = world([['x.md', '~/elsewhere', 1]]);
+  assert.deepEqual(Array.from(docfiles.taskGroups(entries, docs, l), (g) => g.key), [docfiles.OTHER]);
+  assert.deepEqual(plain(docfiles.taskGroups([], {}, l)), []);
+});
+
+test('taskGroups: two tasks with the same newest time keep a steady order', () => {
+  const l = leader();
+  const { docs, entries } = world([['a.md', `${HOME}/data/zz`, 5], ['b.md', `${HOME}/data/aa`, 5]]);
+  assert.deepEqual(Array.from(docfiles.taskGroups(entries, docs, l), (g) => g.key), ['aa', 'zz']);
+});
+
+test('find by task: the words also match the task id and its title, with the folder and the name', () => {
+  const l = leader({ 'reader-task-tags-design': { title: 'Brainstorm task tags with the captain', state: 'In flight' } });
+  const { docs, entries } = world([
+    ['brief.md', `${HOME}/data/reader-task-tags-design`, 10],
+    ['brief.md', `${HOME}/data/other-task`, 20],
+    ['notes.md', `${HOME}/data`, 30],
+  ]);
+  const extra = (d) => docfiles.taskText(d, l);
+  assert.deepEqual(ids(docfiles.find(entries, docs, 'brainstorm brief', 'all', extra)), ['d0'], 'a word of the title');
+  assert.deepEqual(ids(docfiles.find(entries, docs, 'tags-design', 'all', extra)), ['d0'], 'a word of the id');
+  assert.deepEqual(ids(docfiles.find(entries, docs, 'brainstorm', 'all')), [], 'by folder, the title is not searched');
+  assert.deepEqual(ids(docfiles.find(entries, docs, 'brief', 'all', extra)), ['d1', 'd0'], 'newest first');
+  assert.equal(docfiles.taskText(docs.d2, l), '', 'a file in no task adds no words');
+  assert.equal(docfiles.taskText(docs.d0, l), 'reader-task-tags-design Brainstorm task tags with the captain');
+});
+
+test('where: a match shows its task and the folder inside it, or its own folder when it is in none', () => {
+  const l = leader({ a: { title: 'Task A', state: 'Done' } });
+  assert.equal(docfiles.where({ dir: `${HOME}/data/a` }, l), 'a · Task A');
+  assert.equal(docfiles.where({ dir: `${HOME}/data/a/ship` }, l), 'a · Task A · ship');
+  assert.equal(docfiles.where({ dir: `${HOME}/data/b` }, l), 'b', 'no title to add when there is no row');
+  assert.equal(docfiles.where({ dir: '~/x/y' }, l), '~/x/y');
+});
+
+test('opened: the newest task opens on a wide screen, and the task holding the open file when one was chosen', () => {
+  const l = leader();
+  const { docs, entries } = world([['a.md', `${HOME}/data/a`, 5], ['b.md', `${HOME}/data/b`, 9], ['c.md', `${HOME}/data/c`, 1]]);
+  const groups = docfiles.taskGroups(entries, docs, l);
+  assert.deepEqual(Array.from(docfiles.opened(groups, null, true)), ['b']);
+  assert.deepEqual(Array.from(docfiles.opened(groups, null, false)), [], 'a phone starts with every task folded');
+  assert.deepEqual(Array.from(docfiles.opened(groups, 'd2', false)), ['c']);
+});

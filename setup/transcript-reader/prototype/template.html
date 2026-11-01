@@ -239,6 +239,10 @@ __HEAD_HOSTED__
   .qbox input::-webkit-search-cancel-button { display: none; }
   .qbox .mag { display: flex; color: var(--faint); }
   .qbox button { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 6px; }
+  .fp-mode { display: flex; gap: 6px; padding: 9px 12px 0; }
+  .fp-mode[hidden] { display: none; }
+  .fp-mode .btn { padding: 4px 12px; }
+  @media (hover: none) and (pointer: coarse) { .fp-mode .btn { min-height: 40px; } }
   .fp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
   .fp-chips .btn { padding: 3px 10px; }
   .fp-chips .btn b { font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 3px; color: var(--muted); }
@@ -256,6 +260,11 @@ __HEAD_HOSTED__
   /* The folders above the group's own, clipped on the left: the end of a path is the part nearest the title */
   .gpath { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
   .gpath bdi { direction: ltr; unicode-bidi: isolate; }
+  .gpath.task { display: flex; gap: 6px; direction: ltr; }
+  .gpath.task .gstate { flex: none; }
+  .gpath.task .gstate::after { content: " ·"; font-weight: 400; }
+  .gpath.task .gstate.live { color: var(--you); font-weight: 600; }
+  .gpath.task .gid { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
   .gwhen { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .gcount { font-size: 11px; line-height: 1; padding: 3px 6px; border-radius: 99px; background: var(--wash); border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
   .ghead:hover .gcount { background: var(--paper); }
@@ -532,6 +541,9 @@ __HEAD_HOSTED__
   const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here", docPage: "list" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
   try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
+  // How a leader's Documents view groups its files: "task" (the default) or "folder". Kept in this browser, for every leader alike.
+  let docGroup = "task";
+  try { docGroup = docfiles.pref(localStorage.getItem("tr-docgroup")); } catch (e) { /* default: by task */ }
   const homeName = id => id === "main" ? "Main" : id === "captain" ? "You" : id === "workspace" ? "Your own sessions" : id.replace(/^secondmate-/, "").replace(/ · \d{4}-\d{2}-\d{2}-/, " · ");
   const fmtTime = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
   const fmtClock = s => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000));
@@ -838,18 +850,21 @@ __HEAD_HOSTED__
   // The Documents view's picker: this session's files, a group for each folder in the order of the list, so two files with one name are told
   // apart by their folder. A file alone in its folder is in the group of lone files, so it carries its folder after its name.
   function fillDocumentsInto(select) {
-    const entries = sessionDocuments(data.sessions[state.session]);
+    const session = data.sessions[state.session];
+    const entries = listedDocuments(session);
     if (!entries.length) {
-      const none = $("option", null, "No file named"); none.value = ""; none.disabled = none.selected = true;
+      const none = $("option", null, byTask(session) ? "No file in a task folder" : "No file named"); none.value = ""; none.disabled = none.selected = true;
       select.append(none);
       return;
     }
-    for (const g of docfiles.groups(entries, data.documents)) {
+    for (const g of documentGroups(session, entries)) {
       const group = $("optgroup");
-      group.label = g.single ? `Single files · ${g.files.length}` : `${docfiles.title(g.dir)} · ${docfiles.above(g.dir, 34)}`;
+      group.label = g.other ? `Other files · ${g.files.length}` : g.task ? `${live.clip(g.task.title, 60)} · ${g.task.id}`
+        : g.single ? `Single files · ${g.files.length}` : `${docfiles.title(g.dir)} · ${docfiles.above(g.dir, 34)}`;
       group.append(...g.files.map(x => {
         const d = data.documents[x.id];
-        const opt = $("option", null, g.single ? `${d.name} · ${docfiles.tail(d.dir, 30)}` : d.name);
+        const sub = g.task ? docfiles.inside(d.dir, session.leader) : "";
+        const opt = $("option", null, g.single || g.other ? `${d.name} · ${docfiles.tail(d.dir, 30)}` : sub ? `${d.name} · ${sub}` : d.name);
         opt.value = x.id; opt.selected = x.id === state.doc;
         return opt;
       }));
@@ -2242,20 +2257,46 @@ __HEAD_HOSTED__
     ((session && session.exchanges) || []).forEach((ex, index) => { note(ex.input_documents, ex.at, index); note(ex.documents, ex.reply_at || ex.at, index); });
     return [...seen.values()];
   }
+  // A leader's conversation (one run in a Firstmate home) can list its documents by task as well as by folder. By task, the list is every
+  // file in the home's task folders (data/<task id>/, whether or not the conversation named it) and every file the conversation named; a
+  // file's time is the newer of its last mention and its last change. The files no conversation named have no turn to go back to.
+  const byTask = session => docfiles.mode(session, docGroup) === "task";
+  function taskDocuments(session) {
+    const named = sessionDocuments(session), seen = new Set(named.map(e => e.id));
+    const root = session.leader.dir + "/data/";
+    const list = named.map(e => ({ ...e, at: Math.max(e.at || 0, (data.documents[e.id].mtime || 0)) }));
+    for (const id of Object.keys(data.documents)) {
+      const d = data.documents[id];
+      if (!seen.has(id) && String(d.dir).startsWith(root)) list.push({ id, at: d.mtime || 0, index: null, unnamed: true });
+    }
+    // Oldest first, as sessionDocuments gives them: the last is the newest.
+    return list.map((e, i) => [e, i]).sort((a, b) => a[0].at - b[0].at || a[1] - b[1]).map(pair => pair[0]);
+  }
+  // The files the Documents view lists now: by task for a leader that is set to it, else the files the conversation names.
+  const listedDocuments = session => byTask(session) ? taskDocuments(session) : sessionDocuments(session);
+  const documentGroups = (session, entries) => byTask(session) ? docfiles.taskGroups(entries, data.documents, session.leader) : docfiles.groups(entries, data.documents);
+  function setDocGroup(mode) {
+    if (docGroup === mode) return;
+    docGroup = mode;
+    try { localStorage.setItem("tr-docgroup", mode); } catch (e) { /* not kept */ }
+    docList.open = null; docReveal = state.doc;
+    render(); setAddress();
+  }
   // The document the Documents view shows: the one picked, else the last one the session names.
   function pickDoc(session) {
-    const docs = sessionDocuments(session);
+    const docs = listedDocuments(session);
     if (!docs.some(d => d.id === state.doc)) { state.doc = docs.length ? docs[docs.length - 1].id : null; state.docFrom = null; }
     return state.doc;
   }
   function openDocument(id, index) {
+    forgetLazyError(id);
     state.view = "doc"; state.doc = id; state.docFrom = index; state.docPage = "file"; docReveal = id;
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   const wideDoc = () => matchMedia("(min-width: 820px)").matches;
   // Whether the Documents view shows the file: always where the list fits beside it, and on a phone once a file is opened (the tab brings the
   // list first). A session with one file has no list worth a page, so its file shows at once.
-  const onFilePage = session => wideDoc() || state.docPage === "file" || sessionDocuments(session).length < 2;
+  const onFilePage = session => wideDoc() || state.docPage === "file" || listedDocuments(session).length < 2;
   function docPointer(d, section, passage) {
     let text = `Re the file ${d.dir}/${d.name}`;
     if (section) text += `, section "${live.clip(section, 60)}"`;
@@ -2267,6 +2308,26 @@ __HEAD_HOSTED__
   let fileView = null;
   const DESKTOP_WIDTH = 1280;
   const fmtSize = n => n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
+  // A markdown file the build lists without its text (`lazy`: a file of a leader's task folder that no conversation named) is read by the server when
+  // it is opened (md-open, api.js, as the file is on disk now) and kept here: { text, mtime } once read, { loading } meanwhile, { error } when it could not
+  // be. A build that lists a newer change reads it again, the old text showing until then.
+  const lazyText = new Map();
+  function forgetLazyError(id) { const held = lazyText.get(id); if (held && held.error) lazyText.delete(id); }
+  async function loadLazy(d) {
+    lazyText.set(d.id, { ...(lazyText.get(d.id) || {}), loading: true });
+    try {
+      const info = await live.mdOpen(d.id);
+      lazyText.set(d.id, { text: info.text, mtime: info.mtime });
+    } catch (e) { lazyText.set(d.id, { error: e.message }); }
+    if (state.view === "doc" && state.doc === d.id) render();
+  }
+  // The text of a markdown document, or null while a task file is being read.
+  function docText(d) {
+    if (d.text != null || !d.lazy) return d.text;
+    const held = lazyText.get(d.id);
+    if (!held || (!held.loading && !held.error && held.mtime + 0.001 < d.mtime)) loadLazy(d);
+    return held && held.text != null ? held.text : null;
+  }
   // The file, shown by the server (api.js) in an iframe with sandbox="allow-scripts" and no allow-same-origin: its scripts run
   // but cannot reach this page's origin, its token or the reader's API. Each open reads the file as it is on disk now.
   function htmlDocView(key, d, status) {
@@ -2426,6 +2487,7 @@ __HEAD_HOSTED__
     return node;
   }
   function chooseDocument(id) {
+    forgetLazyError(id);
     if (!wideDoc()) docList.scroll = window.scrollY;
     state.doc = id; state.docFrom = null; state.docPage = "file"; docReveal = id;
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
@@ -2444,20 +2506,41 @@ __HEAD_HOSTED__
     row.addEventListener("click", () => chooseDocument(x.id));
     return row;
   }
+  // What a file's second line adds to its time in a group: where it is, when the group does not say (lone files, the files in no task) or when it
+  // is in a folder below its task's own.
+  function rowWhere(g, x) {
+    const d = data.documents[x.id];
+    if (g.task) return docfiles.inside(d.dir, data.sessions[state.session].leader);
+    return g.single || g.other ? docfiles.tail(d.dir, 28) : "";
+  }
   function groupNode(g, current) {
     const wrap = $("div", "group");
     const head = $("button", "ghead" + (g.files.some(f => f.id === current) ? " has-current" : "")); head.type = "button"; head.dataset.key = g.key;
     const main = $("span", "gmain"), path = $("span", "gpath");
-    path.append($("bdi", null, g.single ? "one file from each of its own folders" : docfiles.above(g.dir, 90)));
-    main.append($("span", "gtitle", g.single ? "Single files" : docfiles.title(g.dir)), path);
+    if (g.task) {
+      // A task: its title, then its id and where it stands in the home's backlog (an id with no row there shows by id alone).
+      // Where it stands comes first and is never cut; the id after it is cut from the left, as a folder's path is.
+      path.classList.add("task");
+      const stands = (g.task.known ? g.task.state || "no state" : "not in the backlog") + (g.task.more ? ` · ${g.task.more} more not listed` : "");
+      const id = $("span", "gid"); id.append($("bdi", null, g.task.id));
+      path.append($("span", "gstate" + (g.task.state === "In flight" ? " live" : ""), stands), id);
+      main.append($("span", "gtitle", g.task.title), path);
+      head.title = `${g.task.id}${g.task.known ? (g.task.state ? " · " + g.task.state : "") : " · not in the backlog"}`;
+    } else if (g.other) {
+      path.append($("bdi", null, "files in no task folder"));
+      main.append($("span", "gtitle", "Other files"), path);
+    } else {
+      path.append($("bdi", null, g.single ? "one file from each of its own folders" : docfiles.above(g.dir, 90)));
+      main.append($("span", "gtitle", g.single ? "Single files" : docfiles.title(g.dir)), path);
+      if (!g.single) head.title = g.dir;
+    }
     head.append($("span", "gchev"), main, $("span", "gcount", String(g.files.length)), $("span", "gwhen", fmtListed(g.at)));
-    if (!g.single) head.title = g.dir;
     const body = $("div", "gbody");
     const fill = () => {
       const open = docList.open.has(g.key);
       head.setAttribute("aria-expanded", String(open));
       body.hidden = !open;
-      if (open && !body.firstChild) g.files.forEach(x => body.append(fileRow(x, "", g.single ? docfiles.tail(data.documents[x.id].dir, 28) : "")));
+      if (open && !body.firstChild) g.files.forEach(x => body.append(fileRow(x, "", rowWhere(g, x))));
     };
     head.addEventListener("click", () => { docList.open.has(g.key) ? docList.open.delete(g.key) : docList.open.add(g.key); fill(); paintFolding(docList.shell); });
     fill();
@@ -2470,9 +2553,16 @@ __HEAD_HOSTED__
     shell.act.textContent = shell.groups.every(g => docList.open.has(g.key)) ? "Fold all" : "Unfold all";
   }
   function paintFiles(shell) {
-    const entries = sessionDocuments(data.sessions[state.session]), docs = data.documents;
-    const groups = docfiles.groups(entries, docs);
+    const session = data.sessions[state.session];
+    const tasks = byTask(session), leader = session.leader;
+    const entries = listedDocuments(session), docs = data.documents;
+    const groups = documentGroups(session, entries);
     shell.groups = groups;
+    // The switch is for a leader's conversation; the box says what it finds.
+    shell.mode.hidden = !docfiles.isLeader(session);
+    for (const b of shell.mode.children) b.setAttribute("aria-pressed", String((b.dataset.mode === "task") === tasks));
+    shell.input.placeholder = tasks ? "Find a file, folder or task" : "Find a file or folder";
+    shell.input.setAttribute("aria-label", shell.input.placeholder);
     if (!docList.open) docList.open = docfiles.opened(groups, wideDoc() ? state.doc : docReveal, wideDoc());
     if (docReveal) { const home = groups.find(g => g.files.some(f => f.id === docReveal)); if (home) docList.open.add(home.key); docReveal = null; }
     const counts = docfiles.counts(entries, docs);
@@ -2495,9 +2585,13 @@ __HEAD_HOSTED__
     shell.matching = docfiles.narrowing(docList.q, docList.kind);
     if (shell.matching) {
       // Matches as one flat list, newest first, each with the end of its folder.
-      const rows = docfiles.find(entries, docs, docList.q, docList.kind);
+      const rows = docfiles.find(entries, docs, docList.q, docList.kind, tasks ? d => docfiles.taskText(d, leader) : null);
       shell.count.textContent = `${rows.length} of ${entries.length} files`;
-      shell.list.replaceChildren(...(rows.length ? rows.map(x => fileRow(x, docList.q, docfiles.tail(docs[x.id].dir, 30))) : [$("div", "fp-empty", "No file matches. Try fewer words, or All.")]));
+      shell.list.replaceChildren(...(rows.length ? rows.map(x => fileRow(x, docList.q, tasks ? docfiles.where(docs[x.id], leader) : docfiles.tail(docs[x.id].dir, 30))) : [$("div", "fp-empty", "No file matches. Try fewer words, or All.")]));
+    } else if (tasks) {
+      const n = groups.filter(g => !g.other).length, other = groups.find(g => g.other);
+      shell.count.textContent = `${entries.length} files in ${n} ${n === 1 ? "task" : "tasks"}` + (other ? `, ${other.files.length} in no task` : "");
+      shell.list.replaceChildren(...groups.map(g => groupNode(g, state.doc)));
     } else {
       shell.count.textContent = `${entries.length} files in ${groups.length} ${groups.length === 1 ? "group" : "groups"}`;
       shell.list.replaceChildren(...groups.map(g => groupNode(g, state.doc)));
@@ -2520,10 +2614,17 @@ __HEAD_HOSTED__
     const info = $("div", "fp-count"), count = $("span"), act = $("button"); act.type = "button";
     info.append(count, act);
     const list = $("div", "fp-list"), pane = $("section", "docpane"); pane.setAttribute("aria-label", "Document");
+    // How the files are grouped, for a leader's conversation: by folder, as for any conversation, or by task. Not sticky: it scrolls away with the list.
+    const mode = $("div", "fp-mode"); mode.setAttribute("role", "group"); mode.setAttribute("aria-label", "Group the files");
+    for (const [key, label, hint] of [["folder", "By folder", "Group the files by the folder they are in"], ["task", "By task", "Group the files by the task they belong to, from the home's backlog"]]) {
+      const b = $("button", "btn", label); b.type = "button"; b.dataset.mode = key; b.title = hint;
+      b.addEventListener("click", () => setDocGroup(key));
+      mode.append(b);
+    }
     bar.append(box, chips);
-    files.append(bar, info, list);
+    files.append(mode, bar, info, list);
     node.append(files, pane);
-    const shell = { node, files, pane, chips, clear, count, act, list, groups: [], matching: false, sign: "" };
+    const shell = { node, files, pane, chips, clear, count, act, list, mode, input, groups: [], matching: false, sign: "" };
     input.addEventListener("input", () => { docList.q = input.value; paintFiles(shell); });
     input.addEventListener("keydown", e => { if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; docList.q = ""; paintFiles(shell); } });
     clear.addEventListener("click", () => { input.value = ""; docList.q = ""; paintFiles(shell); input.focus(); });
@@ -2537,7 +2638,7 @@ __HEAD_HOSTED__
   }
   function renderDocView() {
     const session = data.sessions[state.session];
-    const docs = sessionDocuments(session);
+    const docs = listedDocuments(session);
     pickDoc(session);
     const entry = docs.find(d => d.id === state.doc);
     // The same header as the Conversation's, with the document picker where the session picker is (a session is chosen from the Conversation):
@@ -2550,7 +2651,7 @@ __HEAD_HOSTED__
     const d = entry && data.documents[entry.id];
     if (!entry) {
       docList.shell = null; fileView = null; main.replaceChildren();
-      controls.append($("div", "summary", "No message or reply in this session names a markdown, HTML or image file that is on this machine."));
+      controls.append($("div", "summary", byTask(session) ? "No task folder of this home holds a markdown, HTML or image file, and no message or reply names one." : "No message or reply in this session names a markdown, HTML or image file that is on this machine."));
       main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown with its contents list folded above it, HTML rendered, an image fitted to the width."));
       return;
     }
@@ -2581,7 +2682,7 @@ __HEAD_HOSTED__
       files.addEventListener("click", () => { state.docPage = "list"; docReveal = state.doc; setAddress(); render(); window.scrollTo(0, docList.scroll || 0); });
       row.append(files);
     }
-    row.append(back, message);
+    row.append(...(entry.unnamed ? [message] : [back, message]));  // a file no turn named has no turn to go back to
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
     meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
@@ -2607,7 +2708,15 @@ __HEAD_HOSTED__
 
     const view = $("div", "docview");
     const body = $("article", "doc-body");
-    const md = renderMarkdown(d.text, [], [], true);
+    const text = docText(d);
+    if (text == null) {  // a file of a task folder that no conversation named: its text comes from the server when it is opened
+      const held = lazyText.get(d.id);
+      pane.append($("div", "empty", held && held.error ? `The file could not be opened: ${held.error}` : "Opening…"));
+      message.addEventListener("click", () => useTarget(target("", ""), message));
+      docSpy.headings = [];
+      return;
+    }
+    const md = renderMarkdown(text, [], [], true);
     body.append(md);
     replyTargets.set(body, passage => target(passage, sectionAt(md.headings)));
     message.addEventListener("click", () => useTarget(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : ""), message));
@@ -3059,7 +3168,7 @@ __HEAD_HOSTED__
   }
   // "Documents (3)": the tab's text, and the name of the Documents icon in the folded header.
   function docsLabel(session) {
-    const count = sessionDocuments(session).length;
+    const count = listedDocuments(session).length;
     return count ? `Documents (${count})` : "Documents";
   }
   // The tab's title names the open conversation as the picker does, so tabs of several conversations tell apart.

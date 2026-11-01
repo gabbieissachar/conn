@@ -772,6 +772,42 @@ const seal = require(process.argv[1]);
 PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63640000000600055a7ba4c70000000049454e44ae426082")
 
 
+class LeaderTasksTest(unittest.TestCase):
+    """A leader's conversation (run in a home with data, state and projects folders) carries its home's tasks into the copy; only the files its
+    conversations name are in the copy, as before."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        (self.lab.main / "projects").mkdir()
+        self.backlog = self.lab.main / "data" / "backlog.md"
+        self.backlog.write_text("# Backlog\n\n## In flight\n- [ ] fix-login - Fix the login page (repo: x)\n", encoding="utf-8")
+        task = self.lab.main / "data" / "fix-login"
+        task.mkdir()
+        (task / "report.md").write_text("# Report\n", encoding="utf-8")
+        self.lab.build()
+
+    def leader(self):
+        return self.lab.object(f"s/{A}.json")["leader"]
+
+    def test_the_conversation_object_carries_the_homes_tasks_and_a_worker_carries_none(self):
+        self.assertEqual(self.leader()["tasks"]["fix-login"], {"title": "Fix the login page", "state": "In flight"})
+        self.assertNotIn("leader", self.lab.object(f"s/{W}.json"))
+        self.assertNotIn("leader", self.lab.object(f"s/{M}.json"), "the mate's home has no projects folder here")
+
+    def test_a_task_file_no_conversation_named_is_not_in_the_copy(self):
+        self.assertEqual([meta["name"] for meta in self.lab.index()["documents"].values()], ["notes.md"])
+
+    def test_a_changed_backlog_writes_the_leaders_conversation_again_and_no_other(self):
+        before = self.lab.mtimes()
+        wait_a_tick()
+        self.backlog.write_text(self.backlog.read_text(encoding="utf-8").replace("## In flight\n- [ ]", "## Done\n- [x]"), encoding="utf-8")
+        self.lab.build()
+        self.assertEqual(self.leader()["tasks"]["fix-login"]["state"], "Done")
+        after = self.lab.mtimes()
+        self.assertIn(f"s/{A}.json", [rel for rel in after if after[rel] != before.get(rel)])
+        self.assertEqual([rel for rel in after if after[rel] != before.get(rel) and rel.startswith("s/")], [f"s/{A}.json"])
+
+
 class HtmlDocumentsTest(unittest.TestCase):
     """An HTML file a reply names is in the copy with the same name, location and size rules as the local viewer, folded into
     one text that the page shows in its sandboxed viewer (inline_html.py holds the rules; the page's viewer is tested in hosted.test.js)."""

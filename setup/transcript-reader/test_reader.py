@@ -1107,6 +1107,167 @@ class WritePageTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "out.html").exists())
 
 
+class LeaderTasksTest(unittest.TestCase):
+    """A leader (a conversation run in a Firstmate home) lists its home's task folders as documents, with titles from the home's backlog."""
+
+    BACKLOG = (
+        "# Backlog\n\n## In flight\n"
+        "- [ ] reader-docs - Reader: task view (repo: pmos) (kind: ship) (since 2026-11-01)\n  a note under the row\n"
+        "- [ ] with-report - Look at things (popular) data/with-report/report.md (repo: personal) (kind: scout) (reported 2026-10-27)\n"
+        "\n## Queued\n- [ ] later-one - Do it later (repo: pmos)\n"
+        "\n## Done\n- [x] old-one - Finished long ago (repo: pmos) (done 2026-10-19)\n"
+        "- [x] checked-in-flight - Checked row (repo: pmos)\n")
+    ARCHIVE = "# Archive\n\n## Archived 2026-09-28\n- [x] archived-one - Archived work (repo: firstmate) (kind: scout) (reported 2026-09-18)\n- [x] old-one - Archive copy of a task the backlog has\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name).resolve()
+        self.fm = self.home / "firstmate"
+        for name in ("data", "state", "projects"):
+            (self.fm / name).mkdir(parents=True)
+        (self.fm / "data" / "backlog.md").write_text(self.BACKLOG, encoding="utf-8")
+        (self.fm / "data" / "done-archive.md").write_text(self.ARCHIVE, encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def put(self, relative, text="x"):
+        path = self.fm / "data" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def leader(self):
+        return {"leader": builder.leader_info(str(self.fm))}
+
+    def test_a_leader_is_a_conversation_whose_own_working_folder_is_a_home(self):
+        self.assertEqual(builder.leader_home(str(self.fm)), self.fm)
+        self.assertIsNone(builder.leader_home(str(self.fm / "projects")), "a folder inside the home is not the home")
+        self.assertIsNone(builder.leader_home(str(self.fm / "data" / "reader-docs")))
+        worker = self.home / "worker-copy"
+        (worker / "data").mkdir(parents=True)
+        self.assertIsNone(builder.leader_home(str(worker)), "a folder with a data folder but no state or projects is a project")
+        self.assertIsNone(builder.leader_home(""))
+        self.assertIsNone(builder.leader_home(str(self.home / "nowhere")))
+
+    def test_a_leader_is_found_through_a_link_and_never_by_name(self):
+        link = self.home / "leader-workspaceos"
+        link.symlink_to(self.fm)
+        self.assertEqual(builder.leader_home(str(link)), self.fm)
+        plain = self.home / "leader-lookalike"
+        plain.mkdir()
+        self.assertIsNone(builder.leader_home(str(plain)))
+
+    def test_backlog_rows_give_the_title_without_its_tags_and_the_state_of_their_section(self):
+        tasks = builder.leader_tasks(self.fm)
+        self.assertEqual(tasks["reader-docs"], {"title": "Reader: task view", "state": "In flight"})
+        self.assertEqual(tasks["with-report"], {"title": "Look at things (popular)", "state": "In flight"}, "the tags and the report path are cut, a parenthesis in the title stays")
+        self.assertEqual(tasks["later-one"]["state"], "Queued")
+        self.assertEqual(tasks["old-one"], {"title": "Finished long ago", "state": "Done"}, "the backlog's row wins over the archive's")
+        self.assertEqual(tasks["checked-in-flight"]["state"], "Done", "a checked row is done")
+        self.assertEqual(tasks["archived-one"], {"title": "Archived work", "state": "Done"}, "a task only the archive knows")
+
+    def test_a_home_with_no_backlog_has_no_titles_and_a_long_title_is_cut(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(builder.leader_tasks(Path(tmp)), {})
+        title = builder.backlog_tasks(f"## Queued\n- [ ] x - {'w' * 500} (repo: a)\n")["x"]["title"]
+        self.assertEqual(len(title), builder.TITLE_LIMIT)
+        self.assertTrue(title.endswith("…"))
+
+    def test_the_files_of_every_task_folder_are_listed_with_the_kinds_a_conversation_names(self):
+        self.put("reader-docs/brief.md", "# Brief\n")
+        self.put("reader-docs/page.html", "<p>x</p>")
+        self.put("reader-docs/ship/shot.PNG", "png")
+        self.put("reader-docs/notes.txt", "not listed")
+        self.put("no-row/report.md")
+        self.put("loose.md")
+        self.put("reader-docs/.hidden/secret.md")
+        self.put("reader-docs/node_modules/x/readme.md")
+        self.put("reader-docs/.dot.md")
+        sessions = [self.leader()]
+        documents = {}
+        builder.attach_task_files(sessions, documents)
+        found = {(doc["dir"].split("/data/")[1] if "/data/" in doc["dir"] else doc["dir"], doc["name"]): doc for doc in documents.values()}
+        self.assertEqual(sorted(found), [("no-row", "report.md"), ("reader-docs", "brief.md"), ("reader-docs", "page.html"), ("reader-docs/ship", "shot.PNG")],
+                         "a file directly in data/ is in no task, and hidden files, node_modules and other types are never listed")
+        brief = found[("reader-docs", "brief.md")]
+        self.assertTrue(brief["lazy"], "markdown is listed without its text")
+        self.assertNotIn("text", brief)
+        self.assertEqual((found[("reader-docs", "page.html")]["kind"], found[("reader-docs/ship", "shot.PNG")]["kind"]), ("html", "image"))
+        self.assertEqual(brief["dir"], "~/firstmate/data/reader-docs")
+        self.assertEqual(sessions[0]["leader"]["dir"], "~/firstmate", "the home as a document's folder is shown, so a folder says which task it is in")
+
+    def test_a_file_a_conversation_named_keeps_its_text_and_is_listed_once(self):
+        path = self.put("reader-docs/brief.md", "# Brief\n")
+        sessions = [{"exchanges": [{"reply": f"`{path}`", "cwd": ""}], **self.leader()}]
+        documents = builder.attach_documents(sessions)
+        builder.attach_task_files(sessions, documents)
+        self.assertEqual(len(documents), 1)
+        doc = next(iter(documents.values()))
+        self.assertEqual(doc["text"], "# Brief\n")
+        self.assertNotIn("lazy", doc)
+
+    def test_a_conversation_that_is_not_a_leaders_lists_no_task_files(self):
+        self.put("reader-docs/brief.md")
+        documents = {}
+        builder.attach_task_files([{"exchanges": []}], documents)
+        self.assertEqual(documents, {})
+
+    def test_a_link_out_of_a_task_folder_a_link_folder_and_files_over_the_limits_are_left_out(self):
+        outside = self.home / "elsewhere"
+        outside.mkdir()
+        (outside / "secret.md").write_text("x", encoding="utf-8")
+        (outside / "inside.md").write_text("x", encoding="utf-8")
+        self.put("reader-docs/ok.md")
+        (self.fm / "data" / "reader-docs" / "link.md").symlink_to(outside / "secret.md")
+        (self.fm / "data" / "linked-task").symlink_to(outside)
+        self.put("reader-docs/big.md", "x" * (builder.MAX_DOCUMENT_BYTES + 1))
+        documents = {}
+        builder.attach_task_files([self.leader()], documents)
+        self.assertEqual(sorted(doc["name"] for doc in documents.values()), ["ok.md"])
+
+    def test_a_task_folder_is_cut_at_its_limit_shallowest_first_and_says_how_many_it_left_out(self):
+        for n in range(5):
+            self.put(f"big/f{n}.md")
+        self.put("big/deep/er/deepest.md")
+        sessions = [self.leader()]
+        documents = {}
+        with mock.patch.object(builder, "MAX_TASK_FILES", 4):
+            builder.attach_task_files(sessions, documents)
+        self.assertEqual(sorted(doc["name"] for doc in documents.values()), ["f0.md", "f1.md", "f2.md", "f3.md"])
+        self.assertEqual(sessions[0]["leader"]["tasks"]["big"], {"more": 2}, "a task with no backlog row still says what it left out")
+
+    def test_two_conversations_of_one_home_share_its_files(self):
+        self.put("reader-docs/brief.md")
+        sessions = [self.leader(), self.leader()]
+        documents = {}
+        builder.attach_task_files(sessions, documents)
+        self.assertEqual(len(documents), 1)
+
+    def test_the_conversation_carries_its_leader_and_a_worker_does_not(self):
+        chain = [Path("/x/aaaa.jsonl")]
+        for cwd, expected in ((str(self.fm), True), (str(self.fm / "projects"), False)):
+            loaded = {chain[0]: {"exchanges": [], "cwd": cwd, "first_time": 0}}
+            session = builder.thread_session({"id": "main", "home": self.fm}, chain, loaded, None)
+            self.assertEqual("leader" in session, expected)
+        self.assertEqual(session.get("leader"), None)
+        loaded = {chain[0]: {"exchanges": [], "cwd": str(self.fm), "first_time": 0}}
+        leader = builder.thread_session({"id": "main", "home": self.fm}, chain, loaded, None)["leader"]
+        self.assertEqual(leader["tasks"]["reader-docs"]["title"], "Reader: task view")
+
+    def test_the_markdown_files_listed_without_text_are_listed_beside_the_page_for_the_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "prototype.html"
+            template = Path(tmp) / "t.html"
+            template.write_text("<script>x</script>__PAYLOAD__", encoding="utf-8")
+            documents = {"a1": {"id": "a1", "path": "/p/a.md", "text": "t"}, "b2": {"id": "b2", "path": "/p/b.md", "lazy": True}, "c3": {"id": "c3", "path": "/p/c.html", "kind": "html"}}
+            builder.write_page(template, {"generated": 20.0, "documents": documents}, out)
+            listing = Path(tmp) / builder.MD_FILES
+            self.assertEqual(json.loads(listing.read_text(encoding="utf-8")), {"b2": "/p/b.md"}, "a document with its text is not listed, nor is a page")
+            self.assertEqual(listing.stat().st_mode & 0o777, 0o600)
+
+
 class PageShellTest(unittest.TestCase):
     """What the page's header and script hold, checked on the filled-in page (there is no browser in the suite)."""
 
@@ -1287,10 +1448,10 @@ class PageShellTest(unittest.TestCase):
             # The rules docfiles.test.js runs are in the hashed script, once, before the page code that calls them.
             self.assertEqual(script.count("const docfiles = (() => {"), 1, mode)
             self.assertNotIn("/*__DOCFILES__*/", page, mode)
-            self.assertLess(script.index("const docfiles = (() => {"), script.index("docfiles.groups(entries, docs)"), mode)
+            self.assertLess(script.index("const docfiles = (() => {"), script.index("docfiles.groups(entries, data.documents)"), mode)
             self.assertNotRegex(re.search(r"const docfiles = \(\(\) => \{.*?\n  \}\)\(\);", script, re.S).group(0), r"fetch\(|XMLHttpRequest|WebSocket|sendBeacon|import\(|document\.|window\.", mode)
             # The list, its find box and type filter, and the one-page-at-a-time phone layout replace the Document dropdown.
-            for needle in ('input.placeholder = "Find a file or folder"', 'shell.node.className = "docshell "', "const onFilePage = session =>"):
+            for needle in ('"Find a file, folder or task" : "Find a file or folder"', 'shell.node.className = "docshell "', "const onFilePage = session =>"):
                 self.assertIn(needle, script, mode)
             self.assertNotIn('select.setAttribute("aria-label", "Document")', script, mode)
             # The header's picker is the document picker on that view (grouped by folder), the folded line's too, and neither switches session there.
@@ -1300,6 +1461,15 @@ class PageShellTest(unittest.TestCase):
             self.assertNotIn("if (docs) state.docPage", script, mode)
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("const docfiles", sheet)
+
+    def test_both_copies_group_a_leaders_documents_by_task_with_a_switch_kept_in_the_browser_and_read_task_files_from_the_server(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            for needle in ('localStorage.getItem("tr-docgroup")', 'localStorage.setItem("tr-docgroup", mode)', 'b.dataset.mode = key', "docfiles.taskGroups(entries, data.documents, session.leader)",
+                           "const byTask = session => docfiles.mode(session, docGroup) === \"task\"", "live.mdOpen(d.id)"):
+                self.assertIn(needle, script, mode)
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        self.assertNotIn("tr-docgroup", sheet)
 
     def test_both_copies_draw_markdown_through_the_vendored_parser_and_the_answer_sheet_keeps_its_own(self):
         for mode, page in self.pages():

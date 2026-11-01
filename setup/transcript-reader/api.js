@@ -54,6 +54,9 @@
 //                                                   address: { url, name, size, mtime }
 //   POST /api/transcript-reader/image-open          { id }: the same for an image file the page offers (listed in
 //                                                   out/image-files.json): { url, name, size, mtime }
+//   POST /api/transcript-reader/md-open             { id }: the same for a markdown file the page lists without its text (out/md-files.json:
+//                                                   the files of a leader's task folders that no conversation named), checked now and
+//                                                   read: { text, name, size, mtime }. Read only.
 //   GET  /api/transcript-reader/html/<key>/<file>   that file, and the files beside it and below it that it names, as
 //                                                   they are on disk now, for the page to show in a sandboxed frame
 //                                                   (see "HTML files" below); the key in the address is the credential.
@@ -140,12 +143,15 @@ const TOKEN_HEADER = 'x-transcript-reader-token';
 const HTML_ROUTE = API + 'html/';
 const HTML_FILES = 'html-files.json';  // beside the page: id -> path (build_prototype.write_page)
 const IMAGE_FILES = 'image-files.json';  // the same for the images the page offers
+const MD_FILES = 'md-files.json';  // the same for the markdown files the page lists without their text (a leader's task folders)
 const HTML_ID_RE = /^[0-9a-f]{10}$/;
 const HTML_PAGE_RE = /\.html?$/i;
 const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+const MD_FILE_RE = /\.md$/i;
 // build_prototype.MAX_HTML_BYTES and MAX_IMAGE_BYTES: what the page offers. A file beside an HTML page may be larger (a picture).
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_DOC_BYTES = 512 * 1024;  // build_prototype.MAX_DOCUMENT_BYTES: a markdown file the page opens
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 const VIEW_IDLE_MS = 60 * 60 * 1000;
 const MAX_VIEWS = 64;
@@ -892,13 +898,16 @@ function create({
   }
 
   // What the Open button of an HTML file or an image asks: the file as the last build listed it, checked now. The listing
-  // comes from the page's own build (never from the request), so only a file a listed conversation named opens.
+  // comes from the page's own build (never from the request), so only a file a listed conversation named, or that sits in a listed
+  // leader's task folder, opens.
   const OPENABLE = {
     html: { listing: HTML_FILES, type: HTML_PAGE_RE, limit: MAX_HTML_BYTES, not: ['That is not an HTML file.', 'not_html'] },
     image: { listing: IMAGE_FILES, type: IMAGE_FILE_RE, limit: MAX_IMAGE_BYTES, not: ['That is not an image file.', 'not_image'] },
+    md: { listing: MD_FILES, type: MD_FILE_RE, limit: MAX_DOC_BYTES, not: ['That is not a markdown file.', 'not_markdown'] },
   };
-  function fileOpen(body, kind) {
-    const rules = OPENABLE[kind];
+  // The file the page asked for by its id, from the listing the last build wrote and checked now: still there, of the kind the listing is
+  // for, inside the home or a temp folder, and within the limit.
+  function listedFile(body, rules) {
     for (const key of Object.keys(body)) if (key !== 'id') throw new RequestError('Unknown field.');
     if (typeof body.id !== 'string' || !HTML_ID_RE.test(body.id)) throw new RequestError('Invalid file id.');
     let listing = null;
@@ -911,12 +920,26 @@ function create({
     if (!stat.isFile()) throw new RequestError('That file is gone.', 404, 'gone');
     if (!rules.type.test(real)) throw new RequestError(rules.not[0], 404, rules.not[1]);
     if (!roots().some((root) => within(real, root))) throw new RequestError('That file is outside the home and temp folders.', 403, 'outside');
-    if (stat.size > rules.limit) throw new RequestError('That file is over ' + rules.limit / 1024 / 1024 + ' MB.', 413, 'too_big');
+    if (stat.size > rules.limit) throw new RequestError('That file is over ' + (rules.limit >= 1024 * 1024 ? rules.limit / 1024 / 1024 + ' MB' : rules.limit / 1024 + ' KB') + '.', 413, 'too_big');
+    return { real, stat };
+  }
+
+  function fileOpen(body, kind) {
+    const { real, stat } = listedFile(body, OPENABLE[kind]);
     const key = crypto.randomBytes(16).toString('base64url');
     const dir = path.dirname(real);
     views.set(key, { dir, entry: path.basename(real), flat: roots().includes(dir), only: kind === 'image', expires: now() + VIEW_IDLE_MS });
     pruneViews();
     return { url: HTML_ROUTE + key + '/' + encodeURIComponent(path.basename(real)), name: path.basename(real), size: stat.size, mtime: stat.mtimeMs / 1000 };
+  }
+
+  // What the page asks to open a markdown file it lists without its text (a file in a leader's task folder that no conversation named): the
+  // text as it is on disk now, under the same checks as an HTML file or a picture. Read only; the listing is the build's, never the request's.
+  function docOpen(body) {
+    const { real, stat } = listedFile(body, OPENABLE.md);
+    let text;
+    try { text = fs.readFileSync(real, 'utf8'); } catch { throw new RequestError('That file is gone.', 404, 'gone'); }
+    return { text, name: path.basename(real), size: stat.size, mtime: stat.mtimeMs / 1000 };
   }
 
   // The file named by the address, as it is on disk now.
@@ -1073,6 +1096,10 @@ function create({
         send(res, 200, { status: 'ok', ...fileOpen(await readJsonBody(req), kind) });
         return;
       }
+    }
+    if (pathname === API + 'md-open' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...docOpen(await readJsonBody(req)) });
+      return;
     }
     if (pathname === API + 'queue' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...queueWrite(await readJsonBody(req, MAX_QUEUE_BODY_BYTES)) });

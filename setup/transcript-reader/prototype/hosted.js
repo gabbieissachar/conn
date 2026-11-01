@@ -266,7 +266,8 @@
       const before = new Map(((previous && previous.sessions) || []).map(s => [s.object, s]));
       const sessions = (idx.conversations || []).map(entry => {
         const old = before.get(entry.object);
-        return { ...entry, exchanges: old && old.stamp === entry.stamp ? old.exchanges : null };
+        const same = old && old.stamp === entry.stamp;
+        return { ...entry, exchanges: same ? old.exchanges : null, ...(same && old.leader ? { leader: old.leader } : {}) };
       });
       const documents = {};
       for (const [id, meta] of Object.entries(idx.documents || {})) {
@@ -282,7 +283,11 @@
       };
     }
     async function conversation(session) {
-      if (!session.exchanges) session.exchanges = (await object(session)).exchanges || [];
+      if (!session.exchanges) {
+        const loaded = await object(session);
+        session.exchanges = loaded.exchanges || [];
+        if (loaded.leader) session.leader = loaded.leader;  // a leader's tasks, for the Documents view's By task grouping
+      }
       return session;
     }
     async function documentText(meta) {

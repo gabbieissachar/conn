@@ -248,10 +248,11 @@ def rules() -> str:
     return stamp_of("|".join(parts).encode("utf-8"))
 
 
-def sources(exchanges: list[dict], homes: list[Path]) -> dict:
+def sources(exchanges: list[dict], homes: list[Path], leader: Path | None = None) -> dict:
     """What a conversation reads besides its logs: the steering inboxes its doorbells name, whose
-    messages it shows in their place (attach_inbox_bodies), and the task-instruction files its
-    pointers name (attach_operational_input)."""
+    messages it shows in their place (attach_inbox_bodies), the task-instruction files its
+    pointers name (attach_operational_input), and, for a leader's conversation (<leader> is its
+    home), the home's backlog and archive, whose rows give the Documents view its task titles."""
     doorbells, briefs = set(), set()
     for exchange in exchanges:
         if exchange["source"] != "firstmate":
@@ -261,7 +262,7 @@ def sources(exchanges: list[dict], homes: list[Path]) -> dict:
             briefs.add(brief.group(1))
         elif exchange["kind"] == "steer" and builder.doorbell_inbox(exchange["input"], homes) is not None:
             doorbells.add(exchange["input"])
-    return {"homes": [str(home) for home in homes], "doorbells": sorted(doorbells), "briefs": sorted(briefs)}
+    return {"homes": [str(home) for home in homes], "doorbells": sorted(doorbells), "briefs": sorted(briefs), "leader": str(leader) if leader else ""}
 
 
 def inputs_stamp(found: dict) -> str:
@@ -274,6 +275,8 @@ def inputs_stamp(found: dict) -> str:
         messages = sorted(directory.glob("*.msg")) + sorted((directory / "handled").glob("*.msg")) if directory.is_dir() else []
         parts.append([str(directory), [[str(path.relative_to(directory)), version(path)] for path in messages]])
     parts += [[path, version(Path(path))] for path in found["briefs"]]
+    if found.get("leader"):
+        parts += [[name, version(Path(found["leader"]) / "data" / name)] for name in ("backlog.md", "done-archive.md")]
     return stamp_of(encode(parts))
 
 
@@ -426,7 +429,8 @@ class Build:
         versions = {str(member): version(member) for member in chain}  # before reading: a write during it shows next run
         loaded = {member: builder.parsed_log(member, self.parsed) for member in chain}
         # The inboxes and instruction files too are stamped before thread_session reads them.
-        found = sources([e for member in chain for e in loaded[member]["exchanges"]], [h for h in (home["home"], self.parent_of.get(home["id"])) if h])
+        found = sources([e for member in chain for e in loaded[member]["exchanges"]], [h for h in (home["home"], self.parent_of.get(home["id"])) if h],
+                        builder.leader_home(loaded[chain[-1]]["cwd"]))
         inputs = inputs_stamp(found)
         session = builder.thread_session(home, chain, loaded, self.parent_of.get(home["id"]))
         exchanges = session["exchanges"]

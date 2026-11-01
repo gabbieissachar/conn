@@ -62,6 +62,7 @@ SEAL_SCRIPT = HERE / "seal.js"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
 IMAGE_FILES = "image-files.json"  # the same for each image file it offers to show (api.js reads it)
+MD_FILES = "md-files.json"  # the same for each markdown file it lists without its text, which the page asks for when it opens one (api.js reads it)
 # Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
 # that must not touch the real logs.
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
@@ -736,8 +737,12 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
     if where.startswith("state/.treehouse/"):
         where = "worker copy"  # a worker's isolated copy, not the home's own clone
-    return {"home": home["id"], "id": path.stem, "ids": [member.stem for member in chain], "file": str(path), "where": where,
-            "exchanges": exchanges}
+    session = {"home": home["id"], "id": path.stem, "ids": [member.stem for member in chain], "file": str(path), "where": where,
+               "exchanges": exchanges}
+    leader = leader_info(cwd)
+    if leader:
+        session["leader"] = leader
+    return session
 
 
 def mark_sheets(sessions: list[dict]) -> None:
@@ -802,6 +807,7 @@ def build(args) -> dict:
     fleet.sort(key=lambda event: event["at"])
     mark_sheets(sessions)
     documents = attach_documents(sessions, html=True, images=True)
+    attach_task_files(sessions, documents)
     labels = pane_labels([s["id"] for s in sessions], out_dir / "pane-labels.json", live)
     reopened = set(read_ids(out_dir / "reopened.txt"))
     for session in sessions:
@@ -1312,6 +1318,17 @@ def embedded_images(text: str, folder: Path) -> list[tuple[str, Path]]:
     return found
 
 
+def doc_key(path: Path) -> str:
+    """The id of the document at <path>: the same for every conversation that names it, and for a task folder's listing of it."""
+    return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+
+
+def shown_dir(path: Path) -> str:
+    """The folder a document is in as the page shows it: under the home folder from ~/, else as it is."""
+    home = Path.home()
+    return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
+
+
 # Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
 # notice is the fleet's own record and folds away, and a session event has no author.
 DOCUMENT_INPUTS = ("captain", "firstmate", "peer")
@@ -1330,14 +1347,6 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
     the same way. The hosted copy (sync.py) carries both in its own way.
     """
     documents: dict[str, dict] = {}
-
-    def doc_key(path: Path) -> str:
-        return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
-
-    def shown_dir(path: Path) -> str:
-        home = Path.home()
-        return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
-
     shown: dict[str, list[tuple[str, Path]]] = {}  # markdown id -> the images its text shows, found once per document
 
     def add(path: Path, token: str, kind: str) -> str | None:
@@ -1390,6 +1399,165 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
             if ids:
                 exchange["documents"] = ids
     return documents
+
+
+# ------------------------------------------------- a leader's tasks (the Documents view's "By task" grouping)
+
+# A leader is a conversation whose own working folder is a Firstmate home: the folder that holds the home's private `data/`, `state/`
+# and `projects/`. A worker's copy of a project, or of Firstmate's code, has none of them (they are never committed), and a home's
+# subfolder is not the home, so the test reads the working folder itself and never a session's name.
+LEADER_FOLDERS = ("data", "state", "projects")
+MAX_BACKLOG_BYTES = 2 * 1024 * 1024
+MAX_TASK_FILES = 400  # one task's listed files, the shallowest first (the largest task folder on the owner's machine holds 328)
+MAX_TASK_DEPTH = 10
+TASK_SKIP = {"node_modules"}
+# A backlog row: `- [ ] <id> - <title> (repo: x) (kind: scout) (since 2026-10-26)`, then notes indented below it.
+BACKLOG_ROW = re.compile(r"^- \[([ xX])\] (\S+) - (.*)$")
+ROW_TAG = re.compile(r"\s*\((?:repo|kind|since|done|reported|hold|hold-kind|hold-until|mode|yolo|until)\b[^()]*\)\s*$")
+ROW_REPORT = re.compile(r"\s+data/\S+$")
+TITLE_LIMIT = 200
+TASK_STATES = {"in flight": "In flight", "queued": "Queued", "done": "Done"}
+
+
+def leader_home(cwd: str) -> Path | None:
+    """The Firstmate home a conversation's working folder is, or None (the conversation is not a leader's)."""
+    if not cwd:
+        return None
+    try:
+        home = Path(cwd).resolve()
+        return home if all((home / name).is_dir() for name in LEADER_FOLDERS) else None
+    except (OSError, RuntimeError):
+        return None
+
+
+def backlog_tasks(text: str, default: str = "") -> dict[str, dict]:
+    """id -> { title, state } for each row of a backlog (or its archive) in the markdown format `tasks-axi` writes.
+
+    The state is the section the row is in (In flight, Queued, Done), or Done for a checked row, or <default>. The title is the row's
+    words without the trailing (repo: ...) (kind: ...) (since ...) tags and report path; the first row of an id wins.
+    """
+    tasks: dict[str, dict] = {}
+    section = default
+    for line in text.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip().lower()
+            section = TASK_STATES.get(heading, "Done" if heading.startswith("archived") else default)
+            continue
+        row = BACKLOG_ROW.match(line)
+        if not row:
+            continue
+        title = row.group(3).strip()
+        while True:
+            trimmed = ROW_TAG.sub("", title)
+            if trimmed == title:
+                break
+            title = trimmed
+        title = ROW_REPORT.sub("", title).strip()
+        if len(title) > TITLE_LIMIT:
+            title = title[:TITLE_LIMIT - 1].rstrip() + "…"
+        tasks.setdefault(row.group(2), {"title": title, "state": "Done" if row.group(1) in "xX" else section})
+    return tasks
+
+
+def read_small(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace") if path.stat().st_size <= MAX_BACKLOG_BYTES else ""
+    except OSError:
+        return ""
+
+
+def leader_tasks(home: Path) -> dict[str, dict]:
+    """The tasks the home's backlog knows, then those only its archive of finished work knows (the backlog keeps a few recent Done rows)."""
+    tasks = backlog_tasks(read_small(home / "data" / "backlog.md"))
+    for task, record in backlog_tasks(read_small(home / "data" / "done-archive.md"), "Done").items():
+        tasks.setdefault(task, record)
+    return tasks
+
+
+def leader_info(cwd: str) -> dict | None:
+    """What a leader's conversation carries for the By task view: the home's folder as the page shows a document's (so a document's folder
+    says which task it is in) and the tasks' titles and states. None for a conversation that is not a leader's."""
+    home = leader_home(cwd)
+    return {"dir": shown_dir(home / "data"), "tasks": leader_tasks(home)} if home else None
+
+
+def home_from_shown(shown: str) -> Path:
+    return Path.home() / shown[2:] if shown.startswith("~/") else Path(shown)
+
+
+def task_folders(home: Path) -> list[Path]:
+    """The home's task folders: each folder directly in data/, never a hidden one and never a link (a link could lead anywhere)."""
+    data = home / "data"
+    try:
+        names = sorted(os.listdir(data))
+    except OSError:
+        return []
+    return [data / name for name in names if not name.startswith(".") and (data / name).is_dir() and not (data / name).is_symlink()]
+
+
+def task_files(folder: Path) -> tuple[list[tuple[Path, str]], int]:
+    """(file, kind) for the markdown, HTML and image files in a task folder, the shallowest first, with how many more there were than
+    MAX_TASK_FILES. A file counts only as the same kinds, sizes and places a conversation's named file does, and only when it still
+    lies inside the folder once links are followed (a link out of it is left out). Hidden files and folders are never read."""
+    roots = mention_roots()
+    base = folder.resolve()
+    found: list[tuple[int, str, Path, str]] = []
+    for top, folders, names in os.walk(folder):
+        depth = len(Path(top).relative_to(folder).parts)
+        folders[:] = sorted(name for name in folders if not name.startswith(".") and name not in TASK_SKIP) if depth < MAX_TASK_DEPTH else []
+        for name in names:
+            if name.startswith("."):
+                continue
+            suffix = Path(name).suffix.lower()
+            kind, limit = ("", MAX_DOCUMENT_BYTES) if suffix == ".md" else ("html", MAX_HTML_BYTES) if suffix in (".html", ".htm") \
+                else ("image", MAX_IMAGE_BYTES) if IMAGE_SUFFIX.fullmatch(suffix) else (None, 0)
+            if kind is None:
+                continue
+            try:
+                real = (Path(top) / name).resolve()
+                if real.is_file() and real.is_relative_to(base) and any(real.is_relative_to(root) for root in roots) and real.stat().st_size <= limit:
+                    found.append((depth, str(real), real, kind))
+            except (OSError, RuntimeError):
+                continue
+    found.sort(key=lambda item: (item[0], item[1]))
+    return [(path, kind) for _, _, path, kind in found[:MAX_TASK_FILES]], max(0, len(found) - MAX_TASK_FILES)
+
+
+def attach_task_files(sessions: list[dict], documents: dict[str, dict]) -> None:
+    """List, as documents, every file in the task folders of each leader's home (the local page only): the page's By task view shows
+    the files a conversation never named beside the ones it did.
+
+    A markdown file is listed without its text (`lazy`): a home's task folders hold megabytes of notes, and the page asks the server
+    for the one it opens (md-open, api.js), as it does for an HTML file or a picture. A document some conversation names keeps the text
+    it already has. A task folder cut at MAX_TASK_FILES says how many files it left out (`more`, on the task's record in the session).
+    """
+    homes: dict[str, dict[str, int]] = {}
+    for session in sessions:
+        leader = session.get("leader")
+        if not leader:
+            continue
+        shown = leader["dir"]
+        if shown not in homes:
+            homes[shown] = more = {}
+            for folder in task_folders(home_from_shown(shown)):
+                files, left = task_files(folder)
+                if left:
+                    more[folder.name] = left
+                for path, kind in files:
+                    key = doc_key(path)
+                    if key in documents:
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": "", "mtime": stat.st_mtime}
+                    if kind:
+                        documents[key].update(kind=kind, size=stat.st_size)
+                    else:
+                        documents[key]["lazy"] = True
+        for task, left in homes[shown].items():
+            leader["tasks"].setdefault(task, {})["more"] = left
 
 
 # ----------------------------------------------- sessions continued after /clear
@@ -2022,7 +2190,8 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
         # The HTML and image files the page offers to open, which the server reads to find a file by the id the page asks for
         # (api.js), written first so no page is served whose files the server does not know. The sheet has no documents.
         listed = lambda kind: json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == kind})
-        files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image"))] if "documents" in payload else []
+        lazy = json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("lazy")}) if "documents" in payload else ""
+        files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image")), (out.with_name(MD_FILES), lazy)] if "documents" in payload else []
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)

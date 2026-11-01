@@ -61,6 +61,8 @@
     const htmlOpen = id => call("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The same for an image file a reply names.
     const imageOpen = id => call("image-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    // The text of a markdown file the page lists without it (a file in a leader's task folder that no conversation named): { text, name, size, mtime }.
+    const mdOpen = id => call("md-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
@@ -141,5 +143,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

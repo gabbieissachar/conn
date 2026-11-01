@@ -291,3 +291,18 @@ test('new page code reloads the page once per stamp, and an older deployed shell
   assert.equal(again.reloads(), 2);
   assert.equal(again.hosted.outdated(), '');
 });
+
+test('a leader\'s tasks come with its conversation, and stay while its stamp is the same (the By task grouping reads them)', async () => {
+  const leader = { dir: '~/fm/firstmate', tasks: { x: { title: 'Task X', state: 'Done' } } };
+  const objects = { ...OBJECTS, 's/a.json': { id: 'a', exchanges: [{ at: 900 }], leader } };
+  const { hosted } = load({ objects });
+  const first = hosted.data(INDEX, null);
+  await hosted.conversation(first.sessions[0]);
+  await hosted.conversation(first.sessions[1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(first.sessions[0].leader)), leader);
+  assert.equal(first.sessions[1].leader, undefined, 'a conversation that is not a leader\'s has none');
+  const next = hosted.data({ ...INDEX, as_of: 2000 }, first);
+  assert.deepEqual(JSON.parse(JSON.stringify(next.sessions[0].leader)), leader, 'a newer index with the same stamp keeps it with the turns');
+  const changed = hosted.data({ ...INDEX, as_of: 2000, conversations: [{ ...INDEX.conversations[0], stamp: 's9' }, INDEX.conversations[1]] }, first);
+  assert.equal(changed.sessions[0].leader, undefined, 'a changed conversation is loaded again, with its own');
+});
