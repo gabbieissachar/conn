@@ -34,6 +34,8 @@ struct AppConfig {
     var tour: String?
     var holdSeconds = 3
     var sendTest: String?
+    /// Test hook: attach the Herdr-screen pane at launch (it never starts by itself otherwise).
+    var startFallback = false
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -60,6 +62,7 @@ struct AppConfig {
             case "--tour": c.tour = next()
             case "--hold": c.holdSeconds = next().flatMap(Int.init) ?? 3
             case "--send-test": c.sendTest = next()
+            case "--start-fallback": c.startFallback = true
             default: break
             }
             i += 1

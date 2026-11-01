@@ -33,7 +33,9 @@ case "serve":
     signal(SIGINT) { _ in exit(0) }
     dispatchMain()
 case "cli":
-    guard let session = option("--session", in: &args) else { fail("--session required") }
+    // `herdr session attach <name>` names the session positionally; every other command uses --session.
+    let positional = (args.count >= 3 && args[0] == "session" && args[1] == "attach") ? args[2] : nil
+    guard let session = option("--session", in: &args) ?? positional else { fail("--session required") }
     let endpoint = HerdrEndpoint(session: session, binaryPath: "")
     if args.first == "status" {
         // The stand-in CLI asks the live stand-in server what protocol it speaks, as the real CLI does.
@@ -71,6 +73,18 @@ case "cli":
         while let line = sock.readLine() {
             var d = line; d.append(0x0a)
             out.write(d)
+        }
+    } else if args.count >= 3, args[0] == "session", args[1] == "attach" {
+        // A tiny stand-in for Herdr's own screen: the agent list from the snapshot, then echo what is typed (q quits).
+        let client = HerdrClient(endpoint: endpoint)
+        guard let snap = try? client.snapshot() else { fail("herdr: cannot reach session \(session)") }
+        print("\u{1b}[2J\u{1b}[HFAKE HERDR SCREEN  session \(session)  \(snap.agents.count) agents")
+        for a in snap.prioritized.prefix(8) { print("  \(a.state.label.padding(toLength: 9, withPad: " ", startingAt: 0)) \(a.name)") }
+        print("type something (q quits):")
+        fflush(stdout)
+        while let line = readLine() {
+            if line == "q" { break }
+            print("key: \(line)"); fflush(stdout)
         }
     } else {
         fail("unsupported fake herdr command: \(args.joined(separator: " "))")

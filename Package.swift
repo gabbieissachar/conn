@@ -25,7 +25,7 @@ let package = Package(
         // SwiftTerm adapters (engine + AppKit view) behind HelmCore's terminal protocol.
         .target(name: "HelmTerminal", dependencies: ["HelmCore", "SwiftTerm"]),
         // The Mac app.
-        .executableTarget(name: "Helm", dependencies: ["HelmCore", "HelmTerminal"]),
+        .executableTarget(name: "Helm", dependencies: ["HelmCore", "HelmTerminal", "SwiftTerm"]),
         // A stand-in Herdr (JSON socket server, pane stream, `herdr` CLI subset) for fixtures, tests and measurements.
         // The real Herdr lab cannot be provisioned on this Mac, so everything that writes to a pane runs against this.
         .target(name: "FakeHerdrKit", dependencies: ["HelmCore"]),

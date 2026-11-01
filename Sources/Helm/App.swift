@@ -27,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model.shutdown(); NSApplication.shared.terminate(nil)
             }
         }
+        if cfg.startFallback {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
+        }
         if let text = cfg.sendTest {
             // End-to-end check of the compose path without clicking: type the text into the box and send it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { model.compose = text; model.send() }

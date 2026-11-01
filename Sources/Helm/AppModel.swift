@@ -50,6 +50,10 @@ final class AppModel: ObservableObject {
     @Published var toastText: String?
     @Published private(set) var streamVerdict: StreamVerdict = .ok
     @Published private(set) var windowVisible = true
+    /// False once the app has been in the background for `inactivePauseSeconds`: streams stop, the sidebar keeps running.
+    @Published private(set) var attentive = true
+    private var inactiveTimer: Timer?
+    let inactivePauseSeconds: TimeInterval = 30
     @Published var confirmWrites = false
 
     private var cancellables = Set<AnyCancellable>()
@@ -94,6 +98,12 @@ final class AppModel: ObservableObject {
         store.start()
         probeCompatibility()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateStats() } }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appResigned() }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appBecameActive() }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.wokeFromSleep() }
         }
@@ -161,6 +171,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The Herdr server pays for every observed working pane (about 3 to 8 points of a core each), so panes nobody is
+    /// looking at do not stream: after 30 s in the background they stop, and they restart (one full frame, about 80 ms) on return.
+    private func appResigned() {
+        inactiveTimer?.invalidate()
+        inactiveTimer = Timer.scheduledTimer(withTimeInterval: inactivePauseSeconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { guard let self = self else { return }; self.attentive = false; self.syncSessions() }
+        }
+    }
+
+    private func appBecameActive() {
+        inactiveTimer?.invalidate()
+        if !attentive { attentive = true; syncSessions() }
+    }
+
     func setWindowVisible(_ v: Bool) {
         guard v != windowVisible else { return }
         windowVisible = v
@@ -183,7 +207,7 @@ final class AppModel: ObservableObject {
     /// Streams run only for panes that are on screen: the window is visible and the Agent view is showing.
     /// The size is the pane's own (an observer cannot resize it), so the app asks Herdr for exactly that.
     private func syncSessions() {
-        let active = windowVisible && mode == .agent
+        let active = windowVisible && attentive && mode == .agent
         primary.configure(pane: active ? selectedPaneID : nil, size: snapshot.paneSizes[selectedPaneID ?? ""])
         secondary.configure(pane: active ? comparePaneID : nil, size: snapshot.paneSizes[comparePaneID ?? ""])
     }

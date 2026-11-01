@@ -231,3 +231,28 @@ import FakeHerdrKit
         session.stop()
     }
 }
+
+@Suite("Screen matcher") struct ScreenMatcherTests {
+    private func ms(_ v: Double) -> UInt64 { UInt64(v * 1_000_000) }
+
+    @Test func aRecurringScreenIsPairedWithTheNearestEarlierSightingNotTheFirst() {
+        // A spinner: the poller saw A, B, A, B. The stream showed B at 130 ms and A at 230 ms. A first-sighting rule
+        // would pair A@230 with A@0 and report 230 ms; the right pairing is A@200 (30 ms).
+        let polls = [Sighting(t: ms(0), text: "A"), Sighting(t: ms(100), text: "B", previousPollAt: ms(50)),
+                     Sighting(t: ms(200), text: "A", previousPollAt: ms(150)), Sighting(t: ms(300), text: "B", previousPollAt: ms(250))]
+        let stream = [Sighting(t: ms(130), text: "B"), Sighting(t: ms(230), text: "A")]
+        let r = ScreenMatcher.match(stream: stream, polls: polls)
+        #expect(r.lowerBoundMillis == [30, 30])
+        #expect(r.upperBoundMillis == [80, 80])
+        #expect(r.unmatched == 0)
+    }
+
+    @Test func aStreamScreenAheadOfThePollerIsNegativeAndAnOldSightingIsNotUsed() {
+        let polls = [Sighting(t: ms(100), text: "X", previousPollAt: ms(50)), Sighting(t: ms(5000), text: "Y", previousPollAt: ms(4950))]
+        // Stream showed X 20 ms before the poll replied: within the tolerance, so it pairs (-20 ms).
+        // It showed Y long after any sighting of Y... but also showed Z, which no poll ever saw.
+        let r = ScreenMatcher.match(stream: [Sighting(t: ms(80), text: "X"), Sighting(t: ms(6900), text: "Y"), Sighting(t: ms(200), text: "Z")], polls: polls)
+        #expect(r.lowerBoundMillis == [-20])
+        #expect(r.unmatched == 2)       // Y is 1.9 s after its sighting (outside the 1.5 s window); Z was never polled
+    }
+}

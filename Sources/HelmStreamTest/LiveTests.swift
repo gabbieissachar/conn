@@ -85,26 +85,9 @@ enum LiveTests {
         Thread.sleep(forTimeInterval: pollInterval * 2)
         lock.lock(); defer { lock.unlock() }
 
-        // Match each screen the stream showed with the latest poll sighting of the same text that is not later than the
-        // frame (plus a 150 ms tolerance for poll noise). Panes with a spinner repeat the same few screens, so "first
-        // sighting ever" would pair a screen with an earlier cycle: only sightings within 1.5 s before the frame count.
-        var lags: [Double] = [], lagsUpper: [Double] = []
-        var unmatchedEngine = 0
-        let tolerance: UInt64 = 150_000_000, window: UInt64 = 1_500_000_000
-        for s in engineStates.dropFirst() {
-            var hit: (t: UInt64, prev: UInt64)?
-            for p in pollStates.reversed() {
-                if p.t > s.t &+ tolerance { continue }
-                if s.t > p.t && s.t - p.t > window { break }
-                if p.text == s.text { hit = (p.t, p.prev); break }
-            }
-            if let h = hit {
-                // The state changed on the server somewhere between the poll before and the poll that saw it, so the true
-                // lag lies between (frame - first poll that saw it) and (frame - last poll that had not yet).
-                lags.append((Double(s.t) - Double(h.t)) / 1e6)
-                if h.prev > 0 { lagsUpper.append((Double(s.t) - Double(h.prev)) / 1e6) }
-            } else { unmatchedEngine += 1 }
-        }
+        let matched = ScreenMatcher.match(stream: engineStates.dropFirst().map { Sighting(t: $0.t, text: $0.text) },
+                                          polls: pollStates.map { Sighting(t: $0.t, text: $0.text, previousPollAt: $0.prev) })
+        let lags = matched.lowerBoundMillis, lagsUpper = matched.upperBoundMillis, unmatchedEngine = matched.unmatched
         let engineSet = Set(engineStates.map(\.text))
         let pollOnly = pollStates.dropFirst().filter { !engineSet.contains($0.text) }.count
         var gaps: [Double] = []
