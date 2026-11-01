@@ -98,3 +98,35 @@ extension HerdrClient {
         return obj
     }
 }
+
+@Suite("Agent navigation") struct NavigationTests {
+    private func snapshot() throws -> Snapshot {
+        let (server, endpoint) = try makeServer(agents: 8)
+        defer { server.stop() }
+        return try HerdrClient(endpoint: endpoint).snapshot()
+    }
+
+    @Test func cyclingFollowsTheSidebarOrderAndWrapsBothWays() throws {
+        let s = try snapshot()
+        let order = s.prioritized.map(\.id)
+        #expect(s.agent(after: nil, offset: 1)?.id == order[0])
+        #expect(s.agent(after: order[0], offset: 1)?.id == order[1])
+        #expect(s.agent(after: order.last, offset: 1)?.id == order[0])
+        #expect(s.agent(after: order[0], offset: -1)?.id == order.last)
+        #expect(s.agent(after: "gone", offset: -1)?.id == order.last)
+        #expect(Snapshot.empty.agent(after: nil, offset: 1) == nil)
+    }
+
+    @Test func jumpingToWaitingVisitsOnlyAgentsThatWaitAndWraps() throws {
+        let s = try snapshot()
+        let waiting = s.prioritized.filter { $0.state.waitsOnCaptain }.map(\.id)
+        #expect(!waiting.isEmpty)
+        #expect(s.nextWaiting(after: nil)?.id == waiting[0])
+        #expect(s.nextWaiting(after: waiting.last)?.id == waiting[0])
+        let idle = s.agents.first { !$0.state.waitsOnCaptain }!.id
+        #expect(s.nextWaiting(after: idle)?.id == waiting[0])
+        var none = s
+        for a in s.agents { none.setState(a.id, to: .idle) }
+        #expect(none.nextWaiting(after: nil) == nil)
+    }
+}

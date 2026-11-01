@@ -154,6 +154,23 @@ public struct Snapshot: Equatable, Sendable {
         }.map { $0.element }
     }
 
+    /// The agent `offset` places after `current` in the sidebar's order (waiting first), wrapping at both ends.
+    /// With no current agent (or one that is gone) it starts from the top.
+    public func agent(after current: String?, offset: Int) -> Agent? {
+        let list = prioritized
+        guard !list.isEmpty else { return nil }
+        let i = list.firstIndex { $0.id == current } ?? (offset >= 0 ? -1 : 0)
+        return list[((i + offset) % list.count + list.count) % list.count]
+    }
+
+    /// The next agent that waits on the captain after `current` (a question or a finished task), wrapping; nil if none.
+    public func nextWaiting(after current: String?) -> Agent? {
+        let waiting = prioritized.filter { $0.state.waitsOnCaptain }
+        guard !waiting.isEmpty else { return nil }
+        guard let i = waiting.firstIndex(where: { $0.id == current }) else { return waiting[0] }
+        return waiting[(i + 1) % waiting.count]
+    }
+
     public mutating func setState(_ paneID: String, to state: AgentState) {
         guard let i = agents.firstIndex(where: { $0.id == paneID }) else { return }
         agents[i].state = state

@@ -246,17 +246,12 @@ final class AppModel: ObservableObject {
     func selectNth(_ i: Int) { let list = snapshot.prioritized; if i < list.count { select(list[i].id) } }
 
     func cycle(_ delta: Int) {
-        let list = snapshot.prioritized
-        guard !list.isEmpty else { return }
-        let i = list.firstIndex { $0.id == selectedPaneID } ?? -1
-        select(list[(i + delta + list.count) % list.count].id)
+        if let a = snapshot.agent(after: selectedPaneID, offset: delta) { select(a.id) }
     }
 
     func jumpToWaiting() {
-        let w = waiting
-        guard !w.isEmpty else { toast("Nothing is waiting on you"); return }
-        let i = w.firstIndex { $0.id == selectedPaneID }.map { ($0 + 1) % w.count } ?? 0
-        select(w[i].id)
+        guard let a = snapshot.nextWaiting(after: selectedPaneID) else { toast("Nothing is waiting on you"); return }
+        select(a.id)
     }
 
     func toggleCompare() {
