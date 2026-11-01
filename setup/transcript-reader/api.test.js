@@ -1390,7 +1390,9 @@ function fakeWorker({ crash = false } = {}) {
     });`);
   fs.writeFileSync(path.join(dir, 'fakepy'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(dir, 'worker.js'))}\n`, { mode: 0o755 });
   if (crash) fs.writeFileSync(path.join(dir, 'crash'), '');
-  return { dir, pythonBin: path.join(dir, 'fakepy'), requests: () => (fs.existsSync(requests) ? fs.readFileSync(requests, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []),
+  // The worker creates the log and then writes a line to it, so a read in between finds it empty: only whole lines count.
+  return { dir, pythonBin: path.join(dir, 'fakepy'),
+    requests: () => (fs.existsSync(requests) ? fs.readFileSync(requests, 'utf8').split('\n').slice(0, -1).map((line) => JSON.parse(line)) : []),
     stopCrashing: () => fs.rmSync(path.join(dir, 'crash'), { force: true }) };
 }
 
