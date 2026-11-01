@@ -329,7 +329,7 @@ __HEAD_HOSTED__
   .step-head button:disabled { opacity: .4; cursor: default; }
   .step-body { padding: 10px 14px 6px; overflow-y: auto; overscroll-behavior: contain; }
   .step-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; }
-  .step-title .k { color: var(--muted); font-weight: 700; margin-right: 6px; }
+  .step-title .k { color: var(--muted); font-weight: 700; margin-right: 2px; }
   .step-title.failed .k, .step-title .bad { color: var(--open); }
   .step-meta { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
   .step-sec { margin: 10px 0 0; }
@@ -345,6 +345,7 @@ __HEAD_HOSTED__
   .diff .del::before { content: "\2212 "; color: var(--open); }
   .diff .ctx::before { content: "  "; }
   .step-note { font-size: 13px; color: var(--muted); margin: 4px 0 0; }
+  .step-sec .btn { margin-top: 8px; }
   .step-foot { display: flex; gap: 8px; padding: 8px 14px 10px; border-top: 1px solid var(--line); }
   .step-foot .primary { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
   @media (max-width: 440px), (pointer: coarse) { .step-head button, .step-foot button, .step-sheet .step-copy, .step-sec .btn { min-height: 44px; min-width: 44px; } }
@@ -807,13 +808,13 @@ __HEAD_HOSTED__
   }
   // The conversation's outputs: from the laptop's server on the laptop's page, from the object the sealed copy holds (on the device, or
   // from the laptop) on the phone. Only called when the sheet needs it, or when the person asks for the older ones.
-  async function loadOutputs(session) {
+  async function loadOutputs(session, asked = false) {
     const entry = outputEntry(session.id);
     if (entry.state === "loading") return entry.waiting;
     entry.state = "loading"; entry.error = null;
     entry.waiting = (async () => {
       try {
-        const got = HOSTED ? await hosted.steps(session) : await live.steps(session.id);
+        const got = HOSTED ? await hosted.steps(session, asked ? { probe: true } : undefined) : await live.steps(session.id);
         entry.map = (got && got.outputs) || {}; entry.state = "ready"; entry.gen = data.generated;
       } catch (e) { entry.state = "failed"; entry.error = e; }
       if (sheet.ex) paintSheet();
@@ -905,7 +906,7 @@ __HEAD_HOSTED__
     node.pos.textContent = `Step ${index + 1} of ${list.length}`;
     const body = node.body, frag = document.createDocumentFragment();
     const title = $("h2", "step-title" + (step.f ? " failed" : ""));
-    title.append($("span", "k", stepsView.KIND[step.k] || "Tool"), document.createTextNode(step.s));
+    title.append($("span", "k", stepsView.KIND[step.k] || "Tool"), document.createTextNode(" " + step.s));
     if (step.f) title.append(document.createTextNode(" "), $("span", "bad", "· failed"));
     frag.append(title, $("p", "step-meta", [fmtWhen(step.at), step.n].filter(Boolean).join(" · ")));
     const input = step.c || step.p || (step.k === "read" || step.k === "edited" || step.k === "wrote" ? step.s : "");
@@ -959,7 +960,7 @@ __HEAD_HOSTED__
         if (entry.state === "idle") loadOutputs(session);
       }
     } else if (plan.kind === "offer") {
-      outBox.push($("p", "step-note", `${plan.note} Older output waits at the laptop.`), downloadButton(session, "Download this conversation’s outputs"));
+      outBox.push($("p", "step-note", plan.note), downloadButton(session, "Download this conversation’s outputs"));
     }
     if (outBox.length) frag.append(section("Output", ...outBox).sec);
     body.replaceChildren(frag);
@@ -970,7 +971,7 @@ __HEAD_HOSTED__
     btn.addEventListener("click", async () => {
       btn.disabled = true; btn.textContent = "Downloading…";
       outputEntry(session.id).state = "idle";
-      await loadOutputs(session);
+      await loadOutputs(session, true);
       if (sheet.ex) paintSheet();
     });
     return btn;
@@ -3364,7 +3365,9 @@ __HEAD_HOSTED__
     const have = await hosted.stored(offline.index);
     offline.held = have.held;
     const heldNote = have.held ? ` · ${have.held} message${have.held === 1 ? "" : "s"} held on this phone for the laptop` : "";
-    text.textContent = (have.have >= have.total ? `Everything is on this device (${fmtSize(have.bytes)}), as of the laptop's build at ${builtAt(offline.index.as_of)}.` + (have.all ? " It updates by itself while the laptop answers." : "")
+    // The tool output of a conversation that was last active before the build's 7 days is not part of "everything": a step asks for it.
+    const olderOutput = (offline.index.conversations || []).some(c => c.steps && (c.last || 0) < (offline.index.steps_from || 0)) ? " Tool output of older conversations stays at the laptop until a step asks for it." : "";
+    text.textContent = (have.have >= have.total ? `Everything is on this device (${fmtSize(have.bytes)}), as of the laptop's build at ${builtAt(offline.index.as_of)}.` + (have.all ? " It updates by itself while the laptop answers." : "") + olderOutput
       : have.all ? `${have.have} of ${have.total} items are on this device (${fmtSize(have.bytes)}); the rest comes down when the laptop answers.`
       : `${have.have} of ${have.total} items are on this device (${fmtSize(have.bytes)}). Download everything now to read with the laptop shut.`) + heldNote;
   }

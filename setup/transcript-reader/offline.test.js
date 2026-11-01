@@ -567,3 +567,100 @@ test('a laptop slow to answer lets the stored page open after 4 seconds, and its
   await Promise.all(w.waits);
   assert.equal(await w.cache.get(shell).clone().text(), 'late sheet');
 });
+
+// ---------------------------------------------------------------------------------------------------------------- tool output (t/)
+// A conversation's output text is its own object (sync.py: t/<id>.json), named by the index entry's `steps`. Its steps and a failed step's
+// last 400 characters are in the conversation's own object, so they read with the laptop shut once the conversation is on the device;
+// the output text is fetched when a step asks, kept like any object, and the older conversations' only on request.
+
+const DAY = 86400;
+async function withOutputs() {
+  const laptop = await phone.laptop({ conversations: 2, documents: 0, weeks: 0 });
+  const now = Date.now() / 1000;
+  const [recent, old] = laptop.index.conversations;
+  recent.last = now - 3600;
+  old.last = now - 20 * DAY;
+  for (const [entry, text] of [[recent, 'recent output'], [old, 'old output']]) {
+    const exchange = { uid: 'turn-' + entry.id.slice(0, 2), at: entry.last, source: 'captain', input: 'Run it', reply: 'Done', steps: [{ k: 'ran', n: 'Bash', s: 'Run it', at: Math.round(entry.last), o: 0, f: 1, l: 3, t: 'the end of a failure' }] };
+    await laptop.set(entry.object, { id: entry.id, home: 'main', exchanges: [exchange] });
+    entry.stamp = laptop.stamps[entry.object];
+    const rel = `t/${entry.id}.json`;
+    await laptop.set(rel, { outputs: { [`${exchange.uid}:0`]: text } });
+    entry.steps = { object: rel, stamp: laptop.stamps[rel] };
+  }
+  await laptop.publish({ steps_from: now - 7 * DAY });
+  return { laptop, recent, old };
+}
+
+test('a conversation\'s tool output is fetched when a step asks, once, kept on the device, and read again with the laptop shut', async () => {
+  const { laptop, recent } = await withOutputs();
+  const device = phone.device();
+  const first = await opened(laptop, device);
+  const index = await first.hosted.index();
+  const data = first.hosted.data(index, null);
+  const session = data.sessions.find((s) => s.id === recent.id);
+  assert.equal(data.steps_from, index.steps_from, 'the window the build computed');
+  assert.equal(await first.hosted.stepsHeld(session), false, 'nothing of it on the device yet');
+  assert.deepEqual(plain(await first.hosted.steps(session)), { outputs: { ['turn-' + recent.id.slice(0, 2) + ':0']: 'recent output' } });
+  assert.deepEqual(laptop.fetchesOf(/^t\//), [`t/${recent.id}.json.enc`]);
+  await first.hosted.steps(session);
+  assert.equal(laptop.fetchesOf(/^t\//).length, 1, 'once per stamp');
+  assert.equal(await first.hosted.stepsHeld(session), true);
+  assert.ok(storedPaths(device).includes(`t/${recent.id}.json`));
+  // The laptop shuts and the page loads again: the conversation, its failed step's tail and the output all read from the device.
+  await first.hosted.conversation(session);
+  laptop.down = true;
+  const again = await opened(laptop, device);
+  const offline = again.hosted.data(await again.hosted.index(), null);
+  const same = offline.sessions.find((s) => s.id === recent.id);
+  assert.equal(await again.hosted.stepsHeld(same), true);
+  assert.equal(Object.values((await again.hosted.steps(same)).outputs)[0], 'recent output');
+  await again.hosted.conversation(same);
+  assert.equal(same.exchanges[0].steps[0].t, 'the end of a failure', 'a failed step\'s tail is in the conversation\'s own object');
+});
+
+test('a conversation with no output has no object to ask for, and an older conversation\'s output needs the laptop until it was downloaded', async () => {
+  const { laptop, old } = await withOutputs();
+  const plainEntry = laptop.index.conversations.find((c) => c.id === old.id);
+  const device = phone.device();
+  const page = await opened(laptop, device);
+  const data = page.hosted.data(await page.hosted.index(), null);
+  const bare = { id: 'z', object: 's/z.json', stamp: 'x' };
+  laptop.requests.length = 0;
+  assert.deepEqual(plain(await page.hosted.steps(bare)), { outputs: {} });
+  assert.equal(await page.hosted.stepsHeld(bare), false);
+  assert.deepEqual(laptop.requests, [], 'nothing was asked');
+  // The laptop is away and this device never downloaded the older conversation's output: it says so, and a retry later works.
+  laptop.down = true;
+  const older = data.sessions.find((s) => s.id === plainEntry.id);
+  await assert.rejects(page.hosted.steps(older), /not stored on this device yet, and the laptop is not reachable/);
+  laptop.down = false;
+  // The person's own tap on Download tries the laptop at once, though it was away a moment ago.
+  assert.equal(Object.values((await page.hosted.steps(older, { probe: true })).outputs)[0], 'old output');
+  assert.equal(await page.hosted.stepsHeld(older), true);
+});
+
+test('Download everything now keeps the output of the conversations active in the window and leaves the older ones to a request, and keeps what was requested', async () => {
+  const { laptop, recent, old } = await withOutputs();
+  const device = phone.device();
+  const page = await opened(laptop, device);
+  const index = await page.hosted.index();
+  const result = await page.hosted.download(index);
+  assert.deepEqual(plain(result.failed), []);
+  assert.equal(result.fetched, 3, 'two conversations and the recent one\'s output');
+  assert.deepEqual(laptop.fetchesOf(/^t\//), [`t/${recent.id}.json.enc`]);
+  const stored = await page.hosted.stored(index);
+  assert.deepEqual([stored.total, stored.have], [3, 3]);
+  // The person asks for the older conversation's output: it is kept, and the next "Download everything now" does not take it away.
+  const data = page.hosted.data(index, null);
+  await page.hosted.steps(data.sessions.find((s) => s.id === old.id));
+  assert.ok(storedPaths(device).includes(`t/${old.id}.json`));
+  const next = await page.hosted.download(index);
+  assert.equal(next.fetched, 0);
+  assert.ok(storedPaths(device).includes(`t/${old.id}.json`), 'an output that was asked for stays');
+  // A conversation that left the index takes its output with it.
+  laptop.index.conversations = laptop.index.conversations.filter((c) => c.id !== old.id);
+  await laptop.publish({});
+  await page.hosted.download(await page.hosted.index());
+  assert.ok(!storedPaths(device).includes(`t/${old.id}.json`));
+});

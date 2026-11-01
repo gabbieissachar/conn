@@ -306,3 +306,19 @@ test('a leader\'s tasks come with its conversation, and stay while its stamp is 
   const changed = hosted.data({ ...INDEX, as_of: 2000, conversations: [{ ...INDEX.conversations[0], stamp: 's9' }, INDEX.conversations[1]] }, first);
   assert.equal(changed.sessions[0].leader, undefined, 'a changed conversation is loaded again, with its own');
 });
+
+test('a conversation\'s tool output is its own object, asked for once per stamp and never for a conversation that has none', async () => {
+  const steps = { object: 't/a.json', stamp: 't1' };
+  const index = { ...INDEX, steps_from: 400, conversations: [{ ...INDEX.conversations[0], steps }, INDEX.conversations[1]] };
+  const { hosted, calls } = load({ objects: { ...OBJECTS, 't/a.json': { outputs: { 'turn:0': 'all good' } } } });
+  const data = hosted.data(index, null);
+  assert.equal(data.steps_from, 400, 'the window the build computed, which the page measures a step against');
+  assert.deepEqual(data.sessions[0].steps, steps);
+  assert.equal(data.sessions[1].steps, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(await hosted.steps(data.sessions[0]))), { outputs: { 'turn:0': 'all good' } });
+  await hosted.steps(data.sessions[0]);
+  assert.deepEqual(JSON.parse(JSON.stringify(await hosted.steps(data.sessions[1]))), { outputs: {} });
+  assert.deepEqual(calls.map((c) => c.url), ['t/a.json'], 'one ask, for the conversation that has output');
+  assert.equal(await hosted.stepsHeld(data.sessions[0]), false, 'a plain copy keeps nothing on the device');
+  assert.equal(hosted.data({ ...INDEX }, null).steps_from, 0, 'an index from before the window has none');
+});

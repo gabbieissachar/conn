@@ -10,7 +10,7 @@
 //                        and never accepted as an upload, so an upload key cannot change the page that asks for the passphrase.
 //   k/params.json        the salt and iteration count of the key derivation (no secret), and a sealed check word
 //   index.json.enc       the sealed index
-//   s|d|f|a/<id>.json.enc  a sealed conversation, document, week of fleet records or answer sheet
+//   s|d|f|a|t/<id>.json.enc  a sealed conversation, document, week of fleet records, answer sheet or conversation's tool output
 //   q/<uuid>.json.enc    a sealed message the page queues for the laptop to send (POST /api/transcript-reader/queue, the owner's session)
 //   r/<uuid>.json.enc    a sealed receipt the laptop writes for a queued message
 
@@ -20,7 +20,7 @@ const KINDS = {
   shell: { re: /^(?:index|sheet)\.html$/, max: 4 * MIB, type: 'text/html; charset=utf-8' },
   params: { re: /^k\/params\.json$/, max: 4096, type: 'application/json' },
   index: { re: /^index\.json\.enc$/, max: 32 * MIB, type: 'application/octet-stream' },
-  object: { re: /^[sdfa]\/[A-Za-z0-9_-]{1,64}\.json\.enc$/, max: 32 * MIB, type: 'application/octet-stream' },
+  object: { re: /^[sdfat]\/[A-Za-z0-9_-]{1,64}\.json\.enc$/, max: 32 * MIB, type: 'application/octet-stream' },
   queue: { re: /^q\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.enc$/, max: 64 * 1024, type: 'application/octet-stream' },
   receipt: { re: /^r\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json\.enc$/, max: 64 * 1024, type: 'application/octet-stream' },
 };

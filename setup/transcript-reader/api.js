@@ -10,7 +10,7 @@
 //   GET  /setup/transcript-reader/out/{hosted,bucket}/{sw.js,manifest.webmanifest,icon-*.png}
 //                                                   the offline copy's service worker, web app manifest and icons
 //                                                   (no transcript), for the shell that installs them
-//   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*,a/*,r/*}
+//   GET  /setup/transcript-reader/out/hosted/{index.json,s/*,d/*,f/*,a/*,t/*,r/*}
 //                                                   the objects that shell loads (r/ holds the receipts of
 //                                                   its queued sends), to its own token-bearing fetches only
 //   GET  /setup/transcript-reader/out/bucket/...    the sealed copy (sync.py --seal):
@@ -28,6 +28,9 @@
 //                                                   or removed it) and rebuilds the pages from the session logs and
 //                                                   the fleet records, then answers as state does, with the time
 //                                                   it finished
+//   GET  /api/transcript-reader/steps?conv=<id>     the tool output of one conversation of the local page, { outputs: { "<turn>:<n>": text } },
+//                                                   read from out/steps/<id>.json, which the page build writes beside the page (the page itself
+//                                                   holds none of it); an empty set for a conversation with none. Read only.
 //   GET  /api/transcript-reader/pins                the pinned messages (pinstore.js: a small owner-only file
 //                                                   outside the repo) and their revision
 //   POST /api/transcript-reader/pins                { op: "pin", key, conv, at } or { op: "unpin", key }
@@ -128,8 +131,8 @@ const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.htm
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {
-  hosted: { re: /^(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
-  bucket: { re: /^(?:(?:index|[sdfar]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
+  hosted: { re: /^(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
+  bucket: { re: /^(?:(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };
 // The shell pages of a copy: opened in a tab (and so given the token), or, for the offline copy's cache, fetched by the page itself
 // with the token it already holds (see servePage).
@@ -1069,6 +1072,15 @@ function create({
     }
     if (pathname === API + 'sync' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...(await sync(await readJsonBody(req))) });
+      return;
+    }
+    // The tool output of one conversation, for a step the local page opens (the page build writes it beside the page, apart from the turns).
+    if (pathname === API + 'steps' && req.method === 'GET') {
+      const conv = query.get('conv') || '';
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(conv)) { fail(res, 400, 'bad_request', 'Invalid conversation.'); return; }
+      let kept = {};
+      try { kept = JSON.parse(fs.readFileSync(path.join(outDir, 'steps', conv + '.json'), 'utf8')).outputs || {}; } catch { kept = {}; }
+      send(res, 200, { status: 'ok', outputs: kept });
       return;
     }
     if (pathname === API + 'pins' && req.method === 'GET') {

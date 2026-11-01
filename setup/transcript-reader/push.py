@@ -59,13 +59,13 @@ KEY_ENV = "HOSTED_READER_UPLOAD_KEY"
 URL_ENV = "HOSTED_READER_URL"
 KEYCHAIN_SERVICE = "pmos-hosted-reader-upload-key"
 # What the app accepts (replit/names.js), as far as this side builds it.
-OBJECT = re.compile(r"^[sdfa]/[A-Za-z0-9_-]{1,64}\.json\.enc$")
+OBJECT = re.compile(r"^[sdfat]/[A-Za-z0-9_-]{1,64}\.json\.enc$")
 UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 QUEUED = re.compile(rf"^q/({UUID})\.json\.enc$")
 RECEIPT = re.compile(rf"^r/({UUID})\.json\.enc$")
 FIXED = ("k/params.json", "index.json.enc")
 SHELLS = ("index.html", "sheet.html")  # code: copied by hand into the app's shell/ folder, never uploaded
-PRUNED_PREFIXES = ("s/", "d/", "f/", "a/")
+PRUNED_PREFIXES = ("s/", "d/", "f/", "a/", "t/")
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 ATTEMPTS = 3
 

@@ -279,11 +279,12 @@ test('pages: a spelling the file system folds (Unicode form and case) or a symli
 // The hosted copy sync.py writes into out/hosted/: its shell, an index, objects, and the manifest beside them.
 function writeHosted(outDir) {
   const hosted = path.join(outDir, 'hosted');
-  for (const folder of ['s', 'd', 'f', 'a', 'r']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
+  for (const folder of ['s', 'd', 'f', 'a', 't', 'r']) fs.mkdirSync(path.join(hosted, folder), { recursive: true });
   fs.writeFileSync(path.join(hosted, 'r', Q + '.json'), JSON.stringify({ id: Q, state: 'sent' }));
   fs.writeFileSync(path.join(hosted, 'index.html'), builtPage('hosted shell'));
   fs.writeFileSync(path.join(hosted, 'sheet.html'), builtPage('hosted sheet'));
   fs.writeFileSync(path.join(hosted, 'a', A + '.json'), JSON.stringify({ questionnaires: [] }));
+  fs.writeFileSync(path.join(hosted, 't', A + '.json'), JSON.stringify({ outputs: { 'turn:0': 'tool output' } }));
   fs.writeFileSync(path.join(hosted, 'index.json'), JSON.stringify({ as_of: 1, conversations: [{ id: A, object: `s/${A}.json` }] }));
   fs.writeFileSync(path.join(hosted, 's', A + '.json'), JSON.stringify({ id: A, exchanges: [] }));
   fs.writeFileSync(path.join(hosted, 'd', 'abc123.json'), JSON.stringify({ id: 'abc123', text: '# Notes' }));
@@ -316,7 +317,7 @@ test('hosted: the shell\'s own token-bearing fetch gets each object; without the
   try {
     writeHosted(t.tree.outDir);
     const fetchHeaders = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
-    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json', `a/${A}.json`, `r/${Q}.json`]) {
+    for (const name of ['index.json', `s/${A}.json`, 'd/abc123.json', 'f/2026-W43.json', `a/${A}.json`, `t/${A}.json`, `r/${Q}.json`]) {
       const urlPath = '/setup/transcript-reader/out/hosted/' + name;
       const got = await t.request({ path: urlPath, headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
       assert.equal(got.status, 200, name);
@@ -328,7 +329,7 @@ test('hosted: the shell\'s own token-bearing fetch gets each object; without the
         { 'Sec-Fetch-Site': 'cross-site', [TOKEN_HEADER]: t.token }, { Origin: 'http://evil.example', [TOKEN_HEADER]: t.token }]) {
         const refused = await t.request({ path: urlPath, headers });
         assert.equal(refused.status, 403, name + ' ' + JSON.stringify(headers));
-        assert.doesNotMatch(refused.raw, /exchanges|Notes|events|as_of|questionnaires/);
+        assert.doesNotMatch(refused.raw, /exchanges|Notes|events|as_of|questionnaires|tool output/);
       }
     }
     const missing = await t.request({ path: '/setup/transcript-reader/out/hosted/s/' + B + '.json', headers: { ...fetchHeaders, [TOKEN_HEADER]: t.token } });
@@ -1443,5 +1444,29 @@ test('worker: a rebuild that fails in the worker reports what the build said, an
     await until(() => t.state().then((r) => r.json.build.error === 'ValueError: broken log'));
     const closed = await t.post('close', { session_id: A });
     assert.equal(closed.status, 200, 'the worker that failed one build still takes the next');
+  } finally { await t.close(); }
+});
+
+// The tool output of the local page's conversations: the page build writes out/steps/<id>.json beside the page, and one route reads it.
+test('steps: a conversation\'s tool output is read from the file the page build wrote, with the token, and a conversation with none is an empty set', async () => {
+  const t = await start();
+  try {
+    fs.mkdirSync(path.join(t.tree.outDir, 'steps'));
+    fs.writeFileSync(path.join(t.tree.outDir, 'steps', A + '.json'), JSON.stringify({ outputs: { 'turn:0': 'all good', 'turn:2': 'a failure' } }));
+    const got = await t.get('steps?conv=' + A);
+    assert.equal(got.status, 200);
+    assert.deepEqual(got.json, { status: 'ok', outputs: { 'turn:0': 'all good', 'turn:2': 'a failure' } });
+    assert.deepEqual((await t.get('steps?conv=' + B)).json, { status: 'ok', outputs: {} });
+    fs.writeFileSync(path.join(t.tree.outDir, 'steps', B + '.json'), 'not json');
+    assert.deepEqual((await t.get('steps?conv=' + B)).json, { status: 'ok', outputs: {} }, 'a file cut off mid-write is none yet');
+    for (const conv of ['', '../prototype', '..%2Fprototype', 'a/b', 'x'.repeat(65), 'a.b']) {
+      assert.equal((await t.get('steps?conv=' + conv)).status, 400, conv);
+    }
+    assert.equal((await t.get('steps?conv=' + A, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403, 'without the page\'s token nothing is read');
+    assert.equal((await t.request({ path: '/api/transcript-reader/steps?conv=' + A })).status, 403);
+    // The folder is not a page: a direct address is never served.
+    const direct = await t.request({ path: '/setup/transcript-reader/out/steps/' + A + '.json', headers: { [TOKEN_HEADER]: t.token } });
+    assert.notEqual(direct.status, 200);
+    assert.doesNotMatch(direct.raw, /all good/);
   } finally { await t.close(); }
 });

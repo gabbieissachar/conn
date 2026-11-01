@@ -79,7 +79,7 @@
       if (!step.l) return { kind: "none" };
       if (ctx.loaded) return { kind: "show" };
       if (!ctx.sealed || !ctx.from || (step.at || 0) >= ctx.from) return { kind: "fetch" };
-      return { kind: "offer", note: `Output is kept on this device for the last ${WINDOW_DAYS} days.` };
+      return { kind: "offer", note: `No output on this device for this step. Output stays here for the last ${WINDOW_DAYS} days; older output waits at the laptop.` };
     }
     const failedAt = ex => list(ex).map((s, i) => s.f ? i : -1).filter(i => i >= 0);
     // What a search reads of a step: its summary, its file, and the start of its command (the whole command is not searched: the sealed

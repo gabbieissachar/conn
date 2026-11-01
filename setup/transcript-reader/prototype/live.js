@@ -57,6 +57,8 @@
     const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
+    // The tool output of one conversation, { outputs: { "<turn id>:<n>": text } }, which the page asks for when a step opens.
+    const steps = conv => call("steps?conv=" + encodeURIComponent(conv));
     // An HTML file a reply names: the server checks it again and answers with the address to show it from, { url, name, size, mtime }.
     const htmlOpen = id => call("html-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The same for an image file a reply names.
@@ -143,5 +145,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

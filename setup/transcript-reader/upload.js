@@ -23,8 +23,8 @@ const readline = require('readline');
 const zlib = require('zlib');
 const seal = require('./prototype/seal.js');
 
-// The paths sync.py writes: the index, and conversation, document, week and answer-sheet objects.
-const OBJECT_RE = /^(?:index|[sdfa]\/[A-Za-z0-9_-]{1,64})\.json$/;
+// The paths sync.py writes: the index, and conversation, document, week, answer-sheet and tool-output objects.
+const OBJECT_RE = /^(?:index|[sdfat]\/[A-Za-z0-9_-]{1,64})\.json$/;
 
 // The owner's alone (0600 in 0700 folders), like Claude's logs and the reader's own files.
 function replace(file, bytes) {

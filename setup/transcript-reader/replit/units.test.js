@@ -19,7 +19,7 @@ const GOOD_ENV = { APP_URL: 'https://reader.example.test', OIDC_CLIENT_ID: 'clie
 
 test('names: only the copy\'s own names are classified', () => {
   const id = uuid();
-  const kinds = { 'index.html': 'shell', 'k/params.json': 'params', 'index.json.enc': 'index', 's/abc-1_2.json.enc': 'object', 'd/x.json.enc': 'object', 'a/x.json.enc': 'object', 'sheet.html': 'shell', 'f/2026-W43.json.enc': 'object', [`q/${id}.json.enc`]: 'queue', [`r/${id}.json.enc`]: 'receipt' };
+  const kinds = { 'index.html': 'shell', 'k/params.json': 'params', 'index.json.enc': 'index', 's/abc-1_2.json.enc': 'object', 'd/x.json.enc': 'object', 'a/x.json.enc': 'object', 't/x.json.enc': 'object', 'sheet.html': 'shell', 'f/2026-W43.json.enc': 'object', [`q/${id}.json.enc`]: 'queue', [`r/${id}.json.enc`]: 'receipt' };
   for (const [name, kind] of Object.entries(kinds)) assert.strictEqual(classify(name), kind, name);
   for (const name of ['', 'index.json', 'k/params.json.enc', 's/.json.enc', 's/a.b.json.enc', 'S/a.json.enc', '_admin/keys.json', 'manifest.json', 'q/x.json.enc', 'x/y.json.enc', 's/' + 'a'.repeat(200) + '.json.enc', null, undefined, 5]) {
     assert.strictEqual(classify(name), null, String(name));

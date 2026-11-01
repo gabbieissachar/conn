@@ -319,7 +319,7 @@ class OfflineFleetTimelineSwitchTest(unittest.TestCase):
         self.build(lab, "on")
         lab.out = off_out  # one lab, two output folders: the patches of a second lab would replace the first's
         self.build(lab, None)
-        keep = lambda index: {k: v for k, v in index.items() if k not in ("weeks", "fleet_timeline", "as_of", "since")}  # noqa: E731
+        keep = lambda index: {k: v for k, v in index.items() if k not in ("weeks", "fleet_timeline", "as_of", "since", "steps_from")}  # noqa: E731
         lab.out = on_out
         on = lab.index()
         lab.out = off_out
@@ -1111,6 +1111,151 @@ class StaticFilesTest(unittest.TestCase):
         local, _ = builder.fill_template(builder.TEMPLATE, "{}", "local")
         self.assertNotIn("worker-src", local)
         self.assertNotIn("manifest", local.split("</head>")[0])
+
+
+def call(at, cwd, name, tool_input, call_id):
+    return {"type": "assistant", "timestamp": iso(at), "cwd": cwd,
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "id": call_id, "name": name, "input": tool_input}]}}
+
+
+def result(at, cwd, call_id, text, error=False, copy=None):
+    record = {"type": "user", "timestamp": iso(at), "cwd": cwd,
+              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": text, **({"is_error": True} if error else {})}]}}
+    if copy is not None:
+        record["toolUseResult"] = copy
+    return record
+
+
+READ_TEXT = "TEXT-OF-A-FILE-THE-AGENT-READ"
+COPY_TEXT = "SECOND-COPY-OF-AN-OUTPUT"
+# Made up, and written in two pieces so no secret scanner takes it for a real credential.
+FAKE_TOKEN = "abcdefghijklmnop" + "1234567890"
+BEARER = "Bearer " + FAKE_TOKEN
+
+
+class ToolStepsObjectsTest(unittest.TestCase):
+    """Slice 7: a conversation's steps stay in its own object, its output text goes in an object of its own (t/<id>.json),
+    and nothing the plan rules out ever reaches either."""
+
+    def setUp(self):
+        self.lab = Lab(self)
+        main = str(self.lab.main)
+        write_log(self.lab.logs[A], [
+            user("Run the checks.", T0, main),
+            call(T0 + 1, main, "Bash", {"command": "make check", "description": "Run the checks"}, "c1"),
+            call(T0 + 2, main, "Read", {"file_path": "/work/app/settings.toml"}, "c2"),
+            call(T0 + 3, main, "Bash", {"command": "curl -H 'Authorization: " + BEARER + "' https://api.example.test/"}, "c3"),
+            result(T0 + 4, main, "c1", "checking\nall good\n", copy={"stdout": COPY_TEXT}),
+            result(T0 + 5, main, "c2", READ_TEXT, copy={"file": {"content": READ_TEXT}}),
+            result(T0 + 6, main, "c3", "failed with " + BEARER, error=True),
+            say("Two of three ran.", T0 + 20, main),
+        ], T0 + 700)
+        self.assertEqual(self.lab.build(), 0)
+        self.index = self.lab.index()
+        self.entry = next(e for e in self.index["conversations"] if e["id"] == A)
+
+    def objects(self):
+        return sorted(str(p.relative_to(self.lab.out)) for folder in ("s", "t") for p in (self.lab.out / folder).glob("*.json"))
+
+    def test_the_turns_keep_the_steps_and_the_output_text_is_in_its_own_object(self):
+        turn = self.lab.object(f"s/{A}.json")["exchanges"][0]
+        self.assertEqual([step["k"] for step in turn["steps"]], ["ran", "read", "ran"])
+        self.assertTrue(all("out" not in step for step in turn["steps"]), "the turns carry no output text")
+        self.assertEqual(self.entry["steps"]["object"], f"t/{A}.json")
+        outputs = self.lab.object(f"t/{A}.json")["outputs"]
+        self.assertEqual(outputs, {f"{turn['uid']}:0": "checking\nall good", f"{turn['uid']}:2": "failed with " + BEARER})
+        self.assertEqual(turn["steps"][2]["f"], 1)
+        self.assertTrue(turn["steps"][2]["t"].endswith(BEARER), "a failed step's tail travels with the turn")
+
+    def test_nothing_the_plan_rules_out_is_in_any_object_of_the_copy(self):
+        for path in self.lab.out.rglob("*"):
+            if path.is_file() and path.suffix in (".json", ".html"):
+                text = path.read_text(encoding="utf-8", errors="replace")
+                self.assertNotIn(READ_TEXT, text, path)
+                self.assertNotIn(COPY_TEXT, text, path)
+
+    def test_the_index_names_the_window_the_build_computed_and_the_conversations_object(self):
+        self.assertAlmostEqual(self.index["steps_from"], self.index["as_of"] - 7 * 86400, delta=1)
+        self.assertEqual(self.entry["steps"]["stamp"], self.lab.manifest()["conversations"][A]["steps"]["stamp"])
+        other = next(e for e in self.index["conversations"] if e["id"] == M)
+        self.assertNotIn("steps", other, "a conversation with no tool output has no steps object")
+        self.assertFalse((self.lab.out / "t" / f"{M}.json").exists())
+
+    def test_an_unchanged_run_writes_the_object_again_never_and_a_conversation_without_output_loses_it(self):
+        before = (self.lab.out / "t" / f"{A}.json").stat().st_mtime_ns
+        wait_a_tick()
+        self.assertEqual(self.lab.build(), 0)
+        self.assertEqual((self.lab.out / "t" / f"{A}.json").stat().st_mtime_ns, before)
+        # The log is rewritten with no output in it: its object is swept, and the index stops naming it.
+        write_log(self.lab.logs[A], [user("Run the checks.", T0, str(self.lab.main)), say("Nothing ran.", T0 + 20, str(self.lab.main))], T0 + 800)
+        self.assertEqual(self.lab.build(), 0)
+        self.assertFalse((self.lab.out / "t" / f"{A}.json").exists())
+        self.assertNotIn("steps", next(e for e in self.lab.index()["conversations"] if e["id"] == A))
+
+    def test_a_missing_steps_object_builds_the_conversation_again(self):
+        (self.lab.out / "t" / f"{A}.json").unlink()
+        self.assertEqual(self.lab.build(), 0)
+        self.assertTrue((self.lab.out / "t" / f"{A}.json").is_file())
+
+    def test_the_local_page_gets_the_same_output_apart_from_its_page(self):
+        payload = self.lab.local_payload([A])
+        out = self.lab.root / "out" / "prototype.html"
+        builder.write_page(builder.TEMPLATE, payload, out)
+        page = out.read_text(encoding="utf-8")
+        self.assertNotIn("all good", page, "the page holds no output text")
+        self.assertNotIn(READ_TEXT, page)
+        kept = json.loads((out.parent / "steps" / f"{A}.json").read_text(encoding="utf-8"))["outputs"]
+        self.assertEqual(kept, self.lab.object(f"t/{A}.json")["outputs"])
+        self.assertEqual(oct((out.parent / "steps" / f"{A}.json").stat().st_mode & 0o777), "0o600")
+
+
+class ToolStepsSealTest(unittest.TestCase):
+    def setUp(self):
+        self.lab = Lab(self)
+        main = str(self.lab.main)
+        write_log(self.lab.logs[A], [
+            user("Run the checks.", T0, main), call(T0 + 1, main, "Bash", {"command": "make check"}, "c1"),
+            result(T0 + 2, main, "c1", "calling with " + BEARER + " ok"), say("Done.", T0 + 20, main)], T0 + 700)
+        self.target = self.lab.root / "out" / "bucket"
+        env = mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: PASS})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def seal(self):
+        return self.lab.build_only_args("--seal", str(self.target))
+
+    def opened(self, *names):
+        done = subprocess.run(["node", "-e", OPEN_JS, str(SEAL), str(self.target), *names], capture_output=True, text=True,
+                              env={**os.environ, sync.PASSPHRASE_ENV: PASS}, check=True)
+        return json.loads(done.stdout)
+
+    def test_the_steps_object_is_sealed_redacted_and_pruned_with_its_conversation(self):
+        self.assertEqual(self.seal(), 0)
+        self.assertTrue((self.target / "t" / f"{A}.json.enc").is_file())
+        sealed = self.opened(f"t/{A}.json")[f"t/{A}.json"]
+        text = json.dumps(sealed)
+        self.assertIn("calling with Bearer [redacted:bearer] ok", text)
+        self.assertNotIn(FAKE_TOKEN, text)
+        log = json.loads((self.lab.out / "redactions.json").read_text(encoding="utf-8"))
+        self.assertEqual(log["objects"][f"t/{A}.json"], {"bearer": 1})
+        # The conversation leaves the bucket (nothing ran in it any more): so does its object.
+        write_log(self.lab.logs[A], [user("Run the checks.", T0, str(self.lab.main)), say("Nothing ran.", T0 + 20, str(self.lab.main))], T0 + 800)
+        self.seal()
+        self.assertFalse((self.target / "t" / f"{A}.json.enc").exists())
+
+    def test_the_window_moving_with_each_build_does_not_seal_the_index_again(self):
+        self.seal()
+        before = {str(p.relative_to(self.target)): p.stat().st_mtime_ns for p in self.target.rglob("*") if p.is_file()}
+        wait_a_tick()
+        with mock.patch.object(sync.subprocess, "Popen", wraps=sync.subprocess.Popen) as started:
+            self.seal()
+        self.assertEqual(started.call_count, 0, "steps_from moves every run; the index is sealed when the rest of it changes")
+        self.assertEqual({str(p.relative_to(self.target)): p.stat().st_mtime_ns for p in self.target.rglob("*") if p.is_file()}, before)
+
+    def test_wipe_takes_the_steps_objects_too(self):
+        self.seal()
+        self.lab.build_only_args("--wipe", str(self.target))
+        self.assertEqual([p for p in (self.target / "t").glob("*") if p.is_file()], [])
 
 
 class SealTest(unittest.TestCase):

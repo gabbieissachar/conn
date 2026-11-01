@@ -134,7 +134,7 @@
     // Reading what the laptop gave, or else what this device kept of it. A sealed object is asked for only when the device holds
     // no copy with the stamp the index names now (so only what changed comes down); with the laptop not reachable, the copy it
     // holds is read even if older, and one it does not hold is said so.
-    async function get(path, stamp) {
+    async function get(path, stamp, options) {
       if (!sealed.params) return (await fetched(path)).json();
       const kept = stamp === undefined ? null : await safe(dbGet("objects", path));
       const known = kept && await safe(dbGet("stamps", path));
@@ -143,7 +143,7 @@
       }
       let bytes;
       try {
-        bytes = await (await fetched(path + ".enc")).arrayBuffer();
+        bytes = await (await fetched(path + ".enc", options)).arrayBuffer();
       } catch (e) {
         if (kept) return seal.openJson(sealed.key, path, kept);  // an older copy is better than none
         if (e.network) throw new Error("This is not stored on this device yet, and the laptop is not reachable. Open it once with the laptop awake, or use Download everything now.");
@@ -250,9 +250,9 @@
     }
     // One object by its index entry ({ object, stamp }), fetched once per stamp; a failed load is tried again next time.
     const kept = new Map();
-    function object(entry) {
+    function object(entry, options) {
       const key = entry.object + "@" + entry.stamp;
-      if (!kept.has(key)) kept.set(key, get(entry.object, entry.stamp).catch(e => { kept.delete(key); throw e; }));
+      if (!kept.has(key)) kept.set(key, get(entry.object, entry.stamp, options).catch(e => { kept.delete(key); throw e; }));
       return kept.get(key);
     }
     // The weeks of fleet records the timeline shows (none when the build left the timeline out): those reaching into its window, and older
@@ -277,7 +277,7 @@
       }
       const sig = weeksSig(idx);
       return {
-        generated: idx.as_of || 0, since: idx.since || 0, homes: idx.homes || [], summaries: idx.summaries || [],
+        generated: idx.as_of || 0, since: idx.since || 0, steps_from: idx.steps_from || 0, homes: idx.homes || [], summaries: idx.summaries || [],
         template: idx.template, sheetTemplate: idx.sheet_template, fleet_timeline: idx.fleet_timeline !== false, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
         fleet: previous && previous.weeksSig === sig ? previous.fleet : null,
       };
@@ -289,6 +289,19 @@
         if (loaded.leader) session.leader = loaded.leader;  // a leader's tasks, for the Documents view's By task grouping
       }
       return session;
+    }
+    // A conversation's tool output (its t/ object, { outputs: { "<turn id>:<n>": text } }): fetched when a step opens, once per stamp, and kept on
+    // the device like any object, so what was read once reads again with the laptop away. A conversation with no output has no object.
+    // { probe: true } (the person asked for it) tries the laptop even when it was not reachable a moment ago.
+    async function steps(session, options) {
+      if (!session.steps) return { outputs: {} };
+      return object(session.steps, options);
+    }
+    // Whether this device holds the conversation's output as the index names it now (so an older step reads from it with no ask).
+    async function stepsHeld(session) {
+      if (!session.steps || !sealed.params) return false;
+      const known = await safe(dbGet("stamps", session.steps.object));
+      return Boolean(known && known.stamp === session.steps.stamp);
     }
     async function documentText(meta) {
       if (meta.text == null) meta.text = (await object(meta)).text || "";
@@ -314,7 +327,11 @@
     // Whether the copy can be kept for offline: a sealed copy, in a browser with storage and a worker, on a secure address.
     const offlineCapable = () => Boolean(sealed.params) && hasWorker() && typeof indexedDB !== "undefined";
     // The entries of an index that are objects to fetch: conversations, documents (HTML files and pictures too, less the pictures left out), fleet weeks, answer sheets.
-    const entriesOf = idx => [...(idx.conversations || []), ...Object.values(idx.documents || {}), ...Object.values(idx.weeks || {}), ...Object.values(idx.sheets || {})].filter(entry => entry && entry.object && entry.stamp);
+    // The tool output of the conversations active in the index's window (the last 7 days at the build, steps_from) is part of the copy this
+    // device keeps; an older conversation's is only fetched, and kept, when a step asks for it (stepEntries lists them all).
+    const stepEntries = idx => (idx.conversations || []).filter(entry => entry && entry.steps).map(entry => ({ ...entry.steps, last: entry.last || 0 }));
+    const entriesOf = idx => [...(idx.conversations || []), ...Object.values(idx.documents || {}), ...Object.values(idx.weeks || {}), ...Object.values(idx.sheets || {}),
+      ...stepEntries(idx).filter(entry => entry.last >= (idx.steps_from || 0))].filter(entry => entry && entry.object && entry.stamp);
     const stampsOf = async () => new Map(((await safe(dbAll("stamps"))) || []).map(({ key, value }) => [key, value]));
     // What this device holds of the copy the index names: { total, have, bytes, all, held }, total and have in objects.
     async function stored(idx) {
@@ -376,7 +393,7 @@
         }
       };
       await Promise.all(Array.from({ length: Math.min(4, todo.length) }, run));
-      const named = new Set(entries.map(entry => entry.object));
+      const named = new Set([...entries, ...stepEntries(idx)].map(entry => entry.object));
       for (const path of stamps.keys()) if (!named.has(path)) await safe(dbDropObject(path));
       try { await storeShell(idx); } catch (e) { if (!result.stopped) result.failed.push({ object: "the shell pages", message: e.message }); }
       return result;
@@ -552,7 +569,7 @@
     }
     // Where the list came from: the laptop, or this device's copy of it (with why, and when the device took it).
     const offline = () => ({ fromDevice: local.fromDevice, why: local.why, at: local.indexAt, capable: offlineCapable() });
-    return { index, data, object, conversation, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, pageChanged, outdated: () => outdated, prepare, unlock, forget, askPassphrase, enqueue, receipt,
+    return { index, data, object, conversation, steps, stepsHeld, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, pageChanged, outdated: () => outdated, prepare, unlock, forget, askPassphrase, enqueue, receipt,
       cancel, flush, heldIds, offline, stored, download, keepFresh, htmlOpen, registerWorker,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();

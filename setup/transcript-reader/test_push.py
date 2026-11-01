@@ -30,7 +30,7 @@ import push  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 KEY = "hrk_" + "k" * 43
-NAME = re.compile(r"^/api/objects/((?:k/params\.json|index\.json\.enc|[sdfaqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
+NAME = re.compile(r"^/api/objects/((?:k/params\.json|index\.json\.enc|[sdfatqr]/[A-Za-z0-9_-]{1,64}\.json\.enc))$")
 
 
 def sealed(tag: str) -> bytes:
