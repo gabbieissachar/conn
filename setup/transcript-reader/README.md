@@ -295,7 +295,7 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 
 ```bash
 python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
-node --test setup/transcript-reader/sendonce.test.js setup/transcript-reader/undosend.test.js setup/transcript-reader/commentkey.test.js setup/transcript-reader/asks.test.js setup/transcript-reader/worker.test.js setup/transcript-reader/api.test.js setup/transcript-reader/html.test.js setup/transcript-reader/image.test.js setup/transcript-reader/server.test.js setup/transcript-reader/hosted.test.js setup/transcript-reader/seal.test.js setup/transcript-reader/drain.test.js setup/transcript-reader/pinstore.test.js setup/transcript-reader/pins.test.js setup/transcript-reader/syncall.test.js setup/transcript-reader/picker.test.js setup/transcript-reader/find.test.js setup/transcript-reader/docfiles.test.js setup/transcript-reader/markdown.test.js setup/transcript-reader/tailnet.test.js setup/transcript-reader/live.test.js setup/transcript-reader/offline.test.js setup/transcript-reader/phonequeue.test.js setup/transcript-reader/compress.test.js setup/transcript-reader/delta.test.js setup/transcript-reader/taskdocs.test.js setup/transcript-reader/steps.test.js
+node --test setup/transcript-reader/*.test.js
 ```
 
 The offline copy on a phone, end to end (by hand: it needs Playwright and its WebKit, which the repo does not carry):
