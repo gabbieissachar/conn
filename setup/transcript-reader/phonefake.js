@@ -112,7 +112,7 @@ async function laptop({ conversations = 3, documents = 1, weeks = 1, passphrase 
   vm.createContext(sandbox);
   const seal = vm.runInContext(SEAL + '\nseal;', sandbox);
   const { params, key } = await seal.newParams(passphrase);
-  const lap = { seal, params, key, passphrase, down: false, status: {}, requests: [], plain: new Map(), sealed: new Map(), stamps: {}, queued: [], queueAnswer: null };
+  const lap = { seal, params, key, passphrase, down: false, status: {}, requests: [], plain: new Map(), sealed: new Map(), stamps: {}, queued: [], queueAnswer: null, copySync: null };
   lap.set = async (rel, value, stamp) => {
     lap.plain.set(rel, value);
     lap.stamps[rel] = stamp || `${rel}@${lap.plain.size}`;
@@ -157,6 +157,11 @@ async function laptop({ conversations = 3, documents = 1, weeks = 1, passphrase 
       if (lap.queued.some((item) => item.id === body.id)) return reply(409, { status: 'error', code: 'exists', message: 'That request is already queued.' });
       lap.queued.push(body);
       return reply(200, { status: 'ok', id: body.id, queued: lap.queued.length });
+    }
+    // The server's copy-sync route (api.js): a test gives lap.copySync(method, body, url) -> { status, body } (or a promise of it); none is a server older than the route.
+    if (url.startsWith('/api/transcript-reader/copy-sync')) {
+      const answer = lap.copySync ? await lap.copySync(options.method || 'GET', options.body ? JSON.parse(options.body) : null, url) : { status: 404, body: {} };
+      return reply(answer.status, answer.body);
     }
     if (url.endsWith('.enc') && lap.sealed.has(url.slice(0, -4))) return reply(200, lap.sealed.get(url.slice(0, -4)));
     if (/^(?:index|sheet)\.html$|^manifest\.webmanifest$|^icon-/.test(url.split('/').pop() || '')) return reply(200, `<shell ${url}>`, { headers: { get: () => 'text/html' } });

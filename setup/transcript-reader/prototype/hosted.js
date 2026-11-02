@@ -549,6 +549,40 @@
       checked(r, path);
       return sealed.params ? seal.openJson(sealed.key, path, await r.arrayBuffer()) : r.json();
     }
+    // ------------------------------------------------------------ Sync: have the laptop build a new copy (api.js copy-sync)
+    // The page cannot make the laptop build, but the laptop's own server can: it runs the same sync.py a LaunchAgent would, for the copy
+    // this page is (the sealed one, or the plain one), or joins the build already running. Without this, Sync only read the newest copy
+    // the laptop had written, found the one it already held, and said it had synced.
+    const BUILD_POLL_MS = 2000;
+    const BUILD_WAIT_MS = 11 * 60 * 1000;  // a little past the server's own limit for one build
+    // Whether this page was served by the reader's own server (it holds the token that server writes into the page), the one thing
+    // that can build the copy. A static host cannot, and neither can a file opened from disk.
+    const served = () => Boolean(headers["x-transcript-reader-token"]);
+    async function ask(method, route, body) {
+      const r = await request(API + route, { method, headers: body ? { ...headers, "Content-Type": "application/json" } : headers, ...(body ? { body: JSON.stringify(body) } : {}) }, { probe: true });
+      let j = null; try { j = await r.json(); } catch (e) { j = null; }
+      if (r.status === 403 && j && /token/i.test(j.message || "")) throw new Error(reload() ? "Reconnecting to the restarted server…" : "The server restarted: reload the page to reconnect.");
+      if (r.status === 404) return { state: "unsupported" };  // a server older than this route, or a host that has none
+      if (!r.ok) throw new Error((j && j.message) || `The server answered ${r.status}.`);
+      return j || {};
+    }
+    // Resolves { built: true } once the laptop has built a new copy, or { built: false, message } when it could not (the build's own last
+    // line: a keychain item missing, another build running), with unsupported: true for a server that cannot build on request. It
+    // rejects { network: true } when the laptop does not answer. onState("running") is called while it builds.
+    async function build(onState = () => {}, { pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+      const copy = sealed.params ? "bucket" : "hosted";
+      let answer = await ask("POST", "copy-sync", { copy });
+      const giveUp = Date.now() + BUILD_WAIT_MS;
+      while (answer.state === "running") {
+        onState("running");
+        if (Date.now() > giveUp) return { built: false, message: "The laptop is still building after 11 minutes." };
+        await pause(BUILD_POLL_MS);
+        answer = await ask("GET", `copy-sync?copy=${copy}`);
+      }
+      if (answer.state === "done") return { built: true };
+      if (answer.state === "unsupported") return { built: false, unsupported: true, message: "this server cannot build a copy on request (restart the reader's server: serve.sh restart)" };
+      return { built: false, message: answer.message || "the build did not finish" };
+    }
     const stale = (asOf, now = Date.now() / 1000) => now - asOf > HEARTBEAT;
     // A pane Herdr ran the conversation in, closed by the build: its old asks wait on no one.
     const closedPane = s => Boolean(s.pane && !s.pane.live);
@@ -570,6 +604,6 @@
     // Where the list came from: the laptop, or this device's copy of it (with why, and when the device took it).
     const offline = () => ({ fromDevice: local.fromDevice, why: local.why, at: local.indexAt, capable: offlineCapable() });
     return { index, data, object, conversation, steps, stepsHeld, documentText, fleet, weeks, stale, closedPane, waiting, asks, poll, reload, pageChanged, outdated: () => outdated, prepare, unlock, forget, askPassphrase, enqueue, receipt,
-      cancel, flush, heldIds, offline, stored, download, keepFresh, htmlOpen, registerWorker,
+      cancel, flush, heldIds, offline, stored, download, keepFresh, htmlOpen, registerWorker, build, served,
       isSealed: () => Boolean(sealed.params), HEARTBEAT, REFRESH_MS };
   })();

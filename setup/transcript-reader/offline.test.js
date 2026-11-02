@@ -664,3 +664,80 @@ test('Download everything now keeps the output of the conversations active in th
   await page.hosted.download(await page.hosted.index());
   assert.ok(!storedPaths(device).includes(`t/${old.id}.json`));
 });
+
+// ---------------------------------------------------------------- Sync: the laptop builds a new copy (api.js copy-sync)
+
+// The laptop's server building on request: the first answer says running, the next ones too (builds[n] of them), then the build is over and
+// the copy it wrote is the next index (a conversation changed, as_of later).
+function building(laptop, { runningAnswers = 2, end = { state: 'done' }, onDone = null } = {}) {
+  const seen = { posts: [], gets: [], left: runningAnswers };
+  laptop.copySync = async (method, body, url) => {
+    (method === 'POST' ? seen.posts : seen.gets).push(method === 'POST' ? body : url);
+    if (method === 'POST' || seen.left > 0) { if (method !== 'POST') seen.left -= 1; return { status: 200, body: { status: 'ok', copy: 'bucket', state: 'running' } }; }
+    if (end.state === 'done' && onDone) await onDone();
+    return { status: 200, body: { status: 'ok', copy: 'bucket', ...end } };
+  };
+  return seen;
+}
+const instantly = { pause: async () => {} };
+
+test('Sync has the laptop build a new copy, waits while it builds, and the index read after it is the new copy (it was the same old one before)', async () => {
+  const laptop = await phone.laptop({ conversations: 2, documents: 0, weeks: 0 });
+  laptop.index.as_of = Date.now() / 1000 - 3 * 86400;  // built three days ago: nothing has built one since
+  await laptop.publish({});
+  const seen = building(laptop, { onDone: () => { laptop.index.as_of = Date.now() / 1000; return laptop.publish({}); } });
+  const p = await opened(laptop, phone.device());
+  const old = await p.hosted.index();
+  assert.ok(p.hosted.stale(old.as_of), 'the copy is old');
+  // What Sync did before: read the copy again, and get the same old one.
+  assert.equal((await p.hosted.index()).as_of, old.as_of);
+
+  const states = [];
+  const result = await p.hosted.build((state) => states.push(state), instantly);
+  assert.deepEqual(plain(result), { built: true });
+  assert.deepEqual(plain(seen.posts), [{ copy: 'bucket' }], 'one request to build the sealed copy');
+  assert.deepEqual(plain(seen.gets), ['/api/transcript-reader/copy-sync?copy=bucket', '/api/transcript-reader/copy-sync?copy=bucket', '/api/transcript-reader/copy-sync?copy=bucket'], 'asked again until it was over');
+  assert.deepEqual(plain(states), ['running', 'running', 'running']);
+  const next = await p.hosted.index();
+  assert.ok(next.as_of > old.as_of && !p.hosted.stale(next.as_of), 'the copy the laptop built is the one read now');
+  // Every request carried the token the server wrote into the page, and nothing else of the phone's.
+  for (const request of laptop.requests.filter((r) => r.url.includes('copy-sync'))) assert.equal(request.headers['x-transcript-reader-token'], phone.TOKEN);
+});
+
+test('Sync says why the laptop could not build, and that a server without the route cannot', async () => {
+  const laptop = await phone.laptop({ conversations: 1, documents: 0, weeks: 0 });
+  const p = await opened(laptop, phone.device());
+  building(laptop, { runningAnswers: 0, end: { state: 'failed', message: 'Set HOSTED_READER_PASSPHRASE, keep the passphrase in the login keychain' } });
+  assert.deepEqual(plain(await p.hosted.build(() => {}, instantly)), { built: false, message: 'Set HOSTED_READER_PASSPHRASE, keep the passphrase in the login keychain' });
+  building(laptop, { runningAnswers: 0, end: { state: 'failed' } });
+  assert.equal((await p.hosted.build(() => {}, instantly)).built, false);
+  // A server older than the route answers 404 (this is what the owner's server does until it is restarted).
+  laptop.copySync = null;
+  const old = await p.hosted.build(() => {}, instantly);
+  assert.equal(old.built, false);
+  assert.equal(old.unsupported, true);
+  assert.match(old.message, /cannot build a copy on request/);
+});
+
+test('Sync with the laptop shut says the laptop is not reachable, and a build that runs for ever is given up on', async () => {
+  const laptop = await phone.laptop({ conversations: 1, documents: 0, weeks: 0 });
+  const p = await opened(laptop, phone.device());
+  laptop.down = true;
+  await assert.rejects(() => p.hosted.build(() => {}, instantly), (error) => error.network === true && /not reachable/.test(error.message));
+  laptop.down = false;
+  // The page's clock is the sandbox's: a build still running after 11 minutes of it is given up on, not waited for.
+  let now = Date.now();
+  const q = phone.page({ laptop, device: phone.device(), now: () => now });
+  assert.equal(await q.hosted.prepare(), 'locked');
+  assert.equal(await q.hosted.unlock(PASS, false), true);
+  building(laptop, { runningAnswers: 1e9 });
+  const result = await q.hosted.build(() => {}, { pause: async () => { now += 60000; } });
+  assert.equal(result.built, false);
+  assert.match(result.message, /still building after 11 minutes/);
+});
+
+test('only a page the reader\'s own server served can ask for a build (a static host has no route, and no token)', async () => {
+  const laptop = await phone.laptop({ conversations: 1, documents: 0, weeks: 0 });
+  assert.equal((await opened(laptop, phone.device())).hosted.served(), true);
+  assert.equal((await opened(laptop, phone.device(), { token: '' })).hosted.served(), false);
+});

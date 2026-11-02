@@ -322,3 +322,20 @@ test('a conversation\'s tool output is its own object, asked for once per stamp 
   assert.equal(await hosted.stepsHeld(data.sessions[0]), false, 'a plain copy keeps nothing on the device');
   assert.equal(hosted.data({ ...INDEX }, null).steps_from, 0, 'an index from before the window has none');
 });
+
+test('the plain copy\'s Sync asks the laptop to build the plain copy, and waits for it', async () => {
+  const { hosted, posts, calls } = load({ objects: { ...OBJECTS, '/api/transcript-reader/copy-sync?copy=hosted': { status: 'ok', copy: 'hosted', state: 'done' } },
+    posted: { status: 200, body: { status: 'ok', copy: 'hosted', state: 'running' } } });
+  assert.equal(await hosted.prepare(), 'plain');
+  const states = [];
+  assert.deepEqual(JSON.parse(JSON.stringify(await hosted.build((state) => states.push(state), { pause: async () => {} }))), { built: true });
+  assert.deepEqual(posts.map((post) => [post.url, post.body]), [['/api/transcript-reader/copy-sync', { copy: 'hosted' }]]);
+  assert.equal(posts[0].options.headers['x-transcript-reader-token'], TOKEN);
+  assert.deepEqual(calls.filter((call) => call.url.includes('copy-sync')).map((call) => call.url), ['/api/transcript-reader/copy-sync?copy=hosted']);
+  assert.deepEqual(states, ['running']);
+});
+
+test('a page with no token (a static host, a file) is not one the laptop can build for', () => {
+  assert.equal(load({ objects: OBJECTS }).hosted.served(), true);
+  assert.equal(load({ objects: OBJECTS, token: '' }).hosted.served(), false);
+});

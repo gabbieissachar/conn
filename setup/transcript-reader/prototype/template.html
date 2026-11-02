@@ -2227,7 +2227,7 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, hold: null, flight: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
   // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
   const photos = attach.makeStore();
@@ -3617,13 +3617,22 @@ __HEAD_HOSTED__
   // The Sync button: take everything again now, not at the next poll. The local page asks the server to read
   // Herdr again and rebuild from the session logs and the fleet records (all read-only; it writes only out/),
   // then swaps in the list (a live Claude pane not yet on it is added first), each session's live or ended state and
-  // every listed session's newest turns, keeping the place in the conversation you are reading. The hosted copy cannot make the laptop build: it reads the newest copy the laptop wrote.
+  // every listed session's newest turns, keeping the place in the conversation you are reading. The hosted copy cannot rebuild by itself, so its Sync
+  // asks the laptop's own server to build a new copy (the sync.py a LaunchAgent would run), waits for it, and then reads that copy; with no such server
+  // (a static host, or one that predates the route) it reads the newest copy the laptop wrote, and says so.
   async function syncNow() {
     if (link.syncing || !(canLive || HOSTED)) return;
     link.syncing = true; link.listing = null; paintSync(); renderLive();
     try {
-      if (HOSTED) await refreshHosted(true);
-      else {
+      if (HOSTED) {
+        if (hosted.served()) {
+          link.copy = { state: "running" }; paintSync();
+          let outcome;
+          try { outcome = await hosted.build(state => { link.copy = { state }; paintSync(); }); } catch (e) { if (!e.network) throw e; outcome = { built: false, message: e.message }; }
+          link.copy = outcome.built ? null : { state: "failed", message: outcome.message };
+        }
+        await refreshHosted(true);
+      } else {
         let answer;
         try { answer = await live.sync(state.follow); } catch (e) {
           if (e.status !== 404) throw e;
@@ -3740,13 +3749,19 @@ __HEAD_HOSTED__
       const failing = syncFailing();
       // The copy this device keeps, read with the laptop not reachable: say how old it is, rather than only that it is old.
       const device = hosted.offline().fromDevice;
-      line.classList.toggle("stale", old || failing || device || Boolean(hosted.outdated()));
+      const copy = link.copy, couldNot = Boolean(copy && copy.state === "failed");
+      line.classList.toggle("stale", old || failing || device || couldNot || Boolean(hosted.outdated()));
       text.setAttribute("aria-live", "polite");
+      // The laptop's own server answered (this page was served by it, and this is not the device's kept copy), so a copy that is old is not
+      // an asleep laptop: nothing has built a newer one, and Sync asks for one. Anywhere else the page cannot tell, and says what it can.
+      const awake = hosted.served() && !device;
       text.textContent = device ? `Offline · copy from ${at} (${ago(when)} old)`
+        : copy && copy.state === "running" ? "The laptop is building a new copy…"
+        : couldNot ? `The laptop could not build a new copy: ${copy.message}`
         : (failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}`
-        : hosted.outdated() || (old ? `Laptop asleep or not syncing since ${at}` : `As of ${at}`)) + (failing ? "" : ` · ${synced}`);
+        : hosted.outdated() || (old ? (awake ? `Copy from ${at}: nothing has built a newer one. Sync builds one.` : `Laptop asleep or not syncing since ${at}`) : `As of ${at}`)) + (failing || couldNot ? "" : ` · ${synced}`);
       text.title = device ? `${hosted.offline().why} This is the copy the laptop built at ${fmtWhen(when)}, kept on this device. It updates the next time the laptop answers.`
-        : `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.`;
+        : `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.${old && awake ? " The laptop answered: it is awake, and nothing (no sync job, no earlier Sync) has built a newer copy. Sync has it build one now." : ""}`;
       paintOffline();
       return;
     }
@@ -3779,6 +3794,7 @@ __HEAD_HOSTED__
       if (doc) await hosted.documentText(doc);
       if (state.view === "fleet") await hosted.fleet(fresh);
       applyPayload(fresh);
+      link.copy = null;  // the copy the laptop failed to build is not the news any more: a newer one is on screen
     }
     paintSync();
     labelSessions();
