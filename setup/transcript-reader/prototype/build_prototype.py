@@ -790,13 +790,19 @@ def reply_opening(reply: str, limit: int = 60) -> str:
     return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
-def pointer_matches(exchange: dict, pointer: re.Match, sent_at: float | None) -> bool:
+def pointer_matches(exchange: dict, pointer: re.Match, sent_at: float | None, local: dict | None = None) -> bool:
     """Whether a Reply pointer names this exchange's reply: the same minute (and day, when the pointer says one;
-    otherwise the day the message was sent), and the quoted opening words when it quotes any."""
+    otherwise the day the message was sent), and the quoted opening words when it quotes any. <local> keeps the local time of each
+    reply asked about, for a caller that asks about every reply once for each pointer."""
     at = exchange["reply_at"] or exchange["at"]
     if not exchange["reply"] or not at:
         return False
-    when = time.localtime(at)
+    if local is None:
+        when = time.localtime(at)
+    else:
+        when = local.get(at)
+        if when is None:
+            when = local[at] = time.localtime(at)
     if (when.tm_hour, when.tm_min) != (int(pointer["hour"]), int(pointer["minute"])):
         return False
     if pointer["day"]:
@@ -808,10 +814,10 @@ def pointer_matches(exchange: dict, pointer: re.Match, sent_at: float | None) ->
     return quoted is None or reply_opening(exchange["reply"]).startswith(quoted.rstrip("…").strip()[:40])
 
 
-def pointed_at(exchanges: list[dict], index: int, pointer: re.Match) -> dict | None:
+def pointed_at(exchanges: list[dict], index: int, pointer: re.Match, local: dict | None = None) -> dict | None:
     """The one earlier reply a pointer names, or None when it names none or cannot tell two apart."""
     sent_at = exchanges[index]["at"]
-    found = [e for e in exchanges[:index] if pointer_matches(e, pointer, sent_at)]
+    found = [e for e in exchanges[:index] if pointer_matches(e, pointer, sent_at, local)]
     return found[0] if len(found) == 1 else None
 
 
@@ -848,6 +854,7 @@ def mark_asks(exchanges: list[dict]) -> None:
     something later that did not answer it) or settled (you answered it; settled_by says how). Replies that
     do not need you get none. Recomputed from the turns each time, never cached with the parsed log."""
     mine = [i for i, e in enumerate(exchanges) if e["source"] == "captain"]
+    local: dict = {}  # the local time of each reply, which every pointer of every later message is checked against
     for index, exchange in enumerate(exchanges):
         for field in ("ask_state", "settled_by", "answered_at"):
             exchange.pop(field, None)
@@ -856,7 +863,7 @@ def mark_asks(exchanges: list[dict]) -> None:
     for later in mine:
         answer = exchanges[later]
         for pointer in POINTER.finditer(answer["input"]):
-            target = pointed_at(exchanges, later, pointer)
+            target = pointed_at(exchanges, later, pointer, local)
             if target:
                 settle(target, "reply", answer)
         remaining = answered_keys(answer["input"])
@@ -1041,6 +1048,17 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for a
     Claude pane whose session id no running Claude holds. No Herdr, no labels.
     """
+    if _FROZEN is not None and _FROZEN_PANES:
+        panes, pane_ids = _FROZEN_PANES[0]
+        return dict(panes), None if pane_ids is None else set(pane_ids)
+    panes, pane_ids = read_herdr()
+    if _FROZEN is not None:
+        _FROZEN_PANES[:] = [(dict(panes), None if pane_ids is None else set(pane_ids))]
+    return panes, pane_ids
+
+
+def read_herdr() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
+    """herdr_inventory's reading of Herdr: its commands, asked now."""
     def call(*argv):
         try:
             # The sync's passphrase (sync.py --seal) is for sealing only; a Herdr that starts its server from
@@ -1418,10 +1436,17 @@ def resolve_mention(token: str, cd_dirs: list[Path], cwd: str, touched: list[str
     return None
 
 
-def named_files(text: str, cwd: str, touched: list[str] = (), mentions=md_mentions, limit: int = MAX_DOCUMENT_BYTES) -> list[tuple[int, str, Path]]:
-    """(where in the text, as written, file) for each existing file a message names by <mentions>, in order, once each."""
+def cd_lines(text: str) -> tuple[str, list[tuple[int, Path]]]:
+    """A message without its file:// prefixes, and where each `cd` line in it starts and the folder it names: what named_files starts
+    from, once for the markdown, HTML and image files a message can name (<prepared> of named_files)."""
     text = FILE_URL.sub("", text)
-    cds = [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(text)]
+    return text, [(m.start(), Path(os.path.expanduser(m.group(1).strip("\"'")))) for m in CD_LINE.finditer(text)]
+
+
+def named_files(text: str, cwd: str, touched: list[str] = (), mentions=md_mentions, limit: int = MAX_DOCUMENT_BYTES,
+                prepared: tuple[str, list[tuple[int, Path]]] | None = None) -> list[tuple[int, str, Path]]:
+    """(where in the text, as written, file) for each existing file a message names by <mentions>, in order, once each."""
+    text, cds = prepared or cd_lines(text)
     found: list[tuple[int, str, Path]] = []
     for start, token in mentions(text):
         if token.startswith("//"):
@@ -1438,14 +1463,14 @@ def named_documents(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[
     return [(token, path) for _, token, path in named_files(text, cwd, touched)]
 
 
-def named_html(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int, str, Path]]:
+def named_html(text: str, cwd: str, touched: list[str] = (), prepared=None) -> list[tuple[int, str, Path]]:
     """(where in the text, as written, file) for each existing HTML file a message names, in order, once each."""
-    return named_files(text, cwd, touched, html_mentions, MAX_HTML_BYTES)
+    return named_files(text, cwd, touched, html_mentions, MAX_HTML_BYTES, prepared)
 
 
-def named_images(text: str, cwd: str, touched: list[str] = ()) -> list[tuple[int, str, Path]]:
+def named_images(text: str, cwd: str, touched: list[str] = (), prepared=None) -> list[tuple[int, str, Path]]:
     """(where in the text, as written, file) for each existing image file a message names, in order, once each."""
-    return named_files(text, cwd, touched, image_mentions, MAX_IMAGE_BYTES)
+    return named_files(text, cwd, touched, image_mentions, MAX_IMAGE_BYTES, prepared)
 
 
 # A markdown document that shows a picture says so with `![alt](path)` or `<img src="path">`, the path from the document's own folder
@@ -1477,8 +1502,12 @@ def doc_key(path: Path) -> str:
 
 def shown_dir(path: Path) -> str:
     """The folder a document is in as the page shows it: under the home folder from ~/, else as it is."""
-    home = Path.home()
-    return "~/" + path.parent.relative_to(home).as_posix() if home in path.parents else str(path.parent)
+    home, parent = str(Path.home()), str(path.parent)
+    if home == "/":
+        return "~/" + path.parent.relative_to(home).as_posix() if Path(home) in path.parents else parent
+    if parent == home:
+        return "~/."
+    return "~/" + parent[len(home) + 1:] if parent.startswith(home + "/") else parent
 
 
 # Who wrote a turn's input, for the inputs whose named files open as documents. A wake-up's
@@ -1518,11 +1547,12 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
         return key
 
     def ids_for(text: str, cwd: str, touched: Touched) -> list[str]:
-        found = [(start, token, path, "") for start, token, path in named_files(text, cwd, touched)]
+        prepared = cd_lines(text)
+        found = [(start, token, path, "") for start, token, path in named_files(text, cwd, touched, prepared=prepared)]
         if html:
-            found += [(start, token, path, "html") for start, token, path in named_html(text, cwd, touched)]
+            found += [(start, token, path, "html") for start, token, path in named_html(text, cwd, touched, prepared)]
         if images:
-            found += [(start, token, path, "image") for start, token, path in named_images(text, cwd, touched)]
+            found += [(start, token, path, "image") for start, token, path in named_images(text, cwd, touched, prepared)]
         ids = []
         for _, token, path, kind in sorted(found, key=lambda item: item[0]):
             key = add(path, token, kind)
@@ -1857,7 +1887,7 @@ def all_logs() -> list[Path]:
 # A build walks the chains of every listed session, asking for every log thousands of times
 # within a few seconds; even unchanged, listing the folders again each time took seconds.
 LOG_LIST_REUSE = 1.0  # seconds a list of every log is reused for
-_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float], dict[Path, tuple[int, int]]]] = {}
+_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float], dict[Path, tuple[int, int]], tuple]] = {}
 
 
 def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
@@ -1865,7 +1895,7 @@ def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
     each one's last write."""
     cached = _LOG_INDEX.get(PROJECTS)
     if cached and time.monotonic() - cached[0] < LOG_LIST_REUSE:
-        return cached[1:4]
+        return cached[5]  # the tuple kept with the list: a build asks a hundred thousand times, and slicing a new one each time cost a quarter second
     logs = [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
     by_id: dict[str, Path] = {}
     written: dict[Path, float] = {}
@@ -1878,8 +1908,8 @@ def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
             continue
         written[log] = stat.st_mtime
         versions[log] = (stat.st_mtime_ns, stat.st_size)
-    _LOG_INDEX[PROJECTS] = (time.monotonic(), logs, by_id, written, versions)
-    return logs, by_id, written
+    _LOG_INDEX[PROJECTS] = cached = (time.monotonic(), logs, by_id, written, versions, (logs, by_id, written))
+    return cached[5]
 
 
 def listed_version(path: Path) -> tuple[int, int] | None:
@@ -1913,6 +1943,21 @@ def log_timeline() -> tuple[list[float], list[tuple[int, Path]]]:
         ordered = sorted((written[log], places[log], log) for log in written if log in places)
         _TIMELINE.update(written=written, times=[at for at, _, _ in ordered], logs=[(place, log) for _, place, log in ordered])
     return _TIMELINE["times"], _TIMELINE["logs"]
+
+
+# The logs that began with /clear, by the time of that clear: a chain asks which of them a clear left behind, and only the few
+# whose clear came near a write of the chain's last log can be it, so they are found by time instead of asking every log written since.
+_CLEARS: dict[str, object] = {"written": None, "times": [], "logs": []}
+
+
+def clear_timeline() -> tuple[list[float], list[Path]]:
+    """The times logs began with /clear, ascending, and beside each the log (every log in the list of every log)."""
+    logs, _, written = log_index()
+    if _CLEARS["written"] is not written:
+        cleared = [(at, log) for log in logs if (at := head_cleared_at(log)) is not None]
+        cleared.sort(key=lambda item: item[0])
+        _CLEARS.update(written=written, times=[at for at, _ in cleared], logs=[log for _, log in cleared])
+    return _CLEARS["times"], _CLEARS["logs"]
 
 
 TAIL_BYTES = 256 * 1024
@@ -2085,8 +2130,15 @@ def late_linked(path: Path, clear_time: float, bridge: str) -> Path | None:
     """
     found = []
     written = log_index()[2]
-    for other in all_logs():
-        if other == path or (written.get(other) or 0) < clear_time - LATE_LINK_WINDOW:
+    # The logs written since the window began, by time (a clear that early has no log to be found before it, and the list is then the whole index).
+    floor = clear_time - LATE_LINK_WINDOW
+    if floor > 0:
+        times, logs = log_timeline()
+        candidates = (log for _, log in logs[bisect.bisect_left(times, floor):])
+    else:
+        candidates = all_logs()
+    for other in candidates:
+        if other == path or (written.get(other) or 0) < floor:
             continue
         at = last_record_time(other)
         if at is not None and -30 <= clear_time - at <= LATE_LINK_WINDOW:
@@ -2095,6 +2147,17 @@ def late_linked(path: Path, clear_time: float, bridge: str) -> Path | None:
 
 
 def cleared_from(path: Path, clear_time: float) -> Path | None:
+    """cleared_from_log, once for each log and clear inside chains_frozen: every chain asks it of the same few clears (a Herdr restart
+    writes to many logs at once, so many chains have the same logs written near their last), and a rebuild asked it a thousand times."""
+    if _FROZEN is None:
+        return cleared_from_log(path, clear_time)
+    key = (path, clear_time)
+    if key not in _FROZEN_CLEARED:
+        _FROZEN_CLEARED[key] = cleared_from_log(path, clear_time)
+    return _FROZEN_CLEARED[key]
+
+
+def cleared_from_log(path: Path, clear_time: float) -> Path | None:
     """The log a /clear at <clear_time> left behind, last written by the clear itself, so
     within two minutes before it (nearest wins).
 
@@ -2139,20 +2202,29 @@ def cleared_from(path: Path, clear_time: float) -> Path | None:
 
 
 _FROZEN: dict[tuple[Path, int], list[Path]] | None = None
+_FROZEN_PANES: list = []  # inside chains_frozen: what Herdr said the first time it was asked (see herdr_inventory)
+_FROZEN_CLEARED: dict[tuple[Path, float], Path | None] = {}  # inside chains_frozen: the log each clear left (see cleared_from)
 
 
 @contextlib.contextmanager
 def chains_frozen():
-    """Within the block, each log's chain is worked out once. A rebuild asks for the same chains several times (which panes
-    closed, which session is newest, the page, the answer sheet), each of which must see the same sessions, and each of
-    which took about as long as the whole rest of the build."""
+    """Within the block, each log's chain is worked out once, and Herdr is asked once. A rebuild asks for the same chains several
+    times (which panes closed, which session is newest, the page, the answer sheet), each of which must see the same sessions, and
+    each of which took about as long as the whole rest of the build; it asked Herdr the same three times (nine commands), and a pane
+    that changed between two of them made the page and the sheet disagree."""
     global _FROZEN
     outer = _FROZEN
     _FROZEN = {} if outer is None else outer
+    if outer is None:
+        _FROZEN_PANES.clear()
+        _FROZEN_CLEARED.clear()
     try:
         yield
     finally:
         _FROZEN = outer
+        if outer is None:
+            _FROZEN_PANES.clear()
+            _FROZEN_CLEARED.clear()
 
 
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
@@ -2255,10 +2327,19 @@ def cleared_into(chain: list[Path]) -> Path | None:
     # The next log may sit in another project folder (see cleared_from), and was written
     # to since; only those few are sorted and read.
     since = min(written) - 5
-    times, logs = log_timeline()
-    recent = {log for _, log in logs[bisect.bisect_left(times, since):]}
-    recent.update(other for other in logs_in(chain[-1].parent) if (log_mtime(other) or 0) >= since)
-    for other in sorted(recent, key=lambda log: log.parts):
+    # Only a log written since then, whose own clear came within the windows below, can be the one; the clears are found by time,
+    # then taken in the order of their paths, as every log written since was.
+    times, cleared = clear_timeline()
+    windows = [(when - 30, when + 120) for when in written]
+    if recorded is not None:
+        windows.append((recorded - 30, recorded + LATE_LINK_WINDOW))
+    written_at_all = log_index()[2]
+    picked = set()
+    for low, high in windows:
+        for place in range(bisect.bisect_left(times, low - 1e-3), bisect.bisect_right(times, high + 1e-3)):
+            if (written_at_all.get(cleared[place]) or 0) >= since:
+                picked.add(cleared[place])
+    for other in sorted(picked, key=lambda log: log.parts):
         if other in chain:
             continue
         at = head_cleared_at(other)
@@ -2338,12 +2419,18 @@ def write_step_outputs(sessions: list[dict], folder: Path) -> None:
             old.unlink(missing_ok=True)
 
 
-def write_page(template: Path, payload: dict, out: Path) -> None:
+# A page written by this process, and what it was made of apart from its build time (write_page, only_if_changed).
+_UNCHANGED: dict[Path, tuple] = {}
+
+
+def write_page(template: Path, payload: dict, out: Path, only_if_changed: bool = False) -> None:
     """Fill a template with the payload and the shared live.js, then write the page and its stamp.
 
     The page is replaced in one rename, so the server never serves half a page. The
     stamp beside it (<page>.stamp) holds the payload's build time; the served page
-    compares it with its own to know a newer build exists.
+    compares it with its own to know a newer build exists. With <only_if_changed>, a page this
+    process wrote last time that the new payload would only differ from in its build time is left
+    as it is, stamp and all: an open page is told of a new build by the stamp, and nothing it shows has changed.
     """
     private_folder(out.parent)
     stamp = out.with_suffix(".stamp")
@@ -2357,18 +2444,27 @@ def write_page(template: Path, payload: dict, out: Path) -> None:
                 return
         except (OSError, ValueError):
             pass
+        if "sessions" in payload:
+            write_step_outputs(payload["sessions"], out.with_name(STEP_OUTPUTS))  # before the page: no page is served whose outputs are not there
+        data = payload_json(payload)  # after the tool output is moved aside: the page never holds it
+        same = None
+        if only_if_changed:
+            # What the page is made of: its payload but for the build time (the first value), and the files that go into the template.
+            same = (tuple(file_version(path) for path in (template, MARKDOWN_IT_SCRIPT, *sorted(HERE.glob("*.js")))), data[data.index(","):])
+            if _UNCHANGED.get(out) == same and out.is_file() and stamp.is_file():
+                return
         # The HTML and image files the page offers to open, which the server reads to find a file by the id the page asks for
         # (api.js), written first so no page is served whose files the server does not know. The sheet has no documents.
         listed = lambda kind: json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("kind") == kind})
         lazy = json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("lazy")}) if "documents" in payload else ""
         files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image")), (out.with_name(MD_FILES), lazy)] if "documents" in payload else []
-        if "sessions" in payload:
-            write_step_outputs(payload["sessions"], out.with_name(STEP_OUTPUTS))  # before the page: no page is served whose outputs are not there
-        page, _ = fill_template(template, payload_json(payload))
+        page, _ = fill_template(template, data)
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)
             os.replace(partial, target)
+        if same is not None:
+            _UNCHANGED[out] = same
 
 
 def stats(payload: dict) -> str:
@@ -2401,6 +2497,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stats", action="store_true", help="print counts only; write no page")
     args = parser.parse_args(argv)
 
+    # The worker builds again and again in one interpreter, and keeps what each conversation made (build_cache.py); a build run by hand
+    # is made once, from nothing, and a run as a script has no second build to keep anything for.
+    if not args.stats and __name__ != "__main__":
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+        import build_cache
+        if build_cache.usable(args):
+            built = build_cache.build(args)
+            out = Path(args.out).expanduser()
+            build_cache.write(built, out)
+            print(f"Wrote {out}")
+            print(built.stats)
+            return 0
     payload = build(args)
     if args.stats:
         print(stats(payload))

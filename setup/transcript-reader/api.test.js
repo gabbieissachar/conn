@@ -116,7 +116,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, ...(typeof options === 'function' ? options(herdr) : options) });
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -1310,6 +1310,62 @@ test('watch: a log written while a rebuild runs is rebuilt as soon as that one e
     await t.settle();
     t.tick(300);
     await until(() => t.herdr.readerRuns().length === 2);
+  } finally { await t.close(); }
+});
+
+test('watch: the first write after a quiet spell is rebuilt for at once, and the writes that follow wait for the limit and are rebuilt for together', async () => {
+  const t = await start({ options: { ...WATCHING, rebuildEveryMs: 2000 } });
+  try {
+    await t.state();
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    await until(() => t.herdr.readerRuns().length === 1);
+    // Three more writes within the limit, each after the pause that follows a rebuild.
+    for (let i = 1; i <= 3; i += 1) {
+      t.tick(300);
+      publish(t, Date.now() / 1000 - 500 + i);
+      fs.utimesSync(t.tree.logOf(i % 2 ? A : B), new Date(Date.now() + i * 1000), new Date(Date.now() + i * 1000));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    assert.equal(t.herdr.readerRuns().length, 1, 'not within the limit, however many writes');
+    t.tick(1200);
+    await until(() => t.herdr.readerRuns().length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(t.herdr.readerRuns().length, 2, 'the three writes were rebuilt for once');
+  } finally { await t.close(); }
+});
+
+test('watch: a write that has to wait for the limit is rebuilt for when it is over, with no request and no sweep to notice it', async () => {
+  const t = await start({ options: { watch: true, sweepMs: 60000, rebuildEveryMs: 400, now: () => Date.now() } });  // the sweep is out of the way
+  try {
+    await t.state();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    fs.appendFileSync(t.tree.logOf(A), '{}\n');
+    await until(() => t.herdr.readerRuns().length === 1, 1500);
+    const first = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 320));  // the pause after a rebuild is over, the limit is not
+    fs.utimesSync(t.tree.logOf(A), new Date(Date.now() + 1000), new Date(Date.now() + 1000));
+    fs.appendFileSync(t.tree.logOf(A), '{}\n');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(t.herdr.readerRuns().length, 1, 'held back');
+    await until(() => t.herdr.readerRuns().length === 2, 2000);
+    assert.ok(Date.now() - first >= 350, 'not before the limit was over');
+  } finally { await t.close(); }
+});
+
+test('watch: a Sync, a follow and the reading list\'s own rebuilds are not held back by the limit', async () => {
+  const t = await start({ options: { ...WATCHING, rebuildEveryMs: 60000 } });
+  try {
+    await t.state();
+    publish(t, Date.now() / 1000 - 600);
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());
+    await until(() => t.herdr.readerRuns().length === 1);
+    t.tick(300);
+    const synced = await t.post('sync', {});
+    assert.equal(synced.status, 200);
+    assert.equal(t.herdr.readerRuns().length, 2, 'asked for by a person: now');
   } finally { await t.close(); }
 });
 

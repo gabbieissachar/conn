@@ -360,7 +360,49 @@ def sent_answers(text: str) -> dict[str, str]:
     return {key: value.strip() for key, value in KEYED_ANSWER.findall(text)}
 
 
-def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = None) -> list[dict]:
+def member_questionnaires(member: Path, head: str, parsed: Path) -> list[dict]:
+    """The questionnaires of one log of a pane's chain whose newest session is <head>, oldest first, each with the keyed answers you sent
+    after it (new objects, which a caller may change)."""
+    exchanges = builder.parsed_log(member, parsed)["exchanges"]
+    if member.stem == head:
+        builder.mark_compacted_away(exchanges)
+    found = []
+    for index, exchange in enumerate(exchanges):
+        questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
+        if not questionnaire:
+            continue
+        answer = next((later for later in exchanges[index + 1:] if later["source"] == "captain"), None)
+        sent = sent_answers(answer["input"]) if answer else {}
+        found.append({
+            **questionnaire, "session": head, "at": exchange["reply_at"] or exchange["at"],
+            "reply": exchange["reply"], "sent": sent, "sent_at": answer["at"] if answer and sent else None,
+            **({"from_session": member.stem, "log": str(member)} if member.stem != head else {}),
+            **({"compacted_away": True, "log": str(member)} if exchange.get("compacted_away") else {}),
+        })
+    return found
+
+
+# A worker builds the sheet again after each change to a log, and nearly every log is as it was: what a log asked is kept, by the log's
+# path and version, for the pane's newest session it is shown under (the sheet names it), and handed out as it is (the sheet only reads it).
+_MEMBERS: dict[tuple[str, str], tuple[tuple, list[dict]]] = {}
+
+
+def kept_questionnaires(member: Path, head: str, parsed: Path) -> list[dict]:
+    """member_questionnaires, from what an earlier build of this process found while the log and the rules are the same. The objects are
+    shared with that build: for a page that only writes them out."""
+    version = (builder.file_version(member), builder.PARSE_RULES)
+    known = _MEMBERS.get((str(member), head))
+    if known and version[0] is not None and known[0] == version:
+        return known[1]
+    found = member_questionnaires(member, head, parsed)
+    if version[0] is not None:
+        if len(_MEMBERS) >= PARSED_KEPT:
+            _MEMBERS.clear()
+        _MEMBERS[(str(member), head)] = (version, found)
+    return found
+
+
+def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = None, kept: bool = False) -> list[dict]:
     """The questionnaires of one pane's sessions (a /clear chain), oldest log first, each with the
     keyed answers you sent after it. A pane cleared with /clear answers in its newest session, as in
     the reader. The hosted copy (sync.py) builds each conversation's sheet with this too."""
@@ -371,21 +413,7 @@ def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = Non
         if member in seen:
             continue
         seen.add(member)
-        exchanges = builder.parsed_log(member, parsed)["exchanges"]
-        if member.stem == head:
-            builder.mark_compacted_away(exchanges)
-        for index, exchange in enumerate(exchanges):
-            questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
-            if not questionnaire:
-                continue
-            answer = next((later for later in exchanges[index + 1:] if later["source"] == "captain"), None)
-            sent = sent_answers(answer["input"]) if answer else {}
-            found.append({
-                **questionnaire, "session": head, "at": exchange["reply_at"] or exchange["at"],
-                "reply": exchange["reply"], "sent": sent, "sent_at": answer["at"] if answer and sent else None,
-                **({"from_session": member.stem, "log": str(member)} if member.stem != head else {}),
-                **({"compacted_away": True, "log": str(member)} if exchange.get("compacted_away") else {}),
-            })
+        found += (kept_questionnaires if kept else member_questionnaires)(member, head, parsed)
     return found
 
 
@@ -411,7 +439,7 @@ def collect(session_names: list[str]) -> list[dict]:
     for name in session_names:
         path = builder.find_session_file(name)
         if path:
-            found += [{**q, "pane": cache.get(q["session"])} for q in chain_questionnaires(builder.session_chain(path), OUT / "parsed", seen)]
+            found += [{**q, "pane": cache.get(q["session"])} for q in chain_questionnaires(builder.session_chain(path), OUT / "parsed", seen, kept=True)]
     found.sort(key=lambda q: q["at"] or 0, reverse=True)
     return found
 
@@ -429,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             names = []
     payload = {"generated": time.time(), "questionnaires": collect(names)}
     out = Path(args.out).expanduser()
-    builder.write_page(TEMPLATE, payload, out)
+    builder.write_page(TEMPLATE, payload, out, only_if_changed=True)
     print(f"Wrote {out}")
     for q in payload["questionnaires"]:
         print(f"  {q['session'][:8]} {len(open_cards(q))} open, {len(q['resolved'])} answered, {len(q['locked'])} locked: {q['title'][:70]}")

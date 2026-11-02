@@ -463,7 +463,7 @@ def show(ids: list[str]) -> None:
 
 # What the server may ask of a worker, with how many names each takes after it (None: one or more).
 WORKER_COMMANDS = {"rebuild": 0, "follow": 1, "adopt": None, "reopen": 1, "close": 1}
-SOURCES = (HERE / "reader.py", HERE / "prototype" / "build_prototype.py", HERE / "prototype" / "build_questionnaire.py")
+SOURCES = (HERE / "reader.py", HERE / "prototype" / "build_prototype.py", HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "build_cache.py")
 
 
 def worker_request(line: str) -> tuple[object, list[str]]:

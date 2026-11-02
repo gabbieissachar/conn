@@ -240,6 +240,12 @@ const SCAN_TTL_MS = 700;
 // Between two rebuilds, a short pause: a log changed during a rebuild is picked up by the next one at once, and a writer that
 // writes without a pause does not start rebuilds faster than a build can finish.
 const REBUILD_GAP_MS = 250;
+// And between the starts of two rebuilds started because logs changed, at least this. A rebuild costs the worker what changed in the
+// logs, which is little, so without a limit a session that writes every second is rebuilt for every second, and the cost is each
+// build's page published and read again by every open page. The first write after a quiet spell is rebuilt for at once; the writes that
+// follow within this are rebuilt for together, once it is over, so a new reply is on the page within this much of being written (a
+// rebuild that took longer than this is followed by the pause above alone).
+const REBUILD_EVERY_MS = 2000;
 // While a page is open, the logs are looked at this often besides the file system's own notice (which can be missed), and a
 // page seen this recently keeps the server watching.
 const SWEEP_MS = 500;
@@ -385,6 +391,8 @@ function create({
   watch = false, sweepMs = SWEEP_MS,
   // macOS's converter for an iPhone's HEIC photos (an absolute path, so the server's own PATH does not matter).
   sipsBin = '/usr/bin/sips',
+  // The least time between the starts of two rebuilds that changed logs started (REBUILD_EVERY_MS); a test of something else asks for none.
+  rebuildEveryMs = REBUILD_EVERY_MS,
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
@@ -403,7 +411,7 @@ function create({
   let scanning = null;
   const focusSeen = new Map();
   const focus = { seq: 0, herdr: null };
-  const build = { running: null, lastEnd: 0, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false, newest: 0, rebuiltFor: 0 };
+  const build = { running: null, lastEnd: 0, lastStart: -Infinity, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false, newest: 0, rebuiltFor: 0 };
   // Listed sessions seen running in a pane. One that leaves while Herdr still answers had
   // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
   const seenLive = new Set();
@@ -563,6 +571,7 @@ function create({
   }
 
   function runReader(args, adding = null) {
+    build.lastStart = now();
     const done = execReader(args).then((result) => {
       if (result.code === 0) { build.error = null; build.failedAt = 0; }
       else {
@@ -595,7 +604,18 @@ function create({
       if (!failed || now() - failed > RETRY_AFTER_FAILURE_MS) { runReader(['follow', focused.session_id], focused.session_id); return; }
     }
     if (build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS) return;
-    if ((ids.length || build.paneClosed) && (build.paneClosed || logsNewer(ids))) { build.paneClosed = false; build.rebuiltFor = build.newest; runReader(['rebuild']); }
+    if ((ids.length || build.paneClosed) && (build.paneClosed || logsNewer(ids))) {
+      if (waitForTurn()) return;
+      build.paneClosed = false; build.rebuiltFor = build.newest; runReader(['rebuild']);
+    }
+  }
+
+  // Whether the last rebuild started too lately for another (rebuildEveryMs); if so, the sweep is asked to look again when it is over.
+  function waitForTurn() {
+    const wait = build.lastStart + rebuildEveryMs - now();
+    if (wait <= 0) return false;
+    if (sweepTimer) lookAgainIn(wait);
+    return true;
   }
 
   // ----------------------------------------------------------------- watching
@@ -642,7 +662,7 @@ function create({
     syncFolders();
     if (!build.running && now() - build.lastEnd >= REBUILD_GAP_MS && !(build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS)) {
       const ids = listed();
-      if (ids.length && logsNewer(ids)) { build.rebuiltFor = build.newest; runReader(['rebuild']); }
+      if (ids.length && logsNewer(ids) && !waitForTurn()) { build.rebuiltFor = build.newest; runReader(['rebuild']); }
     }
     answerWaiters();
   }
@@ -672,8 +692,13 @@ function create({
   function afterBuild() {
     answerWaiters();
     if (!sweepTimer) return;
+    lookAgainIn(REBUILD_GAP_MS);
+  }
+
+  // The sweep once more in <ms>, in place of one that was set for later (a sweep that finds a write to rebuild for, and must wait, sets this).
+  function lookAgainIn(ms) {
     clearTimeout(afterTimer);
-    afterTimer = setTimeout(sweep, REBUILD_GAP_MS);
+    afterTimer = setTimeout(sweep, Math.max(ms, 1));
     if (afterTimer.unref) afterTimer.unref();
   }
 

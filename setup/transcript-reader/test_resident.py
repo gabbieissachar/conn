@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reader  # noqa: E402
 from reader import builder  # noqa: E402
+import build_cache  # noqa: E402
 import build_questionnaire  # noqa: E402
 import test_sync  # noqa: E402
 from test_reader import CLEAR, T0, iso, log, prompt  # noqa: E402
@@ -29,9 +30,12 @@ from test_sync import T0 as LAB_T0, iso as lab_iso  # noqa: E402  (the lab's log
 def drop_caches():
     """What a build from nothing starts with: every list and every log's head, tail and link unread, no chain kept."""
     for cache in (builder._LOG_INDEX, builder._LISTINGS, builder._HEADS, builder._TAILS, builder._BRIDGES, builder._CLEARED, builder._MENTIONS,
-                  build_questionnaire._PARSED):
+                  builder._FROZEN_PANES, builder._FROZEN_CLEARED, builder._UNCHANGED, build_questionnaire._PARSED, build_questionnaire._MEMBERS,
+                  build_cache._THREADS, build_cache._TASKS, build_cache._HEADS, build_cache._WRITTEN):
         cache.clear()
     builder._TIMELINE.update(written=None, times=[], logs=[])
+    builder._CLEARS.update(written=None, times=[], logs=[])
+    build_cache._FRAME.update(versions=None, head=b"", tail=b"")
 
 
 # ------------------------------------------------------------- the chain search, against the scan it replaced
@@ -339,7 +343,7 @@ class WorkerTest(unittest.TestCase):
         out = io.StringIO()
         saved = reader.BUILDERS
         self.addCleanup(setattr, reader, "BUILDERS", saved)
-        versions = iter([(1, 1)] * 3 + [(2, 2)] * 3)
+        versions = iter([(1, 1)] * len(reader.SOURCES) + [(2, 2)] * len(reader.SOURCES))  # as many files as the worker watches
         with mock.patch("sys.stdin", io.StringIO(json.dumps({"id": 1, "args": ["rebuild"]}) + "\n")), mock.patch("sys.stdout", out), \
                 mock.patch.object(reader, "main", return_value=0), mock.patch.object(builder, "file_version", lambda path: next(versions)), \
                 mock.patch.object(reader.os, "execv", side_effect=SystemExit) as execv:
