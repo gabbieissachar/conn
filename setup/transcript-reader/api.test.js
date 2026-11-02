@@ -1892,3 +1892,64 @@ test('photos: out/ holds them and is gitignored, and the page\'s own limits are 
   const [photos, one, all] = page.match(/const MAX_PHOTOS = (\d+), MAX_PHOTO_BYTES = (\d+) \* 1024 \* 1024, MAX_PHOTOS_BYTES = (\d+) \* 1024 \* 1024;/).slice(1).map(Number);
   assert.deepEqual({ MAX_PHOTOS: photos, MAX_PHOTO_BYTES: one * 1024 * 1024, MAX_PHOTOS_BYTES: all * 1024 * 1024 }, { ...PHOTO_LIMITS });
 });
+
+// ---------------------------------------------------------------- copy-sync: the hosted and sealed copies' Sync builds a new copy
+
+// The runs of sync.py the fake runner saw (reader.py runs go through the same fake python3).
+const syncRuns = (t) => t.herdr.calls.filter((call) => call.file === 'python3' && String(call.args[1]).endsWith('sync.py'));
+
+test('copy-sync: the page\'s Sync has the laptop build the sealed copy (sync.py --seal, as the LaunchAgent would), and asks how it went', async () => {
+  const t = await start();
+  try {
+    let release;
+    t.herdr.readerGate = new Promise((resolve) => { release = resolve; });
+    const started = await t.post('copy-sync', { copy: 'bucket' });
+    assert.equal(started.status, 200, started.raw);
+    assert.equal(started.json.status, 'ok');
+    assert.equal(started.json.state, 'running');
+    assert.equal(syncRuns(t).length, 1);
+    const run = syncRuns(t)[0];
+    assert.deepEqual(run.args.slice(2), ['--seal', path.join(t.tree.outDir, 'bucket'), '--out', path.join(t.tree.outDir, 'hosted')]);
+    assert.ok(!JSON.stringify(run).includes('PASSPHRASE'), 'the server hands the build no passphrase: sync.py reads the keychain itself');
+    // A second tap while it builds joins it.
+    assert.equal((await t.post('copy-sync', { copy: 'bucket' })).json.state, 'running');
+    assert.equal(syncRuns(t).length, 1);
+    assert.equal((await t.get('copy-sync?copy=bucket')).json.state, 'running');
+    release();
+    await t.settle();
+    const done = await t.get('copy-sync?copy=bucket');
+    assert.equal(done.status, 200);
+    assert.equal(done.json.state, 'done');
+    assert.equal(t.herdr.agentCalls().length, 0, 'building a copy never reaches a pane');
+  } finally { await t.close(); }
+});
+
+test('copy-sync: a build that fails says why, the plain copy is built by --build-only, and the owner\'s options go along', async () => {
+  const t = await start({ env: { PMOS_READER_COPY_ARGS: '--panes  open --no-workspace' } });
+  try {
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'Set HOSTED_READER_PASSPHRASE, keep the passphrase in the login keychain', timedOut: false, truncated: false };
+    assert.equal((await t.post('copy-sync', { copy: 'bucket' })).json.state, 'running');
+    await t.settle();
+    const failed = (await t.get('copy-sync?copy=bucket')).json;
+    assert.equal(failed.state, 'failed');
+    assert.equal(failed.message, 'Set HOSTED_READER_PASSPHRASE, keep the passphrase in the login keychain');
+    t.herdr.readerResult = null;
+    await t.post('copy-sync', { copy: 'hosted' });
+    assert.deepEqual(syncRuns(t)[1].args.slice(2), ['--build-only', '--out', path.join(t.tree.outDir, 'hosted'), '--panes', 'open', '--no-workspace']);
+    assert.equal((await t.get('copy-sync?copy=never')).status, 400);
+    await t.settle();
+    assert.equal((await t.get('copy-sync?copy=hosted')).json.state, 'done');
+  } finally { await t.close(); }
+});
+
+test('copy-sync: the same guard as every route, and it names only the sealed or the plain copy', async () => {
+  const t = await start();
+  try {
+    const bare = { 'Content-Type': 'application/json' };
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/copy-sync', headers: { ...bare, Origin: t.origin }, body: { copy: 'bucket' } })).status, 403, 'no token');
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/copy-sync', headers: { ...bare, [TOKEN_HEADER]: t.token, Origin: 'http://evil.example' }, body: { copy: 'bucket' } })).status, 403, 'a foreign origin');
+    assert.equal((await t.request({ path: '/api/transcript-reader/copy-sync?copy=bucket' })).status, 403, 'no token to read it either');
+    for (const body of [{}, { copy: 'both' }, { copy: '../bucket' }, { copy: 7 }]) assert.equal((await t.post('copy-sync', body)).status, 400, JSON.stringify(body));
+    assert.equal(syncRuns(t).length, 0, 'nothing was built');
+  } finally { await t.close(); }
+});

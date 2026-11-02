@@ -28,6 +28,11 @@
 //                                                   or removed it) and rebuilds the pages from the session logs and
 //                                                   the fleet records, then answers as state does, with the time
 //                                                   it finished
+//   POST /api/transcript-reader/copy-sync           the hosted and sealed copies' Sync button: { copy: "bucket" | "hosted" } has the laptop
+//                                                   build that copy now (copysync.js: sync.py --seal, or --build-only for the plain copy,
+//                                                   as the LaunchAgent would), or joins the build already running, and answers { copy,
+//                                                   state: "running" | "done" | "failed", startedAt, finishedAt, message }
+//   GET  /api/transcript-reader/copy-sync?copy=<c>  the same state, for the page to ask again until the build is over
 //   GET  /api/transcript-reader/steps?conv=<id>     the tool output of one conversation of the local page, { outputs: { "<turn>:<n>": text } },
 //                                                   read from out/steps/<id>.json, which the page build writes beside the page (the page itself
 //                                                   holds none of it); an empty set for a conversation with none. Read only.
@@ -142,6 +147,7 @@ const tailnetLane = require('./tailnet');
 const deltaStore = require('./delta');
 const pinstore = require('./pinstore');
 const workerLib = require('./worker');
+const copySyncLib = require('./copysync');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
@@ -561,6 +567,14 @@ function create({
 
   // The reader.py that stays running, started on its first request; one that cannot take a request leaves it to a fresh reader.py.
   const readerWorker = worker ? workerLib.create({ command: pythonBin, args: ['-I', readerScript, 'worker'], cwd: root, env: runEnv(), timeoutMs: 60000, now }) : null;
+
+  // The offline copy's builds, for its page's Sync: sync.py in a process of its own, as the LaunchAgent would run it. PMOS_READER_COPY_ARGS
+  // gives the build the options a build run by hand would have (--panes open, --no-workspace).
+  const copySync = copySyncLib.create({ root, outDir, runner, env: runEnv(), pythonBin, now, args: (env.PMOS_READER_COPY_ARGS || '').split(/\s+/).filter(Boolean) });
+  const copyNamed = (value) => {
+    try { copySync.status(value); } catch { throw new RequestError('Name the copy: bucket or hosted.'); }
+    return value;
+  };
 
   async function execReader(args) {
     if (readerWorker) {
@@ -1255,6 +1269,15 @@ function create({
     }
     if (pathname === API + 'sync' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...(await sync(await readJsonBody(req))) });
+      return;
+    }
+    // The hosted and sealed copies' Sync: have the laptop build the copy now (or join the build under way), then ask again until it is over.
+    if (pathname === API + 'copy-sync' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...copySync.start(copyNamed((await readJsonBody(req)).copy)) });
+      return;
+    }
+    if (pathname === API + 'copy-sync' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...copySync.status(copyNamed(query.get('copy'))) });
       return;
     }
     // The tool output of one conversation, for a step the local page opens (the page build writes it beside the page, apart from the turns).
