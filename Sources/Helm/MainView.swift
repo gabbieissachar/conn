@@ -161,10 +161,18 @@ struct StarredBar: View {
                         .padding(.vertical, 2)
                     }
                     .onChange(of: selected) { _, now in if let c = now { withAnimation { proxy.scrollTo(c, anchor: .center) } } }
+                    // Also when the row first appears or the column is resized: the chip on screen must not sit out of sight.
+                    .onAppear { reveal(selected, proxy) }
+                    .background(GeometryReader { g in Color.clear.onChange(of: g.size.width) { _, _ in reveal(selected, proxy) } })
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func reveal(_ conv: String?, _ proxy: ScrollViewProxy) {
+        guard let c = conv else { return }
+        DispatchQueue.main.async { proxy.scrollTo(c, anchor: .center) }
     }
 
     private func chip(_ conv: String, label: String, selected: Bool) -> some View {

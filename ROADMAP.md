@@ -1,12 +1,12 @@
 # Helm roadmap
 
-What Helm has shipped, what comes next, what is already decided, and what still needs the owner. Last updated 2026-11-02, at `main` `e6b863a`.
+What Helm has shipped, what comes next, what is already decided, and what still needs the owner. Last updated 2026-11-02, at `main` `15c5490` plus the starred-sessions branch.
 
 Update rule: every Helm change updates this file in the same branch (see "How to keep this current" at the end).
 
 ## Short answer
 
-Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 90 unit tests and 46 scripted UI checks pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target passes on Helm's added share (D6). Several things were checked in process only and need a person at a real screen.
+Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 105 unit tests and 56 scripted UI checks against the fixture pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target passes on Helm's added share (D6). Several things were checked in process only and need a person at a real screen.
 
 **Next three steps, in recommended order:**
 
@@ -36,6 +36,7 @@ All commits are on `main`. Nothing was ever pushed.
 | Pane text size | Largest font that fits Herdr's whole grid, plus Cmd+= / Cmd+- / Cmd+0 zoom, remembered | `9e1f709` |
 | Test mode that never takes focus | `--background`, implied by every scripted launch; documented rules for later sessions | `1df1bbb`, `83cd037`, `b3d4064`, `5e5dbba`, `93c98a2` |
 | Reader tab fix | The Reader tab showed the Organizer once the Organizer had been opened; the web host now holds only the selected pane's page; regression check added | `0a491c0`, `4a1f2dd`, `e6b863a` |
+| Starred sessions row | The Reader pane's header row no longer says "Reader". It holds one chip per session starred in the reader (read from the reader's own star list, never written). A click opens that session, the chip on screen is filled, a drag reorders the chips and the order is kept across launches. A star added or removed in the reader shows within 2 s. More chips than fit scroll sideways; with nothing starred the row says where to star. 14 unit tests, fixture and live `--ui-check` steps | `d52a7ef`, `999a21d`, `c27b5c5` |
 
 Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 4,093 MB and 15.5%):
 
@@ -47,7 +48,7 @@ Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 
 
 | ID | Item | Why | Depends on | Source |
 |---|---|---|---|---|
-| N1 | Hand-check `main` on a real screen: (1) trackpad scroll up over a live pane opens the history; (2) Cmd+Y, Cmd+=, Cmd+-, Cmd+0 typed at the window; (3) a needs-you or done pane draws at once, also on the way back from history; (4) the fitted text looks right on the Retina screen; (5) the Organizer opens on Context; (6) Organizer then Reader shows the reader every time; (7) the compose box takes keyboard focus | Scripted checks cannot see a real display, a real trackpad or typed keys | A person at the Mac | Session 2 report s6; reader fix report "How to confirm by hand"; first-slice report "Renderer" |
+| N1 | Hand-check `main` on a real screen: (1) trackpad scroll up over a live pane opens the history; (2) Cmd+Y, Cmd+=, Cmd+-, Cmd+0 typed at the window; (3) a needs-you or done pane draws at once, also on the way back from history; (4) the fitted text looks right on the Retina screen; (5) the Organizer opens on Context; (6) Organizer then Reader shows the reader every time; (7) the compose box takes keyboard focus; (8) the starred row: drag a chip over another and drop it (it follows the pointer, the order holds after a relaunch), and star or unstar in the reader to see the row follow within 2 s | Scripted checks cannot see a real display, a real trackpad or typed keys | A person at the Mac | Session 2 report s6; reader fix report "How to confirm by hand"; first-slice report "Renderer" |
 | N2 | A superseded reader load is not an error: ignore `NSURLErrorCancelled` in the two `didFail` handlers of `WebBox`, and add a check that supersedes a load and watches the phase | Flipping back to the Reader within a second or two can flash "Reader server not reachable". Still present on `main` | Nothing | Reader fix report "Adjacent finding" |
 | N4 | Provision a Herdr lab session | Control mode writes to panes, and restart, sleep, version change and true latency were never tested on real Herdr. The lab helper's precondition is met since 2 Nov: one `default` session runs beside `esim` | Nothing | First-slice report s1; contrarian review verdict 2 |
 | N5 | Control mode and window-sized panes (D3 step 2): Helm takes resize control of a pane | Fixes narrow panes at the root (W1), and is the base for any later write | N4; keyboard rule (done); request-id design from buzz lesson 2 | Decision D3; README "Known limits" |
@@ -59,7 +60,7 @@ Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 
 |---|---|---|---|---|
 | L1 | Stop control (interrupt one agent, with a pending state until it takes effect) | A stuck agent today needs the Herdr screen. Interrupt first, a request id on every control, and cancel a pending prompt before its turn | N5. Deferred, see H1 | Buzz report s6 lesson 2, s7 H1 |
 | L2 | Native reader | Cuts the 255 to 430 MB WebKit cost. Needs a bounded journal that evicts to about 90% of the cap, not to the cap | A real need for the memory; reader state kept in browser storage does not move into the app | Contrarian design review 4.3; buzz lesson 4 |
-| L3 | Reader `hashchange` handler (a change in the reader page, not in Helm) | A pin reloads a 19 MB page (about 1 s) and loses the scroll place | A change in the reader's own source | UX prototype report s3, s6 |
+| L3 | Reader `hashchange` handler (a change in the reader page, not in Helm) | A pin reloads a 19 MB page (about 1 s) and loses the scroll place | A change in the reader's own source. Decided (R1=a, 2 Nov) and being built in the pmos reader by a separate worker; when it lands, Helm can switch sessions, and the starred row can open a chip, without a reload | UX prototype report s3, s6 |
 | L4 | Real scrollback in a live pane | Herdr frames never scroll, so a terminal cannot keep lines | Herdr exposing history with colour, or control mode | Session 2 report s1 |
 | L5 | Markdown highlighting in the editor | Editor is plain text today | Nothing | First-slice report "What is next" |
 | L6 | Lower graphics memory in the app (78 MB IOSurface plus 41 MB owned graphics for a retina window) | Pane footprint goes from 93 MB to 190 to 230 MB while streaming | Nothing; not tried | First-slice report s3 |
@@ -101,18 +102,13 @@ Do not re-ask these unless the facts change.
 | Observers cannot resize | Panes are drawn at the size Herdr gave them | Resize is a write and belongs to control mode |
 | Compose box is the only write | One write path behind a per-session allow list | Safety model in the README |
 | Native reader | Deferred (L2) | The web reader stays until memory or coherence needs it |
+| R1 | Reader-side `hashchange` change (L3): land it (owner answer R1=a, 2 Nov) | The smallest win left on reader switching. It is a small separate change in the pmos reader, being built by a separate worker; Helm's own part (skip the reload) follows when it lands |
 | Buzz | Take ideas, no code | Rust and TypeScript, Apache-2.0, a different problem (headless agents). Lessons 1, 3 and 5 are done; lessons 2 and 4 are L1 and L2 |
 | Other stacks | Tauri, gpui, libghostty, cmux, Option 0 (Herdr in a plain terminal plus a browser) not pursued | A3 and B2 settled the path |
 
 ## Open questions
 
-Reply with keyed answers: `R1=...`
-
-**R1. Reader-side `hashchange` change** (L3)
-This edits the reader page in pmos, outside Helm.
-- a) Yes, as a small separate change.
-- b) No, leave the pin reload.
-Recommendation: a. It is the smallest win left on reader switching.
+None open. Reply with keyed answers (`R2=...`) when one is added.
 
 ## How to keep this current
 

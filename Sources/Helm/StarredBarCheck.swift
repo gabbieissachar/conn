@@ -105,6 +105,11 @@ enum StarredBarCheck {
         model.showWeb = true; model.webTab = .reader
         // A saved order from an earlier run must not decide this one (the check runs in the test preference domain).
         model.stars.resetOrder()
+        // Room for the chips: a real list can be wider than the column (that case is checked below, on its own).
+        let savedWidth = model.webWidth
+        defer { model.webWidth = savedWidth }
+        if let w = Capture.mainWindow() { w.setContentSize(NSSize(width: max(w.contentView?.frame.width ?? 0, 1500), height: max(w.contentView?.frame.height ?? 0, 900))) }
+        model.webWidth = 1000
         await wait(1.5)
         guard let win = Capture.mainWindow() else { report("the starred row can be inspected", false, "no main window"); return }
 
@@ -192,6 +197,23 @@ enum StarredBarCheck {
             let again = StarredSessions(starsFile: model.stars.starsFile, labelsFile: model.stars.labelsFile, store: StarOrderStore(defaults: AppModel.defaults, key: "helm.readerStarOrder.fixture"))
             report("a relaunch (a new row over the same preferences) comes up in that order", again.order == want, "relaunched order=\(again.order.map { $0.suffix(3) })")
             model.stars.resetOrder()
+        }
+
+        // More chips than fit: the row scrolls sideways (nothing is hidden in a menu), and the chip on screen is brought into view.
+        if StarSelection.selected(convs: model.stars.order, shown: reader.shownSession) != nil {
+            model.webWidth = 300; await wait(1.2)
+            if let narrow = rowRect(reader), let r = read(narrow, in: win) {
+                let sats = r.runs.map { saturation(of: $0, in: r.image, strip: narrow) }
+                let filled = sats.indices.filter { sats[$0] > 0.5 }
+                let total = labels.count
+                let wanted = labels.reduce(CGFloat(0)) { $0 + chipWidthRange($1).lowerBound + 2.5 + 6 }
+                report("a row narrower than its chips scrolls, and the chip on screen is in view", wanted > narrow.width - 60 && filled.count == 1,
+                       "chips=\(total) need \(Int(wanted)) pt, shapes drawn=\(r.runs.count) filled=\(filled.count) widths=[\(describe(r.runs))] row=\(Int(narrow.width)) pt wide")
+                if fixture, let dir = ProcessInfo.processInfo.environment["HELM_UI_CHECK_SHOT_DIR"] {
+                    await Capture.window(to: URL(fileURLWithPath: dir).appendingPathComponent("starred-row-narrow.png"))
+                }
+            }
+            model.webWidth = 1000; await wait(0.6)
         }
 
         // A star added or removed in the reader reaches a running row on its own: a row over a scratch copy of the star list.
