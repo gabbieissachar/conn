@@ -150,8 +150,11 @@ public final class SwiftTermEngine: TerminalEngine {
     public var cols: Int { view.terminalDimensions.cols }
     public var rows: Int { view.terminalDimensions.rows }
 
+    /// Clamped like the cell-grid engine's: `apply` and `PaneSession.configure` already keep a stream from asking for more,
+    /// but a grid of 65535 by 65535 cells would need about 69 GB, so the engine is the last line.
     public func resize(cols: Int, rows: Int) {
-        MainActor.assumeIsolated { view.setGrid(cols: max(2, cols), rows: max(1, rows), fontPoints: view.fontPoints) }
+        let c = min(max(2, cols), TerminalFrame.maxCols), r = min(max(1, rows), TerminalFrame.maxRows)
+        MainActor.assumeIsolated { view.setGrid(cols: c, rows: r, fontPoints: view.fontPoints) }
     }
 
     /// A soft reset plus a clear, not RIS: RIS also forgets the theme's default colours and the pane would turn black.
