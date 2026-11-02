@@ -6,13 +6,13 @@ Update rule: every Helm change updates this file in the same branch (see "How to
 
 ## Short answer
 
-Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 90 unit tests and 46 scripted UI checks pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target is not settled (R1). Several things were checked in process only and need a person at a real screen.
+Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 90 unit tests and 46 scripted UI checks pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target passes on Helm's added share (D6). Several things were checked in process only and need a person at a real screen.
 
 **Next three steps, in recommended order:**
 
-1. **Try `main` on a real screen** (N1). A person runs the short hand-check list below. It settles the items that no scripted check can see (trackpad scroll, keys typed at the window, text size on the Retina display, pane first draw) and gives the answers for R3 to R5.
-2. **Small fixes that need nothing from Herdr** (N2, N3). Stop showing a superseded reader load as "not reachable", and fix the narrow-pane problem on wide Herdr grids (R3).
-3. **Provision a Herdr lab session, then build control mode** (N4, N5). Window-sized panes need a pane resize, which is a write. A lab session is the safe place to test it, and it also settles compose-box questions that are open on real Herdr (N6).
+1. **Try `main` on a real screen** (N1). A person runs the short hand-check list below. It settles the items that no scripted check can see (trackpad scroll, keys typed at the window, text size on the Retina display, pane first draw).
+2. **One small fix that needs nothing from Herdr** (N2). Stop showing a superseded reader load as "not reachable". Wide panes wait for control mode (W1).
+3. **Set up a Herdr lab session, then build control mode** (N4, N5). The lab step is unblocked: a running `default` session now exists beside `esim`. Window-sized panes need a pane resize, which is a write. A lab session is the safe place to test it, and it also settles compose-box questions that are open on real Herdr (N6).
 
 ## Done
 
@@ -40,7 +40,7 @@ All commits are on `main`. Nothing was ever pushed.
 Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 4,093 MB and 15.5%):
 
 - Memory: whole setup 1,033 to 1,120 MB in quiet windows with both servers and the reader page open. It passes with little room.
-- CPU: Helm adds about 3 points (0.8 to 1.25% in the app, 2 to 2.4 in the Herdr server). The whole setup was 3.2 to 4.4% in quiet windows, but 7 to 23% on busy windows because of the reader's Python worker, which Helm does not control. See R1.
+- CPU: Helm adds about 3 points (0.8 to 1.25% in the app, 2 to 2.4 in the Herdr server). The whole setup was 3.2 to 4.4% in quiet windows, but 7 to 23% on busy windows because of the reader's Python worker, which Helm does not control. See D6.
 - Each visible working pane costs the Herdr server 3 to 9 points. Panes stream only while visible and stop after 30 s in the background.
 
 ## Next
@@ -49,9 +49,8 @@ Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 
 |---|---|---|---|---|
 | N1 | Hand-check `main` on a real screen: (1) trackpad scroll up over a live pane opens the history; (2) Cmd+Y, Cmd+=, Cmd+-, Cmd+0 typed at the window; (3) a needs-you or done pane draws at once, also on the way back from history; (4) the fitted text looks right on the Retina screen; (5) the Organizer opens on Context; (6) Organizer then Reader shows the reader every time; (7) the compose box takes keyboard focus | Scripted checks cannot see a real display, a real trackpad or typed keys | A person at the Mac | Session 2 report s6; reader fix report "How to confirm by hand"; first-slice report "Renderer" |
 | N2 | A superseded reader load is not an error: ignore `NSURLErrorCancelled` in the two `didFail` handlers of `WebBox`, and add a check that supersedes a load and watches the phase | Flipping back to the Reader within a second or two can flash "Reader server not reachable". Still present on `main` | Nothing | Reader fix report "Adjacent finding" |
-| N3 | Narrow panes on wide Herdr grids: a narrower or auto-hiding reader column | 167-column panes get 7 to 7.5 pt with the reader column open and 10.5 pt without it | R3 | Session 2 report "Open for the captain" 1 |
-| N4 | Provision a Herdr lab session | Control mode writes to panes, and restart, sleep, version change and true latency were never tested on real Herdr. The lab helper refuses on this Mac because it needs exactly one running `default` session and the fleet runs `esim` | A fleet-tooling change or a captain-approved attended test (R2) | First-slice report s1; contrarian review verdict 2 |
-| N5 | Control mode and window-sized panes (D3 step 2): Helm takes resize control of a pane | Fixes narrow panes at the root, and is the base for any later write | N4; R2; keyboard rule (done); request-id design from buzz lesson 2 | Decision D3; README "Known limits" |
+| N4 | Provision a Herdr lab session | Control mode writes to panes, and restart, sleep, version change and true latency were never tested on real Herdr. The lab helper's precondition is met since 2 Nov: one `default` session runs beside `esim` | Nothing | First-slice report s1; contrarian review verdict 2 |
+| N5 | Control mode and window-sized panes (D3 step 2): Helm takes resize control of a pane | Fixes narrow panes at the root (W1), and is the base for any later write | N4; keyboard rule (done); request-id design from buzz lesson 2 | Decision D3; README "Known limits" |
 | N6 | Compose box on real Herdr: a blocked agent, multi-line text, and whether `agent.prompt` is the better call for agents that are not blocked | Only tried against the stand-in. `agent.prompt` rejects a blocked agent | N4 | First-slice report "Compose caveats"; README "Known limits" |
 
 ## Later
@@ -89,7 +88,11 @@ Do not re-ask these unless the facts change.
 | D2 | A read-only stream test before building native panes | Done for decode, cold start, stall, client cost and CPU. Restart, sleep, version change and true latency are still open (N4) |
 | D3 | Step 1: observe-only panes at Herdr's width. Step 2: control mode once native panes are stable | Step 1 shipped. Step 2 is N5 |
 | D4 | Editor ships in the first slice | Shipped |
-| D5 | Success: whole setup under 1.2 GB and 6% idle CPU, measured like the 4.09 GB and 15.5% baseline; a miss means stop and rethink | Memory passes. The CPU basis is R1 |
+| D5 | Success: whole setup under 1.2 GB and 6% idle CPU, measured like the 4.09 GB and 15.5% baseline; a miss means stop and rethink | Memory passes. CPU passes on Helm's added share (D6) |
+| D6 | What the D5 CPU target measures: judge Helm's added share and still report the whole-setup figure (owner answer D6=a, 2 Nov) | Helm adds about 3 points, under the 6% target. The whole setup (3.2 to 4.4% quiet, 7 to 23% busy) is reported beside it, because Herdr and the reader's Python worker use that much with no app running. D5 CPU: passed on this basis |
+| W1 | Wide panes wait for control mode (owner answer W1=b, 2 Nov) | No column fix now. Narrow panes on wide grids are fixed at the root by N5 |
+| W2 | Shortcuts read as "Command required" are accepted (W2=accept, 2 Nov) | Opt+Cmd+1/2/3, Opt+Cmd+R, Opt+Cmd+F and Cmd+Ctrl+S stay. No terminal sends Command chords, so they cannot clash |
+| W3 | The wheel opens the history view (W3=keep, 2 Nov) | A deliberate upward scroll swaps the live pane for the history. N1 still checks the feel by hand |
 | E1 | Mac app first; iPhone keeps the web reader and organizer | Native iPhone later |
 | E2 | Make the web reader lean on the phone (one conversation at a time) | Reader-side work, not Helm |
 | E3, E4 | Paid Apple account and Xcode only when an iPhone build starts | Mac slice builds with Command Line Tools and SwiftPM |
@@ -103,41 +106,9 @@ Do not re-ask these unless the facts change.
 
 ## Open questions
 
-Reply with keyed answers: `R1=...; R2=...; R3=...; R4=...; R5=...; R6=...`
+Reply with keyed answers: `R1=...`
 
-**R1. What does the CPU target measure?** (decision D5)
-Evidence: Helm adds about 3 points. The whole setup was 3.2 to 4.4% in quiet windows and 7 to 23% on busy ones, because Herdr and the reader's Python worker alone use that much with no app running.
-- a) Judge Helm's added share (about 1 to 3 points, passes), and still report the whole-setup figure.
-- b) Keep the whole setup. It fails whenever the fleet is busy, for reasons outside Helm.
-- c) Keep the whole setup but exclude the reader worker.
-Recommendation: a.
-
-**R2. How do we get a safe place to test writes?** (N4)
-The lab helper refuses on this Mac (needs one running `default` session; the fleet runs `esim`).
-- a) Change the lab tooling so it works with a named session.
-- b) One attended test on `esim` with the captain watching.
-- c) No lab: stay observe-only and skip control mode.
-Recommendation: a. It keeps the live session out of any write test.
-
-**R3. Narrow panes on wide Herdr grids** (N3)
-- a) Narrower or auto-hiding reader column now.
-- b) Wait for control mode (N5).
-- c) Both: a small column fix now, resize in N5.
-Recommendation: c.
-
-**R4. "Command-only" shortcuts**
-Read as "Command required", so Opt+Cmd+1/2/3, Opt+Cmd+R, Opt+Cmd+F and Cmd+Ctrl+S stay.
-- a) Accept.
-- b) Tighten to Cmd or Cmd+Shift only (those five need new keys).
-Recommendation: a. No terminal sends Command chords, so they cannot clash.
-
-**R5. Wheel-to-open-history**
-Built but not in the spec. A deliberate upward scroll swaps the live pane for the history.
-- a) Keep.
-- b) Drop (one switch in `PaneHostView.scrollWheel` and `GridTerminalNSView.scrollWheel`).
-Recommendation: a until the hand-check (N1) says the feel is wrong.
-
-**R6. Reader-side `hashchange` change** (L3)
+**R1. Reader-side `hashchange` change** (L3)
 This edits the reader page in pmos, outside Helm.
 - a) Yes, as a small separate change.
 - b) No, leave the pin reload.
