@@ -377,6 +377,10 @@ __HEAD_HOSTED__
   .foldrun { margin: 8px 0; }
   .is-target { animation: flash 1.2s ease-out; }
   @keyframes flash { from { box-shadow: 0 0 0 3px var(--you); } to { box-shadow: 0 0 0 0 transparent; } }
+  /* The reply a message address (#s=...&m=...) went to: outlined for a moment longer than a pin's or a search's jump, as the link was followed from elsewhere. */
+  .is-linked { animation: linked 2.8s ease-out; border-radius: 8px; }
+  @keyframes linked { 0%, 60% { box-shadow: 0 0 0 3px var(--you); } to { box-shadow: 0 0 0 0 transparent; } }
+  @media (prefers-reduced-motion: reduce) { .is-linked { animation: none; box-shadow: 0 0 0 3px var(--you); } }
 
   /* View B: fleet timeline */
   .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin-bottom: 12px; }
@@ -663,6 +667,7 @@ __HEAD_HOSTED__
 /*__STEPS__*/
 /*__FIND__*/
 /*__DOCFILES__*/
+/*__ADDRESS__*/
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -1700,6 +1705,57 @@ __HEAD_HOSTED__
   }
   pins.onChange(paintPins);
 
+  // ---------------------------------------------------------------- message addresses: #s=<session>&m=<turn id> (address.js)
+  // A link to one message: the conversation, scrolled to that turn's reply (its message when it has no reply), with what hides it opened in
+  // place (a wake-up folded into a run, a folded wake-up, a clipped reply) and the reply outlined for a moment. The page opens on one
+  // (chooseOpening, then followOpeningMessage) and follows one that arrives while it is open (hashchange: a link pasted into this tab, or
+  // opened over the conversation on screen). Either way the address then goes back to #s=, so the same link works again and a reload
+  // does not jump again.
+  const sessionAt = prefix => data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(prefix)));
+  const messageGone = id => ({ text: `The message ${id.slice(0, 12)} was not found in this conversation. It may be in another one, or this link was cut short.` });
+  function landOnMessage(si, index) {
+    const ex = data.sessions[si].exchanges[index], part = address.part(ex);
+    goTo(si, index, part, { clips: true }, () => {
+      setAddress();
+      const key = pinKey(ex, part);
+      const node = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === key) || document.getElementById(`ex-${index}`);
+      if (!node) return;
+      window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
+      node.classList.remove("is-linked"); void node.offsetWidth; node.classList.add("is-linked");
+    });
+  }
+  // The message the page opened on, in the conversation it opened on.
+  function followOpeningMessage() {
+    const id = link.message;
+    link.message = null;
+    if (!id) return;
+    const session = data.sessions[state.session], index = session ? address.find(session.exchanges, id) : -1;
+    if (index < 0) { link.listing = messageGone(id); renderLive(); return; }
+    link.listing = null;
+    landOnMessage(state.session, index);
+  }
+  // A message address that reaches the page while it is open (a link pasted into this tab, or opened over the conversation on screen).
+  async function followAddress() {
+    const asked = address.parse(location.hash);
+    if (!asked || !asked.message) return;  // #s= and &d= are read when the page opens, as always
+    const si = sessionAt(asked.session);
+    if (si < 0) { link.listing = { text: `Session ${asked.session.slice(0, 8)} is not on the reader any more, so this stays on the conversation open.` }; renderLive(); return; }
+    if (!data.sessions[si].exchanges) {  // the hosted copy loads a conversation when it is asked for
+      try { await hosted.conversation(data.sessions[si]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
+    }
+    const index = address.find(data.sessions[si].exchanges, asked.message);
+    state.pinsOpen = false;
+    if (index < 0) {  // the conversation opens, and says the message is not in it
+      if (state.session !== si || state.view !== "reader") { state.session = si; state.view = "reader"; whenReady(() => { render(); showLatest(); }); }
+      setAddress();
+      link.listing = messageGone(asked.message); renderLive();
+      return;
+    }
+    link.listing = null;
+    landOnMessage(si, index);
+  }
+  window.addEventListener("hashchange", followAddress);
+
   // ---------------------------------------------------------------- search: find in this conversation or across the reading list
   // The matching is find.js (plain text over the turns this page already holds: no index, no server route, no model).
   // This is the row in the header, the list of matches, the highlights, and the way to a match: it opens only what hides
@@ -2121,7 +2177,7 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false, hold: null, flight: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
   // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
   const photos = attach.makeStore();
@@ -2781,7 +2837,7 @@ __HEAD_HOSTED__
   function setAddress() {
     const session = data.sessions[state.session];
     if (!session) { history.replaceState(null, "", location.pathname + location.search); return; }
-    history.replaceState(null, "", "#s=" + session.id.slice(0, 8) + (state.view === "doc" && state.doc && onFilePage(session) ? "&d=" + state.doc : ""));
+    history.replaceState(null, "", address.build({ session: session.id, doc: state.view === "doc" && state.doc && onFilePage(session) ? state.doc : null }));
   }
   // The documents the session's messages and replies name, each with the last turn that named it.
   function sessionDocuments(session) {
@@ -3813,7 +3869,8 @@ __HEAD_HOSTED__
   const waitingFirst = () => Math.max(0, data.sessions.findIndex(s => hosted.waiting(s) > 0));
   // The conversation and view the page opens on; returns what this tab saved before a reload.
   function chooseOpening() {
-    const [, wanted, wantedDoc] = location.hash.match(/^#s=([0-9a-f-]+)(?:&d=([0-9a-f]{10}))?$/) || [];
+    const asked = address.parse(location.hash) || {};
+    const wanted = asked.session, wantedDoc = asked.doc;
     const fromHash = wanted ? data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(wanted))) : -1;
     // A reload (new page code, a restarted server, or the browser's own) keeps what was
     // expanded and the place being read, in this tab only.
@@ -3834,6 +3891,9 @@ __HEAD_HOSTED__
     // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
     // Decided here, before the page writes its own address below.
     link.keepOpening = fromHash >= 0 || fromSaved >= 0;
+    // A message address (&m=) is followed once the conversation it names is on screen (openReading, reopenLost); one whose
+    // conversation is not on the reader leaves the notice above, and no message is looked for in the conversation that opened instead.
+    link.message = asked.message && (fromHash >= 0 || link.opening) ? asked.message : null;
     return saved;
   }
   function openReading(saved) {
@@ -3849,6 +3909,7 @@ __HEAD_HOSTED__
     setAddress();
     render();
     if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
+    followOpeningMessage();
   }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   window.addEventListener("pagehide", () => {
@@ -3901,6 +3962,7 @@ __HEAD_HOSTED__
     setAddress();
     render();
     if (same && saved.anchor) restoreAnchor(saved.anchor); else showLatest();
+    followOpeningMessage();
   }
 })();
 </script>

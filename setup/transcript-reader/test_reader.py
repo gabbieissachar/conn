@@ -1419,6 +1419,16 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("if (!commentKey.pressed(e)) return;", page, mode)
             self.assertIn("commentKey.label(navigator.platform)", page, mode)
 
+    def test_the_reader_pages_carry_the_address_rules_that_address_test_js_runs(self):
+        for mode, page in self.pages():
+            self.assertIn("const address = (() => {", page, mode)
+            self.assertNotIn("/*__ADDRESS__*/", page, mode)
+            # The page reads its address, and writes it, through the one module; a message address and a changed address are followed in place.
+            self.assertIn("const asked = address.parse(location.hash) || {};", page, mode)
+            self.assertIn("address.build({ session: session.id,", page, mode)
+            self.assertIn('window.addEventListener("hashchange", followAddress);', page, mode)
+            self.assertNotIn("location.reload", page.split("async function followAddress()")[1].split('window.addEventListener("hashchange"')[0], mode)
+
     def test_the_reader_pages_carry_the_photo_rules_that_attach_test_js_runs(self):
         for mode, page in self.pages():
             self.assertIn("const attach = (() => {", page, mode)
