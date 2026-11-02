@@ -12,7 +12,7 @@ APP=build/Helm.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture"
 cp ".build/$CONFIG/Helm" "$APP/Contents/MacOS/Helm"
 cp ".build/$CONFIG/FakeHerdr" build/FakeHerdr
-cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-organizer.html "$APP/Contents/Resources/fixture/"
+cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json "$APP/Contents/Resources/fixture/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

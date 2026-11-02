@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
     let primary: PaneSession
     let secondary: PaneSession
     let web: WebHub
+    /// The Reader pane's starred sessions (read from the reader's own star list; only their order is Helm's).
+    let stars: StarredSessions
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind
@@ -64,7 +66,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var paneZoom: Double = AppModel.savedZoom()
     private static let zoomKey = "helm.paneZoom"
     /// Preferences live in the standard domain, except in test mode: a check that zooms must not overwrite the zoom a person saved.
-    private static var defaults: UserDefaults { Runtime.config.runsInBackground ? (UserDefaults(suiteName: "dev.local.helm.test") ?? .standard) : .standard }
+    static var defaults: UserDefaults { Runtime.config.runsInBackground ? (UserDefaults(suiteName: "dev.local.helm.test") ?? .standard) : .standard }
     private static func savedZoom() -> Double { PaneFit.clampedZoom(defaults.object(forKey: zoomKey) as? Double ?? 1) }
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
@@ -118,6 +120,14 @@ final class AppModel: ObservableObject {
         secondary = PaneSession(engine: engine(), source: ObserveProcessSource(endpoint: endpoint))
         let res = Bundle.main.resourceURL
         web = WebHub(fixture: config.fixture, resourceDir: res?.appendingPathComponent("fixture"))
+        let env = ProcessInfo.processInfo.environment
+        let fixtureDir = res?.appendingPathComponent("fixture")
+        // A fixture launch reads invented stars (never the owner's file) and keeps its order apart from the real one.
+        let starsFile = config.fixture ? URL(fileURLWithPath: env["HELM_READER_STARS"] ?? fixtureDir?.appendingPathComponent("fixture-stars.json").path ?? "/nonexistent") : ReaderStars.defaultFile(env: env)
+        let labelsFile = config.fixture ? URL(fileURLWithPath: env["HELM_READER_LABELS"] ?? fixtureDir?.appendingPathComponent("fixture-pane-labels.json").path ?? "/nonexistent") : StarLabels.defaultFile(env: env)
+        stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile,
+                                store: StarOrderStore(defaults: AppModel.defaults, key: config.fixture ? "helm.readerStarOrder.fixture" : "helm.readerStarOrder"))
+        stars.start()
         editor = EditorModel()
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
@@ -306,9 +316,22 @@ final class AppModel: ObservableObject {
     func pinReader() {
         pinWork?.cancel()
         guard readerFollows, readerVisible, let a = selectedAgent else { return }
-        let w = DispatchWorkItem { [weak self] in self?.web.box(.reader).pin(sessionID: a.sessionID, label: a.name) }
+        let w = DispatchWorkItem { [weak self] in self?.web.box(.reader).pin(sessionID: a.sessionID) }
         pinWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+    }
+
+    /// The Reader pane's row of starred sessions: open this conversation in the reader (the pin path an agent selection uses,
+    /// so the reader loads it with its `#s=` address). The one on screen is left alone: opening it again would reload the page.
+    func openStarred(_ conv: String) {
+        guard !StarSelection.matches(conv: conv, shown: web.box(.reader).shownSession) else { return }
+        if webTab != .reader { webTab = .reader }
+        web.box(.reader).pin(sessionID: conv)
+    }
+
+    /// Names of the agents by session id, for the starred sessions an agent runs now.
+    var agentNamesBySession: [String: String] {
+        Dictionary(snapshot.agents.compactMap { a in a.sessionID.map { ($0, a.name) } }, uniquingKeysWith: { first, _ in first })
     }
 
     func reloadWeb() { web.allBoxes.forEach { $0.reload() } }

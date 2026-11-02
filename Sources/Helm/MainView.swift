@@ -99,15 +99,14 @@ struct WebColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: box.kind.symbol).foregroundStyle(.secondary)
-                Text(box.kind.rawValue).font(.system(size: 12, weight: .semibold))
-                if box.kind == .reader, app.readerFollows, let p = box.pinnedTo {
-                    Label(p, systemImage: "pin.fill").font(.system(size: 10.5)).lineLimit(1)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
-                        .redacted(reason: app.privacy ? .placeholder : [])
+                if box.kind == .reader {
+                    // The tab above already says "Reader": the row is for the starred sessions.
+                    StarredBar(starred: app.stars, box: box)
+                } else {
+                    Image(systemName: box.kind.symbol).foregroundStyle(.secondary)
+                    Text(box.kind.rawValue).font(.system(size: 12, weight: .semibold))
+                    Spacer(minLength: 4)
                 }
-                Spacer(minLength: 4)
                 switch box.phase {
                 case .loading: ProgressView().controlSize(.small)
                 case .ready: if let s = box.loadSeconds { Text(String(format: "%.1fs", s)).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.tertiary) }
@@ -132,6 +131,75 @@ struct WebColumn: View {
             }
         }
     }
+}
+
+/// The Reader pane's header row: one chip per starred session, in the order the captain arranged. A click opens that
+/// session in the reader; the chip for the session on screen is filled; a drag onto another chip moves it there.
+/// More chips than fit scroll sideways (the selected one is brought into view), so none is hidden in a menu and every
+/// one stays a drop target. With nothing starred the row says where to star.
+struct StarredBar: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var starred: StarredSessions
+    @ObservedObject var box: WebBox
+    @State private var dragging: String?
+
+    var body: some View {
+        let selected = StarSelection.selected(convs: starred.order, shown: box.shownSession)
+        let names = app.agentNamesBySession
+        Group {
+            if starred.order.isEmpty {
+                Text("Star a session in the reader to keep it here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                    .accessibilityIdentifier("starred-empty")
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(starred.order, id: \.self) { conv in
+                                chip(conv, label: starred.label(for: conv, agentNames: names), selected: conv == selected)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .onChange(of: selected) { _, now in if let c = now { withAnimation { proxy.scrollTo(c, anchor: .center) } } }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func chip(_ conv: String, label: String, selected: Bool) -> some View {
+        Text(label)
+            .font(.system(size: 10.5, weight: selected ? .semibold : .regular))
+            .lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: 150)
+            .padding(.horizontal, 8).padding(.vertical, 2.5)
+            .background(selected ? Color.accentColor.opacity(0.24) : Color.primary.opacity(0.07), in: Capsule())
+            .redacted(reason: app.privacy ? .placeholder : [])
+            .contentShape(Capsule())
+            .onTapGesture { app.openStarred(conv) }
+            .onDrag { dragging = conv; return NSItemProvider(object: conv as NSString) }
+            .onDrop(of: [.plainText], delegate: ChipDrop(target: conv, starred: starred, dragging: $dragging))
+            .help(app.privacy ? "Starred session" : "\(label) (drag to reorder)")
+            .id(conv)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(app.privacy ? "Starred session" : label)
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { app.openStarred(conv) }
+            .accessibilityIdentifier("starred-chip")
+    }
+}
+
+/// A chip dragged over another takes its place while the pointer is over it, so the row shows the result before the drop.
+struct ChipDrop: DropDelegate {
+    let target: String
+    let starred: StarredSessions
+    @Binding var dragging: String?
+
+    func dropEntered(info: DropInfo) {
+        if let d = dragging, d != target { withAnimation(.easeInOut(duration: 0.15)) { starred.move(d, onto: target) } }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
 }
 
 struct WebTabsColumn: View {

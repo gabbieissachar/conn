@@ -22,7 +22,11 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var title = ""
     @Published private(set) var loadSeconds: Double?
-    @Published private(set) var pinnedTo: String?
+    /// The session the page's address names (`#s=<id or its first eight characters>`), which is how the Reader pane's row of
+    /// starred sessions knows which chip is on screen. The reader rewrites its address when it picks a session itself, so
+    /// this follows its own picker too.
+    @Published private(set) var shownSession: String?
+    private var urlObservation: NSKeyValueObservation?
     private var loadStart: Date?
     private var pinCounter = 0
     private var pendingHash: String?
@@ -43,6 +47,10 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
+        urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] web, _ in
+            let shown = StarSelection.sessionPrefix(inFragment: web.url?.fragment)
+            DispatchQueue.main.async { if let self = self, self.shownSession != shown { self.shownSession = shown } }
+        }
     }
 
     var pid: Int32? { (webView.value(forKey: "_webProcessIdentifier") as? Int).map { Int32($0) } }
@@ -59,9 +67,8 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     /// Open the reader on one conversation. The real reader only reads `#s=<session id prefix>` when the page loads,
     /// so a live pin is a page load (a query string makes WKWebView treat it as a new document, not a fragment jump).
-    func pin(sessionID: String?, label: String) {
-        guard kind == .reader, let sid = sessionID, sid.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { pinnedTo = nil; return }
-        pinnedTo = label
+    func pin(sessionID: String?) {
+        guard kind == .reader, let sid = sessionID, sid.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { return }
         if fixtureDir != nil {
             if webView.url?.path == baseURL.path { webView.evaluateJavaScript("location.hash='s=\(sid)'", completionHandler: nil) }
             else { pendingHash = "s=\(sid)"; load(baseURL) }
