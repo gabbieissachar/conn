@@ -8,7 +8,7 @@ repo/setup/transcript-reader and the organizer module its server requires (its o
 page built from the logs by that copy's reader.py. No real session log, Herdr, port or pin is read or written.
 
 The world: one conversation that was cleared once (an old session and a new one) whose old part holds a long reply that asks L17, a run
-of folded wake-ups with a reply to find inside it, and many later turns; and a second, unrelated conversation. A markdown file the
+of folded wake-ups with a reply to find inside it, and many later turns; a second, unrelated conversation (the one a fake Herdr shows a pane for), and a third whose pane has closed. A markdown file the
 second names gives the Documents view something to open.
 
 Prints one JSON line: the ids the driver needs.
@@ -30,11 +30,13 @@ BASE = datetime(2026, 11, 2, 8, 0, 0, tzinfo=timezone.utc).timestamp()
 OLD = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 NEW = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 OTHER = "33333333-cccc-4ccc-8ccc-cccccccccccc"
+CLOSED = "44444444-dddd-4ddd-8ddd-dddddddddddd"  # a conversation whose Herdr pane has closed: the reader offers it under "Closed panes"
 
 ASK_UID = "a0000010-0000-4000-8000-000000000010"       # the long reply that asks L17, in the old session
 FOLDED_UID = "a0000023-0000-4000-8000-000000000023"    # a wake-up's reply inside a folded run, in the old session
 LATE_UID = "b0000050-0000-4000-8000-000000000050"      # a reply in the new session
 OTHER_UID = "c0000002-0000-4000-8000-000000000002"     # a reply in the other conversation
+CLOSED_UID = "d0000002-0000-4000-8000-000000000002"    # a reply in the closed-pane conversation
 
 
 def iso(second):
@@ -92,6 +94,10 @@ def main(folder: Path) -> None:
     write_log(projects / f"{OLD}.jsonl", old, 399 - 30)
     write_log(projects / f"{NEW}.jsonl", new, 800)
     write_log(projects / f"{OTHER}.jsonl", other, 900)
+    closed = [user(uid("d", 1), "Work in a pane that has closed", 0, cwd), say("Hello from the closed pane.", 1, cwd),
+              user(CLOSED_UID, "what did you decide?", 10, cwd), say("Decision: R1= keep it. Said from the closed pane.", 11, cwd)]
+    write_log(projects / f"{CLOSED}.jsonl", closed, 0)
+    os.utime(projects / f"{CLOSED}.jsonl")  # written now: the page offers closed panes of the last two weeks
 
     # The code under test, copied (its out/ is its own), and the herdr that sees nothing.
     code = folder / "repo" / "setup" / "transcript-reader"
@@ -100,9 +106,11 @@ def main(folder: Path) -> None:
     subprocess.run(["rsync", "-a", "--exclude", "test", "--exclude", "__pycache__", f"{READER.parent / 'herdr-organizer'}/", f"{code.parent / 'herdr-organizer'}/"], check=True)  # the server requires it
     (code / "out").mkdir(exist_ok=True)
     (code / "out" / "sessions.txt").write_text(f"{NEW}\n{OTHER}\n", encoding="utf-8")
+    (code / "out" / "pane-labels.json").write_text(json.dumps({CLOSED: {"label": "gamma", "title": "Gamma work", "herdr": "work", "pane": "w1:p9", "status": "idle"}}), encoding="utf-8")
     (folder / "bin").mkdir(exist_ok=True)
     herdr = folder / "bin" / "herdr"
-    herdr.write_text("#!/bin/sh\necho '{\"sessions\": []}'\n", encoding="utf-8")
+    # Herdr, as the phone run's fake: one live pane, running the other conversation. The closed one was seen in a pane that is gone.
+    herdr.write_text(f"#!/bin/sh\nFAKE_HERDR_SESSION={OTHER} exec node {HERE / 'fake-herdr.js'} \"$@\"\n", encoding="utf-8")
     herdr.chmod(herdr.stat().st_mode | stat.S_IEXEC)
 
     env = {**os.environ, "HOME": str(home), "PMOS_READER_PROJECTS": str(home / ".claude" / "projects"), "PATH": f"{folder / 'bin'}{os.pathsep}{os.environ['PATH']}"}
@@ -111,7 +119,7 @@ def main(folder: Path) -> None:
         sys.stderr.write(done.stdout + done.stderr)
         raise SystemExit(done.returncode or 1)
     print(json.dumps({"home": str(home), "repo": str(folder / "repo"), "bin": str(folder / "bin"), "old": OLD, "new": NEW, "other": OTHER,
-                      "ask": ASK_UID, "folded": FOLDED_UID, "late": LATE_UID, "other_reply": OTHER_UID}))
+                      "ask": ASK_UID, "folded": FOLDED_UID, "late": LATE_UID, "other_reply": OTHER_UID, "closed": CLOSED, "closed_reply": CLOSED_UID}))
 
 
 if __name__ == "__main__":

@@ -69,6 +69,8 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     const [NEW, OLD, OTHER] = [lab.new.slice(0, 8), lab.old.slice(0, 8), lab.other.slice(0, 8)];
     const m = (uid) => uid.slice(0, 12);
     axi('emulate', '--viewport', '1000x800x1');
+    // Following Herdr's focus would move the page to the conversation Herdr shows; the checks are of addresses alone.
+    axi('open', page); await sleep(1500); ev(`localStorage.setItem('tr-follow', '0'); return true;`);
 
     // A fresh load: another page first, so nothing of the reader is kept.
     const fresh = async (hash) => { axi('open', 'about:blank'); axi('open', page + hash); await until(`return { ok: / · (Reader|Documents)$/.test(document.title) && document.getElementById('main').children.length > 0 };`, 'the page'); await sleep(700); };
@@ -107,7 +109,7 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     // ---- 5. #s= and &d= as they always were
     await fresh(`#s=${OTHER}`);
     s = ev(STATE);
-    check(s.hash === `#s=${OTHER}` && /33333333/.test(s.title) && s.linked === 0, 'fresh load: #s= opens the conversation as before', `${s.hash} ${s.title}`);
+    check(s.hash === `#s=${OTHER}` && /(33333333|alpha)/.test(s.title) && s.linked === 0, 'fresh load: #s= opens the conversation as before', `${s.hash} ${s.title}`);
     const doc = ev(`return Object.keys(JSON.parse(document.getElementById('payload').textContent).documents || {})[0] || null;`);
     check(Boolean(doc), 'the lab has a document to open', String(doc));
     await fresh(`#s=${OTHER}&d=${doc}`);
@@ -129,7 +131,7 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
 
     // ---- 7. plain #s= in place, both ways
     ev(`location.hash = '#s=${OTHER}'; return true;`);
-    s = await until(`const t = document.title; return { ok: /33333333/.test(t), title: t, hash: location.hash, marker: window.__marker || null, linked: document.querySelectorAll('.is-linked').length };`, 'the other conversation in place');
+    s = await until(`const t = document.title; return { ok: /(33333333|alpha)/.test(t), title: t, hash: location.hash, marker: window.__marker || null, linked: document.querySelectorAll('.is-linked').length };`, 'the other conversation in place');
     check(s.marker === 'kept' && s.hash === `#s=${OTHER}` && s.linked === 0, 'in place: #s= switches to another conversation without a load', `${s.title} ${s.hash}`);
     ev(`location.hash = '#s=${NEW}'; return true;`);
     s = await until(`const t = document.title; return { ok: /22222222/.test(t), title: t, marker: window.__marker || null, bottom: innerHeight + scrollY >= document.documentElement.scrollHeight - 80 };`, 'the chain in place');
@@ -160,7 +162,18 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     s = await until(`return { ok: document.getElementById('tab-doc').getAttribute('aria-selected') === 'true', hash: location.hash, marker: window.__marker || null };`, 'the Documents view in place');
     check(s.marker === 'kept' && s.hash === `#s=${OTHER}&d=${doc}`, 'in place: #s=&d= opens the Documents view without a load', s.hash);
 
-    // ---- 11. a phone-width screen
+    // ---- 11. a conversation whose pane has closed: opened again as a fresh load opens it, and in place
+    const CLOSED = lab.closed.slice(0, 8);
+    await fresh(`#s=${CLOSED}`);
+    s = await until(`return { ok: /(44444444|gamma)/.test(document.title), title: document.title, note: (document.getElementById('follow-note') || {}).textContent || '', hash: location.hash };`, 'the closed-pane conversation on a fresh load', 20000);
+    check(s.hash === `#s=${CLOSED}` && !/not on the reader/.test(s.note), 'fresh load: a closed pane\'s conversation is listed again and opened', `${s.title} ${s.note}`);
+    await fresh(`#s=${OTHER}`);
+    ev(`window.__marker = 'kept'; return true;`);
+    ev(`location.hash = '#s=${lab.closed.slice(0, 8)}&m=${m(lab.closed_reply)}'; return true;`);
+    s = await until(`const el = document.querySelector('.is-linked'); return { ok: Boolean(el) && /(44444444|gamma)/.test(document.title), linked: el && el.dataset.msg, marker: window.__marker || null, note: (document.getElementById('follow-note') || {}).textContent || '' };`, 'the closed-pane message in place', 20000);
+    check(s.marker === 'kept' && s.linked === `${lab.closed_reply}:reply`, 'in place: a closed pane\'s conversation is listed again, opened and its message outlined, without a load', `${s.linked} ${s.note}`);
+
+    // ---- 12. a phone-width screen
     axi('emulate', '--viewport', '390x844x3,mobile,touch');
     await fresh(`#s=${NEW}&m=${m(lab.ask)}`);
     s = ev(LINKED);
