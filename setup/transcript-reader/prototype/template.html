@@ -26,23 +26,29 @@ __HEAD_HOSTED__
     --open: #b4232d; --code: #f1f3f6; --dim: #657083;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --cue: rgb(0 0 0 / .2);
+    /* One width for the header, the conversation and the message bar: --col (the Documents view widens it to --col-doc). --rail is the room
+       a side menu will take beside that column (DESIGN.md, task tags): the column and the bar are centred in what is left of it. */
+    --col: 44rem; --col-doc: 76rem; --rail: 0px;
+    /* The longest a line of prose runs (about 75 characters); tables and code keep the whole column. */
+    --measure: 35rem;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
       --you: #8db4ff; --you-wash: #1d2a44; --mate: #c3a6ff; --mate-wash: #2a2340;
       --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e; --ok: #8fd3a8; --ok-wash: #1b3024;
-      --open: #ff8a8a; --code: #252a34; --dim: #8f97a8;
+      --open: #ff8a8a; --code: #252a34; --dim: #8f97a8; --cue: rgb(0 0 0 / .55);
     }
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.5 var(--sans); }
+  body { padding-right: var(--rail); }
   button { font: inherit; color: inherit; cursor: pointer; }
   a { color: var(--you); overflow-wrap: anywhere; }
   .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line); }
-  .bar-inner { max-width: 27rem; margin: 0 auto; padding: 8px 12px; }
-  .wide .bar-inner { max-width: 44rem; }
+  .bar-inner { max-width: var(--col); margin: 0 auto; padding: 8px 12px; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
   /* Folded to one line, the tabs and the answer sheet link are icons of one size: Conversation (on the other views), Documents
@@ -117,8 +123,7 @@ __HEAD_HOSTED__
   @media (hover: none) and (pointer: coarse) { .offline-acts .btn { min-height: 44px; padding: 4px 12px; font-size: 14px; } .asof a.offline-link { padding: 12px 4px; } }
   /* A sealed copy asks for its passphrase before anything else; the tabs wait until it opens. */
   .locked #bar-more, .locked .bar-toggle { display: none; }
-  main { max-width: 27rem; margin: 0 auto; padding: 10px 12px 80px; }
-  .wide main { max-width: 44rem; }
+  main { max-width: var(--col); margin: 0 auto; padding: 10px 12px 80px; }
 
   /* View A: conversation reader */
   .divider { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin: 14px 0; }
@@ -152,6 +157,8 @@ __HEAD_HOSTED__
   .reply.boxed .md .ask { background: none; box-shadow: none; }
   .reply.boxed .md tr.ask td { background: none; }
   .asks code, .input code { font: 13px var(--mono); background: color-mix(in srgb, var(--code) 70%, transparent); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  /* Prose stops at about 75 characters a line however wide its box is; tables and code boxes keep the whole box. */
+  .md > :is(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6) { max-width: var(--measure); }
   .md p { margin: 0 0 .55em; }
   .md ul, .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
   .md li { margin: 0 0 .25em; }
@@ -177,6 +184,16 @@ __HEAD_HOSTED__
   .copy::before { content: attr(data-label); }
   .copy:hover { color: var(--you); border-color: var(--you); }
   .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+  .table-cue { position: relative; margin: 0 0 .7em; }
+  .table-cue .table-wrap { margin: 0; }
+  /* The shadow on an edge with more behind it, and a round arrow on it; neither takes a tap. */
+  .table-cue .cue { position: absolute; top: 1px; bottom: 1px; width: 30px; display: none; pointer-events: none; }
+  .table-cue .cue.l { left: 1px; border-radius: 7px 0 0 7px; background: linear-gradient(to right, var(--cue), transparent); }
+  .table-cue .cue.r { right: 1px; border-radius: 0 7px 7px 0; background: linear-gradient(to left, var(--cue), transparent); }
+  .table-cue .cue::after { position: absolute; top: 6px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--paper); border: 1px solid var(--line); color: var(--muted); font-size: 17px; line-height: 1; padding-bottom: 2px; }
+  .table-cue .cue.l::after { content: "\2039"; left: 3px; }
+  .table-cue .cue.r::after { content: "\203a"; right: 3px; }
+  .table-cue.more-l .cue.l, .table-cue.more-r .cue.r { display: block; }
   .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
   .md th, .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
   .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
@@ -210,7 +227,7 @@ __HEAD_HOSTED__
   .imgframe.nozoom img { cursor: default; }
 
   /* Documents: a file a message names, beside its contents list */
-  .docmode .bar-inner, .docmode main { max-width: 76rem; }
+  .docmode { --col: var(--col-doc); }
   .docview { display: block; }
   .toc { position: sticky; top: var(--bar-h, 120px); z-index: 3; background: var(--wash); margin: 0 0 10px; }
   .toc summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
@@ -220,6 +237,13 @@ __HEAD_HOSTED__
   .toc a[aria-current="true"] { color: var(--you); border-left-color: var(--you); background: var(--you-wash); font-weight: 600; }
   .toc .toc-l1 { padding-left: 22px; }
   .toc .toc-l2 { padding-left: 34px; font-size: 12px; }
+  /* Where the window has room beside a 75-character column, the contents list takes it (open, in the column's right), not a line above the file. */
+  @media (min-width: 1180px) {
+    .docview { display: grid; grid-template-columns: minmax(0, calc(var(--measure) + 36px)) minmax(12rem, 16rem); gap: 16px; align-items: start; }
+    .docview > .doc-body { order: 1; }
+    .docview > .toc { order: 2; top: calc(var(--bar-h, 120px) + 10px); margin: 0; }
+    .docview > .toc nav { max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 90px); }
+  }
   .doc-body { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; overflow-wrap: anywhere; }
   #main > [id^="ex-"] { scroll-margin-top: calc(var(--bar-h, 120px) + 8px); }
   .doc-md h1, .doc-md h2, .doc-md h3, .doc-md h4, .doc-md h5, .doc-md h6 { scroll-margin-top: calc(var(--bar-h, 120px) + 12px); line-height: 1.3; margin: 1.1em 0 .45em; }
@@ -405,9 +429,8 @@ __HEAD_HOSTED__
   .kept-note .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
   .float-comment-key { margin-left: 7px; font-weight: 400; font-size: 11px; opacity: .8; }
   .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
-  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
-  .dock-inner { max-width: 27rem; margin: 0 auto; padding: 6px 12px 8px; }
-  .docmode .dock-inner { max-width: 76rem; }
+  .dock { position: fixed; left: 0; right: var(--rail); bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
+  .dock-inner { max-width: var(--col); margin: 0 auto; padding: 6px 12px 8px; }
   .dock-chip { border: 1px solid color-mix(in srgb, var(--you) 35%, transparent); background: var(--you-wash); border-radius: 8px; padding: 5px 8px; margin-bottom: 5px; }
   .dock-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--muted); }
   .dock-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -463,7 +486,7 @@ __HEAD_HOSTED__
   .input.pending .who > button:disabled { opacity: .5; }
   .dock textarea:read-only { opacity: .6; }
   .dock-row button.undo { background: var(--paper); color: var(--you); min-width: 5.2em; font-variant-numeric: tabular-nums; }
-  .new-reply { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .new-reply { position: fixed; left: calc((100% - var(--rail)) / 2); transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
 
   /* Search: the button in the title row, the row under it and the list of matches. Opening it folds the tabs and controls,
      as the folded header already does, so on a phone the row and the list have the screen. */
@@ -498,6 +521,42 @@ __HEAD_HOSTED__
   /* Where the words are on the page. The page's own text is never rewrapped: these are ranges over it. */
   :root { --hit: #ffe066; }
   @media (prefers-color-scheme: dark) { :root { --hit: #6b5a12; } }
+  /* The header, folded: the jumps (the pills of the open controls) and the icons for the other views sit in it. */
+  .jump { display: none; flex: none; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; height: 28px; padding: 0 8px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .jump.ask { color: var(--ask); }
+  .bar.collapsed .jump:not([hidden]) { display: block; }
+  .jump:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  /* On a phone's width the folded header is two lines: the picker, the live badge, search and the way back to the controls above; the jumps,
+     the other views, the answer sheet and Follow below, each with room for a thumb. The sync line stays out of it unless it has a warning. */
+  @media (max-width: 640px) {
+    .bar.collapsed .title { flex-wrap: wrap; gap: 0 6px; }
+    .bar.collapsed .title > :is(.crumb, .crumb-session, .crumb-doc) { order: 1; flex: 1 1 0; }
+    .bar.collapsed .title > .crumb-star { order: 2; }
+    .bar.collapsed .title > .live { order: 3; }
+    .bar.collapsed .title > .search-toggle { order: 4; }
+    .bar.collapsed .title > .bar-toggle { order: 5; }
+    .bar.collapsed .title::after { content: ""; order: 6; flex: 0 0 100%; height: 0; }
+    .bar.collapsed .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { order: 7; margin-top: 6px; }
+    .bar.collapsed .asof:not(.stale) { display: none; }
+    .bar.searching .title::after, .bar.searching .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { display: none !important; }
+  }
+  /* A fingertip is about 44 px: every control in the header (the title row, the tabs, the pills, the pickers, the search and the
+     lists in the controls) is that tall where the screen is touched, and the icon buttons are that wide. */
+  @media (pointer: coarse) {
+    .bar :is(.view-btn, .bar-toggle, .search-toggle, .star-btn, .crumb-star), .bar.collapsed .to-sheet { width: 44px; height: 44px; margin-left: 0; }
+    .bar.collapsed .view-btn::after, .bar.collapsed .to-sheet::after { content: none; }
+    .bar :is(.follow-quick, .jump) { height: 44px; min-width: 44px; padding: 0 6px; }
+    .bar .crumb { min-height: 44px; }
+    .bar :is(.crumb-session, .crumb-doc, .controls select) { height: 44px; }
+    .bar .tab, .bar .btn { min-height: 44px; }
+    .bar .to-sheet { display: flex; align-items: center; min-height: 44px; padding: 0 6px; }
+    .bar .asof { align-items: center; margin-top: 6px; }
+    .bar .asof button.sync { min-height: 44px; padding: 1px 14px; }
+    .bar .asof a.offline-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; }
+    .search-row input { height: 44px; }
+    .search-row button { height: 44px; min-width: 44px; }
+    .pin-item, .pin-x { min-height: 44px; }
+  }
   ::highlight(find-hit) { background-color: #ffe066; color: #1d2433; }
   ::highlight(find-current) { background-color: #ff9632; color: #1d2433; }
   @media (prefers-color-scheme: dark) { ::highlight(find-hit) { background-color: #6b5a12; color: #ffffff; } ::highlight(find-current) { background-color: #c2641a; color: #ffffff; } }
@@ -506,7 +565,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -599,7 +658,13 @@ __HEAD_HOSTED__
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
   const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here", docPage: "list" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
-  try { state.barOpen = localStorage.getItem("tr-bar") !== "0"; } catch (e) { /* default: open */ }
+  // A phone's width. The header starts folded there, on every view (an HTML file gets the whole screen under one line of it), so the
+  // conversation has the screen; the controls are one tap away. What the owner chose in this browser wins over that: open or folded
+  // (barChoice), until the browser forgets it. With no choice, the header follows the width, a turned phone included.
+  const narrow = matchMedia("(max-width: 440px)");
+  let barChoice = null;
+  try { const kept = localStorage.getItem("tr-bar"); barChoice = kept === "1" ? true : kept === "0" ? false : null; } catch (e) { /* no choice kept */ }
+  state.barOpen = barChoice === null ? !narrow.matches : barChoice;
   // How a leader's Documents view groups its files: "task" (the default) or "folder". Kept in this browser, for every leader alike.
   let docGroup = "task";
   try { docGroup = docfiles.pref(localStorage.getItem("tr-docgroup")); } catch (e) { /* default: by task */ }
@@ -623,8 +688,22 @@ __HEAD_HOSTED__
     const drawn = markdownView.render(text, { ask: askLines, reminder: reminderLines, doc });
     const box = $("div", "md" + (doc ? " doc-md" : ""));
     box.innerHTML = drawn.html;
+    box.querySelectorAll(".table-wrap").forEach(tableCue);
     box.headings = drawn.headings.map(h => ({ level: h.level, text: h.text, el: box.querySelector("#" + h.id) }));
     return box;
+  }
+  // A table wider than its box scrolls sideways inside it; a shadow on the edge that has more behind it (and an arrow) says so, and goes
+  // when the edge is reached. The shadow sits on a box around the scrolling one so that it stays put while the table moves.
+  function tableCue(wrap) {
+    const cue = $("div", "table-cue");
+    wrap.replaceWith(cue); cue.append(wrap, $("span", "cue l"), $("span", "cue r"));
+    const paint = () => {
+      const room = wrap.scrollWidth - wrap.clientWidth;
+      cue.classList.toggle("more-r", room > 1 && wrap.scrollLeft < room - 1);
+      cue.classList.toggle("more-l", room > 1 && wrap.scrollLeft > 1);
+    };
+    wrap.addEventListener("scroll", paint, { passive: true });
+    if (window.ResizeObserver) new ResizeObserver(paint).observe(wrap); else requestAnimationFrame(paint);
   }
   // change(isClipped), when given, is told each time the text is shown in full or clipped again.
   function clipped(node, words, limitWords, label, key, change) {
@@ -2559,7 +2638,6 @@ __HEAD_HOSTED__
   // Enter sends, Shift+Enter starts a new line and Cmd+Enter or Ctrl+Enter adds to the batch.
   // On a touch screen the return key starts a new line and the buttons add and send.
   const touch = matchMedia("(pointer: coarse)");
-  const narrow = matchMedia("(max-width: 440px)");
   dock("text").addEventListener("keydown", e => {
     // In the Undo window the box is locked: Esc takes the message back, and Enter must not send it twice or skip the wait.
     if (heldHere()) { if (e.key === "Escape") { e.preventDefault(); undoHold(); } else if (e.key === "Enter") e.preventDefault(); return; }
@@ -2671,6 +2749,7 @@ __HEAD_HOSTED__
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   const wideDoc = () => matchMedia("(min-width: 820px)").matches;
+  const sideToc = matchMedia("(min-width: 1180px)");  // the width where a document's contents list sits beside it (the CSS has the same number)
   // Whether the Documents view shows the file: always where the list fits beside it, and on a phone once a file is opened (the tab brings the
   // list first). A session with one file has no list worth a page, so its file shows at once.
   const onFilePage = session => wideDoc() || state.docPage === "file" || listedDocuments(session).length < 2;
@@ -3110,13 +3189,13 @@ __HEAD_HOSTED__
       a.addEventListener("click", e => {
         e.preventDefault();
         h.el.scrollIntoView({ block: "start" });
-        toc.open = false;
+        toc.open = sideToc.matches;
       });
       h.toc = a; list.append(a);
     });
     if (!md.headings.length) list.append($("div", "notes", "This file has no headings."));
     toc.append(list);
-    toc.open = false;  // folded above the file, on a wide screen too: the list of files has the column
+    toc.open = sideToc.matches;  // folded above the file; open beside it where the window is wide enough for the column and the list (CSS, 1180px)
     view.append(toc, body);
     pane.append(view);
     docSpy.headings = md.headings;
@@ -3149,6 +3228,7 @@ __HEAD_HOSTED__
   window.addEventListener("scroll", () => { if (!docSpy.frame) docSpy.frame = requestAnimationFrame(spyDoc); }, { passive: true });
   // Crossing the width where the list sits beside the file (a window resized, a phone turned) draws the view for the new layout.
   matchMedia("(min-width: 820px)").addEventListener("change", () => { if (state.view === "doc") { setAddress(); render(); } });
+  sideToc.addEventListener("change", () => { if (state.view === "doc") render(); });
 
   // ---------------------------------------------------------------- live: refresh and follow Herdr
   function renderLive() {
@@ -3538,7 +3618,6 @@ __HEAD_HOSTED__
     if (!fleetOn() && state.view === "fleet") state.view = "reader";
     reveals.clear();
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
-    document.body.classList.toggle("wide", state.view === "fleet");
     document.body.classList.toggle("docmode", state.view === "doc");
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
     document.getElementById("tab-doc").textContent = docsLabel(data.sessions[state.session]);
@@ -3594,6 +3673,7 @@ __HEAD_HOSTED__
     crumb.hidden = docPick;
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
     paintViewIcons(session);
+    for (const id of ["jump-prev", "jump-next", "jump-ask"]) document.getElementById(id).hidden = state.view !== "reader" || !session || !session.exchanges.length;
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
   }
   // The icons that stand for the tabs while the header is folded: Documents (lit on that view) and, on any other view, Conversation. Only
@@ -3608,14 +3688,23 @@ __HEAD_HOSTED__
   }
   // The search row and its list change the header's height without a call to paintBar.
   if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px")).observe(document.getElementById("bar"));
-  function setBarOpen(open) {
+  // The owner's own choice (the chevron, the crumb) is kept; the width's default is not.
+  function setBarOpen(open, chosen = true) {
     const anchor = readingAnchor();
     state.barOpen = open;
-    try { localStorage.setItem("tr-bar", open ? "1" : "0"); } catch (e) { /* not kept */ }
+    if (chosen) {
+      barChoice = open;
+      try { localStorage.setItem("tr-bar", open ? "1" : "0"); } catch (e) { /* not kept */ }
+    }
     paintBar(); restoreAnchor(anchor);
   }
+  narrow.addEventListener("change", () => { if (barChoice === null) setBarOpen(!narrow.matches, false); });
   document.getElementById("bar-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(!state.barOpen); });
   document.getElementById("crumb").addEventListener("click", () => { if (look.open) closeSearch(); else setBarOpen(true); });
+  // The three jumps in the folded header are the pills of the open controls: the same function, the same keys (j, k, n).
+  document.getElementById("jump-prev").addEventListener("click", () => jump("captain", -1));
+  document.getElementById("jump-next").addEventListener("click", () => jump("captain", 1));
+  document.getElementById("jump-ask").addEventListener("click", () => jump("needs", 1));
   document.getElementById("crumb-session").addEventListener("change", e => pickSession(e.target.value));
   document.getElementById("crumb-doc").addEventListener("change", e => chooseDocument(e.target.value));
   // The tabs and the icons that stand for them in the folded header go to a view by the same two functions.
