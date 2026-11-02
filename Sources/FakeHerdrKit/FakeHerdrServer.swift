@@ -22,6 +22,8 @@ public final class FakeHerdrServer: @unchecked Sendable {
         public var workingFraction = 0.15
         public var frameInterval = 0.032
         public var serverProtocol = 22
+        /// Lines of scrollback each pane starts with (what `pane.read` with source `recent` and format `text` returns above the screen).
+        public var historyLines = 300
         public init(directory: String, session: String) { self.directory = directory; self.session = session }
     }
 
@@ -29,6 +31,8 @@ public final class FakeHerdrServer: @unchecked Sendable {
         let id: String, workspace: String, tab: String, label: String
         var state: AgentState
         var lines: [String]
+        /// Lines that scrolled off the top of the screen, oldest first (real Herdr keeps these; its `ansi` read does not return them).
+        var history: [String] = []
         var revision = 0
         var sent: [String] = []
         init(id: String, workspace: String, tab: String, label: String, state: AgentState, rows: Int) {
@@ -63,6 +67,7 @@ public final class FakeHerdrServer: @unchecked Sendable {
             let state: AgentState = i % 7 == 3 ? .blocked : (Double(i % 20) / 20.0 < config.workingFraction ? .working : (i % 5 == 0 ? .done : .idle))
             let p = Pane(id: id, workspace: ws, tab: "\(ws):t\(i % 4 + 1)", label: "agent \(i + 1)", state: state, rows: config.rows)
             Self.paint(p, cols: config.cols)
+            p.history = (0..<config.historyLines).map { "\u{1b}[2m#\($0 + 1)\u{1b}[0m earlier output of \(p.label): step \($0 + 1) of the change" }
             panes.append(p)
         }
     }
@@ -136,7 +141,8 @@ public final class FakeHerdrServer: @unchecked Sendable {
     }
 
     static func appendLine(_ p: Pane, _ text: String, cols: Int) {
-        p.lines.removeFirst()
+        p.history.append(p.lines.removeFirst())
+        if p.history.count > 5000 { p.history.removeFirst(p.history.count - 5000) }
         p.lines.append(text)
         p.revision += 1
     }
@@ -203,10 +209,22 @@ public final class FakeHerdrServer: @unchecked Sendable {
                 return
             case "pane.read":
                 guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }
-                lock.lock(); var text = p.lines.joined(separator: "\n"); let rev = p.revision; lock.unlock()
+                // Shaped like real Herdr 0.9.5 (read-only probe of a live session): `visible` is the screen; `recent` with
+                // format `text` is the scrollback above the screen plus the screen (`lines` keeps the newest N); `recent`
+                // with format `ansi` is only the screen.
+                let source = (params["source"] as? String) ?? "visible"
                 let ansi = (params["format"] as? String) == "ansi"
+                lock.lock()
+                var rows = p.lines
+                if source.hasPrefix("recent") && !ansi {
+                    rows = p.history + p.lines
+                    if let n = params["lines"] as? Int, n > 0 { rows = Array(rows.suffix(n)) }
+                }
+                let rev = p.revision
+                lock.unlock()
+                var text = rows.joined(separator: "\n")
                 if !ansi { text = text.replacingOccurrences(of: "\u{1b}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression) }
-                reply(["result": ["type": "pane_read", "read": ["pane_id": p.id, "source": "visible", "format": ansi ? "ansi" : "text", "text": text, "revision": rev, "truncated": false]]])
+                reply(["result": ["type": "pane_read", "read": ["pane_id": p.id, "source": source, "format": ansi ? "ansi" : "text", "text": text, "revision": rev, "truncated": false]]])
             case "pane.send_input":
                 guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }
                 let text = params["text"] as? String ?? ""
