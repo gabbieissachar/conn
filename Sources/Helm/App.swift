@@ -107,6 +107,8 @@ struct HelmCommands: Commands {
             Button("Next Agent") { app.cycle(1) }.keyboardShortcut("]")
             Button("Previous Agent") { app.cycle(-1) }.keyboardShortcut("[")
             Button("Next Agent Waiting on You") { app.jumpToWaiting() }.keyboardShortcut("j")
+            Button(app.primaryHistory == nil ? "Scroll Back (Show History)" : "Back to Live Pane") { app.toggleHistory(.primary) }
+                .keyboardShortcut("y").disabled(app.mode != .agent || app.selectedAgent == nil || app.privacy)
             Divider()
             ForEach(0..<9, id: \.self) { i in
                 Button("Agent \(i + 1)") { app.selectNth(i) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)

@@ -28,6 +28,13 @@ final class GridTerminalNSView: NSView {
     /// First pane row that is drawn. A pane taller than the view is shown from the bottom (where the live prompt is).
     private(set) var topRow = 0
 
+    /// A deliberate upward scroll asks for the pane's history (the pane itself has nothing to scroll).
+    var onScrollBack: (() -> Void)?
+    private var scrollTrigger = ScrollBackTrigger()
+    override func scrollWheel(with event: NSEvent) {
+        if scrollTrigger.add(deltaY: Double(event.scrollingDeltaY), at: event.timestamp) { onScrollBack?() }
+    }
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { true }

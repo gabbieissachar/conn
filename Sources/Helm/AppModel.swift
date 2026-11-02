@@ -5,12 +5,22 @@ import Darwin
 import HelmCore
 import HelmTerminal
 
-/// What the "Recent output" sheet shows: a pane's recent history as plain text, because a stream pane has no scrollback.
-struct RecentOutput: Identifiable {
+/// Which of the two pane columns: the selected agent's, or the comparison pane's.
+enum PaneSlot { case primary, secondary }
+
+/// A pane's history shown in place of its live view: the text `pane.read` (source recent) returns, as a snapshot.
+/// A live stream pane has no scrollback, because Herdr's frames never scroll (see ScrollbackTests), so this is how earlier
+/// output is reached.
+@MainActor
+final class PaneHistory: ObservableObject, Identifiable {
+    enum Phase: Equatable { case loading, ready(String), failed(String) }
     let id = UUID()
-    var agentName: String
-    var text: String?
-    var error: String?
+    let paneID: String
+    let agentName: String
+    @Published var phase: Phase = .loading
+    @Published var loadedAt: Date?
+    init(paneID: String, agentName: String) { self.paneID = paneID; self.agentName = agentName }
+    var text: String? { if case .ready(let t) = phase { return t } else { return nil } }
 }
 
 struct HeldMessage: Equatable {
@@ -45,12 +55,14 @@ final class AppModel: ObservableObject {
     @Published var webTab: WebKind = .reader
     @Published var readerFollows = true
     /// Privacy mode hides content for screen sharing; anything that shows pane history closes with it.
-    @Published var privacy = false { didSet { if privacy { recent = nil } } }
+    @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
     @Published var compose = ""
     @Published var held: HeldMessage?
-    @Published var recent: RecentOutput?
+    /// The history view that replaces a pane's live view while it is on; the stream keeps running underneath.
+    @Published var primaryHistory: PaneHistory?
+    @Published var secondaryHistory: PaneHistory?
     /// nil follows the system. Applied to the whole app: SwiftUI's preferredColorScheme closes the window when it
     /// changes at runtime, NSApp.appearance does not.
     @Published var appearance: ColorScheme? = nil {
@@ -228,6 +240,9 @@ final class AppModel: ObservableObject {
         let active = windowVisible && attentive && mode == .agent
         primary.configure(pane: active ? selectedPaneID : nil, size: snapshot.paneSizes[selectedPaneID ?? ""])
         secondary.configure(pane: active ? comparePaneID : nil, size: snapshot.paneSizes[comparePaneID ?? ""])
+        // A history belongs to the pane it was opened for: another agent in the column shows live again.
+        if let h = primaryHistory, h.paneID != selectedPaneID { primaryHistory = nil }
+        if let h = secondaryHistory, h.paneID != comparePaneID { secondaryHistory = nil }
     }
 
     func select(_ paneID: String, pin: Bool = true) {
@@ -280,19 +295,47 @@ final class AppModel: ObservableObject {
 
     func reloadWeb() { web.allBoxes.forEach { $0.reload() } }
 
-    /// Opens the history of the selected pane (`pane.read`, source recent, plain text, last 3000 lines). Read-only.
-    func showRecentOutput() {
-        guard !privacy, let a = selectedAgent else { return }
-        recent = RecentOutput(agentName: a.name, text: nil, error: nil)
+    // MARK: history view (the toggle that stands in for scrollback)
+
+    func history(for slot: PaneSlot) -> PaneHistory? { slot == .primary ? primaryHistory : secondaryHistory }
+
+    private func paneID(for slot: PaneSlot) -> String? { slot == .primary ? selectedPaneID : comparePaneID }
+
+    /// Swap the live pane for its history, or back. The stream keeps running underneath, so going back is instant.
+    func toggleHistory(_ slot: PaneSlot = .primary) {
+        if history(for: slot) != nil { closeHistory(slot) } else { openHistory(slot) }
+    }
+
+    func openHistory(_ slot: PaneSlot = .primary) {
+        guard !privacy, mode == .agent, history(for: slot) == nil, let id = paneID(for: slot), let a = snapshot.agent(id) else { return }
+        let h = PaneHistory(paneID: id, agentName: a.name)
+        if slot == .primary { primaryHistory = h } else { secondaryHistory = h }
+        loadHistory(h)
+    }
+
+    func closeHistory(_ slot: PaneSlot = .primary) {
+        if slot == .primary { primaryHistory = nil } else { secondaryHistory = nil }
+        // Back to live: SwiftTerm draws from a display-link tick, so ask for the draw now instead of waiting for one.
+        (( slot == .primary ? primary : secondary).engine as? SwiftTermEngine)?.view.nudgeDisplay()
+    }
+
+    func refreshHistory(_ slot: PaneSlot = .primary) {
+        guard let h = history(for: slot) else { return }
+        h.phase = .loading
+        loadHistory(h)
+    }
+
+    /// `pane.read` with source recent, plain text, the newest 3000 lines (scrollback plus the screen). Read-only.
+    private func loadHistory(_ h: PaneHistory) {
         let c = HerdrClient(endpoint: endpoint)
-        let id = recent!.id
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let r: Result<String, Error> = Result { try c.readPane(a.id, source: .recent, ansi: false, lines: 3000) }
+        let pane = h.paneID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak h] in
+            let r: Result<String, Error> = Result { try c.readPane(pane, source: .recent, ansi: false, lines: 3000) }
             DispatchQueue.main.async {
-                guard let self = self, !self.privacy, self.recent?.id == id else { return }
+                guard let self = self, let h = h, !self.privacy, self.primaryHistory === h || self.secondaryHistory === h else { return }
                 switch r {
-                case .success(let t): self.recent?.text = t
-                case .failure(let e): self.recent?.error = "\(e)"
+                case .success(let t): h.phase = .ready(t); h.loadedAt = Date()
+                case .failure(let e): h.phase = .failed("\(e)")
                 }
             }
         }

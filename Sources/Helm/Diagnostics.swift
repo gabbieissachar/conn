@@ -148,13 +148,39 @@ enum UICheck {
         model.toggleCompare(); await wait(0.5)
         report("closing compare stops the second stream", model.comparePaneID == nil && model.secondary.paneID == nil)
 
-        model.privacy = true; model.showRecentOutput(); await wait(0.3)
-        report("privacy mode refuses the history sheet", model.recent == nil)
+        model.privacy = true; model.openHistory(); await wait(0.3)
+        report("privacy mode refuses the history view", model.primaryHistory == nil)
         model.privacy = false
-        model.showRecentOutput(); await wait(2)
-        report("recent output loads as text", model.recent?.text != nil || model.recent?.error != nil, model.recent?.error ?? "chars=\(model.recent?.text?.count ?? 0)")
+        // A working agent, so "the stream keeps running" can be seen as frames still arriving under the history.
+        let working = model.snapshot.agents.first { $0.state == .working }
+        if let w = working { model.select(w.id); await wait(1.5) }
+        let framesBefore = model.primary.stats.frames
+        model.openHistory(); await wait(0.1)
+        report("history swaps in at once (loading)", model.primaryHistory != nil)
+        await wait(2)
+        let h = model.primaryHistory
+        report("history loads as text", h?.text != nil, h.map { "\($0.phase == .loading ? "still loading" : ($0.text.map { "lines=\($0.split(separator: "\n", omittingEmptySubsequences: false).count)" } ?? "failed"))" } ?? "no history")
+        if working != nil {
+            report("the live stream keeps delivering frames under the history", model.primary.state == .live && model.primary.stats.frames > framesBefore, "frames \(framesBefore) -> \(model.primary.stats.frames)")
+        } else {
+            report("the live stream keeps running under the history (no working agent to see frames from)", model.primary.state == .live && model.primary.processID != nil, "state=\(model.primary.state)")
+        }
+        model.refreshHistory(); await wait(1.5)
+        report("refresh reloads the history", model.primaryHistory?.text != nil)
+        let t0 = monotonicNanos()
+        model.toggleHistory(); await wait(0.4)
+        report("back to live removes the history view", model.primaryHistory == nil)
+        if model.primary.engine is SwiftTermEngine {
+            let draw = DrawLog.shared.firstDraw(after: t0)
+            report("the live pane is redrawn at once on the way back", draw != nil, draw.map { "\(String(format: "%.0f", Double($0 - t0) / 1e6)) ms" } ?? "no draw")
+        }
+        model.openHistory(); await wait(0.3)
+        model.cycle(1); await wait(0.4)
+        report("choosing another agent shows its live pane, not the old history", model.primaryHistory == nil)
+        model.cycle(-1); await wait(0.3)
+        model.openHistory(); await wait(0.3)
         model.privacy = true; await wait(0.2)
-        report("turning privacy on closes the history sheet", model.recent == nil)
+        report("turning privacy on closes the history view", model.primaryHistory == nil)
         model.privacy = false
 
         model.webTab = .organizer; await wait(2.5)
@@ -179,8 +205,9 @@ enum UICheck {
         var offenders: [String] = []
         func audit(_ i: NSMenuItem) {
             guard !i.keyEquivalent.isEmpty else { return }
-            chords += 1
             let f = i.keyEquivalentModifierMask
+            if f.contains(.function) { return }        // the system's own Fn items (Start Dictation, Emoji & Symbols)
+            chords += 1
             var m: KeyModifiers = []
             if f.contains(.command) { m.insert(.command) }
             if f.contains(.control) { m.insert(.control) }

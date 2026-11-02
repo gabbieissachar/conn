@@ -10,8 +10,23 @@ final class PaneHostView: NSView {
     private(set) var terminal: HelmTerminalView?
     private let pad: CGSize = CGSize(width: 8, height: 6)
     private var refitting = false
+    /// A deliberate upward scroll over the pane asks for its history (the pane itself has nothing to scroll).
+    var onScrollBack: (() -> Void)?
+    private var scrollTrigger = ScrollBackTrigger()
 
     override var isFlipped: Bool { false }
+
+    /// SwiftTerm's own wheel handling cannot be overridden from outside its module and has nothing to scroll here, so the
+    /// host takes scroll events for itself (mouse clicks and selection still reach the terminal).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        if hit != nil, NSApp.currentEvent?.type == .scrollWheel { return self }
+        return hit
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if scrollTrigger.add(deltaY: Double(event.scrollingDeltaY), at: event.timestamp) { onScrollBack?() }
+    }
 
     func attach(_ t: HelmTerminalView) {
         guard terminal !== t || t.superview !== self else { return }
@@ -43,16 +58,19 @@ final class PaneHostView: NSView {
 struct SwiftTermPaneRep: NSViewRepresentable {
     let engine: SwiftTermEngine
     let theme: TerminalTheme
+    var onScrollBack: (() -> Void)?
 
     func makeNSView(context: Context) -> PaneHostView {
         let v = PaneHostView()
         engine.view.apply(theme: theme)
+        v.onScrollBack = onScrollBack
         v.attach(engine.view)
         return v
     }
 
     func updateNSView(_ v: PaneHostView, context: Context) {
         if engine.view.theme.bg != theme.bg { engine.view.apply(theme: theme) }
+        v.onScrollBack = onScrollBack
         v.attach(engine.view)
     }
 }
@@ -62,12 +80,14 @@ struct GridPaneRep: NSViewRepresentable {
     let engine: GridEngine
     let theme: TerminalTheme
     var redact = false
+    var onScrollBack: (() -> Void)?
 
     func makeNSView(context: Context) -> GridTerminalNSView {
         let v = GridTerminalNSView(frame: .zero)
         v.screen = engine.screen
         v.theme = theme
         v.redact = redact
+        v.onScrollBack = onScrollBack
         session.onApplied = { [weak v] in v?.screenChanged() }
         return v
     }
@@ -75,6 +95,7 @@ struct GridPaneRep: NSViewRepresentable {
     func updateNSView(_ v: GridTerminalNSView, context: Context) {
         v.theme = theme
         v.redact = redact
+        v.onScrollBack = onScrollBack
         v.screen = engine.screen
         session.onApplied = { [weak v] in v?.screenChanged() }
     }
@@ -135,6 +156,7 @@ struct PaneColumn: View {
     @ObservedObject var session: PaneSession
     let agent: Agent?
     let isCompare: Bool
+    var slot: PaneSlot { isCompare ? .secondary : .primary }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -160,9 +182,12 @@ struct PaneColumn: View {
                     AccessBadge(writable: app.writesEnabled, compact: true)
                 }
                 .layoutPriority(1)
-                if !isCompare, agent != nil, !app.privacy {
-                    Button { app.showRecentOutput() } label: { Image(systemName: "text.alignleft") }
-                        .buttonStyle(.borderless).help("Recent output of this agent as text (a stream pane has no scrollback)")
+                if agent != nil, !app.privacy {
+                    let showing = app.history(for: slot) != nil
+                    Button { app.toggleHistory(slot) } label: { Image(systemName: showing ? "dot.radiowaves.left.and.right" : "clock.arrow.circlepath") }
+                        .buttonStyle(.borderless).foregroundStyle(showing ? Color.accentColor : Color.secondary)
+                        .help(showing ? "Back to the live pane (⌘Y or Esc)"
+                                      : "Scroll back: swap the live pane for its history (⌘Y). A live pane cannot scroll; the stream keeps running underneath.")
                 }
                 if isCompare {
                     Button { app.toggleCompare() } label: { Image(systemName: "xmark.circle.fill") }
@@ -181,8 +206,16 @@ struct PaneColumn: View {
                 .background(Color.yellow.opacity(0.12))
             }
             ZStack {
+                // The live view keeps running and drawing while the history is on; it is only covered, so "Back to live"
+                // shows a current screen at once.
+                let history = app.privacy ? nil : app.history(for: slot)
                 terminal
-                    .opacity(app.store.link == .live || app.store.link == .fixture ? 1 : 0.45)
+                    .opacity(history != nil ? 0 : (app.store.link == .live || app.store.link == .fixture ? 1 : 0.45))
+                    .allowsHitTesting(history == nil)
+                if let h = history {
+                    PaneHistoryView(history: h, theme: app.terminalTheme, fontPoints: 12,
+                                    refresh: { app.refreshHistory(slot) }, live: { app.closeHistory(slot) })
+                }
                 if app.privacy {
                     Rectangle().fill(app.terminalTheme.bg.swiftUI)
                     VStack(spacing: 6) {
@@ -198,9 +231,9 @@ struct PaneColumn: View {
 
     @ViewBuilder private var terminal: some View {
         if let e = session.engine as? SwiftTermEngine {
-            SwiftTermPaneRep(engine: e, theme: app.terminalTheme)
+            SwiftTermPaneRep(engine: e, theme: app.terminalTheme, onScrollBack: { app.openHistory(slot) })
         } else if let g = session.engine as? GridEngine {
-            GridPaneRep(session: session, engine: g, theme: app.terminalTheme, redact: app.privacy)
+            GridPaneRep(session: session, engine: g, theme: app.terminalTheme, redact: app.privacy, onScrollBack: { app.openHistory(slot) })
         }
     }
 
@@ -308,51 +341,4 @@ struct FallbackRep: NSViewRepresentable {
         let v = controller.view
         if v.superview !== host { v.removeFromSuperview(); v.frame = host.bounds; v.autoresizingMask = [.width, .height]; host.addSubview(v) }
     }
-}
-
-
-struct RecentOutputSheet: View {
-    let item: RecentOutput
-    let close: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Recent output · \(item.agentName)").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Button("Copy") {
-                    if let t = item.text { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(t, forType: .string) }
-                }.disabled(item.text == nil)
-                Button("Done", action: close).keyboardShortcut(.cancelAction)
-            }
-            .padding(12)
-            Divider()
-            if let t = item.text {
-                ReadOnlyText(text: t)
-            } else if let e = item.error {
-                Text(e).foregroundStyle(.secondary).padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .frame(minWidth: 720, minHeight: 520)
-    }
-}
-
-/// Read-only text with the system find bar, scrolled to the end (the newest output).
-struct ReadOnlyText: NSViewRepresentable {
-    let text: String
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let tv = scroll.documentView as! NSTextView
-        tv.isEditable = false
-        tv.isRichText = false
-        tv.usesFindBar = true
-        tv.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        tv.textContainerInset = NSSize(width: 10, height: 8)
-        tv.string = text
-        DispatchQueue.main.async { tv.scrollToEndOfDocument(nil) }
-        return scroll
-    }
-    func updateNSView(_ v: NSScrollView, context: Context) {}
 }
