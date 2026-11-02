@@ -34,7 +34,7 @@ The icon concepts and the selected flat icon are reproducible without Xcode:
 ./tools/build_icon.sh          # docs/icon-concepts.png and Resources/Conn.icns
 ```
 
-The selected concept is **Command C**: one large custom C glyph on a dark blue field. It reads as Conn at small sizes, keeps one strong idea, and stays legible on both light and dark Dock backgrounds. The other concepts, Signal Pennant and Linked Loops, remain reproducible in the same script.
+The selected concept is **Linked Loops**, the captain's choice: two interlocked rings on a coral field. It signals connection, reads clearly at small sizes, and stays legible on both light and dark Dock backgrounds. The other concepts, Command C and Signal Pennant, remain reproducible in the same script.
 
 More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (the sidebar order: needs you, working, done, idle), Cmd+J next agent waiting on you, Cmd+Y swap the live pane for its history and back (Esc also goes back), Cmd+= / Cmd+- / Cmd+0 pane text bigger / smaller / back to the fit, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
 

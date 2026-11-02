@@ -116,7 +116,7 @@ for concept in Concept.allCases {
     try writePNG(image(size: 32, concept: concept), to: outputDir.appendingPathComponent("\(concept.rawValue)-32.png"))
 }
 
-let sheetSize = CGSize(width: 1664, height: 640)
+let sheetSize = CGSize(width: 1728, height: 640)
 let sheetContext = CGContext(data: nil, width: Int(sheetSize.width), height: Int(sheetSize.height), bitsPerComponent: 8,
                              bytesPerRow: Int(sheetSize.width) * 4, space: CGColorSpaceCreateDeviceRGB(),
                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
