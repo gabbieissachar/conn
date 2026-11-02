@@ -770,15 +770,15 @@ class Seal:
         return 0
 
     @staticmethod
-    def stopped(child: subprocess.Popen, code: int, lead: str = "Sealing stopped before every object was sealed") -> str:
+    def stopped(child: subprocess.Popen, code: int, lead: str = "Sealing stopped") -> str:
         """The sentence a run ends with when upload.js stops, for the log and for the page's Sync ("The laptop could not build a new copy: ..."):
-        what it said last on stderr (its own reason: a full disk, an object it could not read), else how it ended. It says nothing from the
-        objects themselves: upload.js's messages name no text, and the page shows this to whoever holds the phone."""
-        said = " ".join((child.stderr.read() or "").split())
+        what it said last on stderr (its own reason: a full disk, an object it could not read), else how it ended. Short, because the page
+        shows it on a phone, and it says nothing from the objects themselves: upload.js's messages quote no text."""
+        said = " ".join((child.stderr.read() or "").split()).split(" '")[0]  # a system error ends with the file's path in quotes: not for the phone
         child.stderr.close()
         if not said:
             said = f"it was stopped by signal {-code}" if code < 0 else f"it exited with code {code}" if code else "it ended without saying it was done"
-        return f"{lead} ({said[:110]}); the sealed copy keeps what it had."
+        return f"{lead} ({said[:70]}); the sealed copy keeps what it had."
 
     def prune(self, kept: set[str]) -> int:
         """Delete sealed objects the bucket no longer names, and what a stopped run left half written."""

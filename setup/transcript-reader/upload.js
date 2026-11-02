@@ -81,7 +81,7 @@ async function main(argv, env = process.env, input = process.stdin, output = pro
     if (!line.trim()) continue;
     let item;
     // Not the parser's own message: V8's quotes the start of the text it could not read, and this one ends up in a log and on the page's Sync line.
-    try { item = JSON.parse(line); } catch { throw new Error(`A line of ${line.length} characters is not JSON, so nothing after it was sealed`); }
+    try { item = JSON.parse(line); } catch { throw new Error(`A line of ${line.length} characters is not JSON`); }
     const { path: name, text } = item || {};
     if (typeof name !== 'string' || !OBJECT_RE.test(name) || typeof text !== 'string') throw new Error('Not an object of the hosted copy: ' + String(name).slice(0, 80));
     replace(path.join(folder, name + '.enc'), await seal.close(key, name, zlib.gzipSync(Buffer.from(text, 'utf8'))));

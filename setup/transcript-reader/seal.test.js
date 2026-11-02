@@ -164,7 +164,7 @@ test('a line that is not JSON stops upload.js with a message that quotes none of
     input.write(`{"path":"s/cut.json","text":"${secret}` + '\n');  // a line cut short: its string never closes
     input.end(JSON.stringify({ path: 's/after.json', text: '{}' }) + '\n');
     await assert.rejects(upload.main([folder], { HOSTED_READER_PASSPHRASE: PASS }, input, output), (error) => {
-      assert.match(error.message, /A line of \d+ characters is not JSON/);
+      assert.match(error.message, /^A line of \d+ characters is not JSON$/);
       assert.ok(!error.message.includes(secret) && !error.message.includes('private'), error.message);
       return true;
     });

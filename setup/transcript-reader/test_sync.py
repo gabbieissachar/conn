@@ -1347,7 +1347,7 @@ class SealTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 self.seal()
             gc.collect()
-        self.assertEqual(str(caught.exception), "Sealing stopped before every object was sealed (ENOSPC: no space left on device, write); the sealed copy keeps what it had.")
+        self.assertEqual(str(caught.exception), "Sealing stopped (ENOSPC: no space left on device, write); the sealed copy keeps what it had.")
         self.assertEqual(len(self.started), 1)
         self.assertTrue(self.started[0].stdin.closed, "the run closes the pipe itself, so Python has nothing to report when the stopped program's end is dropped")
         self.assertNotIn("Exception ignored", noise.getvalue())
@@ -1358,11 +1358,15 @@ class SealTest(unittest.TestCase):
         silent = "process.stdout.write('{\"ready\":true,\"rekeyed\":true}\\n'); process.kill(process.pid, 'SIGKILL')"
         with self.stub_upload(silent), self.assertRaises(SystemExit) as caught:
             self.seal()
-        self.assertEqual(str(caught.exception), "Sealing stopped before every object was sealed (it was stopped by signal 9); the sealed copy keeps what it had.")
+        self.assertEqual(str(caught.exception), "Sealing stopped (it was stopped by signal 9); the sealed copy keeps what it had.")
         broken = "process.stderr.write('Cannot find module\\nsecond line\\n'); process.exit(3)"
         with self.stub_upload(broken), self.assertRaises(SystemExit) as caught:
             self.seal()
         self.assertEqual(str(caught.exception), "Sealing did not start (Cannot find module second line); the sealed copy keeps what it had.")
+        denied = "process.stdout.write('{\"ready\":true,\"rekeyed\":true}\\n'); process.stderr.write(\"EACCES: permission denied, open '/a/long/path/to/s/x.partial'\\n\"); process.exit(1)"
+        with self.stub_upload(denied), self.assertRaises(SystemExit) as caught:
+            self.seal()
+        self.assertEqual(str(caught.exception), "Sealing stopped (EACCES: permission denied, open); the sealed copy keeps what it had.", "a system error's file path is left off")
 
     def test_a_run_with_nothing_new_seals_nothing_and_starts_no_node(self):
         self.seal()
