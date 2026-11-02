@@ -144,8 +144,8 @@ enum StarredBarCheck {
                row.runs.first.map { abs($0.rect.minX - strip.minX - 12) < 2.5 && chipWidthRange(labels[0]).contains($0.rect.width) } ?? expected.isEmpty,
                "first shape starts \(row.runs.first.map { String(format: "%.1f", $0.rect.minX - strip.minX) } ?? "-") points in (padding is 12) and is \(row.runs.first.map { String(format: "%.0f", $0.rect.width) } ?? "-") wide")
         let lastShape = row.runs.last
-        report("the load time and the reload button are still on the row, after the chips", row.runs.count > whole + (cutByEdge ? 1 : 0) && (lastShape?.rect.maxX ?? 0) > strip.maxX - 20,
-               "shapes after the chips=\(row.runs.count - whole - (cutByEdge ? 1 : 0)), the last ends \(lastShape.map { String(format: "%.0f", strip.maxX - $0.rect.maxX) } ?? "-") points from the row's right edge (padding is 12), phase=\(reader.phase)")
+        report("the load time and the reload button are still on the row, after the chips", row.runs.count > whole + (cutByEdge ? 1 : 0) && (lastShape?.rect.maxX ?? 0) > strip.maxX - 30,
+               "shapes after the chips=\(row.runs.count - whole - (cutByEdge ? 1 : 0)), the last ends \(lastShape.map { String(format: "%.0f", strip.maxX - $0.rect.maxX) } ?? "-") points from the row's right edge (padding is 12; the icon's ring can miss the middle line), phase=\(reader.phase)")
         if fixture, let dir = ProcessInfo.processInfo.environment["HELM_UI_CHECK_SHOT_DIR"] {
             await Capture.window(to: URL(fileURLWithPath: dir).appendingPathComponent("starred-row.png"))
         }
