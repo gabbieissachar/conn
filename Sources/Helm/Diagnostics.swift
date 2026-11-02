@@ -305,18 +305,22 @@ enum UICheck {
         // No click is made inside either page.
         func pageInFront(_ selected: WebBox) -> String {
             guard let host = selected.webView.superview, let root = host.window?.contentView?.superview else { return "not in the window" }
-            var v = root.hitTest(host.convert(NSPoint(x: host.bounds.midX, y: host.bounds.midY), to: nil))
+            let hit = root.hitTest(host.convert(NSPoint(x: host.bounds.midX, y: host.bounds.midY), to: nil))
+            var v = hit
             while let x = v, !(x is WKWebView) { v = x.superview }
-            guard let web = v as? WKWebView else { return "no page" }
+            guard let web = v as? WKWebView else { return "no page (hit \(hit.map { String(describing: type(of: $0)) } ?? "nothing"), phase \(selected.phase))" }
             return model.web.allBoxes.first { $0.webView === web }?.kind.rawValue ?? "other page"
         }
+        // A load that replaces one still in flight cancels it, and the box briefly shows "not reachable" (NSURLErrorCancelled)
+        // until the newer load finishes. That is a separate matter from which page is in front, so each step waits for the page to settle.
+        func settled(_ box: WebBox) async { var n = 0; while box.phase != .ready && n < 40 { await wait(0.2); n += 1 } }
         func tabsShowTheirOwnPage(first: WebKind, then order: [WebKind]) async {
             model.showWeb = false; await wait(0.5)
-            model.webTab = first; model.showWeb = true; await wait(1)
+            model.webTab = first; model.showWeb = true; await wait(1); await settled(model.web.box(first))
             var trail = ["\(first.rawValue)->\(pageInFront(model.web.box(first)))"]
             var wrong = trail[0].hasSuffix("->\(first.rawValue)") ? 0 : 1
             for (i, kind) in order.enumerated() {
-                model.webTab = kind; model.pinReader(); await wait(0.7)
+                model.webTab = kind; model.pinReader(); await wait(0.7); await settled(model.web.box(kind))
                 let front = pageInFront(model.web.box(kind))
                 trail.append("\(kind.rawValue)->\(front)")
                 if front != kind.rawValue { wrong += 1 }
