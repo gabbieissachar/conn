@@ -88,7 +88,7 @@ The turn id is the id the session log gives the turn (`uuid`), so it holds acros
 `message_link.py` writes the address of a message for a reminder:
 
 ```bash
-python3 setup/transcript-reader/message_link.py <session id or prefix> <text>            # the FIRST agent reply that holds the text, e.g. 'L17='
+python3 setup/transcript-reader/message_link.py <session id or prefix> [--from-session <session id or prefix>] [--since <ISO date/time>] <text>
 python3 setup/transcript-reader/message_link.py <session id or prefix> --message <id>    # check an id and write its address
 ```
 
@@ -97,7 +97,7 @@ local:   http://localhost:8768/setup/transcript-reader/out/prototype.html#s=9322
 tailnet: https://<machine>.<tailnet>.ts.net:8443/setup/transcript-reader/out/prototype.html#s=9322c689&m=5e6f7a8b-9c0d
 ```
 
-Only the agent's replies are looked in (never your messages or a steering message), across the whole `/clear` chain of the session, oldest first, as a plain case-sensitive match. The tailnet name is what Tailscale reports (`tailscale status --json`), the ports are `PMOS_READER_PORT` and `PMOS_READER_HTTPS_PORT`; with no tailnet name the tailnet line says so. It exits 1 with a sentence when the session or the message is not found and 2 for a wrong command line, reads the session logs only and prints ids, never the words of a message. The tailnet address works when the reader was started with `--tailnet-https`. A reminder can carry both, as `[Mac](local) · [phone](tailnet)`.
+Only the agent's replies are looked in (never your messages or a steering message), across the whole `/clear` chain of the session, oldest first, as a plain case-sensitive match. Use `--from-session` to start at a session in that chain, including newer sessions, or `--since` to start at an ISO date or date/time. When no scope is given, the whole chain is searched as before. If a key occurs in more than one agent reply, the oldest address is returned with a warning on stderr that lists every match's session, UTC time and message id; scope the search to choose the intended call. The warning and address contain no message text. The tailnet name is what Tailscale reports (`tailscale status --json`), the ports are `PMOS_READER_PORT` and `PMOS_READER_HTTPS_PORT`; with no tailnet name the tailnet line says so. It exits 0 when an address is printed, 1 with a sentence when the session or the message is not found and 2 for a wrong command line, reads the session logs only and prints ids, times and addresses, never the words of a message. The tailnet address works when the reader was started with `--tailnet-https`. A reminder can carry both, as `[Mac](local) · [phone](tailnet)`.
 
 ### The fleet timeline is off for now
 

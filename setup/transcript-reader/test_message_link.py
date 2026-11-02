@@ -99,9 +99,49 @@ class Lab(unittest.TestCase):
 class FirstAgentReply(Lab):
     def test_the_first_reply_that_holds_the_text_is_the_one_addressed(self):
         self.conversation()
-        found = self.lines(self.run_command(NEW[:8], "L17="))
+        done = self.run_command(NEW[:8], "L17=")
+        found = self.lines(done)
         # The question in the old session, not the reminder in the new one.
         self.assertTrue(found["local"].endswith("#s=11111111&m=a0000002-000"), found["local"])
+        self.assertIn("warning: 'L17=' appears in 2 agent replies", done.stderr)
+        self.assertIn("session 11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa time 2026-10-23T10:00:11Z message a0000002-0000-4000-8000-000000000002", done.stderr)
+        self.assertIn("session 22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb time 2026-10-23T10:01:11Z message b0000002-0000-4000-8000-000000000002", done.stderr)
+        self.assertNotIn(SECRET, done.stderr)
+
+    def test_a_from_session_scope_starts_at_that_session(self):
+        self.conversation()
+        done = self.run_command(NEW[:8], "--from-session", NEW[:8], "L17=")
+        found = self.lines(done)
+        self.assertTrue(found["local"].endswith("#s=22222222&m=b0000002-000"), found["local"])
+        self.assertNotIn("warning:", done.stderr)
+
+    def test_a_since_scope_starts_at_that_reply_time(self):
+        self.conversation()
+        done = self.run_command(NEW[:8], "--since", "2026-10-23T10:01:00Z", "L17=")
+        found = self.lines(done)
+        self.assertTrue(found["local"].endswith("#s=22222222&m=b0000002-000"), found["local"])
+        self.assertNotIn("warning:", done.stderr)
+
+    def test_a_scope_session_must_be_in_the_chain(self):
+        self.conversation()
+        done = self.run_command(NEW[:8], "--from-session", "33333333", "L17=")
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+        self.assertIn("no session in that conversation starts with 33333333", done.stderr)
+
+    def test_an_invalid_since_value_is_a_command_line_error(self):
+        self.conversation()
+        done = self.run_command(NEW[:8], "--since", "not-a-date", "L17=")
+        self.assertEqual((done.returncode, done.stdout), (2, ""))
+        self.assertIn("invalid --since value", done.stderr)
+
+    def test_a_scoped_address_keeps_the_message_id_unique_across_the_full_chain(self):
+        first = "abcdefabcdef-1111-4000-8000-000000000001"
+        second = "abcdefabcdef-2222-4000-8000-000000000002"
+        self.log(OLD, [user(first, "go", 0), say("Q= old", 1)], written=40)
+        self.log(NEW, [user(second, "<command-name>/clear</command-name>\n<command-message>clear</command-message>", 60), say("Q= new", 61)], written=80)
+        done = self.run_command(NEW[:8], "--from-session", NEW[:8], "Q=")
+        found = self.lines(done)
+        self.assertTrue(found["local"].endswith("&m=abcdefabcdef-2"), found["local"])
 
     def test_only_the_agents_replies_are_looked_in(self):
         self.conversation()
