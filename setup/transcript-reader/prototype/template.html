@@ -108,6 +108,7 @@ __HEAD_HOSTED__
   .asof { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); margin-top: 2px; }
   .asof span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .asof.stale span { color: var(--ask); font-weight: 600; }
+  .asof.says span { white-space: normal; overflow: visible; }
   .asof button { flex: none; border: 0; background: none; padding: 0; font-size: 12px; color: var(--muted); text-decoration: underline; }
   .asof span { font-variant-numeric: tabular-nums; }
   .asof button.sync { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 1px 9px; color: var(--ink); text-decoration: none; }
@@ -3759,11 +3760,14 @@ __HEAD_HOSTED__
       // The laptop's own server answered (this page was served by it, and this is not the device's kept copy), so a copy that is old is not
       // an asleep laptop: nothing has built a newer one, and Sync asks for one. Anywhere else the page cannot tell, and says what it can.
       const awake = hosted.served() && !device;
+      // "synced 16:46" beside an old copy only says the copy was read again, which reads as good news: it is left off when the laptop answered with an old one.
+      const oldAnswer = old && awake && !hosted.outdated() && !failing;
+      line.classList.toggle("says", couldNot);  // a build's own reason is the sentence to read, so it may take two lines
       text.textContent = device ? `Offline · copy from ${at} (${ago(when)} old)`
         : copy && copy.state === "running" ? "The laptop is building a new copy…"
         : couldNot ? `The laptop could not build a new copy: ${copy.message}`
         : (failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}`
-        : hosted.outdated() || (old ? (awake ? `Copy from ${at}: nothing has built a newer one. Sync builds one.` : `Laptop asleep or not syncing since ${at}`) : `As of ${at}`)) + (failing || couldNot ? "" : ` · ${synced}`);
+        : hosted.outdated() || (old ? (awake ? `Last built ${at} · tap Sync to update` : `Laptop asleep or not syncing since ${at}`) : `As of ${at}`)) + (failing || couldNot || oldAnswer ? "" : ` · ${synced}`);
       text.title = device ? `${hosted.offline().why} This is the copy the laptop built at ${fmtWhen(when)}, kept on this device. It updates the next time the laptop answers.`
         : `The laptop built this copy at ${fmtWhen(when)}; Herdr states are as of then. ${synced}: when this page last read the copy.${old && awake ? " The laptop answered: it is awake, and nothing (no sync job, no earlier Sync) has built a newer copy. Sync has it build one now." : ""}`;
       paintOffline();

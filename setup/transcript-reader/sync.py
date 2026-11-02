@@ -846,8 +846,8 @@ def passphrase(target: Path) -> str:
         kept = keychain_passphrase()
         if kept:
             return kept
-        raise SystemExit(f"Set {PASSPHRASE_ENV}, keep the passphrase in the login keychain (security add-generic-password -s {KEYCHAIN_SERVICE} "
-                         f"-a \"$USER\" -w), or run this in a terminal to be asked for the passphrase.")
+        # One short sentence: the page shows it as the reason a Sync could not build (README, "What builds the copy", has the keychain command).
+        raise SystemExit(f"No passphrase: set {PASSPHRASE_ENV}, keep it in the login keychain (item {KEYCHAIN_SERVICE}), or run in a terminal.")
     import getpass
     first = getpass.getpass("Passphrase for the hosted copy: ")
     if not (target / "k" / "params.json").is_file() and getpass.getpass("Again, to be sure: ") != first:
