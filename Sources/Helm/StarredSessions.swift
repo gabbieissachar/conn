@@ -68,6 +68,13 @@ final class StarredSessions: ObservableObject {
         store.order = next
     }
 
+    /// Forget the arranged order (test hook): the chips go back to the order the reader starred them in.
+    func resetOrder() {
+        store.order = []
+        let next = StarOrder.arrange(stars: stars, saved: [])
+        if next != order { order = next }
+    }
+
     func label(for conv: String, agentNames: [String: String]) -> String {
         StarLabels.resolve(conv: conv, agentNames: agentNames, recorded: recorded)
     }
