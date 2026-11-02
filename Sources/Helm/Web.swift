@@ -209,8 +209,12 @@ final class WebHub {
 
 /// SwiftUI owns this container; the long-lived WKWebView is moved into whichever container is on screen,
 /// so layouts can switch without SwiftUI ever managing one NSView in two places at once.
+/// The Reader and Organizer tabs share one container (the tab swaps the box under the same SwiftUI view), so it holds
+/// exactly one web view at a time: attaching one takes the other out. Left in, the web view attached first would sit
+/// behind the one attached second, and its tab would show the other page.
 final class WebHostView: NSView {
     func attach(_ web: WKWebView) {
+        for other in subviews where other !== web { other.removeFromSuperview() }
         guard web.superview !== self else { return }
         web.removeFromSuperview()
         web.frame = bounds
