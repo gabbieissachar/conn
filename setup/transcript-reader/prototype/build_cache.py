@@ -174,6 +174,32 @@ def recording():
         io.open, builtins.open = real["io.open"], real["open"]
 
 
+_WORKS: list[bool] = []
+
+
+def recording_works() -> bool:
+    """Whether a recording sees what pathlib, os.walk and open ask of the file system on this Python. It does where they call os.stat,
+    os.scandir and io.open as modules do (3.11 and later); a Python whose pathlib took its own copy of them when it was imported would let a
+    conversation be kept past a file it had read, which no check would show, so a build that cannot be recorded is not kept at all."""
+    if not _WORKS:
+        probe = Path(__file__).resolve()
+        try:
+            with recording() as reads:
+                probe.stat()
+                probe.is_file()
+                probe.resolve()
+                probe.read_text(encoding="utf-8")
+                list(probe.parent.glob("build_cache.py"))
+                list(os.walk(probe.parent))
+                (probe.parent / "no such file").exists()
+            seen = reads.seen
+            _WORKS.append(all((str(probe) in seen["stat"], str(probe) in seen["lstat"], str(probe) in seen["file"], str(probe.parent) in seen["dir"],
+                              str(probe.parent / "no such file") in seen["stat"])))
+        except Exception:  # noqa: BLE001  (whatever it was, a recording that fails is one that cannot be relied on)
+            _WORKS.append(False)
+    return _WORKS[0]
+
+
 # ------------------------------------------------------------------------------------------------- one conversation
 
 # The page's JSON must not close the script element it sits in (build_prototype.payload_json). What is kept is UTF-8 bytes, which take
@@ -339,8 +365,8 @@ def log_head(path: Path) -> tuple[str, float | None]:
 
 def usable(args: argparse.Namespace) -> bool:
     """Whether a build can be made from kept conversations: the reader's list, without the fleet timeline (which links the fleet's records to
-    the turns of every conversation, so that no conversation is its own)."""
-    return bool(args.session or getattr(args, "listed", False)) and not builder.fleet_timeline_on()
+    the turns of every conversation, so that no conversation is its own), on a Python whose file system calls can be recorded."""
+    return bool(args.session or getattr(args, "listed", False)) and not builder.fleet_timeline_on() and recording_works()
 
 
 def build(args: argparse.Namespace) -> Built:
@@ -355,6 +381,8 @@ def build(args: argparse.Namespace) -> Built:
         if not path:
             raise SystemExit(f"session not found: {name}")
         logs.append((path, *log_head(path)))
+    for gone in set(_HEADS) - {path for path, _, _ in logs}:
+        del _HEADS[gone]  # a log no longer listed is not kept
     starts = [first for _, _, first in logs if first is not None]
     since = min(starts) if args.since_hours is None and starts else time.time() - (args.since_hours or 72) * 3600
 

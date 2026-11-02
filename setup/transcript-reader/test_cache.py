@@ -555,6 +555,13 @@ class RunByHand(Case):
         self.assertEqual(cached.read_bytes(), plain.read_bytes())
         self.assertEqual(cached.with_suffix(".stamp").read_bytes(), plain.with_suffix(".stamp").read_bytes())
 
+    def test_a_python_whose_calls_cannot_be_recorded_is_built_for_from_nothing(self):
+        self.assertTrue(build_cache.recording_works(), "this Python can be recorded, or nothing here would be kept")
+        with mock.patch.object(build_cache, "_WORKS", []), mock.patch.object(build_cache, "recording") as broken:
+            broken.return_value.__enter__.return_value = build_cache.Reads()  # sees nothing, as a pathlib with its own copy of os.stat would
+            self.assertFalse(build_cache.recording_works())
+            self.assertFalse(build_cache.usable(self.args()))
+
     def test_the_fleet_timeline_and_the_statistics_are_the_plain_builds(self):
         with mock.patch.dict(os.environ, {builder.FLEET_TIMELINE_ENV: "on"}):
             self.assertFalse(build_cache.usable(self.args()))
