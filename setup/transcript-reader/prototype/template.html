@@ -1713,6 +1713,20 @@ __HEAD_HOSTED__
   // does not jump again.
   const sessionAt = prefix => data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(prefix)));
   const messageGone = id => ({ text: `The message ${id.slice(0, 12)} was not found in this conversation. It may be in another one, or this link was cut short.` });
+  // The reply the last address went to. The page is drawn again whenever a build lands, often right after the jump, so the
+  // outline is put back on the redrawn reply (paintLinked, at the end of render), continuing the same 2.8 s fade (a negative
+  // delay), and the class stays on it for LINKED_KEEP ms: the fade is long over by then, but what shows which reply was addressed stays.
+  const LINKED_KEEP = 30000;
+  const linked = { key: null, at: 0 };
+  function paintLinked() {
+    if (!linked.key) return;
+    const age = Date.now() - linked.at;
+    if (age >= LINKED_KEEP) { linked.key = null; return; }
+    const node = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === linked.key);
+    if (!node) return;
+    node.style.animationDelay = `-${age}ms`;
+    node.classList.add("is-linked");
+  }
   function landOnMessage(si, index) {
     const ex = data.sessions[si].exchanges[index], part = address.part(ex);
     goTo(si, index, part, { clips: true }, () => {
@@ -1721,8 +1735,23 @@ __HEAD_HOSTED__
       const node = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === key) || document.getElementById(`ex-${index}`);
       if (!node) return;
       window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
-      node.classList.remove("is-linked"); void node.offsetWidth; node.classList.add("is-linked");
+      document.querySelectorAll(".is-linked").forEach(el => { el.classList.remove("is-linked"); el.style.animationDelay = ""; });
+      void node.offsetWidth; node.classList.add("is-linked");
+      linked.key = node.dataset.msg || null; linked.at = Date.now();
+      holdUnderHeader(node);
     });
+  }
+  // The header grows a line when the first answer from the server arrives (the Synced time), just after a page opens on an address:
+  // for the first few seconds the reply is put back just under the header whenever the header's height changes.
+  function holdUnderHeader(node) {
+    const bar = document.getElementById("bar");
+    if (!node.dataset.msg || !window.ResizeObserver) return;
+    const watch = new ResizeObserver(() => {
+      const now = [...document.querySelectorAll("[data-msg]")].find(el => el.dataset.msg === node.dataset.msg);
+      if (now) window.scrollBy(0, now.getBoundingClientRect().top - bar.offsetHeight - 8);
+    });
+    watch.observe(bar);
+    setTimeout(() => watch.disconnect(), 3000);
   }
   // The message the page opened on, in the conversation it opened on.
   function followOpeningMessage() {
@@ -3784,6 +3813,7 @@ __HEAD_HOSTED__
     refreshSearch();  // the page was drawn again: the query runs on it as it is now
     markRead();
     renderDock();
+    paintLinked();
   }
   // "Documents (3)": the tab's text, and the name of the Documents icon in the folded header.
   function docsLabel(session) {
