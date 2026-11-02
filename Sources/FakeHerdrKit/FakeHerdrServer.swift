@@ -160,7 +160,7 @@ public final class FakeHerdrServer: @unchecked Sendable {
         for p in panes where !wsOrder.contains(p.workspace) { wsOrder.append(p.workspace) }
         let workspaces: [[String: Any]] = wsOrder.enumerated().map { i, w in
             let ps = panes.filter { $0.workspace == w }
-            let st = ps.map(\.state).min { $0.rank < $1.rank } ?? .idle
+            let st = ps.map(\.state).min { $0.rollupRank < $1.rollupRank } ?? .idle
             return ["workspace_id": w, "number": i + 1, "label": "space \(i + 1)", "focused": i == 0, "pane_count": ps.count, "tab_count": ps.count,
                     "active_tab_id": ps[0].tab, "agent_status": st.rawValue]
         }

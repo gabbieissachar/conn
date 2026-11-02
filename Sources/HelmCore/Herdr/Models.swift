@@ -7,8 +7,19 @@ public enum AgentState: String, CaseIterable, Sendable {
 
     public init(raw: String) { self = AgentState(rawValue: raw) ?? .unknown }
 
-    /// Sort rank for the agents list: things that wait on the captain come first.
-    public var rank: Int {
+    /// Sort rank for the agents list: needs you, then working, then done, then idle. Not the rollup order below.
+    public var listRank: Int {
+        switch self {
+        case .blocked: return 0
+        case .working: return 1
+        case .done: return 2
+        case .idle: return 3
+        case .unknown: return 4
+        }
+    }
+
+    /// Rank for a workspace's or tab's rolled-up state (the most urgent child wins): needs you, then done, then working.
+    public var rollupRank: Int {
         switch self {
         case .blocked: return 0
         case .done: return 1
@@ -146,15 +157,15 @@ public struct Snapshot: Equatable, Sendable {
     public func agents(in workspaceID: String?) -> [Agent] { agents.filter { $0.workspaceID == workspaceID } }
     public func agent(inTab tabID: String) -> Agent? { agents.first { $0.tabID == tabID } }
 
-    /// Agents in the order the sidebar and the Cmd+1...9 shortcuts use: waiting first, then working, then idle.
+    /// Agents in the order the sidebar and the Cmd+1...9 shortcuts use: needs you first, then working, then done, then idle.
     public var prioritized: [Agent] {
         agents.enumerated().sorted { l, r in
-            if l.element.state.rank != r.element.state.rank { return l.element.state.rank < r.element.state.rank }
+            if l.element.state.listRank != r.element.state.listRank { return l.element.state.listRank < r.element.state.listRank }
             return l.offset < r.offset
         }.map { $0.element }
     }
 
-    /// The agent `offset` places after `current` in the sidebar's order (waiting first), wrapping at both ends.
+    /// The agent `offset` places after `current` in the sidebar's order (needs you, working, done, idle), wrapping at both ends.
     /// With no current agent (or one that is gone) it starts from the top.
     public func agent(after current: String?, offset: Int) -> Agent? {
         let list = prioritized
@@ -177,7 +188,7 @@ public struct Snapshot: Equatable, Sendable {
         let a = agents[i]
         if let t = tabs.firstIndex(where: { $0.id == a.tabID }) { tabs[t].state = state }
         if let w = workspaces.firstIndex(where: { $0.id == a.workspaceID }) {
-            workspaces[w].state = agents(in: a.workspaceID).map(\.state).min { $0.rank < $1.rank } ?? .idle
+            workspaces[w].state = agents(in: a.workspaceID).map(\.state).min { $0.rollupRank < $1.rollupRank } ?? .idle
         }
     }
 }

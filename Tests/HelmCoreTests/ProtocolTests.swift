@@ -142,6 +142,38 @@ extension HerdrClient {
     }
 }
 
+@Suite("Agents list order") struct AgentListOrderTests {
+    private func snap() -> Snapshot {
+        var s = Snapshot()
+        s.workspaces = [Workspace(id: "w1", label: "one", number: 1, state: .idle, tabCount: 0, paneCount: 0)]
+        let states: [(String, AgentState)] = [("a", .idle), ("b", .done), ("c", .working), ("d", .unknown), ("e", .blocked),
+                                              ("f", .working), ("g", .done), ("h", .blocked)]
+        s.agents = states.map { Agent(id: $0.0, name: $0.0, harness: "claude", state: $0.1, workspaceID: "w1", tabID: "t", sessionID: nil, cwd: "/tmp") }
+        return s
+    }
+
+    @Test func workingSitsAboveDoneAndHerdrsOrderHoldsWithinAState() {
+        // needs you, working, done, idle, unknown; Herdr's own order inside each state.
+        #expect(snap().prioritized.map(\.id) == ["e", "h", "c", "f", "b", "g", "a", "d"])
+    }
+
+    @Test func cyclingAndNextWaitingFollowTheNewOrder() {
+        let s = snap()
+        #expect(s.agent(after: "h", offset: 1)?.id == "c")
+        #expect(s.agent(after: "f", offset: 1)?.id == "b")
+        #expect(s.nextWaiting(after: nil)?.id == "e")          // needs you plus done, in list order
+        #expect(s.nextWaiting(after: "h")?.id == "b")
+    }
+
+    @Test func aWorkspaceStillRollsUpNeedsYouThenDoneThenWorking() {
+        var s = snap()
+        for a in s.agents { s.setState(a.id, to: .idle) }
+        s.setState("c", to: .working); #expect(s.workspace("w1")?.state == .working)
+        s.setState("b", to: .done); #expect(s.workspace("w1")?.state == .done)        // done still beats working
+        s.setState("e", to: .blocked); #expect(s.workspace("w1")?.state == .blocked)
+    }
+}
+
 @Suite("Compose policy") struct ComposePolicyTests {
     @Test func singleLineTextIsAllowedAndEverythingElseIsExplained() {
         #expect(ComposePolicy.problem(for: "run the wider checkout suite") == nil)

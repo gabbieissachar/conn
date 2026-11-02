@@ -1,12 +1,12 @@
 # Helm roadmap
 
-What Helm has shipped, what comes next, what is already decided, and what still needs the owner. Last updated 2026-11-02, at `main` `9f4b172` plus the in-place pin branch.
+What Helm has shipped, what comes next, what is already decided, and what still needs the owner. Last updated 2026-11-02, at `main` `9f4b172` plus the agents-list order branch.
 
 Update rule: every Helm change updates this file in the same branch (see "How to keep this current" at the end).
 
 ## Short answer
 
-Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 106 unit tests and 64 scripted UI checks against the fixture pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target passes on Helm's added share (D6). Several things were checked in process only and need a person at a real screen.
+Helm is a working replacement for the Herdr part of the old setup. It draws the live sidebar and panes of a Herdr session, shows the reader and organizer as web views, edits text files, and has one guarded write (the compose box). It is **observe-only**: it cannot resize a pane, and the compose box has only been tried against the stand-in Herdr. 109 unit tests and 64 scripted UI checks against the fixture pass. Memory fits the budget (about 1.0 to 1.1 GB for the whole setup against 4.1 GB before). The CPU target passes on Helm's added share (D6). Several things were checked in process only and need a person at a real screen.
 
 **Next three steps, in recommended order:**
 
@@ -38,6 +38,7 @@ All commits are on `main`. Nothing was ever pushed.
 | Reader tab fix | The Reader tab showed the Organizer once the Organizer had been opened; the web host now holds only the selected pane's page; regression check added | `0a491c0`, `4a1f2dd`, `e6b863a` |
 | Starred sessions row | The Reader pane's header row no longer says "Reader". It holds one chip per session starred in the reader (read from the reader's own star list, never written). A click opens that session, the chip on screen is filled, a drag reorders the chips and the order is kept across launches. A star added or removed in the reader shows within 2 s. More chips than fit scroll sideways; with nothing starred the row says where to star. 14 unit tests, fixture and live `--ui-check` steps | `d52a7ef`, `999a21d`, `c27b5c5` |
 | In-place pin | An agent selection or a starred chip switches the reader in place (only the address fragment changes) when the page on screen follows an address change: no 19 MB page load. Measured on the live reader (Chrome, 18 switches): 211 ms median in place against 1,369 ms for a load. An older reader without the handler, a first load, another page or a failed in-place change still load the page. 8 `--ui-check` steps (window marker survives, fallback loads, first load, other page, real reader) and 1 unit test | `d74e8e2` |
+| Working agents first | The agents list (and so Cmd+1 to 9 and next / previous agent) now orders needs you, working, done, idle, unknown, Herdr's order inside a state; before, done sat above working. The workspace and tab rolled-up state is unchanged (needs you, then done, then working): the sort rank and the rollup rank are now two separate properties. Header label reads "working first". Cmd+J (needs you plus done) is unchanged. 3 unit tests | COMMIT |
 
 Measured against the decision D5 target (under 1.2 GB and 6% idle CPU, baseline 4,093 MB and 15.5%):
 

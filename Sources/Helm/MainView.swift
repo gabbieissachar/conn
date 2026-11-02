@@ -50,7 +50,7 @@ struct SidebarView: View {
     private var agents: some View {
         let list = app.snapshot.prioritized
         return VStack(spacing: 0) {
-            header("AGENTS", trailing: "waiting first")
+            header("AGENTS", trailing: "working first")
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
