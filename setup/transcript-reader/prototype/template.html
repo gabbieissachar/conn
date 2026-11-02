@@ -3646,7 +3646,11 @@ __HEAD_HOSTED__
       }
     } catch (e) {
       link.listing = { text: `Sync failed: ${e.message}` };
-    } finally { link.syncing = false; paintSync(); renderLive(); }
+    } finally {
+      link.syncing = false;
+      if (link.copy && link.copy.state === "running") link.copy = null;  // an error before the build's own answer leaves no "building" line behind
+      paintSync(); renderLive();
+    }
   }
   document.getElementById("sync").addEventListener("click", syncNow);
 
