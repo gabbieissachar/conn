@@ -71,6 +71,34 @@ In any copy of the page:
 - **Tool steps.** A reply's row reads "7 steps · edited 2 files · 1 failed" (the failures in red, and in words). It opens a list of one-line steps: a kind (`Ran`, `Read`, `Edited`, `Wrote`, `Searched`, `Asked`, `Agent`, `Skill`) and what it did, in the agent's own description of a command, else the command's first line, a path, a pattern, a URL or a question. Steps are grouped in runs of consecutive calls with the agent's working notes between the runs, the first 10 show and the rest sit behind "N more steps", and a failed step is red and says "failed". An edit or write shows `+3 −1`. A step opens a **sheet**, a bottom sheet at phone width and a dialog on a wide screen: its command or file (**Copy**), an edit or write as a diff with two lines around each change (12 lines, then "Show full diff"), its output as the last 12 lines ("Show all N lines": a command's error is at the end), **Prev** and **Next** through the turn's steps (the arrow keys too), and **Ask about this**, which is Reply with a pointer that names the step ("Re your step at 09:14 (Ran "Run the settings tests"): "). Rows and sheet buttons are 44 px at phone width and on touch screens. What is kept, by `prototype/tool_steps.py`: the summary (140 characters), the command (600) and the diff of an edit or write (1,500; a write's count is of the whole file) travel with the turn, read from `message.content` of the log's tool results and never from `toolUseResult`, the second copy of every output; a failed step's **last 400 characters** travel with the turn too; the output text (a command's last 1,500 characters, anything else's first 1,500) is its own object (below). **The text of a file the agent read is never kept**, and a call that touches a dotfile or a credential path (`.env`, `.npmrc`, `~/.ssh/…`, `credentials.json`, a command that names one) keeps its row, its failure marker and nothing of its text: no diff, no output, no tail. Turns from a copy built before steps were kept show the old "N tool steps" line. On the laptop's page a step's output comes from the server (`GET /api/transcript-reader/steps?conv=<id>`, which reads `out/steps/<id>.json`, written beside the page by the page build so the page itself holds none of it).
 - **Cleared sessions.** `/clear` starts a new session log in the same pane. The reader joins the sessions a pane ran into one conversation, under the newest one, with a divider at each clear: the log it cleared is the one written within two minutes before the `/clear` that names the same remote-control link, in any project folder (a session resumed from another directory keeps its old folder), else the log the same Herdr pane ran before, whose last dated record is nearest before the `/clear` and which was written at or after it (a session cleared, then exited and resumed with `claude --resume <new id>`, has no link, and exiting writes to its old log well past the clear), else the one written then in the same folder. Naming any of them (`#s=…`, `reader.py add`) opens the whole conversation, and `reader.py` adds the newest one to the reading list. Replying to a turn from before a clear goes to the pane's current session, and the message names the earlier log, since that session never saw the turn. Claude started again in the same pane (Firstmate swaps a worker's model that way) joins the same way, when the new session starts within ten minutes of the old log's last write. A log is also written to long after its last turn (a Herdr restart rewrites the link and cost records, which carry no time), so the time of its last dated record counts as well as its modification time, and a `/clear` made hours after the last turn still names the log that holds the same remote-control link. Herdr keeps the first session id it was told after such a restart, so for a Claude pane whose id no running Claude holds, the reader asks Herdr for the pane's foreground process and reads that process's session from Claude Code's own record (`~/.claude/sessions`); a pane back at its shell runs no session.
 
+## Links to one message
+
+The page's address names a conversation, and a document or a message in it:
+
+| Address | Opens |
+|---|---|
+| `#s=<session id or its first characters>` | the conversation (the page writes this itself as you read) |
+| `#s=<session>&d=<document id>` | its Documents view on that file |
+| `#s=<session>&m=<turn id or its first 6 or more characters>` | the conversation, scrolled to that turn's reply (its message when it has no reply), outlined for a moment |
+
+The turn id is the id the session log gives the turn (`uuid`), so it holds across rebuilds, restarts, `/clear` (the session in `s=` may be any session of the pane's chain) and the move from one build to the next. What hides the reply is opened in place: a wake-up folded into a run, a folded wake-up, a clipped reply. An id the conversation does not have opens the conversation and says so in the line under the header; a session not on the reader says that, and the page stays where it was. The page goes back to `#s=` once it is there, so the same link works again and a reload does not jump again.
+
+**The page follows an address that reaches it while it is open, without loading again.** A link opened over the conversation on screen, an address pasted into this tab, a pin in another tool: another conversation, a Documents view or a message in it is shown in place, as a fresh load would show it (a closed pane's conversation is listed again, a `/clear` chain opens under its newest session, the same notices). The page's own address writes (`history.replaceState`) fire no change, so following never calls itself, and an address for the conversation already on screen changes nothing. A link in a reply still opens in a new tab, as every link does.
+
+`message_link.py` writes the address of a message for a reminder:
+
+```bash
+python3 setup/transcript-reader/message_link.py <session id or prefix> <text>            # the FIRST agent reply that holds the text, e.g. 'L17='
+python3 setup/transcript-reader/message_link.py <session id or prefix> --message <id>    # check an id and write its address
+```
+
+```
+local:   http://localhost:8768/setup/transcript-reader/out/prototype.html#s=9322c689&m=5e6f7a8b-9c0d
+tailnet: https://<machine>.<tailnet>.ts.net:8443/setup/transcript-reader/out/prototype.html#s=9322c689&m=5e6f7a8b-9c0d
+```
+
+Only the agent's replies are looked in (never your messages or a steering message), across the whole `/clear` chain of the session, oldest first, as a plain case-sensitive match. The tailnet name is what Tailscale reports (`tailscale status --json`), the ports are `PMOS_READER_PORT` and `PMOS_READER_HTTPS_PORT`; with no tailnet name the tailnet line says so. It exits 1 with a sentence when the session or the message is not found and 2 for a wrong command line, reads the session logs only and prints ids, never the words of a message. The tailnet address works when the reader was started with `--tailnet-https`. A reminder can carry both, as `[Mac](local) · [phone](tailnet)`.
+
 ### The fleet timeline is off for now
 
 The page's **Fleet timeline** tab is switched off: the build skips collecting the fleet records (a large part of the page and of every rebuild) and the page hides the tab. All its code, styles and tests stay. To bring it back, set one environment variable where the reader's server or `reader.py` is started, then restart (`serve.sh restart`):
@@ -296,8 +324,14 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
 node --test setup/transcript-reader/*.test.js
+```
+
+The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change:
+
+```bash
+node setup/transcript-reader/e2e/message-link-check.js <scratch folder> [screenshots folder]
 ```
 
 The offline copy on a phone, end to end (by hand: it needs Playwright and its WebKit, which the repo does not carry):
