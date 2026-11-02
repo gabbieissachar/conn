@@ -125,7 +125,7 @@ enum StarredBarCheck {
         let names = model.agentNamesBySession
         let labels = model.stars.order.map { model.stars.label(for: $0, agentNames: names) }
         let reader = model.web.box(.reader)
-        guard let strip = rowRect(reader), var row = read(strip, in: win) else { report("the Reader pane's row can be read", false, "reader view is not in the window"); return }
+        guard let strip = rowRect(reader), let row = read(strip, in: win) else { report("the Reader pane's row can be read", false, "reader view is not in the window"); return }
         func describe(_ r: [Run]) -> String { r.map { String(format: "%.0f", $0.rect.width) }.joined(separator: ",") }
         // How many of the chips from the left are drawn whole and as wide as their names make them. When the row is narrower than
         // the chips it scrolls: the next chip is then cut by the edge (narrower than its name), which is the only other thing allowed.

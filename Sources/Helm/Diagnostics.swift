@@ -385,6 +385,8 @@ enum UICheck {
 
         await StarredBarCheck.run(model: model, report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
+        await ReaderPinCheck.run(model: model, report: report, wait: wait)
+        model.webTab = .reader; model.pinReader(); await wait(0.5)
 
         model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)
         report("quick switcher opens", model.showSwitcher)

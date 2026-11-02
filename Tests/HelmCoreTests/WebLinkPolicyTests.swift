@@ -37,6 +37,21 @@ import HelmCore
         #expect(route(url, from: reader) == .showInPane(pane: "Organizer", url: URL(string: url)!))
     }
 
+    @Test func isPageIgnoresQueryAndFragmentButNotTheServerOrPath() {
+        let base = reader
+        #expect(WebLinkPolicy.isPage(base, URL(string: "http://localhost:8768/setup/transcript-reader/out/prototype.html?helm=3#s=abc")!))
+        #expect(WebLinkPolicy.isPage(base, base))
+        #expect(WebLinkPolicy.isPage(base, URL(string: "http://127.0.0.1:8768/setup/transcript-reader/out/prototype.html#s=abc")!))
+        #expect(!WebLinkPolicy.isPage(base, URL(string: "http://localhost:8768/setup/transcript-reader/out/other.html")!))
+        #expect(!WebLinkPolicy.isPage(base, URL(string: "http://localhost:8765/setup/transcript-reader/out/prototype.html")!))
+        #expect(!WebLinkPolicy.isPage(base, URL(string: "https://localhost:8768/setup/transcript-reader/out/prototype.html")!))
+        #expect(!WebLinkPolicy.isPage(base, nil))
+        let file = URL(fileURLWithPath: "/tmp/fixture/fixture-reader.html")
+        #expect(WebLinkPolicy.isPage(file, URL(string: "file:///tmp/fixture/fixture-reader.html#s=000000000001")!))
+        #expect(!WebLinkPolicy.isPage(file, URL(fileURLWithPath: "/tmp/fixture/fixture-organizer.html")))
+        #expect(!WebLinkPolicy.isPage(file, base))
+    }
+
     @Test func samePageIgnoresOnlyTheFragment() {
         let a = URL(string: "http://localhost:8768/p.html?helm=3#s=a")!
         #expect(WebLinkPolicy.samePageIgnoringFragment(URL(string: "http://localhost:8768/p.html?helm=3#s=b")!, a))

@@ -33,6 +33,14 @@ public enum WebLinkPolicy {
         return .openInBrowser(url)
     }
 
+    /// Whether `current` is the page at `base` (same server and path), whatever its query or fragment say. A pin that Helm had to
+    /// load carries a `?helm=<n>` query, so a page Helm loaded earlier still counts as the base page.
+    public static func isPage(_ base: URL, _ current: URL?) -> Bool {
+        guard let c = current, let s = base.scheme?.lowercased(), s == c.scheme?.lowercased() else { return false }
+        if base.isFileURL { return base.path == c.path }
+        return sameOrigin(base, c) && base.path == c.path
+    }
+
     /// Whether `url` is the page `current` already shows, apart from its fragment (then only the hash needs to change).
     public static func samePageIgnoringFragment(_ url: URL, _ current: URL?) -> Bool {
         guard let c = current else { return false }

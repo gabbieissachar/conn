@@ -42,6 +42,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         self.baseURL = baseURL
         self.fixtureDir = fixtureDir
         let cfg = WKWebViewConfiguration()
+        if kind == .reader { cfg.userContentController.addUserScript(WKUserScript(source: WebBox.listenerWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
         webView.navigationDelegate = self
@@ -65,15 +66,46 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     func reload() { phase = .loading; loadStart = Date(); if webView.url == nil { load(baseURL) } else { webView.reload() } }
 
-    /// Open the reader on one conversation. The real reader only reads `#s=<session id prefix>` when the page loads,
-    /// so a live pin is a page load (a query string makes WKWebView treat it as a new document, not a fragment jump).
+    /// Written into the reader page before its own scripts run: it records that the page listens for an address change
+    /// (`hashchange`), which is how Helm tells a reader that follows `#s=` while open from an older one that reads it only
+    /// at load. Nothing in the page is edited; the page's own `addEventListener` still runs.
+    static let listenerFlag = "__helmFollowsAddress"
+    static let listenerWatch = """
+    (function () {
+      if (window.\(listenerFlag) !== undefined) return;
+      window.\(listenerFlag) = false;
+      var add = window.addEventListener;
+      window.addEventListener = function (type) { if (type === 'hashchange') window.\(listenerFlag) = true; return add.apply(this, arguments); };
+    })();
+    """
+
+    /// How many pins were answered by changing the address in place, and how many by loading the page (test hooks).
+    private(set) var pinsInPlace = 0
+    private(set) var pinsLoaded = 0
+
+    /// Open the reader on one conversation. When the page on screen is the reader and it follows an address change while open
+    /// (it says so by listening for `hashchange`), only the address fragment changes and the reader switches in place: no page
+    /// load, no 19 MB download, the scroll place of the others kept. Otherwise the page is loaded: the first load, another
+    /// page or server, an older reader that reads `#s=` only at load, or an in-place change that fails.
     func pin(sessionID: String?) {
         guard kind == .reader, let sid = sessionID, sid.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { return }
-        if fixtureDir != nil {
-            if webView.url?.path == baseURL.path { webView.evaluateJavaScript("location.hash='s=\(sid)'", completionHandler: nil) }
-            else { pendingHash = "s=\(sid)"; load(baseURL) }
-            return
+        guard phase == .ready, WebLinkPolicy.isPage(baseURL, webView.url) else { loadPinned(sid); return }
+        webView.evaluateJavaScript("window.\(WebBox.listenerFlag) === true") { [weak self] follows, _ in
+            guard let self = self else { return }
+            // The page may have started another load while the question was in flight.
+            guard (follows as? Bool) == true, self.phase == .ready, WebLinkPolicy.isPage(self.baseURL, self.webView.url) else { self.loadPinned(sid); return }
+            self.webView.evaluateJavaScript("location.hash='s=\(sid)'") { [weak self] _, error in
+                guard let self = self else { return }
+                if error != nil { self.loadPinned(sid) } else { self.pinsInPlace += 1 }
+            }
         }
+    }
+
+    /// The pin as a page load. A live page gets a `?helm=<n>` query so WKWebView treats it as a new document and not as a
+    /// fragment jump; a fixture file takes the hash once it has loaded.
+    private func loadPinned(_ sid: String) {
+        pinsLoaded += 1
+        if fixtureDir != nil { pendingHash = "s=\(sid)"; load(baseURL); return }
         pinCounter += 1
         var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "helm", value: "\(pinCounter)")]
