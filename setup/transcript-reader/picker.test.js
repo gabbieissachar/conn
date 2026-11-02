@@ -305,6 +305,65 @@ test('page: paintViewIcons only changes attributes, so the title row and the pic
   assert.doesNotMatch(body, /replaceChildren|innerHTML|\.append\(|\.remove\(|fillSessions/);
 });
 
+// The page's own pinsLabel and paintPinsIcon, run on stand-ins for the elements and the state.
+function pinsIconPage() {
+  const page = pageSource();
+  const make = () => ({ hidden: true, attrs: {}, title: '', setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
+  const icon = make(), panel = make();
+  const world = { state: { view: 'reader', pinsOpen: false }, count: 0, look: { open: false } };
+  const sandbox = { state: world.state, look: world.look, pins: { count: () => world.count }, document: { getElementById: (id) => ({ 'pins-quick': icon, 'pins-panel': panel })[id] }, String };
+  const run = vm.runInNewContext(fnBody(page, 'pinsLabel') + '\n  }\n' + fnBody(page, 'paintPinsIcon') + '\n  }\n({ pinsLabel, paintPinsIcon })', sandbox);
+  return { icon, panel, world, ...run };
+}
+
+test('pin icon: named with the count, lit while the panel is open, shown on the Conversation with a session only', () => {
+  const page = pinsIconPage();
+  page.paintPinsIcon({});
+  assert.equal(page.icon.hidden, false);
+  assert.equal(page.icon.attrs['aria-label'], 'Pins');
+  assert.equal(page.icon.title, 'Pins');
+  assert.equal(page.icon.attrs['aria-pressed'], 'false');
+  assert.equal(page.panel.hidden, true);
+  page.world.count = 3;
+  page.world.state.pinsOpen = true;
+  page.paintPinsIcon({});
+  assert.equal(page.icon.attrs['aria-label'], 'Pins · 3', 'the same words as the Pins control');
+  assert.equal(page.icon.title, 'Pins · 3 (open)');
+  assert.equal(page.icon.attrs['aria-pressed'], 'true');
+  assert.equal(page.panel.hidden, false, 'the panel shows in the folded header too');
+  page.world.look.open = true;
+  page.paintPinsIcon({});
+  assert.equal(page.panel.hidden, true, 'a search has the screen');
+  page.world.look.open = false;
+  page.world.state.view = 'doc';
+  page.paintPinsIcon({});
+  assert.equal(page.icon.hidden, true);
+  assert.equal(page.panel.hidden, true);
+  page.world.state.view = 'reader';
+  page.paintPinsIcon(null);
+  assert.equal(page.icon.hidden, true, 'no session, nothing to pin');
+});
+
+test('page: the pin icon sits after the answer sheet icon and before Follow, is an icon of the neighbours\' kind, and opens the same panel as Pins', () => {
+  const page = pageSource();
+  const title = page.match(/<div class="title">([\s\S]*?)<\/div>/)[1];
+  assert.match(title, /<button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">/);
+  assert.match(title.match(/id="pins-quick"[\s\S]*?<\/svg>/)[0], /stroke="currentColor" stroke-width="1\.4"/, 'the weight of the Documents and answer sheet icons');
+  assert.ok(title.indexOf('class="to-sheet"') < title.indexOf('id="pins-quick"') && title.indexOf('id="pins-quick"') < title.indexOf('id="follow-quick"'));
+  assert.match(page, /document\.getElementById\("pins-quick"\)\.addEventListener\("click", togglePins\);/);
+  assert.match(page, /pinned\.addEventListener\("click", togglePins\);/, 'the Pins control in the controls is untouched and shares the switch');
+  assert.match(fnBody(page, 'togglePins'), /state\.pinsOpen = !state\.pinsOpen; paintPins\(\);/);
+  assert.match(fnBody(page, 'paintBar'), /paintPinsIcon\(session\);/, 'every draw of the bar keeps it right');
+  assert.equal((page.match(/id="pins-panel"/g) || []).length, 1, 'one panel, in the header and not in the controls, so folded or open shows it');
+  assert.match(page.match(/<div id="controls"><\/div>[\s\S]*?<\/header>/)[0], /<div id="pins-panel" hidden><\/div>/);
+  assert.match(page, /\.bar\.collapsed \.view-btn:not\(\[hidden\]\) \{ display: grid; \}/, 'folded only, with the same size, tap area and pressed look as the other icons');
+});
+
+test('page: on a phone the pin icon keeps Follow on the same row', () => {
+  const page = pageSource();
+  assert.match(page, /@media \(pointer: coarse\) and \(max-width: 440px\) \{\s*\.bar\.collapsed \.title \{ column-gap: 4px; \}\s*\.bar :is\(\.follow-quick, \.jump\) \{ padding: 0 4px; \}/);
+});
+
 test('page: the folded header shows the icons, the answer sheet link turns into one, and the unfolded header keeps its tabs and its text link', () => {
   const page = pageSource();
   assert.match(page, /\.view-btn, \.to-sheet \.sheet-ico \{ display: none; \}/, 'not in the unfolded header, where the tabs are');
