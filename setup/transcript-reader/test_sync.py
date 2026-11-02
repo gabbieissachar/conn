@@ -1389,12 +1389,41 @@ class SealTest(unittest.TestCase):
         self.assertFalse((self.lab.out / "upload.json").exists())
         self.assertTrue((self.lab.out / "index.json").is_file(), "the laptop's copy stays")
 
+    def keychain(self, answer):
+        """A `security` that answers as the login keychain does for the item the README stores (answer None: no such item)."""
+        fake = self.lab.root / "security"
+        text = f'#!/bin/sh\n[ "$1 $2 $3 $4" = "find-generic-password -w -s {sync.KEYCHAIN_SERVICE}" ] || exit 2\n'
+        fake.write_text(text + (f'echo "{answer}"\n' if answer is not None else "exit 44\n"), encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
     def test_without_a_passphrase_or_a_terminal_it_stops_before_building(self):
-        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: ""}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
+        # No terminal and no variable: the login keychain is the last place (never this Mac's own, which a test must not read).
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "", sync.SECURITY_ENV: str(self.keychain(None))}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
                 self.assertRaises(SystemExit) as stop:
             self.seal()
         self.assertIn(sync.PASSPHRASE_ENV, str(stop.exception))
+        self.assertIn("keychain", str(stop.exception))
         self.assertFalse(self.lab.out.exists())
+
+    def test_without_a_terminal_the_passphrase_comes_from_the_login_keychain_and_is_never_printed(self):
+        # What the reader's server runs when the phone's Sync asks for a new copy: no terminal, no variable, the keychain item
+        # the LaunchAgent's README stores. The passphrase is read inside this run, so no other process is handed it.
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "", sync.SECURITY_ENV: str(self.keychain(PASS))}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+            self.assertEqual(sync.main(["--seal", str(self.target), "--out", str(self.lab.out), "--main-home", str(self.lab.main)]), 0)
+        self.assertNotIn(PASS, printed.getvalue())
+        self.assertEqual(len(self.opened("index.json")["index.json"]["conversations"]), 3)
+
+    def test_the_variable_wins_over_the_keychain_and_a_terminal_over_both(self):
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "from the variable", sync.SECURITY_ENV: str(self.keychain("from the keychain"))}), \
+                mock.patch.object(sys.stdin, "isatty", lambda: False):
+            self.assertEqual(sync.passphrase(self.target), "from the variable")
+        with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "", sync.SECURITY_ENV: str(self.keychain("from the keychain"))}), \
+                mock.patch.object(sys.stdin, "isatty", lambda: True), mock.patch("getpass.getpass", return_value="typed"):
+            (self.target / "k").mkdir(parents=True)
+            (self.target / "k" / "params.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(sync.passphrase(self.target), "typed")
 
     def test_the_launch_agent_reads_the_passphrase_from_the_keychain_and_is_only_printed(self):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:

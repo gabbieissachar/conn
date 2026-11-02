@@ -19,7 +19,8 @@ Usage (from the repo root):
   --seal, --launch-agent (the printed plist carries it) and --preview.
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
 
---seal takes the passphrase from HOSTED_READER_PASSPHRASE, or asks for it in a terminal;
+--seal takes the passphrase from HOSTED_READER_PASSPHRASE; with no terminal (the LaunchAgent, or the reader's server answering the
+page's Sync) from the login keychain item pmos-hosted-reader; else it asks for it in a terminal;
 it is never written or printed. Each run builds incrementally (below), then, for the
 conversations active in the last 90 days, the documents they name and the fleet weeks of the
 last 90 days: redacts every text (redact.py; the counts go to out/hosted/redactions.json, never
@@ -140,6 +141,7 @@ IMAGE_COPY_BYTES = 2 * 1024 * 1024
 IMAGE_COPY_TOTAL = 12 * 1024 * 1024
 PASSPHRASE_ENV = "HOSTED_READER_PASSPHRASE"
 KEYCHAIN_SERVICE = "pmos-hosted-reader"
+SECURITY_ENV = "HOSTED_READER_SECURITY"  # the `security` program that reads the keychain (a test names a fake; default macOS's own)
 
 
 
@@ -822,13 +824,30 @@ def wipe(target: Path, out: Path) -> int:
     return 0
 
 
+def keychain_passphrase() -> str:
+    """The passphrase kept in the login keychain (the item the LaunchAgent reads: `security add-generic-password -s pmos-hosted-reader
+    -a "$USER" -w`), or "" when there is none or the keychain cannot be read. It is read here, inside this run, so no other process is
+    handed it, and it is never printed."""
+    try:
+        done = subprocess.run([os.environ.get(SECURITY_ENV) or "/usr/bin/security", "find-generic-password", "-w", "-s", KEYCHAIN_SERVICE],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.rstrip("\n") if done.returncode == 0 else ""
+
+
 def passphrase(target: Path) -> str:
-    """The passphrase: from the environment, else asked in the terminal (twice for a new bucket)."""
+    """The passphrase: from the environment, else (with no terminal: the LaunchAgent, or the reader's server answering the page's Sync)
+    from the login keychain, else asked in the terminal (twice for a new bucket)."""
     found = os.environ.get(PASSPHRASE_ENV, "")
     if found:
         return found
     if not sys.stdin.isatty():
-        raise SystemExit(f"Set {PASSPHRASE_ENV}, or run this in a terminal to be asked for the passphrase.")
+        kept = keychain_passphrase()
+        if kept:
+            return kept
+        raise SystemExit(f"Set {PASSPHRASE_ENV}, keep the passphrase in the login keychain (security add-generic-password -s {KEYCHAIN_SERVICE} "
+                         f"-a \"$USER\" -w), or run this in a terminal to be asked for the passphrase.")
     import getpass
     first = getpass.getpass("Passphrase for the hosted copy: ")
     if not (target / "k" / "params.json").is_file() and getpass.getpass("Again, to be sure: ") != first:
