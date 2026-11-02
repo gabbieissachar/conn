@@ -175,13 +175,28 @@ enum UICheck {
         model.appBecameActive(); await wait(2)
         report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
         // The menus SwiftUI built from the commands, with their shortcuts.
+        var chords = 0
+        var offenders: [String] = []
+        func audit(_ i: NSMenuItem) {
+            guard !i.keyEquivalent.isEmpty else { return }
+            chords += 1
+            let f = i.keyEquivalentModifierMask
+            var m: KeyModifiers = []
+            if f.contains(.command) { m.insert(.command) }
+            if f.contains(.control) { m.insert(.control) }
+            if f.contains(.option) { m.insert(.option) }
+            if f.contains(.shift) { m.insert(.shift) }
+            if ![.app, .toggleFocus].contains(KeyRule.route(KeyChord(i.keyEquivalent, m))) { offenders.append("\(i.title) [\(i.keyEquivalent)]") }
+        }
         func dump(_ m: NSMenu, _ indent: String) {
             for i in m.items where !i.isSeparatorItem {
+                audit(i)
                 let key = i.keyEquivalent.isEmpty ? "" : " [\(i.keyEquivalentModifierMask.contains(.control) ? "^" : "")\(i.keyEquivalentModifierMask.contains(.option) ? "~" : "")\(i.keyEquivalentModifierMask.contains(.shift) ? "$" : "")\(i.keyEquivalentModifierMask.contains(.command) ? "@" : "")\(i.keyEquivalent)]"
                 if let sub = i.submenu, !["Services"].contains(i.title) { print("ui-check: menu \(indent)\(i.title)"); dump(sub, indent + "  ") } else { print("ui-check: menu \(indent)\(i.title)\(key)\(i.isEnabled ? "" : " (disabled)")") }
             }
         }
         if let main = NSApp.mainMenu { dump(main, "") }
+        report("every menu shortcut carries Command (Ctrl and Alt chords stay the pane's)", chords > 0 && offenders.isEmpty, "shortcuts=\(chords) offenders=\(offenders)")
         print("ui-check: done")
         model.shutdown(); NSApplication.shared.terminate(nil)
     }

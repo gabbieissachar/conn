@@ -25,6 +25,17 @@ Command Line Tools and SwiftPM only. No Xcode.
 
 More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (waiting first), Cmd+J next agent waiting on you, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
 
+## Keyboard ownership (design note, `HelmCore/KeyRule.swift`)
+
+Panes take no keys today, but the rule is fixed before they do:
+
+- App shortcuts always carry Command (Shift or Option may join it: Opt+Cmd+1/2/3 switch the centre view, Cmd+Ctrl+S toggles the sidebar). A chord without Command is never the app's.
+- Control and Option (Alt) chords without Command always go to the focused pane (Ctrl-C, Ctrl-R, Alt-B, Esc prefixes); no terminal sends Command chords, so the two sets never clash.
+- One chord, Cmd+L, moves keyboard focus between the compose box and the pane. It is ignored while an input method is composing (marked text): then the keys belong to the input method.
+- Everything else belongs to whatever has focus.
+
+`KeyRule.route` is the matcher (unit-tested over every modifier combination); `--ui-check` audits every menu shortcut against it. The day a pane takes input, its key view asks `KeyRule.route` before it handles an event.
+
 ## Known limits
 
 - Panes are drawn at the size Herdr's own screen gave them (an observer cannot resize a pane), so they are narrow in a wide window. Window-sized panes need control mode (decision D3, step 2), which is not built.
