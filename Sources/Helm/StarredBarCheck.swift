@@ -29,7 +29,6 @@ enum StarredBarCheck {
         let r = content.convert(rect, from: nil)
         guard let rep = content.bitmapImageRepForCachingDisplay(in: r) else { return nil }
         content.cacheDisplay(in: r, to: rep)
-        if let d = ProcessInfo.processInfo.environment["HELM_UI_CHECK_STRIP_DIR"] { Capture.writePNG(rep, to: URL(fileURLWithPath: d).appendingPathComponent("strip-\(Int(Date().timeIntervalSince1970 * 1000)).png")) }
         guard let px = Pixels(rep) else { return nil }
         let scale = CGFloat(px.width) / rect.width
         let y = px.height / 2
