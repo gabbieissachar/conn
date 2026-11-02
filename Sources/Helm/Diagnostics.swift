@@ -152,7 +152,8 @@ enum UICheck {
             let startSize = win.contentView?.frame.size ?? savedSize
             model.setPaneZoom(1, remember: false); await wait(0.5)
             let base = e.view.fontPoints
-            report("pane text fits the pane in width and height", fitsRoom(), "font=\(base) pt, \(room())")
+            let cellInfo = [7.0, 7.5, 8.0, 9.0, 10.0].map { p in "\(p)pt=\(HelmTerminalView.cellSize(forPoints: CGFloat(p), scale: 2).width)x\(HelmTerminalView.cellSize(forPoints: CGFloat(p), scale: 2).height)" }.joined(separator: " ")
+            report("pane text fits the pane in width and height", fitsRoom(), "font=\(base) pt, \(room()); mirrored cell sizes \(cellInfo); view cell=\(e.view.frame.width / CGFloat(e.view.gridCols))")
             win.setContentSize(NSSize(width: startSize.width + 400, height: startSize.height + 250)); await wait(0.8)
             let big = e.view.fontPoints
             report("a larger window gives larger text, still fitting", big >= base && fitsRoom(), "font \(base) -> \(big) pt, \(room())")
@@ -228,7 +229,7 @@ enum UICheck {
                 print("ui-check: SKIP wheel over the pane (the grid renderer is on)")
             }
             model.setPaneZoom(originalZoom)
-            print("ui-check: info window occlusionVisible=\(win.occlusionState.contains(.visible)) alpha=\(win.alphaValue) appNapHeld=\(Runtime.config.runsInBackground)")
+            print("ui-check: info window occlusionVisible=\(win.occlusionState.contains(.visible)) alpha=\(win.alphaValue) appNapHeld=\(Runtime.config.runsInBackground) windowScale=\(win.backingScaleFactor) screenScale=\(win.screen?.backingScaleFactor ?? 0) mainScreenScale=\(NSScreen.main?.backingScaleFactor ?? 0)")
         }
 
         model.mode = .editor; await wait(0.5)
