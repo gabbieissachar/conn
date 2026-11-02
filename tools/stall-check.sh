@@ -3,14 +3,14 @@
 # Runs against the stand-in Herdr only. The sidebar must still be live and the pane must still be streaming afterwards.
 cd "$(dirname "$0")/.."
 PAUSE=${1:-20}
-D=/tmp/helm-stall-$UID; S=$D/state; mkdir -p "$D" "$S"
+D=/tmp/conn-stall-$UID; S=$D/state; mkdir -p "$D" "$S"
 printf '#!/bin/sh\nexec "%s/build/FakeHerdr" cli "$@"\n' "$PWD" > "$D/herdr"; chmod +x "$D/herdr"
 build/FakeHerdr serve --dir "$D/s" --session fake --agents 12 >/dev/null 2>&1 &
 FAKE=$!
 trap 'kill $FAKE 2>/dev/null' EXIT
 sleep 1
 OUT=$D/out.txt
-HELM_STATE_DIR="$S" HELM_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off --background --selftest $((PAUSE + 22)) --quit-after $((PAUSE + 40))" build/Helm.app/Contents/MacOS/Helm > "$OUT" 2>&1 &
+CONN_STATE_DIR="$S" CONN_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off --background --selftest $((PAUSE + 22)) --quit-after $((PAUSE + 40))" build/Conn.app/Contents/MacOS/Conn > "$OUT" 2>&1 &
 APP=$!
 sleep 8
 kill -STOP $APP; echo "app frozen for ${PAUSE}s"; sleep "$PAUSE"; kill -CONT $APP; echo "app resumed"

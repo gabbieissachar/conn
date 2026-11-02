@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Helm. Options go through the HELM_ARGS environment variable (AppKit treats stray argv words as files to open).
+# Run Conn. Options go through the CONN_ARGS environment variable (AppKit treats stray argv words as files to open).
 #   ./run.sh                      live: observe-only client of Herdr session "esim"
 #   ./run.sh --session NAME       another Herdr session
 #   ./run.sh --write NAME         allow the compose box to send to that session (default: none)
@@ -11,13 +11,13 @@
 #   ./run.sh --selftest 10 | --shot FILE | --tour DIR | --quit-after N
 #   ./run.sh --background ...     test mode: no focus, no Dock icon or menu-bar item, invisible click-through windows.
 #                                 Every scripted launch (--ui-check, --shot, --tour, --selftest, --quit-after, ...) implies it;
-#                                 --foreground (or HELM_FOREGROUND=1) opts out.
+#                                 --foreground (or CONN_FOREGROUND=1) opts out.
 cd "$(dirname "$0")"
-[ -d build/Helm.app ] || ./build.sh
+[ -d build/Conn.app ] || ./build.sh
 ARGS="$*"
 if [[ " $ARGS " == *" --fixture "* ]]; then
   # Short path: a Unix socket path is limited to 104 bytes.
-  DIR=/tmp/helm-fixture-$UID
+  DIR=/tmp/conn-fixture-$UID
   mkdir -p "$DIR"
   printf '#!/bin/sh\nexec "%s/build/FakeHerdr" cli "$@"\n' "$PWD" > "$DIR/herdr"
   chmod +x "$DIR/herdr"
@@ -27,4 +27,4 @@ if [[ " $ARGS " == *" --fixture "* ]]; then
   sleep 0.8
   ARGS="--session fake --socket-dir $DIR/s --herdr-bin $DIR/herdr --write fake $ARGS"
 fi
-HELM_ARGS="$ARGS" build/Helm.app/Contents/MacOS/Helm
+CONN_ARGS="$ARGS" build/Conn.app/Contents/MacOS/Conn

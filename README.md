@@ -1,30 +1,40 @@
-# Helm
+# Conn
 
 Native Mac workspace app: Herdr panes, the transcript reader, the organizer and a plain editor in one window. Decisions: see the native app decision ledger kept by the leader-workspaceos firstmate home.
 
-**What is done and what is next: [ROADMAP.md](ROADMAP.md).** Every change to Helm updates it in the same branch.
+**What is done and what is next: [ROADMAP.md](ROADMAP.md).** Every change to Conn updates it in the same branch.
 
-Helm is a client of `herdr server`: Herdr stays the backend and keeps every agent alive when the app quits. The app draws a native sidebar from Herdr's snapshot and events, streams visible panes into a terminal pane, shows the reader and the organizer as web views, edits text and markdown files, and keeps Herdr's own screen in a terminal pane as a fallback.
+Conn is a client of `herdr server`: Herdr stays the backend and keeps every agent alive when the app quits. The app draws a native sidebar from Herdr's snapshot and events, streams visible panes into a terminal pane, shows the reader and the organizer as web views, edits text and markdown files, and keeps Herdr's own screen in a terminal pane as a fallback.
 
 **What draws the panes.** Decision B2: SwiftTerm is the terminal engine, behind a protocol (`TerminalEngine`). It is the default pane view. A second engine, a 450-line cell grid ported from the prototype, stays selectable with `./run.sh --renderer grid`; it is the one whose output the agents that built this could see in screenshots, so it is the reference when a SwiftTerm pane looks wrong. SwiftTerm also runs the Herdr-screen fallback pane.
 
-SwiftTerm normally draws from a display-link tick that follows its own dirty mark. A pane that gets one burst of output and then nothing (a "needs you" or "done" agent) was slow to draw its first screen on the captain's display, so the engine forces a draw 60 ms after a full frame and 250 ms after the last bytes (`SwiftTermEngine.scheduleNudge`, `HelmTerminalView.nudgeDisplay`). In the one environment it could be measured (no display link ticks at all), the first draw lands 55 to 67 ms after the first frame; whether that matches the delay on a real screen is for the captain to confirm.
+SwiftTerm normally draws from a display-link tick that follows its own dirty mark. A pane that gets one burst of output and then nothing (a "needs you" or "done" agent) was slow to draw its first screen on the captain's display, so the engine forces a draw 60 ms after a full frame and 250 ms after the last bytes (`SwiftTermEngine.scheduleNudge`, `ConnTerminalView.nudgeDisplay`). In the one environment it could be measured (no display link ticks at all), the first draw lands 55 to 67 ms after the first frame; whether that matches the delay on a real screen is for the captain to confirm.
 
 ## Build and run
 
 Command Line Tools and SwiftPM only. No Xcode.
 
 ```
-./build.sh                 # build/Helm.app (release), about 5 minutes the first time (SwiftTerm dominates)
+./build.sh                 # build/Conn.app (release), about 5 minutes the first time (SwiftTerm dominates)
 ./run.sh                   # live: observe-only client of Herdr session "esim"
 ./run.sh --fixture         # stand-in Herdr with invented agents and pages: safe to screen-share, compose box enabled
 ./run.sh --fixture --renderer grid   # the same with the cell-grid pane view
 ./run.sh --session NAME    # another session
 ./run.sh --write NAME      # let the compose box send to that session (default: none)
 ./run.sh --text-panes      # poll pane text instead of streaming (works across Herdr protocol changes)
-./test.sh                  # unit tests (Swift Testing from the Command Line Tools); HELM_HOSTILE_SCALE=full adds the 2 MB and 12 MB hostile streams
+./test.sh                  # unit tests (Swift Testing from the Command Line Tools); CONN_HOSTILE_SCALE=full adds the 2 MB and 12 MB hostile streams
 ./run.sh --fixture --ui-check   # scripted in-process UI checks (background mode); add no --fixture to run them read-only against session esim
 ```
+
+Conn's first launch migrates app-owned data from Helm when the new locations are absent. It moves `~/Library/Application Support/Helm` to `~/Library/Application Support/Conn` and copies the old `dev.local.helm` UserDefaults domain to `dev.local.conn`, renaming Conn-owned `helm.*` keys to `conn.*`. Existing Conn locations are never overwritten. The migration is covered by unit tests.
+
+The icon concepts and the selected flat icon are reproducible without Xcode:
+
+```
+./tools/build_icon.sh          # docs/icon-concepts.png and Resources/Conn.icns
+```
+
+The selected concept is **Command C**: one large custom C glyph on a dark blue field. It reads as Conn at small sizes, keeps one strong idea, and stays legible on both light and dark Dock backgrounds. The other concepts, Signal Pennant and Linked Loops, remain reproducible in the same script.
 
 More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (the sidebar order: needs you, working, done, idle), Cmd+J next agent waiting on you, Cmd+Y swap the live pane for its history and back (Esc also goes back), Cmd+= / Cmd+- / Cmd+0 pane text bigger / smaller / back to the fit, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
 
@@ -32,22 +42,22 @@ More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+
 
 **Pane text size.** The font is the largest (7 to 28 pt) at which Herdr's whole cols x rows grid fits the pane's width and height, refitted on every window or split resize; the grid is centred in the slack. Cmd+= / Cmd+- change a zoom factor (0.6 to 2.0 of the fit) that is remembered across launches; zoomed past the fit the left and top edges crop. A pane that is 59 rows tall is height-bound: rows, not columns, set the size, so a wide window does not make its text larger. A different grid (more columns, fewer rows for the width you have) needs the Herdr pane resized, which is a write and belongs to control mode.
 
-**Organizer and reader.** The Organizer pane opens on its Context view every time it is switched to or its page loads (Helm clicks the page's own Context button; the page is not edited). A link in one pane to the other pane's server (localhost, 127.0.0.1 or ::1, the same port), by click or by `target=_blank` / `window.open`, switches to that pane and loads that exact address, hash kept; any other outside link opens in the browser. The two tabs share one container that holds only the selected pane's web view, so a tab always shows its own page; `--ui-check` asks which page a click in the middle of the column would reach after each switch, built from either tab first (with `--fixture`, `HELM_UI_CHECK_SHOT_DIR=DIR` also writes a picture of each step).
+**Organizer and reader.** The Organizer pane opens on its Context view every time it is switched to or its page loads (Conn clicks the page's own Context button; the page is not edited). A link in one pane to the other pane's server (localhost, 127.0.0.1 or ::1, the same port), by click or by `target=_blank` / `window.open`, switches to that pane and loads that exact address, hash kept; any other outside link opens in the browser. The two tabs share one container that holds only the selected pane's web view, so a tab always shows its own page; `--ui-check` asks which page a click in the middle of the column would reach after each switch, built from either tab first (with `--fixture`, `CONN_UI_CHECK_SHOT_DIR=DIR` also writes a picture of each step).
 
-**Pinning the reader.** An agent selection and a starred chip both call one pin. When the Reader web view already shows the reader page (same server and path; a `?helm=<n>` query left by an earlier load does not matter) and the page says it follows an address change while open, the pin only changes the address fragment (`location.hash`), so the reader switches in place: no page load, no 19 MB download, no new load time on the row. Helm tells a reader that follows from one that does not by a small script it adds to the reader page before the page's own scripts run; it only notes whether the page listens for `hashchange` and edits nothing. Anything else is a page load as before: the first load, another page or server, a page still loading, a reader that reads `#s=` only at load (it gets `?helm=<n>#s=...`, so WebKit treats it as a new document), or an in-place change that raises an error. The chip and agent highlighting follow the address the reader writes back, in place or after a load. `--ui-check` proves both paths on throwaway pages served from a scratch local port (a window marker survives an in-place pin and is lost on a load), and with the real reader (no `--fixture`) pins it once, read-only. Measured on the live reader in Chrome, 18 switches between 6 starred sessions: 211 ms median (119 to 595) in place against 1,369 ms median (1,088 to 2,052) for a page load.
+**Pinning the reader.** An agent selection and a starred chip both call one pin. When the Reader web view already shows the reader page (same server and path; a `?conn=<n>` query left by an earlier load does not matter) and the page says it follows an address change while open, the pin only changes the address fragment (`location.hash`), so the reader switches in place: no page load, no 19 MB download, no new load time on the row. Conn tells a reader that follows from one that does not by a small script it adds to the reader page before the page's own scripts run; it only notes whether the page listens for `hashchange` and edits nothing. Anything else is a page load as before: the first load, another page or server, a page still loading, a reader that reads `#s=` only at load (it gets `?conn=<n>#s=...`, so WebKit treats it as a new document), or an in-place change that raises an error. The chip and agent highlighting follow the address the reader writes back, in place or after a load. `--ui-check` proves both paths on throwaway pages served from a scratch local port (a window marker survives an in-place pin and is lost on a load), and with the real reader (no `--fixture`) pins it once, read-only. Measured on the live reader in Chrome, 18 switches between 6 starred sessions: 211 ms median (119 to 595) in place against 1,369 ms median (1,088 to 2,052) for a page load.
 
-**Starred sessions row.** The Reader pane's header row (no "Reader" label: the tab above says it) holds one chip per session starred in the reader's own picker, then the load time and the reload button. A click opens that session in the reader (the same pin an agent selection uses, see "Pinning the reader"; the session already on screen is left alone); the chip for the session on screen is filled. Drag a chip onto another to move it there; the order is kept across launches (the only thing Helm stores about stars). More chips than fit scroll sideways, the selected one is brought into view; with nothing starred the row says where to star. Stars are the reader's: Helm reads `~/.config/pmos-transcript-reader/stars.json` (`HELM_READER_STARS` or the reader's own `PMOS_READER_STARS` names another) and never writes it, looking at the file every 2 s, so a star added or removed in the reader reaches the row without a relaunch. A chip is named by the agent running that session now, else by the reader's own record of the pane (`~/workspace/pmos/setup/transcript-reader/out/pane-labels.json`, `HELM_READER_LABELS` names another), else by the first eight characters of the id. `--fixture` reads invented stars and keeps its order apart from the real one; `--ui-check` reads the row from a drawing of the window, clicks a chip with an event delivered inside the process, and checks a live change of the star list on a scratch copy. A drag needs a real pointer, so the reorder call is checked and the feel is a hand check (ROADMAP N1).
+**Starred sessions row.** The Reader pane's header row (no "Reader" label: the tab above says it) holds one chip per session starred in the reader's own picker, then the load time and the reload button. A click opens that session in the reader (the same pin an agent selection uses, see "Pinning the reader"; the session already on screen is left alone); the chip for the session on screen is filled. Drag a chip onto another to move it there; the order is kept across launches (the only thing Conn stores about stars). More chips than fit scroll sideways, the selected one is brought into view; with nothing starred the row says where to star. Stars are the reader's: Conn reads `~/.config/pmos-transcript-reader/stars.json` (`CONN_READER_STARS` or the reader's own `PMOS_READER_STARS` names another) and never writes it, looking at the file every 2 s, so a star added or removed in the reader reaches the row without a relaunch. A chip is named by the agent running that session now, else by the reader's own record of the pane (`~/workspace/pmos/setup/transcript-reader/out/pane-labels.json`, `CONN_READER_LABELS` names another), else by the first eight characters of the id. `--fixture` reads invented stars and keeps its order apart from the real one; `--ui-check` reads the row from a drawing of the window, clicks a chip with an event delivered inside the process, and checks a live change of the star list on a scratch copy. A drag needs a real pointer, so the reorder call is checked and the feel is a hand check (ROADMAP N1).
 
 ## Test notes (read before launching the app from a script or an agent session)
 
 A test launch must never take the keyboard or the pointer from the person at the computer. The rules:
 
-1. **Background mode.** `--background` (or `HELM_BACKGROUND=1`) makes the process an accessory (no Dock icon, no menu-bar item), never activates it, makes its windows fully transparent and click-through, and has any window that becomes key give it up. Views still lay out and draw, so in-process checks and captures work. Every scripted launch (`--ui-check`, `--shot`, `--tour`, `--selftest`, `--probe-draw`, `--editor-test`, `--send-test`, `--start-fallback`, `--quit-after`) implies it; `--foreground` or `HELM_FOREGROUND=1` opts out. `tools/kill9-orphan-check.sh` and `tools/stall-check.sh` pass it. Going through `open`, use `open -g -j`.
+1. **Background mode.** `--background` (or `CONN_BACKGROUND=1`) makes the process an accessory (no Dock icon, no menu-bar item), never activates it, makes its windows fully transparent and click-through, and has any window that becomes key give it up. Views still lay out and draw, so in-process checks and captures work. Every scripted launch (`--ui-check`, `--shot`, `--tour`, `--selftest`, `--probe-draw`, `--editor-test`, `--send-test`, `--start-fallback`, `--quit-after`) implies it; `--foreground` or `CONN_FOREGROUND=1` opts out. `tools/kill9-orphan-check.sh` and `tools/stall-check.sh` pass it. Going through `open`, use `open -g -j`.
 2. **No synthesised input.** No CGEvent, AppleScript or System Events clicks or keystrokes, no cliclick, nothing that moves the real pointer. Drive the UI in-process: the `--ui-check` hooks and direct method calls on the model. Capture with `--shot` / `--tour` (in-process rendering), never by bringing a window forward.
 3. **Stop what you start.** Kill every test instance when its check ends (the check scripts do).
 4. **Needs a real foreground window?** Do not run it from a script. List it for a person to try by hand. Today that is: the pane's mouse-wheel gesture on a real trackpad, keyboard focus in the compose box, Cmd+= / Cmd+- / Cmd+0 and Cmd+Y typed at the real window, and `tools/measure.py` (it opens a real window on purpose, because drawing cost is what it measures).
 
-## Keyboard ownership (design note, `HelmCore/KeyRule.swift`)
+## Keyboard ownership (design note, `ConnCore/KeyRule.swift`)
 
 Panes take no keys today, but the rule is fixed before they do:
 
@@ -70,19 +80,19 @@ Panes take no keys today, but the rule is fixed before they do:
 
 | Path | What |
 |---|---|
-| `Sources/HelmCore` | Everything that is not UI: Herdr JSON client with a write gate, store (snapshot + events, reconnect, health ping), pane stream sources, compatibility check, terminal protocol and the cell-grid engine, editor document |
-| `Sources/HelmTerminal` | SwiftTerm behind HelmCore's `TerminalEngine`: engine, observe-only view, theme, the fallback pane |
-| `Sources/Helm` | The SwiftUI app with AppKit views for the hot paths |
+| `Sources/ConnCore` | Everything that is not UI: Herdr JSON client with a write gate, store (snapshot + events, reconnect, health ping), pane stream sources, compatibility check, terminal protocol and the cell-grid engine, editor document |
+| `Sources/ConnTerminal` | SwiftTerm behind ConnCore's `TerminalEngine`: engine, observe-only view, theme, the fallback pane |
+| `Sources/Conn` | The SwiftUI app with AppKit views for the hot paths |
 | `Sources/FakeHerdrKit`, `Sources/FakeHerdr` | A stand-in Herdr (JSON socket, pane stream, `herdr` CLI subset) for fixtures, tests and measurements |
-| `Sources/HelmStreamTest` | The read-only Herdr stream test (latency, reconnect, load, version checks) |
+| `Sources/ConnStreamTest` | The read-only Herdr stream test (latency, reconnect, load, version checks) |
 | `Sources/SwiftTermVendored` | SwiftTerm v1.99.2 compiled unmodified from a pinned clone (see below) |
 | `tools/` | `fetch-deps.sh` and `deps.lock` (the pin), `measure.py` (footprint and CPU, same method as the 4.09 GB / 15.5% baseline), `kill9-orphan-check.sh` (one app and two apps killed with `kill -9`, stand-in only), `stall-check.sh` |
 
 ## Safety model
 
 - Panes are observe-only. The app never resizes a pane and has no control-mode path.
-- The only write is the compose box (`pane.send_input`: text, then Enter). It is refused in code unless the session is on the `WritePolicy` allow list (`--write NAME` or `HELM_WRITE_SESSIONS`), it waits a few seconds with an Undo, and the text returns to the box if delivery fails.
-- Everything that talks to Herdr is in `HelmCore/Herdr`. Session names and pane ids are validated before they reach a socket or a command line.
+- The only write is the compose box (`pane.send_input`: text, then Enter). It is refused in code unless the session is on the `WritePolicy` allow list (`--write NAME` or `CONN_WRITE_SESSIONS`), it waits a few seconds with an Undo, and the text returns to the box if delivery fails.
+- Everything that talks to Herdr is in `ConnCore/Herdr`. Session names and pane ids are validated before they reach a socket or a command line.
 - Stream bytes are untrusted: CSI parameters are clamped, saved cursors are clamped, frame sizes are checked (500 by 300 cells at most), clipboard and title requests from a pane are dropped, and only http and https links open.
 - Observer children get one receipt each (`observers/<pid>.json`: pid and start time of the child and of its owner). A launching instance ends a child (SIGTERM, then SIGKILL after about a second) only when its owner is gone, it is still the same process, its parent is launchd and its command line is still ours; another running instance's children are never touched.
 

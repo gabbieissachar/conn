@@ -1,25 +1,28 @@
 #!/bin/bash
-# Build Helm.app with the Command Line Tools and SwiftPM. No Xcode.
-# usage: ./build.sh          -> build/Helm.app (release)
-#        HELM_CONFIG=debug ./build.sh
+# Build Conn.app with the Command Line Tools and SwiftPM. No Xcode.
+# usage: ./build.sh          -> build/Conn.app (release)
+#        CONN_CONFIG=debug ./build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-CONFIG=${HELM_CONFIG:-release}
+CONFIG=${CONN_CONFIG:-release}
 tools/fetch-deps.sh
-swift build -c "$CONFIG" --product Helm
+swift build -c "$CONFIG" --product Conn
 swift build -c "$CONFIG" --product FakeHerdr
-APP=build/Helm.app
+APP=build/Conn.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture"
-cp ".build/$CONFIG/Helm" "$APP/Contents/MacOS/Helm"
+cp ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn"
 cp ".build/$CONFIG/FakeHerdr" build/FakeHerdr
 cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json "$APP/Contents/Resources/fixture/"
+cp Resources/Conn.icns "$APP/Contents/Resources/Conn.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>dev.local.helm</string>
-  <key>CFBundleName</key><string>Helm</string>
-  <key>CFBundleExecutable</key><string>Helm</string>
+  <key>CFBundleIdentifier</key><string>dev.local.conn</string>
+  <key>CFBundleName</key><string>Conn</string>
+  <key>CFBundleDisplayName</key><string>Conn</string>
+  <key>CFBundleExecutable</key><string>Conn</string>
+  <key>CFBundleIconFile</key><string>Conn</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>

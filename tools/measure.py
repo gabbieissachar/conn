@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Sample footprint and CPU of Helm, its `herdr terminal session observe` children and its WebKit helper processes.
+"""Sample footprint and CPU of Conn, its `herdr terminal session observe` children and its WebKit helper processes.
 Read-only: proc_pid_rusage on pids this script started or found as new WebKit helpers. Same method as the design
 study's baseline sampler (phys_footprint = Activity Monitor's Memory column; CPU% = delta CPU time / wall time).
 
-usage: measure.py NAME "HELM_ARGS" SECONDS [SETTLE_SECONDS]
+usage: measure.py NAME "CONN_ARGS" SECONDS [SETTLE_SECONDS]
   e.g. measure.py idle "--session esim --web off --select 6" 60
-Results go to $HELM_MEASURE_DIR (default ./measurements) as NAME.json.
+Results go to $CONN_MEASURE_DIR (default ./measurements) as NAME.json.
 """
 import ctypes, ctypes.util, json, os, re, signal, subprocess, sys, time
 
@@ -58,11 +58,11 @@ def server_targets():
     streams are paid for."""
     rows = list(ps_rows())
     t = {}
-    env_pid = os.environ.get('HELM_MEASURE_SERVER_PID')
+    env_pid = os.environ.get('CONN_MEASURE_SERVER_PID')
     herdr = [pid for pid, _, cmd in rows if cmd.rstrip().endswith('herdr server')]
     pid = int(env_pid) if env_pid else (herdr[0] if len(herdr) == 1 else None)
     if pid is None:
-        sys.exit(f'measure.py: cannot pick the Herdr server pid ({len(herdr)} candidates); set HELM_MEASURE_SERVER_PID')
+        sys.exit(f'measure.py: cannot pick the Herdr server pid ({len(herdr)} candidates); set CONN_MEASURE_SERVER_PID')
     t[f'server-herdr-{pid}'] = pid
     for name, port in (('reader', 8768), ('organizer', 8765)):
         p = listening_pid(port)
@@ -75,13 +75,13 @@ def main():
     name, args, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
     settle = float(sys.argv[4]) if len(sys.argv) > 4 else 12
     here = os.path.dirname(os.path.abspath(__file__))
-    app = os.path.join(here, '..', 'build/Helm.app/Contents/MacOS/Helm')
+    app = os.path.join(here, '..', 'build/Conn.app/Contents/MacOS/Conn')
     before = webkit_helpers()
-    noapp = os.environ.get('HELM_MEASURE_NOAPP') == '1'     # servers alone, for paired with/without windows
-    p = None if noapp else subprocess.Popen([app], env={**os.environ, 'HELM_ARGS': args}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    noapp = os.environ.get('CONN_MEASURE_NOAPP') == '1'     # servers alone, for paired with/without windows
+    p = None if noapp else subprocess.Popen([app], env={**os.environ, 'CONN_ARGS': args}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1 if noapp else settle)
     targets = {} if noapp else {'app': p.pid}
-    if os.environ.get('HELM_MEASURE_SERVERS', '1') == '1': targets.update(server_targets())
+    if os.environ.get('CONN_MEASURE_SERVERS', '1') == '1': targets.update(server_targets())
     for pid, ppid, cmd in ([] if noapp else ps_rows()):
         if ppid == p.pid and 'herdr' in cmd.lower() and 'observe' in cmd: targets[f'observer-{pid}'] = pid
     for pid, kind in ({} if noapp else webkit_helpers()).items():
@@ -118,10 +118,10 @@ def main():
     result['app_footprint_series_mb'] = [round(r[1]['app'][0] / 1e6, 1) for r in rows if 'app' in r[1]]
     result['total'] = {'footprint_mb_mean': round(sum(tot_fp) / len(tot_fp), 1), 'footprint_mb_max': round(max(tot_fp), 1), 'cpu_percent': round(tot_cpu, 2)}
     own = [g for g in result['groups'] if not g.startswith('server-')]
-    result['helm_only'] = {'footprint_mb_mean': round(sum(result['groups'][g]['footprint_mb_mean'] for g in own), 1),
+    result['conn_only'] = {'footprint_mb_mean': round(sum(result['groups'][g]['footprint_mb_mean'] for g in own), 1),
                            'cpu_percent': round(sum(result['groups'][g]['cpu_percent'] for g in own), 2)}
     print(json.dumps(result, indent=1))
-    outdir = os.environ.get('HELM_MEASURE_DIR', os.path.join(here, '..', 'measurements'))
+    outdir = os.environ.get('CONN_MEASURE_DIR', os.path.join(here, '..', 'measurements'))
     os.makedirs(outdir, exist_ok=True)
     out = os.path.join(outdir, f'{name}.json')
     with open(out, 'w') as f: json.dump(result, f, indent=1)

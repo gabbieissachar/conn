@@ -1,0 +1,196 @@
+// Conn: a native Mac workspace app and a client of one Herdr session (`herdr server` stays the backend).
+import SwiftUI
+import AppKit
+import ConnCore
+import ConnTerminal
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor func applicationDidFinishLaunching(_ n: Notification) {
+        let cfg = Runtime.config, model = Runtime.model
+        if cfg.runsInBackground {
+            // Test mode: no Dock icon, never activated, never key, nothing the person at the keyboard can see or click.
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Background.keepWindowsInert()
+        } else {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+        if cfg.dark { model.appearance = .dark }
+        if let t = cfg.webTab { model.webTab = t }
+        model.privacy = cfg.privacy
+        if let m = cfg.mode { model.mode = m }
+        if let size = cfg.windowSize { DispatchQueue.main.async { Capture.mainWindow()?.setContentSize(size) } }
+        model.editor.restoreSession()
+        for f in cfg.openFiles { model.editor.open(URL(fileURLWithPath: f)) }
+        if !cfg.openFiles.isEmpty && cfg.mode == nil { model.mode = .editor }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            let list = model.snapshot.prioritized
+            if let i = cfg.select, i < list.count { model.select(list[i].id) }
+            if cfg.compare, model.comparePaneID == nil { model.toggleCompare() }
+            if cfg.openHistory { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { model.openHistory() } }
+        }
+        if let dir = cfg.tour { Task { @MainActor in try? await Task.sleep(nanoseconds: 3_000_000_000); await Tour.run(dir: URL(fileURLWithPath: dir), model: model); model.shutdown(); NSApplication.shared.terminate(nil) } }
+        if let path = cfg.shot {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(cfg.shotDelay * 1_000_000_000))
+                await Capture.window(to: URL(fileURLWithPath: path))
+                model.shutdown(); NSApplication.shared.terminate(nil)
+            }
+        }
+        if let file = cfg.editorTest {
+            Task { @MainActor in await EditorSelfTest.run(file: file, model: model) }
+        }
+        if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
+        if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
+        if cfg.startFallback {
+            // The Herdr-screen pane is an interactive second client: this test hook may only run when both the socket
+            // directory and the herdr executable are a stand-in's, never attach to a real session without a click.
+            if !model.endpoint.isStandIn {
+                FileHandle.standardError.write("conn: --start-fallback refused: it would attach a second client to a real Herdr session\n".data(using: .utf8)!)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
+            }
+        }
+        if let text = cfg.sendTest {
+            // End-to-end check of the compose path without clicking: type the text into the box and send it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { model.compose = text; model.send() }
+        }
+        if let secs = cfg.selftest { Task { @MainActor in await SelfTest.run(after: secs, model: model) } }
+        if let q = cfg.quitAfter { DispatchQueue.main.asyncAfter(deadline: .now() + q) { model.shutdown(); NSApplication.shared.terminate(nil) } }
+        model.updateStats()
+    }
+
+    @MainActor func application(_ application: NSApplication, open urls: [URL]) {
+        let m = Runtime.model
+        urls.forEach { m.editor.open($0) }
+        m.mode = .editor
+    }
+
+    @MainActor func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Runtime.model.editor.confirmQuit() ? .terminateNow : .terminateCancel
+    }
+
+    @MainActor func applicationWillTerminate(_ n: Notification) { Runtime.model.shutdown() }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+/// Test mode (`--background`): every window is made fully transparent and click-through the moment AppKit first updates it,
+/// and any window that becomes key gives it up again. Nothing in the app calls `activate` or `makeKeyAndOrderFront` in this
+/// mode, and the process is an accessory (no Dock icon), so it cannot take the keyboard or the pointer from another app.
+/// Views still lay out and draw, so the in-process checks and captures work.
+@MainActor
+enum Background {
+    /// Held for the life of the process: without it App Nap throttles timers and layout of a window nobody can see.
+    private static var activity: NSObjectProtocol?
+
+    static func keepWindowsInert() {
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Conn test mode: keep timers, layout and streams running in an inert window")
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didUpdateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification, NSWindow.didExposeNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { n in
+                guard let w = n.object as? NSWindow else { return }
+                MainActor.assumeIsolated { inert(w) }
+            }
+        }
+        // Windows that exist before the first notification.
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in MainActor.assumeIsolated { NSApp.windows.forEach(inert) } }
+    }
+
+    private static func inert(_ w: NSWindow) {
+        if w.alphaValue != 0 { w.alphaValue = 0 }
+        if !w.ignoresMouseEvents { w.ignoresMouseEvents = true }
+        if w.isKeyWindow { w.resignKey() }
+    }
+}
+
+enum TextFinderCommand {
+    /// Sends the standard text-finder action down the responder chain, as the Find menu items of a text app do.
+    @MainActor @discardableResult
+    static func send(_ action: NSTextFinder.Action, to target: Any? = nil) -> Bool {
+        let item = NSMenuItem()
+        item.tag = action.rawValue
+        return NSApp.sendAction(#selector(NSResponder.performTextFinderAction(_:)), to: target, from: item)
+    }
+}
+
+struct ConnCommands: Commands {
+    @ObservedObject var app: AppModel
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Document") { app.mode = .editor; app.editor.newDocument() }.keyboardShortcut("n")
+            Button("Open…") { app.mode = .editor; app.editor.showOpenPanel(startingIn: app.selectedAgent?.cwd) }.keyboardShortcut("o")
+            Menu("Open Recent") {
+                let recents = NSDocumentController.shared.recentDocumentURLs
+                ForEach(recents, id: \.self) { url in
+                    Button(url.lastPathComponent) { app.mode = .editor; app.editor.open(url) }.help(url.path)
+                }
+                if recents.isEmpty { Text("No recent files") }
+            }
+        }
+        // The editor's text view has a find bar, but the Edit menu SwiftUI builds has no Find items to trigger it.
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { TextFinderCommand.send(.showFindInterface) }.keyboardShortcut("f")
+            Button("Find Next") { TextFinderCommand.send(.nextMatch) }.keyboardShortcut("g")
+            Button("Find Previous") { TextFinderCommand.send(.previousMatch) }.keyboardShortcut("g", modifiers: [.command, .shift])
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") { if let d = app.editor.current { app.editor.save(d) } }.keyboardShortcut("s").disabled(app.editor.current == nil)
+            Button("Save As…") { if let d = app.editor.current { app.editor.saveAs(d) } }.keyboardShortcut("s", modifiers: [.command, .shift]).disabled(app.editor.current == nil)
+            Button("Close Document") { if let d = app.editor.current { app.editor.close(d) } }.keyboardShortcut("w").disabled(app.editor.current == nil || app.mode != .editor)
+        }
+        CommandMenu("Agents") {
+            Button("Quick Switcher…") { app.showSwitcher = true }.keyboardShortcut("k")
+            Button("Next Agent") { app.cycle(1) }.keyboardShortcut("]")
+            Button("Previous Agent") { app.cycle(-1) }.keyboardShortcut("[")
+            Button("Next Agent Waiting on You") { app.jumpToWaiting() }.keyboardShortcut("j")
+            Button(app.primaryHistory == nil ? "Scroll Back (Show History)" : "Back to Live Pane") { app.toggleHistory(.primary) }
+                .keyboardShortcut("y")
+            Divider()
+            ForEach(0..<9, id: \.self) { i in
+                Button("Agent \(i + 1)") { app.selectNth(i) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+            }
+            Divider()
+            Button(app.comparePaneID == nil ? "Compare with Previous Agent" : "Close Comparison") { app.toggleCompare() }.keyboardShortcut("\\")
+        }
+        CommandMenu("Layout") {
+            ForEach(Array(CenterMode.allCases.enumerated()), id: \.element.id) { i, m in
+                Button(m.rawValue) { app.mode = m }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: [.command, .option])
+            }
+            Divider()
+            Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
+            Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
+            Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent)
+            Divider()
+            Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
+            Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])
+            Toggle("Privacy Mode", isOn: $app.privacy).keyboardShortcut("b", modifiers: [.command, .shift])
+            Toggle("Sidebar", isOn: $app.sidebarVisible).keyboardShortcut("s", modifiers: [.command, .control])
+            Divider()
+            Button("Reload Web Panes") { app.reloadWeb() }.keyboardShortcut("r")
+        }
+    }
+}
+
+struct ConnApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    private let app = MainActor.assumeIsolated { Runtime.model }
+
+    var body: some Scene {
+        // One window: the model and its terminal views are shared, and a second window would fight over them.
+        Window("Conn", id: "main") {
+            MainView()
+                .environmentObject(app)
+                .frame(minWidth: 1000, minHeight: 600)
+        }
+        .defaultSize(width: 1500, height: 920)
+        .commands { ConnCommands(app: app) }
+
+        MenuBarExtra(isInserted: .constant(!Runtime.config.runsInBackground)) {
+            WaitingMenu().environmentObject(app)
+        } label: {
+            MenuBarLabel(app: app)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}

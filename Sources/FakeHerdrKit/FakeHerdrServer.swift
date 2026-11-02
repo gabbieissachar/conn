@@ -1,14 +1,14 @@
-// A stand-in Herdr: enough of the JSON API, the pane stream and `herdr status` for Helm to run against it.
+// A stand-in Herdr: enough of the JSON API, the pane stream and `herdr status` for Conn to run against it.
 //
 // It exists because the real Herdr lab session cannot be provisioned on this Mac (the lab helper needs a running
 // default session) and because anything that writes to a pane must never be tried on the live one. It speaks the same
-// wire shapes Herdr 0.9.5 does for the calls Helm makes (checked against a read-only probe of a real session):
+// wire shapes Herdr 0.9.5 does for the calls Conn makes (checked against a read-only probe of a real session):
 //   JSON API on <dir>/<session>/herdr.sock: ping, session.snapshot, events.subscribe, pane.read, pane.send_input
 //   pane stream on <dir>/<session>/stream.sock, relayed by `FakeHerdr cli ... terminal session observe`
 //   `FakeHerdr cli --session S status --json`
 // Test-only control calls start with "fake.": set_state, set_protocol, mark, dump, stall.
 import Foundation
-import HelmCore
+import ConnCore
 
 public final class FakeHerdrServer: @unchecked Sendable {
     public struct Config {

@@ -1,8 +1,8 @@
 // FakeHerdr serve --dir DIR --session NAME   (--dir is required and is refused under ~/.config/herdr) [--agents N] [--working-rate R] [--protocol P]
 // FakeHerdr cli --session NAME status --json | terminal session observe PANE --cols C --rows R
-// `cli` is what a `herdr` shim script execs, so HELM_HERDR_BIN can point at a stand-in for the real executable.
+// `cli` is what a `herdr` shim script execs, so CONN_HERDR_BIN can point at a stand-in for the real executable.
 import Foundation
-import HelmCore
+import ConnCore
 import FakeHerdrKit
 
 func fail(_ s: String) -> Never { FileHandle.standardError.write(Data((s + "\n").utf8)); exit(2) }
