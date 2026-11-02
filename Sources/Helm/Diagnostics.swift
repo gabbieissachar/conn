@@ -1,6 +1,7 @@
 // Self test: prints counts and timings only, never terminal text or page content, so it is safe to run against a live
 // Herdr session.
 import SwiftUI
+import WebKit
 import HelmCore
 import HelmTerminal
 import SwiftTerm
@@ -298,6 +299,37 @@ enum UICheck {
         report("switching from the organizer to the reader tab loads the reader", reader.phase == .ready && readerNodes > 50 && reader.webView.window != nil, "phase=\(reader.phase) nodes=\(readerNodes) url=\(reader.webView.url?.host ?? "-"):\(reader.webView.url?.port ?? 0) \(shown(reader))")
         model.webTab = .organizer; model.pinReader(); await wait(2)
         report("and back to the organizer", model.web.box(.organizer).phase == .ready && model.web.box(.organizer).webView.window != nil, "phase=\(model.web.box(.organizer).phase) \(shown(model.web.box(.organizer)))")
+        // What a person sees. "Loaded, and in the window" does not say which page is in front: both web views can sit under
+        // one host view (the segmented control swaps the box under the same SwiftUI view). So this asks which web view a click
+        // in the middle of the column would reach, after each tab switch, from a column built showing either pane first.
+        // No click is made inside either page.
+        func pageInFront(_ selected: WebBox) -> String {
+            guard let host = selected.webView.superview, let root = host.window?.contentView?.superview else { return "not in the window" }
+            var v = root.hitTest(host.convert(NSPoint(x: host.bounds.midX, y: host.bounds.midY), to: nil))
+            while let x = v, !(x is WKWebView) { v = x.superview }
+            guard let web = v as? WKWebView else { return "no page" }
+            return model.web.allBoxes.first { $0.webView === web }?.kind.rawValue ?? "other page"
+        }
+        func tabsShowTheirOwnPage(first: WebKind, then order: [WebKind]) async {
+            model.showWeb = false; await wait(0.5)
+            model.webTab = first; model.showWeb = true; await wait(1)
+            var trail = ["\(first.rawValue)->\(pageInFront(model.web.box(first)))"]
+            var wrong = trail[0].hasSuffix("->\(first.rawValue)") ? 0 : 1
+            for (i, kind) in order.enumerated() {
+                model.webTab = kind; model.pinReader(); await wait(0.7)
+                let front = pageInFront(model.web.box(kind))
+                trail.append("\(kind.rawValue)->\(front)")
+                if front != kind.rawValue { wrong += 1 }
+                if model.config.fixture, let dir = ProcessInfo.processInfo.environment["HELM_UI_CHECK_SHOT_DIR"] {
+                    await Capture.window(to: URL(fileURLWithPath: dir).appendingPathComponent("\(first.rawValue.lowercased())-first-\(i + 1)-\(kind.rawValue.lowercased())-tab.png"))
+                }
+            }
+            let inWindow = model.web.allBoxes.filter { $0.webView.window != nil }.map { $0.kind.rawValue }
+            report("tabs switched from a column that showed the \(first.rawValue) first: the selected tab's page is the one in front", wrong == 0, "\(trail.joined(separator: " ")); in the window at the end: \(inWindow)")
+        }
+        await tabsShowTheirOwnPage(first: .reader, then: [.organizer, .reader, .organizer, .reader, .reader])
+        await tabsShowTheirOwnPage(first: .organizer, then: [.reader, .organizer, .reader, .organizer])
+        model.webTab = .organizer; model.pinReader(); await wait(2)
         // The organizer opens on its Context view, whatever view it was last on.
         func organizerView() async -> String { await withCheckedContinuation { c in model.web.box(.organizer).selectedOrganizerView { c.resume(returning: $0 ?? "none") } } }
         let organizerBox = model.web.box(.organizer)
