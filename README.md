@@ -20,10 +20,17 @@ Command Line Tools and SwiftPM only. No Xcode.
 ./run.sh --session NAME    # another session
 ./run.sh --write NAME      # let the compose box send to that session (default: none)
 ./run.sh --text-panes      # poll pane text instead of streaming (works across Herdr protocol changes)
-./test.sh                  # unit tests (Swift Testing from the Command Line Tools)
+./test.sh                  # unit tests (Swift Testing from the Command Line Tools); HELM_HOSTILE_SCALE=full adds the 2 MB and 12 MB hostile streams
+./run.sh --fixture --ui-check   # scripted in-process UI checks (background mode); add no --fixture to run them read-only against session esim
 ```
 
-More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (waiting first), Cmd+J next agent waiting on you, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
+More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (waiting first), Cmd+J next agent waiting on you, Cmd+Y swap the live pane for its history and back (Esc also goes back), Cmd+= / Cmd+- / Cmd+0 pane text bigger / smaller / back to the fit, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
+
+**Scrolling a pane.** A live pane cannot scroll: Herdr re-renders the pane for an observer (a full frame clears the screen and writes every row at an absolute position, later frames rewrite changed rows; a real working pane sampled read-only held 0 line feeds in 19,908 bytes), and a terminal only keeps scrollback when line feeds scroll it. Herdr's ANSI form of `pane.read` for the `recent` source is only the screen too, so styled history cannot be seeded either. Instead the clock button in the pane header, Cmd+Y, or a deliberate upward wheel or trackpad scroll over the pane swaps the live pane for a scrollable snapshot of its history (`pane.read` recent, plain text, newest at the bottom, find bar, Refresh, Copy). The stream keeps running and drawing underneath, so "Back to live" shows a current screen at once. Real, styled, live scrollback needs Herdr to expose it (a history call that keeps colour, or scroll-aware frames) or control mode.
+
+**Pane text size.** The font is the largest (7 to 28 pt) at which Herdr's whole cols x rows grid fits the pane's width and height, refitted on every window or split resize; the grid is centred in the slack. Cmd+= / Cmd+- change a zoom factor (0.6 to 2.0 of the fit) that is remembered across launches; zoomed past the fit the left and top edges crop. A pane that is 59 rows tall is height-bound: rows, not columns, set the size, so a wide window does not make its text larger. A different grid (more columns, fewer rows for the width you have) needs the Herdr pane resized, which is a write and belongs to control mode.
+
+**Organizer and reader.** The Organizer pane opens on its Context view every time it is switched to or its page loads (Helm clicks the page's own Context button; the page is not edited). A link in one pane to the other pane's server (localhost, 127.0.0.1 or ::1, the same port), by click or by `target=_blank` / `window.open`, switches to that pane and loads that exact address, hash kept; any other outside link opens in the browser.
 
 ## Test notes (read before launching the app from a script or an agent session)
 
@@ -48,7 +55,7 @@ Panes take no keys today, but the rule is fixed before they do:
 ## Known limits
 
 - Panes are drawn at the size Herdr's own screen gave them (an observer cannot resize a pane), so they are narrow in a wide window. Window-sized panes need control mode (decision D3, step 2), which is not built.
-- A stream pane has no scrollback: the history button in the pane header opens the pane's recent output as text, and the reader has the full conversation.
+- A stream pane has no scrollback of its own (see "Scrolling a pane"): the history view shows the newest 3000 lines of `pane.read` as plain text, a snapshot, not live. The reader has the full conversation.
 - The compose box has only been exercised against the stand-in Herdr. Multi-line messages are refused with a message (a newline may submit early on real Herdr). Not yet tried on real Herdr: an agent that is blocked on a question. Herdr's `agent.prompt` rejects a blocked agent, so it may be the better call for non-blocked agents; that needs a lab session.
 - Each visible working pane costs the Herdr server several points of CPU, so streams run only for panes on screen, and stop after 30 s in the background.
 - The reader reloads its 19 MB page when it follows a different agent (it only reads its address at load).
@@ -63,7 +70,7 @@ Panes take no keys today, but the rule is fixed before they do:
 | `Sources/FakeHerdrKit`, `Sources/FakeHerdr` | A stand-in Herdr (JSON socket, pane stream, `herdr` CLI subset) for fixtures, tests and measurements |
 | `Sources/HelmStreamTest` | The read-only Herdr stream test (latency, reconnect, load, version checks) |
 | `Sources/SwiftTermVendored` | SwiftTerm v1.99.2 compiled unmodified from a pinned clone (see below) |
-| `tools/` | `fetch-deps.sh` and `deps.lock` (the pin), `measure.py` (footprint and CPU, same method as the 4.09 GB / 15.5% baseline) |
+| `tools/` | `fetch-deps.sh` and `deps.lock` (the pin), `measure.py` (footprint and CPU, same method as the 4.09 GB / 15.5% baseline), `kill9-orphan-check.sh` (one app and two apps killed with `kill -9`, stand-in only), `stall-check.sh` |
 
 ## Safety model
 
@@ -71,7 +78,7 @@ Panes take no keys today, but the rule is fixed before they do:
 - The only write is the compose box (`pane.send_input`: text, then Enter). It is refused in code unless the session is on the `WritePolicy` allow list (`--write NAME` or `HELM_WRITE_SESSIONS`), it waits a few seconds with an Undo, and the text returns to the box if delivery fails.
 - Everything that talks to Herdr is in `HelmCore/Herdr`. Session names and pane ids are validated before they reach a socket or a command line.
 - Stream bytes are untrusted: CSI parameters are clamped, saved cursors are clamped, frame sizes are checked (500 by 300 cells at most), clipboard and title requests from a pane are dropped, and only http and https links open.
-- Observer children are recorded and orphaned ones are ended at the next launch.
+- Observer children get one receipt each (`observers/<pid>.json`: pid and start time of the child and of its owner). A launching instance ends a child (SIGTERM, then SIGKILL after about a second) only when its owner is gone, it is still the same process, its parent is launchd and its command line is still ours; another running instance's children are never touched.
 
 ## Dependencies and why SwiftTerm is not a SwiftPM dependency
 
