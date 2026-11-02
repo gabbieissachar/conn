@@ -458,7 +458,7 @@ class Build:
             sheet_rel = f"a/{cid}.json"
             before_sheet = (((self.old.get("conversations") or {}).get(cid) or {}).get("sheet") or {}).get("stamp")
             sheet = {"object": sheet_rel, "stamp": self.put(sheet_rel, {"questionnaires": found_sheets}, before_sheet),
-                     "list": [{"at": q["at"], "open": len(q["cards"]), "title": q["title"]} for q in found_sheets]}
+                     "list": [questionnaires.list_entry(q) for q in found_sheets]}
         documents = builder.attach_documents([session], html=True, images=True)  # HTML files too (each folded into one text, inline_html.py) and images
         # The tool output goes in an object of its own (the steps stay in the turns, which are the conversation's object).
         outputs = builder.tool_steps.take_outputs(exchanges)

@@ -42,16 +42,19 @@ __HEAD_HOSTED__
   .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line); }
   .inner { max-width: 30rem; margin: 0 auto; padding: 8px 12px; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
-  .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
+  .proto { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
   .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy's "As of" line, as the reader's: the laptop's build time, in the warning colour once it is old. */
   .asof { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .asof.stale { color: var(--ask); font-weight: 600; }
   .title a { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
-  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; }
+  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .sent .what { flex: 1 1 14rem; min-width: 0; }
   .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
-  main { max-width: 30rem; margin: 0 auto; padding: 10px 12px 170px; }
+  .sent button { border: 1px solid var(--you); background: var(--paper); color: var(--you); border-radius: 8px; padding: 5px 12px; font-size: 13px; font-weight: 600; }
+  main { max-width: 30rem; margin: 0 auto; padding: 10px 12px 190px; }
+  body.no-dock main { padding-bottom: 24px; }
 
   details.context { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin-bottom: 12px; }
   details.context summary { cursor: pointer; font-size: 14px; font-weight: 600; }
@@ -71,13 +74,18 @@ __HEAD_HOSTED__
   .rec b { color: var(--ink); font-weight: 600; }
   .opts { display: flex; flex-wrap: wrap; gap: 6px; }
   .opt { border: 1px solid var(--line); background: var(--wash); border-radius: 99px; padding: 5px 11px; font-size: 14px; text-align: left; }
-  .opt[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: #fff; }
+  /* A picked answer is a wash with an outline and a tick, so Send stays the only filled control. */
+  .opt[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); box-shadow: inset 0 0 0 1px var(--you); color: var(--ink); font-weight: 600; }
+  .opt[aria-pressed="true"]::before { content: "\2713"; margin-right: 5px; color: var(--you); }
   .opt .star { color: var(--ask); font-size: 12px; margin-left: 4px; }
-  .opt[aria-pressed="true"] .star { color: #fff; }
+  /* A sent answer: shown picked and not changeable until "Answer again". */
+  .opt:disabled { cursor: default; color: var(--ink); }
+  .opt:disabled[aria-pressed="false"] { opacity: .55; }
+  .other[readonly] { background: var(--wash); }
   .opt-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .other { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--paper); font-size: 14px; resize: vertical; min-height: 2.4em; }
-  .hint { font-size: 12px; color: var(--faint); margin-top: 6px; }
-  .section { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .section { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 6px; }
   .done-item, .locked-item { font-size: 14px; padding: 7px 0; border-top: 1px solid var(--line); }
   .done-item small, .locked-item small { color: var(--muted); display: block; }
   .locked-item { color: var(--muted); }
@@ -85,19 +93,29 @@ __HEAD_HOSTED__
   .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); }
   .dock .inner { padding: 8px 12px 10px; }
   .dock .line { font: 13px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; max-height: 5.6em; overflow-y: auto; }
-  .dock .line .gap { color: var(--open); }
   .dock .line .ptr { color: var(--muted); }
+  .dock .line.none { color: var(--muted); font-family: var(--sans); font-size: 13px; }
   .dock .why { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 1em; }
   .dock .why.bad { color: var(--open); }
-  .dock .acts { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
-  .dock .count { flex: 1; font-size: 12px; color: var(--muted); }
+  .dock .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  .dock .count { flex: 1 1 100%; font-size: 12px; color: var(--muted); }
+  .dock #send { margin-left: auto; }
   .dock button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
   .dock button:disabled { opacity: .45; cursor: default; }
-  .dock button.primary { background: var(--you); border-color: var(--you); color: #fff; font-weight: 600; }
+  .dock button.primary { background: var(--you); border-color: var(--you); color: var(--paper); font-weight: 600; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; }
   [hidden] { display: none !important; }
   /* A sealed copy asks for its passphrase first; the picker and the answer line wait for it. */
   .locked .pick, .locked .meta, .locked .asof, .locked .dock { display: none; }
+  /* On a phone or a touch screen every control is at least 44 px tall. */
+  @media (max-width: 440px), (pointer: coarse) {
+    .proto { display: none; }
+    .title a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; }
+    select.pick, .opt, .dock button, .sent button { min-height: 44px; }
+    details.context summary { padding: 10px 0; margin: -8px 0; }
+    .other { min-height: 44px; }
+    .dock button { padding: 6px 12px; font-size: 14px; }
+  }
 </style>
 </head>
 <body>
@@ -112,7 +130,7 @@ __HEAD_HOSTED__
   <div class="line" id="line" aria-live="polite"></div>
   <div class="acts">
     <span class="count" id="count"></span>
-    <button id="recommended" title="Fill unanswered cards with the option marked recommended">★ Fill</button>
+    <button id="recommended">Fill recommended</button>
     <button id="clear">Clear</button>
     <button id="copy">Copy</button>
     <button class="primary" id="send" title="Send this exact text to the session's Herdr pane">Send</button>
@@ -164,6 +182,9 @@ __HEAD_HOSTED__
   const openContexts = new Set();
   try { JSON.parse(sessionStorage.getItem("tr-q-context") || "[]").forEach(k => openContexts.add(k)); } catch (e) { /* starts closed */ }
   const answers = {};   // questionnaire index -> { key: value }
+  // Questionnaires the owner opened again after answering them ("Answer again"), kept for the tab.
+  const again = new Set();
+  try { JSON.parse(sessionStorage.getItem("tr-q-again") || "[]").forEach(k => again.add(k)); } catch (e) { /* starts locked */ }
   const storeKey = q => `tr-q:${q.session}:${Math.round(q.at || 0)}`;
   function load(i) {
     if (answers[i]) return answers[i];
@@ -179,24 +200,55 @@ __HEAD_HOSTED__
   }
   const fields = q => [...q.cards.map(c => ({ ...c, kind: "card" })), ...q.corrections.map(k => ({ key: k, kind: "correction", ...q.resolved.find(r => r.key === k) }))];
 
+  /* rules:start - pure: they take the questionnaire and the picked answers and touch nothing else (sheet.test.js runs this block alone). */
+  // The answers a questionnaire already sent in its session (keyed lines the owner wrote after the reply). Until "Answer again"
+  // those cards show what was sent, not a draft, and they are left out of what Send types.
+  const sentOf = (q, reopened) => reopened ? {} : (q.sent || {});
+  const settledKeys = (q, reopened) => q.cards.map(c => c.key).filter(k => k in sentOf(q, reopened));
+  const isAnswered = (q, reopened) => q.cards.length > 0 && settledKeys(q, reopened).length === q.cards.length;
+  // The open cards: not sent yet. (build_questionnaire.open_cards counts the same way for the picker of the hosted copy.)
+  const openCards = (q, reopened) => q.cards.filter(c => !(c.key in sentOf(q, reopened)));
+  // The picked answers Send types, in card order, with the corrections after them.
+  const answerLine = (q, a, reopened) => {
+    const skip = new Set(settledKeys(q, reopened));
+    return fields(q).filter(f => a[f.key] && !skip.has(f.key)).map(f => `${f.key}=${a[f.key]}`).join(";");
+  };
+  // The text Copy and Send use: the pointer to the reply that asked, then the answers; nothing when nothing is picked.
+  const messageOf = (q, a, pointerText, reopened) => answerLine(q, a, reopened) ? pointerText + answerLine(q, a, reopened) : "";
+  // "Fill recommended": the open cards with no answer yet whose choices name a recommended one, in card order.
+  const fillPlan = (q, a, reopened) => openCards(q, reopened).filter(c => !a[c.key]).map(c => ({ key: c.key, option: c.options.find(o => o.recommended) })).filter(x => x.option).map(x => ({ key: x.key, value: x.option.value }));
+  // What the owner reads under the line Send types: which open cards it leaves out.
+  const leftOut = (q, a, reopened) => openCards(q, reopened).filter(c => !a[c.key]).map(c => c.key);
+  const listKeys = keys => keys.length < 3 ? keys.join(" and ") : keys.slice(0, -1).join(", ") + " and " + keys[keys.length - 1];
+  const countText = (q, a, reopened) => {
+    const open = openCards(q, reopened), left = leftOut(q, a, reopened);
+    const done = open.length - left.length;
+    return `${done} of ${open.length} answered` + (done && left.length ? `. ${listKeys(left)} ${left.length > 1 ? "are" : "is"} left out of what Send types.` : "");
+  };
+  /* rules:end */
+
   // ---------------------------------------------------------------- shared pieces
   function optionButtons(card, onPick) {
-    const a = load(state.q), wrap = $("div", "opts");
+    // A card the session already has an answer for shows that answer, picked and not changeable (until "Answer again").
+    const sent = card.key in sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const a = sent ? sentOf(qs[state.q], false) : load(state.q), wrap = $("div", "opts");
     const custom = a[card.key] != null && !card.options.some(o => o.value === a[card.key]);
     card.options.forEach(o => {
       const b = $("button", "opt", o.value); b.setAttribute("aria-pressed", String(a[card.key] === o.value));
       if (o.recommended) { const s = $("span", "star", "★ recommended"); b.append(s); }
+      b.disabled = sent;
       b.addEventListener("click", () => { setAnswer(card.key, a[card.key] === o.value ? "" : o.value); onPick(); });
       wrap.append(b);
     });
     const other = $("button", "opt", "Write my own"); other.setAttribute("aria-pressed", String(custom));
-    wrap.append(other);
+    other.disabled = sent;
+    if (!sent || custom) wrap.append(other);
     const box = $("textarea", "other"); box.placeholder = `Your answer for ${card.key}`; box.rows = 1;
-    box.value = custom ? a[card.key] : ""; box.hidden = !custom;
+    box.value = custom ? a[card.key] : ""; box.hidden = !custom; box.readOnly = sent;
     other.addEventListener("click", () => { box.hidden = false; box.focus(); });
     box.addEventListener("input", () => { setAnswer(card.key, box.value); wrap.querySelectorAll(".opt").forEach(b => b.setAttribute("aria-pressed", String(b === other && !!box.value.trim()))); });
     const frag = document.createDocumentFragment(); frag.append(wrap, box);
-    const notes = card.options.filter(o => o.note && o.note !== card.recommended);  // the recommended one is already shown above
+    const notes = sent ? [] : card.options.filter(o => o.note && o.note !== card.recommended);  // the recommended one is already shown above
     notes.forEach(o => { const n = $("div", "opt-note"); n.innerHTML = `<code>${inline(o.value).replace(/<\/?code>/g, "")}</code> ${inline(o.note)}`; frag.append(n); });
     return frag;
   }
@@ -206,7 +258,8 @@ __HEAD_HOSTED__
   }
   function dependsHint(card) {
     const keys = (card.depends || "").match(/\b[A-Z]\d{1,2}\b/g) || [];
-    const missing = keys.filter(k => !load(state.q)[k]);
+    const sent = sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const missing = keys.filter(k => !load(state.q)[k] && !(k in sent));
     return missing.length ? $("div", "hint", `Depends on ${missing.join(", ")}, not answered yet`) : null;
   }
   function correctionCard(f) {
@@ -218,10 +271,11 @@ __HEAD_HOSTED__
     card.append(box); return card;
   }
   function cardNode(card, onPick = () => render()) {
-    const el = $("div", "card" + (load(state.q)[card.key] ? " answered" : ""));
+    const sent = card.key in sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const el = $("div", "card" + (sent || load(state.q)[card.key] ? " answered" : ""));
     const head = $("div", "q"); head.append($("span", "key", card.key)); head.append(Object.assign(document.createElement("span"), { innerHTML: inline(card.question) }));
     el.append(head);
-    [recLine(card), dependsHint(card)].forEach(n => n && el.append(n));
+    [recLine(card), sent ? null : dependsHint(card)].forEach(n => n && el.append(n));
     el.append(optionButtons(card, onPick));
     return el;
   }
@@ -251,14 +305,16 @@ __HEAD_HOSTED__
   function viewCards(q, main) {
     main.append(context(q));
     q.cards.forEach(c => main.append(cardNode(c)));
-    q.corrections.forEach(k => main.append(correctionCard({ key: k, ...q.resolved.find(r => r.key === k) })));
+    // Once every card is answered in the session, an optional correction is only shown when it was sent too, and not changeable.
+    const reopened = again.has(storeKey(q)), answered = isAnswered(q, reopened);
+    q.corrections.filter(k => !answered || k in sentOf(q, reopened)).forEach(k => {
+      const card = correctionCard({ key: k, ...q.resolved.find(r => r.key === k) });
+      if (answered) { const box = card.querySelector("textarea"); box.value = q.sent[k]; box.readOnly = true; card.classList.add("answered"); }
+      main.append(card);
+    });
     main.append(aside(q));
   }
   // ---------------------------------------------------------------- dock, header
-  function answerLine(q) {
-    const a = load(state.q);
-    return fields(q).filter(f => a[f.key]).map(f => `${f.key}=${a[f.key]}`).join(";");
-  }
   // The exact text Copy and Send use: a pointer to the reply that asked, then the answers.
   // A questionnaire from before a /clear goes to the pane's newest session, which never saw
   // it, and one from before a compaction is held only as a summary: both name the log and
@@ -268,19 +324,23 @@ __HEAD_HOSTED__
       : q.compacted_away ? `[From before this session's last compaction; its log: ${q.log}] ` : "";
     return earlier + live.pointer(q.at, q.reply, "", Boolean(earlier), q.cards.map(c => `${c.key}: ${c.question}`));
   };
-  const message = q => answerLine(q) ? pointer(q) + answerLine(q) : "";
+  const reopenedNow = q => again.has(storeKey(q));
+  const message = q => messageOf(q, load(state.q), pointer(q), reopenedNow(q));
   function renderDock() {
     const q = qs[state.q]; if (!q) return;
-    const a = load(state.q), line = document.getElementById("line"); line.replaceChildren();
-    line.append($("span", "ptr", pointer(q)));
-    q.cards.forEach((c, i) => {
-      if (i) line.append(";");
-      if (a[c.key]) line.append(`${c.key}=${a[c.key]}`); else { const g = $("span", "gap", `${c.key}=?`); line.append(g); }
-    });
-    q.corrections.filter(k => a[k]).forEach(k => line.append(`;${k}=${a[k]}`));
-    const done = q.cards.filter(c => a[c.key]).length;
-    document.getElementById("count").textContent = `${done} of ${q.cards.length} answered`;
-    document.getElementById("recommended").disabled = !q.cards.some(c => !a[c.key] && c.options.some(o => o.recommended));
+    const a = load(state.q), reopened = reopenedNow(q), line = document.getElementById("line"); line.replaceChildren();
+    // Nothing to send once every card is answered: the dock goes, and the page says so above the cards.
+    const finished = isAnswered(q, reopened);
+    document.querySelector(".dock").hidden = finished; document.body.classList.toggle("no-dock", finished);
+    // What Send types, character for character; the cards it leaves out are named under it.
+    const text = message(q);
+    line.classList.toggle("none", !text);
+    if (text) { const mark = pointer(q); line.append($("span", "ptr", mark), text.slice(mark.length)); }
+    else line.textContent = "Pick an answer and the line Send types shows here.";
+    document.getElementById("count").textContent = countText(q, a, reopened);
+    const fill = fillPlan(q, a, reopened), button = document.getElementById("recommended");
+    button.disabled = !fill.length;
+    button.title = fill.length ? `Fill ${listKeys(fill.map(f => f.key))} with the recommended choice` : "No open card with a recommended choice is left to fill";
     renderSend();
   }
   // Send needs the served page and a live Herdr pane for the session; the reason shows when it cannot.
@@ -380,8 +440,21 @@ __HEAD_HOSTED__
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
     meta.textContent = `${where} · asked ${fmtWhen(q.at)}`;
     if (Object.keys(q.sent || {}).length) {
-      // The answers already sent in the session, so an old questionnaire is not answered twice by mistake.
-      const sent = $("div", "sent"); sent.append(`You answered this ${fmtWhen(q.sent_at)}: `, $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";")));
+      // The answers already sent in the session, so an old questionnaire is not answered twice by mistake. Those cards show
+      // them picked and read-only; "Answer again" opens them.
+      const reopened = reopenedNow(q), sent = $("div", "sent"), what = $("div", "what");
+      const line = $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";"));
+      what.append(reopened ? `You answered this ${fmtWhen(q.sent_at)}: ` : isAnswered(q, false) ? `Answered ${fmtWhen(q.sent_at)}: ` : `Part answered ${fmtWhen(q.sent_at)}: `, line);
+      sent.append(what);
+      if (!reopened && settledKeys(q, false).length) {
+        const reopen = $("button", null, "Answer again");
+        reopen.addEventListener("click", () => {
+          again.add(storeKey(q));
+          try { sessionStorage.setItem("tr-q-again", JSON.stringify([...again])); } catch (e) { /* not kept */ }
+          render();
+        });
+        sent.append(reopen);
+      }
       main.append(sent);
     }
     viewCards(q, main);
@@ -401,8 +474,13 @@ __HEAD_HOSTED__
   }
 
   const pick = document.getElementById("pick");
+  // "3 open", or "answered" once the session holds an answer for every card. The hosted list says it before the cards load.
+  const pickState = q => {
+    const open = q.cards ? openCards(q, reopenedNow(q)).length : q.open;
+    return open ? `${open} open` : "answered";
+  };
   function fillPick() {
-    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${q.cards ? q.cards.length : q.open} open`, i)));
+    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${pickState(q)}`, i)));
     pick.value = String(state.q);
   }
   // ---------------------------------------------------------------- hosted copy
@@ -449,8 +527,8 @@ __HEAD_HOSTED__
   document.getElementById("send").addEventListener("click", sendAnswers);
   document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); render(); });
   document.getElementById("recommended").addEventListener("click", () => {
-    const a = load(state.q);
-    qs[state.q].cards.forEach(c => { const r = c.options.find(o => o.recommended); if (!a[c.key] && r) a[c.key] = r.value; });
+    const a = load(state.q), q = qs[state.q];
+    fillPlan(q, a, reopenedNow(q)).forEach(f => { a[f.key] = f.value; });
     save(); render();
   });
   // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.

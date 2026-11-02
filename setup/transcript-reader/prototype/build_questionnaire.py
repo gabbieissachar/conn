@@ -160,9 +160,11 @@ def reply_examples(lines: list[str], reply_line: str) -> tuple[dict[str, str], l
 
 
 def mark_recommended(card: dict) -> None:
-    """Mark the choice the card's recommendation names, by fixed rules: a recommendation
-    that opens with a choice's value, or names a lettered choice (`Assume a)`, `**b).**`).
-    Nothing else is guessed."""
+    """Mark the choice the card's recommendation names, by fixed rules, the first that finds one:
+    a recommendation that opens with a choice's value, one that names a lettered choice
+    (`Assume a)`, `**b).**`), and one that names exactly one of the card's choices anywhere in
+    its text ("The **export** date", "Replace them with a dash"). When it names two or more
+    choices, none is marked: the page must not guess between them. Nothing else is guessed."""
     if any(o["recommended"] for o in card["options"]):
         return
     text = strip_md(BACKTICK.sub(lambda m: m.group(1), card["recommended"]))
@@ -175,6 +177,11 @@ def mark_recommended(card: dict) -> None:
         if letter and opt["value"] == letter.group(1):
             opt["recommended"] = True
             return
+    # A one-character value is a letter (`a`), which a sentence uses as a word, so it is only ever matched as `a)` above.
+    named = [opt for opt in card["options"] if len(opt["value"]) > 1
+             and re.search(rf"(?<![\w-]){re.escape(opt['value'].lower())}(?![\w-])", text.lower())]
+    if len(named) == 1:
+        named[0]["recommended"] = True
 
 
 def short_value(cell: str) -> str:
@@ -382,6 +389,18 @@ def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = Non
     return found
 
 
+def open_cards(questionnaire: dict) -> list[dict]:
+    """The cards no keyed answer in the session covers yet. The page counts them the same way (questionnaire.html, openCards)."""
+    sent = questionnaire.get("sent") or {}
+    return [card for card in questionnaire["cards"] if card["key"] not in sent]
+
+
+def list_entry(questionnaire: dict) -> dict:
+    """One line of the hosted copy's picker: when it was asked, how many cards are still open (none: the session answered them
+    all), and its title."""
+    return {"at": questionnaire["at"], "open": len(open_cards(questionnaire)), "title": questionnaire["title"]}
+
+
 def collect(session_names: list[str]) -> list[dict]:
     labels = builder.pane_labels([], OUT / "pane-labels.json")  # refreshes the cache; read below
     try:
@@ -413,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     builder.write_page(TEMPLATE, payload, out)
     print(f"Wrote {out}")
     for q in payload["questionnaires"]:
-        print(f"  {q['session'][:8]} {len(q['cards'])} open, {len(q['resolved'])} answered, {len(q['locked'])} locked: {q['title'][:70]}")
+        print(f"  {q['session'][:8]} {len(open_cards(q))} open, {len(q['resolved'])} answered, {len(q['locked'])} locked: {q['title'][:70]}")
     return 0
 
 

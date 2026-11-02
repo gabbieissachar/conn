@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "prototype"))
-from build_questionnaire import parse_questionnaire, sent_answers  # noqa: E402
+from build_questionnaire import list_entry, open_cards, parse_questionnaire, sent_answers  # noqa: E402
 
 CARDS = """Review group A (2 cards): two calls on the launch note.
 
@@ -228,14 +228,66 @@ class CardsTableTest(unittest.TestCase):
         self.assertEqual(self.q["cards"][1]["depends"], "A1")
         self.assertEqual(self.q["cards"][0]["recommended"], "The **later** date.")
 
-    def test_only_a_recommendation_that_opens_with_a_choice_marks_it(self):
-        # "Finance." opens with the choice `finance`; "The later date." does not open with `later`.
-        self.assertEqual([[o["value"] for o in c["options"] if o["recommended"]] for c in self.q["cards"]], [[], ["finance"]])
+    def test_a_recommendation_that_names_one_choice_marks_it(self):
+        # "Finance." opens with the choice `finance`; "The later date." names `later` further in, and it is the only choice it names.
+        self.assertEqual([[o["value"] for o in c["options"] if o["recommended"]] for c in self.q["cards"]], [["later"], ["finance"]])
 
     def test_locked_cards_and_intro(self):
         self.assertEqual([l["key"] for l in self.q["locked"]], ["B1", "B2"])
         self.assertIn("Teaching frame", self.q["intro"])
         self.assertNotIn("| ID |", self.q["intro"])
+
+
+def card_with(recommended: str, choices: str = "`export`, `shipped`, `dash`, `keep`") -> dict:
+    reply = ("Review (1 card)\n\n| ID | Decision | Depends on | Recommended default | Answer |\n| --- | --- | --- | --- | --- |\n"
+             f"| A1 | Which one | none | {recommended} | {choices} |\n\nReply with keyed answers: `A1=...`\n")
+    return parse_questionnaire(reply)["cards"][0]
+
+
+def starred(card: dict) -> list[str]:
+    return [o["value"] for o in card["options"] if o["recommended"]]
+
+
+class NamedAnywhereTest(unittest.TestCase):
+    """A choice is starred when the recommendation names exactly one of the card's choices anywhere in its text."""
+
+    def test_one_choice_named_in_the_middle_is_starred(self):
+        self.assertEqual(starred(card_with("The **export** date.")), ["export"])
+        self.assertEqual(starred(card_with("Replace them with a dash.")), ["dash"])
+
+    def test_two_choices_named_star_none(self):
+        self.assertEqual(starred(card_with("Use the export date, not the shipped one.")), [])
+        self.assertEqual(starred(card_with("Either dash or keep works.")), [])
+
+    def test_a_choice_inside_a_longer_word_is_not_named(self):
+        self.assertEqual(starred(card_with("Use the exported date.")), [])
+        self.assertEqual(starred(card_with("Keep-alive is unrelated.", "`keep`, `drop`")), [])
+
+    def test_a_one_letter_choice_is_never_matched_as_a_word(self):
+        self.assertEqual(starred(card_with("Replace them with a dash.", "`a`, `b`")), [])
+
+    def test_nothing_named_stars_nothing(self):
+        self.assertEqual(starred(card_with("Whatever the team uses today.")), [])
+
+    def test_the_opening_choice_still_wins_and_a_lettered_one_is_still_found(self):
+        self.assertEqual(starred(card_with("Finance, then ops.", "`finance`, `ops`")), ["finance"])
+        self.assertEqual(starred(card_with("Assume b) for now.", "`a`, `b`")), ["b"])
+
+
+class AnsweredListTest(unittest.TestCase):
+    def questionnaire(self, sent):
+        q = parse_questionnaire(CARDS)
+        return {**q, "at": 100.0, "sent": sent, "sent_at": 160.0}
+
+    def test_cards_the_session_answered_are_not_open(self):
+        self.assertEqual([c["key"] for c in open_cards(self.questionnaire({"A1": "later"}))], ["A2"])
+        self.assertEqual(open_cards(self.questionnaire({"A1": "later", "A2": "finance"})), [])
+        self.assertEqual(len(open_cards(self.questionnaire({}))), 2)
+
+    def test_the_hosted_picker_line_counts_open_cards(self):
+        self.assertEqual(list_entry(self.questionnaire({}))["open"], 2)
+        self.assertEqual(list_entry(self.questionnaire({"A1": "later", "A2": "ops"}))["open"], 0)
+        self.assertEqual(set(list_entry(self.questionnaire({}))), {"at", "open", "title"})
 
 
 class CheckpointTest(unittest.TestCase):
