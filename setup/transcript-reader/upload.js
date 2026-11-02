@@ -15,11 +15,12 @@
 // existing params stops it, with {"ready":false} on stdout. Then it prints
 // {"ready":true,"rekeyed":...} and reads one JSON line per object from stdin,
 // {"path":"s/<id>.json","text":"<the object's JSON>"}, gzips and seals it, and writes
-// <folder>/<path>.enc in one rename. At the end of stdin it prints {"written":<count>}.
+// <folder>/<path>.enc in one rename. At the end of stdin it prints {"written":<count>}. A line ends at "\n" and nowhere else
+// (see lines() below).
 
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
+const { StringDecoder } = require('string_decoder');
 const zlib = require('zlib');
 const seal = require('./prototype/seal.js');
 
@@ -33,6 +34,27 @@ function replace(file, bytes) {
   fs.writeFileSync(partial, bytes, { mode: 0o600 });
   fs.chmodSync(partial, 0o600);
   fs.renameSync(partial, file);
+}
+
+// The lines of a stream: each ends at "\n" and at nothing else. readline is not used for this on purpose: it also ends a line at
+// U+2028 and U+2029, and sync.py writes those as they are inside a conversation's text (JSON allows them raw in a string), so it cut
+// such an object in half and the seal stopped there ("Unterminated string in JSON at position N"). A character split between two
+// chunks is joined by the decoder; a last line with no newline is still a line.
+async function* lines(input) {
+  const decoder = new StringDecoder('utf8');
+  let pieces = [];  // the start of a line whose end has not arrived yet (joined once, not on every chunk: a line may be megabytes)
+  for await (const chunk of input) {
+    let text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+    for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n')) {
+      yield pieces.concat(text.slice(0, at)).join('');
+      pieces = [];
+      text = text.slice(at + 1);
+    }
+    if (text) pieces.push(text);
+  }
+  pieces.push(decoder.end());
+  const last = pieces.join('');
+  if (last) yield last;
 }
 
 async function main(argv, env = process.env, input = process.stdin, output = process.stdout) {
@@ -55,7 +77,7 @@ async function main(argv, env = process.env, input = process.stdin, output = pro
   }
   output.write(JSON.stringify({ ready: true, rekeyed }) + '\n');
   let written = 0;
-  for await (const line of readline.createInterface({ input, crlfDelay: Infinity })) {
+  for await (const line of lines(input)) {
     if (!line.trim()) continue;
     const { path: name, text } = JSON.parse(line);
     if (typeof name !== 'string' || !OBJECT_RE.test(name) || typeof text !== 'string') throw new Error('Not an object of the hosted copy: ' + String(name).slice(0, 80));
@@ -70,4 +92,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => { process.stderr.write(error.message + '\n'); process.exit(1); });
 }
 
-module.exports = { main, OBJECT_RE, replace };
+module.exports = { main, lines, OBJECT_RE, replace };

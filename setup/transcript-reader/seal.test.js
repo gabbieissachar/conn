@@ -110,6 +110,50 @@ test('upload.js takes the passphrase from the environment only, and writes only 
   } finally { cleanup(); }
 });
 
+// sync.py writes each object as one JSON line, and JSON allows U+2028 and U+2029 raw inside a string, so a conversation that holds one
+// (a pasted text, or a script that handles them) is a line that holds one. A line ends at "\n" and nowhere else. readline ends it at
+// those two as well, which cut such an object in half ("Unterminated string in JSON at position N", N the place of the character) and
+// stopped every seal after it: 2 of 795 conversations on the owner's laptop held one, and each run of the sealed copy failed on them.
+test('upload.js reads one object per line, and a line ends at a newline only', async () => {
+  const { folder, cleanup } = bucket();
+  try {
+    const objects = {
+      's/sep.json': { say: 'a b c', long: 'x'.repeat(111000) + ' ' + 'y'.repeat(2000) },
+      's/only.json': { say: ' ' },
+      's/big.json': { say: 'z'.repeat(3 * 1024 * 1024) },
+      's/others.json': { say: 'a\u0085b\u000bc\u000cd\u001ce f g' },
+      'index.json': { conversations: [' '] },
+    };
+    const lines = Object.entries(objects).map(([name, value]) => ({ path: name, text: JSON.stringify(value) }));
+    assert.ok(lines.every((line) => JSON.stringify(line).split('\n').length === 1), 'one line each, as sync.py writes them');
+    const sealed = await runUpload(folder, lines);
+    assert.deepEqual(sealed.said, [{ ready: true, rekeyed: true }, { written: lines.length }]);
+    const key = await seal.unlock(PASS, JSON.parse(fs.readFileSync(path.join(folder, 'k', 'params.json'), 'utf8')));
+    for (const [name, value] of Object.entries(objects)) {
+      assert.deepEqual(await seal.openJson(key, name, fs.readFileSync(path.join(folder, name + '.enc'))), value, name);
+    }
+  } finally { cleanup(); }
+});
+
+test('upload.js reads a line that arrives in pieces, even in the middle of a character, and one with no newline at the end', async () => {
+  const { folder, cleanup } = bucket();
+  try {
+    const value = { say: 'café   𝄞   日本' + 'w'.repeat(5000) };
+    const wire = Buffer.from(JSON.stringify({ path: 's/pieces.json', text: JSON.stringify(value) }) + '\n' + JSON.stringify({ path: 's/last.json', text: '{}' }), 'utf8');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let said = '';
+    output.on('data', (chunk) => { said += chunk; });
+    const done = upload.main([folder], { HOSTED_READER_PASSPHRASE: PASS }, input, output);
+    for (let at = 0; at < wire.length; at += 7) { input.write(wire.subarray(at, at + 7)); await new Promise((resolve) => setImmediate(resolve)); }
+    input.end();
+    assert.equal(await done, 0);
+    assert.deepEqual(said.trim().split('\n').map((line) => JSON.parse(line)), [{ ready: true, rekeyed: true }, { written: 2 }]);
+    const key = await seal.unlock(PASS, JSON.parse(fs.readFileSync(path.join(folder, 'k', 'params.json'), 'utf8')));
+    assert.deepEqual(await seal.openJson(key, 's/pieces.json', fs.readFileSync(path.join(folder, 's', 'pieces.json.enc'))), value);
+  } finally { cleanup(); }
+});
+
 // The shell's loader in a sandbox, fetching a sealed bucket from memory (no IndexedDB here).
 function shell(files) {
   const calls = [];
