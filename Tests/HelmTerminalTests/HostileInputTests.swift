@@ -76,6 +76,13 @@ import HelmCore
         feedHostile("sync2026Repeated", Array(String(repeating: "\u{1b}[?2026h", count: 100_000).utf8))
     }
 
+    @Test func aCharacterSetSwitchDoesNotSurviveTheNextFullFrame() {
+        // ESC ( 0 (G0 = DEC line drawing) and SO (shift out to G1, set to line drawing) turn letters into box characters.
+        // The first version of the engine kept them across a full frame; reset() now restores ASCII.
+        feedHostile("charsetG0", esc("(0") + Array("lqqk".utf8))
+        feedHostile("charsetShiftOut", esc(")0") + [0x0e] + Array("lqqk".utf8))
+    }
+
     @Test func aSavedCursorFromBeforeAShrink() {
         let engine = SwiftTermEngine()
         engine.resize(cols: 66, rows: 59)

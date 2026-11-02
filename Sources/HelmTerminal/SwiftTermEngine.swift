@@ -160,7 +160,9 @@ public final class SwiftTermEngine: TerminalEngine {
     /// A soft reset plus a clear, not RIS: RIS also forgets the theme's default colours and the pane would turn black.
     public func reset() {
         view.softReset()
-        view.feed(text: "\u{1b}[0m\u{1b}[2J\u{1b}[H")
+        // A soft reset leaves the character sets alone: a stream that switched G0 to the DEC line-drawing set (ESC ( 0, or
+        // SO) would draw every later frame as box characters. A full frame must start from ASCII in G0 whatever came before.
+        view.feed(text: "\u{1b}(B\u{1b})B\u{1b}*B\u{1b}+B\u{0f}\u{1b}[0m\u{1b}[2J\u{1b}[H")
         MainActor.assumeIsolated { view.reapplyTheme() }
         scheduleNudge(early: true)
     }
