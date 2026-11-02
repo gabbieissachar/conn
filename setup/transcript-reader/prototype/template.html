@@ -1734,25 +1734,46 @@ __HEAD_HOSTED__
     link.listing = null;
     landOnMessage(state.session, index);
   }
-  // A message address that reaches the page while it is open (a link pasted into this tab, or opened over the conversation on screen).
+  // An address that reaches the page while it is open (a link pasted into this tab, or opened over the conversation on screen, as
+  // Helm's pin does) is followed in place, as a fresh load would follow it, without loading the page again: another conversation,
+  // its Documents view on a file, or a message in it. The page's own writes (setAddress) are history.replaceState, which fires no
+  // hashchange, so following an address never calls itself. An address for the conversation already on screen changes nothing.
+  let addressLive = false;  // set once the page has opened on its conversation; an address before that is read by chooseOpening
   async function followAddress() {
     const asked = address.parse(location.hash);
-    if (!asked || !asked.message) return;  // #s= and &d= are read when the page opens, as always
-    const si = sessionAt(asked.session);
-    if (si < 0) { link.listing = { text: `Session ${asked.session.slice(0, 8)} is not on the reader any more, so this stays on the conversation open.` }; renderLive(); return; }
+    if (!addressLive || !asked) return;
+    let si = sessionAt(asked.session);
+    if (si < 0) {
+      // A conversation whose pane closed is listed again, as a fresh load lists it, unless it was closed by hand in this tab.
+      const closed = live.served && !HOSTED && !handClosed.some(id => id.startsWith(asked.session)) ? (data.closed || []).find(c => c.id.startsWith(asked.session)) : null;
+      if (closed) {
+        link.listing = { text: `Opening ${closed.label}…` }; renderLive();
+        try { await live.changeList("reopen", closed.id); await refreshData(true); } catch (e) { link.listing = { text: `Could not open ${closed.label} again: ${e.message}. This stays on the conversation open.` }; renderLive(); return; }
+        si = sessionAt(asked.session);
+      }
+      if (si < 0) { link.listing = { text: `Session ${asked.session.slice(0, 8)} is not on the reader any more, so this stays on the conversation open.` }; renderLive(); return; }
+    }
     if (!data.sessions[si].exchanges) {  // the hosted copy loads a conversation when it is asked for
       try { await hosted.conversation(data.sessions[si]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
     }
-    const index = address.find(data.sessions[si].exchanges, asked.message);
     state.pinsOpen = false;
-    if (index < 0) {  // the conversation opens, and says the message is not in it
-      if (state.session !== si || state.view !== "reader") { state.session = si; state.view = "reader"; whenReady(() => { render(); showLatest(); }); }
-      setAddress();
-      link.listing = messageGone(asked.message); renderLive();
+    link.listing = null;
+    if (asked.message) {
+      const index = address.find(data.sessions[si].exchanges, asked.message);
+      if (index < 0) {  // the conversation opens, and says the message is not in it
+        if (state.session !== si || state.view !== "reader") { state.session = si; state.view = "reader"; whenReady(() => { render(); showLatest(); }); }
+        setAddress();
+        link.listing = messageGone(asked.message); renderLive();
+        return;
+      }
+      landOnMessage(si, index);
       return;
     }
-    link.listing = null;
-    landOnMessage(si, index);
+    if (asked.doc && data.documents && data.documents[asked.doc]) { state.session = si; openDocument(asked.doc, null); return; }
+    if (si === state.session && state.view === "reader") { setAddress(); return; }
+    state.session = si; state.view = "reader";
+    setAddress();
+    whenReady(() => { render(); showLatest(); });
   }
   window.addEventListener("hashchange", followAddress);
 
@@ -3897,6 +3918,7 @@ __HEAD_HOSTED__
     return saved;
   }
   function openReading(saved) {
+    addressLive = true;
     if (link.opening) { render(); reopenLost(link.opening, saved); return; }
     const opened = data.sessions[state.session];
     const same = saved && opened && (opened.ids || [opened.id]).includes(saved.session);

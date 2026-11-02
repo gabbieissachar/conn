@@ -1428,6 +1428,10 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("address.build({ session: session.id,", page, mode)
             self.assertIn('window.addEventListener("hashchange", followAddress);', page, mode)
             self.assertNotIn("location.reload", page.split("async function followAddress()")[1].split('window.addEventListener("hashchange"')[0], mode)
+            # Any address the page is handed while open (another conversation, a file, a message) is followed in place; its own writes fire no hashchange.
+            self.assertIn("let addressLive = false;", page, mode)
+            self.assertIn("addressLive = true;", page, mode)
+            self.assertNotIn("location.hash =", page, mode)
 
     def test_the_reader_pages_carry_the_photo_rules_that_attach_test_js_runs(self):
         for mode, page in self.pages():
