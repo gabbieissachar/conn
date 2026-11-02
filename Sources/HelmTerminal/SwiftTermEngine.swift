@@ -6,6 +6,7 @@
 // - clipboard read and write requests (OSC 52 and Kitty), titles, bells, links - are refused or reduced, because the
 // bytes come from an agent's screen.
 import AppKit
+import CoreText
 import SwiftTerm
 import HelmCore
 
@@ -110,6 +111,20 @@ public final class HelmTerminalView: TerminalView {
     public func nudgeDisplay() {
         setFrameSize(frame.size)
         needsDisplay = true
+    }
+
+    /// One cell at this size as SwiftTerm measures it (the advance of "W" and the line height, each snapped to whole device
+    /// pixels so text stays crisp). The host uses it to choose the font; the view's real size is checked afterwards.
+    public static func cellSize(forPoints points: CGFloat, scale: CGFloat) -> CGSize {
+        let f = NSFont.monospacedSystemFont(ofSize: points, weight: .regular)
+        let ct = f as CTFont
+        let height = ceil(CTFontGetAscent(ct) + CTFontGetDescent(ct) + CTFontGetLeading(ct))
+        var chars: [UniChar] = [0x57], glyphs: [CGGlyph] = [0]
+        let width = CTFontGetGlyphsForCharacters(ct, &chars, &glyphs, 1)
+            ? f.advancement(forGlyph: NSGlyph(glyphs[0])).width
+            : ("W" as NSString).size(withAttributes: [.font: f]).width
+        let s = max(scale, 1)
+        return CGSize(width: max(1, (width * s).rounded() / s), height: max(1, ceil(height * s) / s))
     }
 
     /// Width of one cell at the current font (for choosing the font that fits a host).

@@ -15,8 +15,13 @@ final class GridTerminalNSView: NSView {
     /// Privacy mode: text is drawn as solid bars (box and block characters stay), so nothing readable reaches a screen share.
     var redact = false { didSet { if redact != oldValue { needsDisplay = true } } }
 
-    private let padX: CGFloat = 10
-    private let padY: CGFloat = 8
+    private let minPadX: CGFloat = 10
+    private let minPadY: CGFloat = 8
+    /// Where the grid starts: the minimum margin plus half the slack, so a grid smaller than the view sits in the middle.
+    private var padX: CGFloat = 10
+    private var padY: CGFloat = 8
+    /// Text size as a factor of the fit (Cmd+= / Cmd+- / Cmd+0); 1 is the fit itself.
+    var zoom: Double = 1 { didSet { if zoom != oldValue { refit() } } }
     private(set) var cellW: CGFloat = 7
     private(set) var cellH: CGFloat = 15
     private var fonts: [NSFont] = []          // regular, bold, italic, bold-italic
@@ -54,22 +59,23 @@ final class GridTerminalNSView: NSView {
         cellH = ceil(base.ascender - base.descender + base.leading) + 1
     }
 
-    /// Pick the font so every column is visible (between 8 and 12.5 pt); a pane taller than the view loses its top rows.
+    /// The largest font at which the whole grid fits in width and height (7 to 28 pt), times the zoom; the grid is centred
+    /// in the slack. Zoomed past the fit, a pane taller than the view loses its top rows (the live prompt stays in view).
     private func refit() {
         guard let s = screen else { return }
-        let availW = bounds.width - 2 * padX, availH = bounds.height - 2 * padY
+        let availW = bounds.width - 2 * minPadX, availH = bounds.height - 2 * minPadY
         guard availW > 60, availH > 60 else { return }
-        var size: CGFloat = 12.5
-        while size > 8 {
-            let f = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
-            let w = ("M" as NSString).size(withAttributes: [.font: f]).width
-            if w * CGFloat(s.cols) <= availW { break }
-            size -= 0.5
+        let size = PaneFit.points(cols: s.cols, rows: s.rows, availableWidth: availW, availableHeight: availH, zoom: zoom) { p in
+            let f = NSFont.monospacedSystemFont(ofSize: p, weight: .regular)
+            return CGSize(width: ("M" as NSString).size(withAttributes: [.font: f]).width, height: ceil(f.ascender - f.descender + f.leading) + 1)
         }
         if abs(size - fontSize) > 0.01 { setup(size: size); needsDisplay = true }
         let visible = max(1, Int(availH / cellH))
         let top = max(0, s.rows - visible)
         if top != topRow { topRow = top; needsDisplay = true }
+        let usedW = cellW * CGFloat(s.cols), usedH = cellH * CGFloat(s.rows - top)
+        let px = minPadX + max(0, floor((availW - usedW) / 2)), py = minPadY + max(0, floor((availH - usedH) / 2))
+        if px != padX || py != padY { padX = px; padY = py; needsDisplay = true }
     }
 
     // MARK: geometry

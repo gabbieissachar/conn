@@ -136,6 +136,34 @@ enum UICheck {
         model.select(list[list.count / 2].id); await wait(1.5)
         report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state)")
 
+        // Text size: the largest at which Herdr's grid fits the room, following the window, with zoom on top.
+        if let e = model.primary.engine as? SwiftTermEngine, let host = e.view.superview, let win = Capture.mainWindow() {
+            let savedZoom = model.paneZoom, savedSize = win.contentView?.frame.size ?? .zero
+            func room() -> String { "view \(Int(e.view.frame.width))x\(Int(e.view.frame.height)) in \(Int(host.bounds.width))x\(Int(host.bounds.height)), \(e.view.gridCols)x\(e.view.gridRows) cells" }
+            func fitsRoom() -> Bool { e.view.frame.width <= host.bounds.width + 0.5 && e.view.frame.height <= host.bounds.height + 0.5 }
+            model.setPaneZoom(1, remember: false); await wait(0.5)
+            let base = e.view.fontPoints
+            report("pane text fits the pane in width and height", fitsRoom(), "font=\(base) pt, \(room())")
+            win.setContentSize(NSSize(width: savedSize.width + 400, height: savedSize.height + 250)); await wait(0.8)
+            let big = e.view.fontPoints
+            report("a larger window gives larger text, still fitting", big >= base && fitsRoom(), "font \(base) -> \(big) pt, \(room())")
+            win.setContentSize(NSSize(width: 1000, height: 600)); await wait(0.8)
+            let small = e.view.fontPoints
+            report("a smaller window gives smaller text (cropped only below the 7 pt floor)", small <= base && (fitsRoom() || small == PaneFit.floorPoints), "font \(base) -> \(small) pt, \(room())")
+            win.setContentSize(savedSize); await wait(0.6)
+            model.zoomPane(1); model.zoomPane(1); await wait(0.5)
+            let zoomed = e.view.fontPoints
+            report("zoom in makes the text larger than the fit", zoomed > base && model.paneZoom > 1, "zoom=\(model.paneZoom) font=\(zoomed) pt (fit \(base))")
+            model.zoomPane(-1); model.zoomPane(-1); model.zoomPane(-1); await wait(0.5)
+            report("zoom out makes the text smaller than the fit", e.view.fontPoints < base && fitsRoom(), "zoom=\(model.paneZoom) font=\(e.view.fontPoints) pt")
+            model.resetPaneZoom(); await wait(0.5)
+            report("reset returns to the fit", abs(e.view.fontPoints - base) < 0.01 && model.paneZoom == 1, "font=\(e.view.fontPoints) pt")
+            model.setPaneZoom(savedZoom, remember: false)
+            await wait(0.3)
+        } else {
+            print("ui-check: SKIP pane text size (the grid renderer is on, or no pane)")
+        }
+
         model.mode = .editor; await wait(0.5)
         report("editor mode stops the pane stream", model.primary.paneID == nil && model.primary.processID == nil, "pane=\(model.primary.paneID ?? "nil")")
         model.mode = .herdr; await wait(0.3)

@@ -44,6 +44,10 @@ struct AppConfig {
     var textPanes = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
     var editorTest: String?
+    /// Content size of the window in points (`--window 1100x700`), for screenshots of a small and a large window.
+    var windowSize: CGSize?
+    /// Open the selected pane's history view once the pane is up (for screenshots).
+    var openHistory = false
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -77,6 +81,10 @@ struct AppConfig {
             case "--web-tab": c.webTab = (next() ?? "") == "organizer" ? .organizer : .reader
             case "--text-panes": c.textPanes = true
             case "--editor-test": c.editorTest = next()
+            case "--window":
+                let parts = (next() ?? "").split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2, parts[0] >= 400, parts[1] >= 300 { c.windowSize = CGSize(width: parts[0], height: parts[1]) }
+            case "--history": c.openHistory = true
             default: break
             }
             i += 1

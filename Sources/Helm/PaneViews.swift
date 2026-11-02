@@ -40,29 +40,49 @@ final class PaneHostView: NSView {
     }
 
     override func layout() { super.layout(); refit() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refit() }
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); refit() }
 
+    /// Text size as a factor of the fit (Cmd+= / Cmd+- / Cmd+0); 1 is the fit itself.
+    var zoom: Double = 1 { didSet { if zoom != oldValue { refit() } } }
+
+    /// The largest font at which Herdr's whole grid fits the room in width and height, times the zoom; refitted on every
+    /// layout (a window or split resize), grid change, zoom change and move to another screen. The grid is centred in the
+    /// slack; zoomed past the fit it crops on the left and top, keeping the bottom rows (where the live prompt is).
     func refit() {
         guard !refitting, let t = terminal else { return }
         refitting = true; defer { refitting = false }
-        let availW = bounds.width - 2 * pad.width
-        guard availW > 40, bounds.height > 40 else { return }
-        var pts: CGFloat = 13
-        while pts > 7, HelmTerminalView.cellWidth(forPoints: pts) * CGFloat(t.gridCols) > availW { pts -= 0.5 }
+        let availW = bounds.width - 2 * pad.width, availH = bounds.height - 2 * pad.height
+        guard availW > 40, availH > 40 else { return }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        var pts = PaneFit.points(cols: t.gridCols, rows: t.gridRows, availableWidth: availW, availableHeight: availH, zoom: zoom) {
+            HelmTerminalView.cellSize(forPoints: $0, scale: scale)
+        }
         t.setGrid(cols: t.gridCols, rows: t.gridRows, fontPoints: pts)
-        let h = t.frame.height
-        let y = h > bounds.height - 2 * pad.height ? pad.height : bounds.height - pad.height - h
-        t.setFrameOrigin(NSPoint(x: pad.width, y: y))
+        // The cell size above mirrors SwiftTerm's own; the view's real size is the truth. At zoom 1 or less nothing may
+        // overflow, so step down until it fits.
+        var steps = 0
+        while zoom <= 1, pts > PaneFit.floorPoints, t.frame.width > availW + 1 || t.frame.height > availH + 1, steps < 8 {
+            pts -= PaneFit.step; steps += 1
+            t.setGrid(cols: t.gridCols, rows: t.gridRows, fontPoints: pts)
+        }
+        let w = t.frame.width, h = t.frame.height
+        let x = w > availW + 1 ? pad.width : pad.width + floor((availW - w) / 2)
+        let y = h > availH + 1 ? pad.height : pad.height + floor((availH - h) / 2)
+        t.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
 
 struct SwiftTermPaneRep: NSViewRepresentable {
     let engine: SwiftTermEngine
     let theme: TerminalTheme
+    var zoom: Double = 1
     var onScrollBack: (() -> Void)?
 
     func makeNSView(context: Context) -> PaneHostView {
         let v = PaneHostView()
         engine.view.apply(theme: theme)
+        v.zoom = zoom
         v.onScrollBack = onScrollBack
         v.attach(engine.view)
         return v
@@ -70,6 +90,7 @@ struct SwiftTermPaneRep: NSViewRepresentable {
 
     func updateNSView(_ v: PaneHostView, context: Context) {
         if engine.view.theme.bg != theme.bg { engine.view.apply(theme: theme) }
+        v.zoom = zoom
         v.onScrollBack = onScrollBack
         v.attach(engine.view)
     }
@@ -80,6 +101,7 @@ struct GridPaneRep: NSViewRepresentable {
     let engine: GridEngine
     let theme: TerminalTheme
     var redact = false
+    var zoom: Double = 1
     var onScrollBack: (() -> Void)?
 
     func makeNSView(context: Context) -> GridTerminalNSView {
@@ -87,6 +109,7 @@ struct GridPaneRep: NSViewRepresentable {
         v.screen = engine.screen
         v.theme = theme
         v.redact = redact
+        v.zoom = zoom
         v.onScrollBack = onScrollBack
         session.onApplied = { [weak v] in v?.screenChanged() }
         return v
@@ -95,6 +118,7 @@ struct GridPaneRep: NSViewRepresentable {
     func updateNSView(_ v: GridTerminalNSView, context: Context) {
         v.theme = theme
         v.redact = redact
+        v.zoom = zoom
         v.onScrollBack = onScrollBack
         v.screen = engine.screen
         session.onApplied = { [weak v] in v?.screenChanged() }
@@ -213,7 +237,7 @@ struct PaneColumn: View {
                     .opacity(history != nil ? 0 : (app.store.link == .live || app.store.link == .fixture ? 1 : 0.45))
                     .allowsHitTesting(history == nil)
                 if let h = history {
-                    PaneHistoryView(history: h, theme: app.terminalTheme, fontPoints: 12,
+                    PaneHistoryView(history: h, theme: app.terminalTheme, fontPoints: 12 * CGFloat(app.paneZoom),
                                     refresh: { app.refreshHistory(slot) }, live: { app.closeHistory(slot) })
                 }
                 if app.privacy {
@@ -231,9 +255,9 @@ struct PaneColumn: View {
 
     @ViewBuilder private var terminal: some View {
         if let e = session.engine as? SwiftTermEngine {
-            SwiftTermPaneRep(engine: e, theme: app.terminalTheme, onScrollBack: { app.openHistory(slot) })
+            SwiftTermPaneRep(engine: e, theme: app.terminalTheme, zoom: app.paneZoom, onScrollBack: { app.openHistory(slot) })
         } else if let g = session.engine as? GridEngine {
-            GridPaneRep(session: session, engine: g, theme: app.terminalTheme, redact: app.privacy, onScrollBack: { app.openHistory(slot) })
+            GridPaneRep(session: session, engine: g, theme: app.terminalTheme, redact: app.privacy, zoom: app.paneZoom, onScrollBack: { app.openHistory(slot) })
         }
     }
 

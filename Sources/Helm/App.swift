@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = cfg.webTab { model.webTab = t }
         model.privacy = cfg.privacy
         if let m = cfg.mode { model.mode = m }
+        if let size = cfg.windowSize { DispatchQueue.main.async { Capture.mainWindow()?.setContentSize(size) } }
         model.editor.restoreSession()
         for f in cfg.openFiles { model.editor.open(URL(fileURLWithPath: f)) }
         if !cfg.openFiles.isEmpty && cfg.mode == nil { model.mode = .editor }
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let list = model.snapshot.prioritized
             if let i = cfg.select, i < list.count { model.select(list[i].id) }
             if cfg.compare, model.comparePaneID == nil { model.toggleCompare() }
+            if cfg.openHistory { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { model.openHistory() } }
         }
         if let dir = cfg.tour { Task { @MainActor in try? await Task.sleep(nanoseconds: 3_000_000_000); await Tour.run(dir: URL(fileURLWithPath: dir), model: model); model.shutdown(); NSApplication.shared.terminate(nil) } }
         if let path = cfg.shot {
@@ -120,6 +122,10 @@ struct HelmCommands: Commands {
             ForEach(Array(CenterMode.allCases.enumerated()), id: \.element.id) { i, m in
                 Button(m.rawValue) { app.mode = m }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: [.command, .option])
             }
+            Divider()
+            Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
+            Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
+            Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent || app.paneZoom == 1)
             Divider()
             Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])

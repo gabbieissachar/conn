@@ -55,6 +55,10 @@ final class AppModel: ObservableObject {
     @Published var webTab: WebKind = .reader
     @Published var readerFollows = true
     /// Privacy mode hides content for screen sharing; anything that shows pane history closes with it.
+    /// Text size of the live panes as a factor of the size that fits (Cmd+= / Cmd+- / Cmd+0); remembered across launches.
+    @Published private(set) var paneZoom: Double = AppModel.savedZoom()
+    private static let zoomKey = "helm.paneZoom"
+    private static func savedZoom() -> Double { PaneFit.clampedZoom(UserDefaults.standard.object(forKey: zoomKey) as? Double ?? 1) }
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
@@ -419,6 +423,19 @@ final class AppModel: ObservableObject {
         var policy = client.writePolicy
         policy.writableSessions.remove(endpoint.session)
         client = HerdrClient(endpoint: endpoint, writePolicy: policy)
+    }
+
+    // MARK: pane text size
+
+    func zoomPane(_ direction: Int) { setPaneZoom(PaneFit.stepZoom(paneZoom, direction: direction)) }
+    func resetPaneZoom() { setPaneZoom(1) }
+
+    func setPaneZoom(_ z: Double, remember: Bool = true) {
+        let z = PaneFit.clampedZoom(z)
+        guard z != paneZoom else { return }
+        paneZoom = z
+        if remember { UserDefaults.standard.set(z, forKey: Self.zoomKey) }
+        toast(z == 1 ? "Text fits the pane" : "Text \(Int((z * 100).rounded()))% of the fit")
     }
 
     func toast(_ s: String) {
