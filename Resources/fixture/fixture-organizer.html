@@ -12,7 +12,7 @@
   header { padding:12px 16px 0; }
   h1 { font-size:16px; margin:0 0 10px; }
   .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); }
-  .tab { padding:7px 12px; font-size:13px; color:var(--muted); border-radius:8px 8px 0 0; }
+  .tab { padding:7px 12px; font:inherit; font-size:13px; color:var(--muted); background:transparent; border:1px solid transparent; border-radius:8px 8px 0 0; cursor:pointer; }
   .tab.on { color:var(--ink); background:var(--card); border:1px solid var(--line); border-bottom-color:var(--card); margin-bottom:-1px; font-weight:600; }
   main { padding:14px 16px; }
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
@@ -36,9 +36,16 @@
 <body>
 <header>
   <h1>Herdr organizer <span style="color:var(--muted);font-weight:400">· fixture</span></h1>
-  <div class="tabs"><div class="tab">Restart</div><div class="tab">Workspaces</div><div class="tab">Archives</div><div class="tab on">Context</div></div>
+  <nav class="tabs" aria-label="Organizer views">
+    <button class="tab on" type="button" data-view="restart" aria-selected="true">Restart</button>
+    <button class="tab" type="button" data-view="workspaces" aria-selected="false">Workspaces</button>
+    <button class="tab" type="button" data-view="archives" aria-selected="false">Archives</button>
+    <button class="tab" type="button" data-view="context" aria-selected="false">Context</button>
+  </nav>
 </header>
 <main>
+  <div id="other" hidden><p class="lead">Invented view: nothing to see here. Helm opens the organizer on Context.</p></div>
+  <div id="context">
   <div class="chips">
     <div class="chip"><small>Claude plan</small><b>62% of week used</b><small>resets Thu 09:00</small></div>
     <div class="chip"><small>Codex credits</small><b>18 this month</b><small>4 this week</small></div>
@@ -46,11 +53,19 @@
   </div>
   <p class="lead">Sessions by context used. Restart idle ones before they fill up.</p>
   <div id="rows"></div>
+  </div>
   <div class="note">Invented page for the Helm prototype. Buttons do nothing.</div>
 </main>
 <script>
 const R = [["onboarding-copy-review","working",71],["checkout-flow-fix","working",58],["competitor-teardown","working",44],["ledger-reconcile","blocked",37],["staging-cert-rotation","blocked",29],["changelog-draft","done",52],["promo-banner-copy","done",33],["search-index-audit","idle",64],["refund-webhook-retry","idle",41],["cart-empty-state","idle",22],["pricing-survey-notes","idle",18],["cost-report","idle",12],["push-opt-in-test","idle",9],["icon-set-cleanup","idle",6]];
 document.getElementById('rows').innerHTML = R.map(([n,s,p]) => `<div class="row"><div><div class="name">${n}</div><div class="sub">claude · ${s}</div></div><div class="track"><div class="fill ${p>65?'hot':p>45?'warn':''}" style="width:${p}%"></div></div><div class="pct">${p}%</div><div class="go">${s==='idle'?'Restart':'—'}</div></div>`).join('');
+// Like the real page: it starts on Restart and remembers nothing; a click on a view button selects it.
+document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('[data-view]').forEach(o => { const on = o === b; o.setAttribute('aria-selected', String(on)); o.classList.toggle('on', on); });
+  document.getElementById('context').hidden = b.dataset.view !== 'context';
+  document.getElementById('other').hidden = b.dataset.view === 'context';
+}));
+document.getElementById('context').hidden = true; document.getElementById('other').hidden = false;
 </script>
 </body>
 </html>

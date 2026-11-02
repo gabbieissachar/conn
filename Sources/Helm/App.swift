@@ -80,7 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Views still lay out and draw, so the in-process checks and captures work.
 @MainActor
 enum Background {
+    /// Held for the life of the process: without it App Nap throttles timers and layout of a window nobody can see.
+    private static var activity: NSObjectProtocol?
+
     static func keepWindowsInert() {
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Helm test mode: keep timers, layout and streams running in an inert window")
         let nc = NotificationCenter.default
         for name in [NSWindow.didUpdateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification, NSWindow.didExposeNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { n in
@@ -141,7 +145,7 @@ struct HelmCommands: Commands {
             Button("Previous Agent") { app.cycle(-1) }.keyboardShortcut("[")
             Button("Next Agent Waiting on You") { app.jumpToWaiting() }.keyboardShortcut("j")
             Button(app.primaryHistory == nil ? "Scroll Back (Show History)" : "Back to Live Pane") { app.toggleHistory(.primary) }
-                .keyboardShortcut("y").disabled(app.mode != .agent || app.selectedAgent == nil || app.privacy)
+                .keyboardShortcut("y")
             Divider()
             ForEach(0..<9, id: \.self) { i in
                 Button("Agent \(i + 1)") { app.selectNth(i) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
@@ -156,7 +160,7 @@ struct HelmCommands: Commands {
             Divider()
             Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
             Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
-            Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent || app.paneZoom == 1)
+            Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent)
             Divider()
             Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])

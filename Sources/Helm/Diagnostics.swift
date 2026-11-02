@@ -173,6 +173,64 @@ enum UICheck {
             print("ui-check: SKIP pane text size (the grid renderer is on, or no pane)")
         }
 
+        // Events built and delivered inside this process: they are never posted to the system, so they cannot touch the real
+        // pointer or the focus of another app. Wheel events go straight to the pane's responder method; key events go through
+        // the app's own menu (`performKeyEquivalent`), the way a real key press reaches a menu shortcut.
+        if let win = Capture.mainWindow() {
+            func scrollEvent(_ dy: Int32) -> NSEvent? {
+                guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0) else { return nil }
+                cg.timestamp = mach_absolute_time()
+                return NSEvent(cgEvent: cg)
+            }
+            func keyEvent(_ chars: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags) -> NSEvent? {
+                NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                 windowNumber: win.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)
+            }
+            func press(_ chars: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags) -> Bool {
+                guard let e = keyEvent(chars, code, flags) else { return false }
+                return NSApp.mainMenu?.performKeyEquivalent(with: e) ?? false
+            }
+            let originalZoom = model.paneZoom
+            model.setPaneZoom(1); await wait(0.3)
+            let up = press("=", 24, [.command]); await wait(0.3)
+            report("Cmd+= makes the pane text bigger", up && model.paneZoom == 1.1, "zoom=\(model.paneZoom)")
+            let d1 = press("-", 27, [.command]); await wait(0.3); let z1 = model.paneZoom
+            let d2 = press("-", 27, [.command]); await wait(0.3)
+            report("Cmd+- makes it smaller", d1 && z1 == 1.0 && d2 && model.paneZoom == 0.9, "zoom \(z1) then \(model.paneZoom)")
+            let reset = press("0", 29, [.command]); await wait(0.3)
+            report("Cmd+0 returns to the fit", reset && model.paneZoom == 1.0, "zoom=\(model.paneZoom)")
+            model.closeHistory(); await wait(0.2)
+            // The menu runs its action on a later turn of the run loop, so each press is followed by a short wait.
+            let handled1 = press("y", 16, [.command]); await wait(0.3); let opened = model.primaryHistory != nil
+            let handled2 = press("y", 16, [.command]); await wait(0.3); let closed = model.primaryHistory == nil
+            report("Cmd+Y swaps in the history and Cmd+Y swaps it out", handled1 && opened && handled2 && closed, "handled=\(handled1)/\(handled2) opened=\(opened) closed=\(closed) mode=\(model.mode.rawValue) privacy=\(model.privacy) agent=\(model.selectedAgent?.name ?? "nil")")
+            // Ownership rule: no menu shortcut claims a Ctrl or Alt chord without Command, so those keys stay the pane's.
+            func stateKey() -> String {
+                "\(model.paneZoom)|\(model.primaryHistory != nil)|\(model.selectedPaneID ?? "-")|\(model.mode.rawValue)|\(model.privacy)|\(model.showSwitcher)|\(model.showWeb)|\(model.sidebarVisible)|\(model.comparePaneID ?? "-")"
+            }
+            let before = stateKey()
+            var claimed: [String] = []
+            for (chars, code) in [("=", UInt16(24)), ("-", 27), ("0", 29), ("y", 16), ("j", 38), ("k", 40), ("1", 18), ("2", 19), ("[", 33), ("]", 30), ("\\", 42), ("l", 37), ("r", 15), ("s", 1), ("f", 3), ("b", 11), ("n", 45), ("o", 31), ("w", 13), ("g", 5)] {
+                for (name, flags) in [("Ctrl", NSEvent.ModifierFlags.control), ("Alt", .option), ("Ctrl+Alt", [.control, .option]), ("Ctrl+Shift", [.control, .shift]), ("Alt+Shift", [.option, .shift])] where press(chars, code, flags) { claimed.append("\(name)+\(chars)") }
+            }
+            await wait(0.3)
+            let after = stateKey()
+            report("no menu shortcut claims a Ctrl or Alt chord (they stay the pane's), and nothing changed", claimed.isEmpty && before == after, "claimed=\(claimed) unchanged=\(before == after)")
+            // The wheel over the pane. The host takes scroll events itself; one upward gesture opens the history, once.
+            if let host = (model.primary.engine as? SwiftTermEngine)?.view.superview as? PaneHostView {
+                for dy in [Int32(-6), -6, -6, 3, 2] { if let e = scrollEvent(dy) { host.scrollWheel(with: e) } }
+                report("a downward scroll or a small flick over the pane does not open the history", model.primaryHistory == nil)
+                try? await Task.sleep(nanoseconds: 600_000_000)       // a pause ends the gesture
+                for _ in 0..<6 { if let e = scrollEvent(6) { host.scrollWheel(with: e) } }
+                report("a deliberate upward scroll over the pane opens its history", model.primaryHistory != nil)
+                model.closeHistory(); await wait(0.3)
+            } else {
+                print("ui-check: SKIP wheel over the pane (the grid renderer is on)")
+            }
+            model.setPaneZoom(originalZoom)
+            print("ui-check: info window occlusionVisible=\(win.occlusionState.contains(.visible)) alpha=\(win.alphaValue) appNapHeld=\(Runtime.config.runsInBackground)")
+        }
+
         model.mode = .editor; await wait(0.5)
         report("editor mode stops the pane stream", model.primary.paneID == nil && model.primary.processID == nil, "pane=\(model.primary.paneID ?? "nil")")
         model.mode = .herdr; await wait(0.3)
@@ -251,6 +309,10 @@ enum UICheck {
         report("a reloaded organizer page opens on Context", reloaded == "context", "view=\(reloaded)")
 
         // Links between Helm's panes stay in Helm; links that leave open in the browser (recorded here, never opened).
+        // The pages' real addresses are http://localhost:8768 and :8765, so this part needs the live servers.
+        if model.config.fixture {
+            print("ui-check: SKIP links between the reader and organizer servers (the fixture pages are local files; WebLinkPolicyTests cover the rule)")
+        } else {
         final class Spy { var urls: [URL] = [] }
         let spy = Spy()
         organizerBox.openInBrowser = { spy.urls.append($0) }
@@ -277,6 +339,7 @@ enum UICheck {
         await click("https://example.com/helm-check", target: nil); await wait(0.5)
         report("a link to an outside site is handed to the browser and leaves Helm where it is", model.webTab == .organizer && spy.urls.map(\.absoluteString) == ["https://example.com/helm-check"], "tab=\(model.webTab.rawValue) opened=\(spy.urls.map(\.absoluteString))")
         organizerBox.openInBrowser = { NSWorkspace.shared.open($0) }
+        }
         model.webTab = .reader; model.pinReader(); await wait(0.5)
 
         model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)
@@ -298,7 +361,7 @@ enum UICheck {
         func audit(_ i: NSMenuItem) {
             guard !i.keyEquivalent.isEmpty else { return }
             let f = i.keyEquivalentModifierMask
-            if f.contains(.function) { return }        // the system's own Fn items (Start Dictation, Emoji & Symbols)
+            if f.contains(.function) || i.keyEquivalent.unicodeScalars.contains(where: { $0.value >= 0xF000 }) { return }        // the system's own Fn items (Start Dictation, Emoji & Symbols)
             chords += 1
             var m: KeyModifiers = []
             if f.contains(.command) { m.insert(.command) }

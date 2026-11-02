@@ -63,7 +63,9 @@ final class AppModel: ObservableObject {
     /// Text size of the live panes as a factor of the size that fits (Cmd+= / Cmd+- / Cmd+0); remembered across launches.
     @Published private(set) var paneZoom: Double = AppModel.savedZoom()
     private static let zoomKey = "helm.paneZoom"
-    private static func savedZoom() -> Double { PaneFit.clampedZoom(UserDefaults.standard.object(forKey: zoomKey) as? Double ?? 1) }
+    /// Preferences live in the standard domain, except in test mode: a check that zooms must not overwrite the zoom a person saved.
+    private static var defaults: UserDefaults { Runtime.config.runsInBackground ? (UserDefaults(suiteName: "dev.local.helm.test") ?? .standard) : .standard }
+    private static func savedZoom() -> Double { PaneFit.clampedZoom(defaults.object(forKey: zoomKey) as? Double ?? 1) }
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
@@ -446,7 +448,7 @@ final class AppModel: ObservableObject {
         let z = PaneFit.clampedZoom(z)
         guard z != paneZoom else { return }
         paneZoom = z
-        if remember { UserDefaults.standard.set(z, forKey: Self.zoomKey) }
+        if remember { Self.defaults.set(z, forKey: Self.zoomKey) }
         toast(z == 1 ? "Text fits the pane" : "Text \(Int((z * 100).rounded()))% of the fit")
     }
 
