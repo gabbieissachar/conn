@@ -1422,7 +1422,7 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("const askRules = (() => {", page, mode)
             self.assertNotIn("/*__ASKS__*/", page, mode)
             # The header counts the same open set that the cards and the jump use.
-            self.assertIn("${askRules.count(exs)} need you", page, mode)
+            self.assertIn('[askRules.count(exs), "need you"]', page, mode)
             self.assertIn("isOpen(e) && !e.folded", page, mode)
             self.assertNotIn('count(e => e.verdict === "needs-you")', page, mode)
 

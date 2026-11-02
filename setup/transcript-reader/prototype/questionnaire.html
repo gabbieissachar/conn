@@ -121,7 +121,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar"><div class="inner">
   <div class="title">Answer sheet <span class="proto">prototype</span><a href="prototype.html">← Reader</a></div>
-  <select class="pick" id="pick" aria-label="Questionnaire"></select>
+  <select class="pick" id="pick" aria-label="Answer sheet"></select>
   <div class="meta" id="meta"></div>
   <div class="asof" id="asof" hidden aria-live="polite"></div>
 </div></header>
@@ -434,7 +434,7 @@ __HEAD_HOSTED__
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
-    if (!q) { main.append($("div", "empty", "No questionnaire found in the listed sessions.")); return; }
+    if (!q) { main.append($("div", "empty", "No answer sheet found in the listed sessions.")); return; }
     if (!q.cards) { main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
     const meta = document.getElementById("meta");
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
@@ -510,7 +510,7 @@ __HEAD_HOSTED__
   }
   async function openSheet(q) {
     const found = ((await hosted.object(q.sheet)).questionnaires || []).find(x => Math.round(x.at || 0) === Math.round(q.at || 0));
-    if (!found) throw new Error("this questionnaire is not in its conversation's sheet any more");
+    if (!found) throw new Error("this answer sheet is not in its conversation's copy any more");
     Object.assign(q, found, { pane: q.pane, sheet: q.sheet });
   }
   if (HOSTED) {

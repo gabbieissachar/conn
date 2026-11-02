@@ -23,7 +23,7 @@ __HEAD_HOSTED__
     --ink: #1d2433; --muted: #5d6779; --faint: #8b93a3; --line: #dfe3ea; --paper: #ffffff; --wash: #f4f5f8;
     --you: #1f5fd1; --you-wash: #e9f0fd; --mate: #6b3fc4; --mate-wash: #f1ecfb;
     --ask: #8a5a00; --ask-wash: #fff3d6; --ask-line: #f0c45c; --ok: #2f6b45; --ok-wash: #e8f3ec;
-    --open: #b4232d; --code: #f1f3f6; --star: #a86a00;
+    --open: #b4232d; --code: #f1f3f6; --dim: #657083;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
@@ -32,7 +32,7 @@ __HEAD_HOSTED__
       --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
       --you: #8db4ff; --you-wash: #1d2a44; --mate: #c3a6ff; --mate-wash: #2a2340;
       --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e; --ok: #8fd3a8; --ok-wash: #1b3024;
-      --open: #ff8a8a; --code: #252a34; --star: #f2c14e;
+      --open: #ff8a8a; --code: #252a34; --dim: #8f97a8;
     }
   }
   * { box-sizing: border-box; }
@@ -45,14 +45,10 @@ __HEAD_HOSTED__
   .wide .bar-inner { max-width: 44rem; }
   .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
   .to-sheet { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
-  .to-sheet .short { display: none; }
-  /* At phone width the title row also holds the search button, and folded to one line the session picker needs the room too: the link is short. */
-  @media (max-width: 440px) { .to-sheet .long { display: none; } .to-sheet .short { display: inline; } }
   /* Folded to one line, the tabs and the answer sheet link are icons of one size: Conversation (on the other views), Documents
      (lit on the Documents view) and the answer sheet. Unfolded, the tabs and the text link are there instead. Each icon's tap area reaches past its box. */
   .view-btn, .to-sheet .sheet-ico { display: none; }
   .view-btn { position: relative; flex: none; width: 30px; height: 28px; padding: 0; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; color: var(--muted); place-items: center; }
-  .view-btn[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
   .bar.collapsed .view-btn:not([hidden]) { display: grid; }
   .bar.collapsed .to-sheet { position: relative; flex: none; width: 30px; height: 28px; margin-left: 0; display: grid; place-items: center; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; color: var(--muted); }
   .bar.collapsed .to-sheet .txt { display: none; }
@@ -67,10 +63,12 @@ __HEAD_HOSTED__
   /* Follow Herdr, kept in reach when the header is folded to one line (the same switch as the one in the controls). */
   .follow-quick { display: none; flex: none; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; height: 28px; padding: 0 9px; font-size: 13px; color: var(--muted); }
   .bar.collapsed .follow-quick:not([hidden]) { display: block; }
-  .follow-quick[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
   .follow-quick:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .crumb { display: none; flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 0; text-align: left; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .name { white-space: nowrap; }
+  /* At phone width the title row also holds the status badge, the search button and the chevron: the link keeps its whole name ("Answer sheet", never a short form),
+     loses its arrow, and the title gives way (cut with an ellipsis) when a long badge such as "hosted · read-only" needs the room. */
+  @media (max-width: 440px) { .to-sheet .go { display: none; } .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; } }
   .bar.collapsed .name, .bar.collapsed .proto, .bar.collapsed #bar-more { display: none; }
   /* The tab title already says prototype; at phone width the badge would push the title onto two lines. */
   @media (max-width: 440px) { .proto { display: none; } }
@@ -82,7 +80,6 @@ __HEAD_HOSTED__
   /* The star beside a session picker: outline when the session on screen is not starred, filled when it is. */
   .star-btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; width: 30px; height: 28px; padding: 0; color: var(--muted); flex: none; display: none; place-items: center; }
   .star-btn svg { fill: none; }
-  .star-btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); color: var(--star); }
   .star-btn[aria-pressed="true"] svg { fill: currentColor; }
   .star-btn:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .bar.collapsed.pick .crumb-star:not([hidden]), .pick-row .star-btn:not([hidden]) { display: grid; }
@@ -97,7 +94,8 @@ __HEAD_HOSTED__
   .pick-row select { flex: 1 1 auto; }
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
-  .btn[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
+  /* One pressed style for every toggle, in the "you" blue: yellow belongs to "Needs you" alone, so a switched-on Follow Herdr or Pin never reads as an ask. */
+  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy says when the laptop built it, and says so louder once that is old. */
@@ -137,14 +135,13 @@ __HEAD_HOSTED__
   .input.captain .who b { color: var(--you); }
   .input.firstmate .who b { color: var(--mate); }
   .clip { max-height: 13.5em; overflow: hidden; position: relative; }
-  .clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5em; background: linear-gradient(transparent, var(--paper)); }
+  .clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5em; background: linear-gradient(transparent, var(--paper)); pointer-events: none; }
   .input .clip::after { background: none; }
   .more { border: 0; background: none; color: var(--you); padding: 2px 0; font-size: 13px; }
   .reply { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; margin: 6px 0 4px; overflow-wrap: anywhere; }
   .reply.needs { border-left: 4px solid var(--ask-line); }
   .chip { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
   .chip.needs { background: var(--ask-wash); color: var(--ask); }
-  .chip.none { background: var(--ok-wash); color: var(--ok); }
   .chip.reminder, .chip.asked, .chip.answered { background: var(--code); color: var(--muted); font-weight: 600; }
   .chip.open { background: color-mix(in srgb, var(--open) 15%, transparent); color: var(--open); }
   .asks { background: var(--ask-wash); border-radius: 8px; padding: 6px 9px; margin: 6px 0; font-size: 15px; }
@@ -166,7 +163,7 @@ __HEAD_HOSTED__
   .md h4 { margin: .6em 0 .3em; font-size: 15px; }
   .md .ask { background: var(--ask-wash); box-shadow: -4px 0 0 var(--ask-wash), 4px 0 0 var(--ask-wash); border-radius: 3px; }
   .md .reminder { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
-  .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md code, .empty code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
   .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
@@ -175,7 +172,7 @@ __HEAD_HOSTED__
   .codebox { position: relative; margin: 0 0 .55em; }
   /* Wrapped, not scrolled sideways, so a whole command shows at once and stays clear of Copy. */
   .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--faint); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+  .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--dim); background: var(--paper); border-radius: 4px; padding: 0 4px; }
   .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; user-select: none; -webkit-user-select: none; }
   .copy::before { content: attr(data-label); }
   .copy:hover { color: var(--you); border-color: var(--you); }
@@ -351,7 +348,7 @@ __HEAD_HOSTED__
   .step-foot .primary { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
   @media (max-width: 440px), (pointer: coarse) { .step-head button, .step-foot button, .step-sheet .step-copy, .step-sec .btn { min-height: 44px; min-width: 44px; } }
   .fold { display: flex; width: 100%; gap: 6px; align-items: baseline; text-align: left; border: 0; border-top: 1px dashed var(--line); background: none; padding: 5px 2px; font-size: 13px; color: var(--muted); }
-  .fold .t { color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+  .fold .t { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
   .fold .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .foldrun { margin: 8px 0; }
   .is-target { animation: flash 1.2s ease-out; }
@@ -387,7 +384,6 @@ __HEAD_HOSTED__
   /* Pin: on a message and on a reply, then the list of pins in the header. */
   .pin { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .reply-to { margin-left: 0; }
-  .pin[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); color: var(--ask); font-weight: 600; }
   .pin:focus-visible, .pin-item:focus-visible, .pin-x:focus-visible, .reply-to:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   #pins-panel { flex: 1 1 100%; min-width: 0; }
   .pins { margin-top: 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 6px 8px; }
@@ -482,7 +478,6 @@ __HEAD_HOSTED__
   .search-row input:focus { outline: 2px solid var(--you); outline-offset: -1px; }
   .search-count { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .search-row button { flex: none; height: 30px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 0 8px; font-size: 13px; color: var(--ink); }
-  .search-row button[aria-pressed="true"] { background: var(--ask-wash); border-color: var(--ask-line); }
   .search-row button:disabled { opacity: .45; cursor: default; }
   .search-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
   .search-chips .btn { font-size: 12px; padding: 3px 7px; }
@@ -511,7 +506,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt"><span class="long">Answer sheet</span><span class="short">Sheet</span> →</span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -636,11 +631,11 @@ __HEAD_HOSTED__
     const wrap = $("div");
     if (words <= limitWords || state.open.has(key)) { wrap.append(node); return wrap; }
     const inner = $("div", "clip"); inner.append(node); wrap.append(inner);
-    const more = $("button", "more", `${label} (${words} words)`);
-    const show = () => { inner.classList.remove("clip"); more.remove(); if (key) state.open.add(key); if (change) change(false); };
+    const more = $("button", "more", `${label} (${words} words)`); more.type = "button"; more.setAttribute("aria-expanded", "false");
+    const show = () => { inner.classList.remove("clip"); more.setAttribute("aria-expanded", "true"); more.remove(); if (key) state.open.add(key); if (change) change(false); };
     more.addEventListener("click", show);
     wrap.append(more);
-    if (key) reveals.set(key, { open: show, close: () => { inner.classList.add("clip"); wrap.append(more); state.open.delete(key); if (change) change(true); }, shown: () => !inner.classList.contains("clip") });
+    if (key) reveals.set(key, { open: show, close: () => { inner.classList.add("clip"); more.setAttribute("aria-expanded", "false"); wrap.append(more); state.open.delete(key); if (change) change(true); }, shown: () => !inner.classList.contains("clip") });
     return wrap;
   }
 
@@ -650,7 +645,7 @@ __HEAD_HOSTED__
     if (askState(ex) === "quiet") { const c = $("span", "chip asked", "Asked"); c.title = "Asked, and you have written since without answering it"; return c; }
     if (askState(ex) === "settled") { const c = $("span", "chip answered", "Answered"); c.title = ex.answered_at ? `You answered this at ${fmtWhen(ex.answered_at)}` : "You answered this"; return c; }
     if (ex.verdict === "needs-you") return $("span", "chip needs", "Needs you");
-    if (ex.verdict === "no-action") return $("span", "chip none", "No action");
+    if (ex.verdict === "no-action") return null;  // nothing to flag: "Needs you" stands alone
     if (ex.answered_below) return $("span", "chip reminder", "Answered below");
     return $("span", "chip reminder", "No reply");
   }
@@ -659,7 +654,8 @@ __HEAD_HOSTED__
     const open = isOpen(ex);
     const card = $("div", "reply" + (open ? " needs" : ""));
     const who = $("div", "who");
-    who.append(verdictChip(ex));
+    const verdict = verdictChip(ex);
+    if (verdict) who.append(verdict);
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
     if (sid && ex.reply) {
@@ -675,7 +671,7 @@ __HEAD_HOSTED__
     card.append(who);
     // Only an open ask is marked, and only once: by the box below while the reply is clipped (the clip would hide the
     // asks), else by the highlight in the body. A reply that opens an answer sheet lists that sheet's questions with
-    // their recommended defaults in the box, and "Answer these questions" sits right under it.
+    // their recommended defaults in the box, and the "Answer sheet" link sits right under it.
     const replyKey = key + ":reply";
     const cards = ex.sheet_cards || [];
     const later = (ex.ask_lines || []).filter(n => n > 1);
@@ -697,7 +693,7 @@ __HEAD_HOSTED__
       }
     }
     const settled = askState(ex) === "settled";
-    const sheetLink = ex.sheet ? $("a", "btn sheet" + (settled ? " done" : ""), settled ? "Answered · open the answer sheet" : "Answer these questions →") : null;
+    const sheetLink = ex.sheet ? $("a", "btn sheet" + (settled ? " done" : ""), settled ? "Answered · open the answer sheet" : "Answer sheet →") : null;
     // The hosted copy's answer sheet is sheet.html beside it.
     if (sheetLink) sheetLink.href = (HOSTED ? "sheet.html" : "questionnaire.html") + "#q=" + encodeURIComponent(ex.sheet);
     let body = null, notesNode = null;
@@ -1278,6 +1274,10 @@ __HEAD_HOSTED__
       else { setAddress(); render(); }
     } catch (e) { link.closing = null; link.listing = { text: `Could not ${command === "reopen" ? "open" : "close"} ${name}: ${e.message}` }; renderLive(); }
   }
+  // The header's count line: the turns, then each count that is not zero ("0 from Firstmate" says nothing).
+  function summaryLine(turns, counts) {
+    return [`${turns} turn${turns === 1 ? "" : "s"}`, ...counts.filter(c => c[0] > 0).map(c => `${c[0]} ${c[1]}`)].join(" · ");
+  }
   function renderReader() {
     if (link.opening) {  // a reload is listing the closed pane's conversation it was on again (see the load code)
       document.getElementById("controls").replaceChildren($("div", "kept-note", `Its Herdr pane has closed. Opening ${link.opening.label} again…`));
@@ -1303,7 +1303,7 @@ __HEAD_HOSTED__
       document.getElementById("main").replaceChildren($("div", "empty", "No conversation to show."));
       return;
     }
-    const prev = $("button", "btn", "↑ Your last"); prev.title = "Previous message from you (k)";
+    const prev = $("button", "btn", "Your previous"); prev.title = "Previous message from you (k)";
     const next = $("button", "btn", "Your next ↓"); next.title = "Next message from you (j)";
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
     const wakes = $("button", "btn", "Wake-ups"); wakes.setAttribute("aria-pressed", String(state.showWakes)); wakes.title = "Show or fold wake-ups (w)";
@@ -1327,7 +1327,9 @@ __HEAD_HOSTED__
     row.append(prev, next, needs, wakes, pinned, shut, follow, pinHost);
     paintStar(star);
     const count = p => exs.filter(p).length;
-    const summary = $("div", "summary", `${exs.length} turns · ${count(e => e.source === "captain")} from you · ${count(e => e.source === "firstmate")} from Firstmate · ${count(e => e.source === "peer") ? count(e => e.source === "peer") + " from other sessions · " : ""}${count(e => e.folded)} wake-ups folded · ${askRules.count(exs)} need you`);
+    const summary = $("div", "summary", summaryLine(exs.length, [
+      [count(e => e.source === "captain"), "from you"], [count(e => e.source === "firstmate"), "from Firstmate"], [count(e => e.source === "peer"), "from other sessions"],
+      [count(e => e.folded), "wake-ups folded"], [askRules.count(exs), "need you"]]));
     const pane = session && session.pane;
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
@@ -2639,10 +2641,10 @@ __HEAD_HOSTED__
   function taskDocuments(session) {
     const named = sessionDocuments(session), seen = new Set(named.map(e => e.id));
     const root = session.leader.dir + "/data/";
-    const list = named.map(e => ({ ...e, at: Math.max(e.at || 0, (data.documents[e.id].mtime || 0)) }));
+    const list = named.map(e => ({ ...e, at: Math.max(e.at || 0, (data.documents[e.id].mtime || 0)), by: (data.documents[e.id].mtime || 0) > (e.at || 0) ? "changed" : "named" }));
     for (const id of Object.keys(data.documents)) {
       const d = data.documents[id];
-      if (!seen.has(id) && String(d.dir).startsWith(root)) list.push({ id, at: d.mtime || 0, index: null, unnamed: true });
+      if (!seen.has(id) && String(d.dir).startsWith(root)) list.push({ id, at: d.mtime || 0, index: null, unnamed: true, by: "changed" });
     }
     // Oldest first, as sessionDocuments gives them: the last is the newest.
     return list.map((e, i) => [e, i]).sort((a, b) => a[0].at - b[0].at || a[1] - b[1]).map(pair => pair[0]);
@@ -2873,7 +2875,7 @@ __HEAD_HOSTED__
     const row = $("button", "frow"); row.type = "button";
     if (x.id === state.doc) row.setAttribute("aria-current", "true");
     const text = $("span", "nmwrap"), sub = $("span", "sb");
-    sub.append(fmtListed(x.at) + (where ? " · " : ""));
+    sub.append(`${x.by || "named"} ${fmtListed(x.at)}` + (where ? " · " : ""));
     if (where) appendMarked(sub, where, query);
     text.append(appendMarked($("span", "nm"), d.name, query), sub);
     row.append($("span", "ic", DOC_ICON[docfiles.kindOf(d)]), text);
@@ -3026,8 +3028,11 @@ __HEAD_HOSTED__
     const d = entry && data.documents[entry.id];
     if (!entry) {
       docList.shell = null; fileView = null; main.replaceChildren();
-      controls.append($("div", "summary", byTask(session) ? "No task folder of this home holds a markdown, HTML or image file, and no message or reply names one." : "No message or reply in this session names a markdown, HTML or image file that is on this machine."));
-      main.append($("div", "empty", "Documents a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) open here: markdown with its contents list folded above it, HTML rendered, an image fitted to the width."));
+      const empty = $("div", "empty");
+      // One text: what is empty (a few words), then what fills it. The names of files are drawn as code.
+      empty.innerHTML = (byTask(session) ? "No file in a task folder or named in this session yet. " : "No file named in this session yet. ")
+        + inline("A markdown, HTML or image file that a message or reply names (such as `requirements.md`, a sketch's `.html` or a screenshot's `.png`) opens here: markdown with its contents list folded above it, HTML rendered, an image fitted to the width.");
+      main.append(empty);
       return;
     }
     // The session's files (a page of their own on a phone) and the open file. Both stay across a redraw: the list keeps the words typed and the
@@ -3059,7 +3064,9 @@ __HEAD_HOSTED__
     }
     row.append(...(entry.unnamed ? [message] : [back, message]));  // a file no turn named has no turn to go back to
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
-    const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`);
+    // When the file changed is said once: here for a markdown file, in the viewer's own toolbar for an HTML file or a picture.
+    const framed = d.kind === "html" || d.kind === "image";
+    const meta = $("div", "summary", `…/${d.dir.split("/").slice(-3).join("/")}/${d.name}${framed ? "" : ` · changed ${fmtWhen(shown ? shown.mtime : d.mtime)}`}`);
     meta.title = `${d.dir}/${d.name}, as on disk ${shown ? "when it was opened" : "at the last rebuild"}`;
     controls.append(meta);  // the row is in the controls already: appending it again would move the picker
     const target = (passage, section) => ({ sid: session.id, passage, title: `Comment on ${d.name} to ${paneName(session.id)}`,
@@ -3067,10 +3074,9 @@ __HEAD_HOSTED__
 
     if (d.kind === "html" || d.kind === "image") {
       if (!keep) {
-        // Once the frame has the file, the line above says when it last changed on disk, not as of the last rebuild.
+        // Once the frame has the file, the line above says where it is as on disk, not as of the last rebuild.
         const view = (d.kind === "image" ? imageDocView : htmlDocView)(session.id + ":" + d.id, d, info => {
           if (fileView !== view) return;
-          meta.textContent = `…/${d.dir.split("/").slice(-3).join("/")}/${d.name} · changed ${fmtWhen(info.mtime)}`;
           meta.title = `${d.dir}/${d.name}, as on disk when it was opened`;
         });
         fileView = view;
