@@ -220,9 +220,64 @@ enum UICheck {
         report("turning privacy on closes the history view", model.primaryHistory == nil)
         model.privacy = false
 
-        model.webTab = .organizer; await wait(2.5)
-        report("organizer tab loads", model.web.box(.organizer).phase == .ready, "phase=\(model.web.box(.organizer).phase)")
-        model.webTab = .reader; await wait(0.5)
+        func nodes(_ box: WebBox) async -> Int {
+            let probe: String = await withCheckedContinuation { c in box.probe { c.resume(returning: $0) } }
+            return (probe.range(of: "\"nodes\":(\\d+)", options: .regularExpression)).flatMap { Int(probe[$0].dropFirst(8)) } ?? 0
+        }
+        func shown(_ box: WebBox) -> String { "frame=\(Int(box.webView.frame.width))x\(Int(box.webView.frame.height)) inWindow=\(box.webView.window != nil) hidden=\(box.webView.isHiddenOrHasHiddenAncestor)" }
+        model.webTab = .organizer; model.pinReader(); await wait(3)
+        let organizerNodes = await nodes(model.web.box(.organizer))
+        report("organizer tab loads", model.web.box(.organizer).phase == .ready && organizerNodes > 50, "phase=\(model.web.box(.organizer).phase) nodes=\(organizerNodes) \(shown(model.web.box(.organizer)))")
+        // The way a person gets from the organizer back to the reader: the segmented control (tab, then pin).
+        model.webTab = .reader; model.pinReader(); await wait(6)
+        let reader = model.web.box(.reader)
+        let readerNodes = await nodes(reader)
+        report("switching from the organizer to the reader tab loads the reader", reader.phase == .ready && readerNodes > 50 && reader.webView.window != nil, "phase=\(reader.phase) nodes=\(readerNodes) url=\(reader.webView.url?.host ?? "-"):\(reader.webView.url?.port ?? 0) \(shown(reader))")
+        model.webTab = .organizer; model.pinReader(); await wait(2)
+        report("and back to the organizer", model.web.box(.organizer).phase == .ready && model.web.box(.organizer).webView.window != nil, "phase=\(model.web.box(.organizer).phase) \(shown(model.web.box(.organizer)))")
+        // The organizer opens on its Context view, whatever view it was last on.
+        func organizerView() async -> String { await withCheckedContinuation { c in model.web.box(.organizer).selectedOrganizerView { c.resume(returning: $0 ?? "none") } } }
+        let organizerBox = model.web.box(.organizer)
+        let first = await organizerView()
+        report("the organizer opens on its Context view", first == "context", "view=\(first)")
+        _ = try? await organizerBox.webView.evaluateJavaScript("document.querySelector('[data-view=\"workspaces\"]').click()")
+        await wait(0.5)
+        let moved = await organizerView()
+        model.webTab = .reader; await wait(0.4); model.webTab = .organizer; await wait(1.2)
+        let again = await organizerView()
+        report("switching to the Organizer tab shows Context again, not the view it was left on", moved == "workspaces" && again == "context", "left on=\(moved) reopened on=\(again)")
+        organizerBox.reload(); await wait(4)
+        let reloaded = await organizerView()
+        report("a reloaded organizer page opens on Context", reloaded == "context", "view=\(reloaded)")
+
+        // Links between Helm's panes stay in Helm; links that leave open in the browser (recorded here, never opened).
+        final class Spy { var urls: [URL] = [] }
+        let spy = Spy()
+        organizerBox.openInBrowser = { spy.urls.append($0) }
+        // The reader normalises its own hash after it loads (`#s=` becomes the id prefix of the session it selected), so the
+        // check asks for real sessions of this Herdr and compares the first eight characters.
+        let sessionIDs = model.snapshot.agents.compactMap(\.sessionID).filter { $0.count >= 8 }
+        let sid1 = sessionIDs.first ?? "00000000", sid2 = sessionIDs.dropFirst().first ?? sid1
+        let readerAddress = "http://localhost:8768/setup/transcript-reader/out/prototype.html#s=\(sid1)"
+        func click(_ href: String, target: String?) async {
+            let t = target.map { " target=\"\($0)\"" } ?? ""
+            _ = try? await organizerBox.webView.evaluateJavaScript("(function(){var a=document.createElement('a');a.href='\(href)';\(t.isEmpty ? "" : "a.target='\(target!)';")document.body.appendChild(a);a.click();a.remove();})()")
+        }
+        model.webTab = .organizer; await wait(0.5)
+        await click(readerAddress, target: nil); await wait(5)
+        let readerBox = model.web.box(.reader)
+        report("an organizer link to the reader switches Helm to the Reader tab and loads that exact address (hash kept)", model.webTab == .reader && readerBox.webView.url?.path == "/setup/transcript-reader/out/prototype.html" && readerBox.webView.url?.port == 8768 && (readerBox.webView.url?.fragment ?? "").hasPrefix("s=\(sid1.prefix(8))") && spy.urls.isEmpty,
+               "tab=\(model.webTab.rawValue) url=\(readerBox.webView.url?.absoluteString ?? "-") phase=\(readerBox.phase) openedInBrowser=\(spy.urls.count)")
+        model.webTab = .organizer; await wait(1)
+        let blank = "http://127.0.0.1:8768/setup/transcript-reader/out/prototype.html#s=\(sid2)"
+        await click(blank, target: "_blank"); await wait(5)
+        report("the same through target=_blank (a new-window request), at another name for the same server", model.webTab == .reader && readerBox.webView.url?.host == "127.0.0.1" && (readerBox.webView.url?.fragment ?? "").hasPrefix("s=\(sid2.prefix(8))") && spy.urls.isEmpty,
+               "tab=\(model.webTab.rawValue) url=\(readerBox.webView.url?.absoluteString ?? "-") openedInBrowser=\(spy.urls.count)")
+        model.webTab = .organizer; await wait(1)
+        await click("https://example.com/helm-check", target: nil); await wait(0.5)
+        report("a link to an outside site is handed to the browser and leaves Helm where it is", model.webTab == .organizer && spy.urls.map(\.absoluteString) == ["https://example.com/helm-check"], "tab=\(model.webTab.rawValue) opened=\(spy.urls.map(\.absoluteString))")
+        organizerBox.openInBrowser = { NSWorkspace.shared.open($0) }
+        model.webTab = .reader; model.pinReader(); await wait(0.5)
 
         model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)
         report("quick switcher opens", model.showSwitcher)

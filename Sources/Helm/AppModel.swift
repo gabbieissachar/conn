@@ -49,10 +49,15 @@ final class AppModel: ObservableObject {
     @Published var comparePaneID: String?
     @Published var selectedWorkspaceID: String?
     @Published var mode: CenterMode = .agent { didSet { if mode != oldValue { syncSessions() } } }
-    @Published var showWeb = true
+    @Published var showWeb = true {
+        didSet { if showWeb && !oldValue && webTab == .organizer { web.box(.organizer).showContextView() } }
+    }
     @Published var sidebarVisible = true
     @Published var webWidth: CGFloat = 480
-    @Published var webTab: WebKind = .reader
+    /// The Organizer pane opens on its Context view every time it is switched to (and when its page loads: see WebBox).
+    @Published var webTab: WebKind = .reader {
+        didSet { if webTab == .organizer && oldValue != .organizer { web.box(.organizer).showContextView() } }
+    }
     @Published var readerFollows = true
     /// Privacy mode hides content for screen sharing; anything that shows pane history closes with it.
     /// Text size of the live panes as a factor of the size that fits (Cmd+= / Cmd+- / Cmd+0); remembered across launches.
@@ -113,6 +118,13 @@ final class AppModel: ObservableObject {
         web = WebHub(fixture: config.fixture, resourceDir: res?.appendingPathComponent("fixture"))
         editor = EditorModel()
         fallback = FallbackTerminalController()
+        // A link in one web pane that points at the other switches to it and shows that exact address.
+        web.onShowPane = { [weak self] kind, url in
+            guard let self = self else { return }
+            self.showWeb = true
+            self.webTab = kind
+            self.web.box(kind).show(address: url)
+        }
         showWeb = config.showWeb ?? true
         for p in [primary, secondary] {
             p.onProtocolMismatch = { [weak self] in self?.streamRefused() }

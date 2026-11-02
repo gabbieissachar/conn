@@ -3,6 +3,7 @@
 // Helm only loads these pages. It never serves them, restarts their servers or writes to them.
 import SwiftUI
 import WebKit
+import HelmCore
 
 enum WebKind: String, CaseIterable, Identifiable {
     case reader = "Reader"
@@ -11,7 +12,7 @@ enum WebKind: String, CaseIterable, Identifiable {
     var symbol: String { self == .reader ? "text.bubble" : "square.grid.2x2" }
 }
 
-final class WebBox: NSObject, ObservableObject, WKNavigationDelegate {
+final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     enum Phase: Equatable { case idle, loading, ready, failed(String) }
 
     let kind: WebKind
@@ -25,6 +26,12 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate {
     private var loadStart: Date?
     private var pinCounter = 0
     private var pendingHash: String?
+    /// The addresses of Helm's panes by name, so a link between them can be told from one that leaves Helm.
+    var paneAddresses: () -> [String: URL] = { [:] }
+    /// A link that points at another Helm pane: switch to it and show that address.
+    var showInPane: ((WebKind, URL) -> Void)?
+    /// A link that leaves Helm. A test replaces it with a recorder so a check never opens a browser.
+    var openInBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
     init(kind: WebKind, baseURL: URL, fixtureDir: URL?) {
         self.kind = kind
@@ -34,6 +41,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate {
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
     }
 
@@ -71,17 +79,78 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate {
         title = webView.title ?? ""
         if let s = loadStart { loadSeconds = Date().timeIntervalSince(s) }
         if let h = pendingHash { pendingHash = nil; webView.evaluateJavaScript("location.hash='\(h)'", completionHandler: nil) }
+        if kind == .organizer { showContextView() }
+    }
+
+    // MARK: the organizer opens on its Context view
+
+    /// The organizer page starts on its Restart view and has no memory of a chosen view, so Helm selects the Context view
+    /// (the button `data-view="context"`) every time the Organizer pane opens or its page loads. The page builds its views
+    /// from data it fetches, so the click is checked and repeated a few times until the Context view is the selected one.
+    /// Nothing is edited in the page's source; this is one click on its own button.
+    func showContextView(attempts: Int = 5) {
+        guard kind == .organizer, phase == .ready else { return }
+        let script = """
+        (function () {
+          var b = document.querySelector('[data-view="context"]');
+          if (!b) return 'none';
+          if (b.getAttribute('aria-selected') !== 'true') b.click();
+          return b.getAttribute('aria-selected') === 'true' ? 'selected' : 'clicked';
+        })()
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            guard let self = self else { return }
+            if (result as? String) == "selected" || attempts <= 1 { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.showContextView(attempts: attempts - 1) }
+        }
+    }
+
+    /// Which view the organizer shows (test hook): the label of the selected view button, or nil if there is none.
+    func selectedOrganizerView(_ done: @escaping (String?) -> Void) {
+        webView.evaluateJavaScript("(function(){var b=document.querySelector('[data-view][aria-selected=\"true\"]');return b?b.getAttribute('data-view'):null;})()") { r, _ in done(r as? String) }
+    }
+
+    // MARK: links between Helm's panes
+
+    /// Show this exact address in the pane (the reader keeps its `#s=` hash). If the pane already shows that page, only the
+    /// hash changes, so nothing reloads.
+    func show(address url: URL) {
+        if fixtureDir == nil, WebLinkPolicy.samePageIgnoringFragment(url, webView.url), phase == .ready {
+            let h = (url.fragment ?? "").replacingOccurrences(of: "'", with: "")
+            webView.evaluateJavaScript("location.hash='\(h)'", completionHandler: nil)
+            return
+        }
+        load(url)
+    }
+
+    private func handle(_ route: WebLinkRoute) {
+        switch route {
+        case .allow: break
+        case .showInPane(let name, let url):
+            if let k = WebKind(rawValue: name) { showInPane?(k, url) }
+        case .openInBrowser(let url): openInBrowser(url)
+        }
+    }
+
+    /// `target=_blank` and `window.open` ask for a new window; Helm has none, so the link is routed like any other and no
+    /// web view is created (returning nil refuses the new window).
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = action.request.url {
+            let route = WebLinkPolicy.route(for: url, ownBase: baseURL, panes: paneAddresses())
+            handle(route == .allow ? (url.scheme == "http" || url.scheme == "https" ? .showInPane(pane: kind.rawValue, url: url) : .allow) : route)
+        }
+        return nil
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { phase = .failed(error.localizedDescription) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { phase = .failed(error.localizedDescription) }
 
-    /// Links that leave the page open in the default browser instead of replacing the reader.
+    /// A link to the other Helm pane switches to it (exact address, hash kept); any other link that leaves the page opens in
+    /// the default browser instead of replacing the pane. Links inside the page, and everything that is not a click, load as usual.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if action.navigationType == .linkActivated, let url = action.request.url, url.host != baseURL.host || (url.port != baseURL.port) , url.scheme == "https" || url.scheme == "http" {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-            return
+        if action.navigationType == .linkActivated, let url = action.request.url {
+            let route = WebLinkPolicy.route(for: url, ownBase: baseURL, panes: paneAddresses())
+            if route != .allow { handle(route); decisionHandler(.cancel); return }
         }
         decisionHandler(.allow)
     }
@@ -99,8 +168,19 @@ final class WebHub {
     let resourceDir: URL?
     private(set) var readerBox: WebBox?
     private(set) var organizerBox: WebBox?
+    /// A link in one pane points at the other: the app switches tabs and has the box show the address.
+    var onShowPane: ((WebKind, URL) -> Void)?
 
     init(fixture: Bool, resourceDir: URL?) { self.fixture = fixture; self.resourceDir = resourceDir }
+
+    /// Where each pane's page lives (the same addresses `make` loads).
+    func baseURL(_ kind: WebKind) -> URL {
+        if fixture, let dir = resourceDir { return dir.appendingPathComponent(kind == .reader ? "fixture-reader.html" : "fixture-organizer.html") }
+        let env = ProcessInfo.processInfo.environment
+        let reader = env["HELM_READER_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/prototype.html"
+        let organizer = env["HELM_ORGANIZER_URL"] ?? "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
+        return URL(string: kind == .reader ? reader : organizer)!
+    }
 
     /// Web views are created the first time a layout shows them, so a layout without them never pays for WebKit.
     func box(_ kind: WebKind) -> WebBox {
@@ -115,14 +195,13 @@ final class WebHub {
     }
 
     private func make(_ kind: WebKind) -> WebBox {
-        if fixture, let dir = resourceDir {
-            let name = kind == .reader ? "fixture-reader.html" : "fixture-organizer.html"
-            return WebBox(kind: kind, baseURL: dir.appendingPathComponent(name), fixtureDir: dir)
+        let box = WebBox(kind: kind, baseURL: baseURL(kind), fixtureDir: fixture ? resourceDir : nil)
+        box.paneAddresses = { [weak self] in
+            guard let self = self else { return [:] }
+            return Dictionary(uniqueKeysWithValues: WebKind.allCases.map { ($0.rawValue, self.baseURL($0)) })
         }
-        let env = ProcessInfo.processInfo.environment
-        let readerURL = env["HELM_READER_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/prototype.html"
-        let organizerURL = env["HELM_ORGANIZER_URL"] ?? "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
-        return WebBox(kind: kind, baseURL: URL(string: kind == .reader ? readerURL : organizerURL)!, fixtureDir: nil)
+        box.showInPane = { [weak self] k, url in self?.onShowPane?(k, url) }
+        return box
     }
 
     var allBoxes: [WebBox] { [readerBox, organizerBox].compactMap { $0 } }
