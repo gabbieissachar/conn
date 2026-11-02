@@ -221,6 +221,8 @@ const SENDABLE = new Set(['idle', 'working', 'done']);
 const CLEAR_KEYS = ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u'];
 const CLEAR_CALLS = 25;
 const CLEAR_PAUSE_MS = 40;
+// Codex opens a skill autocomplete popup for a leading `$`; let it settle before Herdr submits the prompt.
+const CODEX_SKILL_SETTLE_MS = 1200;
 const MAX_BODY_BYTES = 16 * 1024;
 // Photos (see above). prototype/attach.js holds the first three for the page's own checks; a test keeps them equal.
 const MAX_PHOTOS = 6;
@@ -377,6 +379,7 @@ function create({
   pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
+  codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
   pinsFile = pinstore.defaultFile(env),
   starsFile = pinstore.defaultStarsFile(env),
@@ -458,7 +461,37 @@ function create({
       const candidate = path.join(projectsDir, folder.name, sessionId + '.jsonl');
       if (fs.existsSync(candidate)) { logPaths.set(sessionId, candidate); return candidate; }
     }
+    const codex = codexRollouts().find((entry) => entry.session === sessionId);
+    if (codex) { logPaths.set(sessionId, codex.file); return codex.file; }
     return null;
+  }
+
+  function codexRollouts() {
+    const found = [];
+    const walk = (folder) => {
+      let entries;
+      try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const file = path.join(folder, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+          let first;
+          try { first = parseJson(fs.readFileSync(file, { encoding: 'utf8', flag: 'r' }).split('\n', 1)[0]); } catch { first = null; }
+          const payload = first && first.payload;
+          const session = payload && (payload.id || payload.session_id);
+          const cwd = payload && payload.cwd;
+          if (first && first.type === 'session_meta' && payload && payload.source === 'cli' && SESSION_ID_RE.test(session || '') && typeof cwd === 'string' && cwd) {
+            let mtime = 0;
+            try { mtime = fs.statSync(file).mtimeMs; } catch { /* a live rollout may disappear */ }
+            let realCwd;
+            try { realCwd = fs.realpathSync.native(cwd); } catch { realCwd = path.resolve(cwd); }
+            found.push({ file, session, cwd: realCwd, mtime });
+          }
+        }
+      }
+    };
+    walk(codexSessionsDir);
+    return found.sort((a, b) => b.mtime - a.mtime);
   }
 
   function mtimeMs(file) {
@@ -504,6 +537,27 @@ function create({
     return found;
   }
 
+  function codexProcess(processInfo) {
+    const processes = Array.isArray(processInfo && processInfo.foreground_processes) ? processInfo.foreground_processes : [];
+    return processes.find((item) => {
+      const argv0 = path.basename(String(item && item.argv0 || ''));
+      const command = String(item && (item.command || item.cmdline) || '');
+      return argv0 === 'codex' || /(?:^|[\s/])codex(?:$|[\s/])/.test(command);
+    }) || null;
+  }
+
+  function codexSessionForProcessInfo(processInfo, claimed = null) {
+    const process = codexProcess(processInfo);
+    if (!process) return null;
+    const cwd = process.cwd || (processInfo && processInfo.cwd);
+    if (typeof cwd !== 'string' || !cwd) return null;
+    let realCwd;
+    try { realCwd = fs.realpathSync.native(cwd); } catch { realCwd = path.resolve(cwd); }
+    const match = codexRollouts().find((entry) => entry.cwd === realCwd);
+    if (match) return match.session;
+    return null;
+  }
+
   // Herdr keeps the session id it was first told even when Claude is restarted in the same
   // pane (Firstmate swaps a worker's model that way), and it can keep the id of an agent that
   // has exited, the pane then naming no agent at all. A pane with such an id that no running
@@ -511,9 +565,16 @@ function create({
   // back at its shell. Read-only: `herdr pane process-info`, asked only for such panes.
   async function checkSessions(session) {
     const running = runningClaude();
-    if (!running.size) return session;
+    const hasCodex = session.panes.some((pane) => pane.agent === 'codex');
+    if (!running.size && !hasCodex) return session;
     const held = new Set(running.values());
     for (const pane of session.panes) {
+      if (pane.agent === 'codex') {
+        const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
+        const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
+        pane.session_id = codexSessionForProcessInfo(info, pane.session_id);
+        continue;
+      }
       const retained = !pane.agent && pane.session_id;
       if ((pane.agent !== 'claude' && !retained) || held.has(pane.session_id)) continue;
       const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
@@ -793,7 +854,7 @@ function create({
 
   // ------------------------------------------------------------------- sync
 
-  // The sessions running in a Herdr pane with Claude that the reading list lacks and has a log to read, and that no
+  // The sessions running in a Herdr pane with Claude or Codex that the reading list lacks and has a log to read, and that no
   // person took off the list. Only listing them changes the list; the panes are not touched.
   function unlistedLive(sessions) {
     const skip = new Set([...listed(), ...closedByHand()]);
@@ -801,13 +862,13 @@ function create({
     for (const session of sessions) {
       for (const pane of session.panes) {
         const id = pane.session_id;
-        if (pane.agent === 'claude' && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
+        if ((pane.agent === 'claude' || pane.agent === 'codex') && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
       }
     }
     return found;
   }
 
-  // What the Sync button asks for: Herdr is read again now (not from the last scan), every live Claude pane's session
+  // What the Sync button asks for: Herdr is read again now (not from the last scan), every live Claude or Codex pane's session
   // not yet listed is listed (reader.py adopt, as follow lists the focused one, so /clear joins and labels work the
   // same), the pages are rebuilt from the session logs and the fleet records whether or not a log looks newer, and
   // the answer is state's, once it is done. That is the same read-only rebuild a changed log starts, so the reading
@@ -846,12 +907,19 @@ function create({
 
   // Herdr's guide: a retained agent identity (even idle or done) does not mean the agent is in
   // the foreground; after Ctrl+Z a shell is, and each line sent would run as a command. So the
-  // pane's foreground must hold Claude running this very session (by its ~/.claude/sessions
-  // record), or a Claude without a record. Read-only: `herdr pane process-info`.
+  // The pane's foreground must hold the named harness running this very session. Claude is
+  // checked by its ~/.claude/sessions record; Codex is checked by its native rollout cwd.
+  // Read-only: `herdr pane process-info`.
   async function checkForeground(pane, sessionId) {
     const result = await runner(herdrBin, ['--session', pane.herdr, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
     const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
     if (!info) throw new RequestError('Herdr could not say what runs in the pane, so nothing was sent. Check the pane first.', 502, 'herdr_failed');
+    if (pane.agent === 'codex') {
+      const actual = codexSessionForProcessInfo(info, pane.session_id);
+      if (actual === sessionId) return;
+      if (actual) throw new RequestError('The pane now runs another Codex session, so nothing was sent. Reload the page.', 409, 'other_session');
+      throw new RequestError('The Codex agent is not in the foreground of its pane, so nothing was sent. Check the pane first.', 409, 'agent_not_foreground');
+    }
     const processes = Array.isArray(info.foreground_processes) ? info.foreground_processes : [];
     const running = runningClaude();
     const held = processes.map((process) => running.get(process.pid)).filter(Boolean);
@@ -987,6 +1055,7 @@ function create({
     if (sending) throw new RequestError('Another message is still being sent.', 409, 'busy');
     sending = true;
     try {
+      if (pane.agent === 'codex' && typed.startsWith('$')) await pause(CODEX_SKILL_SETTLE_MS);
       for (let i = 0; i < CLEAR_CALLS; i += 1) {
         if (i) await pause(CLEAR_PAUSE_MS);
         const cleared = await runner(herdrBin, ['--session', pane.herdr, 'agent', 'send-keys', pane.pane_id, ...CLEAR_KEYS], { env: runEnv(), timeoutMs: 5000 });

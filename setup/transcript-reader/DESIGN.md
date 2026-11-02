@@ -67,6 +67,28 @@ The message points at the reply instead of copying it (its time and first words,
 
 Not verified end to end: no message was sent to a real pane while building this (the tests fake Herdr), and the VS Code shortcut above was not tried in the captain's window.
 
+## Codex crew panes (2026-11-02)
+
+The local reader now supports native Codex CLI rollouts alongside Claude Code logs.
+Codex writes rollout JSONL under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.
+The first `session_meta` record supplies the root session id, working directory and `source: "cli"`.
+The reader accepts only that native root source, so guardian and other subagent rollouts do not become pane conversations.
+
+Herdr's Codex pane snapshot does not reliably provide the rollout id, so discovery uses read-only `pane process-info`.
+The reader requires a foreground Codex process and maps its exact working directory to the newest native root rollout for that directory.
+This same mapping is used by the API's state, Sync, and Send paths.
+If the foreground is another Codex rollout or is not Codex, Send stops before clearing keys or prompting the pane.
+
+The Codex parser translates `response_item` messages into the existing exchange model.
+It reads `input_text`, `output_text`, custom tool calls and custom tool results, plus plaintext reasoning summaries when present.
+It ignores `event_msg` duplicates and encrypted reasoning content.
+Codex tool inputs use the existing sanitized tool-step path, so command output remains separate from the conversation payload and sensitive paths keep their existing redaction rules.
+
+Codex skill references begin with `$` and open an autocomplete popup.
+Send waits 1.2 seconds before clearing the composer and calling `herdr agent prompt` so that popup cannot capture the message.
+The local API tests use fake Herdr panes and throwaway Codex rollout metadata; no real crew pane receives a test message.
+Hosted and phone copies are not expanded by this change.
+
 ## Documents, code boxes and cleared sessions (2026-10-21)
 
 The captain asked for three things while trying the prototype:

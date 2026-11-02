@@ -2,7 +2,8 @@
 """Build the phase 1 transcript-reader prototype page.
 
 Throwaway prototype for the design checkpoint in ../DESIGN.md. It only reads:
-Claude Code session logs under ~/.claude/projects, the Firstmate fleet
+Claude Code session logs under ~/.claude/projects, Codex rollout logs under
+~/.codex/sessions, the Firstmate fleet
 records under each home's state/ folder, and Herdr's live pane list (for the
 pane labels). It writes only the page and, beside it, a cache of pane labels
 so a closed pane keeps its name and a cache of each log's parsed turns (parsed/)
@@ -75,7 +76,10 @@ STEP_OUTPUTS = "steps"  # beside the page: one <conversation id>.json of each co
 # Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
 # that must not touch the real logs.
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
+# Codex stores one rollout JSONL per session. The optional override keeps parser tests and isolated labs away from a real home.
+CODEX_SESSIONS = Path(os.environ["PMOS_READER_CODEX_SESSIONS"]) if os.environ.get("PMOS_READER_CODEX_SESSIONS") else Path.home() / ".codex" / "sessions"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 # ---------------------------------------------------------------- input files
@@ -119,7 +123,7 @@ def block_text(content) -> str:
     for block in content:
         if isinstance(block, str):
             parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
+        elif isinstance(block, dict) and block.get("type") in ("text", "input_text", "output_text"):
             parts.append(block.get("text") or "")
     return "\n".join(part for part in parts if part)
 
@@ -453,6 +457,119 @@ def session_exchanges(records: list[dict]) -> list[dict]:
     return exchanges
 
 
+def codex_record_text(content) -> str:
+    """Text from a Codex response item, without reasoning ciphertext or tool payloads."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in ("input_text", "output_text", "text"):
+            parts.append(str(block.get("text") or ""))
+    return "\n".join(part for part in parts if part)
+
+
+def codex_summary_text(summary) -> str:
+    """Plain working-note text in a Codex reasoning summary, if a rollout has one."""
+    if isinstance(summary, str):
+        return summary
+    if not isinstance(summary, list):
+        return ""
+    parts = []
+    for item in summary:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            parts.append(str(item.get("text") or item.get("summary_text") or ""))
+    return "\n".join(part for part in parts if part)
+
+
+def codex_tool_input(value) -> dict:
+    """Make Codex's JSON-string tool input look like the existing tool-step input."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = None
+        return parsed if isinstance(parsed, dict) else {"command": value}
+    return {}
+
+
+def codex_output_text(value) -> str:
+    """Extract visible custom-tool output while ignoring structured metadata."""
+    if isinstance(value, dict):
+        return codex_record_text(value.get("content")) or codex_record_text(value.get("output"))
+    return codex_record_text(value)
+
+
+def codex_session_exchanges(records) -> list[dict]:
+    """Split a Codex rollout into the reader's existing exchange model.
+
+    Only plaintext response items are read. Event-message duplicates and encrypted
+    reasoning content are deliberately ignored.
+    """
+    exchanges: list[dict] = []
+    current = None
+    calls: dict[str, dict] = {}
+    for record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = record.get("payload") or {}
+        kind = payload.get("type")
+        timestamp = record.get("timestamp") or payload.get("timestamp")
+        if kind == "message":
+            role = payload.get("role")
+            text = codex_record_text(payload.get("content"))
+            if not text.strip():
+                continue
+            if role == "user":
+                source, sub, label = classify_input(text, None, False)
+                current = new_exchange(source, sub, label, clean_input(text), timestamp,
+                                       uid=turn_id({"uuid": payload.get("id")}, text))
+                current["signal_task"] = signal_task(text) if source == "wake" else None
+                exchanges.append(current)
+            elif role == "assistant" and current is not None:
+                current["events"].append(("text", text, iso_to_epoch(timestamp)))
+                current["texts"] += 1
+        elif kind == "reasoning" and current is not None:
+            text = codex_summary_text(payload.get("summary"))
+            if text.strip():
+                current["events"].append(("text", text, iso_to_epoch(timestamp)))
+                current["texts"] += 1
+        elif kind == "custom_tool_call" and current is not None:
+            call_id = payload.get("call_id") or payload.get("id")
+            block = {"name": "Bash" if payload.get("name") == "exec" else payload.get("name") or "tool",
+                     "input": codex_tool_input(payload.get("input")), "id": call_id}
+            current["events"].append(("tool", block["name"], None))
+            current["tools"] += 1
+            step = tool_steps.make_step(block, iso_to_epoch(timestamp), current["texts"])
+            current.setdefault("steps", []).append(step)
+            if isinstance(call_id, str):
+                calls[call_id] = step
+        elif kind == "custom_tool_call_output":
+            step = calls.get(payload.get("call_id"))
+            if step is not None:
+                tool_steps.apply_result(step, {"content": codex_output_text(payload.get("output")),
+                                                "is_error": payload.get("status") == "failed"})
+    for exchange in exchanges:
+        finish_exchange(exchange)
+    for i, exchange in enumerate(exchanges):
+        later = exchanges[i + 1:]
+        run = next((n for n, item in enumerate(later) if not item["absorbed"]), len(later))
+        exchange["answered_below"] = not exchange["reply"] and any(item["reply"] for item in later[:run])
+    if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
+        exchanges[-1]["folded"] = False
+    latest = next((item for item in reversed(exchanges) if item["reply"]), None)
+    if latest:
+        latest["folded"] = False
+    return exchanges
+
+
 def finish_exchange(exchange: dict) -> None:
     events = exchange.pop("events")
     exchange.pop("texts", None)
@@ -536,11 +653,67 @@ def project_folder(home: Path) -> Path:
     return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", str(home))
 
 
+_CODEX_INDEX: tuple[float, list[Path], dict[str, Path], dict[str, Path]] | None = None
+
+
+def codex_metadata(path: Path) -> dict | None:
+    """The first-line identity of a native Codex rollout, without reading its transcript."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            record = json.loads(handle.readline())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload") or {}
+    if not isinstance(payload, dict):
+        return None
+    if record.get("type") != "session_meta" or payload.get("source") != "cli":
+        return None
+    session = payload.get("id") or payload.get("session_id")
+    cwd = payload.get("cwd")
+    if not isinstance(session, str) or not SESSION_ID_RE.fullmatch(session) or not isinstance(cwd, str) or not cwd:
+        return None
+    return {"session": session, "cwd": os.path.realpath(cwd), "timestamp": record.get("timestamp") or ""}
+
+
+def codex_log_index() -> tuple[list[Path], dict[str, Path], dict[str, Path]]:
+    """Native Codex rollouts by session id and working directory, newest first."""
+    global _CODEX_INDEX
+    now = time.monotonic()
+    if _CODEX_INDEX and now - _CODEX_INDEX[0] < LOG_LIST_REUSE:
+        return _CODEX_INDEX[1:]
+    logs, by_id, by_cwd = [], {}, {}
+    try:
+        candidates = sorted(CODEX_SESSIONS.rglob("rollout-*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        candidates = []
+    for path in candidates:
+        metadata = codex_metadata(path)
+        if not metadata:
+            continue
+        logs.append(path)
+        by_id.setdefault(metadata["session"], path)
+        by_cwd.setdefault(metadata["cwd"], path)
+    _CODEX_INDEX = (now, logs, by_id, by_cwd)
+    return logs, by_id, by_cwd
+
+
+def codex_session_files(prefix: str = "") -> list[Path]:
+    """Codex rollout files whose native session id starts with <prefix>."""
+    return sorted(path for session, path in codex_log_index()[1].items() if session.startswith(prefix))
+
+
+def is_codex_log(path: Path) -> bool:
+    """Whether <path> is a native Codex rollout accepted by the reader."""
+    return codex_metadata(path) is not None
+
+
 def find_session_file(session: str) -> Path | None:
     candidate = Path(session).expanduser()
     if candidate.is_file():
         return candidate
-    return log_index()[1].get(session)
+    return log_index()[1].get(session) or codex_log_index()[1].get(session)
 
 
 def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
@@ -1015,6 +1188,32 @@ def pane_session(claimed: str | None, process_info: dict | None, running: dict[i
     return None  # Claude has exited; the pane holds a shell
 
 
+def codex_process(process: dict) -> bool:
+    """Whether a foreground process is the native Codex CLI."""
+    argv0 = str(process.get("argv0") or "")
+    command = str(process.get("command") or process.get("cmdline") or "")
+    return Path(argv0).name == "codex" or bool(re.search(r"(?:^|[/\\s])codex(?:$|[/\\s])", command))
+
+
+def codex_pane_session(claimed: str | None, process_info: dict | None) -> str | None:
+    """Map a live Codex pane to its native root rollout by foreground cwd."""
+    if not process_info:
+        return None
+    processes = process_info.get("foreground_processes") or []
+    for process in processes:
+        if not isinstance(process, dict) or not codex_process(process):
+            continue
+        cwd = process.get("cwd") or process_info.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            continue
+        candidates = codex_log_index()[2].get(os.path.realpath(cwd))
+        if candidates:
+            metadata = codex_metadata(candidates)
+            if metadata:
+                return metadata["session"]
+    return None
+
+
 def herdr_panes() -> dict[str, dict]:
     """Session id -> the Herdr pane running it, from every running Herdr session (see herdr_inventory)."""
     return herdr_inventory()[0]
@@ -1046,8 +1245,8 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     one within a session's life, see HERDR_LIVES) from a pane whose agent has not come back yet. It is None when a running Herdr
     session could not be read, since a pane missing from a partial list has not closed.
 
-    Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for a
-    Claude pane whose session id no running Claude holds. No Herdr, no labels.
+    Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for
+    Claude or Codex panes when their identity needs checking. No Herdr, no labels.
     """
     if _FROZEN is not None and _FROZEN_PANES:
         panes, pane_ids = _FROZEN_PANES[0]
@@ -1096,6 +1295,10 @@ def read_herdr() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
             pane_ids.update((name, pane["pane_id"]) for pane in found if pane.get("pane_id"))
         for pane in found:
             claimed = (pane.get("agent_session") or {}).get("value")
+            if pane.get("agent") == "codex" and pane.get("pane_id"):
+                info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
+                actual = codex_pane_session(claimed, info)
+                pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
             # Herdr also keeps the session id of an agent that has exited: the pane then names no agent at all
             # and its state is unknown, while its shell runs in the foreground. So a session id no running
             # Claude holds is checked against the pane's foreground whether or not Herdr still names Claude.
@@ -1827,6 +2030,7 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
         except (OSError, json.JSONDecodeError, AttributeError, KeyError):
             pass
     seen = {"first_time": None, "cwd": ""}
+    codex = is_codex_log(path)
 
     def records():
         for record in iter_jsonl(path):
@@ -1834,10 +2038,15 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
                 seen["first_time"] = iso_to_epoch(record.get("timestamp"))
             if not seen["cwd"] and record.get("cwd"):
                 seen["cwd"] = record["cwd"]
+            if not seen["cwd"] and codex:
+                payload = record.get("payload") or {}
+                if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
+                    seen["cwd"] = payload["cwd"]
             yield record
 
     try:
-        log = {"exchanges": session_exchanges(records()), **seen}
+        parser = codex_session_exchanges if codex else session_exchanges
+        log = {"exchanges": parser(records()), **seen}
     except OSError:
         log = {"exchanges": [], "first_time": None, "cwd": ""}
     # The version was taken before the read: a log that grew meanwhile is parsed again next time.
@@ -2231,6 +2440,8 @@ def chains_frozen():
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
     """The sessions one Claude Code pane ran across /clear, or across Claude restarted in the
     same pane, oldest first, including <path>."""
+    if is_codex_log(path):
+        return [path]
     if _FROZEN is not None:
         if (path, limit) not in _FROZEN:
             _FROZEN[(path, limit)] = chain_of(path, limit)

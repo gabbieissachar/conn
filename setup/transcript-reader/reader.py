@@ -14,7 +14,7 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py reopen <id>      list one full session id whose pane has closed, kept
                                                              until closed, then rebuild only (the page's picker)
   python3 setup/transcript-reader/reader.py close <id>       take one full session id off the list, then rebuild only
-  python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude panes a Sync found
+  python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude or Codex panes a Sync found
                                                              that are not listed), then rebuild only; one a person
                                                              closed or removed is skipped
   python3 setup/transcript-reader/reader.py worker           stay running and take rebuild, follow, adopt, reopen and
@@ -104,7 +104,9 @@ def write_list(ids: list[str]) -> None:
 
 
 def session_files(projects: Path, prefix: str) -> list[Path]:
-    return sorted(projects.glob(f"*/{prefix}*.jsonl"))
+    claude = list(projects.glob(f"*/{prefix}*.jsonl"))
+    codex = builder.codex_session_files(prefix)
+    return sorted({*claude, *codex})
 
 
 def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS) -> str:
@@ -324,7 +326,7 @@ def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
     # A rebuild started by hand while the server runs its own waits for it, so two builds
     # never share the machine; the later one reads what the earlier one parsed.
     builder.private_folder(OUT)
-    builder.make_private(OUT)  # out/ holds private transcript text: owner-only, like Claude's logs
+    builder.make_private(OUT)  # out/ holds private transcript text: owner-only, like the harness logs
     with builder.private_open(OUT / ".rebuild.lock", truncate=False) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if BUILDERS(argv, questions):

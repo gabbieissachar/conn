@@ -26,14 +26,23 @@ const builtPage = (title) => `<!doctype html><head>${TOKEN_META}<title>${title}<
   + '<script id="payload" type="application/json">{"text":"\\u003cmeta name=\\"reader-token\\" content=\\"__READER_TOKEN__\\">"}</script>';
 const tokenIn = (html) => (html.match(/<meta name="reader-token" content="([^"]*)">/) || [])[1];
 
+function writeCodexLog(tree, id, cwd) {
+  const file = path.join(tree.codexSessionsDir, '2026', '11', '02', 'rollout-' + id + '.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', timestamp: '2026-11-02T10:00:00Z', payload: { id, session_id: id, cwd, source: 'cli' } }) + '\n');
+  return file;
+}
+
 function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'transcript-reader-'));
   const root = path.join(base, 'repo');
   const outDir = path.join(root, ...outParts);
   const projectsDir = path.join(base, 'projects');
   const claudeSessionsDir = path.join(base, 'sessions');  // no running Claude unless a test writes one
+  const codexSessionsDir = path.join(base, 'codex-sessions');  // no Codex rollout unless a test writes one
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(projectsDir, '-Users-someone-home'), { recursive: true });
+  fs.mkdirSync(codexSessionsDir, { recursive: true });
   const write = (file, text) => fs.writeFileSync(file, text);
   write(path.join(outDir, 'prototype.html'), builtPage('reader'));
   write(path.join(outDir, 'questionnaire.html'), builtPage('sheet'));
@@ -47,7 +56,7 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   // The pins file lives outside the repo; a test gets one inside its own temporary folder, never the owner's.
   const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
   const starsFile = path.join(base, 'config', 'pmos-transcript-reader', 'stars.json');
-  return { root, outDir, projectsDir, claudeSessionsDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -66,6 +75,7 @@ function fakeHerdr() {
     keysResult: { code: 0, stdout: '{}', stderr: '' },
     down: false,
     calls: [],
+    pauses: [],
     sipsCalls: [],
   };
   const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
@@ -116,7 +126,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr) : options) });  // no limit on how often rebuilds start, but where a test asks for one
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -1951,5 +1961,52 @@ test('copy-sync: the same guard as every route, and it names only the sealed or 
     assert.equal((await t.request({ path: '/api/transcript-reader/copy-sync?copy=bucket' })).status, 403, 'no token to read it either');
     for (const body of [{}, { copy: 'both' }, { copy: '../bucket' }, { copy: 7 }]) assert.equal((await t.post('copy-sync', body)).status, 400, JSON.stringify(body));
     assert.equal(syncRuns(t).length, 0, 'nothing was built');
+  } finally { await t.close(); }
+});
+
+test('Codex: a live pane maps to its native rollout and Send waits for a leading skill command', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCodexLog(tree, A, tree.root);
+    herdr.panes[0] = { ...herdr.panes[0], agent: 'codex', agent_session: { value: null } };
+    herdr.processInfo['w1:p1'] = [{ pid: 9001, argv0: 'codex', cwd: tree.root }];
+    return { pause: async (ms) => herdr.pauses.push(ms) };
+  } });
+  try {
+    const state = await t.state();
+    assert.equal(state.status, 200);
+    assert.equal(state.json.panes[A].status, 'idle');
+    assert.equal(state.json.focus.session_id, A);
+    const sent = await t.send({ session_id: A, text: '$open skill' });
+    assert.equal(sent.status, 200, sent.raw);
+    assert.equal(t.herdr.pauses[0], 1200);
+    assert.equal(t.herdr.prompts().at(-1).args.at(-1), '$open skill');
+  } finally { await t.close(); }
+});
+
+test('Codex: Sync adopts an unlisted live Codex pane, and a changed foreground session is rejected', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCodexLog(tree, A, tree.root);
+    writeCodexLog(tree, B, path.join(tree.root, 'other'));
+    const unlistedCwd = path.join(tree.root, 'd');
+    writeCodexLog(tree, D, unlistedCwd);
+    herdr.panes[0] = { ...herdr.panes[0], agent: 'codex', agent_session: { value: null } };
+    herdr.panes[2] = { ...herdr.panes[2], agent: 'codex', agent_session: { value: null } };
+    let foregroundChecks = 0;
+    herdr.processInfo['w1:p1'] = () => {
+      foregroundChecks += 1;
+      const changed = foregroundChecks === 3;
+      return [{ pid: changed ? 9002 : 9001, argv0: 'codex', cwd: changed ? path.join(tree.root, 'other') : tree.root }];
+    };
+    herdr.processInfo['w1:p3'] = [{ pid: 9003, argv0: 'codex', cwd: unlistedCwd }];
+    return { pause: async () => {} };
+  } });
+  try {
+    const synced = await t.post('sync', {});
+    assert.equal(synced.status, 200, synced.raw);
+    assert.ok(t.herdr.readerRuns().some((run) => run[0] === 'adopt' && run.includes(D)), 'Sync should adopt the unlisted Codex rollout');
+    const refused = await t.send({ session_id: A, text: 'continue' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.json.code, 'other_session');
+    assert.equal(t.herdr.prompts().length, 0);
   } finally { await t.close(); }
 });

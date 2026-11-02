@@ -54,6 +54,18 @@ def queued(prompt, second, origin=None):
     return {"type": "attachment", "timestamp": stamp(second), "attachment": attachment}
 
 
+def codex_message(role, text, second, uid=None):
+    block_type = "input_text" if role == "user" else "output_text"
+    payload = {"type": "message", "role": role, "content": [{"type": block_type, "text": text}]}
+    if uid:
+        payload["id"] = uid
+    return {"type": "response_item", "timestamp": stamp(second), "payload": payload}
+
+
+def codex_record(kind, second, **payload):
+    return {"type": "response_item", "timestamp": stamp(second), "payload": {"type": kind, **payload}}
+
+
 PEER = {"kind": "peer", "from": "session-123", "name": "release-mate", "fromMode": "send", "msg_id": "m1",
         "body": "Is the fix on the branch yet?"}
 HANDBACK = {"kind": "peer", "from": "task-9", "name": "doc-checker", "senderTaskId": "t9", "handback": True,
@@ -106,6 +118,58 @@ class ClassifyInputTest(unittest.TestCase):
         self.assertIsNone(builder.peer_input({"kind": "task-notification"}))
         self.assertEqual(builder.peer_text(PEER, "<cross-session-message>wrapped</cross-session-message>"), PEER["body"])
         self.assertEqual(builder.peer_text({"kind": "peer"}, "plain words"), "plain words")
+
+
+class CodexParserTest(unittest.TestCase):
+    def test_parsed_log_dispatches_by_native_session_metadata(self):
+        session_id = "12345678-1234-4123-8123-123456789012"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "2026" / "11" / "02"
+            root.mkdir(parents=True)
+            path = root / "rollout-test.jsonl"
+            records = [
+                {"type": "session_meta", "timestamp": stamp(0), "payload": {"id": session_id, "cwd": "/repo", "source": "cli"}},
+                codex_message("user", "Read this rollout", 1),
+                codex_message("assistant", "It is readable.", 2),
+            ]
+            path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            with mock.patch.object(builder, "CODEX_SESSIONS", Path(temp)), mock.patch.object(builder, "_CODEX_INDEX", None):
+                parsed = builder.parsed_log(path, None)
+            self.assertEqual(parsed["cwd"], "/repo")
+            self.assertEqual(parsed["exchanges"][0]["reply"], "It is readable.")
+
+    def test_rollout_messages_tools_and_plain_reasoning_use_the_reader_turn_model(self):
+        records = [
+            {"type": "session_meta", "timestamp": stamp(0), "payload": {"source": "cli"}},
+            codex_message("user", "Inspect the reader", 1, "msg-1"),
+            codex_record("reasoning", 2, encrypted_content="ciphertext", summary=[{"summary_text": "Checking the parser."}]),
+            codex_record("custom_tool_call", 3, call_id="call-1", name="exec", input='{"command":"printf ready"}'),
+            codex_record("custom_tool_call_output", 4, call_id="call-1", status="completed", output=[{"type": "output_text", "text": "ready"}]),
+            codex_message("assistant", "The reader is mapped.", 5),
+            {"type": "event_msg", "timestamp": stamp(5), "payload": {"type": "AgentMessage", "message": "The reader is mapped."}},
+            codex_message("user", "Now summarize it", 6, "msg-2"),
+            codex_message("assistant", "Summary complete.", 7),
+        ]
+
+        exchanges = builder.codex_session_exchanges(records)
+
+        self.assertEqual([exchange["input"] for exchange in exchanges], ["Inspect the reader", "Now summarize it"])
+        self.assertEqual(exchanges[0]["reply"], "The reader is mapped.")
+        self.assertEqual(exchanges[0]["narration"], ["Checking the parser."])
+        self.assertEqual(exchanges[0]["tools"], 1)
+        self.assertEqual(exchanges[0]["steps"][0]["c"], "printf ready")
+        self.assertEqual(exchanges[0]["steps"][0]["out"], "ready")
+        self.assertEqual(exchanges[1]["reply"], "Summary complete.")
+
+    def test_encrypted_reasoning_without_a_plain_summary_is_not_transcript_text(self):
+        records = [
+            codex_message("user", "Do the thing", 1),
+            codex_record("reasoning", 2, encrypted_content="secret reasoning", summary=[]),
+            codex_message("assistant", "Done.", 3),
+        ]
+        exchange = builder.codex_session_exchanges(records)[0]
+        self.assertEqual(exchange["reply"], "Done.")
+        self.assertEqual(exchange["narration"], [])
 
 
 class ClassifyReplyTest(unittest.TestCase):
