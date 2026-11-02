@@ -6,9 +6,15 @@ import HelmTerminal
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func applicationDidFinishLaunching(_ n: Notification) {
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
         let cfg = Runtime.config, model = Runtime.model
+        if cfg.runsInBackground {
+            // Test mode: no Dock icon, never activated, never key, nothing the person at the keyboard can see or click.
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Background.keepWindowsInert()
+        } else {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
         if cfg.dark { model.appearance = .dark }
         if let t = cfg.webTab { model.webTab = t }
         model.privacy = cfg.privacy
@@ -66,6 +72,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor func applicationWillTerminate(_ n: Notification) { Runtime.model.shutdown() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+/// Test mode (`--background`): every window is made fully transparent and click-through the moment AppKit first updates it,
+/// and any window that becomes key gives it up again. Nothing in the app calls `activate` or `makeKeyAndOrderFront` in this
+/// mode, and the process is an accessory (no Dock icon), so it cannot take the keyboard or the pointer from another app.
+/// Views still lay out and draw, so the in-process checks and captures work.
+@MainActor
+enum Background {
+    static func keepWindowsInert() {
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didUpdateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification, NSWindow.didExposeNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { n in
+                guard let w = n.object as? NSWindow else { return }
+                MainActor.assumeIsolated { inert(w) }
+            }
+        }
+        // Windows that exist before the first notification.
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in MainActor.assumeIsolated { NSApp.windows.forEach(inert) } }
+    }
+
+    private static func inert(_ w: NSWindow) {
+        if w.alphaValue != 0 { w.alphaValue = 0 }
+        if !w.ignoresMouseEvents { w.ignoresMouseEvents = true }
+        if w.isKeyWindow { w.resignKey() }
+    }
 }
 
 enum TextFinderCommand {
@@ -151,7 +182,7 @@ struct HelmApp: App {
         .defaultSize(width: 1500, height: 920)
         .commands { HelmCommands(app: app) }
 
-        MenuBarExtra {
+        MenuBarExtra(isInserted: .constant(!Runtime.config.runsInBackground)) {
             WaitingMenu().environmentObject(app)
         } label: {
             MenuBarLabel(app: app)

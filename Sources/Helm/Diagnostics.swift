@@ -129,6 +129,12 @@ enum UICheck {
         func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
         func report(_ name: String, _ ok: Bool, _ detail: String = "") { print("ui-check: \(ok ? "PASS" : "FAIL") \(name) \(detail)") }
         await wait(4)
+        if Runtime.config.runsInBackground {
+            let wins = NSApp.windows.filter { $0.isVisible }
+            report("test mode keeps the app out of the way (accessory, not active, no key window, windows invisible and click-through)",
+                   NSApp.activationPolicy() == .accessory && !NSApp.isActive && !wins.contains { $0.isKeyWindow } && wins.allSatisfy { $0.alphaValue == 0 && $0.ignoresMouseEvents },
+                   "policy=\(NSApp.activationPolicy().rawValue) active=\(NSApp.isActive) windows=\(wins.count) keyWindows=\(wins.filter { $0.isKeyWindow }.count) alpha=\(wins.map { $0.alphaValue })")
+        }
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
         let waitingNow = model.waiting.count
@@ -141,16 +147,19 @@ enum UICheck {
             let savedZoom = model.paneZoom, savedSize = win.contentView?.frame.size ?? .zero
             func room() -> String { "view \(Int(e.view.frame.width))x\(Int(e.view.frame.height)) in \(Int(host.bounds.width))x\(Int(host.bounds.height)), \(e.view.gridCols)x\(e.view.gridRows) cells" }
             func fitsRoom() -> Bool { e.view.frame.width <= host.bounds.width + 0.5 && e.view.frame.height <= host.bounds.height + 0.5 }
+            // A window of a known size: an inert background window may open at the minimum size.
+            win.setContentSize(NSSize(width: 1500, height: 900)); await wait(0.8)
+            let startSize = win.contentView?.frame.size ?? savedSize
             model.setPaneZoom(1, remember: false); await wait(0.5)
             let base = e.view.fontPoints
             report("pane text fits the pane in width and height", fitsRoom(), "font=\(base) pt, \(room())")
-            win.setContentSize(NSSize(width: savedSize.width + 400, height: savedSize.height + 250)); await wait(0.8)
+            win.setContentSize(NSSize(width: startSize.width + 400, height: startSize.height + 250)); await wait(0.8)
             let big = e.view.fontPoints
             report("a larger window gives larger text, still fitting", big >= base && fitsRoom(), "font \(base) -> \(big) pt, \(room())")
             win.setContentSize(NSSize(width: 1000, height: 600)); await wait(0.8)
             let small = e.view.fontPoints
             report("a smaller window gives smaller text (cropped only below the 7 pt floor)", small <= base && (fitsRoom() || small == PaneFit.floorPoints), "font \(base) -> \(small) pt, \(room())")
-            win.setContentSize(savedSize); await wait(0.6)
+            win.setContentSize(startSize); await wait(0.6)
             model.zoomPane(1); model.zoomPane(1); await wait(0.5)
             let zoomed = e.view.fontPoints
             report("zoom in makes the text larger than the fit", zoomed > base && model.paneZoom > 1, "zoom=\(model.paneZoom) font=\(zoomed) pt (fit \(base))")
@@ -159,7 +168,7 @@ enum UICheck {
             model.resetPaneZoom(); await wait(0.5)
             report("reset returns to the fit", abs(e.view.fontPoints - base) < 0.01 && model.paneZoom == 1, "font=\(e.view.fontPoints) pt")
             model.setPaneZoom(savedZoom, remember: false)
-            await wait(0.3)
+            win.setContentSize(savedSize); await wait(0.3)
         } else {
             print("ui-check: SKIP pane text size (the grid renderer is on, or no pane)")
         }

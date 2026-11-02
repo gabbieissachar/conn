@@ -9,6 +9,9 @@
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode agent|editor|herdr   --web on|off   --select N   --dark   --privacy   --open FILE
 #   ./run.sh --selftest 10 | --shot FILE | --tour DIR | --quit-after N
+#   ./run.sh --background ...     test mode: no focus, no Dock icon or menu-bar item, invisible click-through windows.
+#                                 Every scripted launch (--ui-check, --shot, --tour, --selftest, --quit-after, ...) implies it;
+#                                 --foreground (or HELM_FOREGROUND=1) opts out.
 cd "$(dirname "$0")"
 [ -d build/Helm.app ] || ./build.sh
 ARGS="$*"

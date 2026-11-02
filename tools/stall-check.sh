@@ -10,7 +10,7 @@ FAKE=$!
 trap 'kill $FAKE 2>/dev/null' EXIT
 sleep 1
 OUT=$D/out.txt
-HELM_STATE_DIR="$S" HELM_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off --selftest $((PAUSE + 22)) --quit-after $((PAUSE + 40))" build/Helm.app/Contents/MacOS/Helm > "$OUT" 2>&1 &
+HELM_STATE_DIR="$S" HELM_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off --background --selftest $((PAUSE + 22)) --quit-after $((PAUSE + 40))" build/Helm.app/Contents/MacOS/Helm > "$OUT" 2>&1 &
 APP=$!
 sleep 8
 kill -STOP $APP; echo "app frozen for ${PAUSE}s"; sleep "$PAUSE"; kill -CONT $APP; echo "app resumed"

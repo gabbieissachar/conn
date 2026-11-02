@@ -25,6 +25,15 @@ Command Line Tools and SwiftPM only. No Xcode.
 
 More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+1..9 agents (waiting first), Cmd+J next agent waiting on you, Cmd+O / Cmd+S in the editor, Opt+Cmd+1/2/3 Agent / Editor / Herdr screen.
 
+## Test notes (read before launching the app from a script or an agent session)
+
+A test launch must never take the keyboard or the pointer from the person at the computer. The rules:
+
+1. **Background mode.** `--background` (or `HELM_BACKGROUND=1`) makes the process an accessory (no Dock icon, no menu-bar item), never activates it, makes its windows fully transparent and click-through, and has any window that becomes key give it up. Views still lay out and draw, so in-process checks and captures work. Every scripted launch (`--ui-check`, `--shot`, `--tour`, `--selftest`, `--probe-draw`, `--editor-test`, `--send-test`, `--start-fallback`, `--quit-after`) implies it; `--foreground` or `HELM_FOREGROUND=1` opts out. `tools/kill9-orphan-check.sh` and `tools/stall-check.sh` pass it. Going through `open`, use `open -g -j`.
+2. **No synthesised input.** No CGEvent, AppleScript or System Events clicks or keystrokes, no cliclick, nothing that moves the real pointer. Drive the UI in-process: the `--ui-check` hooks and direct method calls on the model. Capture with `--shot` / `--tour` (in-process rendering), never by bringing a window forward.
+3. **Stop what you start.** Kill every test instance when its check ends (the check scripts do).
+4. **Needs a real foreground window?** Do not run it from a script. List it for a person to try by hand. Today that is: the pane's mouse-wheel gesture on a real trackpad, keyboard focus in the compose box, Cmd+= / Cmd+- / Cmd+0 and Cmd+Y typed at the real window, and `tools/measure.py` (it opens a real window on purpose, because drawing cost is what it measures).
+
 ## Keyboard ownership (design note, `HelmCore/KeyRule.swift`)
 
 Panes take no keys today, but the rule is fixed before they do:

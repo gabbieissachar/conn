@@ -48,6 +48,11 @@ struct AppConfig {
     var windowSize: CGSize?
     /// Open the selected pane's history view once the pane is up (for screenshots).
     var openHistory = false
+    /// Test mode: the app never takes focus, shows no Dock icon or menu-bar item, and its windows are invisible and inert.
+    /// Every scripted or diagnostic launch is a background launch (`--foreground` or HELM_FOREGROUND=1 opts out, for a
+    /// person who wants to look at the window); a plain `./run.sh` is not.
+    var background = false
+    var foreground = false
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -85,11 +90,22 @@ struct AppConfig {
                 let parts = (next() ?? "").split(separator: "x").compactMap { Double($0) }
                 if parts.count == 2, parts[0] >= 400, parts[1] >= 300 { c.windowSize = CGSize(width: parts[0], height: parts[1]) }
             case "--history": c.openHistory = true
+            case "--background": c.background = true
+            case "--foreground": c.foreground = true
             default: break
             }
             i += 1
         }
         return c
+    }
+
+    /// True for an explicit `--background` / HELM_BACKGROUND=1, and for every launch that runs a self-test, a check, a
+    /// capture or any other scripted hook, unless it asks to be `--foreground` (or HELM_FOREGROUND=1).
+    var runsInBackground: Bool {
+        let env = ProcessInfo.processInfo.environment
+        if foreground || env["HELM_FOREGROUND"] == "1" { return false }
+        if background || env["HELM_BACKGROUND"] == "1" { return true }
+        return uiTour || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
     }
 
     var endpoint: HerdrEndpoint {
