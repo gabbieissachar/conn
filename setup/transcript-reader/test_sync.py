@@ -9,6 +9,7 @@ sealing needs Node (upload.js); the passphrase is made up.
 
 import argparse
 import base64
+import gc
 import io
 import json
 import os
@@ -1308,6 +1309,60 @@ class SealTest(unittest.TestCase):
         self.assertGreaterEqual(log["totals"]["github-token"], 2)  # the reply, and its first line in the fleet week
         self.assertEqual(log["objects"][f"s/{M}.json"], {"github-token": 1})
         self.assertNotIn(secret, (self.lab.out / "redactions.json").read_text(encoding="utf-8"))
+
+    def test_a_conversation_that_holds_a_line_or_paragraph_separator_is_sealed_whole(self):
+        # JSON allows U+2028 and U+2029 raw in a string and the object is written that way. The sealing step used to end a line at them, cut the
+        # object in half ("Unterminated string in JSON") and stop, so every seal failed from the first conversation that quoted one (a pasted
+        # text, or a script that handles them): 2 of 795 on the owner's laptop, and each time the whole copy stayed as old as before.
+        text = "A pasted line\u2028and another\u2029and a third; " + "x" * 120000 + "\u2028end"
+        append_log(self.lab.logs[M], [user("Paste this.", T0 + 900, str(self.lab.mate)), say(text, T0 + 910, str(self.lab.mate))])
+        self.assertEqual(self.seal(), 0)
+        sealed = self.opened(f"s/{M}.json")[f"s/{M}.json"]
+        self.assertIn(text, json.dumps(sealed, ensure_ascii=False), "the sealed conversation has the text as it was")
+        self.assertEqual(sealed, self.lab.object(f"s/{M}.json"))
+        self.assertTrue((self.target / "index.json.enc").is_file())
+        self.assertTrue((self.lab.out / "upload.json").is_file(), "the run is recorded, so the next one seals only what changed")
+
+    def stub_upload(self, script):
+        """Run the sealing step as this node script instead of upload.js (the one program --seal starts besides the build)."""
+        real = subprocess.Popen
+        self.started = []
+
+        def popen(command, **kwargs):
+            if not str(command[1]).endswith("upload.js"):
+                return real(command, **kwargs)
+            self.started.append(real(["node", "-e", script], **kwargs))
+            return self.started[-1]
+        return mock.patch.object(sync.subprocess, "Popen", popen)
+
+    def test_a_seal_that_stops_says_why_in_one_sentence_with_no_python_traceback(self):
+        # The page's Sync shows the last line a build printed ("The laptop could not build a new copy: ..."): the reason, in words, not a
+        # bare "upload.js stopped", and not what Python says when the pipe to a stopped program is dropped with data still waiting.
+        # It stops on the first bytes it is sent (as upload.js did on a line it could not read), with the rest of the objects still to write.
+        stopped = ("process.stdout.write('{\"ready\":true,\"rekeyed\":true}\\n'); "
+                   "process.stdin.once('data', () => { process.stderr.write('ENOSPC: no space left on device, write\\n'); process.exit(1); })")
+        # Objects bigger than the pipe's buffer, so the program is written to after it has stopped (as the owner's 780 conversations are).
+        append_log(self.lab.logs[M], [user("A long one.", T0 + 900, str(self.lab.mate)), say("y" * 300000, T0 + 910, str(self.lab.mate))])
+        with self.stub_upload(stopped), mock.patch("sys.stderr", new_callable=io.StringIO) as noise:
+            with self.assertRaises(SystemExit) as caught:
+                self.seal()
+            gc.collect()
+        self.assertEqual(str(caught.exception), "Sealing stopped before every object was sealed (ENOSPC: no space left on device, write); the sealed copy keeps what it had.")
+        self.assertEqual(len(self.started), 1)
+        self.assertTrue(self.started[0].stdin.closed, "the run closes the pipe itself, so Python has nothing to report when the stopped program's end is dropped")
+        self.assertNotIn("Exception ignored", noise.getvalue())
+        self.assertNotIn("BrokenPipe", noise.getvalue())
+        self.assertFalse((self.lab.out / "upload.json").exists(), "nothing is recorded as sealed, so the next run seals it all again")
+
+    def test_a_sealing_step_that_says_nothing_or_does_not_start_is_still_named(self):
+        silent = "process.stdout.write('{\"ready\":true,\"rekeyed\":true}\\n'); process.kill(process.pid, 'SIGKILL')"
+        with self.stub_upload(silent), self.assertRaises(SystemExit) as caught:
+            self.seal()
+        self.assertEqual(str(caught.exception), "Sealing stopped before every object was sealed (it was stopped by signal 9); the sealed copy keeps what it had.")
+        broken = "process.stderr.write('Cannot find module\\nsecond line\\n'); process.exit(3)"
+        with self.stub_upload(broken), self.assertRaises(SystemExit) as caught:
+            self.seal()
+        self.assertEqual(str(caught.exception), "Sealing did not start (Cannot find module second line); the sealed copy keeps what it had.")
 
     def test_a_run_with_nothing_new_seals_nothing_and_starts_no_node(self):
         self.seal()

@@ -720,15 +720,16 @@ class Seal:
             print(f"Sealed copy in {self.target}: nothing changed, the index was sealed under {HEARTBEAT // 60} minutes ago; removed {removed}")
             return 0
         child = subprocess.Popen(["node", str(HERE / "upload.js"), str(self.target), *(["--new-key"] if self.new_key else [])],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, PASSPHRASE_ENV: self.passphrase})
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, PASSPHRASE_ENV: self.passphrase})
         ready = json.loads(child.stdout.readline() or "{}")
         if not ready.get("ready"):
             child.stdin.close()
-            child.wait()
+            code = child.wait()
             child.stdout.close()
             if ready.get("error") == "wrong-passphrase":
+                child.stderr.close()
                 raise SystemExit("That passphrase does not open this bucket; nothing was sealed. To seal everything under it, add --new-passphrase.")
-            raise SystemExit("upload.js did not start; nothing was sealed")
+            raise SystemExit(self.stopped(child, code, "Sealing did not start"))
         if ready["rekeyed"]:
             todo, sealed = list(objects), {}  # a new passphrase or a new bucket: every object again
         counts: dict[str, dict] = {}
@@ -740,14 +741,19 @@ class Seal:
                 child.stdin.write(json.dumps({"path": rel, "text": json.dumps(value, ensure_ascii=False, separators=(",", ":"))}, ensure_ascii=False) + "\n")
             if heartbeat:
                 child.stdin.write(json.dumps({"path": "index.json", "text": index_text}, ensure_ascii=False) + "\n")
-            child.stdin.close()
         except BrokenPipeError:
-            pass
+            pass  # upload.js stopped and said why on stderr: read below
+        finally:
+            try:
+                child.stdin.close()
+            except BrokenPipeError:
+                pass  # what was still buffered had nowhere to go; closing it here keeps Python from reporting it again when the pipe is dropped
         done = json.loads(child.stdout.readline() or "{}")
         code = child.wait()
         child.stdout.close()
         if code or "written" not in done:
-            raise SystemExit("upload.js stopped before sealing every object; the bucket keeps what it had")
+            raise SystemExit(self.stopped(child, code))
+        child.stderr.close()
         for rel in todo:
             sealed[rel] = {"stamp": objects[rel], "redacted": counts[rel]}
         removed = self.prune(set(objects))
@@ -762,6 +768,17 @@ class Seal:
               f"{len(objects)} objects for {len(bucket_index['conversations'])} conversations of the last {RETENTION_DAYS} days"
               f"{'; a new passphrase or bucket, so every object was sealed again' if ready['rekeyed'] else ''}")
         return 0
+
+    @staticmethod
+    def stopped(child: subprocess.Popen, code: int, lead: str = "Sealing stopped before every object was sealed") -> str:
+        """The sentence a run ends with when upload.js stops, for the log and for the page's Sync ("The laptop could not build a new copy: ..."):
+        what it said last on stderr (its own reason: a full disk, an object it could not read), else how it ended. It says nothing from the
+        objects themselves: upload.js's messages name no text, and the page shows this to whoever holds the phone."""
+        said = " ".join((child.stderr.read() or "").split())
+        child.stderr.close()
+        if not said:
+            said = f"it was stopped by signal {-code}" if code < 0 else f"it exited with code {code}" if code else "it ended without saying it was done"
+        return f"{lead} ({said[:110]}); the sealed copy keeps what it had."
 
     def prune(self, kept: set[str]) -> int:
         """Delete sealed objects the bucket no longer names, and what a stopped run left half written."""

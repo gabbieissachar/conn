@@ -154,6 +154,25 @@ test('upload.js reads a line that arrives in pieces, even in the middle of a cha
   } finally { cleanup(); }
 });
 
+test('a line that is not JSON stops upload.js with a message that quotes none of it, and nothing after it is sealed', async () => {
+  const { folder, cleanup } = bucket();
+  try {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const secret = 'a private sentence from a conversation';
+    input.write(JSON.stringify({ path: 's/first.json', text: '{}' }) + '\n');
+    input.write(`{"path":"s/cut.json","text":"${secret}` + '\n');  // a line cut short: its string never closes
+    input.end(JSON.stringify({ path: 's/after.json', text: '{}' }) + '\n');
+    await assert.rejects(upload.main([folder], { HOSTED_READER_PASSPHRASE: PASS }, input, output), (error) => {
+      assert.match(error.message, /A line of \d+ characters is not JSON/);
+      assert.ok(!error.message.includes(secret) && !error.message.includes('private'), error.message);
+      return true;
+    });
+    assert.ok(fs.existsSync(path.join(folder, 's', 'first.json.enc')));
+    assert.ok(!fs.existsSync(path.join(folder, 's', 'after.json.enc')));
+  } finally { cleanup(); }
+});
+
 // The shell's loader in a sandbox, fetching a sealed bucket from memory (no IndexedDB here).
 function shell(files) {
   const calls = [];
