@@ -257,7 +257,11 @@ enum UICheck {
         let h = model.primaryHistory
         report("history loads as text", h?.text != nil, h.map { "\($0.phase == .loading ? "still loading" : ($0.text.map { "lines=\($0.split(separator: "\n", omittingEmptySubsequences: false).count)" } ?? "failed"))" } ?? "no history")
         if working != nil {
-            report("the live stream keeps delivering frames under the history", model.primary.state == .live && model.primary.stats.frames > framesBefore, "frames \(framesBefore) -> \(model.primary.stats.frames)")
+            // On the stand-in a working pane prints every 250 ms, so frames must arrive; a real agent can be quiet for two
+            // seconds, so there the stream only has to be alive (its observer child running).
+            let alive = model.primary.state == .live && model.primary.processID != nil
+            let arrived = model.primary.stats.frames > framesBefore
+            report("the live stream keeps delivering frames under the history", model.config.fixture ? (alive && arrived) : (alive || arrived), "frames \(framesBefore) -> \(model.primary.stats.frames), stream alive=\(alive)")
         } else {
             report("the live stream keeps running under the history (no working agent to see frames from)", model.primary.state == .live && model.primary.processID != nil, "state=\(model.primary.state)")
         }

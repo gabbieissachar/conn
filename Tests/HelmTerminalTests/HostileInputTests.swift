@@ -14,7 +14,8 @@ import HelmCore
 /// (about 1 microsecond a byte; ordinary Herdr frames cost under 0.01). The bound is 100 microseconds a byte plus a second,
 /// which catches an unbounded or quadratic loop, not a slow machine. `HELM_HOSTILE_SCALE=full` adds the 2 MB and 12 MB
 /// random streams (minutes in a debug build; run them with `swift test -c release -Xswiftc -enable-testing`).
-@Suite("SwiftTerm hostile input", .serialized) @MainActor struct HostileInputTests {
+extension SwiftTermMainActorTests {
+@Suite("SwiftTerm hostile input") @MainActor struct HostileInputTests {
     static let secondsPerByte = 100e-6
     static let maxGrowthBytes: Int64 = 128 << 20
     static let full = ProcessInfo.processInfo.environment["HELM_HOSTILE_SCALE"] == "full"
@@ -155,4 +156,5 @@ import HelmCore
         #expect(engine.cols <= TerminalFrame.maxCols && engine.rows <= TerminalFrame.maxRows)
         #expect(footprint() - before < Self.maxGrowthBytes)
     }
+}
 }

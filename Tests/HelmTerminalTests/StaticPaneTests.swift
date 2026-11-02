@@ -16,7 +16,8 @@ final class OneShotSource: PaneStreamSource {
     func stop() {}
 }
 
-@Suite("SwiftTerm static pane", .serialized) @MainActor struct StaticPaneTests {
+extension SwiftTermMainActorTests {
+@Suite("SwiftTerm static pane") @MainActor struct StaticPaneTests {
     @Test func aPaneThatReceivesOneFullFrameAndNothingAfterItShowsItsTextAndIsRedrawnPromptly() async throws {
         let engine = SwiftTermEngine()
         let session = PaneSession(engine: engine, source: OneShotSource(), queue: .main)
@@ -37,4 +38,5 @@ final class OneShotSource: PaneStreamSource {
         #expect(session.stats.frames == 1)
         session.stop()
     }
+}
 }
