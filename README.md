@@ -2,6 +2,8 @@
 
 Native Mac workspace app: Herdr panes, the transcript reader, the organizer and a plain editor in one window. Decisions: see the native app decision ledger kept by the leader-workspaceos firstmate home.
 
+**What is done and what is next: [ROADMAP.md](ROADMAP.md).** Every change to Helm updates it in the same branch.
+
 Helm is a client of `herdr server`: Herdr stays the backend and keeps every agent alive when the app quits. The app draws a native sidebar from Herdr's snapshot and events, streams visible panes into a terminal pane, shows the reader and the organizer as web views, edits text and markdown files, and keeps Herdr's own screen in a terminal pane as a fallback.
 
 **What draws the panes.** Decision B2: SwiftTerm is the terminal engine, behind a protocol (`TerminalEngine`). It is the default pane view. A second engine, a 450-line cell grid ported from the prototype, stays selectable with `./run.sh --renderer grid`; it is the one whose output the agents that built this could see in screenshots, so it is the reference when a SwiftTerm pane looks wrong. SwiftTerm also runs the Herdr-screen fallback pane.
