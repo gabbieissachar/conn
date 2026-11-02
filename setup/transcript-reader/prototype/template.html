@@ -486,6 +486,21 @@ __HEAD_HOSTED__
   .input.pending .who > button:disabled { opacity: .5; }
   .dock textarea:read-only { opacity: .6; }
   .dock-row button.undo { background: var(--paper); color: var(--you); min-width: 5.2em; font-variant-numeric: tabular-nums; }
+  /* Photos for the message: the button that picks them (the same size as Add and Send, 44 px where the screen is touched), a thumbnail for
+     each above the box with its own remove button (tap area about 44 px), and a dashed edge while a file is dragged over the page. */
+  .dock-row button.icon { padding: 0; width: 38px; height: 36px; display: grid; place-items: center; flex: none; }
+  .dock-row button.icon svg { display: block; }
+  .dock-row button[aria-disabled="true"] { opacity: .45; }
+  .dock-thumbs { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; padding: 6px 0 2px; margin-top: 2px; scrollbar-width: thin; }
+  .thumb { position: relative; flex: none; width: 56px; height: 56px; }
+  .thumb-pic { display: block; width: 100%; height: 100%; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--code); }
+  .thumb-pic canvas { display: block; width: 100%; height: 100%; }
+  .thumb-pic.plain { display: grid; place-items: end center; padding-bottom: 9px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .thumb.bad .thumb-pic { border: 2px solid var(--open); }
+  .thumb-x { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: rgb(0 0 0 / .66); color: #fff; font-size: 11px; line-height: 1; display: grid; place-items: center; }
+  .thumb-x::after { content: ""; position: absolute; inset: -11px; }
+  .thumb-x:focus-visible, .dock-row button.icon:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .dock.dropping .dock-inner { outline: 2px dashed var(--you); outline-offset: -4px; border-radius: 12px; }
   .new-reply { position: fixed; left: calc((100% - var(--rail)) / 2); transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
 
   /* Search: the button in the title row, the row under it and the list of matches. Opening it folds the tabs and controls,
@@ -624,7 +639,9 @@ __HEAD_HOSTED__
   <div class="dock-note" id="dock-note" hidden></div>
   <div class="dock-acts"><span class="why" id="dock-status" aria-live="polite"></span><span class="count" id="dock-count" hidden></span><button id="dock-preview-toggle" type="button" aria-controls="dock-preview" hidden>Exact text</button><button id="dock-copy" type="button" title="Copy the message">Copy</button></div>
   <div class="dock-worker" id="dock-worker" hidden>This is a worker. Firstmate only sees direct messages at its next review.</div>
-  <div class="dock-row"><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button class="alt" id="dock-add" type="button" title="Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)">Add</button><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
+  <div class="dock-thumbs" id="dock-thumbs" role="group" aria-label="Photos to send" hidden></div>
+  <input type="file" id="dock-file" accept="image/*" multiple hidden>
+  <div class="dock-row"><button class="alt icon" id="dock-photo" type="button" aria-label="Add photos" title="Add photos (you can also paste or drop pictures)"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.7" fill="currentColor"/><path d="M4 17.5l5-4.5 3.5 3 3-2.5 4.5 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg></button><textarea id="dock-text" rows="1" placeholder="Message" aria-label="Message"></textarea><button class="alt" id="dock-add" type="button" title="Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)">Add</button><button id="dock-send" type="button" title="Send to the session's Herdr pane (Enter; Shift+Enter for a new line)">Send</button></div>
 </div></div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
@@ -2097,6 +2114,7 @@ __HEAD_HOSTED__
   }
 
 /*__UNDOSEND__*/
+/*__ATTACH__*/
 /*__COMMENTKEY__*/
   // ---------------------------------------------------------------- replying to a reply
   // The served page sends a short message to the session's own Herdr pane. It points at
@@ -2105,6 +2123,13 @@ __HEAD_HOSTED__
   const replyTargets = new WeakMap();
   const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, syncedAt: 0, syncFail: null, syncing: false, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
+  // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
+  const photos = attach.makeStore();
+  const paintThumbs = attach.makeStrip({ doc: document, el: dock("thumbs"), onRemove: item => {
+    const session = dockSession();
+    if (!session || link.hold || link.sending) return;
+    photos.remove(session.id, item.key); link.result = null; renderDock();
+  } });
   function selectedPassage(card) {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !card.contains(sel.anchorNode) || !card.contains(sel.focusNode)) return "";
@@ -2187,6 +2212,7 @@ __HEAD_HOSTED__
   function adopt(session) {
     for (const id of session.ids || []) {
       if (id === session.id) continue;
+      photos.move(id, session.id);
       if (batches[id]) { saveBatch(session.id, batches[id].map(item => ({ sid: id, ...item })).concat(batchOf(session.id))); saveBatch(id, []); }
       if (drafts[id]) {
         if (!draftOf(session.id)) drafts[session.id] = draftOf(id);
@@ -2315,6 +2341,7 @@ __HEAD_HOSTED__
     dock("text").placeholder = `Message ${name}`;
     dock("text").setAttribute("aria-label", `Message ${name}`);
     renderBatch(session);
+    const pics = photos.list(session.id);
     const text = dockMessage(), target = link.target, out = outgoing(), batch = batchOf(session.id);
     const toggle = dock("preview-toggle");
     toggle.hidden = !batch.length;
@@ -2345,6 +2372,7 @@ __HEAD_HOSTED__
     else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
     const command = dockTyped().startsWith("/");
     if (!reason && batch.length && command) reason = "A command goes on its own: send the batch first, or clear it.";
+    if (!reason && pics.length && command) reason = "A command goes on its own: remove the photos first.";
     // One message at a time is in its Undo window, so a session switched to meanwhile cannot send until it ends (a few seconds).
     const elsewhere = Boolean(link.hold && link.hold.sid !== session.id);
     if (!reason && elsewhere) reason = `Send is back when ${paneName(link.hold.sid)}'s Undo window ends.`;
@@ -2352,7 +2380,13 @@ __HEAD_HOSTED__
     // While the message is in its Undo window the box is locked (what is in it is what will be sent) and Send turns into Undo.
     const held = Boolean(link.hold && link.hold.sid === session.id);
     dock("text").readOnly = held;
-    dock("send").disabled = held ? false : Boolean(reason) || link.sending || !out || over;
+    // The photos stay as they are while the message is held or on its way; the button says why when this copy cannot take any.
+    paintThumbs(pics, held || link.sending);
+    const noPhotos = photoBlock();
+    dock("photo").disabled = held || link.sending;
+    dock("photo").setAttribute("aria-disabled", String(Boolean(noPhotos)));
+    dock("photo").title = noPhotos || "Add photos (you can also paste or drop pictures)";
+    dock("send").disabled = held ? false : Boolean(reason) || link.sending || (!out && !pics.length) || over;
     dock("send").classList.toggle("undo", held);
     dock("send").title = held ? "Take the message back before it is sent (Esc)" : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
     const total = batch.length + (dockTyped() ? 1 : 0);
@@ -2370,7 +2404,7 @@ __HEAD_HOSTED__
     status.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane)));
     status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : link.result ? link.result.text : reason || (HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
-      : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${link.sending ? " · sending…" : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
+      : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${pics.length ? " · " + attach.photos(pics.length) : ""}${link.sending ? " · " + (link.uploading || "sending…") : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
     main.style.paddingBottom = bar.offsetHeight + 24 + "px";
@@ -2386,7 +2420,9 @@ __HEAD_HOSTED__
   // asks the server or the queue. Until that moment nothing has left the page, so Undo can say plainly that it was never sent.
   const sendHold = makeSendHold({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) });
   let holdTimer = 0;
-  const holdMessage = hold => ({ text: hold.text, label: paneName(hold.sid), at: Date.now() / 1000 });
+  // While a message is held or on its way the faded copy shows its words, and how many photos go with them (their paths are only known
+  // once the laptop has saved them; the faded copy then reads exactly what was typed into the pane).
+  const holdMessage = hold => ({ text: [hold.text, hold.photos ? "+ " + attach.photos(hold.photos) : ""].filter(Boolean).join("\n\n"), label: paneName(hold.sid), at: Date.now() / 1000 });
   function paintHold() {
     if (!link.hold) return;
     renderDock();
@@ -2412,7 +2448,8 @@ __HEAD_HOSTED__
   function sendNow() { sendHold.release(); }
   function sendDock() {
     if (link.hold) return;
-    const text = outgoing(); if (!text || dock("send").disabled) return;
+    const text = outgoing(), sentPhotos = dockSession() ? photos.list(dockSession().id).slice() : [];
+    if ((!text && !sentPhotos.length) || dock("send").disabled) return;
     const session = dockSession();
     // These end, reset, shrink or sign out the session, so they ask first.
     const command = (text.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
@@ -2420,28 +2457,36 @@ __HEAD_HOSTED__
     // What this send carries. The box stays as it is (locked) through the window and while the send runs (emptying the pane's
     // input box first takes a second or more), so only these are removed when it has gone.
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
-    const hold = { sid, text };
-    const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed }); }, UNDO_SECONDS, hold);
+    const hold = { sid, text, photos: sentPhotos.length };
+    const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);
     if (!begun) { link.result = { ok: false, text: "Another message is still in its Undo window. Wait a moment." }; renderDock(); return; }
     link.hold = hold; link.result = null;
     holdTimer = setInterval(paintHold, 500);
     renderDock();
     redrawPending(pointed);
   }
-  async function deliverDock({ sid, text, sentItems, sentBox, pointed }) {
+  async function deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos = [] }) {
     // Taken when the send starts: the log stamps the message when the pane receives it, which is
     // before Herdr answers (emptying the pane's input box first takes a second or more).
     const at = Date.now() / 1000;
-    link.sending = true; link.result = null; link.flight = { sid, text }; redrawPending(pointed);
+    link.sending = true; link.result = null; link.uploading = ""; link.flight = { sid, text, photos: sentPhotos.length }; redrawPending(pointed);
     try {
       // The hosted copy queues it: the laptop sends it when it is awake and the pane is ready.
       const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
-      const sent = HOSTED ? { label: (sessionOf(sid) && sessionOf(sid).pane && sessionOf(sid).pane.label) || paneName(sid) } : await live.send(sid, text);
+      // With photos, each is uploaded first (a photo that fails stops the send, and nothing is typed into the pane), then the send names the
+      // saved files and the laptop adds their paths to the text; what it answers is the text as it went.
+      const sent = HOSTED ? { label: (sessionOf(sid) && sessionOf(sid).pane && sessionOf(sid).pane.label) || paneName(sid) } : await attach.deliver(sentPhotos, {
+        upload: (file, name) => live.upload(file, name),
+        send: ids => live.send(sid, text, ids),
+        step: (n, of) => { link.uploading = n ? `uploading ${of > 1 ? `photo ${n} of ${of}` : "the photo"}…` : ""; renderDock(); },
+      });
+      link.uploading = "";
       link.result = { ok: true, text: HOSTED ? (queued.held ? `Held on this phone at ${fmtTime(at)}.` : `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.`) : `Sent to ${sent.label} at ${fmtTime(at)}.` };
       // agent: what Herdr said the agent was doing when the message went in (a working agent holds it as a queued message).
-      link.pending.push({ sid, text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
+      link.pending.push({ sid, text: sent.text || text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
       keepQueued();
       saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
+      photos.drop(sid, sentPhotos);
       const onScreen = dockSession();
       if (onScreen && (onScreen.ids || [onScreen.id]).includes(sid) && dock("text").value === sentBox) {
         dock("text").value = ""; link.editing = null;
@@ -2454,7 +2499,7 @@ __HEAD_HOSTED__
       // keeps your place there; the faded message waits at the end.
       link.flight = null;
       redrawPending(pointed);
-    } catch (e) { link.flight = null; link.result = { ok: false, text: e.message }; redrawPending(true); }
+    } catch (e) { link.flight = null; link.uploading = ""; link.result = { ok: false, text: e.message }; redrawPending(true); }
     link.sending = false; renderDock();
   }
   // A sent message shows at once, faded, until the session's log has it: one of your messages
@@ -2655,6 +2700,41 @@ __HEAD_HOSTED__
   });
   dock("preview-toggle").addEventListener("click", () => { link.preview = !link.preview; renderDock(); });
   dock("copy").addEventListener("click", copyDock);
+  // Photos. Why none can be added here, or "": the hosted copy's queue carries text only (its words are sealed, and a photo is far past the
+  // size the queue takes), and a copy that cannot reach the server sends nothing. Pictures come from the button, a paste or a drop.
+  function photoBlock() {
+    return HOSTED ? "This copy cannot send photos: its queue carries text only. Open the laptop's page for photos."
+      : !canLive ? "Read-only copy: open the served page to send photos." : "";
+  }
+  function barSays(ok, text, ms) {
+    link.result = { ok, text }; renderDock();
+    if (ms) setTimeout(() => { if (link.result && link.result.text === text) { link.result = null; renderDock(); } }, ms);
+  }
+  function addPhotos(files) {
+    const picked = Array.from(files || []), session = dockSession();
+    if (!picked.length || !session) return;
+    if (photoBlock()) { barSays(false, photoBlock(), 8000); return; }
+    if (link.hold || link.sending) { barSays(false, "A message is on its way. Add photos once it has gone.", 6000); return; }
+    const { added, refused } = photos.add(session.id, picked);
+    const sentence = [added ? `Added ${attach.photos(added)}.` : "", attach.refusal(refused)].filter(Boolean).join(" ");
+    barSays(!refused.length, sentence, refused.length ? 10000 : 4000);
+    dock("text").focus();
+  }
+  dock("photo").addEventListener("click", () => { if (photoBlock()) barSays(false, photoBlock(), 8000); else dock("file").click(); });
+  dock("file").addEventListener("change", () => { addPhotos(dock("file").files); dock("file").value = ""; });
+  // A picture on the clipboard (a screenshot, a copied image) joins the message; words win when the clipboard holds both (a copy from a
+  // page or a document carries its pictures beside its text, and the text is what was meant).
+  dock("text").addEventListener("paste", e => {
+    const data = e.clipboardData, files = Array.from((data && data.files) || []).filter(file => /^image\//i.test(file.type));
+    if (!files.length || (data.getData("text/plain") || "")) return;
+    e.preventDefault(); addPhotos(files);
+  });
+  // A file dropped anywhere on the page goes to the bar (the page never opens it in place of itself), and the bar shows where it will land.
+  function carriesFiles(e) { return Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes("Files"); }
+  const dockBar = document.getElementById("dock");
+  document.addEventListener("dragover", e => { if (carriesFiles(e)) { e.preventDefault(); dockBar.classList.toggle("dropping", !dockBar.hidden); } });
+  document.addEventListener("dragleave", e => { if (!e.relatedTarget) dockBar.classList.remove("dropping"); });
+  document.addEventListener("drop", e => { if (!carriesFiles(e)) return; e.preventDefault(); dockBar.classList.remove("dropping"); addPhotos(e.dataTransfer.files); });
   dock("chip-drop").addEventListener("click", () => { dropTarget(); dock("text").focus(); });
   dock("passage-drop").addEventListener("click", () => { if (heldHere()) return; link.target.passage = ""; dock("passage").hidden = true; saveDraft(); renderDock(); });
 

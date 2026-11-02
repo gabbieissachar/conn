@@ -37,9 +37,17 @@
 //   GET  /api/transcript-reader/stars               the starred sessions of the picker (the same store, in a file
 //                                                   beside the pins) and their revision
 //   POST /api/transcript-reader/stars               { op: "star", conv } or { op: "unstar", conv }
-//   POST /api/transcript-reader/send                { session_id, text }: empties the input box
+//   POST /api/transcript-reader/send                { session_id, text[, images] }: empties the input box
 //                                                   of the one live Herdr pane running that
-//                                                   session, then sends the text there
+//                                                   session, then sends the text there. images are the ids
+//                                                   upload gave: each is added to the text as a line
+//                                                   "Attached image: <absolute path>" (the way Claude Code is
+//                                                   pointed at a picture), and the answer then carries the text
+//                                                   as sent. With images, text may be empty (not a / command).
+//   POST /api/transcript-reader/upload              { data[, name] }: one photo, base64 in the JSON body every
+//                                                   route takes, saved owner-only (0600 in a 0700 folder) as
+//                                                   out/uploads/<random>.<png|jpg|gif|webp> after its bytes are
+//                                                   checked (see "Photos" below): { id, bytes, type }
 //   POST /api/transcript-reader/queue               a hosted copy's Send: { copy: "hosted", id, object:
 //                                                   { session_id, text, at } } writes out/hosted/q/<id>.json;
 //                                                   { copy: "bucket", id, data } writes the sealed bytes the
@@ -114,6 +122,16 @@
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
+//
+// Photos. The message bar can attach pictures. A page uploads each one first (upload: the same guard as every
+// route, so the same Host, Origin, token and, on the tailnet, sign-in), and then names the saved ids in send, which
+// adds their paths to the text. What is saved is decided here, from the bytes and never from the name the page gave:
+// PNG, JPEG, GIF and WebP by their headers, and HEIC (an iPhone's) converted to JPEG with macOS's sips because Claude
+// Code cannot read HEIC; anything else is refused. A photo is at most 12 MB, a message carries at most 6 photos and
+// 30 MB, a saved file has a random name and its type's extension, and the folder holds at most 1 GB, files older than 30
+// days being removed as new ones arrive. Saved photos are never served: the folder is under out/, which this module
+// claims whole (no route lists or serves it), and the page shows its own thumbnails from the file the person picked.
+// The hosted copy's queue cannot carry photos (its text is sealed, and a photo is far past its size), so it takes none.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -198,6 +216,18 @@ const CLEAR_KEYS = ['ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 'ctrl+k', 'ctrl+u', 
 const CLEAR_CALLS = 25;
 const CLEAR_PAUSE_MS = 40;
 const MAX_BODY_BYTES = 16 * 1024;
+// Photos (see above). prototype/attach.js holds the first three for the page's own checks; a test keeps them equal.
+const MAX_PHOTOS = 6;
+const MAX_PHOTO_BYTES = 12 * 1024 * 1024;
+const MAX_PHOTOS_BYTES = 30 * 1024 * 1024;
+// A photo travels as base64 inside a JSON body (the guard takes only application/json), a third larger than the file.
+const MAX_UPLOAD_BODY_BYTES = Math.ceil(MAX_PHOTO_BYTES * 4 / 3) + 4096;
+const UPLOADS = 'uploads';
+const UPLOAD_NAME_RE = /^[0-9a-f]{32}\.(?:png|jpg|gif|webp)$/;
+const UPLOAD_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+const UPLOAD_TEMP_KEEP_MS = 60 * 60 * 1000;
+const UPLOADS_FULL_BYTES = 1024 * 1024 * 1024;
+const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']);
 // A queued send carries up to MAX_TEXT characters, sealed and in base64, so its route takes a larger body.
 const MAX_QUEUE_BODY_BYTES = 64 * 1024;
 const MAX_QUEUED = 50;
@@ -234,7 +264,7 @@ function fail(res, status, code, message) {
   send(res, status, { status: 'error', code, message });
 }
 
-function readJsonBody(req, limit = MAX_BODY_BYTES) {
+function readJsonBody(req, limit = MAX_BODY_BYTES, tooLong = { message: 'Message too long.', code: 'error' }) {
   return new Promise((resolve, reject) => {
     let size = 0;
     let done = false;
@@ -242,7 +272,7 @@ function readJsonBody(req, limit = MAX_BODY_BYTES) {
     req.on('data', (chunk) => {
       if (done) return;
       size += chunk.length;
-      if (size > limit) { done = true; reject(new RequestError('Message too long.', 413)); return; }
+      if (size > limit) { done = true; reject(new RequestError(tooLong.message, 413, tooLong.code)); return; }
       chunks.push(chunk);
     });
     req.on('end', () => {
@@ -272,6 +302,24 @@ function checkText(value) {
 
 function parseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
+}
+
+const megabytes = (bytes) => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
+
+// What a photo's bytes say it is: { ext, type } for a PNG, JPEG, GIF or WebP, { heic: true } for an iPhone's HEIC, else null.
+// The headers are read, not just the first bytes (a PNG must open with its IHDR chunk and a size, a GIF with its screen size,
+// a JPEG with a marker a JPEG can start with, a WebP with a size that fits the file), so a text file or a page renamed .png is refused.
+function sniffImage(b) {
+  const at = (from, to) => b.toString('latin1', from, to);
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(4) === 0x0d0a1a0a && at(12, 16) === 'IHDR'
+    && b.readUInt32BE(16) > 0 && b.readUInt32BE(20) > 0) return { ext: '.png', type: 'image/png' };
+  if (b.length >= 20 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
+    && ((b[3] >= 0xe0 && b[3] <= 0xef) || [0xc0, 0xc1, 0xc2, 0xc4, 0xdb, 0xfe].includes(b[3]))) return { ext: '.jpg', type: 'image/jpeg' };
+  if (b.length >= 13 && /^GIF8[79]a$/.test(at(0, 6)) && b.readUInt16LE(6) > 0 && b.readUInt16LE(8) > 0) return { ext: '.gif', type: 'image/gif' };
+  if (b.length >= 20 && at(0, 4) === 'RIFF' && at(8, 12) === 'WEBP' && ['VP8 ', 'VP8L', 'VP8X'].includes(at(12, 16))
+    && b.readUInt32LE(4) + 8 <= b.length) return { ext: '.webp', type: 'image/webp' };
+  if (b.length >= 16 && at(4, 8) === 'ftyp' && HEIC_BRANDS.has(at(8, 12))) return { heic: true };
+  return null;
 }
 
 // Where a path really is, as the file system resolves it: the nearest existing
@@ -335,6 +383,8 @@ function create({
   worker = false,
   // Watching the listed logs while a page is open, and answering `events` as a build is published; server.js turns it on.
   watch = false, sweepMs = SWEEP_MS,
+  // macOS's converter for an iPhone's HEIC photos (an absolute path, so the server's own PATH does not matter).
+  sipsBin = '/usr/bin/sips',
 } = {}) {
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
@@ -772,11 +822,118 @@ function create({
     throw new RequestError('The agent is not in the foreground of its pane (it may be suspended to a shell), so nothing was sent. Check the pane first.', 409, 'agent_not_foreground');
   }
 
+  // ------------------------------------------------------------------ photos
+
+  // out/uploads/, made owner-only (0700) every time it is used, and its real path (the one a person or an agent can open).
+  function uploadsDir() {
+    const dir = path.join(outDir, UPLOADS);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+    return fs.realpathSync(dir);
+  }
+
+  // Before a photo is saved: the folder drops what is old (a photo after 30 days, a leftover conversion file after an hour) and
+  // refuses the photo when what stays and it would pass 1 GB. A person clears space by deleting files in it; nothing else does.
+  function tidyUploads(dir, incoming) {
+    let total = incoming;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(dir, entry.name);
+      let stat;
+      try { stat = fs.statSync(file); } catch { continue; }
+      if (now() - stat.mtimeMs > (entry.name.startsWith('.') ? UPLOAD_TEMP_KEEP_MS : UPLOAD_KEEP_MS)) {
+        try { fs.unlinkSync(file); } catch { /* a person or another request got there first */ }
+        continue;
+      }
+      total += stat.size;
+    }
+    if (total > UPLOADS_FULL_BYTES) throw new RequestError('The laptop\'s photo folder is full (1 GB). Delete old files in setup/transcript-reader/out/uploads, then try again.', 507, 'folder_full');
+  }
+
+  // An iPhone's HEIC as JPEG bytes, converted by sips through two short-lived files in the folder, or null when it could not be.
+  async function heicToJpeg(bytes, dir) {
+    const stem = path.join(dir, '.convert-' + crypto.randomBytes(8).toString('hex'));
+    const input = stem + '.heic';
+    const output = stem + '.jpg';
+    try {
+      fs.writeFileSync(input, bytes, { mode: 0o600, flag: 'wx' });
+      const result = await runner(sipsBin, ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90', input, '--out', output], { env: runEnv(), timeoutMs: 30000 });
+      if (result.code !== 0) return null;
+      const converted = fs.readFileSync(output);
+      const kind = sniffImage(converted);
+      return kind && kind.ext === '.jpg' ? converted : null;
+    } catch { return null; } finally {
+      for (const file of [input, output]) { try { fs.unlinkSync(file); } catch { /* never made */ } }
+    }
+  }
+
+  // What the page's upload asks: one photo, checked by its bytes and saved under a random name. { id, bytes, type[, converted] }.
+  async function uploadPhoto(body) {
+    for (const key of Object.keys(body)) if (key !== 'data' && key !== 'name') throw new RequestError('Unknown field.');
+    if (typeof body.name !== 'undefined' && typeof body.name !== 'string') throw new RequestError('Invalid name.');
+    // The name is only ever shown back in a refusal, never used for the file.
+    const label = (body.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60) || 'That file';
+    if (typeof body.data !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) throw new RequestError(label + ' arrived empty or damaged, so it was not saved.', 400, 'bad_data');
+    let bytes = Buffer.from(body.data, 'base64');
+    if (bytes.length > MAX_PHOTO_BYTES) throw new RequestError(label + ' is ' + megabytes(bytes.length) + '; a photo can be at most ' + megabytes(MAX_PHOTO_BYTES) + '.', 413, 'too_big');
+    let kind = sniffImage(bytes);
+    if (!kind) throw new RequestError(label + ' is not a PNG, JPEG, GIF, WebP or HEIC image, so it was not saved.', 415, 'not_image');
+    const dir = uploadsDir();
+    tidyUploads(dir, bytes.length);
+    let converted = false;
+    if (kind.heic) {
+      const jpeg = await heicToJpeg(bytes, dir);
+      if (!jpeg) throw new RequestError(label + ' is a HEIC photo and the laptop could not convert it to JPEG (it uses sips), so it was not saved.', 415, 'heic_failed');
+      bytes = jpeg;
+      kind = sniffImage(bytes);
+      converted = true;
+    }
+    const name = crypto.randomBytes(16).toString('hex') + kind.ext;
+    const file = path.join(dir, name);
+    try {
+      fs.writeFileSync(file, bytes, { mode: 0o600, flag: 'wx' });
+      fs.chmodSync(file, 0o600);
+    } catch { throw new RequestError(label + ' could not be saved on the laptop.', 500, 'upload_failed'); }
+    return { id: name, bytes: bytes.length, type: kind.type, ...(converted ? { converted: 'heic' } : {}) };
+  }
+
+  // The saved photos a send names, as absolute paths, or a RequestError saying why none is typed: each id must be one upload gave
+  // (never a path), still a plain file of this folder, and together they stay within the count and the size a message may carry.
+  function checkPhotos(value) {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) throw new RequestError('Invalid photos.');
+    if (value.length > MAX_PHOTOS) throw new RequestError('A message can carry at most ' + MAX_PHOTOS + ' photos.', 413, 'too_many');
+    let dir;
+    try { dir = fs.realpathSync(path.join(outDir, UPLOADS)); } catch { dir = null; }
+    const seen = new Set();
+    const files = [];
+    let total = 0;
+    for (const id of value) {
+      if (typeof id !== 'string' || !UPLOAD_NAME_RE.test(id)) throw new RequestError('Invalid photo id.');
+      if (seen.has(id)) throw new RequestError('The same photo is listed twice.');
+      seen.add(id);
+      let stat = null;
+      try { stat = dir && fs.lstatSync(path.join(dir, id)); } catch { stat = null; }
+      if (!stat || !stat.isFile()) throw new RequestError('A photo is no longer on the laptop, so nothing was sent. Add it again.', 409, 'image_gone');
+      total += stat.size;
+      files.push(path.join(dir, id));
+    }
+    if (total > MAX_PHOTOS_BYTES) throw new RequestError('The photos add up to ' + megabytes(total) + '; a message can carry at most ' + megabytes(MAX_PHOTOS_BYTES) + '.', 413, 'too_big');
+    return files;
+  }
+
+  // The text that goes to the pane: what was typed, then one line for each photo naming its file, as Claude Code is pointed at a picture.
+  const withPhotos = (typed, files) => [typed, files.map((file) => 'Attached image: ' + file).join('\n')].filter(Boolean).join('\n\n');
+
   async function sendPrompt(body) {
-    for (const key of Object.keys(body)) if (key !== 'session_id' && key !== 'text') throw new RequestError('Unknown field.');
+    for (const key of Object.keys(body)) if (key !== 'session_id' && key !== 'text' && key !== 'images') throw new RequestError('Unknown field.');
     const sessionId = body.session_id;
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) throw new RequestError('Invalid session id.');
-    const text = checkText(body.text);
+    const files = checkPhotos(body.images);
+    // With photos the words may be none; a slash command goes alone, so the agent still reads it as a command.
+    const typed = files.length && (body.text === undefined || (typeof body.text === 'string' && !body.text.trim())) ? '' : checkText(body.text);
+    if (files.length && typed.startsWith('/')) throw new RequestError('A command goes on its own, so it cannot carry photos.', 400, 'command_with_photos');
+    const text = withPhotos(typed, files);
     if (!(sendable ? sendable() : listed()).includes(sessionId)) throw new RequestError('That session is not on the reading list.', 409, 'not_listed');
     const sessions = await scan({ fresh: true });
     const matches = sessions.flatMap((session) => session.panes.filter((p) => p.session_id === sessionId).map((p) => ({ ...p, herdr: session.name })));
@@ -802,7 +959,8 @@ function create({
         throw new RequestError(result.timedOut ? 'Herdr did not answer in time; check the pane before sending again.' : 'Herdr did not accept the message.', 502, 'herdr_failed');
       }
     } finally { sending = false; }
-    return { label: pane.label, herdr: pane.herdr, status: pane.status };
+    // With photos, the text as it went (their paths are only known here); the page matches its log line by it.
+    return { label: pane.label, herdr: pane.herdr, status: pane.status, ...(files.length ? { text } : {}) };
   }
 
   // ------------------------------------------------------------------- queue
@@ -1103,6 +1261,11 @@ function create({
       send(res, 200, { status: 'ok', ...(await sendPrompt(await readJsonBody(req))) });
       return;
     }
+    if (pathname === API + 'upload' && req.method === 'POST') {
+      const tooBig = { message: 'That photo is too big: a photo can be at most ' + megabytes(MAX_PHOTO_BYTES) + '.', code: 'too_big' };
+      send(res, 200, { status: 'ok', ...(await uploadPhoto(await readJsonBody(req, MAX_UPLOAD_BODY_BYTES, tooBig))) });
+      return;
+    }
     for (const kind of ['html', 'image']) {
       if (pathname === API + kind + '-open' && req.method === 'POST') {
         send(res, 200, { status: 'ok', ...fileOpen(await readJsonBody(req), kind) });
@@ -1172,4 +1335,4 @@ function create({
   return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane };
 }
 
-module.exports = { create, checkText, copyId, namesReaderOut, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER };
+module.exports = { create, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };

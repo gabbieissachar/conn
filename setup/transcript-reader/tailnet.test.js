@@ -567,6 +567,47 @@ test('a correct passcode sets an HttpOnly, SameSite=Strict session cookie and th
   assert.equal(pin.status, 200);
 });
 
+// A photo for a message goes through the same lane as Send: the phone's passcode sign-in, then Host, Origin, Fetch-Metadata and the page's token.
+test('photos over the tailnet: the upload needs the sign-in and then the token, and with both a photo is saved and Send names it', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0]), Buffer.alloc(16)]);
+  const body = { name: 'from-the-phone.png', data: png.toString('base64') };
+  const uploads = path.join(s.base, 'repo', 'setup', 'transcript-reader', 'out', 'uploads');
+  const post = (command, extra, payload) => s.onTailnet({ method: 'POST', path: '/api/transcript-reader/' + command, headers: { Origin: s.phone.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', ...extra }, body: payload });
+
+  const unsigned = await post('upload', {}, body);
+  assert.equal(unsigned.status, 401);
+  assert.equal(unsigned.json.code, 'sign_in_required');
+  assert.equal(fs.existsSync(uploads), false, 'nothing was saved for a phone that is not signed in');
+
+  const cookie = await s.signedIn();
+  const page = await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, Cookie: cookie } });
+  const token = tokenIn(page.raw);
+  const noToken = await post('upload', { Cookie: cookie }, body);
+  assert.equal(noToken.status, 403, 'a session is not enough on its own');
+  assert.equal(fs.existsSync(uploads), false);
+  const badOrigin = await post('upload', { Cookie: cookie, [TOKEN_HEADER]: token, Origin: s.loopback.origin }, body);
+  assert.equal(badOrigin.status, 403, 'the loopback address is not the phone\'s origin');
+  assert.equal(fs.existsSync(uploads), false);
+
+  const saved = await post('upload', { Cookie: cookie, [TOKEN_HEADER]: token }, body);
+  assert.equal(saved.status, 200, saved.raw);
+  assert.match(saved.json.id, /^[0-9a-f]{32}\.png$/);
+  assert.equal(fs.statSync(path.join(uploads, saved.json.id)).mode & 0o777, 0o600);
+  const sent = await post('send', { Cookie: cookie, [TOKEN_HEADER]: token }, { session_id: A, text: 'from the phone', images: [saved.json.id] });
+  assert.equal(sent.status, 200, sent.raw);
+  const typed = `from the phone\n\nAttached image: ${fs.realpathSync(uploads)}/${saved.json.id}`;
+  assert.equal(sent.json.text, typed);
+  assert.deepEqual(s.herdr.prompts().map((call) => call.args[5]), [typed]);
+  // The photo is not on the tailnet's address as a file either, with the sign-in and the token or without.
+  for (const headers of [{ Cookie: cookie, [TOKEN_HEADER]: token }, { Cookie: cookie }, {}]) {
+    const direct = await s.onTailnet({ path: '/setup/transcript-reader/out/uploads/' + saved.json.id, headers: { ...NAVIGATE, ...headers } });
+    assert.notEqual(direct.status, 200);
+    assert.equal(direct.raw.includes('IHDR'), false);
+  }
+});
+
 test('a session is not enough on its own: the API still needs the token, and the token is not enough without a session', async (t) => {
   const s = await boot();
   t.after(s.close);

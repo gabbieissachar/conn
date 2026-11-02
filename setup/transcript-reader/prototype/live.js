@@ -41,7 +41,7 @@
       if (r.status === 401 && j && j.code === "sign_in_required") {
         throw Object.assign(new Error(reloadForToken() ? "Signed out: opening the sign-in page…" : "Signed out: reload the page to sign in again."), { status: r.status });
       }
-      if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; throw error; }
+      if (!r.ok) { const error = new Error((j && j.message) || `The server answered ${r.status}.`); error.status = r.status; error.code = j && j.code; throw error; }
       return j;
     }
     async function call(path, options = {}) {
@@ -54,7 +54,16 @@
     // What changed since the build the page holds (its `generated` time), in place of the whole page: the turns after the ones it
     // has, the fleet events and documents that differ, and the order of the sessions. { delta: false } means fetch the page.
     const delta = (name, have) => call("delta?name=" + encodeURIComponent(name) + "&have=" + encodeURIComponent(have));
-    const send = (sessionId, text) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
+    // images: the ids upload gave for the photos that go with the message; the answer then carries the text as it was sent (their paths added).
+    const send = (sessionId, text, images) => call("send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text, ...(images && images.length ? { images } : {}) }) });
+    // One photo for a message: its bytes as base64 inside the JSON body every route takes. The laptop checks them and saves the file: { id, bytes, type }.
+    const readBase64 = file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => { const url = String(reader.result); resolve(url.slice(url.indexOf(",") + 1)); };
+      reader.onerror = () => reject(new Error("The photo could not be read from this device."));
+      reader.readAsDataURL(file);
+    });
+    const upload = async (file, name = file.name) => call("upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, data: await readBase64(file) }) });
     // The Sync button: the server reads Herdr again and rebuilds the pages now, then answers like state, with when it finished.
     const sync = follow => call("sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ follow: Boolean(follow) }) });
     // The tool output of one conversation, { outputs: { "<turn id>:<n>": text } }, which the page asks for when a step opens.
@@ -145,5 +154,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, page, delta, send, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

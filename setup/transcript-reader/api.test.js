@@ -11,7 +11,9 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { create, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
+const { spawnSync } = require('child_process');
+const zlib = require('zlib');
+const { create, namesReaderOut, PHOTO_LIMITS, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
 
 const A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const B = 'bbbbbbbb-2222-4222-8222-222222222222';
@@ -64,6 +66,7 @@ function fakeHerdr() {
     keysResult: { code: 0, stdout: '{}', stderr: '' },
     down: false,
     calls: [],
+    sipsCalls: [],
   };
   const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
   herdr.runner = async (file, args, options = {}) => {
@@ -86,6 +89,7 @@ function fakeHerdr() {
     }
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'prompt') return { timedOut: false, truncated: false, ...herdr.promptResult };
     if (file === 'herdr' && args[2] === 'agent' && args[3] === 'send-keys') return { timedOut: false, truncated: false, ...herdr.keysResult };
+    if (file === 'sips') { herdr.sipsCalls.push(args.slice()); return herdr.sips ? herdr.sips(args) : { code: 1, stdout: '', stderr: 'sips is not set up', timedOut: false, truncated: false }; }  // the HEIC converter, when a test gives one
     if (file === 'python3') { if (herdr.readerGate) await herdr.readerGate; return herdr.readerResult || ok(''); }  // reader.py; a test may make it fail, or hold it
     return { code: 1, stdout: '', stderr: 'unexpected command', timedOut: false, truncated: false };
   };
@@ -1471,4 +1475,364 @@ test('steps: a conversation\'s tool output is read from the file the page build 
     assert.notEqual(direct.status, 200);
     assert.doesNotMatch(direct.raw, /all good/);
   } finally { await t.close(); }
+});
+
+// ------------------------------------------------------------------- photos in a message
+// A photo is uploaded to out/uploads/ (checked by its bytes), and send then names the saved files by path. Herdr and sips are faked.
+
+const crc32 = (buffer) => { let c; let crc = 0xffffffff; for (const byte of buffer) { c = (crc ^ byte) & 0xff; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crc = (crc >>> 8) ^ c; } return (crc ^ 0xffffffff) >>> 0; };
+const chunk = (kind, data) => { const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length, 0); out.write(kind, 4, 'latin1'); data.copy(out, 8); out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length); return out; };
+// A real PNG (a w x h block of one colour), a header-true JPEG, GIF, WebP and HEIC: what the checks read, without a decoder.
+const realPng = (w = 4, h = 4) => { const head = Buffer.alloc(13); head.writeUInt32BE(w, 0); head.writeUInt32BE(h, 4); head.set([8, 2, 0, 0, 0], 8); const rows = Buffer.concat(Array.from({ length: h }, () => Buffer.concat([Buffer.from([0]), Buffer.alloc(w * 3, 0x7f)]))); return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', head), chunk('IDAT', zlib.deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]); };
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from('JFIF\0'), Buffer.alloc(40, 1), Buffer.from([0xff, 0xd9])]);
+const GIF = Buffer.concat([Buffer.from('GIF89a'), Buffer.from([2, 0, 2, 0, 0, 0, 0]), Buffer.alloc(20, 0), Buffer.from([0x3b])]);
+const WEBP = (() => { const body = Buffer.concat([Buffer.from('WEBPVP8 '), Buffer.alloc(4), Buffer.alloc(20, 3)]); const riff = Buffer.alloc(8); riff.write('RIFF', 0, 'latin1'); riff.writeUInt32LE(body.length, 4); return Buffer.concat([riff, body]); })();
+const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypheic'), Buffer.alloc(12, 0), Buffer.from('mif1heic')]);
+const b64 = (bytes) => Buffer.from(bytes).toString('base64');
+const photoOptions = () => ({ sipsBin: 'sips' });
+const savedFiles = (t) => { try { return fs.readdirSync(path.join(t.tree.outDir, 'uploads')).sort(); } catch { return []; } };
+const uploadsPath = (t) => fs.realpathSync(path.join(t.tree.outDir, 'uploads'));
+const upload = (t, bytes, name = 'photo.png', headers = {}) => t.post('upload', { name, data: b64(bytes) }, headers);
+
+test('photos: PNG, JPEG, GIF and WebP are saved owner-only under a random name, with the extension of what the bytes are', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const wanted = [[realPng(), '.png', 'image/png'], [JPEG, '.jpg', 'image/jpeg'], [GIF, '.gif', 'image/gif'], [WEBP, '.webp', 'image/webp']];
+    for (const [bytes, ext, type] of wanted) {
+      // Named for another type on purpose: the name is never trusted, never used for the file.
+      const answer = await upload(t, bytes, 'IMG_0001.heic');
+      assert.equal(answer.status, 200, answer.raw);
+      assert.match(answer.json.id, new RegExp('^[0-9a-f]{32}\\' + ext + '$'));
+      assert.equal(answer.json.type, type);
+      assert.equal(answer.json.bytes, bytes.length);
+      assert.equal(answer.json.converted, undefined);
+      assert.equal(JSON.stringify(answer.json).includes(t.tree.root), false, 'the answer holds no path of the laptop');
+      const file = path.join(t.tree.outDir, 'uploads', answer.json.id);
+      assert.deepEqual(fs.readFileSync(file), bytes);
+      assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the file is the owner\'s alone');
+    }
+    assert.equal(fs.statSync(path.join(t.tree.outDir, 'uploads')).mode & 0o777, 0o700, 'so is the folder');
+    // The same photo twice is two files with two unguessable names.
+    const [one, two] = [await upload(t, JPEG, 'a.jpg'), await upload(t, JPEG, 'a.jpg')];
+    assert.notEqual(one.json.id, two.json.id);
+    assert.equal(savedFiles(t).length, 6);
+    // A folder some other process left open is narrowed again.
+    fs.chmodSync(path.join(t.tree.outDir, 'uploads'), 0o755);
+    await upload(t, JPEG);
+    assert.equal(fs.statSync(path.join(t.tree.outDir, 'uploads')).mode & 0o777, 0o700);
+  } finally { await t.close(); }
+});
+
+test('photos: what is not an image is refused by its bytes, whatever it is called, and nothing is saved', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const refused = [
+      ['a page renamed .png', Buffer.from('<!doctype html><script>alert(1)</script>'), 'cute.png'],
+      ['a text file renamed .png', Buffer.from('just some notes, long enough to look like a file'), 'notes.png'],
+      ['a PNG signature and nothing else', realPng().subarray(0, 8), 'cut.png'],
+      ['a PNG whose first chunk is not IHDR', Buffer.concat([realPng().subarray(0, 8), chunk('IDAT', Buffer.alloc(13, 1)), Buffer.alloc(12)]), 'odd.png'],
+      ['an SVG', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>'), 'logo.svg'],
+      ['a PDF', Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n'), 'scan.png'],
+      ['a ZIP', Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(40)]), 'photos.jpg'],
+      ['a JPEG signature with a marker no JPEG starts with', Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0x00]), Buffer.alloc(40)]), 'bad.jpg'],
+      ['a WebP that claims more than it holds', Buffer.concat([WEBP.subarray(0, 4), Buffer.from([0xff, 0xff, 0, 0]), WEBP.subarray(8)]), 'big.webp'],
+      ['a QuickTime movie (ftyp, but not HEIC)', Buffer.concat([Buffer.from([0, 0, 0, 0x14]), Buffer.from('ftypqt  '), Buffer.alloc(20)]), 'clip.heic'],
+      ['an AVIF', Buffer.concat([Buffer.from([0, 0, 0, 0x14]), Buffer.from('ftypavif'), Buffer.alloc(20)]), 'a.avif'],
+    ];
+    for (const [what, bytes, name] of refused) {
+      const answer = await upload(t, bytes, name);
+      assert.equal(answer.status, 415, what + ': ' + answer.raw);
+      assert.equal(answer.json.code, 'not_image', what);
+      assert.match(answer.json.message, new RegExp('^' + name.replace('.', '\\.') + ' is not a PNG, JPEG, GIF, WebP or HEIC image'), what);
+    }
+    for (const [what, body, status] of [
+      ['no data', { name: 'a.png' }, 400], ['empty data', { name: 'a.png', data: '' }, 400], ['data that is not base64', { name: 'a.png', data: 'not base64!' }, 400],
+      ['data that is not text', { data: 12 }, 400], ['an unknown field', { data: b64(JPEG), path: '/etc/passwd' }, 400], ['a name that is not text', { name: ['a'], data: b64(JPEG) }, 400],
+    ]) assert.equal((await t.post('upload', body)).status, status, what);
+    assert.deepEqual(savedFiles(t).filter((name) => !name.startsWith('.')), [], 'nothing was kept');
+    // The name only ever reaches the refusal, without control characters, and never longer than a line.
+    const long = await upload(t, Buffer.from('x'.repeat(60)), 'a\u0000b\u001b[31m' + 'z'.repeat(200) + '.png');
+    assert.doesNotMatch(long.json.message, /[\u0000-\u001f]/);
+    assert.ok(long.json.message.length < 160);
+  } finally { await t.close(); }
+});
+
+test('photos: one photo is at most 12 MB, a message at most 6 photos and 30 MB, and the folder at most 1 GB', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    assert.deepEqual({ ...PHOTO_LIMITS }, { MAX_PHOTOS: 6, MAX_PHOTO_BYTES: 12 * 1024 * 1024, MAX_PHOTOS_BYTES: 30 * 1024 * 1024 });
+    const png = (bytes) => Buffer.concat([realPng(), Buffer.alloc(bytes - realPng().length)]);  // a PNG with its tail padded to a size
+    const big = await upload(t, png(12 * 1024 * 1024 + 100));
+    assert.equal(big.status, 413);
+    assert.equal(big.json.code, 'too_big');
+    assert.equal(big.json.message, 'photo.png is 12 MB; a photo can be at most 12 MB.');
+    const huge = await upload(t, png(14 * 1024 * 1024));
+    assert.equal(huge.status, 413, 'a body past the limit is stopped before it is read whole');
+    assert.equal(huge.json.message, 'That photo is too big: a photo can be at most 12 MB.');
+    const edge = await upload(t, png(12 * 1024 * 1024));
+    assert.equal(edge.status, 200, 'exactly 12 MB is taken');
+    assert.deepEqual(savedFiles(t), [edge.json.id]);
+
+    // A message: the count, then the total.
+    const ids = [];
+    for (let i = 0; i < 7; i += 1) ids.push((await upload(t, realPng(4 + i, 4))).json.id);
+    const seven = await t.send({ session_id: B, text: 'seven', images: ids });
+    assert.equal(seven.status, 413);
+    assert.equal(seven.json.code, 'too_many');
+    const three = [edge.json.id, (await upload(t, png(11 * 1024 * 1024))).json.id, (await upload(t, png(11 * 1024 * 1024))).json.id];
+    const total = await t.send({ session_id: B, text: 'three big ones', images: three });
+    assert.equal(total.status, 413);
+    assert.equal(total.json.code, 'too_big');
+    assert.match(total.json.message, /add up to 34 MB; a message can carry at most 30 MB/);
+    assert.equal((await t.send({ session_id: B, text: 'two big ones', images: three.slice(0, 2) })).status, 200, '23 MB is within 30');
+    assert.equal(t.herdr.prompts().length, 1, 'nothing was typed for the refused ones');
+
+    // The folder: a file already there that fills it (a sparse file, so the test writes nothing) makes the next photo wait.
+    const fill = path.join(t.tree.outDir, 'uploads', 'f'.repeat(32) + '.png');
+    fs.writeFileSync(fill, '');
+    fs.truncateSync(fill, 1024 * 1024 * 1024);
+    const full = await upload(t, realPng());
+    assert.equal(full.status, 507);
+    assert.equal(full.json.code, 'folder_full');
+    assert.match(full.json.message, /out\/uploads/);
+  } finally { await t.close(); }
+});
+
+test('photos: files older than 30 days leave the folder as a new photo arrives, and a leftover conversion file after an hour', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const first = await upload(t, JPEG);
+    const dir = path.join(t.tree.outDir, 'uploads');
+    const old = path.join(dir, 'a'.repeat(32) + '.jpg');
+    const recent = path.join(dir, 'b'.repeat(32) + '.jpg');
+    const leftover = path.join(dir, '.convert-0123456789abcdef.heic');
+    const fresh = path.join(dir, '.convert-fedcba9876543210.heic');
+    for (const file of [old, recent, leftover, fresh]) fs.writeFileSync(file, 'x');
+    const days = (n) => new Date(Date.now() - n * 24 * 3600 * 1000);
+    fs.utimesSync(old, days(31), days(31));
+    fs.utimesSync(recent, days(29), days(29));
+    fs.utimesSync(leftover, days(1), days(1));
+    await upload(t, JPEG);
+    assert.equal(fs.existsSync(old), false, 'a photo past 30 days is gone');
+    assert.equal(fs.existsSync(recent), true, 'one at 29 days stays');
+    assert.equal(fs.existsSync(leftover), false, 'a leftover temp file of a day ago is gone');
+    assert.equal(fs.existsSync(fresh), true, 'one just made may belong to a conversion in progress');
+    assert.equal(fs.existsSync(path.join(dir, first.json.id)), true);
+  } finally { await t.close(); }
+});
+
+test('photos: the upload route takes the same checks as send: token, origin, host, Fetch-Metadata and a JSON body', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const body = JSON.stringify({ name: 'a.png', data: b64(realPng()) });
+    const base = { method: 'POST', path: '/api/transcript-reader/upload', body, headers: { Origin: t.origin, 'Content-Type': 'application/json', [TOKEN_HEADER]: t.token } };
+    const without = (name) => { const headers = { ...base.headers }; delete headers[name]; return { ...base, headers }; };
+    const over = (extra) => ({ ...base, headers: { ...base.headers, ...extra } });
+    const refused = [
+      ['no token', without(TOKEN_HEADER), 403],
+      ['a wrong token', over({ [TOKEN_HEADER]: 'f'.repeat(64) }), 403],
+      ['no Origin', without('Origin'), 403],
+      ['another site\'s Origin', over({ Origin: 'http://evil.example' }), 403],
+      ['a cross-site fetch', over({ 'Sec-Fetch-Site': 'cross-site' }), 403],
+      ['a foreign Host', over({ Host: 'evil.example:80' }), 403],
+      ['a body that is not JSON', over({ 'Content-Type': 'text/plain' }), 415],
+      ['a form post', over({ 'Content-Type': 'multipart/form-data; boundary=x' }), 415],
+      ['a preflight', { ...base, method: 'OPTIONS' }, 403],
+    ];
+    for (const [what, request, status] of refused) assert.equal((await t.request(request)).status, status, what);
+    assert.equal((await t.request({ path: '/api/transcript-reader/upload', headers: { [TOKEN_HEADER]: t.token } })).status, 404, 'a GET finds no route');
+    assert.deepEqual(savedFiles(t), [], 'nothing was saved');
+    assert.equal((await t.request(base)).status, 200, 'the same request with everything right is taken');
+    assert.equal(savedFiles(t).length, 1);
+  } finally { await t.close(); }
+});
+
+test('photos: send adds the saved files\' absolute paths after what was typed, and answers with the text as it went', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const one = (await upload(t, realPng(), 'a.png')).json.id;
+    const two = (await upload(t, JPEG, 'b.jpg')).json.id;
+    const dir = uploadsPath(t);
+    assert.ok(path.isAbsolute(dir));
+    const lines = `Attached image: ${dir}/${one}\nAttached image: ${dir}/${two}`;
+
+    const both = await t.send({ session_id: B, text: 'look at these two', images: [one, two] });
+    assert.equal(both.status, 200, both.raw);
+    assert.equal(both.json.text, `look at these two\n\n${lines}`);
+    assert.deepEqual(t.herdr.prompts()[0].args, ['--session', 'work', 'agent', 'prompt', 'w1:p2', `look at these two\n\n${lines}`]);
+
+    const alone = await t.send({ session_id: B, images: [one] });
+    assert.equal(alone.status, 200, alone.raw);
+    assert.equal(alone.json.text, `Attached image: ${dir}/${one}`);
+    const blank = await t.send({ session_id: B, text: '   \n ', images: [two] });
+    assert.equal(blank.json.text, `Attached image: ${dir}/${two}`);
+    assert.equal(t.herdr.prompts()[2].args[5], `Attached image: ${dir}/${two}`);
+
+    // A message with a comment batch or a pointer is just text by now; the photos follow it.
+    const numbered = 'Re your reply at 10:57 ("Checkpoint"): A2=link-only';
+    assert.equal((await t.send({ session_id: B, text: numbered, images: [one] })).json.text, `${numbered}\n\nAttached image: ${dir}/${one}`);
+
+    // Without photos nothing changes: no text in the answer, the words as they were.
+    const plain = await t.send({ session_id: B, text: 'no photos', images: [] });
+    assert.equal(plain.json.text, undefined);
+    assert.equal(t.herdr.prompts()[t.herdr.prompts().length - 1].args[5], 'no photos');
+    assert.equal((await t.send({ session_id: B, text: '   ' })).status, 400, 'words are still needed when no photo goes');
+    // A saved photo can go again (the same file named by a second message), since the page may retry after a failed send.
+    assert.equal((await t.send({ session_id: B, text: 'again', images: [one] })).status, 200);
+  } finally { await t.close(); }
+});
+
+test('photos: send takes only ids an upload gave, still in the folder, and a command goes alone; none of it reaches Herdr', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const id = (await upload(t, realPng())).json.id;
+    const gone = 'c'.repeat(32) + '.png';
+    fs.writeFileSync(path.join(t.tree.outDir, 'secret.txt'), 'private');
+    fs.symlinkSync(path.join(t.tree.outDir, 'secret.txt'), path.join(t.tree.outDir, 'uploads', 'd'.repeat(32) + '.png'));
+    fs.mkdirSync(path.join(t.tree.outDir, 'uploads', 'e'.repeat(32) + '.png'));
+    const refused = [
+      [{ session_id: B, text: 'hi', images: [gone] }, 409, 'image_gone'],
+      [{ session_id: B, text: 'hi', images: ['d'.repeat(32) + '.png'] }, 409, 'image_gone'],
+      [{ session_id: B, text: 'hi', images: ['e'.repeat(32) + '.png'] }, 409, 'image_gone'],
+      [{ session_id: B, text: 'hi', images: ['../prototype.html'] }, 400],
+      [{ session_id: B, text: 'hi', images: [path.join(t.tree.outDir, 'uploads', id)] }, 400],
+      [{ session_id: B, text: 'hi', images: ['../uploads/' + id] }, 400],
+      [{ session_id: B, text: 'hi', images: [id.replace('.png', '.svg')] }, 400],
+      [{ session_id: B, text: 'hi', images: [id.toUpperCase()] }, 400],
+      [{ session_id: B, text: 'hi', images: [id, id] }, 400],
+      [{ session_id: B, text: 'hi', images: id }, 400],
+      [{ session_id: B, text: 'hi', images: [7] }, 400],
+      [{ session_id: B, text: 'hi', images: [id], more: 1 }, 400],
+      [{ session_id: B, text: '/clear', images: [id] }, 400, 'command_with_photos'],
+      [{ session_id: B, images: [id], text: '/compact now' }, 400, 'command_with_photos'],
+      [{ session_id: B, text: 'hi \u001b[201~', images: [id] }, 400],
+      [{ session_id: C, text: 'hi', images: [id] }, 409, 'not_listed'],
+    ];
+    for (const [body, status, code] of refused) {
+      const answer = await t.send(body);
+      assert.equal(answer.status, status, JSON.stringify(body).slice(0, 90) + ' ' + answer.raw);
+      if (code) assert.equal(answer.json.code, code);
+    }
+    assert.equal(t.herdr.agentCalls().length, 0, 'no key and no prompt reached a pane');
+    assert.equal(fs.readFileSync(path.join(t.tree.outDir, 'secret.txt'), 'utf8'), 'private');
+  } finally { await t.close(); }
+});
+
+test('photos: saved photos are never served, to anyone, on any address', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const id = (await upload(t, realPng())).json.id;
+    const headers = { [TOKEN_HEADER]: t.token };
+    const tab = { 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
+    for (const [what, request] of [
+      ['in a tab, with the token', { path: '/setup/transcript-reader/out/uploads/' + id, headers: { ...headers, ...tab } }],
+      ['in a tab, without it', { path: '/setup/transcript-reader/out/uploads/' + id, headers: tab }],
+      ['as a script\'s fetch', { path: '/setup/transcript-reader/out/uploads/' + id, headers: { ...headers, 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } }],
+      ['by another spelling', { path: '/setup/transcript-reader/out/%75ploads/' + id, headers: { ...headers, ...tab } }],
+      ['by a doubled slash', { path: '/setup/transcript-reader//out/uploads/' + id, headers: { ...headers, ...tab } }],
+      ['as an api path', { path: '/api/transcript-reader/uploads/' + id, headers }],
+      ['as the viewer\'s address', { path: '/api/transcript-reader/html/' + id + '/' + id, headers }],
+      ['the folder itself', { path: '/setup/transcript-reader/out/uploads/', headers: { ...headers, ...tab } }],
+    ]) {
+      const answer = await t.request(request);
+      assert.notEqual(answer.status, 200, what);
+      assert.equal(Object.keys(answer.headers).some((name) => name.startsWith('access-control')), false, what);
+      assert.equal(answer.raw.includes(id), false, what + ' names nothing of the folder');
+    }
+    // The only way a picture comes back is image-open, for a file the page build listed; a photo is not one.
+    const open = await t.post('image-open', { id: id.slice(0, 10) });
+    assert.equal(open.status, 404);
+    assert.equal(open.json.code, 'not_listed');
+    // And the server that shares the repo for other apps refuses the whole folder.
+    assert.equal(namesReaderOut(t.tree.root, { url: '/setup/transcript-reader/out/uploads/' + id }), true);
+  } finally { await t.close(); }
+});
+
+test('photos: an iPhone\'s HEIC is converted to JPEG by sips and only the JPEG is kept', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    t.herdr.sips = async (args) => {
+      assert.deepEqual(args.slice(0, 6), ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90']);
+      assert.deepEqual(fs.readFileSync(args[6]), HEIC, 'sips is given the bytes that arrived');
+      assert.equal(fs.statSync(args[6]).mode & 0o777, 0o600);
+      assert.equal(args[7], '--out');
+      fs.writeFileSync(args[8], JPEG);
+      return { code: 0, stdout: args[8], stderr: '', timedOut: false, truncated: false };
+    };
+    const answer = await upload(t, HEIC, 'IMG_4021.HEIC');
+    assert.equal(answer.status, 200, answer.raw);
+    assert.match(answer.json.id, /^[0-9a-f]{32}\.jpg$/);
+    assert.equal(answer.json.type, 'image/jpeg');
+    assert.equal(answer.json.converted, 'heic');
+    assert.deepEqual(fs.readFileSync(path.join(t.tree.outDir, 'uploads', answer.json.id)), JPEG);
+    assert.deepEqual(savedFiles(t), [answer.json.id], 'the HEIC and the work files are gone');
+    assert.equal(t.herdr.sipsCalls.length, 1);
+    assert.equal(t.herdr.sipsCalls[0][6].startsWith(uploadsPath(t)), true, 'the work files are in the owner-only folder');
+
+    // sips failing, or answering with something that is not a JPEG, keeps nothing.
+    t.herdr.sips = async () => ({ code: 1, stdout: '', stderr: 'Error 13: cannot read', timedOut: false, truncated: false });
+    const failed = await upload(t, HEIC, 'broken.heic');
+    assert.equal(failed.status, 415);
+    assert.equal(failed.json.code, 'heic_failed');
+    assert.match(failed.json.message, /^broken\.heic is a HEIC photo and the laptop could not convert it to JPEG/);
+    t.herdr.sips = async (args) => { fs.writeFileSync(args[8], Buffer.from('not a jpeg, just text')); return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false }; };
+    assert.equal((await upload(t, HEIC)).status, 415);
+    t.herdr.sips = async () => { throw new Error('spawn failed'); };
+    assert.equal((await upload(t, HEIC)).status, 415);
+    assert.deepEqual(savedFiles(t), [answer.json.id], 'still only the one converted photo');
+    // A photo that is already a JPEG never goes to sips.
+    const calls = t.herdr.sipsCalls.length;
+    await upload(t, JPEG);
+    assert.equal(t.herdr.sipsCalls.length, calls);
+  } finally { await t.close(); }
+});
+
+test('photos: with the real sips on this Mac, a HEIC made from a PNG comes out as a JPEG', { skip: !fs.existsSync('/usr/bin/sips') && 'sips is not here' }, async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-heic-'));
+  const png = path.join(scratch, 'a.png');
+  const heic = path.join(scratch, 'a.heic');
+  fs.writeFileSync(png, realPng(64, 48));
+  const made = spawnSync('/usr/bin/sips', ['-s', 'format', 'heic', png, '--out', heic], { encoding: 'utf8' });
+  if (made.status !== 0 || !fs.existsSync(heic)) { fs.rmSync(scratch, { recursive: true, force: true }); return; }  // this sips cannot write HEIC: nothing to prove here
+  const { defaultRunner } = require('../herdr-organizer/adapter');
+  // The fake Herdr answers everything but the converter, which is the real one here.
+  const t = await start({ options: (herdr) => ({ runner: async (file, args, opts) => (file === '/usr/bin/sips' ? defaultRunner(file, args, opts) : herdr.runner(file, args, opts)) }) });
+  try {
+    const answer = await upload(t, fs.readFileSync(heic), 'IMG_1.HEIC');
+    assert.equal(answer.status, 200, answer.raw);
+    assert.equal(answer.json.type, 'image/jpeg');
+    const kept = fs.readFileSync(path.join(t.tree.outDir, 'uploads', answer.json.id));
+    assert.deepEqual([...kept.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+    assert.deepEqual(savedFiles(t), [answer.json.id]);
+  } finally { await t.close(); fs.rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('photos: the hosted copy\'s queue carries no photo, and the reading list and the pane check hold for a send with photos too', async () => {
+  const t = await start({ options: photoOptions });
+  try {
+    const id = (await upload(t, realPng())).json.id;
+    const queued = await t.post('queue', { copy: 'hosted', id: Q, object: { session_id: A, text: 'hi', at: Date.now() / 1000, images: [id] } });
+    assert.equal(queued.status, 400);
+    assert.equal(queued.json.message, 'Unknown field.');
+    assert.equal((await t.post('queue', { copy: 'hosted', id: Q, images: [id], object: { session_id: A, text: 'hi', at: 1 } })).status, 400);
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q')), false, 'nothing was queued');
+    t.herdr.panes[1] = { ...t.herdr.panes[1], agent_status: 'blocked' };
+    const blocked = await t.send({ session_id: B, text: 'hi', images: [id] });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.json.code, 'agent_blocked');
+    t.herdr.panes[1] = { ...t.herdr.panes[1], agent_status: 'idle' };
+    t.herdr.processInfo['w1:p2'] = [{ pid: 4242, argv0: 'zsh' }];
+    assert.equal((await t.send({ session_id: B, text: 'hi', images: [id] })).json.code, 'agent_not_foreground');
+    assert.equal(t.herdr.prompts().length, 0);
+  } finally { await t.close(); }
+});
+
+test('photos: out/ holds them and is gitignored, and the page\'s own limits are the server\'s', () => {
+  const repo = path.resolve(__dirname, '..', '..');
+  const ignored = spawnSync('git', ['check-ignore', '-q', 'setup/transcript-reader/out/uploads/' + 'a'.repeat(32) + '.jpg'], { cwd: repo });
+  if (ignored.error || ignored.status === 128) return;  // not a git checkout here
+  assert.equal(ignored.status, 0, 'a saved photo would show up in git status');
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'attach.js'), 'utf8');
+  const [photos, one, all] = page.match(/const MAX_PHOTOS = (\d+), MAX_PHOTO_BYTES = (\d+) \* 1024 \* 1024, MAX_PHOTOS_BYTES = (\d+) \* 1024 \* 1024;/).slice(1).map(Number);
+  assert.deepEqual({ MAX_PHOTOS: photos, MAX_PHOTO_BYTES: one * 1024 * 1024, MAX_PHOTOS_BYTES: all * 1024 * 1024 }, { ...PHOTO_LIMITS });
 });

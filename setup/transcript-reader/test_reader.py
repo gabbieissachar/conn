@@ -1291,7 +1291,7 @@ class PageShellTest(unittest.TestCase):
             # The click holds the message (sendHold.begin) and deliverDock is the one thing the window's end runs.
             self.assertEqual(page.count("sendHold.begin("), 1, mode)
             self.assertEqual(page.count("deliverDock("), 2, "its definition and the one call the window makes: " + mode)
-            self.assertIn("const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed }); }, UNDO_SECONDS, hold);", page, mode)
+            self.assertIn("const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);", page, mode)
             send = re.search(r"  function sendDock\(\) \{.*?\n  \}\n", page, re.S).group(0)
             self.assertNotIn("live.send(", send, mode)
             self.assertNotIn("hosted.enqueue(", send, mode)
@@ -1299,7 +1299,9 @@ class PageShellTest(unittest.TestCase):
             self.assertEqual(page.count("live.send("), 1, mode)
             self.assertEqual(page.count("hosted.enqueue("), 1, mode)
             delivery = re.search(r"  async function deliverDock\(.*?\n  \}\n", page, re.S).group(0)
-            self.assertIn("live.send(sid, text)", delivery, mode)
+            # With photos the upload comes first and the send names what it saved (attach.deliver); the call is still the one place that sends.
+            self.assertIn("send: ids => live.send(sid, text, ids)", delivery, mode)
+            self.assertLess(delivery.index("attach.deliver("), delivery.index("live.send("), mode)
             self.assertIn("hosted.enqueue(sid, text)", delivery, mode)
             # The Undo window locks the box, Send turns into Undo and Esc takes the message back.
             self.assertIn('dock("text").readOnly = held;', page, mode)
@@ -1416,6 +1418,20 @@ class PageShellTest(unittest.TestCase):
             self.assertNotIn("/*__COMMENTKEY__*/", page, mode)
             self.assertIn("if (!commentKey.pressed(e)) return;", page, mode)
             self.assertIn("commentKey.label(navigator.platform)", page, mode)
+
+    def test_the_reader_pages_carry_the_photo_rules_that_attach_test_js_runs(self):
+        for mode, page in self.pages():
+            self.assertIn("const attach = (() => {", page, mode)
+            self.assertNotIn("/*__ATTACH__*/", page, mode)
+            self.assertIn("const photos = attach.makeStore();", page, mode)
+            self.assertIn('id="dock-photo"', page, mode)
+            self.assertIn('id="dock-file" accept="image/*" multiple hidden', page, mode)
+            self.assertIn("upload: (file, name) => live.upload(file, name),", page, mode)
+            self.assertIn("const upload = async (file, name = file.name) => call(\"upload\"", page, mode)
+            # The thumbnails are painted into a canvas from the picked file, so the page's content policy gains no image address for them.
+            policy = re.search(r'http-equiv="Content-Security-Policy" content="([^"]*)"', page).group(1)
+            self.assertNotIn("blob:", policy, mode)
+            self.assertNotIn("data:", policy.split("img-src")[1].split(";")[0] if mode == "local" else "", mode)
 
     def test_the_reader_pages_carry_the_ask_rules_that_asks_test_js_runs(self):
         for mode, page in self.pages():
