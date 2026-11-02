@@ -150,7 +150,7 @@ public final class ObserveProcessSource: PaneStreamSource {
             self.lock.unlock()
         }
         p.terminationHandler = { [weak self] proc in
-            ObserverRegistry.forget(proc.processIdentifier)
+            ObserverRegistry.shared.forget(proc.processIdentifier)
             // Let the readers drain what the process wrote before it exited, then report.
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
                 var tail = ""
@@ -159,7 +159,7 @@ public final class ObserveProcessSource: PaneStreamSource {
             }
         }
         do { try p.run() } catch { finish(.failedToStart("\(error)")); return }
-        ObserverRegistry.record(p.processIdentifier)
+        ObserverRegistry.shared.record(p.processIdentifier)
         lock.lock(); process = p; outPipe = out; errPipe = err; stderrTail = ""; lock.unlock()
     }
 
@@ -173,7 +173,7 @@ public final class ObserveProcessSource: PaneStreamSource {
         p?.terminationHandler = nil
         if let p = p {
             if p.isRunning { p.terminate() }
-            ObserverRegistry.forget(p.processIdentifier)
+            ObserverRegistry.shared.forget(p.processIdentifier)
         }
     }
 }

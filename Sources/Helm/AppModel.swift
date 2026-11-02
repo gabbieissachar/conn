@@ -78,8 +78,11 @@ final class AppModel: ObservableObject {
     private let holdSeconds: Int
 
     init(config: AppConfig) {
-        // A crash or kill -9 of an earlier run can leave observer children behind; end the ones that are provably ours.
-        ObserverRegistry.reapOrphans()
+        // A crash or kill -9 of an earlier run can leave observer children behind; end the ones that are provably ours
+        // and whose owning instance is gone (another running instance's children are left alone). It can wait up to a
+        // second for a child that ignores SIGTERM, so it runs off the main thread; this instance's own children are
+        // never its target (their owner is alive).
+        DispatchQueue.global(qos: .utility).async { ObserverRegistry.shared.reapOrphans() }
         self.config = config
         let endpoint = config.endpoint
         self.endpoint = endpoint

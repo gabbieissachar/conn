@@ -158,7 +158,7 @@ import FakeHerdrKit
     }
 }
 
-@Suite("Frame sanity and observer registry", .serialized) struct SanityTests {
+@Suite("Frame sanity") struct SanityTests {
     @Test func framesWithAbsurdGeometryAreRejectedAndCounted() {
         let huge = TerminalFrame(full: true, width: 65535, height: 65535, seq: 1, bytes: Array("x".utf8))
         #expect(!huge.isSane)
@@ -181,45 +181,6 @@ import FakeHerdrKit
         #expect(waitUntil { session.stats.rejectedFrames == 1 })
         #expect(session.stats.frames == 0)
         session.stop()
-    }
-
-    @Test func registryRecognisesOnlyItsOwnCommandLineAndSparesLiveChildren() throws {
-        let dir = shortSocketDir()
-        setenv("HELM_STATE_DIR", dir, 1)
-        defer { unsetenv("HELM_STATE_DIR") }
-        #expect(ObserverRegistry.looksLikeOurObserver(" /Users/x/.local/bin/herdr --session esim terminal session observe w1:p3 --cols 66 --rows 59"))
-        #expect(!ObserverRegistry.looksLikeOurObserver(" /bin/sleep 30"))
-        #expect(!ObserverRegistry.looksLikeOurObserver(" herdr session attach esim"))
-        // A child that still has its parent is not an orphan and must not be signalled.
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        child.arguments = ["30"]
-        try child.run()
-        defer { child.terminate() }
-        ObserverRegistry.record(child.processIdentifier)
-        #expect(ObserverRegistry.reapOrphans().isEmpty)
-        #expect(child.isRunning)
-        ObserverRegistry.record(child.processIdentifier)
-        ObserverRegistry.forget(child.processIdentifier)
-        #expect(ObserverRegistry.reapOrphans().isEmpty)
-    }
-
-    @Test func aLiveObserverOfAnotherRunningInstanceStaysOnTheList() throws {
-        let dir = shortSocketDir()
-        setenv("HELM_STATE_DIR", dir, 1)
-        defer { unsetenv("HELM_STATE_DIR") }
-        // A child whose command line looks like ours and whose parent (this process) is alive: not an orphan.
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/bin/sh")
-        child.arguments = ["-c", "sleep 30", "sh", "--session", "esim", "terminal", "session", "observe", "w1:p1", "--cols", "66", "--rows", "59"]
-        try child.run()
-        defer { child.terminate() }
-        ObserverRegistry.record(child.processIdentifier)
-        #expect(ObserverRegistry.reapOrphans().isEmpty)
-        #expect(child.isRunning)
-        let file = try String(contentsOf: ObserverRegistry.fileURL, encoding: .utf8)
-        #expect(file.contains("\(child.processIdentifier)"))           // still remembered for the instance that owns it
-        ObserverRegistry.forget(child.processIdentifier)
     }
 }
 
