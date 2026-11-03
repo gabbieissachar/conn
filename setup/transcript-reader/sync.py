@@ -14,8 +14,8 @@ Usage (from the repo root):
   python3 setup/transcript-reader/sync.py --launch-agent [FOLDER]      print a LaunchAgent that runs --seal every minute
   python3 setup/transcript-reader/sync.py --preview                    list what a build would include, named by Herdr label, and count what it leaves out;
                                                                        writes nothing, needs no passphrase (--show-left-out lists those too)
-  Scope: --panes all (default: every conversation in scope, closed panes too) or --panes open (only those in a live Herdr pane,
-  plus those you reopened; a conversation dropped by narrowing is pruned from the build and the bucket); with --build-only,
+  Scope: --panes open (default: conversations in a live Herdr pane at build time plus starred conversations) or --panes all (every conversation in scope,
+  closed panes too); a conversation dropped by narrowing is pruned from the build and the bucket; with --build-only,
   --seal, --launch-agent (the printed plist carries it) and --preview.
   Options: --full (rebuild every object), --since-hours N (fleet window), --out DIR, --main-home PATH
 
@@ -125,6 +125,7 @@ WORKSPACE = Path.home() / "workspace"  # the owner's own working sessions: logs 
 WORKSPACE_ID = "workspace"  # the picker's group for them (the page names it "Your own sessions")
 LOCAL_PANES = HERE / "out" / "pane-labels.json"
 REOPENED = HERE / "out" / "reopened.txt"
+STARS_DEFAULT = Path.home() / ".config" / "pmos-transcript-reader" / "stars.json"
 VERSION = 1
 STEP_DAYS = 7  # the sealed copy's phone keeps a conversation's tool output on the device without being asked for this many days
 FLEET_DAYS = 14
@@ -324,11 +325,38 @@ class Build:
         self.rebuilt: list[str] = []
         self.live: dict[str, dict] = {}  # Herdr's live panes, set by run() before any conversation is chosen
         self.reopened: set[str] = set(builder.read_ids(REOPENED))
+        self._stars: list[dict] | None = None
 
     def wanted(self, cid: str, ids: list[str]) -> bool:
-        """Whether the scope takes this conversation: all of them, or (--panes open) those running in a live Herdr pane
-        and those the owner reopened. Decided before a conversation is parsed, so one left out costs nothing each run."""
-        return getattr(self.args, "panes", "all") == "all" or cid in self.live or bool(self.reopened & set(ids))
+        """Whether the scope takes this conversation: all of them, or (--panes open) those running in a live Herdr pane or starred.
+        Decided before a conversation is parsed, so one left out costs nothing each run."""
+        return getattr(self.args, "panes", "open") == "all" or cid in self.live or bool(set(ids) & {star["conv"] for star in self.stars()})
+
+    def has_wanted_seed(self, seeds: list[Path]) -> bool:
+        """Whether a scope with no live panes still has a real starred conversation to keep."""
+        return any(self.wanted(chain[-1].stem, [member.stem for member in chain])
+                   for seed in seeds if (chain := builder.session_chain(seed)))
+
+    @staticmethod
+    def star_file() -> Path:
+        return Path(os.environ.get("PMOS_READER_STARS", str(STARS_DEFAULT))).expanduser()
+
+    def stars(self) -> list[dict]:
+        if self._stars is None:
+            try:
+                saved = json.loads(self.star_file().read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                saved = {}
+            values = saved.get("stars") if isinstance(saved, dict) else None
+            self._stars = [star for star in values if isinstance(star, dict) and isinstance(star.get("conv"), str)
+                           and isinstance(star.get("starred"), (int, float)) and not isinstance(star.get("starred"), bool)] \
+                if isinstance(values, list) else []
+        return self._stars
+
+    def copied_stars(self, conversations: list[tuple[str, dict]]) -> list[dict]:
+        """Copy valid stars that name one of the conversations in this build."""
+        carried = {member for _, record in conversations for member in record["entry"]["ids"]}
+        return [{"conv": star["conv"], "starred": star["starred"]} for star in self.stars() if star["conv"] in carried]
 
     # Every object goes through here: written only when its bytes changed since the last build.
     def put(self, rel: str, value, before: str | None) -> str:
@@ -594,11 +622,11 @@ class Build:
     def run(self) -> int:
         builder.private_folder(self.out)
         live = self.live = self.panes()
-        if getattr(self.args, "panes", "all") == "open" and not live:
+        seeds = self.seeds()
+        if getattr(self.args, "panes", "open") == "open" and not live and not self.has_wanted_seed(seeds):
             # Herdr is not running (or lists no pane): this scope would leave nothing, and the prune would empty the copy and the bucket.
             print("Herdr lists no live pane, so --panes open would build nothing; this run stops and leaves the copy as it is.")
             return 1
-        seeds = self.seeds()
         since = self.since(seeds)
         conversations = self.conversations(seeds)
         documents = self.documents(conversations)
@@ -624,6 +652,7 @@ class Build:
             "homes": [home["id"] for home in self.homes] + ([WORKSPACE_ID] if any(entry["home"] == WORKSPACE_ID for entry in entries) else []),
             "summaries": [summary for summary in (builder.home_summary(home) for home in self.homes) if summary],
             "conversations": entries,
+            "stars": self.copied_stars(conversations),
             "documents": {doc_id: {key: record[key] for key in ("id", "name", "dir", "mtime", "object", "stamp", "kind", "size", "mime", "left_out") if key in record}
                           for doc_id, record in documents.items() if not record.get("gone")},
             "weeks": weeks,
@@ -926,12 +955,13 @@ def preview(args) -> int:
     builder._PANE_HISTORY.clear()
     builder._PANE_HISTORY.update(cache)  # session_chain joins a pane's sessions across a restart with it
     build.live = live
-    if args.panes == "open" and not live:
+    seeds = build.seeds()
+    if args.panes == "open" and not live and not build.has_wanted_seed(seeds):
         print("Herdr lists no live pane, so --panes open would build nothing: a real run stops and leaves the copy as it is.")
         return 1
     found: dict[str, dict] = {}
     covered: set[str] = set()
-    for seed in build.seeds():
+    for seed in seeds:
         if str(seed) in covered:
             continue
         chain = builder.session_chain(seed)
@@ -1005,8 +1035,8 @@ def main(argv: list[str]) -> int:
     mode.add_argument("--wipe", nargs="?", const=str(BUCKET), metavar="FOLDER", help="empty the local bucket of what --seal wrote")
     mode.add_argument("--launch-agent", nargs="?", const=str(BUCKET), metavar="FOLDER", help="print a LaunchAgent that runs --seal every minute")
     mode.add_argument("--preview", action="store_true", help="list the conversations the options would include and leave out, with counts and a size estimate; builds, seals and writes nothing")
-    parser.add_argument("--panes", choices=("all", "open"), default="all",
-                        help="which conversations: all (default; every one in scope, closed panes too) or open (only those in a live Herdr pane, plus those you reopened)")
+    parser.add_argument("--panes", choices=("all", "open"), default="open",
+                        help="which conversations: open (default; live Herdr panes plus starred sessions) or all (every one in scope, closed panes too)")
     parser.add_argument("--show-left-out", action="store_true", help="with --preview: also list the conversations left out (by default only their count is printed)")
     parser.add_argument("--new-passphrase", action="store_true", help="with --seal: seal everything again under a passphrase the bucket does not know yet")
     scope = parser.add_mutually_exclusive_group()

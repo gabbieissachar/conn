@@ -70,6 +70,7 @@
     window.addEventListener("storage", e => { if (where === "browser" && e.key === BROWSER) { items = browserItems(); notify(); } });
     return {
       load, refresh, has, toggle, onChange: fn => listeners.add(fn),
+      replace: all => { items = Array.isArray(all) ? all.filter(sound) : []; if (where === "browser") saveBrowser(items); notify(); },
       all: () => items.slice(), count: () => items.length,
       where: () => where,
     };

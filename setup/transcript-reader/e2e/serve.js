@@ -25,8 +25,8 @@ start({
     ip: '127.0.0.1', port: Number(plainPort), passcodeFile: path.join(folder, 'passcode.json'),
     https: { host, port: Number(httpsPort), certFile: path.join(folder, 'cert', 'cert.pem'), keyFile: path.join(folder, 'cert', 'key.pem') },
   },
-  env: { ...process.env, PATH: path.join(folder, 'bin') + path.delimiter + process.env.PATH, FAKE_HERDR_SESSION: process.env.FAKE_HERDR_SESSION, FAKE_HERDR_LOG: path.join(folder, 'herdr.log') },
-  pinsFile: path.join(folder, 'pins.json'), projectsDir: path.join(home, '.claude', 'projects'), claudeSessionsDir: path.join(home, '.claude', 'sessions'),
+  env: { ...process.env, PATH: path.join(folder, 'bin') + path.delimiter + process.env.PATH, PMOS_READER_STARS: path.join(folder, 'stars.json'), FAKE_HERDR_SESSION: process.env.FAKE_HERDR_SESSION, FAKE_HERDR_LOG: path.join(folder, 'herdr.log') },
+  pinsFile: path.join(folder, 'pins.json'), starsFile: path.join(folder, 'stars.json'), projectsDir: path.join(home, '.claude', 'projects'), claudeSessionsDir: path.join(home, '.claude', 'sessions'),
 }).then((server) => {
   process.stdout.write(`READY ${JSON.stringify({ port: server.port, tailnet: server.tailnet, httpsError: server.httpsError })}\n`);
 }, (error) => { process.stderr.write(`FAILED ${error.message}\n`); process.exit(1); });

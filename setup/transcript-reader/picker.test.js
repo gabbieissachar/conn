@@ -116,13 +116,17 @@ test('page: both pickers lead with the Starred group, the option text carries th
   const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
   assert.match(body('fillSessionsInto'), /picker\.sections\(data\.sessions, paneLive, starred\)[\s\S]*Starred · /, 'the local picker');
-  assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, \(\) => false, starred\)[\s\S]*Starred · /, 'the hosted copy\'s picker');
+  assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, hostedPickerLive, starred\)[\s\S]*Starred · /, 'the hosted copy\'s picker uses Herdr state from the build');
+  assert.doesNotMatch(body('fillHostedSessions'), /homes\.map\(home/, 'the hosted copy mirrors the live sections instead of regrouping by home');
+  assert.match(page, /const hostedPickerLive = s => Boolean\(s\.pane && s\.pane\.live\)/, 'the hosted picker uses the pane state carried by the copy');
+  assert.match(page, /data\.stars/, 'the hosted page reads stars carried by the copied index');
+  assert.match(page, /at last sync/, 'the hosted picker labels Herdr state as historical');
   assert.match(page, /const optionText = s => \(starred\(s\) \? "★ " : ""\)/, 'every option, labelSessions\' redraw included');
   assert.match(page, /const pickerSection = s => picker\.part\(s, [^)]*\)?[^;]*starred\)/, 'twins in different parts are not told apart by title');
   assert.match(body('fillSessionsInto'), /\$\("option", null, optionText\(s\)\)/, 'the local picker draws the star and status itself: nothing rewrites its option text afterwards');
   assert.match(page, /stars\.onChange\(paintStars\)/);
   assert.match(page, /stars\.refresh\(s\.stamps && s\.stamps\.stars\)/, 'the state poll carries the revision');
-  assert.match(body('toggleStar'), /picker\.starOf\(session, stars\.all\(\)\) \|\| session\.id/, 'unstar by the conversation the star was made under');
+  assert.match(body('toggleStar'), /picker\.starOf\(session, HOSTED \? \(data\.stars \|\| \[\]\) : stars\.all\(\)\) \|\| session\.id/, 'unstar by the conversation the star was made under');
 });
 
 test('page: the batch list starts folded on every screen and Add leaves it as the reader left it', () => {

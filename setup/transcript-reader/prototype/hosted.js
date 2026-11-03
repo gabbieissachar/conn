@@ -277,7 +277,7 @@
       }
       const sig = weeksSig(idx);
       return {
-        generated: idx.as_of || 0, since: idx.since || 0, steps_from: idx.steps_from || 0, homes: idx.homes || [], summaries: idx.summaries || [],
+        generated: idx.as_of || 0, since: idx.since || 0, steps_from: idx.steps_from || 0, homes: idx.homes || [], summaries: idx.summaries || [], stars: idx.stars || [],
         template: idx.template, sheetTemplate: idx.sheet_template, fleet_timeline: idx.fleet_timeline !== false, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
         fleet: previous && previous.weeksSig === sig ? previous.fleet : null,
       };

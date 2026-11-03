@@ -50,6 +50,7 @@ function load({ objects = {}, token = TOKEN, hidden = false, posted = { status: 
 
 const INDEX = {
   as_of: 1000, since: 500, homes: ['main'], template: 'abc', summaries: [],
+  stars: [{ conv: 'a', starred: 700 }],
   conversations: [
     { id: 'a', ids: ['a'], home: 'main', object: 's/a.json', stamp: 's1', last: 900, needs: 1 },
     { id: 'b', ids: ['b'], home: 'main', object: 's/b.json', stamp: 's2', last: 800, needs: 0 },
@@ -109,6 +110,11 @@ test('the list comes from the index with no turns, which load one conversation a
   assert.deepEqual(session.exchanges, []);
   assert.equal(data.sessions[0].exchanges, null);
   assert.deepEqual(calls.map((c) => c.url), ['s/b.json']);
+});
+
+test('the hosted data carries the stars the copy was built with', () => {
+  const { hosted } = load();
+  assert.deepEqual(hosted.data(INDEX, null).stars, [{ conv: 'a', starred: 700 }]);
 });
 
 test('an object is fetched once per stamp, even when asked for twice at once', async () => {

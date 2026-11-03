@@ -87,6 +87,7 @@ class Lab:
         root = Path(self.tmp.name).resolve()
         self.root, self.projects, self.out = root, root / "projects", root / "out" / "hosted"
         self.main, self.mate = root / "homes" / "main", root / "homes" / "mate" / "firstmate"
+        self.stars = root / "config" / "pmos-transcript-reader" / "stars.json"
         self.worker = self.main / "state" / ".treehouse" / "proj-1" / "1" / "repo"
         for folder in (self.main / "state", self.mate / "state", self.main / "data", self.worker, root / "elsewhere"):
             folder.mkdir(parents=True, exist_ok=True)
@@ -123,14 +124,19 @@ class Lab:
         self.panes = {A: {"label": "alpha", "title": "Alpha work", "herdr": "lab", "pane": "w1:p1", "status": "working"}}
         for patch in (mock.patch.object(builder, "PROJECTS", self.projects), mock.patch.object(builder, "herdr_panes", lambda: dict(self.panes)),
                       mock.patch.object(sync, "LOCAL_PANES", root / "out" / "pane-labels.json"), mock.patch.object(sync, "REOPENED", root / "out" / "reopened.txt"),
-                      mock.patch.object(sync.reader, "LIST", root / "out" / "sessions.txt")):
+                      mock.patch.object(sync.reader, "LIST", root / "out" / "sessions.txt"),
+                      mock.patch.dict(os.environ, {"PMOS_READER_STARS": str(self.stars)})):
             patch.start()
             test.addCleanup(patch.stop)
 
     def build(self, *extra):
-        return self.build_only_args("--build-only", *extra)
+        # Most tests exercise the full object/sealing contract. Keep that fixture explicit now that
+        # a normal offline build defaults to the live-plus-starred scope.
+        return self.build_only_args("--build-only", "--panes", "all", *extra)
 
     def build_only_args(self, *args):
+        if "--panes" not in args:
+            args = (*args, "--panes", "all")
         with mock.patch("sys.stdout"):
             return sync.main([*args, "--out", str(self.out), "--main-home", str(self.main)])
 
@@ -377,7 +383,7 @@ class OfflineFleetTimelineSwitchTest(unittest.TestCase):
 
 
 class PanesScopeTest(unittest.TestCase):
-    """--panes: all (today's scope, the default) or open (a live Herdr pane, or reopened by the owner)."""
+    """--panes: open (live Herdr panes plus starred sessions) or all (every session in scope)."""
 
     def lab(self):
         lab = Lab(self)
@@ -390,14 +396,14 @@ class PanesScopeTest(unittest.TestCase):
     def objects(self, lab):
         return sorted(str(p.relative_to(lab.out)) for folder in ("s", "d", "a", "f") for p in (lab.out / folder).glob("*"))
 
-    def test_all_is_the_default_and_keeps_closed_panes(self):
+    def test_live_sessions_are_the_default_and_all_remains_an_explicit_scope(self):
         lab = self.lab()
-        self.assertEqual(lab.build(), 0)  # only A has a live pane
-        self.assertEqual(self.ids(lab), sorted([A, W, M]))
+        self.assertEqual(lab.build_only_args("--build-only", "--panes", "open"), 0)  # only A has a live pane
+        self.assertEqual(self.ids(lab), [A])
         self.assertEqual(lab.build("--panes", "all"), 0)
         self.assertEqual(self.ids(lab), sorted([A, W, M]))
 
-    def test_open_keeps_live_panes_and_reopened_ones_and_parses_nothing_else(self):
+    def test_open_keeps_live_panes_and_parses_nothing_else(self):
         lab = self.lab()
         with mock.patch.object(builder, "parsed_log", wraps=builder.parsed_log) as parsed:
             self.assertEqual(lab.build("--panes", "open"), 0)
@@ -405,7 +411,17 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual({call.args[0] for call in parsed.call_args_list}, {lab.logs[A]})
         (lab.root / "out" / "reopened.txt").write_text(f"{M}\n", encoding="utf-8")
         self.assertEqual(lab.build("--panes", "open"), 0)
-        self.assertEqual(self.ids(lab), sorted([A, M]))
+        self.assertEqual(self.ids(lab), [A], "an unstarred reopened session is not part of the offline live-plus-starred copy")
+
+    def test_the_build_carries_live_and_starred_conversations(self):
+        lab = self.lab()
+        lab.stars.parent.mkdir(parents=True, exist_ok=True)
+        lab.stars.write_text(json.dumps({"version": 1, "rev": 2, "stars": [
+            {"conv": M, "starred": 2}, {"conv": A, "starred": 1},
+        ]}), encoding="utf-8")
+        self.assertEqual(lab.build_only_args("--build-only", "--panes", "open"), 0)
+        self.assertEqual([entry["id"] for entry in lab.index()["conversations"]], [A, M])
+        self.assertEqual(lab.index()["stars"], [{"conv": M, "starred": 2}, {"conv": A, "starred": 1}])
 
     def test_narrowing_prunes_the_dropped_objects_documents_and_sheets_and_widening_brings_them_back(self):
         lab = self.lab()
@@ -434,6 +450,14 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual(self.ids(lab), sorted([A, W, M]))
         self.assertEqual({rel: (lab.out / rel).read_bytes() for rel in self.objects(lab)}, before)
 
+    def test_open_with_no_live_pane_still_builds_a_starred_conversation(self):
+        lab = self.lab()
+        lab.stars.parent.mkdir(parents=True, exist_ok=True)
+        lab.stars.write_text(json.dumps({"stars": [{"conv": M, "starred": 1}]}), encoding="utf-8")
+        lab.panes = {}
+        self.assertEqual(lab.build("--panes", "open"), 0)
+        self.assertEqual(self.ids(lab), [M])
+
     def test_the_printed_launch_agent_carries_the_scope(self):
         self.assertIn("--seal", sync.launch_agent(Path("/tmp/x")))
         self.assertNotIn("--panes", sync.launch_agent(Path("/tmp/x")))
@@ -459,12 +483,12 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(snapshot(), before, "nothing is written, not even a cache")
         included = text.split("Included (")[1].split("Left out: ")[0]
-        self.assertIn("Would build 2 of 3 conversations (1 with a live pane, 1 reopened, 0 closed)", text)
+        self.assertIn("Would build 1 of 3 conversations (1 with a live pane, 0 reopened, 0 closed)", text)
         self.assertIn("alpha", included)
         self.assertNotIn("Alpha work", text, "named by the Herdr label, not the picker title")
         self.assertIn("open", included)
-        self.assertIn("reopened", included)
-        self.assertIn("Left out: 1", text)
+        self.assertNotIn("reopened", included)
+        self.assertIn("Left out: 2", text)
         self.assertNotIn("secondmate-mate", text, "the left-out list is opt-in")
         self.assertIn("--show-left-out", text)
         code, text = self.run_preview(lab, "--panes", "open", "--show-left-out")
@@ -472,21 +496,21 @@ class PanesScopeTest(unittest.TestCase):
         self.assertIn("secondmate-mate", left)
         self.assertIn("closed", left)
         self.assertIn("Estimated size", text)
-        self.assertIn("Would remove 1 conversations", text)
+        self.assertIn("Would remove 2 conversations", text)
         code, text = self.run_preview(lab)
-        self.assertIn("Would build 3 of 3 conversations", text)
-        self.assertIn("Left out: 0", text)
+        self.assertIn("Would build 1 of 3 conversations", text)
+        self.assertIn("Left out: 2", text)
 
     def test_the_preview_names_a_closed_pane_by_its_cached_label_and_does_not_cut_it(self):
         lab = self.lab()
         label = "fm-2026-10-27-esim-flag-test-dogfood-runbook"
         lab.panes = {A: {**lab.panes[A], "label": label}}
-        code, text = self.run_preview(lab)
+        code, text = self.run_preview(lab, "--panes", "all")
         self.assertIn(label, text)
         lab.panes = {}
         (lab.root / "out").mkdir(exist_ok=True)
         (lab.root / "out" / "pane-labels.json").write_text(json.dumps({A: {"label": label, "title": "x", "herdr": "lab", "pane": "w1:p1"}}), encoding="utf-8")
-        code, text = self.run_preview(lab)
+        code, text = self.run_preview(lab, "--panes", "all")
         self.assertIn(label, text)
         self.assertIn("closed", text)
 
@@ -1470,7 +1494,7 @@ class SealTest(unittest.TestCase):
         # the LaunchAgent's README stores. The passphrase is read inside this run, so no other process is handed it.
         with mock.patch.dict(os.environ, {sync.PASSPHRASE_ENV: "", sync.SECURITY_ENV: str(self.keychain(PASS))}), mock.patch.object(sys.stdin, "isatty", lambda: False), \
                 mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
-            self.assertEqual(sync.main(["--seal", str(self.target), "--out", str(self.lab.out), "--main-home", str(self.lab.main)]), 0)
+            self.assertEqual(sync.main(["--seal", str(self.target), "--panes", "all", "--out", str(self.lab.out), "--main-home", str(self.lab.main)]), 0)
         self.assertNotIn(PASS, printed.getvalue())
         self.assertEqual(len(self.opened("index.json")["index.json"]["conversations"]), 3)
 

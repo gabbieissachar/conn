@@ -113,11 +113,14 @@ async function until(fn, what, ms = 20000) {
   await page.fill('.unlock input[type=password]', PASSPHRASE);
   await page.click('.unlock .row button');
   await until(async () => /Tidy the scratch folder/.test(await text('#main')), 'the conversation');
-  check(true, 'the passphrase opens the sealed copy, on the newest conversation (the owner\'s own session under ~/workspace)');
+  check(true, 'the passphrase opens the sealed copy, including the starred closed conversation');
   await until(() => page.evaluate(() => navigator.serviceWorker.controller !== null), 'the worker to control the page');
   check(true, 'the service worker is installed and controls the page');
-  const groups = await page.evaluate(() => [...document.querySelectorAll('select[name=session] optgroup, #crumb-session optgroup')].map((g) => g.label));
-  check(groups.some((label) => /^Your own sessions · 1$/.test(label)) && groups.some((label) => /^Main · 1$/.test(label)), 'the picker has a heading of its own for the owner\'s own sessions', JSON.stringify(groups));
+  const picker = await page.evaluate(() => {
+    const select = document.querySelector('select[name=session], #crumb-session');
+    return { groups: [...select.querySelectorAll('optgroup')].map((g) => g.label), options: [...select.options].map((o) => o.textContent) };
+  });
+  check(picker.groups.includes('Starred · 2') && picker.options.filter((label) => /★ /.test(label)).length === 2 && picker.options.some((label) => /Your own sessions/.test(label)) && picker.options.some((label) => /Idle at last sync/.test(label)), 'the picker carries live and starred sessions with historical live wording', JSON.stringify(picker));
   await shot('03-conversation');
   // Switch to the main home's conversation, which names the documents.
   const switchTo = (label) => until(() => page.evaluate((wanted) => {
@@ -130,8 +133,13 @@ async function until(fn, what, ms = 20000) {
   await switchTo('alpha');
   await until(async () => /Drafted the notes/.test(await text('#main')), 'the main conversation');
   check(true, 'the picker switches to the main home\'s conversation');
+  await page.click('#bar-toggle');
   const before = await text('#offline-text');
-  check(/items are on this device/.test(before) && (await page.locator('#offline-download').isVisible()), 'the page offers Download everything now and says what is stored', before);
+  const offlineUi = await page.evaluate(() => {
+    const box = document.querySelector('#offline'), button = document.querySelector('#offline-download');
+    return { boxHidden: box.hidden, buttonHidden: button.hidden, display: getComputedStyle(button).display, visibility: getComputedStyle(button).visibility };
+  });
+  check(/items are on this device/.test(before) && (await page.locator('#offline-download').isVisible()), 'the page offers Download everything now and says what is stored', JSON.stringify({ before, ...offlineUi }));
   const downloading = page.click('#offline-download');
   await downloading;
   await until(async () => /^Done:/.test(await text('#offline-text')), 'the download to finish');
@@ -144,7 +152,7 @@ async function until(fn, what, ms = 20000) {
     const names = await new Promise((resolve) => { const r = db.transaction('objects').objectStore('objects').getAllKeys(); r.onsuccess = () => resolve(r.result); });
     return { objects: await count('objects'), names, keys: await count('keys'), cache: (await caches.keys()).join() };
   });
-  check(stored.objects === 5 && stored.keys === 1 && /reader-shell/.test(stored.cache), 'the device holds the 5 sealed objects (2 conversations, the markdown file, the sketch and the picture), the key and the shell cache', JSON.stringify(stored));
+  check(stored.objects === 5 && stored.keys === 1 && /reader-shell/.test(stored.cache), 'the device holds the 5 sealed objects (the live and starred conversations, the markdown file, the sketch and the picture), the key and the shell cache', JSON.stringify(stored));
 
   // ------------------------------------------------------------------ documents: markdown and the HTML sketch, online
   // On a phone the Documents tab opens the session's file list (one page at a time); the header's document picker, which takes the
@@ -222,7 +230,7 @@ async function until(fn, what, ms = 20000) {
 
   // The answer sheet's page is stored too: it opens with the laptop away, and goes back to the reader.
   await page.goto(`${base}/setup/transcript-reader/out/bucket/sheet.html`);
-  await until(async () => /No questionnaire found|asked/.test(await text('#main') + await text('#meta')), 'the answer sheet offline');
+  await until(async () => /No questionnaire found|No answer sheet found|asked/.test(await text('#main') + await text('#meta')), 'the answer sheet offline');
   check(true, 'the answer sheet page opens from the stored shell with the laptop away');
   await shot('08b-sheet-offline');
   await page.goto(shell);

@@ -82,7 +82,12 @@ def main(folder: Path, passphrase: str) -> None:
         user("Tidy the scratch folder.", T0 + 600, own_cwd),
         say("Done. Nothing needed deleting.", T0 + 640, own_cwd),
     ])
+    stars = folder / "stars.json"
+    stars.write_text(json.dumps({"version": 1, "rev": 2, "stars": [
+        {"conv": MAIN, "starred": 2}, {"conv": OWN, "starred": 1},
+    ]}), encoding="utf-8")
     env = {**os.environ, "HOME": str(home), "PATH": f"{folder / 'bin'}{os.pathsep}{os.environ['PATH']}", "HOSTED_READER_PASSPHRASE": passphrase,
+           "PMOS_READER_STARS": str(stars),
            "FAKE_HERDR_SESSION": MAIN, "FAKE_HERDR_LOG": str(folder / "herdr.log")}
     (folder / "bin").mkdir(exist_ok=True)
     herdr = folder / "bin" / "herdr"
