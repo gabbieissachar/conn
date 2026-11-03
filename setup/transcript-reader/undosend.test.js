@@ -11,8 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const { UNDO_SECONDS, makeSendHold, describeSend } = vm.runInNewContext(
-  fs.readFileSync(path.join(__dirname, 'prototype', 'undosend.js'), 'utf8') + '\n({ UNDO_SECONDS, makeSendHold, describeSend })', { Math });
+const { UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend } = vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, 'prototype', 'undosend.js'), 'utf8') + '\n({ UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend })', { Math });
 
 // A clock that only moves when told to, with timers that fire when it passes them.
 function clock() {
@@ -117,6 +117,23 @@ test('a send that throws still leaves the window free for the next message', () 
   assert.throws(() => c.tick(5), /boom/);
   assert.equal(hold.active(), false);
   assert.equal(hold.begin(() => {}, 5), true);
+});
+
+test('a full navigation resumes a live hold only when the new page is another session', () => {
+  const record = makeSendHandoff({ hold: { id: 'send-1', sid: 'alpha', text: 'hello', photos: 0 }, deadline: 105, sentBox: 'hello' });
+  const resumed = resumeSendHandoff(record, 'beta', 101);
+  assert.equal(resumed.action, 'resume');
+  assert.equal(resumed.seconds, 4);
+  assert.equal(resumed.hold.sid, 'alpha', 'the resumed send keeps its original session');
+  assert.equal(resumeSendHandoff(record, 'alpha', 101).action, 'discard', 'a reload keeps the draft and never sends');
+});
+
+test('a resumed hold can expire immediately but still runs once for its original session', () => {
+  const record = makeSendHandoff({ hold: { id: 'send-2', sid: 'alpha', text: 'hello', photos: 0 }, deadline: 105 });
+  const resumed = resumeSendHandoff(record, 'beta', 106);
+  assert.equal(resumed.action, 'resume');
+  assert.equal(resumed.seconds, 0);
+  assert.equal(resumed.hold.sid, 'alpha');
 });
 
 // ------------------------------------------------------------------------------------------------ the faded message

@@ -6,6 +6,20 @@
   //                  has, so the owner can tell whether Undo is still possible and why it is not.
   // No page needed: undosend.test.js runs it in a bare sandbox.
   const UNDO_SECONDS = 5;
+  const SEND_HANDOFF_VERSION = 1;
+
+  // A full navigation destroys the page timer. Keep enough text state in this tab to resume when the
+  // new page is a different session. A reload of the same session discards the record and leaves its draft alone.
+  const makeSendHandoff = ({ hold, deadline, sentItems = [], sentBox = "", pointed = false }) => ({
+    version: SEND_HANDOFF_VERSION, id: hold.id, sid: hold.sid, text: hold.text, at: hold.at, photos: hold.photos || 0,
+    deadline, sentItems: sentItems.map(item => ({ ...item })), sentBox, pointed,
+  });
+  const resumeSendHandoff = (record, currentSid, now) => {
+    if (!record || record.version !== SEND_HANDOFF_VERSION || typeof record.id !== "string" || typeof record.sid !== "string"
+      || typeof record.deadline !== "number" || !Number.isFinite(record.deadline)) return null;
+    if (record.sid === currentSid) return { action: "discard" };
+    return { action: "resume", seconds: Math.max(0, record.deadline - now), hold: { ...record } };
+  };
   // clock: { now() in seconds, after(ms, fn) -> handle, cancel(handle) }, the page's own timers or a test's.
   const makeSendHold = clock => {
     let held = null;

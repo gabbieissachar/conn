@@ -297,6 +297,7 @@ function deliverWorld({ hosted = false, upload, send } = {}) {
     hosted: { enqueue: async () => { throw new Error('the queue is not used here'); } },
     renderDock: () => { world.renders += 1; world.log.push('render ' + world.link.uploading); },
     redrawPending: () => world.log.push('redraw'),
+    withoutSentItems: (items) => items,
     keepQueued: () => {}, saveBatch: (sid, left) => world.batchSaved.push([sid, left.length]), batchOf: () => [],
     sessionOf: () => ({ pane: { label: 'alpha' } }), paneName: () => 'alpha', fmtTime: () => '10:42',
     dockSession: () => ({ id: 's1', ids: ['s1'] }), dock: () => ({ get value() { return world.box; }, set value(v) { world.box = v; } }),
@@ -388,6 +389,7 @@ function sendWorld({ words = '', photoNames = [], disabled = false } = {}) {
     link: w.link, photos, UNDO_SECONDS: 5, Boolean, Date, setInterval: () => 1,
     outgoing: () => words, dockSession: () => ({ id: 's1' }), dock: (id) => (id === 'send' ? { disabled } : { value: words }),
     confirm: () => true, paneName: () => 'alpha', batchOf: () => [],
+    newHoldId: () => 'hold-1', saveSendHandoff: () => {}, clearSendHandoff: () => {},
     sendHold: { begin: (fn, seconds, hold) => { w.held.push({ seconds, hold }); w.fire = fn; return true; } },
     endHold: () => {}, deliverDock: (args) => w.delivered.push(args), holdTimer: 0, paintHold: () => {}, renderDock: () => { w.renders += 1; }, redrawPending: () => {},
     SESSION_COMMANDS: {},
@@ -402,7 +404,10 @@ test('page Send: a message of only photos is held for Undo and then delivered wi
   const only = sendWorld({ words: '', photoNames: ['a.png', 'b.png'] });
   only.send();
   assert.equal(only.held.length, 1);
-  assert.deepEqual({ ...only.held[0].hold }, { sid: 's1', text: '', photos: 2 }, 'the Undo window knows how many photos wait');
+  assert.deepEqual({ sid: only.held[0].hold.sid, text: only.held[0].hold.text, photos: only.held[0].hold.photos },
+    { sid: 's1', text: '', photos: 2 }, 'the Undo window knows how many photos wait');
+  assert.equal(only.held[0].hold.id, 'hold-1');
+  assert.equal(only.held[0].hold.deadline - only.held[0].hold.at, 5);
   only.fire();
   assert.equal(only.delivered.length, 1);
   assert.deepEqual(only.delivered[0].sentPhotos.map((p) => p.name), ['a.png', 'b.png']);
@@ -418,7 +423,8 @@ test('page Send: a message of only photos is held for Undo and then delivered wi
 
   const both = sendWorld({ words: 'look', photoNames: ['a.png'] });
   both.send();
-  assert.deepEqual({ ...both.held[0].hold }, { sid: 's1', text: 'look', photos: 1 });
+  assert.deepEqual({ sid: both.held[0].hold.sid, text: both.held[0].hold.text, photos: both.held[0].hold.photos },
+    { sid: 's1', text: 'look', photos: 1 });
 });
 
 // ---------------------------------------------------------------- the page's markup and wiring

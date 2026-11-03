@@ -1288,10 +1288,10 @@ class PageShellTest(unittest.TestCase):
 
     def test_send_goes_through_the_undo_window_and_only_the_delivery_reaches_the_server_or_the_queue(self):
         for mode, page in self.pages():
-            # The click holds the message (sendHold.begin) and deliverDock is the one thing the window's end runs.
-            self.assertEqual(page.count("sendHold.begin("), 1, mode)
-            self.assertEqual(page.count("deliverDock("), 2, "its definition and the one call the window makes: " + mode)
-            self.assertIn("const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);", page, mode)
+            # The click holds the message (sendHold.begin) and deliverDock is the one thing the window's end runs. A resumed hold uses the same path.
+            self.assertEqual(page.count("sendHold.begin("), 2, mode)
+            self.assertEqual(page.count("deliverDock("), 3, "its definition and the two ways the window can end: " + mode)
+            self.assertIn("const begun = sendHold.begin(() => { clearSendHandoff(hold.id); endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);", page, mode)
             send = re.search(r"  function sendDock\(\) \{.*?\n  \}\n", page, re.S).group(0)
             self.assertNotIn("live.send(", send, mode)
             self.assertNotIn("hosted.enqueue(", send, mode)
@@ -1310,6 +1310,11 @@ class PageShellTest(unittest.TestCase):
             # Undo on a message waiting in the queue asks the laptop, and only "cancelled" gives the text back.
             self.assertIn("await hosted.cancel(id)", page, mode)
             self.assertIn('if (answer.state === "cancelled") takeBack(p, "Undone: it was never sent.");', page, mode)
+            # A full navigation records text in this tab, resumes only on another session, and clears the record before delivery.
+            self.assertIn("sessionStorage.setItem(SEND_HANDOFF_KEY", page, mode)
+            self.assertIn("resumeSendHandoff(saved, current && current.id", page, mode)
+            self.assertIn('if (decision.action === "discard")', page, mode)
+            self.assertIn("clearSendHandoff(hold.id); endHold();", page, mode)
         local, hosted = (page for _, page in self.pages())
         self.assertIn('const hosted = null;', local)
         self.assertNotIn("function cancel(id)", local, "the local page has no queue to take a message back from")

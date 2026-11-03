@@ -2343,6 +2343,16 @@ __HEAD_HOSTED__
     keep("tr-batches", batches);
   }
   const itemText = (item, sid) => withNote(carried(sid, item.sid), item.pointer) + item.typed;
+  const sameBatchItem = (a, b) => a && b && a.sid === b.sid && a.title === b.title && a.passage === b.passage && a.typed === b.typed
+    && a.pointer === b.pointer && a.bare === b.bare;
+  function withoutSentItems(items, sent) {
+    const rest = items.slice();
+    for (const wanted of sent || []) {
+      const at = rest.findIndex(item => sameBatchItem(item, wanted));
+      if (at >= 0) rest.splice(at, 1);
+    }
+    return rest;
+  }
   // Where the comment in the box goes in the batch: its old place while it is being edited, else last.
   const boxPlace = (sid, count) => link.editing && link.editing.sid === sid ? Math.min(link.editing.index, count) : count;
   // What Send types into the pane. With a batch, every comment goes in one message, numbered
@@ -2534,9 +2544,48 @@ __HEAD_HOSTED__
   // asks the server or the queue. Until that moment nothing has left the page, so Undo can say plainly that it was never sent.
   const sendHold = makeSendHold({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) });
   let holdTimer = 0;
+  const SEND_HANDOFF_KEY = HOSTED ? "tr-hosted-send-handoff" : "tr-send-handoff";
+  const newHoldId = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  function readSendHandoff() {
+    try { return JSON.parse(sessionStorage.getItem(SEND_HANDOFF_KEY) || "null"); } catch (e) { return null; }
+  }
+  function clearSendHandoff(id = null) {
+    try {
+      const saved = readSendHandoff();
+      if (!id || !saved || saved.id === id) sessionStorage.removeItem(SEND_HANDOFF_KEY);
+    } catch (e) { /* the timer still owns the send */ }
+  }
+  function saveSendHandoff() {
+    const hold = link.hold;
+    // A File cannot survive a page navigation. In-place session switching still keeps photo sends intact; a full navigation leaves
+    // a photo draft in the box, like a reload, instead of silently sending a message without its attachments.
+    if (!hold || hold.photos) return;
+    try {
+      sessionStorage.setItem(SEND_HANDOFF_KEY, JSON.stringify(makeSendHandoff({ hold, deadline: hold.deadline,
+        sentItems: hold.sentItems, sentBox: hold.sentBox, pointed: hold.pointed })));
+    } catch (e) { /* the draft remains the reload-safe fallback */ }
+  }
+  let sendHandoffRestored = false;
+  function restoreSendHandoff() {
+    if (sendHandoffRestored) return;
+    sendHandoffRestored = true;
+    const saved = readSendHandoff(), current = data.sessions[state.session];
+    const decision = resumeSendHandoff(saved, current && current.id, Date.now() / 1000);
+    if (!decision) { if (saved) clearSendHandoff(saved.id); return; }
+    if (decision.action === "discard") { clearSendHandoff(saved.id); return; }
+    const hold = { ...decision.hold, sentItems: Array.isArray(decision.hold.sentItems) ? decision.hold.sentItems : [] };
+    const resume = () => {
+      clearSendHandoff(hold.id); endHold();
+      deliverDock({ sid: hold.sid, text: hold.text, sentItems: hold.sentItems, sentBox: hold.sentBox, pointed: hold.pointed, sentPhotos: [] });
+    };
+    if (!sendHold.begin(resume, decision.seconds, hold)) return;
+    link.hold = hold;
+    holdTimer = setInterval(paintHold, 500);
+    renderDock();
+  }
   // While a message is held or on its way the faded copy shows its words, and how many photos go with them (their paths are only known
   // once the laptop has saved them; the faded copy then reads exactly what was typed into the pane).
-  const holdMessage = hold => ({ text: [hold.text, hold.photos ? "+ " + attach.photos(hold.photos) : ""].filter(Boolean).join("\n\n"), label: paneName(hold.sid), at: Date.now() / 1000 });
+  const holdMessage = hold => ({ text: [hold.text, hold.photos ? "+ " + attach.photos(hold.photos) : ""].filter(Boolean).join("\n\n"), label: paneName(hold.sid), at: hold.at || Date.now() / 1000 });
   function paintHold() {
     if (!link.hold) return;
     renderDock();
@@ -2553,6 +2602,7 @@ __HEAD_HOSTED__
   }
   function undoHold() {
     if (!sendHold.undo()) return;
+    clearSendHandoff(link.hold && link.hold.id);
     endHold();
     link.result = { ok: true, text: "Undone: it was never sent. Your message is still in the box." };
     setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, 6000);
@@ -2571,9 +2621,11 @@ __HEAD_HOSTED__
     // What this send carries. The box stays as it is (locked) through the window and while the send runs (emptying the pane's
     // input box first takes a second or more), so only these are removed when it has gone.
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
-    const hold = { sid, text, photos: sentPhotos.length };
-    const begun = sendHold.begin(() => { endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);
+    const now = Date.now() / 1000;
+    const hold = { id: newHoldId(), sid, text, photos: sentPhotos.length, at: now, deadline: now + UNDO_SECONDS, sentItems, sentBox, pointed };
+    const begun = sendHold.begin(() => { clearSendHandoff(hold.id); endHold(); deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos }); }, UNDO_SECONDS, hold);
     if (!begun) { link.result = { ok: false, text: "Another message is still in its Undo window. Wait a moment." }; renderDock(); return; }
+    saveSendHandoff();
     link.hold = hold; link.result = null;
     holdTimer = setInterval(paintHold, 500);
     renderDock();
@@ -2599,7 +2651,7 @@ __HEAD_HOSTED__
       // agent: what Herdr said the agent was doing when the message went in (a working agent holds it as a queued message).
       link.pending.push({ sid, text: sent.text || text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
       keepQueued();
-      saveBatch(sid, batchOf(sid).filter(item => !sentItems.includes(item)));
+      saveBatch(sid, withoutSentItems(batchOf(sid), sentItems));
       photos.drop(sid, sentPhotos);
       const onScreen = dockSession();
       if (onScreen && (onScreen.ids || [onScreen.id]).includes(sid) && dock("text").value === sentBox) {
@@ -4000,6 +4052,7 @@ __HEAD_HOSTED__
       state.showWakes = !!saved.showWakes;
       if (state.view === "reader" && saved.view === "fleet") state.view = "fleet";
     }
+    restoreSendHandoff();
     if (state.view === "reader") restoreSearch();
     setAddress();
     render();
@@ -4008,6 +4061,7 @@ __HEAD_HOSTED__
   }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   window.addEventListener("pagehide", () => {
+    saveSendHandoff();
     saveSearch();
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
@@ -4054,6 +4108,7 @@ __HEAD_HOSTED__
     const opened = data.sessions[state.session];
     const same = index >= 0 && saved && (opened.ids || [opened.id]).includes(saved.session);
     if (same) state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
+    restoreSendHandoff();
     setAddress();
     render();
     if (same && saved.anchor) restoreAnchor(saved.anchor); else showLatest();
