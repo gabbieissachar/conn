@@ -206,6 +206,7 @@ const copyId = (root) => crypto.createHash('sha256').update(fs.realpathSync(root
 const TOKEN_SLOT = '__READER_TOKEN__';
 const TOKEN_META = '<meta name="reader-token" content="' + TOKEN_SLOT + '">';
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CODEX_ROLLOUT_RE = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/;
 const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 // Newline and tab are the only control characters a message may carry, so no escape
 // sequence (such as the end of a bracketed paste) can reach the terminal.
@@ -421,6 +422,14 @@ function create({
   const focusSeen = new Map();
   const focus = { seq: 0, herdr: null };
   const build = { running: null, lastEnd: 0, lastStart: -Infinity, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false, newest: 0, rebuiltFor: 0 };
+
+  function canonicalSessionId(value) {
+    if (typeof value !== 'string') return null;
+    if (SESSION_ID_RE.test(value)) return value;
+    const match = CODEX_ROLLOUT_RE.exec(path.basename(value));
+    return match ? match[1] : null;
+  }
+
   // Listed sessions seen running in a pane. One that leaves while Herdr still answers had
   // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
   const seenLive = new Set();
@@ -435,7 +444,7 @@ function create({
   function idsIn(name) {
     let text = '';
     try { text = fs.readFileSync(path.join(outDir, name), 'utf8'); } catch { return []; }
-    return text.split('\n').map((line) => line.trim()).filter((line) => SESSION_ID_RE.test(line));
+    return [...new Set(text.split('\n').map((line) => canonicalSessionId(line.trim())).filter(Boolean))];
   }
   const listed = () => idsIn('sessions.txt');
   // Sessions reader.py dropped because their pane closed, and lists again if one runs in a pane.
@@ -452,6 +461,7 @@ function create({
 
   // The session's log under ~/.claude/projects/<folder>/<id>.jsonl, or null.
   function logPath(sessionId) {
+    sessionId = canonicalSessionId(sessionId) || sessionId;
     const known = logPaths.get(sessionId);
     if (known && fs.existsSync(known)) return known;
     let folders = [];
@@ -597,7 +607,7 @@ function create({
       if (typeof pane.pane_id !== 'string' || !PANE_ID_RE.test(pane.pane_id)) continue;
       panes.push({
         pane_id: pane.pane_id,
-        session_id: typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : null,
+        session_id: canonicalSessionId(sessionId),
         agent: typeof pane.agent === 'string' ? pane.agent : null,
         status: typeof pane.agent_status === 'string' ? pane.agent_status : 'unknown',
         label: String(pane.label || tabLabels.get(pane.tab_id) || pane.terminal_title_stripped || pane.pane_id).slice(0, 120),
@@ -862,7 +872,8 @@ function create({
     for (const session of sessions) {
       for (const pane of session.panes) {
         const id = pane.session_id;
-        if ((pane.agent === 'claude' || pane.agent === 'codex') && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
+        const codex = id && codexRollouts().some((entry) => entry.session === id);
+        if ((pane.agent === 'claude' || pane.agent === 'codex' || codex) && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
       }
     }
     return found;

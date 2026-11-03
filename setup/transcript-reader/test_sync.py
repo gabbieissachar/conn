@@ -225,6 +225,38 @@ class FirstBuildTest(unittest.TestCase):
         self.assertNotIn("found", record)
 
 
+class CodexRolloutEntryTest(unittest.TestCase):
+    """A Herdr Codex pane can report its rollout filename instead of its native id."""
+
+    def test_rollout_name_is_normalized_and_one_unreadable_session_does_not_stop_the_rest(self):
+        lab = Lab(self)
+        native = "01a1a025-b884-78a0-a670-94ebc603c956"
+        rollout_name = "rollout-2026-11-03T13-43-09-" + native
+        missing = "rollout-2026-11-03T13-44-09-ffffffff-3333-4333-8333-333333333333"
+        codex = lab.root / "codex-sessions" / "2026" / "11" / "03"
+        codex.mkdir(parents=True)
+        rollout = codex / (rollout_name + ".jsonl")
+        records = [
+            {"type": "session_meta", "timestamp": "2026-11-03T13:43:09Z",
+             "payload": {"id": native, "session_id": native, "cwd": str(lab.main), "source": "cli"}},
+            {"type": "response_item", "timestamp": "2026-11-03T13:43:10Z",
+             "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "codex ask"}]}},
+            {"type": "response_item", "timestamp": "2026-11-03T13:43:11Z",
+             "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "codex reply"}]}},
+        ]
+        write_log(rollout, records, NOW)
+        lab.panes[rollout_name] = {"label": "codex-rollout", "title": "Codex work", "herdr": "lab", "pane": "w1:p2", "status": "working"}
+        with mock.patch.object(sync.builder, "CODEX_SESSIONS", codex):
+            result = lab.build_only_args("--build-only", "--session", missing, "--session", rollout_name, "--session", A)
+        self.assertEqual(result, 0)
+        index = lab.index()
+        self.assertEqual(sorted(entry["id"] for entry in index["conversations"]), sorted([native, A]))
+        self.assertEqual(sync.builder.find_session_file(native).stem, rollout_name)
+        self.assertEqual(sync.builder.find_session_file(A).stem, A)
+        self.assertEqual(lab.object(f"s/{native}.json")["exchanges"][-1]["reply"], "codex reply")
+        self.assertEqual(lab.object(f"s/{A}.json")["exchanges"][-1]["reply"], "The worker needs a layout. Which one do you want?")
+
+
 class ParityTest(unittest.TestCase):
     """The objects hold what the local page's payload holds for the same sessions."""
 

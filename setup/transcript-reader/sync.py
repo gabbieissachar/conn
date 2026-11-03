@@ -334,7 +334,8 @@ class Build:
 
     def has_wanted_seed(self, seeds: list[Path]) -> bool:
         """Whether a scope with no live panes still has a real starred conversation to keep."""
-        return any(self.wanted(chain[-1].stem, [member.stem for member in chain])
+        return any(self.wanted(builder.canonical_session_id(chain[-1].stem) or chain[-1].stem,
+                               [builder.canonical_session_id(member.stem) or member.stem for member in chain])
                    for seed in seeds if (chain := builder.session_chain(seed)))
 
     @staticmethod
@@ -376,16 +377,29 @@ class Build:
                 try:
                     path = builder.find_session_file(reader.resolve(name, {}, builder.PROJECTS))
                 except ValueError as error:
-                    raise SystemExit(str(error)) from None
+                    print(f"Skipping {name}: {error}")
+                    continue
                 if not path:
-                    raise SystemExit(f"session not found: {name}")
+                    print(f"Skipping {name}: session log is gone")
+                    continue
                 found.append(path)
+            if not found:
+                raise SystemExit("No readable sessions were named")
             return found
         if args.reading_list:
             ids = reader.read_list()
             if not ids:
                 raise SystemExit(f"the local reader's list ({reader.LIST}) is empty")
-            return [path for path in (builder.find_session_file(sid) for sid in ids) if path]
+            found = []
+            for sid in ids:
+                path = builder.find_session_file(sid)
+                if path:
+                    found.append(path)
+                else:
+                    print(f"Skipping {sid}: session log is gone")
+            if not found:
+                raise SystemExit("No readable sessions remain on the local reader's list")
+            return found
         roots = [str(home["home"]) for home in self.homes + ([self.workspace] if self.workspace else [])]
         inside = lambda cwd: any(cwd == root or cwd.startswith(root + "/") for root in roots)  # noqa: E731
         logs = [path for path in builder.all_logs() if inside(first_cwd(path))]
@@ -449,8 +463,10 @@ class Build:
                         todo.append(member)
             covered.update(names)
             home = builder.session_home(self.homes + ([self.workspace] if self.workspace else []), first_cwd(Path(seed)))
-            if self.wanted(chain[-1].stem, [member.stem for member in chain]):
-                chains[chain[-1].stem] = (home, chain)
+            cid = builder.canonical_session_id(chain[-1].stem) or chain[-1].stem
+            ids = [builder.canonical_session_id(member.stem) or member.stem for member in chain]
+            if self.wanted(cid, ids):
+                chains[cid] = (home, chain)
         for cid, (home, chain) in chains.items():
             kept[cid] = self.parse(cid, home, chain)
             self.rebuilt.append(cid)
@@ -966,7 +982,8 @@ def preview(args) -> int:
             continue
         chain = builder.session_chain(seed)
         covered.update(str(member) for member in chain)
-        cid, ids = chain[-1].stem, [member.stem for member in chain]
+        cid = builder.canonical_session_id(chain[-1].stem) or chain[-1].stem
+        ids = [builder.canonical_session_id(member.stem) or member.stem for member in chain]
         home = builder.session_home(build.homes + ([build.workspace] if build.workspace else []), first_cwd(seed))
         pane = cache.get(cid) or {}
         sizes = [member.stat().st_size for member in chain if member.is_file()]

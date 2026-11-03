@@ -53,6 +53,14 @@ class PaneIndexTest(unittest.TestCase):
         self.assertEqual(index[C]["status"], "")  # Herdr said nothing about the agent's state
         self.assertEqual(len(index), 3)
 
+    def test_rollout_filename_is_indexed_by_native_session_id(self):
+        native = "01a1a025-b884-78a0-a670-94ebc603c956"
+        rollout = "rollout-2026-11-03T13-43-09-" + native
+        panes = [{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "codex", "agent": "codex",
+                  "agent_session": {"value": rollout}}]
+        index = builder.pane_index("work", panes, [])
+        self.assertEqual(list(index), [native])
+
 
 class HerdrInventoryTest(unittest.TestCase):
     """Every pane Herdr lists is known, with or without an agent in it, and a list that could not be read is not mistaken for a short one."""
@@ -221,6 +229,17 @@ class ResolveTest(unittest.TestCase):
     def test_log_path(self):
         self.assertEqual(self.resolve(str(self.projects / "-Users-someone-home" / f"{B}.jsonl")), B)
 
+    def test_codex_rollout_name_resolves_to_its_native_session_id(self):
+        native = "01a1a025-b884-78a0-a670-94ebc603c956"
+        rollout = "rollout-2026-11-03T13-43-09-" + native
+        codex = self.projects / "codex" / "2026" / "11" / "03"
+        codex.mkdir(parents=True)
+        (codex / f"{rollout}.jsonl").write_text(json.dumps({
+            "type": "session_meta", "payload": {"id": native, "cwd": "/nowhere", "source": "cli"}
+        }) + "\n", encoding="utf-8")
+        with mock.patch.object(builder, "CODEX_SESSIONS", self.projects / "codex"):
+            self.assertEqual(reader.resolve(rollout, PANES, self.projects), native)
+
     def test_exact_label_wins_over_partial(self):
         self.assertEqual(self.resolve("LEADER-ALPHA"), A)
 
@@ -264,6 +283,13 @@ class FollowTest(unittest.TestCase):
         reader.OUT.mkdir(parents=True)
         reader.LIST.write_text(f"# note\n{A}\n/Users/someone/.zsh_history\naaaaaaaa\n  {B}  \n", encoding="utf-8")
         self.assertEqual(reader.read_list(), [A, B])
+
+    def test_the_list_normalizes_a_codex_rollout_name_and_deduplicates_it(self):
+        native = "01a1a025-b884-78a0-a670-94ebc603c956"
+        rollout = "rollout-2026-11-03T13-43-09-" + native
+        reader.OUT.mkdir(parents=True)
+        reader.LIST.write_text(f"{rollout}\n{native}\n", encoding="utf-8")
+        self.assertEqual(reader.read_list(), [native])
 
     def test_refuses_anything_but_one_full_id_with_a_log(self):
         for names in (["aaaaaaaa"], [C], ["leader-alpha"], [A, A], []):

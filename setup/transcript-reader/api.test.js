@@ -1983,6 +1983,20 @@ test('Codex: a live pane maps to its native rollout and Send waits for a leading
   } finally { await t.close(); }
 });
 
+test('Codex: a rollout filename already in the reading list becomes one native session entry', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCodexLog(tree, A, tree.root);
+    herdr.panes[0] = { ...herdr.panes[0], agent: 'codex', agent_session: { value: null } };
+    herdr.processInfo['w1:p1'] = [{ pid: 9001, argv0: 'codex', cwd: tree.root }];
+    fs.writeFileSync(path.join(tree.outDir, 'sessions.txt'), `rollout-${A}\n${A}\n`);
+  } });
+  try {
+    const state = await t.state();
+    assert.deepEqual(Object.keys(state.json.panes), [A]);
+    assert.equal(state.json.focus.session_id, A);
+  } finally { await t.close(); }
+});
+
 test('Codex: Sync adopts an unlisted live Codex pane, and a changed foreground session is rejected', async () => {
   const t = await start({ options: (herdr, tree) => {
     writeCodexLog(tree, A, tree.root);

@@ -90,17 +90,27 @@ PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
 
 
 def read_list() -> list[str]:
-    """The listed session ids. `add` writes full ids only, so any other line (a path a
-    website planted through the shared server, say) is never read as a session log."""
+    """The listed native session ids, including Codex rollouts written by older readers."""
     try:
         lines = LIST.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
-    return [line.strip() for line in lines if UUID.match(line.strip())]
+    ids = []
+    for line in lines:
+        name = line.strip()
+        sid = builder.canonical_session_id(name) if name else None
+        if sid and sid not in ids:
+            ids.append(sid)
+    return ids
 
 
 def write_list(ids: list[str]) -> None:
-    builder.write_private(LIST, "".join(f"{i}\n" for i in ids))
+    normalized = []
+    for value in ids:
+        sid = builder.canonical_session_id(value) if isinstance(value, str) else None
+        if sid and sid not in normalized:
+            normalized.append(sid)
+    builder.write_private(LIST, "".join(f"{i}\n" for i in normalized))
 
 
 def session_files(projects: Path, prefix: str) -> list[Path]:
@@ -113,9 +123,14 @@ def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS
     """The session id that <name> means. Raises ValueError with a readable reason."""
     path = Path(name).expanduser()
     if path.suffix == ".jsonl" and path.is_file():
-        return path.stem
+        return builder.canonical_session_id(path.stem) or path.stem
+    canonical = builder.canonical_session_id(name)
+    if canonical and canonical != name:
+        if session_files(projects, canonical):
+            return canonical
+        raise ValueError(f"no session log found for {name}")
     if PREFIX.match(name):
-        ids = sorted({p.stem for p in session_files(projects, name)})
+        ids = sorted({builder.canonical_session_id(p.stem) or p.stem for p in session_files(projects, name)})
         if len(ids) == 1:
             return ids[0]
         if len(ids) > 1:
@@ -167,7 +182,7 @@ def forget_closed(sids: set[str]) -> None:
 def chain_members(sid: str) -> set[str]:
     """The session and every session its pane ran across /clear, as `close` takes them off together."""
     path = builder.find_session_file(sid)
-    return {sid} | ({member.stem for member in builder.session_chain(path)} if path else set())
+    return {sid} | ({builder.canonical_session_id(member.stem) or member.stem for member in builder.session_chain(path)} if path else set())
 
 
 class PaneView:
@@ -188,7 +203,7 @@ class PaneView:
 
     def members(self, sid: str) -> list[str]:
         path = builder.find_session_file(sid)
-        return [member.stem for member in builder.session_chain(path)] if path else [sid]
+        return [builder.canonical_session_id(member.stem) or member.stem for member in builder.session_chain(path)] if path else [sid]
 
     def pane_left(self, member: str) -> str | None:
         """Why the pane this session was last seen in no longer runs it, or None while it may. A pane
@@ -296,6 +311,11 @@ def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -
 
 
 def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
+    original = list(ids)
+    ids = [sid for sid in (builder.canonical_session_id(value) for value in ids) if sid]
+    ids = list(dict.fromkeys(ids))
+    if ids != original:
+        write_list(ids)
     kept = drop_closed(ids)
     if kept != ids:
         if ids and not kept:
@@ -307,13 +327,20 @@ def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
     if not ids:
         print("No sessions listed. Add one: reader.py add <session id or Herdr pane label>")
     present = [i for i in ids if builder.find_session_file(i)]
-    for missing in sorted(set(ids) - set(present)):
-        print(f"Skipping {missing}: its session log is gone")
-    if ids and not present:
-        return 1
+    missing = sorted(set(ids) - set(present))
+    for sid in missing:
+        print(f"Skipping {sid}: its session log is gone")
+    if missing:
+        ids = present
+        write_list(ids)
+        if not present:
+            return 1
     # A listed session that was cleared reads on in the pane's newer session, which the
     # page shows as the same conversation; list that one too so its pane can be answered.
-    newest = [builder.session_chain(builder.find_session_file(i))[-1].stem for i in present]
+    newest = []
+    for sid in present:
+        chain = builder.session_chain(builder.find_session_file(sid))
+        newest.append(builder.canonical_session_id(chain[-1].stem) or chain[-1].stem)
     added = [sid for sid in dict.fromkeys(newest) if sid not in ids]
     if added:
         ids += added

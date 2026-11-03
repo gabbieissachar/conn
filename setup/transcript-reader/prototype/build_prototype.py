@@ -80,6 +80,7 @@ PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READ
 CODEX_SESSIONS = Path(os.environ["PMOS_READER_CODEX_SESSIONS"]) if os.environ.get("PMOS_READER_CODEX_SESSIONS") else Path.home() / ".codex" / "sessions"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+CODEX_ROLLOUT_RE = re.compile(r"^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$")
 
 
 # ---------------------------------------------------------------- input files
@@ -653,7 +654,15 @@ def project_folder(home: Path) -> Path:
     return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", str(home))
 
 
-_CODEX_INDEX: tuple[float, list[Path], dict[str, Path], dict[str, Path]] | None = None
+def canonical_session_id(value: str) -> str | None:
+    """Return a native session id, including when Codex reported its rollout filename."""
+    if SESSION_ID_RE.fullmatch(value):
+        return value
+    match = CODEX_ROLLOUT_RE.fullmatch(Path(value).name)
+    return match.group(1) if match else None
+
+
+_CODEX_INDEX: tuple[float, Path, list[Path], dict[str, Path], dict[str, Path]] | None = None
 
 
 def codex_metadata(path: Path) -> dict | None:
@@ -681,8 +690,8 @@ def codex_log_index() -> tuple[list[Path], dict[str, Path], dict[str, Path]]:
     """Native Codex rollouts by session id and working directory, newest first."""
     global _CODEX_INDEX
     now = time.monotonic()
-    if _CODEX_INDEX and now - _CODEX_INDEX[0] < LOG_LIST_REUSE:
-        return _CODEX_INDEX[1:]
+    if _CODEX_INDEX and _CODEX_INDEX[1] == CODEX_SESSIONS and now - _CODEX_INDEX[0] < LOG_LIST_REUSE:
+        return _CODEX_INDEX[2:]
     logs, by_id, by_cwd = [], {}, {}
     try:
         candidates = sorted(CODEX_SESSIONS.rglob("rollout-*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -695,7 +704,7 @@ def codex_log_index() -> tuple[list[Path], dict[str, Path], dict[str, Path]]:
         logs.append(path)
         by_id.setdefault(metadata["session"], path)
         by_cwd.setdefault(metadata["cwd"], path)
-    _CODEX_INDEX = (now, logs, by_id, by_cwd)
+    _CODEX_INDEX = (now, CODEX_SESSIONS, logs, by_id, by_cwd)
     return logs, by_id, by_cwd
 
 
@@ -713,7 +722,8 @@ def find_session_file(session: str) -> Path | None:
     candidate = Path(session).expanduser()
     if candidate.is_file():
         return candidate
-    return log_index()[1].get(session) or codex_log_index()[1].get(session)
+    canonical = canonical_session_id(session) or session
+    return log_index()[1].get(canonical) or codex_log_index()[1].get(canonical)
 
 
 def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
@@ -931,7 +941,9 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
     if where.startswith("state/.treehouse/"):
         where = "worker copy"  # a worker's isolated copy, not the home's own clone
-    session = {"home": home["id"], "id": path.stem, "ids": [member.stem for member in chain], "file": str(path), "where": where,
+    session_id = canonical_session_id(path.stem) or path.stem
+    ids = [canonical_session_id(member.stem) or member.stem for member in chain]
+    session = {"home": home["id"], "id": session_id, "ids": ids, "file": str(path), "where": where,
                "exchanges": exchanges}
     leader = leader_info(cwd)
     if leader:
@@ -1322,7 +1334,9 @@ def pane_index(herdr_session: str, panes: list[dict], tabs: list[dict], life: st
     tab_labels = {tab.get("tab_id"): tab.get("label") or "" for tab in tabs}
     found = {}
     for pane in panes:
-        session = (pane.get("agent_session") or {}).get("value")
+        raw_session = (pane.get("agent_session") or {}).get("value")
+        session = canonical_session_id(raw_session) if isinstance(raw_session, str) else None
+        session = session or raw_session
         if not session:
             continue
         title = pane.get("terminal_title_stripped") or ""
