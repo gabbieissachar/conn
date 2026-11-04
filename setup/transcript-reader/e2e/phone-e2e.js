@@ -241,13 +241,22 @@ async function until(fn, what, ms = 20000) {
   await until(async () => /Drafted the notes|Sent a short version/.test(await text('#main')), 'the main conversation again');
 
   // ------------------------------------------------------------------ Send while away
+  await shot('09-add-before');
   await page.fill('#dock-text', 'Please also send it to the design team. Sent from the train.');
   await page.click('#dock-send');
   // Send holds the message for the Undo window (5 s, nothing leaves the page) before the page tries the laptop.
   await until(async () => /Sending in \d s/.test(await text('#main')), 'the Undo window');
+  const heldDock = await page.evaluate(() => { const b = document.querySelector('#dock-add'); return { text: b.textContent, disabled: b.disabled, title: b.title }; });
+  check(heldDock.text === 'Send now' && !heldDock.disabled, 'the Undo window changes Add into an enabled Send now action', JSON.stringify(heldDock));
+  await shot('10-send-now-window');
+  await page.click('#dock-add');
+  await until(async () => (await page.locator('#dock-add').textContent()) === 'Add' && !(await page.locator('#dock-send').textContent()).startsWith('Undo'), 'Send now to finish and restore Add');
+  const sentNowDock = await page.evaluate(() => { const add = document.querySelector('#dock-add'), send = document.querySelector('#dock-send'); return { add: add.textContent, addDisabled: add.disabled, send: send.textContent, status: document.querySelector('#dock-status').textContent }; });
+  check(sentNowDock.add === 'Add' && /Held on this phone/.test(sentNowDock.status), 'Send now uses the queue path and restores Add after delivery starts', JSON.stringify(sentNowDock));
+  await shot('11-send-now-delivered');
   await until(async () => /Held on this phone/.test(await text('#dock-status') + await text('#main')), 'the held message', 40000);
   check(/Held on this phone/.test(await text('#main')), 'a Send with the laptop away is held on the phone and says so');
-  await shot('09-held');
+  await shot('12-held');
   const queueFolder = path.join(folder, 'out', 'bucket', 'q');
   check(!fs.existsSync(queueFolder) || fs.readdirSync(queueFolder).length === 0, 'nothing reached the laptop\'s queue yet');
 
@@ -264,7 +273,7 @@ async function until(fn, what, ms = 20000) {
   check(!fs.readFileSync(path.join(queueFolder, queued[0])).includes('the train'), 'the queue holds sealed bytes only');
   await page.click('#tab-reader');  // the reload for the new token reopens the address's document
   await until(async () => /waiting for the laptop to send it|Queued/.test(await text('#main')), 'the queued state');
-  await shot('10-queued');
+  await shot('13-queued');
   const calls = () => (fs.existsSync(world.log) ? fs.readFileSync(world.log, 'utf8').split('\n').filter((l) => l.startsWith('PROMPT')) : []);
   const drainEnv = { ...process.env, HOME: world.home, HOSTED_READER_PASSPHRASE: PASSPHRASE, HOSTED_READER_HERDR: path.join(world.bin, 'herdr'), FAKE_HERDR_SESSION: world.main, FAKE_HERDR_LOG: world.log };
   const drain = () => execFileSync('node', [path.join(READER, 'drain.js'), path.join(folder, 'out', 'bucket'), '--sealed', '--state', path.join(folder, 'out')], { encoding: 'utf8', env: drainEnv, timeout: 60000 });
@@ -274,7 +283,7 @@ async function until(fn, what, ms = 20000) {
   check(calls().length === 1, 'a second drain sends nothing more');
   await until(async () => /Sent by the laptop at/.test(await text('#main')), 'the receipt', 40000);
   check(true, 'the phone shows the laptop\'s receipt');
-  await shot('11-receipt');
+  await shot('14-receipt');
 
   // ------------------------------------------------------------------ Forget this device
   await page.click('#forget');
@@ -288,7 +297,7 @@ async function until(fn, what, ms = 20000) {
   // The fresh page load after forgetting installs the worker again and keeps the copy's public key parameters (a salt, no secret); everything
   // that was stored from the copy, the key, the held sends and the shell cache are gone.
   check(left.objects === 0 && left.keys === 0 && left.outbox === 0 && left.caches === 0 && left.meta <= 1, 'Forget this device clears the key, the objects, the held sends and the shell cache', JSON.stringify(left));
-  await shot('12-forgotten');
+  await shot('15-forgotten');
 
   check(problems.length === 0, 'no script error or console error on the page', problems.slice(0, 3).join(' | '));
   await browser.close();

@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const TEMPLATE = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
 
 const { UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend } = vm.runInNewContext(
   fs.readFileSync(path.join(__dirname, 'prototype', 'undosend.js'), 'utf8') + '\n({ UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend })', { Math });
@@ -82,6 +83,14 @@ test('Send now runs the send at once, once, and Undo cannot follow it', () => {
   assert.equal(hold.undo(), false);
   c.tick(60);
   assert.deepEqual(sent, ['A'], 'the timer does not send it a second time');
+});
+
+test('the dock makes Add into Send now only for the held message on screen', () => {
+  assert.match(TEMPLATE, /dock\("add"\)\.disabled = held \? false : elsewhere \|\| !dockTyped\(\) \|\| command;/);
+  assert.match(TEMPLATE, /dock\("add"\)\.textContent = held \? "Send now" : "Add";/);
+  assert.match(TEMPLATE, /dock\("add"\)\.title = held \? "Send this message immediately \(Cmd\+Enter or Ctrl\+Enter\)"/);
+  assert.match(TEMPLATE, /if \(heldHere\(\)\) sendNow\(\); else \{ addToBatch\(\); dock\("text"\)\.focus\(\); \}/);
+  assert.match(TEMPLATE, /else if \(e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\) && !e\.isComposing\) \{ e\.preventDefault\(\); sendNow\(\); \}/);
 });
 
 test('only one message is in the window at a time, and a new one can start after it ends or is undone', () => {

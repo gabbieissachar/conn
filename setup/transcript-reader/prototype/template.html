@@ -2517,7 +2517,9 @@ __HEAD_HOSTED__
     dock("note").hidden = !batch.length || link.preview;
     dock("note").textContent = `${total} comment${total === 1 ? "" : "s"} - Exact text shows what Send types`;
     dock("send").textContent = held ? `Undo ${sendHold.left()}` : batch.length ? `Send ${total}` : "Send";
-    dock("add").disabled = held || elsewhere || !dockTyped() || command;
+    dock("add").disabled = held ? false : elsewhere || !dockTyped() || command;
+    dock("add").textContent = held ? "Send now" : "Add";
+    dock("add").title = held ? "Send this message immediately (Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
     dock("copy").disabled = !out;
     const count = dock("count");
     count.hidden = out.length <= 3500;
@@ -2849,14 +2851,19 @@ __HEAD_HOSTED__
   // On a touch screen the return key starts a new line and the buttons add and send.
   const touch = matchMedia("(pointer: coarse)");
   dock("text").addEventListener("keydown", e => {
-    // In the Undo window the box is locked: Esc takes the message back, and Enter must not send it twice or skip the wait.
-    if (heldHere()) { if (e.key === "Escape") { e.preventDefault(); undoHold(); } else if (e.key === "Enter") e.preventDefault(); return; }
+    // In the Undo window the box is locked: Esc takes the message back, Cmd/Ctrl+Enter sends it now, and plain Enter must not send it twice or skip the wait.
+    if (heldHere()) {
+      if (e.key === "Escape") { e.preventDefault(); undoHold(); }
+      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); sendNow(); }
+      else if (e.key === "Enter") e.preventDefault();
+      return;
+    }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); addToBatch(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); sendDock(); }
     if (e.key === "Escape" && link.target) dropTarget();
   });
   dock("send").addEventListener("click", () => { if (heldHere()) undoHold(); else sendDock(); });
-  dock("add").addEventListener("click", () => { addToBatch(); dock("text").focus(); });
+  dock("add").addEventListener("click", () => { if (heldHere()) sendNow(); else { addToBatch(); dock("text").focus(); } });
   dock("batch-toggle").addEventListener("click", () => { link.batchOpen = !link.batchOpen; renderDock(); });
   dock("batch-clear").addEventListener("click", () => {
     const session = dockSession(), n = session ? batchOf(session.id).length : 0;

@@ -1349,13 +1349,19 @@ class PageShellTest(unittest.TestCase):
     def test_a_session_switched_to_during_another_sessions_undo_window_cannot_send_and_says_why(self):
         for mode, page in self.pages():
             # One message is in its window at a time, so the other session's Send is off with a reason on screen (never a dead click),
-            # decided before the button's state is set from it; Add is off too.
+            # decided before the button's state is set from it; Add is off too. On the held session Add becomes Send now.
             self.assertIn("const elsewhere = Boolean(link.hold && link.hold.sid !== session.id);", page, mode)
             self.assertLess(page.index("if (!reason && elsewhere) reason ="), page.index('dock("send").disabled = held ? false : Boolean(reason)'), mode)
-            self.assertIn('dock("add").disabled = held || elsewhere ||', page, mode)
+            self.assertIn('dock("add").disabled = held ? false : elsewhere ||', page, mode)
+            self.assertIn('dock("add").textContent = held ? "Send now" : "Add";', page, mode)
+            self.assertIn('dock("add").title = held ? "Send this message immediately (Cmd+Enter or Ctrl+Enter)"', page, mode)
             # Esc, Enter and the Undo click belong to the session whose message is held: not to a box switched to meanwhile.
-            self.assertIn('if (heldHere()) { if (e.key === "Escape")', page, mode)
+            self.assertIn('if (heldHere()) {', page, mode)
+            self.assertIn('if (e.key === "Escape") { e.preventDefault(); undoHold(); }', page, mode)
+            self.assertIn('else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)', page, mode)
+            self.assertIn('else if (e.key === "Enter") e.preventDefault();', page, mode)
             self.assertIn("if (heldHere()) undoHold(); else sendDock();", page, mode)
+            self.assertIn('if (heldHere()) sendNow(); else { addToBatch(); dock("text").focus(); }', page, mode)
 
     def test_follow_herdr_is_in_the_folded_header_and_is_the_same_switch_as_the_one_in_the_controls(self):
         for mode, page in self.pages():
