@@ -60,6 +60,7 @@ SENDONCE_SCRIPT = HERE / "sendonce.js"
 UNDOSEND_SCRIPT = HERE / "undosend.js"
 ATTACH_SCRIPT = HERE / "attach.js"
 COMMENTKEY_SCRIPT = HERE / "commentkey.js"
+SELECTCOPY_SCRIPT = HERE / "selectcopy.js"
 ASKS_SCRIPT = HERE / "asks.js"
 FIND_SCRIPT = HERE / "find.js"
 STEPS_SCRIPT = HERE / "steps.js"
@@ -2602,6 +2603,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__UNDOSEND__*/", UNDOSEND_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ATTACH__*/", ATTACH_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__COMMENTKEY__*/", COMMENTKEY_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__SELECTCOPY__*/", SELECTCOPY_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__MARKDOWN_IT__*/", MARKDOWN_IT_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__MARKDOWN__*/", MARKDOWN_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__STEPS__*/", STEPS_SCRIPT.read_text(encoding="utf-8"))

@@ -440,6 +440,8 @@ __HEAD_HOSTED__
   .kept-note .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
   .float-comment-key { margin-left: 7px; font-weight: 400; font-size: 11px; opacity: .8; }
   .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .copy-note { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 8; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; background: var(--paper); color: var(--muted); font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / .14); opacity: 0; transform: translateY(3px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+  .copy-note.show { opacity: 1; transform: translateY(0); }
   .dock { position: fixed; left: 0; right: var(--rail); bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
   .dock-inner { max-width: var(--col); margin: 0 auto; padding: 6px 12px 8px; }
   .dock-chip { border: 1px solid color-mix(in srgb, var(--you) 35%, transparent); background: var(--you-wash); border-radius: 8px; padding: 5px 8px; margin-bottom: 5px; }
@@ -641,6 +643,7 @@ __HEAD_HOSTED__
 </header>
 <main id="main"></main>
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
+<div class="copy-note" id="copy-note" role="status" aria-live="polite">Copied</div>
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
 <div class="dock" id="dock" hidden><div class="dock-inner">
   <div class="dock-batch" id="dock-batch" hidden>
@@ -682,6 +685,8 @@ __HEAD_HOSTED__
 /*__FIND__*/
 /*__DOCFILES__*/
 /*__ADDRESS__*/
+/*__SELECTCOPY__*/
+  const selectCopy = readerSelectCopy;
   // The hosted shell starts empty until its index.json arrives.
   let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -692,8 +697,9 @@ __HEAD_HOSTED__
   // { open(), close(), shown() }
   const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, docPage: "list" };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, docPage: "list" };
   try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
+  try { state.copySelection = localStorage.getItem("tr-copy-selection") !== "0"; } catch (e) { /* default: copy */ }
   // A phone's width. The header starts folded there, on every view (an HTML file gets the whole screen under one line of it), so the
   // conversation has the screen; the controls are one tap away. What the owner chose in this browser wins over that: open or folded
   // (barChoice), until the browser forgets it. With no choice, the header follows the width, a turned phone included.
@@ -1389,6 +1395,20 @@ __HEAD_HOSTED__
   function summaryLine(turns, counts) {
     return [`${turns} turn${turns === 1 ? "" : "s"}`, ...counts.filter(c => c[0] > 0).map(c => `${c[0]} ${c[1]}`)].join(" · ");
   }
+  function copySelectionToggle() {
+    const button = $("button", "btn", "Copy on select"); button.type = "button";
+    const paint = () => {
+      button.setAttribute("aria-pressed", String(state.copySelection));
+      button.title = state.copySelection ? "Copy selected text to the clipboard" : "Do not copy selected text to the clipboard";
+    };
+    button.addEventListener("click", () => {
+      state.copySelection = !state.copySelection;
+      try { localStorage.setItem("tr-copy-selection", state.copySelection ? "1" : "0"); } catch (e) { /* not kept */ }
+      paint();
+    });
+    paint();
+    return button;
+  }
   function renderReader() {
     if (link.opening) {  // a reload is listing the closed pane's conversation it was on again (see the load code)
       document.getElementById("controls").replaceChildren($("div", "kept-note", `Its Herdr pane has closed. Opening ${link.opening.label} again…`));
@@ -1429,12 +1449,13 @@ __HEAD_HOSTED__
     pinned.setAttribute("aria-pressed", String(state.pinsOpen)); pinned.setAttribute("aria-controls", "pins-panel");
     pinned.title = "Pinned messages: this conversation's, or every conversation's";
     pinned.addEventListener("click", togglePins);
+    const copyToggle = copySelectionToggle();
     prev.addEventListener("click", () => jump("captain", -1));
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
     if (pickRow.parentNode !== row) row.append(pickRow);
-    row.append(prev, next, needs, wakes, pinned, shut, follow);
+    row.append(prev, next, needs, wakes, pinned, copyToggle, shut, follow);
     paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", summaryLine(exs.length, [
@@ -2893,6 +2914,56 @@ __HEAD_HOSTED__
     const lift = () => { document.getElementById("dock").style.bottom = Math.max(0, window.innerHeight - visualViewport.height - visualViewport.offsetTop) + "px"; placeNewReply(); };
     visualViewport.addEventListener("resize", lift); visualViewport.addEventListener("scroll", lift);
   }
+  const copyOnSelect = { last: null, timer: null, nodes: new WeakMap(), nextNode: 0 };
+  function selectionNodeId(node) {
+    if (!node || (typeof node !== "object" && typeof node !== "function")) return "";
+    let id = copyOnSelect.nodes.get(node);
+    if (!id) { id = ++copyOnSelect.nextNode; copyOnSelect.nodes.set(node, id); }
+    return id;
+  }
+  function selectionSignature(selection, text) {
+    if (!selection.rangeCount) return text;
+    const range = selection.getRangeAt(0);
+    return [text, selectionNodeId(range.startContainer), range.startOffset, selectionNodeId(range.endContainer), range.endOffset].join("\u0000");
+  }
+  function showCopied() {
+    const note = document.getElementById("copy-note");
+    const dock = document.getElementById("dock");
+    note.style.bottom = `${(dock && !dock.hidden ? dock.offsetHeight : 0) + 12}px`;
+    note.classList.remove("show");
+    void note.offsetWidth;
+    note.classList.add("show");
+    clearTimeout(copyOnSelect.timer);
+    copyOnSelect.timer = setTimeout(() => note.classList.remove("show"), 1100);
+  }
+  function copySelectionOnMouseUp(event) {
+    if (!state.copySelection || matchMedia("(pointer: coarse)").matches) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const text = selection.toString();
+    const boundaries = [event && event.target, selection.anchorNode, selection.focusNode];
+    const editable = boundaries.some(selectCopy.isEditableTarget);
+    const eligible = boundaries.some(selectCopy.copyArea);
+    const check = selectCopy.decide({ text, collapsed: selection.isCollapsed, editable, eligible, signature: selectionSignature(selection, text) }, copyOnSelect.last);
+    if (!check.copy) return;
+    copyOnSelect.last = check.signature;
+    const originalRange = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+    const secure = typeof window.isSecureContext === "boolean" ? window.isSecureContext : Boolean(navigator && navigator.clipboard);
+    const usesFallback = !(secure && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function");
+    let copied;
+    try {
+      copied = selectCopy.copy(check.text, {
+        navigator,
+        document,
+        isSecureContext: secure,
+      });
+    } catch (e) { return; }
+    Promise.resolve(copied).then(ok => {
+      if (!ok) return;
+      if (usesFallback && originalRange) { const current = window.getSelection(); current.removeAllRanges(); current.addRange(originalRange); }
+      showCopied();
+    }, () => {});
+  }
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {
       const t = $("textarea"); t.value = text; document.body.append(t); t.select();
@@ -2993,7 +3064,7 @@ __HEAD_HOSTED__
     floatButton.style.left = `${Math.max(8, Math.min(rect.left + window.scrollX, document.documentElement.clientWidth - floatButton.offsetWidth - 8))}px`;
     floatButton.card = card;
   }
-  document.addEventListener("mouseup", () => setTimeout(placeFloat, 0));
+  document.addEventListener("mouseup", event => { copySelectionOnMouseUp(event); setTimeout(placeFloat, 0); });
   document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });
   document.addEventListener("selectionchange", () => { const sel = window.getSelection(); if (!sel || sel.isCollapsed) floatButton.hidden = true; else if (matchMedia("(pointer: coarse)").matches) placeFloat(); });
   floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
@@ -3429,6 +3500,7 @@ __HEAD_HOSTED__
     const { row, star, pickRow } = pickerRow(controls, session);
     if (session) { fillDocuments(pick.docs); if (pickRow.parentNode !== row) row.append(pickRow); paintStar(star); }
     if (row.parentNode !== controls) controls.append(row);
+    row.append(copySelectionToggle());
     const main = document.getElementById("main");
     const d = entry && data.documents[entry.id];
     if (!entry) {
