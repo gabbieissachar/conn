@@ -55,15 +55,18 @@ struct SidebarView: View {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
                         SidebarRow(selected: a.id == app.selectedPaneID, action: { app.select(a.id) }) {
-                            StateGlyph(state: a.state)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(a.name).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                                    .redacted(reason: app.privacy ? .placeholder : [])
-                                Text("\(a.harness) · \(a.state.label)").font(.system(size: 11))
-                                    .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary)
+                            HStack(alignment: .top, spacing: 8) {
+                                StateGlyph(state: a.state)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(a.name).font(.system(size: 13, weight: .medium)).lineLimit(2).truncationMode(.tail)
+                                        .help(app.privacy ? "Agent name" : a.name)
+                                        .redacted(reason: app.privacy ? .placeholder : [])
+                                    Text("\(a.harness) · \(a.state.label)").font(.system(size: 11))
+                                        .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                if i < 9 { Text("⌘\(i + 1)").font(.system(size: 10.5, design: .rounded)).foregroundStyle(.tertiary) }
                             }
-                            Spacer(minLength: 0)
-                            if i < 9 { Text("⌘\(i + 1)").font(.system(size: 10.5, design: .rounded)).foregroundStyle(.tertiary) }
                         }
                     }
                 }
