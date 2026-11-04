@@ -453,6 +453,7 @@ test('the bar: the thumbnails and the button are sized for a thumb on a touch sc
 
 test('the bar: Send is on for photos alone, a command cannot carry photos, and nothing can change while a message is held or on its way', () => {
   assert.match(page, /dock\("send"\)\.disabled = held \? false : Boolean\(reason\) \|\| link\.sending \|\| \(!out && !pics\.length\) \|\| over;/);
+  assert.match(page, /add\.disabled = held \? false : link\.sending \|\| elsewhere \|\| !dockTyped\(\) \|\| command;/, 'Add is disabled for the same in-flight delivery state as Send');
   assert.match(page, /if \(!reason && pics\.length && command\) reason = "A command goes on its own: remove the photos first\.";/);
   assert.match(page, /paintThumbs\(pics, held \|\| link\.sending\);/);
   assert.match(page, /dock\("photo"\)\.disabled = held \|\| link\.sending;/);

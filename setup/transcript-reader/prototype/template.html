@@ -2527,7 +2527,7 @@ __HEAD_HOSTED__
       add.style.height = `${height}px`;
       add.dataset.addSize = "1";
     }
-    add.disabled = held ? false : elsewhere || !dockTyped() || command;
+    add.disabled = held ? false : link.sending || elsewhere || !dockTyped() || command;
     add.textContent = held ? "Now" : "Add";
     add.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
     add.setAttribute("aria-label", held ? "Send this message now" : "Add to the batch and write the next comment");

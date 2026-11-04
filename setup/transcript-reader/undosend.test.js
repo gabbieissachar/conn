@@ -86,7 +86,7 @@ test('Send now runs the send at once, once, and Undo cannot follow it', () => {
 });
 
 test('the dock makes Add into Now only for the held message on screen', () => {
-  assert.match(TEMPLATE, /add\.disabled = held \? false : elsewhere \|\| !dockTyped\(\) \|\| command;/);
+  assert.match(TEMPLATE, /add\.disabled = held \? false : link\.sending \|\| elsewhere \|\| !dockTyped\(\) \|\| command;/);
   assert.match(TEMPLATE, /if \(!add\.dataset\.addSize && add\.getBoundingClientRect\(\)\.width > 0\)/);
   assert.match(TEMPLATE, /const \{ width, height \} = add\.getBoundingClientRect\(\);/);
   assert.match(TEMPLATE, /add\.style\.height = `\$\{height\}px`;/);

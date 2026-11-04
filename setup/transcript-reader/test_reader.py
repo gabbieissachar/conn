@@ -1352,7 +1352,7 @@ class PageShellTest(unittest.TestCase):
             # decided before the button's state is set from it; Add is off too. On the held session Add becomes Now.
             self.assertIn("const elsewhere = Boolean(link.hold && link.hold.sid !== session.id);", page, mode)
             self.assertLess(page.index("if (!reason && elsewhere) reason ="), page.index('dock("send").disabled = held ? false : Boolean(reason)'), mode)
-            self.assertIn('add.disabled = held ? false : elsewhere ||', page, mode)
+            self.assertIn('add.disabled = held ? false : link.sending || elsewhere ||', page, mode)
             self.assertIn('add.textContent = held ? "Now" : "Add";', page, mode)
             self.assertIn('add.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)"', page, mode)
             self.assertIn('add.setAttribute("aria-label", held ? "Send this message now" : "Add to the batch and write the next comment");', page, mode)
