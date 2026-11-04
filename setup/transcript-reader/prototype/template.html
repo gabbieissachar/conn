@@ -2517,9 +2517,20 @@ __HEAD_HOSTED__
     dock("note").hidden = !batch.length || link.preview;
     dock("note").textContent = `${total} comment${total === 1 ? "" : "s"} - Exact text shows what Send types`;
     dock("send").textContent = held ? `Undo ${sendHold.left()}` : batch.length ? `Send ${total}` : "Send";
-    dock("add").disabled = held ? false : elsewhere || !dockTyped() || command;
-    dock("add").textContent = held ? "Send now" : "Add";
-    dock("add").title = held ? "Send this message immediately (Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
+    const add = dock("add");
+    if (!add.dataset.addSize && add.getBoundingClientRect().width > 0) {
+      const label = add.textContent;
+      add.textContent = "Add";
+      const { width, height } = add.getBoundingClientRect();
+      add.textContent = label;
+      add.style.width = `${width}px`;
+      add.style.height = `${height}px`;
+      add.dataset.addSize = "1";
+    }
+    add.disabled = held ? false : elsewhere || !dockTyped() || command;
+    add.textContent = held ? "Now" : "Add";
+    add.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
+    add.setAttribute("aria-label", held ? "Send this message now" : "Add to the batch and write the next comment");
     dock("copy").disabled = !out;
     const count = dock("count");
     count.hidden = out.length <= 3500;
@@ -2851,10 +2862,11 @@ __HEAD_HOSTED__
   // On a touch screen the return key starts a new line and the buttons add and send.
   const touch = matchMedia("(pointer: coarse)");
   dock("text").addEventListener("keydown", e => {
-    // In the Undo window the box is locked: Esc takes the message back, Cmd/Ctrl+Enter sends it now, and plain Enter must not send it twice or skip the wait.
+    // In the Undo window the box is locked: Esc takes the message back, Enter sends it now, and IME composition stays alone.
     if (heldHere()) {
+      if (e.isComposing) return;
       if (e.key === "Escape") { e.preventDefault(); undoHold(); }
-      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); sendNow(); }
+      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendNow(); }
       else if (e.key === "Enter") e.preventDefault();
       return;
     }

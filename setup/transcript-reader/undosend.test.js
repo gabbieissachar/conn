@@ -85,12 +85,17 @@ test('Send now runs the send at once, once, and Undo cannot follow it', () => {
   assert.deepEqual(sent, ['A'], 'the timer does not send it a second time');
 });
 
-test('the dock makes Add into Send now only for the held message on screen', () => {
-  assert.match(TEMPLATE, /dock\("add"\)\.disabled = held \? false : elsewhere \|\| !dockTyped\(\) \|\| command;/);
-  assert.match(TEMPLATE, /dock\("add"\)\.textContent = held \? "Send now" : "Add";/);
-  assert.match(TEMPLATE, /dock\("add"\)\.title = held \? "Send this message immediately \(Cmd\+Enter or Ctrl\+Enter\)"/);
+test('the dock makes Add into Now only for the held message on screen', () => {
+  assert.match(TEMPLATE, /add\.disabled = held \? false : elsewhere \|\| !dockTyped\(\) \|\| command;/);
+  assert.match(TEMPLATE, /if \(!add\.dataset\.addSize && add\.getBoundingClientRect\(\)\.width > 0\)/);
+  assert.match(TEMPLATE, /const \{ width, height \} = add\.getBoundingClientRect\(\);/);
+  assert.match(TEMPLATE, /add\.style\.height = `\$\{height\}px`;/);
+  assert.match(TEMPLATE, /add\.textContent = held \? "Now" : "Add";/);
+  assert.match(TEMPLATE, /add\.title = held \? "Send this message now \(Enter; Cmd\+Enter or Ctrl\+Enter\)"/);
+  assert.match(TEMPLATE, /add\.setAttribute\("aria-label", held \? "Send this message now" : "Add to the batch and write the next comment"\);/);
   assert.match(TEMPLATE, /if \(heldHere\(\)\) sendNow\(\); else \{ addToBatch\(\); dock\("text"\)\.focus\(\); \}/);
-  assert.match(TEMPLATE, /else if \(e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\) && !e\.isComposing\) \{ e\.preventDefault\(\); sendNow\(\); \}/);
+  assert.match(TEMPLATE, /if \(e\.isComposing\) return;/);
+  assert.match(TEMPLATE, /else if \(e\.key === "Enter" && !e\.shiftKey\) \{ e\.preventDefault\(\); sendNow\(\); \}/);
 });
 
 test('only one message is in the window at a time, and a new one can start after it ends or is undone', () => {

@@ -242,17 +242,22 @@ async function until(fn, what, ms = 20000) {
 
   // ------------------------------------------------------------------ Send while away
   await shot('09-add-before');
+  const normalDock = await page.evaluate(() => { const r = document.querySelector('#dock-add').getBoundingClientRect(); return { width: r.width, height: r.height }; });
   await page.fill('#dock-text', 'Please also send it to the design team. Sent from the train.');
   await page.click('#dock-send');
   // Send holds the message for the Undo window (5 s, nothing leaves the page) before the page tries the laptop.
   await until(async () => /Sending in \d s/.test(await text('#main')), 'the Undo window');
-  const heldDock = await page.evaluate(() => { const b = document.querySelector('#dock-add'); return { text: b.textContent, disabled: b.disabled, title: b.title }; });
-  check(heldDock.text === 'Send now' && !heldDock.disabled, 'the Undo window changes Add into an enabled Send now action', JSON.stringify(heldDock));
+  const heldDock = await page.evaluate(() => {
+    const add = document.querySelector('#dock-add'), r = add.getBoundingClientRect();
+    return { text: add.textContent, disabled: add.disabled, title: add.title, width: r.width, height: r.height };
+  });
+  check(heldDock.text === 'Now' && !heldDock.disabled && /Enter/.test(heldDock.title), 'the Undo window changes Add into an enabled Now action with an Enter shortcut', JSON.stringify(heldDock));
+  check(heldDock.width === normalDock.width && heldDock.height === normalDock.height, 'the phone dock keeps its button size stable while Add becomes Now', JSON.stringify({ normal: normalDock, held: heldDock }));
   await shot('10-send-now-window');
-  await page.click('#dock-add');
+  await page.locator('#dock-text').press('Enter');
   await until(async () => (await page.locator('#dock-add').textContent()) === 'Add' && !(await page.locator('#dock-send').textContent()).startsWith('Undo'), 'Send now to finish and restore Add');
   const sentNowDock = await page.evaluate(() => { const add = document.querySelector('#dock-add'), send = document.querySelector('#dock-send'); return { add: add.textContent, addDisabled: add.disabled, send: send.textContent, status: document.querySelector('#dock-status').textContent }; });
-  check(sentNowDock.add === 'Add' && /Held on this phone/.test(sentNowDock.status), 'Send now uses the queue path and restores Add after delivery starts', JSON.stringify(sentNowDock));
+  check(sentNowDock.add === 'Add' && /Held on this phone|Queues for|Queued for/.test(sentNowDock.status), 'Send now uses the queue path and restores Add after delivery starts', JSON.stringify(sentNowDock));
   await shot('11-send-now-delivered');
   await until(async () => /Held on this phone/.test(await text('#dock-status') + await text('#main')), 'the held message', 40000);
   check(/Held on this phone/.test(await text('#main')), 'a Send with the laptop away is held on the phone and says so');
