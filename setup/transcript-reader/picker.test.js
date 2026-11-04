@@ -258,11 +258,18 @@ const fnBody = (page, fn) => page.slice(page.indexOf('function ' + fn + '('), pa
 function iconPage() {
   const page = pageSource();
   const make = () => ({ hidden: false, attrs: {}, title: '', setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
-  const conv = make(), docs = make();
-  const world = { state: { view: 'reader' }, count: 0 };
-  const sandbox = { state: world.state, document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs })[id] }, listedDocuments: () => new Array(world.count).fill(0), String };
+  const conv = make(), docs = make(), files = make();
+  const world = { state: { view: 'reader', docPage: 'list', doc: null }, count: 0, wide: false };
+  const sandbox = {
+    state: world.state,
+    data: { documents: { open: {} } },
+    wideDoc: () => world.wide,
+    document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs, 'files-quick': files })[id] },
+    listedDocuments: () => new Array(world.count).fill(0),
+    String,
+  };
   const run = vm.runInNewContext(fnBody(page, 'docsLabel') + '\n  }\n' + fnBody(page, 'paintViewIcons') + '\n  }\n({ docsLabel, paintViewIcons })', sandbox);
-  return { conv, docs, world, ...run };
+  return { conv, docs, files, world, ...run };
 }
 
 test('icons: Documents is lit on the Documents view and Conversation is offered on every other view', () => {
@@ -270,6 +277,7 @@ test('icons: Documents is lit on the Documents view and Conversation is offered 
   page.paintViewIcons({});
   assert.equal(page.conv.hidden, true, 'on the Conversation view the picker is the conversation: no icon for it');
   assert.equal(page.docs.attrs['aria-pressed'], 'false');
+  assert.equal(page.files.hidden, true, 'the Files icon is not for the Conversation view');
   page.world.state.view = 'doc';
   page.paintViewIcons({});
   assert.equal(page.conv.hidden, false);
@@ -293,12 +301,39 @@ test('icons: the Documents icon is named like its tab, with the count', () => {
   assert.equal(page.docsLabel({}), 'Documents (3)');
 });
 
+test('icons: Files appears only for an open multi-file document on a phone file page', () => {
+  const page = iconPage();
+  page.world.count = 2;
+  page.world.state.view = 'doc';
+  page.world.state.docPage = 'file';
+  page.world.state.doc = 'open';
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, false);
+  page.world.state.docPage = 'list';
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, true, 'the list button hides when the list is already on screen');
+  page.world.state.docPage = 'file';
+  page.world.wide = true;
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, true, 'the wide layout already shows the list beside the file');
+  page.world.wide = false;
+  page.world.count = 1;
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, true, 'a single file has no separate list page');
+  page.world.count = 2;
+  page.world.state.view = 'reader';
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, true, 'the Files icon hides on non-Documents views');
+});
+
 test('page: the icons and the tabs go to a view by the same functions, and the Documents icon on its own view does nothing', () => {
   const page = pageSource();
   assert.match(page, /document\.getElementById\("tab-reader"\)\.addEventListener\("click", showReaderView\);/);
   assert.match(page, /document\.getElementById\("tab-doc"\)\.addEventListener\("click", showDocView\);/);
   assert.match(page, /document\.getElementById\("view-conv"\)\.addEventListener\("click", showReaderView\);/);
   assert.match(page, /document\.getElementById\("view-doc"\)\.addEventListener\("click", \(\) => \{ if \(state\.view !== "doc"\) showDocView\(\); \}\);/);
+  assert.match(page, /document\.getElementById\("files-quick"\)\.addEventListener\("click", showDocList\);/);
+  assert.match(fnBody(page, 'showDocList'), /state\.docPage = "list"; docReveal = state\.doc;/, 'the Files icon opens the existing list page');
   assert.match(fnBody(page, 'showReaderView'), /if \(opening\) showLatest\(\)/, 'back to the conversation opens at its latest turn, as the tab does');
   assert.match(fnBody(page, 'paintBar'), /paintViewIcons\(session\);/, 'every draw of the bar keeps the icons right');
   assert.match(fnBody(page, 'render'), /docsLabel\(data\.sessions\[state\.session\]\)/, 'tab and icon share one label');
@@ -381,7 +416,9 @@ test('page: the folded header shows the icons, the answer sheet link turns into 
   assert.match(title, /id="view-conv"[^>]*aria-label="Conversation"[^>]*title="Conversation"[^>]*hidden/);
   assert.match(title, /id="view-doc"[^>]*aria-label="Documents"[^>]*aria-pressed="false"/);
   assert.match(title, /<a class="to-sheet" href="questionnaire\.html" title="Answer sheet" aria-label="Answer sheet">/);
-  assert.ok(title.indexOf('id="view-conv"') < title.indexOf('id="view-doc"') && title.indexOf('id="view-doc"') < title.indexOf('class="to-sheet"') && title.indexOf('class="to-sheet"') < title.indexOf('id="follow-quick"'));
+  assert.match(title, /<button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">/);
+  assert.match(title.match(/id="files-quick"[\s\S]*?<\/svg>/)[0], /stroke="currentColor" stroke-width="1\.4"/, 'the Files icon has the same stroke weight as its neighbours');
+  assert.ok(title.indexOf('id="view-conv"') < title.indexOf('id="view-doc"') && title.indexOf('id="view-doc"') < title.indexOf('id="files-quick"') && title.indexOf('id="files-quick"') < title.indexOf('class="to-sheet"') && title.indexOf('class="to-sheet"') < title.indexOf('id="follow-quick"'));
   assert.doesNotMatch(page.match(/<div id="bar-more">[\s\S]*?<div id="controls">/)[0], /view-btn|to-sheet/, 'the unfolded controls are untouched');
 });
 

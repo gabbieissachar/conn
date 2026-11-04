@@ -1382,11 +1382,12 @@ class PageShellTest(unittest.TestCase):
     def test_the_folded_header_has_icons_for_conversation_documents_and_the_answer_sheet_in_every_copy(self):
         for mode, page in self.pages():
             title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)
-            # Conversation (hidden on its own view), Documents and the answer sheet, in that order, ahead of Follow.
-            order = [title.index(mark) for mark in ('id="view-conv"', 'id="view-doc"', 'class="to-sheet"', 'id="follow-quick"')]
+            # Conversation (hidden on its own view), Documents, Files and the answer sheet, in that order, ahead of Follow.
+            order = [title.index(mark) for mark in ('id="view-conv"', 'id="view-doc"', 'id="files-quick"', 'class="to-sheet"', 'id="follow-quick"')]
             self.assertEqual(order, sorted(order), mode)
             self.assertRegex(title, r'<button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden>', mode)
             self.assertRegex(title, r'<button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false">', mode)
+            self.assertRegex(title, r'<button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden>', mode)
             # The answer sheet stays one link (the hosted copy aims it at sheet.html by its class); folded it shows as an icon, with a name.
             self.assertRegex(title, r'<a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">.*?</span><svg class="sheet-ico"', mode)
             self.assertIn('document.querySelector(".to-sheet").href = "sheet.html"', page)
@@ -1396,6 +1397,8 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('<button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>', controls, mode)
             self.assertIn(".bar.collapsed .view-btn:not([hidden]) { display: grid; }", page)
             self.assertIn("  .view-btn, .to-sheet .sheet-ico { display: none; }", page)
+            self.assertIn('document.getElementById("files-quick").addEventListener("click", showDocList);', page)
+            self.assertIn('files.hidden = !(fileOpen && !wideDoc() && entries.length > 1);', page)
 
     def test_the_documents_view_has_the_conversations_header_with_a_document_picker_in_place_of_the_session_picker(self):
         for mode, page in self.pages():
