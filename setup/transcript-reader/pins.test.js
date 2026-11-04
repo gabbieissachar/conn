@@ -28,7 +28,8 @@ function load({ hosted = false, served = true, server = null, starServer = null,
     pinsChange: async (change) => {
       calls.push(['change', JSON.parse(JSON.stringify(change))]);
       if (server.fail) throw new Error(server.fail);
-      if (change.op === 'pin' && !server.pins.some((p) => p.key === change.key)) server.pins.push({ key: change.key, conv: change.conv, at: change.at, pinned: 99 });
+      if (change.op === 'pin' && !server.pins.some((p) => p.key === change.key)) server.pins.push({ key: change.key, conv: change.conv, at: change.at, pinned: 99, ...(change.description === undefined ? {} : { description: change.description }) });
+      if (change.op === 'describe') server.pins = server.pins.map((p) => p.key === change.key ? { ...p, ...(change.description ? { description: change.description } : {}) } : p);
       if (change.op === 'unpin') server.pins = server.pins.filter((p) => p.key !== change.key);
       server.rev += 1;
       return { status: 'ok', rev: server.rev, pins: server.pins.map((p) => ({ ...p })) };
@@ -56,8 +57,8 @@ function load({ hosted = false, served = true, server = null, starServer = null,
     },
   };
   vm.createContext(sandbox);
-  const { pins, stars } = vm.runInContext(SOURCE + '\n({ pins, stars });', sandbox);
-  return { pins, stars, calls, storage, listeners };
+  const { pins, stars, pinDefaultDescription, pinDescription } = vm.runInContext(SOURCE + '\n({ pins, stars, pinDefaultDescription, pinDescription });', sandbox);
+  return { pins, stars, pinDefaultDescription, pinDescription, calls, storage, listeners };
 }
 
 const serverWith = (pins = [], rev = 0) => ({ pins, rev, fail: '', down: false });
@@ -83,7 +84,9 @@ test('the hosted copy keeps its own pins, apart from the local page\'s, and neve
   await t.pins.load();
   assert.deepEqual(t.pins.all(), [], 'the local page\'s pins are not the hosted copy\'s');
   await t.pins.toggle(K1, CONV, 5);
+  await t.pins.describe(K1, 'Hosted handoff');
   assert.deepEqual(JSON.parse(storage.get('tr-hosted-pins')).map((p) => p.key), [K1]);
+  assert.equal(JSON.parse(storage.get('tr-hosted-pins'))[0].description, 'Hosted handoff');
   assert.deepEqual(t.calls, [], 'no request at all');
 });
 
@@ -92,6 +95,28 @@ test('a pin holds where the message is and when, never any text', async () => {
   await t.pins.load();
   await t.pins.toggle(K1, CONV, 5);
   assert.deepEqual(Object.keys(t.pins.all()[0]).sort(), ['at', 'conv', 'key', 'pinned']);
+});
+
+test('a pin description saves and edits in browser storage, while an old pin without one still works', async () => {
+  const storage = new Map([['tr-pins', JSON.stringify([pin(K2)])]]);
+  const t = load({ served: false, storage });
+  await t.pins.load();
+  assert.equal(t.pins.all()[0].description, undefined);
+  await t.pins.describe(K2, 'About the handoff');
+  assert.equal(t.pins.all()[0].description, 'About the handoff');
+  assert.equal(JSON.parse(storage.get('tr-pins'))[0].description, 'About the handoff');
+  await t.pins.describe(K2, 'Updated handoff');
+  assert.equal(t.pins.all()[0].description, 'Updated handoff');
+  await t.pins.describe(K2, '');
+  assert.equal(t.pins.all()[0].description, '');
+});
+
+test('a pin description overrides the default, which skips greetings and the Nathan address', () => {
+  const t = load({ served: false });
+  const text = 'Hello Nathan,\nNathan,\nThe launch checklist is ready.';
+  assert.equal(t.pinDefaultDescription(text), 'The launch checklist is ready.');
+  assert.equal(t.pinDescription({}, text), 'The launch checklist is ready.');
+  assert.equal(t.pinDescription({ description: 'What the checklist covers' }, text), 'What the checklist covers');
 });
 
 test('a browser that will not keep the pin says so and leaves the list as it was', async () => {
@@ -113,6 +138,9 @@ test('with the local server, the pins come from its file and each change is sent
   await t.pins.toggle(K1, CONV, 7);
   assert.deepEqual(t.calls.at(-1), ['change', { op: 'pin', key: K1, conv: CONV, at: 7 }]);
   assert.equal(t.pins.count(), 2);
+  await t.pins.describe(K2, 'The earlier reply');
+  assert.deepEqual(t.calls.at(-1), ['change', { op: 'describe', key: K2, description: 'The earlier reply' }]);
+  assert.equal(server.pins.find((p) => p.key === K2).description, 'The earlier reply');
   await t.pins.toggle(K2, CONV, 5);
   assert.deepEqual(t.calls.at(-1), ['change', { op: 'unpin', key: K2 }]);
   assert.deepEqual(t.pins.all().map((p) => p.key), [K1]);

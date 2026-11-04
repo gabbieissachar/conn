@@ -948,6 +948,22 @@ test('pins: written to the owner-only file outside out/, one change at a time, a
   } finally { await t.close(); }
 });
 
+test('pins: an owner description is saved and edited without storing the message text', async () => {
+  const t = await start();
+  try {
+    const key = 'abcdef12-3456-4789-8abc-def012345678:reply';
+    const added = await t.post('pins', { op: 'pin', key, conv: A, at: 1700000000.5, description: 'The handoff' });
+    assert.equal(added.status, 200, added.raw);
+    assert.equal(added.json.pins[0].description, 'The handoff');
+    const edited = await t.post('pins', { op: 'describe', key, description: 'The updated handoff' });
+    assert.equal(edited.status, 200, edited.raw);
+    assert.equal(edited.json.pins[0].description, 'The updated handoff');
+    const saved = JSON.parse(fs.readFileSync(t.tree.pinsFile, 'utf8')).pins[0];
+    assert.deepEqual(saved, { key, conv: A, at: 1700000000.5, pinned: saved.pinned, description: 'The updated handoff' });
+    assert.equal(saved.text, undefined);
+  } finally { await t.close(); }
+});
+
 test('pins: bad input and foreign pages are refused, and no message text is ever stored', async () => {
   const t = await start();
   try {

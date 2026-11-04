@@ -38,7 +38,7 @@
 //                                                   holds none of it); an empty set for a conversation with none. Read only.
 //   GET  /api/transcript-reader/pins                the pinned messages (pinstore.js: a small owner-only file
 //                                                   outside the repo) and their revision
-//   POST /api/transcript-reader/pins                { op: "pin", key, conv, at } or { op: "unpin", key }
+//   POST /api/transcript-reader/pins                { op: "pin", key, conv, at[, description] }, { op: "describe", key, description } or { op: "unpin", key }
 //   GET  /api/transcript-reader/stars               the starred sessions of the picker (the same store, in a file
 //                                                   beside the pins) and their revision
 //   POST /api/transcript-reader/stars               { op: "star", conv } or { op: "unstar", conv }

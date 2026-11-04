@@ -1,18 +1,33 @@
   // ---------------------------------------------------------------- pins and stars (pins.js, the reader page only)
   // build_prototype.fill_template pastes this file into the reader page's script, after live.js.
   // A pin names one message by its turn's id (the session log's own record id, which never changes)
-  // and the part pinned: "<id>:in" is the message, "<id>:reply" the reply to it. It holds no text, only
-  // { key, conv, at, pinned }: where it sits, when the message was written and when it was pinned.
+  // and the part pinned: "<id>:in" is the message, "<id>:reply" the reply to it. It holds no message text, only
+  // { key, conv, at, pinned, description }: where it sits, when the message was written, when it was pinned and the owner's short label.
   // The served local page keeps pins in one small owner-only file on the laptop, outside the repo, through
   // the reader's own server (pinstore.js), so they survive a rebuilt page, a new copy of the repo and a
   // restarted server. A page that cannot reach it (a file copy, the hosted copy, a server too old to have
   // the route) keeps them in this browser, and the local page moves them into the file once it can.
   // The picker's stars are kept the same way by the same code (kept, below): one list per kind, in the server's
   // stars file or this browser, each { conv, starred }: which conversation, and when it was starred.
+  const pinDefaultDescription = text => {
+    const lines = String(text || "").split("\n").map(line => line.replace(/^[\s#>*\-\d.)|]+/, "").replace(/[*`_]/g, "").trim().replace(/\s+/g, " "));
+    const greeting = /^(?:(?:hi|hello|hey|dear)(?:\s+nathan)?[!,.?:;]?|good\s+(?:morning|afternoon|evening)(?:\s+nathan)?[!,.?:;]?)$/i;
+    const address = /^nathan[,:]?[.!]?$/i;
+    return lines.find(line => line && !greeting.test(line) && !address.test(line)) || "(no text)";
+  };
+  const pinDescription = (pin, text) => {
+    const value = pin && typeof pin.description === "string" ? pin.description.trim() : "";
+    return value || pinDefaultDescription(text);
+  };
+  const validPinDescription = description => description === undefined || (typeof description === "string" && description.length <= 80 && !/[\r\n]/.test(description));
+  const normalizedPinDescription = description => {
+    if (!validPinDescription(description)) throw new Error("Description must be one line and at most 80 characters.");
+    return typeof description === "string" ? description.trim().replace(/\s+/g, " ") : description;
+  };
   // One kept list, as the page holds it: <ask> names the server's calls ({ list, change }), <id> the field that
   // names an item, <add> and <remove> its two operations, <noun> and <undo> the words of the cap's message, <make>
   // the item an add builds from its other fields, and <storage> where this browser keeps it.
-  const kept = ({ storage, ask, id, add, remove, noun, undo, make, sound, max }) => {
+  const kept = ({ storage, ask, id, add, remove, edit = "edit", noun, undo, make, sound, max }) => {
     const BROWSER = HOSTED ? "tr-hosted-" + storage : "tr-" + storage;
     let items = [];
     let rev = 0;
@@ -67,9 +82,23 @@
       } catch (e) { items = was; notify(); throw e; }
       notify();
     }
+    async function update(key, more = {}) {
+      const was = items;
+      const current = items.find(item => item[id] === key);
+      if (!current) throw new Error(`That ${noun} is no longer here.`);
+      items = items.map(item => item[id] === key ? { ...item, ...more } : item);
+      notify();
+      try {
+        if (where === "file") {
+          const saved = await ask.change({ op: edit, [id]: key, ...more });
+          items = list(saved); rev = saved.rev;
+        } else if (!saveBrowser(items)) throw new Error(`This browser would not keep the ${noun} description.`);
+      } catch (e) { items = was; notify(); throw e; }
+      notify();
+    }
     window.addEventListener("storage", e => { if (where === "browser" && e.key === BROWSER) { items = browserItems(); notify(); } });
     return {
-      load, refresh, has, toggle, onChange: fn => listeners.add(fn),
+      load, refresh, has, toggle, update, onChange: fn => listeners.add(fn),
       replace: all => { items = Array.isArray(all) ? all.filter(sound) : []; if (where === "browser") saveBrowser(items); notify(); },
       all: () => items.slice(), count: () => items.length,
       where: () => where,
@@ -78,11 +107,17 @@
   const pinStore = kept({
     storage: "pins", ask: { list: () => live.pinsList(), change: c => live.pinsChange(c) },
     id: "key", add: "pin", remove: "unpin", noun: "pins", undo: "unpin", max: 1000,
+    edit: "describe",
     make: (key, more) => ({ key, ...more, pinned: Date.now() / 1000 }),
-    sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && Number.isFinite(p.pinned),
+    sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && Number.isFinite(p.pinned)
+      && validPinDescription(p.description),
   });
   // Pin or unpin a message: its key, the conversation and the time it was written.
-  const pins = { ...pinStore, toggle: (key, conv, at) => pinStore.toggle(key, { conv, at }) };
+  const pins = {
+    ...pinStore,
+    toggle: (key, conv, at, description) => pinStore.toggle(key, { conv, at, ...(description === undefined ? {} : { description }) }),
+    describe: (key, description) => pinStore.update(key, { description: normalizedPinDescription(description) }),
+  };
   const stars = kept({
     storage: "stars", ask: { list: () => live.starsList(), change: c => live.starsChange(c) },
     id: "conv", add: "star", remove: "unstar", noun: "stars", undo: "unstar", max: 200,

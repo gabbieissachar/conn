@@ -1447,6 +1447,19 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('id="sync"', page, mode)
             self.assertIn("async function syncNow()", page, mode)
 
+    def test_pins_carry_editable_short_descriptions_and_default_old_pins(self):
+        for mode, page in self.pages():
+            self.assertIn("const pinDefaultDescription =", page, mode)
+            self.assertIn("const pinDescription =", page, mode)
+            self.assertIn('describe: (key, description) => pinStore.update(key, { description: normalizedPinDescription(description) })', page, mode)
+            self.assertIn('state.pinsOpen = true;', page, mode)
+            self.assertIn('state.pinEditing = key;', page, mode)
+            self.assertIn('input.maxLength = 80;', page, mode)
+            self.assertIn('await pins.describe(key, description);', page, mode)
+            self.assertIn('const line = pinDescription(pin, text);', page, mode)
+            self.assertIn('p.description || ""', page, mode)
+            self.assertIn('It holds pinned message ids and your short descriptions, not message text.', page, mode)
+
     def test_the_reader_pages_carry_the_picker_rules_that_picker_test_js_runs(self):
         for mode, page in self.pages():
             self.assertIn("const picker = (() => {", page, mode)

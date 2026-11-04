@@ -2,9 +2,9 @@
 
 // The reader's pinned messages, kept in one small file on this laptop, outside the repo, so a
 // pin survives a rebuilt page, a new worktree of the repo and a restarted server. The file
-// holds only which message was pinned (its turn's id from the session log, never any text):
+// holds which message was pinned (its turn's id from the session log, never the message text), plus the owner's short description:
 //
-//   { "version": 1, "rev": 7, "pins": [{ "key": "<turn id>:in|reply", "conv": "<conversation id>", "at": <message time>, "pinned": <epoch> }] }
+//   { "version": 1, "rev": 7, "pins": [{ "key": "<turn id>:in|reply", "conv": "<conversation id>", "at": <message time>, "pinned": <epoch>, "description": "<owner's short label>" }] }
 //
 // Like everything this reader writes it is the owner's alone (folder 0700, file 0600). It is
 // read and written only through api.js's pins route, behind the same guard as Send.
@@ -28,6 +28,7 @@ const KEY_RE = /^[0-9A-Za-z_-]{8,80}:(?:in|reply)$/;
 const CONV_RE = /^[0-9A-Za-z_-]{1,64}$/;
 const MAX_PINS = 1000;
 const MAX_STARS = 200;
+const MAX_DESCRIPTION = 80;
 
 class PinError extends Error {
   constructor(message, status = 400, code = 'error') {
@@ -48,17 +49,40 @@ function defaultStarsFile(env = process.env) {
 // What a list of kept things is: the file's list name, its add and remove operations, the field that names an
 // item, the fields an add carries, how each is checked and made, and the most it holds.
 const PINS = {
-  list: 'pins', add: 'pin', remove: 'unpin', id: 'key', addFields: ['key', 'conv', 'at'], max: MAX_PINS,
+  list: 'pins', add: 'pin', remove: 'unpin', edit: 'describe', id: 'key', addFields: ['key', 'conv', 'at', 'description'], editFields: ['key', 'description'], max: MAX_PINS,
   tooMany: 'Too many pins: unpin some first.',
   checkId: (body) => { if (typeof body.key !== 'string' || !KEY_RE.test(body.key)) throw new PinError('Invalid message id.'); },
   checkAdd: (body) => {
     if (typeof body.conv !== 'string' || !CONV_RE.test(body.conv)) throw new PinError('Invalid conversation id.');
     if (!Number.isFinite(body.at)) throw new PinError('Invalid time.');
+    checkDescription(body);
   },
-  make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, pinned: epoch }),
+  checkEdit: (body) => { if (typeof body.description !== 'string') throw new PinError('Description must be one line and at most 80 characters.'); checkDescription(body); },
+  make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, pinned: epoch, ...descriptionField(body.description) }),
   valid: (pin) => Boolean(pin) && typeof pin === 'object' && KEY_RE.test(pin.key) && CONV_RE.test(pin.conv)
-    && Number.isFinite(pin.at) && Number.isFinite(pin.pinned),
+    && Number.isFinite(pin.at) && Number.isFinite(pin.pinned) && validDescription(pin.description),
 };
+
+function validDescription(description) {
+  return description === undefined || (typeof description === 'string' && description.length <= MAX_DESCRIPTION && !/[\r\n]/.test(description));
+}
+
+function normalizedDescription(description) {
+  if (description === undefined) return undefined;
+  if (typeof description !== 'string') throw new PinError('Description must be one line and at most 80 characters.');
+  const value = description.trim().replace(/\s+/g, ' ');
+  if (value.length > MAX_DESCRIPTION || /[\r\n]/.test(description)) throw new PinError('Description must be one line and at most 80 characters.');
+  return value;
+}
+
+function checkDescription(body) {
+  normalizedDescription(body.description);
+}
+
+function descriptionField(description) {
+  const value = normalizedDescription(description);
+  return value ? { description: value } : {};
+}
 
 // A starred session is named by its conversation (the same conv a pin carries), never by a session id alone.
 const STARS = {
@@ -107,13 +131,14 @@ function createList(kind, { file, now = () => Date.now() }) {
 
   function read() { return view(load()); }
 
-  // One change: { op: <add>, ...fields } adds an item (again is a no-op) and { op: <remove>, <id> } takes it off.
+  // One change: { op: <add>, ...fields } adds an item (again is a no-op), { op: <edit>, <id>, ...fields } changes its owner label,
+  // and { op: <remove>, <id> } takes it off.
   // Answers every item after the change.
   function change(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new PinError('Invalid request.');
-    const allowed = body.op === kind.add ? ['op', ...kind.addFields] : ['op', kind.id];
+    const allowed = body.op === kind.add ? ['op', ...kind.addFields] : kind.edit && body.op === kind.edit ? ['op', ...(kind.editFields || [kind.id])] : ['op', kind.id];
     for (const name of Object.keys(body)) if (!allowed.includes(name)) throw new PinError('Unknown field.');
-    if (body.op !== kind.add && body.op !== kind.remove) throw new PinError('Unknown operation.');
+    if (body.op !== kind.add && body.op !== kind.remove && (!kind.edit || body.op !== kind.edit)) throw new PinError('Unknown operation.');
     kind.checkId(body);
     const state = load();
     const items = state[kind.list];
@@ -123,6 +148,22 @@ function createList(kind, { file, now = () => Date.now() }) {
       const rest = items.filter((item) => item[kind.id] !== body[kind.id]);
       save(state.rev + 1, rest, state.unreadable);
       return { rev: state.rev + 1, [kind.list]: rest };
+    }
+    if (kind.edit && body.op === kind.edit) {
+      if (kind.checkEdit) kind.checkEdit(body);
+      if (!has) return view(state);
+      const description = normalizedDescription(body.description);
+      const current = items.find((item) => item[kind.id] === body[kind.id]);
+      if ((current.description || '') === description) return view(state);
+      const changed = items.map((item) => {
+        if (item[kind.id] !== body[kind.id]) return item;
+        const next = { ...item };
+        if (description) next.description = description;
+        else delete next.description;
+        return next;
+      });
+      save(state.rev + 1, changed, state.unreadable);
+      return { rev: state.rev + 1, [kind.list]: changed };
     }
     kind.checkAdd(body);
     if (has) return view(state);
@@ -138,4 +179,4 @@ function createList(kind, { file, now = () => Date.now() }) {
 const create = (options = {}) => createList(PINS, { file: defaultFile(), ...options });
 const createStars = (options = {}) => createList(STARS, { file: defaultStarsFile(), ...options });
 
-module.exports = { create, createStars, defaultFile, defaultStarsFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS };
+module.exports = { create, createStars, defaultFile, defaultStarsFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS, MAX_DESCRIPTION };

@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { create, createStars, defaultFile, defaultStarsFile, PinError, MAX_PINS, MAX_STARS } = require('./pinstore');
+const { create, createStars, defaultFile, defaultStarsFile, PinError, MAX_PINS, MAX_STARS, MAX_DESCRIPTION } = require('./pinstore');
 
 const K1 = 'abcdef12-3456-4789-8abc-def012345678:in';
 const K2 = 'abcdef12-3456-4789-8abc-def012345678:reply';
@@ -31,6 +31,20 @@ test('no file reads as no pins; a pin is kept with its conversation, message tim
   // A second store on the same file (a restarted server) sees the same pins.
   assert.deepEqual(create({ file }).read().pins.map((pin) => pin.key), [K1]);
   assert.deepEqual(store.change({ op: 'pin', key: K2, conv: CONV, at: 1700000100 }).pins.map((pin) => pin.key), [K1, K2]);
+});
+
+test('a pin can carry and later edit the owner short description, while clearing it keeps old pin shape', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'pins.json');
+  const store = create({ file, now: () => 5_000_000 });
+  const added = store.change({ op: 'pin', key: K1, conv: CONV, at: 1, description: '  The handoff  ' });
+  assert.equal(added.pins[0].description, 'The handoff');
+  const edited = store.change({ op: 'describe', key: K1, description: 'Updated handoff' });
+  assert.equal(edited.pins[0].description, 'Updated handoff');
+  const cleared = store.change({ op: 'describe', key: K1, description: '' });
+  assert.deepEqual(cleared.pins[0], { key: K1, conv: CONV, at: 1, pinned: 5000 });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pins[0].description, undefined);
+  assert.equal(MAX_DESCRIPTION, 80);
 });
 
 test('the file is 0600 in a 0700 folder, also when an earlier run left the folder wider', () => {
@@ -70,7 +84,9 @@ test('bad input is refused with a reason and writes nothing', () => {
   const store = create({ file });
   const bad = [
     null, [], 'pin', {}, { op: 'pin' }, { op: 'pin', key: K1 }, { op: 'pin', key: K1, conv: CONV }, { op: 'pin', key: K1, conv: CONV, at: NaN },
-    { op: 'pin', key: K1, conv: CONV, at: 1, text: 'hello' }, { op: 'unpin', key: K1, at: 1 }, { op: 'pin', key: 'x:in', conv: CONV, at: 1 },
+    { op: 'pin', key: K1, conv: CONV, at: 1, text: 'hello' }, { op: 'pin', key: K1, conv: CONV, at: 1, description: 'x'.repeat(MAX_DESCRIPTION + 1) },
+    { op: 'pin', key: K1, conv: CONV, at: 1, description: 'one\ntwo' }, { op: 'describe', key: K1 }, { op: 'describe', key: K1, description: 'one\ntwo' },
+    { op: 'unpin', key: K1, at: 1 }, { op: 'pin', key: 'x:in', conv: CONV, at: 1 },
     { op: 'pin', key: K1, conv: 'a/b', at: 1 }, { op: 'pin', key: K1 + '!', conv: CONV, at: 1 }, { op: 'swap', key: K1 },
   ];
   for (const body of bad) assert.throws(() => store.change(body), PinError, JSON.stringify(body));
