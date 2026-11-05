@@ -14,6 +14,13 @@
       const only = name => entries.filter(([s]) => part(s, running, starred) === name);
       return { starred: only("starred"), running: only("running"), idle: only("idle") };
     }
+    // Which session an option of the picker names. The option holds the session's id, never its place in the list: the list is put
+    // in a new order by every build (newest reply first), and a picker that is held open (its options are drawn again once it
+    // closes) would send a choice to whichever session now stands at the old place. -1 for a session no longer on the page.
+    function indexOf(sessions, value) {
+      const own = sessions.findIndex(s => s.id === value);
+      return own >= 0 ? own : sessions.findIndex(s => (s.ids || [s.id]).includes(value));
+    }
     // Whether a star names this session: stars are kept by conversation, the way pins are (<ids> is every id the
     // conversation has had, the newest first), so a /clear that moves it under a new id keeps its star. Answers the
     // star's own conversation, which is what to send to unstar it, or null.
@@ -37,5 +44,5 @@
       if (!name) return "Transcript reader";
       return name + (view === "doc" ? " · Documents" : " · Reader");
     }
-    return { part, sections, starOf, label, pageTitle };
+    return { part, sections, indexOf, starOf, label, pageTitle };
   })();

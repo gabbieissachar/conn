@@ -2358,3 +2358,60 @@ test('Claude homes: a lab that names the projects and sessions folders reads tho
     assert.deepEqual(t.herdr.readerRuns(), []);
   } finally { await t.close(); fs.rmSync(second, { recursive: true, force: true }); }
 });
+
+// The owner's tabs one day: a Copilot pane, a Claude under a second config folder and a Claude under ~/.claude in one working folder,
+// and a Codex pane, all four reported by Herdr WITHOUT a session id, with a shell pane beside one of them.
+test('mixed panes: panes Herdr gave no session id each map to their own session, and Send goes to the picked pane only', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const work = path.join(path.dirname(tree.root), 'personal-work');
+    const split = path.join(path.dirname(tree.root), 'split-fix');
+    fs.mkdirSync(work, { recursive: true }); fs.mkdirSync(split, { recursive: true });
+    writeCopilotSession(tree, K1, work);
+    writeCopilotLog(tree, 9101, [registering(K1, '2026-11-05T06:02:21.271Z')]);
+    writeCodexLog(tree, E, split);
+    const home = secondClaudeHome(tree, X, process.pid);  // the second folder's Claude: this process's pid
+    fs.mkdirSync(tree.claudeSessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(tree.claudeSessionsDir, process.ppid + '.json'), JSON.stringify({ pid: process.ppid, sessionId: A, cwd: work }));
+    herdr.panes = [
+      { pane_id: 'w1:p1', tab_id: 'w1:t1', label: 'cp-ontology-learning', agent: 'copilot', agent_status: 'idle' },
+      { pane_id: 'w1:p2', tab_id: 'w1:t2', label: 'cp-ontology-search', agent: 'claude', agent_status: 'idle' },
+      { pane_id: 'w1:p3', tab_id: 'w1:t2', terminal_title_stripped: 'zsh' },
+      { pane_id: 'w1:p4', tab_id: 'w1:t3', label: 'cp-whatapps-tool', agent: 'claude', agent_status: 'done' },
+      { pane_id: 'w2:p2', tab_id: 'w2:t1', label: 'fm-adjoe-wrong-trip-split-fix', agent: 'codex', agent_status: 'working' },
+    ];
+    herdr.processInfo = {
+      'w1:p1': [{ pid: 9101, argv0: 'copilot', cwd: work }],
+      'w1:p2': [{ pid: process.pid, argv0: 'claude', cwd: work }],
+      'w1:p4': [{ pid: process.ppid, argv0: 'claude', cwd: work }],
+      'w2:p2': [{ pid: 9201, argv0: 'codex', cwd: split }],
+    };
+    herdr.focused = 'w1:p2';
+    listCopilot(tree, K1, X, A, E);
+    return { claudeHomes: [home] };
+  } });
+  try {
+    const { json } = await t.state();
+    assert.equal(json.panes[K1].label, 'cp-ontology-learning', 'the Copilot pane shows the session its process registered');
+    assert.equal(json.panes[X].label, 'cp-ontology-search', 'the Claude of the second folder is matched by its process id, not by the folder it shares');
+    assert.equal(json.panes[A].label, 'cp-whatapps-tool', 'the Claude of the first folder, in the same working folder, is its own');
+    assert.equal(json.panes[E].label, 'fm-adjoe-wrong-trip-split-fix', 'the Codex pane maps by its working folder');
+    assert.equal(json.panes[A].status, 'done');
+    assert.equal(Object.keys(json.panes).length, 4, 'the shell pane runs no session');
+    assert.equal(json.focus.session_id, X);
+    // Each send reaches the pane of the session it names, and no other.
+    for (const [id, pane] of [[X, 'w1:p2'], [A, 'w1:p4'], [E, 'w2:p2']]) {
+      t.herdr.calls.length = 0;
+      t.tick(5000);
+      const sent = await t.send({ session_id: id, text: 'to ' + pane });
+      assert.equal(sent.status, 200, sent.raw);
+      assert.equal(t.herdr.prompts().length, 1);
+      assert.equal(t.herdr.prompts()[0].args[4], pane, id + ' goes to ' + pane);
+      assert.ok(t.herdr.keys().every((call) => call.args[4] === pane), 'the keys that empty the box went there too');
+    }
+    t.herdr.calls.length = 0;
+    t.tick(5000);
+    const copilot = await t.send({ session_id: K1, text: 'to the copilot pane' });
+    assert.equal(copilot.status, 409);
+    assert.equal(t.herdr.agentCalls().length, 0, 'nothing reached any pane for the Copilot session');
+  } finally { await t.close(); }
+});

@@ -450,3 +450,33 @@ test('page: a session is chosen on the Conversation only, so pickSession has no 
   assert.match(page, /docs\.addEventListener\("change", \(\) => chooseDocument\(docs\.value\)\);/);
   assert.match(fnBody(page, 'pickDoc'), /state\.doc = docs\.length \? docs\[docs\.length - 1\]\.id : null/, 'the newest file, or none (the empty note)');
 });
+
+// ---- a choice names a session by its id, never by its place in a list that every build puts in a new order
+
+test('indexOf: the option holds the session id, and the session is found wherever the list has moved it', () => {
+  const before = [session('a', 'alpha'), session('b', 'beta'), session('c', 'gamma'), session('d', 'delta')];
+  assert.equal(picker.indexOf(before, 'c'), 2);
+  // A reply in "d" puts it first: every session above it moves down one place. The picker held open still offers "c" by what it drew.
+  const after = [before[3], before[0], before[1], before[2]];
+  assert.equal(picker.indexOf(after, 'c'), 3, 'the same session, one place further down');
+  assert.equal(after[picker.indexOf(after, 'c')].id, 'c');
+  assert.equal(picker.indexOf(after, 'gone'), -1, 'a session no longer on the page is none');
+  assert.equal(picker.indexOf([], 'a'), -1);
+});
+
+test('indexOf: a session that a /clear gave a newer id is still found by an id it had', () => {
+  const list = [session('new', 'alpha', { ids: ['new', 'old'] }), session('other', 'beta')];
+  assert.equal(picker.indexOf(list, 'old'), 0);
+  assert.equal(picker.indexOf(list, 'new'), 0);
+  assert.equal(picker.indexOf([session('old', 'x'), session('z', 'y', { ids: ['z', 'old'] })], 'old'), 0, 'the session that is called by that id comes before one that only had it');
+});
+
+test('page: the session picker offers ids, and a choice is looked up in the list as it is now (the held-open picker bug)', () => {
+  const page = pageSource();
+  assert.doesNotMatch(page, /opt\.value = i;/, 'no option holds a place in the list');
+  assert.equal(page.match(/opt\.value = s\.id;/g).length, 2, 'the live picker and the hosted copy\'s picker both offer ids');
+  const body = fnBody(page, 'pickSession');
+  assert.match(body, /picker\.indexOf\(data\.sessions, value\)/);
+  assert.doesNotMatch(body, /Number\(value\)/, 'the value is not a number');
+  assert.match(body, /if \(index < 0\) \{ render\(\); return; \}/, 'a session that left the page changes nothing but the picker');
+});
