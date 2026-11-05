@@ -74,8 +74,38 @@ test('save-manual-identity: saves through register with explicit pane ids, a std
 
     const [register] = registerCalls(env.calls);
     assert.deepEqual(register.args.slice(1), ['register', '--client', 'codex', '--session-id', ID, '--allow-no-herdr', '--pane-id', 'w1:p2', '--workspace-id', 'w1', '--tab-id', 'w1:t2', '--herdr-session', 'project-a', '--cwd', env.real]);
-    assert.equal(Object.keys(register.env).some((key) => key.startsWith('HERDR_')), false, 'no Herdr context reaches register');
+    // No Herdr context reaches register, and Herdr's own "current pane" fallback (the focused pane of the default session)
+    // cannot answer either: the one HERDR_ variable it gets is a socket path that can never exist.
+    assert.deepEqual(Object.keys(register.env).filter((key) => key.startsWith('HERDR_')), ['HERDR_SOCKET_PATH']);
+    assert.equal(register.env.HERDR_SOCKET_PATH.startsWith('/dev/null/'), true, 'no server can listen below /dev/null');
+    assert.notEqual(register.env.HERDR_SOCKET_PATH, '/x', 'the socket path of the server\'s own shell is not passed on');
   } finally { await env.done(); }
+});
+
+test('save-manual-identity: a registry that recorded another pane is reported, never shown as saved', async () => {
+  // The tool prints the pane it recorded. Answering with the focused pane of another session is how the bug looked.
+  const wrong = (file, args) => (args.includes('register') ? { code: 0, stdout: 'registered codex -> w9:p9\nmanifest: /fixture/manifest.json\n', stderr: '', timedOut: false, truncated: false } : undefined);
+  const env = await manualServer({ handle: wrong });
+  try {
+    const { post } = await client(env.server);
+    await verified(post);
+    const response = await post('save-manual-identity', manual());
+    assert.equal(response.status, 502, response.raw);
+    assert.equal(response.json.code, 'register_wrong_pane');
+    assert.match(response.json.message, /w9:p9 instead of w1:p2/);
+    assert.match(response.json.message, /herdr-agent-remove w9:p9/);
+    assert.equal(response.raw.includes(ID), false);
+    assert.deepEqual(findLeaks(response.raw), []);
+  } finally { await env.done(); }
+  // The right pane, and a tool that prints nothing recognisable, are both accepted as before.
+  for (const stdout of ['registered codex -> w1:p2\nmanifest: /fixture/manifest.json\n', 'registered ok\nmanifest: /fixture/manifest.json\n']) {
+    const ok = await manualServer({ handle: (file, args) => (args.includes('register') ? { code: 0, stdout, stderr: '', timedOut: false, truncated: false } : undefined) });
+    try {
+      const { post } = await client(ok.server);
+      await verified(post);
+      assert.equal((await post('save-manual-identity', manual())).status, 200, stdout);
+    } finally { await ok.done(); }
+  }
 });
 
 test('save-manual-identity: saves without any identity check, and a check can only add protection', async () => {

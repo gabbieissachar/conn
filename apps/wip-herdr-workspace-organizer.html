@@ -1172,30 +1172,46 @@ created: 2026-09-10
     };
     // The manual identity form also appears in the Archive all card, so a change re-renders both places.
     const rerenderManual = () => { renderRestart(); renderArchiveAll(); };
+    // A save outlives its form: Close form or Cancel can be pressed while the request runs. The entry is therefore looked up
+    // again by key once the request ends, and a failure only reaches the attempt that raised it. A reply that lands on a
+    // closed form is told in a toast, because nothing on the page would show it.
+    let manualAttempt = 0;
     const saveManualIdentity = async key => {
       const entry = restart.manual[key];
       if (!entry || entry.saving) return;
       const [session, pane] = key.split('|');
+      const attempt = ++manualAttempt;
       entry.saving = true;
+      entry.attempt = attempt;
       entry.error = '';
       rerenderManual();
-      try {
-        const data = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, replace_existing: entry.replace === true, confirm: `save:${pane}` });
-        restart.manual[key] = { saved: data.masked_id };
+      let saved = null;
+      let failure = null;
+      try { saved = await api.run('save-manual-identity', { session, pane_id: pane, client: entry.client, session_id: String(entry.draft || '').trim(), folder_override: entry.override === true, replace_existing: entry.replace === true, confirm: `save:${pane}` }); }
+      catch (error) { failure = error; }
+      if (saved) {
+        restart.manual[key] = { saved: saved.masked_id };
         showToast(`Identity saved for ${pane}`);
-      } catch (error) {
-        entry.saving = false;
-        entry.error = error.message;
-        if (error.code === 'folder_differs' || error.code === 'folder_unknown') entry.needsOverride = error.code;
-        if (error.code === 'pane_registered') entry.needsReplace = true;
+      } else {
+        const current = restart.manual[key];
+        const mine = Boolean(current) && current.attempt === attempt;
+        if (mine) {
+          current.saving = false;
+          current.error = failure.message;
+          if (failure.code === 'folder_differs' || failure.code === 'folder_unknown') current.needsOverride = failure.code;
+          if (failure.code === 'pane_registered') current.needsReplace = true;
+        }
+        if (!mine || !current.open) showToast(`Could not save the identity for ${pane}: ${failure.message}`);
       }
       rerenderManual();
     };
     const openManual = (session, pane, client, scroll) => {
       const key = manualKey(session, pane);
       const entry = restart.manual[key];
-      if (entry && entry.open && !scroll) restart.manual[key] = { ...entry, open: false };
-      else restart.manual[key] = { ...(entry || {}), open: true, client: (entry && entry.client) || (client === 'codex' ? 'codex' : 'claude'), draft: (entry && entry.draft) || '' };
+      // The entry is changed in place: a save in flight keeps hold of it, and a copy would lose its saving state.
+      if (entry && entry.open && !scroll) entry.open = false;
+      else if (entry) Object.assign(entry, { open: true, client: entry.client || (client === 'codex' ? 'codex' : 'claude'), draft: entry.draft || '' });
+      else restart.manual[key] = { open: true, client: client === 'codex' ? 'codex' : 'claude', draft: '' };
       renderRestart();
       if (scroll) document.querySelector(`#restart-section [data-pane-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     };
@@ -1242,7 +1258,7 @@ created: 2026-09-10
       else if (action === 'copy-bundle' && restart.seal?.data) copy(restart.seal.data.bundle_id, 'Bundle ID copied');
       else if (action === 'manual-open') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, false);
       else if (action === 'manual-goto') openManual(target.dataset.session, target.dataset.pane, target.dataset.client, true);
-      else if (action === 'manual-cancel') { delete restart.manual[target.dataset.key]; renderRestart(); }
+      else if (action === 'manual-cancel') { delete restart.manual[target.dataset.key]; rerenderManual(); }
       else if (action === 'build-share') buildShare();
       else if (action === 'copy-share' && restart.share?.data) copy(restart.share.data.markdown, 'Report copied');
       else if (action === 'download-share' && restart.share?.data) downloadText(restart.share.data.filename, restart.share.data.markdown);
@@ -1516,8 +1532,10 @@ created: 2026-09-10
     const openArchiveManual = (session, pane, client) => {
       const key = manualKey(session, pane);
       const existing = restart.manual[key];
-      restart.manual[key] = existing?.open ? { ...existing, open: false }
-        : { ...(existing || {}), open: true, client: client === 'codex' ? 'codex' : 'claude', draft: existing?.draft || '' };
+      // In place, like openManual: a copy would drop the saving state of a save still in flight.
+      if (existing?.open) existing.open = false;
+      else if (existing) Object.assign(existing, { open: true, client: client === 'codex' ? 'codex' : 'claude', draft: existing.draft || '' });
+      else restart.manual[key] = { open: true, client: client === 'codex' ? 'codex' : 'claude', draft: '' };
       renderArchiveAll();
     };
     const applyFromArchiveAll = async () => {

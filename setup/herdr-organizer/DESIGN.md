@@ -77,7 +77,7 @@ Every `/api/herdr-organizer/*` request therefore passes these checks, all covere
 - POST bodies must be `application/json`.
 - These routes are dispatched before the shared CORS and OPTIONS handler and never send `Access-Control-Allow-*` headers. A preflight to them is answered 403.
 - Only one tier 1 action runs at a time (409 otherwise); child processes have timeouts and bounded output.
-- Child processes never inherit `HERDR_SESSION`, `HERDR_PANE_ID` and the other Herdr context variables from the shell that started the server. `register` prefers the current pane over explicit pane arguments, so an inherited pane id would register the wrong pane.
+- Child processes never inherit `HERDR_SESSION`, `HERDR_PANE_ID` and the other Herdr context variables from the shell that started the server. `register` prefers the current pane over explicit pane arguments, so an inherited pane id would register the wrong pane. Dropping the variables is not enough: with no `HERDR_PANE_ID`, Herdr's `pane current --current` still answers with the focused pane of the default session. The manual save therefore also gives `register` a `HERDR_SOCKET_PATH` that can never exist (below `/dev/null`), so `pane current` fails and the explicit ids are used.
 
 The older `POST /api/herdr-workspace-organizer/snapshot` stays untouched (fixed command, no input).
 
@@ -114,6 +114,8 @@ Layer 3 is the independent cross-check: a check that only proves an id exists ca
 The id travels browser to server in a JSON body, then to `agent-session-registry.py register --allow-no-herdr` as one short-lived process, and is never logged or echoed.
 Afterwards the page shows only the first 4 and last 4 characters.
 Because `register` only takes `--session-id` on its command line, the id is visible to same-user `ps` for the life of that process (see companion tasks).
+`register` prints the pane it recorded. When that is not the pane the user asked for, the save fails with `register_wrong_pane`, names the pane that received the identity, and the page never shows "Saved" for the pane that has none. Without the socket guard above, a save for a pane in one session was recorded on the default session's focused pane, no Herdr session was stored with it, and saving the same id again was refused as already registered to another pane.
+The form's save state outlives the form: Close form and Cancel can be pressed while a save runs. The page keeps one entry per pane, changes it in place, and looks it up again when the request ends, so a failure always clears the saving state; a failure that lands on a closed form is told in a toast.
 
 ## Independent review follow-ups
 

@@ -20,7 +20,23 @@ const REAL_TOOL_ROOT = process.env.HERDR_ORGANIZER_TOOL_ROOT || path.join(__dirn
 const available = fs.existsSync(path.join(REAL_TOOL_ROOT, 'agent-session-registry.py'));
 const ID = '0f1e2d3c-4b5a-4968-8777-665544332211';
 
-async function setup() {
+// A stand-in for the `herdr` binary that the real registry tool runs by name. It answers `pane current --current` the
+// way Herdr 0.7.3 does with no HERDR_PANE_ID set: with the focused pane of the default session, unless the API socket
+// it is pointed at does not exist. The real tool then prefers that pane to the ids it was given, so the stand-in is
+// what lets a test see where the registry really wrote.
+const FAKE_HERDR = `#!/bin/sh
+if [ "$1 $2 $3" = "pane current --current" ]; then
+  if [ -n "$HERDR_SOCKET_PATH" ] && [ ! -S "$HERDR_SOCKET_PATH" ]; then
+    echo '{"id":"cli:pane:current","error":{"code":"server_not_running","message":"no herdr server is running"}}'
+    exit 1
+  fi
+  printf '{"id":"cli:pane:current","result":{"pane":{"pane_id":"w9:p9","workspace_id":"w9","tab_id":"w9:t9","cwd":"%s","focused":true}}}\\n' "$PWD"
+  exit 0
+fi
+exit 1
+`;
+
+async function setup({ currentPaneFallback = false } = {}) {
   const tree = tempTree('herdr-organizer-int-');
   const realBase = tree.real;
   const toolRoot = tree.mkdir('tools');
@@ -45,7 +61,13 @@ async function setup() {
     'Summary:', 'total panes: 3', 'verified: native 0; argv 0; handle 0; pid record 0', 'ambiguous: 3; unresolved: 0', 'safe to apply with --apply: 0; manual: 3',
   ].join('\n');
   // No bytecode: the tests import the real verifier and must not write next to it.
-  const env = { PATH: process.env.PATH, CODEX_HOME: codexHome, HOME: realBase, PYTHONDONTWRITEBYTECODE: '1' };
+  let binPath = process.env.PATH;
+  if (currentPaneFallback) {
+    const bin = tree.write('bin/herdr', FAKE_HERDR);
+    fs.chmodSync(bin, 0o755);
+    binPath = path.dirname(bin) + path.delimiter + process.env.PATH;
+  }
+  const env = { PATH: binPath, CODEX_HOME: codexHome, HOME: realBase, PYTHONDONTWRITEBYTECODE: '1' };
   const runner = async (file, args, options = {}) => {
     const ok = (stdout) => ({ code: 0, stdout, stderr: '', timedOut: false, truncated: false });
     if (file === 'herdr') {
@@ -108,6 +130,26 @@ test('manual identity: real store check and real registry write, private files, 
 
     const elsewhere = await post('save-manual-identity', params({ pane_id: 'w2:p1', confirm: 'save:w2:p1' }));
     assert.equal(elsewhere.status, 409, 'already registered check runs before the folder check');
+  } finally { await env.close(); }
+});
+
+test('manual identity: the registry records the pane that was asked for, not the current pane Herdr would name', { skip: !available }, async () => {
+  // Regression: with no HERDR_PANE_ID, Herdr answers `pane current --current` with the focused pane of the default
+  // session. `register` preferred that pane, so the page said "Saved" while the identity landed on another pane, and
+  // saving the same id again was refused as already registered to another pane.
+  const env = await setup({ currentPaneFallback: true });
+  try {
+    const { post } = await client(env);
+    assert.equal((await post('verify', { session: 'project-a' })).status, 200);
+    const saved = await post('save-manual-identity', { session: 'project-a', pane_id: 'w1:p2', client: 'codex', session_id: ID, confirm: 'save:w1:p2' });
+    assert.equal(saved.status, 200, saved.raw);
+    const manifest = path.join(env.toolRoot, 'state', 'herdr-agent-sessions.json');
+    const panes = JSON.parse(fs.readFileSync(manifest, 'utf8')).panes;
+    assert.deepEqual(panes.map((item) => [item.herdr_session, item.pane_id, item.workspace_id, item.tab_id]), [['project-a', 'w1:p2', 'w1', 'w1:t2']],
+      'one record, for the pane that was asked for and in its own Herdr session');
+    // The same id on the same pane is not "registered to another pane".
+    const again = await post('save-manual-identity', { session: 'project-a', pane_id: 'w1:p2', client: 'codex', session_id: ID, confirm: 'save:w1:p2' });
+    assert.equal(again.status, 200, again.raw);
   } finally { await env.close(); }
 });
 

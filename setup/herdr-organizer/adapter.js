@@ -71,6 +71,15 @@ function childEnv(base) {
   return env;
 }
 
+// Dropping the HERDR_ variables is not enough to give `register` no current pane. Without HERDR_PANE_ID, Herdr's
+// `pane current --current` still answers: it names the focused pane of the default session, and `register` then
+// ignores the pane, workspace, tab and session it was given and records an identity for that pane instead (no
+// Herdr session either). The page said "Saved" while the identity sat on a pane in another session, and a second
+// save of the same id was refused as "already registered to another pane". A socket path that cannot exist makes
+// `pane current` fail with server_not_running, which is what `register --allow-no-herdr` needs to use the explicit
+// ids. A path below /dev/null can never be created, so no Herdr server can ever listen there.
+const NO_CURRENT_PANE_SOCKET = '/dev/null/herdr-organizer-no-current-pane.sock';
+
 function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024 * 1024, cwd, input } = {}) {
   return new Promise((resolve) => {
     let stdout = '';
@@ -412,8 +421,14 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       registryScript, 'register', '--client', client, '--session-id', id, '--allow-no-herdr',
       '--pane-id', paneId, '--workspace-id', pane.workspace_id, '--tab-id', pane.tab_id,
       '--herdr-session', session, ...(pane.cwd ? ['--cwd', pane.cwd] : []),
-    ], { env: runEnv(), timeoutMs: 60000 });
+    ], { env: { ...runEnv(), HERDR_SOCKET_PATH: NO_CURRENT_PANE_SOCKET }, timeoutMs: 60000 });
     if (registered.code !== 0) throw new AdapterError('The registry refused the identity. ' + scrub(registered.stderr || registered.stdout, 160), 502, 'register_failed');
+    // The tool reports the pane it recorded. When that is not the pane the user asked for, the write has landed on
+    // another pane: say so and name it, so it can be removed, instead of showing "Saved" for this one.
+    const landed = /^registered \S+ -> (\S+)\s*$/m.exec(registered.stdout || '');
+    if (landed && landed[1] !== paneId) {
+      throw new AdapterError('The registry recorded that identity for ' + scrub(landed[1], 40) + ' instead of ' + paneId + ', so this pane has no identity yet. Remove the wrong registration with herdr-agent-remove ' + scrub(landed[1], 40) + ', then save again.', 502, 'register_wrong_pane');
+    }
     return { session, pane_id: paneId, client, masked_id: maskId(id), folder_confirmed: check.store_folder === 'match' ? 'match' : 'override', saved_at: new Date().toISOString() };
   }
 

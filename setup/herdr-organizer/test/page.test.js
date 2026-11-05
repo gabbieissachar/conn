@@ -123,7 +123,7 @@ test('skipped pane: a session id can be set while the identity check is still ru
 
 test('the save sends the replace confirmation only when the pane already has a different session', () => {
   assert.match(html, /replace_existing: entry\.replace === true/);
-  assert.match(html, /error\.code === 'pane_registered'\) entry\.needsReplace = true/);
+  assert.match(html, /failure\.code === 'pane_registered'\) current\.needsReplace = true/);
   assert.match(html, /data-action="manual-replace"/);
 });
 
@@ -1186,4 +1186,118 @@ test('context table: every session row has an Open button that sends only a sess
   const handler = html.slice(html.indexOf('const openTab = async'), html.indexOf('const copyHandoff'));
   assert.match(handler, /api\.run\('focus-tab', \{ session: button\.dataset\.session, pane_id: button\.dataset\.pane, id: button\.dataset\.id \}\)/);
   assert.equal(/tab_id|command|args/.test(handler), false, 'the page names no tab and builds no command');
+});
+
+// Behavioural check of the manual identity save: a save outlives its form, so Close form or Cancel can be pressed
+// while the request runs. The page's own save and open functions run with stand-ins for the server and the view.
+function loadManualSave() {
+  const vm = require('vm');
+  const slice = (from, to) => html.slice(html.indexOf(from), html.indexOf(to));
+  const code = [
+    slice('let manualAttempt = 0;', 'const buildShare = '),
+    slice('const openArchiveManual = ', 'const applyFromArchiveAll = '),
+  ].join('\n');
+  const pending = [];
+  const context = {
+    restart: { manual: {} },
+    toasts: [],
+    renders: 0,
+    pending,
+    api: { run: (action, params) => new Promise((resolve, reject) => pending.push({ action, params, resolve, reject })) },
+    showToast: (message) => context.toasts.push(message),
+    rerenderManual: () => { context.renders += 1; },
+    renderRestart: () => {},
+    renderArchiveAll: () => {},
+    manualKey: (session, paneId) => `${session}|${paneId}`,
+    document: { querySelector: () => null },
+    CSS: { escape: (value) => value },
+    String,
+    Boolean,
+    Object,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${code}\nthis.save = saveManualIdentity; this.openManual = openManual; this.openArchiveManual = openArchiveManual;`, context);
+  return context;
+}
+
+const MANUAL_KEY = 'project-a|w1:p2';
+const refusal = (message, code) => Object.assign(new Error(message), { code });
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('manual save: a form closed while its save runs is not left on "Saving…" when the save fails', async () => {
+  const page = loadManualSave();
+  page.openManual('project-a', 'w1:p2', 'claude', false);
+  page.restart.manual[MANUAL_KEY].draft = '0f1e2d3c-4b5a-4968-8777-665544332211';
+  const saving = page.save(MANUAL_KEY);
+  assert.equal(page.restart.manual[MANUAL_KEY].saving, true);
+  page.openManual('project-a', 'w1:p2', 'claude', false); // Close form, while the request is still out
+  assert.equal(page.restart.manual[MANUAL_KEY].open, false);
+  page.pending[0].reject(refusal('That session is already registered to another pane.', 'already_registered'));
+  await saving;
+  const entry = page.restart.manual[MANUAL_KEY];
+  assert.equal(entry.saving, false, 'nothing is in flight any more');
+  assert.equal(entry.error, 'That session is already registered to another pane.');
+  assert.match(page.toasts.join('|'), /Could not save the identity for w1:p2: That session is already registered/, 'the form was closed, so the failure is told in a toast');
+  // Opening the form again shows a working form with the error, not a disabled button.
+  page.openManual('project-a', 'w1:p2', 'claude', false);
+  assert.equal(page.restart.manual[MANUAL_KEY].open, true);
+  assert.equal(page.restart.manual[MANUAL_KEY].saving, false);
+  assert.equal(page.restart.manual[MANUAL_KEY].draft, '0f1e2d3c-4b5a-4968-8777-665544332211', 'the typed id is kept');
+});
+
+test('manual save: the same holds when the form is closed and reopened from the Archive all card', async () => {
+  const page = loadManualSave();
+  page.openArchiveManual('project-a', 'w1:p2', 'claude');
+  page.restart.manual[MANUAL_KEY].draft = '0f1e2d3c-4b5a-4968-8777-665544332211';
+  const saving = page.save(MANUAL_KEY);
+  page.openArchiveManual('project-a', 'w1:p2', 'claude'); // close
+  page.pending[0].reject(refusal('Another change is still running. Wait for it to finish.', 'busy'));
+  await saving;
+  page.openArchiveManual('project-a', 'w1:p2', 'claude'); // open again
+  assert.deepEqual({ open: page.restart.manual[MANUAL_KEY].open, saving: page.restart.manual[MANUAL_KEY].saving }, { open: true, saving: false });
+});
+
+test('manual save: a save that succeeds after its form was cancelled still shows as saved', async () => {
+  const page = loadManualSave();
+  page.openManual('project-a', 'w1:p2', 'claude', false);
+  page.restart.manual[MANUAL_KEY].draft = '0f1e2d3c-4b5a-4968-8777-665544332211';
+  const saving = page.save(MANUAL_KEY);
+  delete page.restart.manual[MANUAL_KEY]; // Cancel
+  page.pending[0].resolve({ masked_id: '0f1e...2211' });
+  await saving;
+  assert.deepEqual({ ...page.restart.manual[MANUAL_KEY] }, { saved: '0f1e...2211' });
+  assert.match(page.toasts.join('|'), /Identity saved for w1:p2/);
+});
+
+test('manual save: a late failure of a cancelled save does not touch the form opened after it', async () => {
+  const page = loadManualSave();
+  page.openManual('project-a', 'w1:p2', 'claude', false);
+  page.restart.manual[MANUAL_KEY].draft = '0f1e2d3c-4b5a-4968-8777-665544332211';
+  const first = page.save(MANUAL_KEY);
+  delete page.restart.manual[MANUAL_KEY]; // Cancel
+  page.openManual('project-a', 'w1:p2', 'claude', false); // a fresh form
+  page.restart.manual[MANUAL_KEY].draft = 'typing';
+  page.pending[0].reject(refusal('The registry refused the identity.', 'register_failed'));
+  await first;
+  await settle();
+  assert.deepEqual({ ...page.restart.manual[MANUAL_KEY] }, { open: true, client: 'claude', draft: 'typing' }, 'the new form has no error, no saving flag and no override prompt from the old save');
+});
+
+test('manual save: a failed save keeps the form open with its error and the override prompt', async () => {
+  const page = loadManualSave();
+  page.openManual('project-a', 'w1:p2', 'claude', false);
+  page.restart.manual[MANUAL_KEY].draft = '0f1e2d3c-4b5a-4968-8777-665544332211';
+  const saving = page.save(MANUAL_KEY);
+  page.pending[0].reject(refusal('That session was recorded in a different folder than this pane.', 'folder_differs'));
+  await saving;
+  const entry = page.restart.manual[MANUAL_KEY];
+  assert.deepEqual({ open: entry.open, saving: entry.saving, needsOverride: entry.needsOverride }, { open: true, saving: false, needsOverride: 'folder_differs' });
+  assert.deepEqual(page.toasts, [], 'a visible form shows its own error, so no toast');
+  // A second click while a save runs is ignored.
+  entry.override = true;
+  const again = page.save(MANUAL_KEY);
+  page.save(MANUAL_KEY);
+  assert.equal(page.pending.length, 2, 'one request per click on an idle form');
+  page.pending[1].resolve({ masked_id: '0f1e...2211' });
+  await again;
 });
