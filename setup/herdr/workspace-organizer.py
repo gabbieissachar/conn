@@ -2339,6 +2339,11 @@ def run_archive_batch(
             for earlier in earlier_members:
                 print(f"It replaces {earlier['archive_id']} in the archive group; that archive stays as a single archive.")
         retire_duplicate_tabs(batch_path, manifest, batch_id)
+        if snapshot:
+            try:
+                report_retired_snapshots(retire_finished_snapshots(manifest))
+            except OSError as error:
+                print(f"Note: finished snapshot records were not removed ({error}).")
         finished = True
     finally:
         # Any other error or Ctrl-C must not leave the record stuck. The workspace being closed at that moment may
@@ -2508,6 +2513,107 @@ def sent_resume_sessions(archive_id: str) -> dict[str, str]:
     }
 
 
+def mark_snapshot_left_alone(archive_id: str, reason: str) -> bool:
+    """Take a snapshot member a restore could not finish out of the `archived` state, and record why.
+
+    The snapshot button of the group shows while any snapshot member is `archived`, so a member that is left alone
+    (a workspace Herdr only partly brought back, a leader tab already open, a refused resume) would keep it forever.
+    `restore_partial` is the state that already means "needs a look": the member stays in the group with its saved
+    layout and agent identities, restore-batch leaves it alone from then on, and `restore <archive>` retries it.
+    Nothing is deleted. Only a still-archived snapshot is touched, never an ordinary archive.
+    """
+    try:
+        path, archive = archive_by_id(archive_id)
+    except OrganizerError:
+        return False
+    if not archive.get("snapshot") or archive.get("status") != "archived":
+        return False
+    archive["status"] = "restore_partial"
+    archive["restore"] = {"left_alone": reason, "left_alone_at": now(), "tabs": [], "agent_resume": []}
+    write_json(path, archive)
+    return True
+
+
+def is_left_alone_snapshot(archive: dict[str, Any]) -> bool:
+    record = archive.get("restore")
+    return bool(archive.get("snapshot")) and archive.get("status") == "restore_partial" and isinstance(record, dict) and bool(record.get("left_alone"))
+
+
+def leave_group(batch_path: Path, manifest: dict[str, Any], archive_id: str, reason: str, by: str) -> None:
+    """Take one member out of the group without touching the archive: it stays as a single archive, as a replaced one does."""
+    manifest["members"] = [m for m in manifest.get("members", []) if not (isinstance(m, dict) and m.get("archive_id") == archive_id)]
+    manifest["updated_at"] = now()
+    write_json(batch_path, manifest)
+    try:
+        path, archive = archive_by_id(archive_id)
+    except OrganizerError:
+        return
+    archive["left_group"] = {"reason": reason, "by": by, "at": now()}
+    write_json(path, archive)
+
+
+def finished_snapshot_records(manifest: dict[str, Any]) -> list[tuple[str, Path]]:
+    """The snapshot archives of this group whose restore finished: restored or resumed, with a completed restore record.
+
+    A snapshot is a copy of workspaces that were open. Once a restore brought one back, its record only repeats what is
+    running, so nothing is left in it to restore. An archive that is still archived, partly restored, or whose restore
+    recorded an error never counts. Ordinary archives and other sessions' snapshots are never listed.
+    """
+    batch_ids = group_batch_ids(manifest)
+    found: list[tuple[str, Path]] = []
+    if not ARCHIVE_DIR.exists():
+        return found
+    for path in sorted(ARCHIVE_DIR.glob("*.json")):
+        try:
+            archive = read_json(path, None)
+        except OrganizerError:
+            continue
+        if not isinstance(archive, dict) or not archive.get("snapshot") or archive.get("status") not in RESTORED_STATUSES:
+            continue
+        if archive.get("batch_id") not in batch_ids:
+            continue
+        owner, wanted = archive.get("herdr_session"), manifest.get("herdr_session")
+        if owner and wanted and owner != wanted:
+            continue
+        record = archive.get("restore")
+        if not isinstance(record, dict) or record.get("error") or not record.get("completed_at"):
+            continue
+        found.append((str(archive.get("archive_id") or path.stem), path))
+    return found
+
+
+def retire_finished_snapshots(manifest: dict[str, Any]) -> list[str]:
+    """Delete the finished snapshot records of this group so snapshots do not pile up. Callers hold the run lock."""
+    retired: list[str] = []
+    for archive_id, path in finished_snapshot_records(manifest):
+        try:
+            path.unlink()
+        except OSError as error:
+            print(f"Note: finished snapshot record {archive_id} was not removed: {error}")
+            continue
+        retired.append(archive_id)
+    return retired
+
+
+def snapshot_member_forecast(archive_id: str, session: str | None) -> dict[str, Any]:
+    """What restoring this snapshot member would do against the live session right now, read-only."""
+    try:
+        _, archive = archive_by_id(archive_id)
+        capture = archive.get("capture", {})
+        live = session_snapshot(session)
+        native = native_workspace_copy(archive, live, session)
+        if native and native["state"] == "match":
+            return {"outcome": "adopt", "workspace_id": native["copy"]["workspace_id"]}
+        if native:
+            return {"outcome": "left_alone", "reason": native["reason"]}
+        problems = leader_restore_problems(live, leader_archive_workspace_label(capture), capture.get("tabs", []), False)
+        if problems:
+            return {"outcome": "left_alone", "reason": "; ".join(problems)}
+        return {"outcome": "build_new_workspace"}
+    except OrganizerError as error:
+        return {"outcome": "unknown", "reason": str(error)}
+
+
 def restore_batch_command(args: argparse.Namespace) -> None:
     args.batch = resolve_group_argument(args)
     _, manifest = batch_by_id(args.batch)
@@ -2530,8 +2636,10 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         "snapshot_only": bool(getattr(args, "snapshot_only", False)),
         "to_restore": [
             {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "layout_workspace_id": m["layout_workspace_id"]}
+            | ({"forecast": snapshot_member_forecast(m["archive_id"], args.session)} if m.get("snapshot") and args.resume_agents and not args.execute else {})
             for m in targets
         ],
+        "finished_snapshot_records_to_retire": [archive_id for archive_id, _ in finished_snapshot_records(manifest)] if args.resume_agents else [],
         "not_restored": [
             {"archive_id": m["archive_id"], "workspace_label": m["workspace_label"], "status": m["status"]}
             for m in left_alone
@@ -2548,6 +2656,8 @@ def restore_batch_command(args: argparse.Namespace) -> None:
         print(f"Left {member['archive_id']} alone: {member['status']}.")
     if not targets:
         print("Nothing to restore: no snapshot member of this batch is still archived." if getattr(args, "snapshot_only", False) else "Nothing to restore: no member of this batch is still archived.")
+        if args.resume_agents:
+            report_retired_snapshots(retire_finished_snapshots(manifest))
         return
     failures: list[str] = []
     outcomes: dict[str, int] = {}
@@ -2579,12 +2689,16 @@ def restore_batch_command(args: argparse.Namespace) -> None:
             confirm=archive_id,
             session=args.session,
             resumed_sessions=resumed_sessions,
+            # A snapshot member that cannot be finished leaves the `archived` state with its reason, never lingers in it.
+            settle_left_alone=bool(member.get("snapshot")),
         )
         try:
             outcome = restore_command(member_args) or "created"
         except OrganizerError as error:
             failures.append(f"{archive_id}: {error}")
             print(f"Could not restore {archive_id}: {error}")
+            if member.get("snapshot") and mark_snapshot_left_alone(archive_id, str(error)):
+                print(f"{archive_id} is now restore_partial, so it no longer counts as an archived snapshot member. Retry it with restore {archive_id} --resume-agents once the cause is gone.")
             continue
         finally:
             resumed_sessions.update(sent_resume_sessions(archive_id))
@@ -2592,13 +2706,19 @@ def restore_batch_command(args: argparse.Namespace) -> None:
     if outcomes.get("native_partial"):
         print(
             f"Left {outcomes['native_partial']} archive(s) alone because Herdr already restored part of them. "
-            "They stay in the group; restore their missing tabs with restore-tab."
+            "They stay in the group as restore_partial with the reason recorded; restore their missing tabs with restore-tab, "
+            "or retry with restore <archive> --resume-agents."
         )
-    if outcomes.get("shadowed"):
-        print(
-            f"Left {outcomes['shadowed']} archive(s) alone because a newer snapshot member holds the same agent sessions. "
-            "They stay in the group; delete them with delete-batch --archives once the newer member is restored."
-        )
+    batch_path = batch_by_id(args.batch)[0]
+    for older, newer in shadowed.items():
+        if batch_member_view({"archive_id": newer})["status"] in RESTORED_STATUSES:
+            # The newer member resumed every agent session the older one holds, so the older one has nothing left to
+            # restore. It leaves the group and stays as a single archive, as a replaced snapshot does.
+            _, current = batch_by_id(args.batch)
+            leave_group(batch_path, current, older, "superseded", newer)
+            print(f"{older} left the group: the restored snapshot member {newer} holds every agent session it holds. The archive stays.")
+        elif mark_snapshot_left_alone(older, f"the newer snapshot member {newer} holds its agent sessions but was not restored"):
+            print(f"{older} is now restore_partial: the newer snapshot member {newer} that holds its agent sessions was not restored.")
     if args.resume_agents:
         done = outcomes.get("created", 0) + outcomes.get("adopted", 0)
         print(
@@ -2611,8 +2731,19 @@ def restore_batch_command(args: argparse.Namespace) -> None:
             f"{outcomes.get('already_laid_out', 0)} already had their layout open. Nothing is marked restored; "
             "run restore-batch --resume-agents to resume the agents in these workspaces."
         )
+    if args.resume_agents:
+        _, current = batch_by_id(args.batch)
+        report_retired_snapshots(retire_finished_snapshots(current))
     if failures:
         raise OrganizerError("Some archives were not restored: " + "; ".join(failures))
+
+
+def report_retired_snapshots(retired: list[str]) -> None:
+    if retired:
+        print(
+            f"Retired {len(retired)} finished snapshot record(s): their workspaces are restored and running, so nothing "
+            "restorable was in them. Archives that are still archived or restore_partial, and every ordinary archive, were not touched."
+        )
 
 
 def batch_archive_paths(manifest: dict[str, Any], batch_id: str) -> tuple[list[tuple[str, Path]], list[str]]:
@@ -2894,7 +3025,10 @@ def find_snapshot_members(
             archive = read_json(path, None)
         except OrganizerError:
             continue
-        if not isinstance(archive, dict) or not archive.get("snapshot") or archive.get("status") != "archived":
+        if not isinstance(archive, dict) or not archive.get("snapshot"):
+            continue
+        # A member a restore left alone (restore_partial) is replaced like an archived one: it is the same open workspace.
+        if archive.get("status") != "archived" and not is_left_alone_snapshot(archive):
             continue
         if archive.get("batch_id") not in group_batch_ids(manifest) | {batch_id}:
             continue
@@ -4152,11 +4286,22 @@ def twin_problem(
     A label and a shape are not evidence: Herdr's default tab label is `1`, and a shell is a shell. The tab is a twin
     only when every pane is in the captured pane's folder, and every pane that is going to be typed a resume command
     is at a plain shell prompt, so nothing running there (an editor, a dev server) gets the text. A folder that is
-    missing on either side cannot be compared, so it is no evidence either.
+    missing on either side cannot be compared, so it is no evidence either. A pane that already runs the captured
+    session is the exception: nothing is typed into it and its session identifies it, so its folder is not compared.
     """
     live_leaves = {str(leaf.get("pane_id")): leaf for leaf in leaf_panes(live_root)}
+    running = {pane_id: session_id for session_id, pane_id in live_agent_sessions(snapshot).items()}
+    captured_sessions = {
+        pane_map[str(restore.get("source_pane_id"))]: str(restore["session_id"])
+        for restore in captured_tab.get("agent_restores", [])
+        if restore.get("session_id") and str(restore.get("source_pane_id")) in pane_map
+    }
     for captured_leaf in leaf_panes(captured_tab.get("layout", {}).get("root")):
         live_leaf = live_leaves.get(pane_map.get(str(captured_leaf.get("pane_id")), ""), {})
+        # A pane that runs the captured session is the captured pane. The folder it started in proves nothing more: an
+        # agent moves into its own worktree after the capture, and refusing it here would leave the whole member unrestored.
+        if running.get(str(live_leaf.get("pane_id"))) and running.get(str(live_leaf.get("pane_id"))) == captured_sessions.get(str(live_leaf.get("pane_id"))):
+            continue
         captured_folder = clean_folder(captured_leaf.get("cwd"))
         live_folder = clean_folder(live_leaf.get("cwd"))
         if not captured_folder or not live_folder:
@@ -4477,6 +4622,8 @@ def restore_archive(args: argparse.Namespace) -> str:
                 f"Archive {args.archive} was left alone: Herdr already restored part of it ({native['reason']}). "
                 "Restore the missing tabs with restore-tab, or add --force for another copy."
             )
+            if getattr(args, "settle_left_alone", False):
+                mark_snapshot_left_alone(args.archive, f"Herdr already restored part of it ({native['reason']})")
             return "native_partial"
         copy, adopted_native = native["copy"], True
     if not copy:

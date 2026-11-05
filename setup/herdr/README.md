@@ -432,23 +432,40 @@ first looks for one open workspace with its label and a live twin of every
 captured tab (same label, same layout shape): that workspace is adopted, only
 panes without an agent get a resume command, and sessions already running are
 skipped. A workspace that is only partly back (or more than one look-alike) is
-left archived with the reason and counted as left alone, never rebuilt on top;
-`--force` still makes another copy. `restore-batch --snapshot-only` restores just the snapshot members and
+left alone with the reason, never rebuilt on top; `--force` still makes another
+copy. `restore-batch --snapshot-only` restores just the snapshot members and
 leaves the group's ordinary archives alone. If a group still holds two snapshots of
 one renamed workspace (made before the rename was recognised), the run restores only the
-newer one and leaves the older archived with the reason, and it never resumes a session a
-member of the same run already resumed, so no agent session runs twice. `restore-tab` and `restore-tabs` adopt an
+newer one, and it never resumes a session a member of the same run already resumed, so no
+agent session runs twice. `restore-tab` and `restore-tabs` adopt an
 already-open tab of a snapshot member the same way. Leader tabs keep their rule:
 a natively restored one is adopted, never duplicated.
+
+A snapshot restore leaves no snapshot member `archived`, because the group shows its
+snapshot restore button while one is. Each member ends restored or resumed (and leaves
+the group), or, when it cannot be finished (a workspace only partly back, a leader tab
+already open, a refused resume), `restore_partial` with the reason in its `restore.left_alone`
+(or `error`); it stays in the group with its saved layout and agent identities, and
+`restore <archive> --resume-agents` retries it. An older member whose agent sessions a newer,
+restored member holds leaves the group and stays as a single archive. A run with
+`--resume-agents` then deletes the finished snapshot records of the group (restored or
+resumed, restore completed without error): their workspaces are running, so nothing is
+left in them to restore. Archives that are still archived or `restore_partial`, ordinary
+archives, and other groups are never touched. A new snapshot retires finished snapshot
+records the same way and replaces a member a restore left alone like an archived one. The
+preview lists each snapshot member's forecast (`adopt`, `left_alone`, `build_new_workspace`)
+and the records it would retire, and changes nothing.
 
 A live tab only counts as a captured tab's twin if the evidence agrees. A label
 and a layout shape are not enough (Herdr's default tab label is `1`): every pane
 must be in the folder of the captured pane, and every pane that would be typed a
 resume command must be at a plain shell prompt, so an editor or a dev server
 never gets the text. A folder missing on either side cannot be compared and
-counts as no evidence. No pane of it may run an agent other than the captured
-session either; a fresh agent Herdr relaunched there, or another session, also
-fails. A whole workspace with such a tab stays archived and the output says why
+counts as no evidence. A pane that already runs the captured session is the
+captured pane whatever folder it is in now (an agent moves into its worktree after
+the capture), and nothing is typed into it. No pane of it may run an agent other than
+the captured session either; a fresh agent Herdr relaunched there, or another session,
+also fails. A whole workspace with such a tab is left alone and the output says why
 ("open, but its pane w9:p1 is in another folder than the captured pane"), and
 `restore-tab` prints the same reason and rebuilds that tab instead of adopting the
 open one. Pairing runs over all of the archive's

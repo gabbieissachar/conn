@@ -3380,6 +3380,34 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(self.archive_file(archive_id)["left_group"]["reason"], "replaced")
         self.assertIn("replaces", output)
 
+    def test_a_newer_snapshot_replaces_a_member_a_restore_left_alone(self):
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        left_alone = group["members"][0]["archive_id"]
+        self.assertTrue(ORGANIZER.mark_snapshot_left_alone(left_alone, "Herdr already restored part of it"))
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        self.assertEqual(len(group["members"]), 1, "the group does not hold the workspace twice")
+        self.assertNotEqual(group["members"][0]["archive_id"], left_alone)
+        kept = self.archive_file(left_alone)
+        self.assertEqual(kept["left_group"]["reason"], "replaced")
+        self.assertEqual(kept["status"], "restore_partial", "the archive itself is kept")
+
+    def test_taking_a_snapshot_retires_the_finished_snapshot_records_of_the_group(self):
+        self.world(workspaces=[("w1", "Clean")], restores={}, working=())
+        self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        (group,) = self.manifests()
+        done = {"archive_id": "20260101-000000-done", "status": "restored", "snapshot": True, "batch_id": group["batch_id"],
+                "herdr_session": "esim", "restore": {"completed_at": "2026-01-01T00:00:00+00:00"}, "capture": {"workspace": {}, "tabs": []}}
+        ordinary = dict(done, archive_id="20260101-000001-ordinary", snapshot=False)
+        for record in (done, ordinary):
+            ORGANIZER.write_json(self.archives / f"{record['archive_id']}.json", record)
+        output = self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
+        self.assertFalse((self.archives / "20260101-000000-done.json").exists())
+        self.assertTrue((self.archives / "20260101-000001-ordinary.json").exists(), "an ordinary restored archive stays")
+        self.assertIn("Retired 1 finished snapshot record(s)", output)
+
     def test_a_snapshot_is_not_replaced_by_a_workspace_with_the_same_id_and_another_label(self):
         self.world(workspaces=[("w1", "Clean")], restores={}, working=())
         self.run_quietly(ORGANIZER.archive_all_command, self.snapshot_args())
@@ -4950,8 +4978,10 @@ class SnapshotRestoreTests(unittest.TestCase):
     def test_restore_batch_snapshot_only_leaves_the_groups_ordinary_archives_alone(self):
         ordinary_id = self.write_mixed_group()
         self.herdr.add_workspace("w9", "Alpha")
-        self.run_batch(snapshot_only=True)
-        self.assertEqual(self.archive()["status"], "resumed")
+        output = self.run_batch(snapshot_only=True)
+        self.assertEqual(self.herdr.sent, ["w9:p1"], "the snapshot member was resumed")
+        self.assertFalse((self.archives / f"{self.ARCHIVE_ID}.json").exists(), "its finished snapshot record is retired")
+        self.assertIn("Retired 1 finished snapshot record(s)", output)
         ordinary = json.loads((self.archives / f"{ordinary_id}.json").read_text())
         self.assertEqual(ordinary["status"], "archived", "an ordinary archive in the same group is not restored")
         self.assertEqual(self.herdr.created, [])
@@ -4994,9 +5024,14 @@ class SnapshotRestoreTests(unittest.TestCase):
         output = self.run_batch(snapshot_only=True)
         self.assertEqual(self.herdr.created, [], "the stale name is not rebuilt")
         self.assertEqual(self.herdr.sent, ["w9:p1"], "the session is resumed once, in the workspace Herdr brought back")
-        self.assertEqual(json.loads((self.archives / "20261023-100000-alpha.json").read_text())["status"], "archived")
-        self.assertEqual(json.loads((self.archives / "20261023-100100-beta.json").read_text())["status"], "resumed")
+        older = json.loads((self.archives / "20261023-100000-alpha.json").read_text())
+        self.assertEqual(older["status"], "archived", "the stale record is kept as a single archive, nothing is deleted")
+        self.assertEqual(older["left_group"]["reason"], "superseded")
+        self.assertEqual(older["left_group"]["by"], "20261023-100100-beta")
+        self.assertFalse((self.archives / "20261023-100100-beta.json").exists(), "the restored newer record is retired")
+        self.assertEqual(self.group_members(), [], "the group holds neither snapshot member any more")
         self.assertIn("Left 20261023-100000-alpha alone: the newer snapshot member 20261023-100100-beta", output)
+        self.assertIn("20261023-100000-alpha left the group", output)
 
     def test_a_session_one_member_resumed_is_not_resumed_again_by_a_later_member(self):
         older = self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1", "S2"])
@@ -5014,6 +5049,145 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.run_batch(snapshot_only=True)
         self.assertEqual(len(self.herdr.created), 2)
         self.assertEqual(len(self.herdr.sent), 2)
+
+    BATCH_ID = "batch-20261023-100000"
+
+    def group_members(self):
+        return ORGANIZER.batch_by_id(self.BATCH_ID)[1]["members"]
+
+    def stored(self, archive_id):
+        return json.loads((self.archives / f"{archive_id}.json").read_text())
+
+    def archived_snapshot_members(self):
+        """What the page counts to show its snapshot restore button."""
+        view = ORGANIZER.batch_summary(ORGANIZER.batch_by_id(self.BATCH_ID)[1])
+        return [m for m in view["members"] if m["status"] == "archived" and m["snapshot"]]
+
+    def write_finished_snapshot(self, archive_id, status="restored", session="esim", batch_id=BATCH_ID, snapshot=True, **restore):
+        record = {"workspace_id": "w77", "started_at": "2026-10-23T00:00:00+00:00", "completed_at": "2026-10-23T00:00:01+00:00", "tabs": [], "agent_resume": []}
+        record.update(restore)
+        ORGANIZER.write_json(
+            self.archives / f"{archive_id}.json",
+            {"archive_id": archive_id, "status": status, "snapshot": snapshot, "batch_id": batch_id, "herdr_session": session,
+             "capture": {"workspace": {"source_workspace_id": "w1", "label": "Old"}, "tabs": []}, "restore": record},
+        )
+
+    def test_a_snapshot_member_left_part_restored_stops_being_archived_and_keeps_its_reason(self):
+        # What happened to the captain: the restore left a snapshot member alone and it stayed `archived` for good, so
+        # the group showed the snapshot restore button on and on.
+        self.write_group(self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1"]))
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id="99999999-0000-0000-0000-000000000000")
+        self.assertEqual([m["archive_id"] for m in self.archived_snapshot_members()], ["20261023-100000-alpha"], "the button shows before")
+        output = self.run_batch(snapshot_only=True)
+        self.assertEqual(self.archived_snapshot_members(), [], "no snapshot member is archived any more")
+        archive = self.stored("20261023-100000-alpha")
+        self.assertEqual(archive["status"], "restore_partial")
+        self.assertIn("runs another agent session", archive["restore"]["left_alone"])
+        self.assertEqual(archive["capture"]["tabs"][0]["agent_restores"][0]["session_id"], "S1", "its saved agent identity is kept")
+        self.assertEqual([m["archive_id"] for m in self.group_members()], ["20261023-100000-alpha"], "it stays in the group for the user to act on")
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
+        self.assertIn("retry with restore <archive> --resume-agents", output, "the output names the way on")
+
+    def test_a_snapshot_member_refused_by_the_leader_rule_is_reported_and_settled(self):
+        member = self.write_snapshot_member("20261023-100000-leader", "leader-space", ["S1"])
+        archive = self.stored("20261023-100000-leader")
+        archive["capture"]["tabs"][0]["label"] = "big-boss"
+        ORGANIZER.write_json(self.archives / "20261023-100000-leader.json", archive)
+        self.write_group(member)
+        self.herdr.add_workspace("w9", "Elsewhere", tab_label="big-boss")
+        with self.assertRaisesRegex(ORGANIZER.OrganizerError, "Some archives were not restored"):
+            self.run_batch(snapshot_only=True)
+        self.assertEqual(self.archived_snapshot_members(), [])
+        settled = self.stored("20261023-100000-leader")
+        self.assertEqual(settled["status"], "restore_partial")
+        self.assertIn("already open", settled["restore"]["left_alone"])
+        self.assertEqual(self.herdr.created, [])
+
+    def test_a_left_alone_snapshot_member_does_not_touch_the_ordinary_archives_of_the_group(self):
+        ordinary_id = self.write_mixed_group()
+        self.herdr.add_workspace("w9", "Alpha", tab_label="other")
+        self.run_batch(snapshot_only=True)
+        self.assertEqual(self.stored(self.ARCHIVE_ID)["status"], "restore_partial")
+        self.assertEqual(self.stored(ordinary_id)["status"], "archived")
+        self.assertEqual(self.stored(ordinary_id)["restore"], {})
+        self.assertEqual({m["archive_id"] for m in self.group_members()}, {self.ARCHIVE_ID, ordinary_id})
+
+    def test_a_snapshot_restore_leaves_no_snapshot_member_archived_and_retires_the_finished_records(self):
+        # The two members of the real case: a worker whose agent moved into its worktree (adopted), and a leader tab
+        # that now runs another session (left alone with its reason).
+        worker = self.write_snapshot_member("20261105-091128-worker", "Worker", ["S2"])
+        leader = self.write_snapshot_member("20261105-091127-leader", "Leader", ["S1"])
+        ordinary_id = "20261010-100000-ordinary"
+        ordinary = self.stored("20261105-091128-worker")
+        ordinary.update({"archive_id": ordinary_id, "batch_id": self.BATCH_ID})
+        ordinary.pop("snapshot")
+        ORGANIZER.write_json(self.archives / f"{ordinary_id}.json", ordinary)
+        self.write_group(leader, worker, {"archive_id": ordinary_id, "workspace_id": "w1", "workspace_label": "Worker"})
+        self.write_finished_snapshot("20261023-121503-old-one")
+        self.write_finished_snapshot("20261024-234833-old-two", status="resumed")
+        self.herdr.add_workspace("w9", "Leader", status="idle", agent="codex", session_id="99999999-0000-0000-0000-000000000000")
+        self.herdr.add_workspace("w10", "Worker", status="idle", agent="codex", session_id="S2")
+        self.herdr.cwds["w10:p1"] = "/home/moved-into-its-worktree"
+        output = self.run_batch(snapshot_only=True)
+        self.assertEqual(self.archived_snapshot_members(), [], "the button is gone")
+        self.assertEqual(self.herdr.created, [])
+        for retired in ("20261105-091128-worker", "20261023-121503-old-one", "20261024-234833-old-two"):
+            self.assertFalse((self.archives / f"{retired}.json").exists(), retired)
+        self.assertIn("Retired 3 finished snapshot record(s)", output)
+        self.assertEqual(self.stored("20261105-091127-leader")["status"], "restore_partial", "an unrestored workspace is never deleted")
+        self.assertEqual(self.stored(ordinary_id)["status"], "archived", "an ordinary archive stays until it is restored")
+        self.assertEqual({m["archive_id"] for m in self.group_members()}, {"20261105-091127-leader", ordinary_id})
+
+    def test_only_finished_snapshot_records_of_this_group_are_ever_retired(self):
+        self.write_group()
+        keep = {
+            "archived-snapshot": dict(status="archived", completed_at=None),
+            "partial-snapshot": dict(status="restore_partial"),
+            "errored-restore": dict(error="boom"),
+            "no-completed-restore": dict(completed_at=None),
+            "ordinary-restored": dict(snapshot=False),
+            "other-session": dict(session="other"),
+            "other-group": dict(batch_id="batch-20260101-000000"),
+        }
+        for name, overrides in keep.items():
+            status = overrides.pop("status", "restored")
+            options = {k: v for k, v in overrides.items() if k in ("session", "batch_id", "snapshot")}
+            restore = {k: v for k, v in overrides.items() if k in ("error", "completed_at")}
+            self.write_finished_snapshot(f"2026-{name}", status=status, **options, **restore)
+        self.write_finished_snapshot("2026-finished")
+        output = self.run_batch(snapshot_only=True)
+        self.assertIn("Nothing to restore", output)
+        self.assertIn("Retired 1 finished snapshot record(s)", output)
+        self.assertFalse((self.archives / "2026-finished.json").exists())
+        for name in keep:
+            self.assertTrue((self.archives / f"2026-{name}.json").exists(), name)
+
+    def test_a_layout_only_snapshot_restore_retires_nothing(self):
+        self.write_group(self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1"]))
+        self.write_finished_snapshot("2026-finished")
+        self.herdr.add_workspace("w9", "Alpha")
+        output = self.run_batch(snapshot_only=True, resume_agents=False)
+        self.assertNotIn("Retired", output)
+        self.assertTrue((self.archives / "2026-finished.json").exists())
+        self.assertEqual(self.stored("20261023-100000-alpha")["status"], "archived", "a layout-only restore is never a restore")
+
+    def test_the_preview_forecasts_each_snapshot_member_and_lists_what_it_would_retire_and_changes_nothing(self):
+        self.write_group(
+            self.write_snapshot_member("20261023-100000-alpha", "Alpha", ["S1"]),
+            self.write_snapshot_member("20261023-100100-beta", "Beta", ["S2"]),
+            self.write_snapshot_member("20261023-100200-gamma", "Gamma", ["S3"]),
+        )
+        self.write_finished_snapshot("2026-finished")
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id="S1")
+        self.herdr.add_workspace("w10", "Beta", status="idle", agent="codex", session_id="other")
+        before = sorted(path.name for path in self.archives.glob("*.json"))
+        output = self.run_batch(snapshot_only=True, execute=False, confirm=None)
+        preview = json.loads(output[: output.rindex("}") + 1])
+        forecasts = {item["archive_id"]: item["forecast"]["outcome"] for item in preview["to_restore"]}
+        self.assertEqual(forecasts, {"20261023-100000-alpha": "adopt", "20261023-100100-beta": "left_alone", "20261023-100200-gamma": "build_new_workspace"})
+        self.assertEqual(preview["finished_snapshot_records_to_retire"], ["2026-finished"])
+        self.assertEqual(sorted(path.name for path in self.archives.glob("*.json")), before)
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
 
     def test_a_restored_tab_that_is_already_open_in_the_destination_is_adopted(self):
         self.write_archive()
@@ -5155,6 +5329,23 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
         self.assertEqual(self.archive()["status"], "archived")
         self.assertIn("open, but its pane w9:p1 is in another folder than the captured pane", self.output)
+
+    def test_a_pane_running_the_captured_session_is_adopted_even_after_it_moved_to_another_folder(self):
+        # The agent of a worker moves into its own worktree after the snapshot. Its session is the proof it is the
+        # captured pane, so the folder it started in is no evidence either way.
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id=self.SESSION_ID)
+        self.herdr.cwds["w9:p1"] = "/home/other"
+        self.assertEqual(self.run_restore(), "adopted")
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
+        self.assertEqual(self.archive()["status"], "restored")
+
+    def test_a_pane_running_another_session_in_another_folder_still_blocks_the_adoption(self):
+        self.write_archive()
+        self.herdr.add_workspace("w9", "Alpha", status="idle", agent="codex", session_id="99999999-0000-0000-0000-000000000000")
+        self.herdr.cwds["w9:p1"] = "/home/other"
+        self.assertEqual(self.run_restore(), "native_partial")
+        self.assertEqual((self.herdr.created, self.herdr.sent), ([], []))
 
     def test_a_workspace_herdr_brought_back_with_a_program_in_its_pane_is_left_archived(self):
         self.write_archive()

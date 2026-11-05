@@ -335,8 +335,12 @@ for why, folders, programs in (("another folder", {"w7:p1": "/elsewhere"}, {}), 
     r = run("restore-batch", "--snapshot-only", "--resume-agents", "--execute", "--confirm", snap_bid, check=0); print(r.stdout.strip())
     st = state(); assert "w7:p1" not in st["sent"], (why, st["sent"])
     alpha = next(json.loads(path.read_text()) for path in archives_dir.glob("*.json") if json.loads(path.read_text())["capture"]["workspace"]["label"] == "Alpha")
-    assert alpha["status"] == "archived", (why, alpha["status"])
-    assert "was left alone" in r.stdout and "open, but" in r.stdout, (why, r.stdout); ok(f"Alpha back natively with {why}: no resume typed into it, the member stays archived")
+    assert alpha["status"] == "restore_partial" and alpha["restore"]["left_alone"], (why, alpha["status"])
+    assert "was left alone" in r.stdout and "open, but" in r.stdout, (why, r.stdout)
+    (snap_group,) = json.loads(run("list-batches", check=0).stdout)
+    assert not [m for m in snap_group["members"] if m["status"] == "archived" and m["snapshot"]], snap_group["members"]
+    assert snap_group["counts"]["archived"] == 0 and snap_group["counts"]["restore_partial"] == 1, snap_group["counts"]
+    ok(f"Alpha back natively with {why}: no resume typed into it, the member is settled as restore_partial with its reason and no snapshot member stays archived")
     (root / "cwd-override.json").unlink()
     st = state(); st["programs"] = {}; state_path.write_text(json.dumps(st))
 assert not handler_errors, handler_errors; ok("the fake Herdr socket saw no unexpected handler error")
