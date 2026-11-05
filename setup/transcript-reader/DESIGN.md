@@ -125,6 +125,39 @@ What Send for Copilot would take (not built): Herdr's `agent prompt` as the tran
 
 **Not changed.** Claude and Codex behaviour, and the parsed-log cache of their logs. The hosted and phone copies were not expanded: a Copilot session on the reading list builds into them as any conversation does (checked with `sync.py --build-only --session <id>`: its object carries `agent: "copilot"`, so the shell's message bar says the same), but the default scope of `sync.py` (fleet homes, `~/workspace`, live panes) lists Claude logs only, so a Copilot session reaches the hosted copy only through `--reading-list` or `--session`. Taking Copilot sessions into the default scope would mean listing `session-state/*/events.jsonl` in `sync.py`'s scope walk and the pane test it applies.
 
+## Claude under another config folder (2026-11-05)
+
+The captain focused the tab `cp-ontology-search` with Follow on, and the reader loaded nothing.
+That pane runs Claude Code with `CLAUDE_CONFIG_DIR=~/.claude-personal`, a second account.
+
+**Cause (read-only: Herdr's snapshot, `pane process-info`, the two config folders).** Herdr reported `agent: claude` for the pane but no `agent_session`, because its Claude hook lives in `~/.claude/settings.json` only.
+The reader's fallback for a pane with no session is the process check in `checkSessions`: the pane's foreground pid looked up in the running processes' records.
+It read only `~/.claude/sessions`, and the log lookup read only `~/.claude/projects`, so the pane's pid had no record, its session id stayed null, and Follow had nothing to add.
+The record was in `~/.claude-personal/sessions/<pid>.json` (`pid`, `sessionId`, `cwd`), and the log in `~/.claude-personal/projects/<folder>/<id>.jsonl`, the same layout as `~/.claude`.
+
+**The change.** Every place that read one Claude folder reads the folders of all config folders, `~/.claude`'s first:
+
+- **Which folders.** `otherClaudeHomes` (`api.js`) and `other_claude_homes` (`build_prototype.py`) answer the same: each `~/.claude*` folder that holds a `projects/` or `sessions/` folder, the folder `CLAUDE_CONFIG_DIR` names for the reader's own process, and each folder of `PMOS_READER_CLAUDE_HOMES` (absolute paths, separated like `PATH`).
+  No account name is hard-coded.
+  A plain file (`~/.claude.json`), another tool's folder with neither child (`~/.claude-mem`) and a folder of another name that nothing names are left out.
+  Why this rule and not "the folder of the running process's environment": it also finds the logs of sessions whose process has ended, which a reading list keeps, and it needs no `ps eww` of other processes; the environment of a live process (`ps eww -p <pid>` does show `CLAUDE_CONFIG_DIR` on macOS) is the better proof of which folder a pane uses, and stays available as a fallback if an account ever lives outside both `~/.claude*` and `PMOS_READER_CLAUDE_HOMES`.
+  The answer is looked up again at each use (Python reuses it for the one second the list of logs is reused), so an account set up while the server runs is found without a restart.
+- **Running processes.** `runningClaude` (`api.js`) and `running_claude_sessions` read `sessions/*.json` of every folder into one pid-to-session map, so `checkSessions`, `pane_session` and Send's foreground check work unchanged for such a pane: a Claude pane with no session id takes the session of its foreground process, and a pid with a record in no folder gets none (never guessed from a label, a folder or a cwd).
+- **Logs.** `logPath`, `log_index` (hence `all_logs`, `find_session_file`, the `/clear` chains and the fleet timeline), `home_sessions`, `reader.session_files` (`reader.py add`, `follow`, `adopt`, `resolve`) and `message_link.session_log` read every folder's `projects/`.
+  A session id is looked up in the usual folder first, so a copy of a log in a second folder never shadows it.
+  The server's watch needed no change: it follows `logPath`, so a new turn written under the second folder rebuilds the page like any other.
+- **Left alone on purpose.** `PMOS_READER_PROJECTS` and `create({ projectsDir, claudeSessionsDir })`, which a test or a measurement uses so it does not touch the real logs, still mean exactly those folders: no other folder is added when either is given (`create` takes `claudeHomes` to name the extra ones in a test).
+  Claude, Codex and Copilot panes read as before.
+
+**Send.** Sending to such a pane follows the existing Claude checks unchanged (a live pane, a foreground whose record, in whichever folder, names this very session).
+It was tested with a fake Herdr only; nothing was sent to a real pane.
+
+**Tried (2026-11-05).** Read-only against the live tab `cp-ontology-search` (pane `wJP:p2`, session `bfda597d`): `reader.py panes` listed it after the change and not before; a lab copy on a spare port with Follow on, Herdr focused on that tab, added the session within one poll and showed its first turn and the reply.
+Live updating was shown on an invented session under a second config folder with a name nothing here knows (`~/.claude-second` in a fake home, a stand-in `herdr` that answers the read commands and refuses all others): with the page open, each turn appended to its log was on the page within the 9 seconds waited, twice, without a reload ("1 turn", then "2 turns", then "3 turns").
+`python3 -m unittest` and the Node suites pass; `test_claude_homes.py` and the "Claude homes" tests in `api.test.js` cover the folder rule, the pane mapping, the logs, the rebuild on a newer log and Send's checks.
+
+**Not done.** Safari or a phone; the hosted copy's own build beyond what falls out (`sync.py --session` resolves such a session by id through the same lookup, and its default scope now lists the logs of every folder); a Claude config folder outside both `~/.claude*` and `PMOS_READER_CLAUDE_HOMES` (name it in that variable); anything for Copilot's or Codex's own config folders.
+
 ## Documents, code boxes and cleared sessions (2026-10-21)
 
 The captain asked for three things while trying the prototype:

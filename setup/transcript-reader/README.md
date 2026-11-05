@@ -1,6 +1,6 @@
 # Transcript reader
 
-Reads Firstmate Claude Code, Codex and GitHub Copilot CLI session logs back as a conversation, and lets you answer a reply in its own Herdr pane (Claude and Codex panes; a Copilot session is read only).
+Reads Firstmate Claude Code, Codex and GitHub Copilot CLI session logs back as a conversation, and lets you answer a reply in its own Herdr pane (Claude and Codex panes, a Claude under any config folder included; a Copilot session is read only).
 Design and decisions: `DESIGN.md`.
 
 ## Run it
@@ -49,6 +49,15 @@ Which session a pane shows comes from the pane's `copilot` process: its own log 
 **Send is off.** The message bar says "Sending to Copilot is not supported yet. Copy still works.", and the server refuses with the same words before it asks Herdr anything, so no key or text can reach a Copilot pane.
 The hosted and phone copies take a listed Copilot session as they take any other, with Send off there too; `sync.py`'s default scope still lists Claude logs only.
 Details and the limits: `DESIGN.md`, "Copilot CLI panes, read only".
+
+### Claude under another config folder
+
+A Claude Code run with another `CLAUDE_CONFIG_DIR` (a second account, for example `~/.claude-personal`) keeps its logs and process records in that folder, not in `~/.claude`, and Herdr's Claude hook is set up in `~/.claude/settings.json` only, so Herdr names no session for such a pane.
+The reader looks in every folder named `~/.claude<anything>` that holds a `projects/` or `sessions/` folder (a file such as `~/.claude.json`, or another tool's `~/.claude-xyz` folder, has neither), in the folder `CLAUDE_CONFIG_DIR` names for the reader's own process, and in each folder of `PMOS_READER_CLAUDE_HOMES` (absolute paths, separated like `PATH`), for a place outside the home folder.
+No account's name is written anywhere: a new account is found at the next look, with no restart.
+Such a pane is mapped to its session the way every Claude pane is, through its foreground process and that process's record in `<config folder>/sessions/<pid>.json`, so it lists, reads, follows (Follow adds it as it does any focused pane), stays live (the server watches its log) and is sent to under the usual Claude checks.
+A test or a lab that names the projects and sessions folders itself (`PMOS_READER_PROJECTS`, `create({ projectsDir, claudeSessionsDir })`) reads those alone.
+Details: `DESIGN.md`, "Claude under another config folder".
 - **Pins messages.** **Pin** on a message or a reply keeps it; **Pins · n** in the controls lists this conversation's pins or all of them, and a click goes to the message (opening the wake-up run that hides it, in place: a conversation already on screen is not drawn again). A pin names the message by its turn's id from the session log, so it holds across rebuilds and `/clear`. Each pin can carry an optional owner-written description, editable from its row; without one, the list uses the first meaningful line of the message or reply. Pins are kept in `~/.config/pmos-transcript-reader/pins.json` (`PMOS_READER_PINS` moves it), outside the repo, owner-only (folder 0700, file 0600), holding no message text. A page that cannot reach the server (a file copy, a server that predates pins) keeps them in this browser, and moves them into the file once it can. The hosted copy keeps them in the browser, per viewer.
 - **Stars sessions.** The star beside the session picker (in the folded header and in the controls) stars or unstars the session on screen; starred sessions sit in a **Starred** group at the top of the picker, each marked with a star, ahead of the running sessions and Closed panes. A star names the conversation, so it holds across rebuilds, Sync and `/clear`. Stars are kept like pins, in `~/.config/pmos-transcript-reader/stars.json` (`PMOS_READER_STARS` moves it), outside the repo and owner-only, holding no text, or in this browser when the server cannot be reached (the hosted copy, always).
 - **Follows Herdr.** With "Follow Herdr" on, the reader shows the session of the pane Herdr has focused. A session not on the reading list is added. While you write in the message bar, the switch waits until you send or leave the box, and the bar says where Herdr is. The session the page opens on wins over the first focus when the address names it (`#s=…`, which the page keeps up to date) or when this tab read it last (a reload, or the answer sheet's "← Reader").
@@ -341,7 +350,7 @@ To review it locally, start the reader's server and open the sealed copy beside 
 
 ## What it touches
 
-- Reads Claude Code session logs (`~/.claude/projects`, or the folder `PMOS_READER_PROJECTS` names, for a test or a measurement that must not touch the real ones) and its running-process records, the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name. It lists the HTML files and the image files they name (`out/html-files.json` and `out/image-files.json`, paths only, never served) and the server reads one only when you open it.
+- Reads Claude Code session logs (`~/.claude/projects` and the `projects/` of each other Claude config folder, see "Claude under another config folder"; or only the folder `PMOS_READER_PROJECTS` names, for a test or a measurement that must not touch the real ones) and its running-process records (`sessions/` of each), the fleet homes' records, Herdr's session list and snapshots, and the markdown files messages and replies name. It lists the HTML files and the image files they name (`out/html-files.json` and `out/image-files.json`, paths only, never served) and the server reads one only when you open it.
 - Writes `out/` (photos you attach to a message are saved in `out/uploads/`, owner-only, and never served; and, when a rebuild is asked for by the server, runs one `reader.py worker` that stays running while pages are open), the passcode hash (`out/passcode.json`, only on `serve.sh passcode`), the pins file (`~/.config/pmos-transcript-reader/pins.json`, only on a pin or an unpin; it holds which messages are pinned, not their text) and the stars file (`~/.config/pmos-transcript-reader/stars.json`, only on a star or an unstar; it holds which conversations are starred). `out/` is gitignored: the pages embed private transcripts. Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
 - Sends a prompt to one Herdr pane, only on a Send click (or, for the hosted copy's Send, when `drain.js` carries out a queued request), and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session. Undo only renames or empties files in a copy's `q/` folder (the `unqueue` route); it sends nothing to a pane.
 
@@ -369,7 +378,7 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_claude_homes.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
 node --test setup/transcript-reader/*.test.js
 ```
 

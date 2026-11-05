@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const zlib = require('zlib');
-const { create, namesReaderOut, PHOTO_LIMITS, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
+const { create, otherClaudeHomes, namesReaderOut, PHOTO_LIMITS, TOKEN_HEADER, TOKEN_META, COPY_HEADER } = require('./api');
 
 const A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const B = 'bbbbbbbb-2222-4222-8222-222222222222';
@@ -2218,4 +2218,143 @@ test('Copilot: a conversation file is the log only when its first record says it
     const state = await t.state(true);
     assert.equal(state.json.focus.readable, false, 'the forged file is not a log, so the pane is not readable');
   } finally { await t.close(); }
+});
+
+// ------------------------------------------- Claude panes under another config folder (CLAUDE_CONFIG_DIR)
+
+const X = 'd1d1d1d1-0000-4000-8000-000000000001';  // a session of a Claude run under a second config folder
+const Y = 'd2d2d2d2-0000-4000-8000-000000000002';
+
+// A second Claude config folder as Claude Code leaves it: sessions/<pid>.json (a record of the process) and projects/<folder>/<id>.jsonl.
+function secondClaudeHome(tree, id, pid = process.pid, name = 'claude-second', home = path.join(path.dirname(tree.root), name)) {
+  fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'projects', '-Users-someone-work'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'sessions', pid + '.json'), JSON.stringify({ pid, sessionId: id, cwd: '/Users/someone/work', kind: 'interactive' }));
+  const log = path.join(home, 'projects', '-Users-someone-work', id + '.jsonl');
+  fs.writeFileSync(log, '{}\n');
+  const old = new Date(Date.now() - 3600 * 1000);
+  fs.utimesSync(log, old, old);  // older than the page, so no rebuild starts unless a test asks for one
+  return home;
+}
+// Herdr's hook lives in ~/.claude/settings.json only, so a Claude run under another folder is named an agent but given no session.
+const unhookedClaudePane = (herdr, pid = process.pid, slot = 0) => {
+  herdr.panes[slot] = { ...herdr.panes[slot], agent: 'claude', agent_session: undefined };
+  herdr.processInfo[herdr.panes[slot].pane_id] = [{ pid, argv0: 'claude', cwd: '/Users/someone/work' }];
+};
+
+test('Claude homes: every folder named ~/.claude<anything> that holds projects/ or sessions/ is found, and nothing else', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-homes-'));
+  try {
+    const folder = (name, ...inside) => { for (const part of inside) fs.mkdirSync(path.join(home, name, part), { recursive: true }); if (!inside.length) fs.mkdirSync(path.join(home, name)); };
+    folder('.claude', 'projects', 'sessions');  // the usual one: never listed among the others
+    folder('.claude-personal', 'projects', 'sessions');
+    folder('.claude-org2', 'projects');  // one that has only logs
+    folder('.claudework', 'sessions');  // no dash in its name
+    folder('.claude-mem', 'chroma');  // another tool's folder
+    folder('.claude-empty');
+    fs.writeFileSync(path.join(home, '.claude.json'), '{}');  // a file
+    fs.mkdirSync(path.join(home, 'claude-visible', 'projects'), { recursive: true });  // not named .claude*
+    assert.deepEqual(otherClaudeHomes({ homeDir: home, env: {} }).map((found) => path.basename(found)), ['.claude-org2', '.claude-personal', '.claudework']);
+    // The folder this process itself runs under, and the folders of PMOS_READER_CLAUDE_HOMES, for places outside the home folder.
+    const elsewhere = path.join(home, 'elsewhere');
+    fs.mkdirSync(path.join(elsewhere, 'projects'), { recursive: true });
+    const visible = path.join(home, 'claude-visible');
+    const found = otherClaudeHomes({ homeDir: home, env: { CLAUDE_CONFIG_DIR: elsewhere, PMOS_READER_CLAUDE_HOMES: [visible, path.join(home, 'missing'), 'relative/path', elsewhere].join(path.delimiter) } });
+    assert.deepEqual(found.map((one) => path.basename(one)), ['.claude-org2', '.claude-personal', '.claudework', 'elsewhere', 'claude-visible'], 'each once; a missing or relative path is ignored');
+    assert.deepEqual(otherClaudeHomes({ homeDir: path.join(home, 'no-such-home'), env: {} }), []);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('Claude homes: a Claude pane Herdr gave no session takes the session of its foreground process in another config folder, which Follow reads', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const home = secondClaudeHome(tree, X);
+    unhookedClaudePane(herdr);
+    herdr.focused = 'w1:p1';
+    return { claudeHomes: [home] };
+  } });
+  try {
+    const state = await t.state(true);
+    assert.equal(state.json.focus.session_id, X, 'the pane\'s session comes from the record under the other folder');
+    assert.equal(state.json.focus.readable, true, 'and its log under that folder\'s projects/ is found');
+    assert.equal(state.json.focus.listed, false);
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), [['follow', X]], 'Follow lists it to read, as for any Claude pane');
+    assert.equal(t.herdr.calls.filter((call) => call.args[3] === 'process-info').length > 0, true);
+  } finally { await t.close(); }
+});
+
+test('Claude homes: a listed session of another folder shows its live pane, and its log being newer than the page starts a rebuild', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const home = secondClaudeHome(tree, X);
+    unhookedClaudePane(herdr);
+    listCopilot(tree, A, X);  // the reading list (the helper only writes the file)
+    return { claudeHomes: [home] };
+  } });
+  try {
+    assert.equal((await t.state()).json.panes[X].label, 'leader-alpha');
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), []);
+    // The session writes a turn: only its own log changed, under the other folder.
+    fs.writeFileSync(path.join(t.tree.outDir, 'prototype.stamp'), String(Date.now() / 1000 - 600));
+    const log = path.join(path.dirname(t.tree.root), 'claude-second', 'projects', '-Users-someone-work', X + '.jsonl');
+    fs.utimesSync(log, new Date(), new Date());
+    t.tick(5000);
+    await t.state();
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+  } finally { await t.close(); }
+});
+
+test('Claude homes: a pane is matched to a record of the second folder by its process id; a process with no record in any folder gets no session', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const home = secondClaudeHome(tree, X);
+    unhookedClaudePane(herdr, 4242);  // a process that has no record anywhere
+    herdr.panes[1] = { ...herdr.panes[1], agent: 'claude', agent_session: undefined };
+    herdr.processInfo['w1:p2'] = [{ pid: process.pid, argv0: 'claude' }];  // this one has: it is the second folder's
+    herdr.focused = 'w1:p2';
+    return { claudeHomes: [home] };
+  } });
+  try {
+    const state = await t.state();
+    assert.equal(state.json.focus.session_id, X);
+    assert.equal(state.json.panes[X], undefined, 'it is not listed, so not among the live panes of the list');
+    assert.equal(state.json.panes[A], undefined, 'and the pane with no record names no session, nor does a guess give it one');
+  } finally { await t.close(); }
+});
+
+test('Claude homes: sending to such a pane follows the Claude checks: its record names the session, and another session in the pane stops the send', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const home = secondClaudeHome(tree, X);
+    listCopilot(tree, A, X);
+    unhookedClaudePane(herdr);
+    return { claudeHomes: [home] };
+  } });
+  try {
+    const sent = await t.send({ session_id: X, text: 'hello' });
+    assert.equal(sent.status, 200, sent.raw);
+    assert.equal(t.herdr.prompts().length, 1);
+    assert.equal(t.herdr.prompts()[0].args[4], 'w1:p1');
+    // The pane now runs another session (its record, in the second folder, says so): nothing is sent.
+    fs.writeFileSync(path.join(path.dirname(t.tree.root), 'claude-second', 'sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: Y }));
+    t.tick(5000);
+    const other = await t.send({ session_id: X, text: 'hello again' });
+    assert.notEqual(other.status, 200);
+    assert.equal(t.herdr.prompts().length, 1, 'no second prompt reached Herdr');
+  } finally { await t.close(); }
+});
+
+test('Claude homes: a lab that names the projects and sessions folders reads those alone, whatever the environment names', async () => {
+  const second = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-second-'));
+  const t = await start({ env: { PMOS_READER_CLAUDE_HOMES: second }, options: (herdr, tree) => {
+    secondClaudeHome(tree, X, process.pid, 'unused', second);
+    unhookedClaudePane(herdr);
+    herdr.focused = 'w1:p1';
+  } });
+  try {
+    const { json } = await t.state(true);
+    assert.equal(json.focus.session_id, null, 'the record under the folder the environment names is not read');
+    assert.equal(json.focus.readable, false);
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), []);
+  } finally { await t.close(); fs.rmSync(second, { recursive: true, force: true }); }
 });

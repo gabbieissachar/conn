@@ -63,7 +63,11 @@ class NotFound(Exception):
 def session_log(prefix: str) -> Path:
     if not SESSION_PREFIX.match(prefix):
         raise NotFound(f"{prefix!r} is not a session id: give its first 6 or more characters (hex digits and dashes)")
-    found = sorted({log.stem: log for log in builder.PROJECTS.glob(f"*/{prefix}*.jsonl")}.items())
+    logs: dict[str, Path] = {}
+    for root in builder.project_roots():  # ~/.claude first: a copy of a log under another config folder never shadows it
+        for log in root.glob(f"*/{prefix}*.jsonl"):
+            logs.setdefault(log.stem, log)
+    found = sorted(logs.items())
     if not found:
         raise NotFound(f"no session log starts with {prefix}")
     if len(found) > 1:

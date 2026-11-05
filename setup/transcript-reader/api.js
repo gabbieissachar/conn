@@ -128,6 +128,11 @@
 // through this module's own sendPrompt, so both routes check the pane the same way.
 // Nothing here starts, stops or closes a Herdr session, tab or pane.
 //
+// Claude config folders. A Claude run with another CLAUDE_CONFIG_DIR keeps its sessions/ records and projects/ logs in that
+// folder, and Herdr's hook names no session for its pane, so every lookup of a Claude log or running process reads ~/.claude and
+// each other config folder (otherClaudeHomes: any ~/.claude* folder with projects/ or sessions/, CLAUDE_CONFIG_DIR, and
+// PMOS_READER_CLAUDE_HOMES). create({ projectsDir, claudeSessionsDir }) reads those two alone, unless claudeHomes adds more.
+//
 // Photos. The message bar can attach pictures. A page uploads each one first (upload: the same guard as every
 // route, so the same Host, Origin, token and, on the tailnet, sign-in), and then names the saved ids in send, which
 // adds their paths to the text. What is saved is decided here, from the bytes and never from the name the page gave:
@@ -381,11 +386,36 @@ function namesReaderOut(root, req) {
   return requestsOut(root, path.join(root, 'setup', 'transcript-reader', 'out'), req, url).inside;
 }
 
+// The folders Claude Code keeps its sessions in besides ~/.claude: one per CLAUDE_CONFIG_DIR a person runs it under (a second
+// account is often ~/.claude-personal or ~/.claude-work). A folder named ~/.claude<anything> counts when it holds a projects/ or
+// sessions/ folder, which only a Claude config folder does (a plain file such as ~/.claude.json, or a tool's own ~/.claude-xyz
+// folder, has neither); so does the folder CLAUDE_CONFIG_DIR names for this process, and each of PMOS_READER_CLAUDE_HOMES (absolute
+// paths separated like PATH) for a place outside the home folder. No folder's name is known here: a new account is found by the
+// next look. Read-only; the primary ~/.claude is not in the answer.
+function otherClaudeHomes({ homeDir = os.homedir(), env = process.env } = {}) {
+  const primary = path.join(homeDir, '.claude');
+  const found = [];
+  const isDir = (folder) => { try { return fs.statSync(folder).isDirectory(); } catch { return false; } };
+  const add = (folder) => {
+    if (!path.isAbsolute(folder)) return;
+    folder = path.resolve(folder);
+    if (folder !== primary && !found.includes(folder) && (isDir(path.join(folder, 'projects')) || isDir(path.join(folder, 'sessions')))) found.push(folder);
+  };
+  let names = [];
+  try { names = fs.readdirSync(homeDir); } catch { /* no home folder to look in */ }
+  for (const name of names.filter((entry) => entry.startsWith('.claude')).sort()) add(path.join(homeDir, name));
+  if (env && typeof env.CLAUDE_CONFIG_DIR === 'string' && env.CLAUDE_CONFIG_DIR) add(env.CLAUDE_CONFIG_DIR);
+  if (env && typeof env.PMOS_READER_CLAUDE_HOMES === 'string') for (const folder of env.PMOS_READER_CLAUDE_HOMES.split(path.delimiter)) if (folder) add(folder);
+  return found;
+}
+
 function create({
   root, port, runner = defaultRunner, env = process.env, now = () => Date.now(),
   pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
-  claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
+  herdrBin = 'herdr', pythonBin = 'python3', projectsDir: projectsOption, claudeSessionsDir: claudeSessionsOption,
+  // The config folders of a Claude run with another CLAUDE_CONFIG_DIR, whose projects/ and sessions/ are read like ~/.claude's: left
+  // out, they are found (otherClaudeHomes) unless the two folders above are given, which means a test or a lab reading only those.
+  claudeHomes,
   codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions'),
   // The Copilot CLI's home: session-state/<session id>/events.jsonl is a conversation, logs/process-<start>-<pid>.log a running process's own log.
   copilotHomeDir = path.join(os.homedir(), '.copilot'),
@@ -412,6 +442,12 @@ function create({
   // The least time between the starts of two rebuilds that changed logs started (REBUILD_EVERY_MS); a test of something else asks for none.
   rebuildEveryMs = REBUILD_EVERY_MS,
 } = {}) {
+  const projectsDir = projectsOption || path.join(os.homedir(), '.claude', 'projects');
+  const claudeSessionsDir = claudeSessionsOption || path.join(os.homedir(), '.claude', 'sessions');
+  // The Claude config folders read besides ~/.claude, looked at again each time: a new account's folder shows up with no restart.
+  const otherHomes = () => (claudeHomes !== undefined ? claudeHomes : (!projectsOption && !claudeSessionsOption ? otherClaudeHomes({ env }) : []));
+  const claudeProjectDirs = () => [projectsDir, ...otherHomes().map((home) => path.join(home, 'projects'))];
+  const claudeSessionDirs = () => [claudeSessionsDir, ...otherHomes().map((home) => path.join(home, 'sessions'))];
   const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
   const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
   const lane = tailnet && tailnetLane.create({ ...laneOptions, ip: tailnet.ip, port: tailnet.port || port });
@@ -468,17 +504,19 @@ function create({
     } catch { return null; }
   }
 
-  // The session's log under ~/.claude/projects/<folder>/<id>.jsonl, or null.
+  // The session's log under <config folder>/projects/<folder>/<id>.jsonl (~/.claude's first, then each other Claude config folder's), or null.
   function logPath(sessionId) {
     sessionId = canonicalSessionId(sessionId) || sessionId;
     const known = logPaths.get(sessionId);
     if (known && fs.existsSync(known)) return known;
-    let folders = [];
-    try { folders = fs.readdirSync(projectsDir, { withFileTypes: true }); } catch { return null; }
-    for (const folder of folders) {
-      if (!folder.isDirectory()) continue;
-      const candidate = path.join(projectsDir, folder.name, sessionId + '.jsonl');
-      if (fs.existsSync(candidate)) { logPaths.set(sessionId, candidate); return candidate; }
+    for (const dir of claudeProjectDirs()) {
+      let folders = [];
+      try { folders = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const folder of folders) {
+        if (!folder.isDirectory()) continue;
+        const candidate = path.join(dir, folder.name, sessionId + '.jsonl');
+        if (fs.existsSync(candidate)) { logPaths.set(sessionId, candidate); return candidate; }
+      }
     }
     const codex = codexRollouts().find((entry) => entry.session === sessionId);
     if (codex) { logPaths.set(sessionId, codex.file); return codex.file; }
@@ -564,16 +602,20 @@ function create({
   }
 
   // pid -> session id of every running Claude Code process, from the record each keeps in
-  // ~/.claude/sessions (it follows /clear and --resume).
+  // <its config folder>/sessions (it follows /clear and --resume): ~/.claude's and every other config folder's.
   function runningClaude() {
     const found = new Map();
-    let names = [];
-    try { names = fs.readdirSync(claudeSessionsDir).filter((name) => name.endsWith('.json')); } catch { return found; }
-    for (const name of names) {
-      const record = parseJson(fs.readFileSync(path.join(claudeSessionsDir, name), 'utf8')) || {};
-      if (!Number.isInteger(record.pid) || typeof record.sessionId !== 'string' || !SESSION_ID_RE.test(record.sessionId)) continue;
-      try { process.kill(record.pid, 0); } catch { continue; }
-      found.set(record.pid, record.sessionId);
+    for (const dir of claudeSessionDirs()) {
+      let names = [];
+      try { names = fs.readdirSync(dir).filter((name) => name.endsWith('.json')); } catch { continue; }
+      for (const name of names) {
+        let text = '';
+        try { text = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }  // a record ends with its process
+        const record = parseJson(text) || {};
+        if (!Number.isInteger(record.pid) || typeof record.sessionId !== 'string' || !SESSION_ID_RE.test(record.sessionId)) continue;
+        try { process.kill(record.pid, 0); } catch { continue; }
+        found.set(record.pid, record.sessionId);
+      }
     }
     return found;
   }
@@ -1609,4 +1651,4 @@ function create({
   return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane };
 }
 
-module.exports = { create, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };
+module.exports = { create, otherClaudeHomes, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };

@@ -309,6 +309,7 @@ class Build:
         self.started = time.time()  # before any log is read: a turn written during the build is newer
         # The builder reuses its list of every log for a second; a run starts from the logs as they are now.
         builder._LOG_INDEX.clear()
+        builder._OTHER_HOMES.clear()
         self.homes, self.parent_of = builder.fleet_homes(args.main_home)
         try:
             old = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))

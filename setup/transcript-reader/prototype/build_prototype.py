@@ -2,7 +2,7 @@
 """Build the phase 1 transcript-reader prototype page.
 
 Throwaway prototype for the design checkpoint in ../DESIGN.md. It only reads:
-Claude Code session logs under ~/.claude/projects, Codex rollout logs under
+Claude Code session logs under ~/.claude/projects (and under the projects/ of each other Claude config folder), Codex rollout logs under
 ~/.codex/sessions, GitHub Copilot CLI session logs under ~/.copilot/session-state, the Firstmate fleet
 records under each home's state/ folder, and Herdr's live pane list (for the
 pane labels). It writes only the page and, beside it, a cache of pane labels
@@ -77,6 +77,7 @@ STEP_OUTPUTS = "steps"  # beside the page: one <conversation id>.json of each co
 # Where Claude keeps its session logs. PMOS_READER_PROJECTS names another folder laid out the same way, for a test or a measurement
 # that must not touch the real logs.
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
+DEFAULT_PROJECTS = Path.home() / ".claude" / "projects"
 # Codex stores one rollout JSONL per session. The optional override keeps parser tests and isolated labs away from a real home.
 CODEX_SESSIONS = Path(os.environ["PMOS_READER_CODEX_SESSIONS"]) if os.environ.get("PMOS_READER_CODEX_SESSIONS") else Path.home() / ".codex" / "sessions"
 # The Copilot CLI keeps one folder per session under <home>/session-state/<session id>/, whose events.jsonl is the conversation. The
@@ -810,8 +811,54 @@ def registered_secondmates(home: Path) -> list[dict]:
     return mates
 
 
-def project_folder(home: Path) -> Path:
-    return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", str(home))
+_OTHER_HOMES: dict[tuple, tuple[float, list[Path]]] = {}
+
+
+def other_claude_homes() -> list[Path]:
+    """The folders Claude Code keeps its sessions in besides ~/.claude: one per CLAUDE_CONFIG_DIR a person runs it under (a second
+    account is often ~/.claude-personal or ~/.claude-work). A folder named ~/.claude<anything> counts when it holds a projects/ or
+    sessions/ folder, which only a Claude config folder does (a plain file such as ~/.claude.json, or a tool's own ~/.claude-xyz
+    folder, has neither); so does the folder CLAUDE_CONFIG_DIR names for this process, and each of PMOS_READER_CLAUDE_HOMES (absolute
+    paths separated like PATH) for a place outside the home folder. No folder's name is known here: a new account is found by the
+    next look. api.js's otherClaudeHomes finds the same ones. The answer is reused for LOG_LIST_REUSE seconds, as the list of logs is
+    (a build asks for the logs' folders thousands of times)."""
+    home = Path.home()
+    asked = (home, os.environ.get("CLAUDE_CONFIG_DIR", ""), os.environ.get("PMOS_READER_CLAUDE_HOMES", ""))
+    memo = _OTHER_HOMES.get(asked)
+    if memo and time.monotonic() - memo[0] < LOG_LIST_REUSE:
+        return memo[1]
+    primary = home / ".claude"
+    found: list[Path] = []
+
+    def add(folder: Path) -> None:
+        if folder.is_absolute() and folder != primary and folder not in found and ((folder / "projects").is_dir() or (folder / "sessions").is_dir()):
+            found.append(folder)
+
+    try:
+        for entry in sorted(home.iterdir(), key=lambda item: item.name):
+            if entry.name.startswith(".claude"):
+                add(entry)
+    except OSError:
+        pass
+    for named in (os.environ.get("CLAUDE_CONFIG_DIR", ""), *os.environ.get("PMOS_READER_CLAUDE_HOMES", "").split(os.pathsep)):
+        if named:
+            add(Path(named))
+    _OTHER_HOMES.clear()
+    _OTHER_HOMES[asked] = (time.monotonic(), found)
+    return found
+
+
+def project_roots() -> list[Path]:
+    """Every folder of Claude session logs: PROJECTS, then the projects/ of each other Claude config folder. A PROJECTS that
+    something else points at (PMOS_READER_PROJECTS, a test) is read alone, as it always was."""
+    if PROJECTS != DEFAULT_PROJECTS:
+        return [PROJECTS]
+    return [PROJECTS, *(home / "projects" for home in other_claude_homes())]
+
+
+def project_folder(home: Path) -> list[Path]:
+    """The folders (one per Claude config folder) that hold the logs of sessions run in <home>."""
+    return [root / re.sub(r"[^A-Za-z0-9]", "-", str(home)) for root in project_roots()]
 
 
 def canonical_session_id(value: str) -> str | None:
@@ -961,13 +1008,12 @@ def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
         current = find_session_file(lock.read_text().strip())
         if current:
             found.append(current)
-    folder = project_folder(home)
-    if folder.is_dir():
-        for path in sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
-            if len(found) >= limit or path.stat().st_mtime < since:
-                break
-            if path not in found:
-                found.append(path)
+    own = [path for folder in project_folder(home) if folder.is_dir() for path in folder.glob("*.jsonl")]
+    for path in sorted(own, key=lambda p: p.stat().st_mtime, reverse=True):
+        if len(found) >= limit or path.stat().st_mtime < since:
+            break
+        if path not in found:
+            found.append(path)
     return found[:limit]
 
 
@@ -1396,20 +1442,30 @@ def build(args) -> dict:
 
 
 CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
+DEFAULT_CLAUDE_SESSIONS = CLAUDE_SESSIONS
+
+
+def claude_session_dirs() -> list[Path]:
+    """The folders of running Claude Code processes' records: ~/.claude/sessions and each other Claude config folder's. A
+    CLAUDE_SESSIONS that something else points at (a test) is read alone."""
+    if CLAUDE_SESSIONS != DEFAULT_CLAUDE_SESSIONS:
+        return [CLAUDE_SESSIONS]
+    return [CLAUDE_SESSIONS, *(home / "sessions" for home in other_claude_homes())]
 
 
 def running_claude_sessions() -> dict[int, str]:
     """pid -> session id of every running Claude Code process, from the record each keeps
-    in ~/.claude/sessions (it follows /clear and --resume)."""
+    in <its config folder>/sessions (it follows /clear and --resume): ~/.claude's and every other config folder's."""
     found = {}
-    for record in sorted(CLAUDE_SESSIONS.glob("*.json")):
-        try:
-            data = json.loads(record.read_text(encoding="utf-8"))
-            pid, session = int(data["pid"]), str(data["sessionId"])
-            os.kill(pid, 0)
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            continue
-        found[pid] = session
+    for folder in claude_session_dirs():
+        for record in sorted(folder.glob("*.json")):
+            try:
+                data = json.loads(record.read_text(encoding="utf-8"))
+                pid, session = int(data["pid"]), str(data["sessionId"])
+                os.kill(pid, 0)
+            except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            found[pid] = session
     return found
 
 
@@ -2469,16 +2525,17 @@ def all_logs() -> list[Path]:
 # A build walks the chains of every listed session, asking for every log thousands of times
 # within a few seconds; even unchanged, listing the folders again each time took seconds.
 LOG_LIST_REUSE = 1.0  # seconds a list of every log is reused for
-_LOG_INDEX: dict[Path, tuple[float, list[Path], dict[str, Path], dict[Path, float], dict[Path, tuple[int, int]], tuple]] = {}
+_LOG_INDEX: dict[tuple[Path, ...], tuple[float, list[Path], dict[str, Path], dict[Path, float], dict[Path, tuple[int, int]], tuple]] = {}
 
 
 def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
     """Every session log, each by its session id (the first one, if a copy exists), and
     each one's last write."""
-    cached = _LOG_INDEX.get(PROJECTS)
+    roots = tuple(project_roots())
+    cached = _LOG_INDEX.get(roots)
     if cached and time.monotonic() - cached[0] < LOG_LIST_REUSE:
         return cached[5]  # the tuple kept with the list: a build asks a hundred thousand times, and slicing a new one each time cost a quarter second
-    logs = [log for folder in listing(PROJECTS, "*") for log in logs_in(folder)]
+    logs = [log for root in roots for folder in listing(root, "*") for log in logs_in(folder)]
     by_id: dict[str, Path] = {}
     written: dict[Path, float] = {}
     versions: dict[Path, tuple[int, int]] = {}
@@ -2490,7 +2547,7 @@ def log_index() -> tuple[list[Path], dict[str, Path], dict[Path, float]]:
             continue
         written[log] = stat.st_mtime
         versions[log] = (stat.st_mtime_ns, stat.st_size)
-    _LOG_INDEX[PROJECTS] = cached = (time.monotonic(), logs, by_id, written, versions, (logs, by_id, written))
+    _LOG_INDEX[roots] = cached = (time.monotonic(), logs, by_id, written, versions, (logs, by_id, written))
     return cached[5]
 
 
@@ -2498,7 +2555,7 @@ def listed_version(path: Path) -> tuple[int, int] | None:
     """A log's (modification time, size) as the list of every log found it, while that list is reused: what the caches of a
     log's head, tail and link are checked against, once for every candidate of every chain."""
     log_index()
-    known = _LOG_INDEX[PROJECTS][4].get(path)
+    known = _LOG_INDEX[tuple(project_roots())][4].get(path)
     return known if known is not None else file_version(path)
 
 

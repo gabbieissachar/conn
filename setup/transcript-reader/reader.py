@@ -114,7 +114,10 @@ def write_list(ids: list[str]) -> None:
 
 
 def session_files(projects: Path, prefix: str) -> list[Path]:
-    claude = list(projects.glob(f"*/{prefix}*.jsonl"))
+    """The logs whose session id starts with <prefix>: Claude's under <projects> (and, when that is the usual folder, under every other
+    Claude config folder's), Codex's and Copilot's."""
+    roots = builder.project_roots() if projects == builder.PROJECTS else [projects]
+    claude = [log for root in roots for log in root.glob(f"*/{prefix}*.jsonl")]
     codex = builder.codex_session_files(prefix)
     copilot = builder.copilot_session_files(prefix)
     return sorted({*claude, *codex, *copilot})
@@ -533,6 +536,7 @@ def worker(replay: str | None = None) -> int:
             continue
         output = io.StringIO()
         builder._LOG_INDEX.clear()  # a log written since the last build is on the list
+        builder._OTHER_HOMES.clear()  # and so is the folder of a Claude account set up since
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             try:
                 code = main(args)
