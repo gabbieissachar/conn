@@ -1529,7 +1529,9 @@ __HEAD_HOSTED__
     paint();
     return button;
   }
-  function renderReader() {
+  function renderReader(keepTurns = false) {
+    const held = turnsDrawn;
+    turnsDrawn = null;  // set again when the turns are drawn, or kept, below
     if (link.opening) {  // a reload is listing the closed pane's conversation it was on again (see the load code)
       document.getElementById("controls").replaceChildren($("div", "kept-note", `Its Herdr pane has closed. Opening ${link.opening.label} again…`));
       document.getElementById("main").replaceChildren();
@@ -1601,6 +1603,8 @@ __HEAD_HOSTED__
       controls.append(closed);
     }
     renderLive();
+    // The controls above are drawn for every build; the turns below only when they changed (turnsUnchanged, in applyPayload).
+    if (keepTurns && held && held.sid === session.id) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from) }; paintPins(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", "No turns in this session."), ...pendingNodes(session)); return; }
@@ -1620,7 +1624,34 @@ __HEAD_HOSTED__
     });
     if (run) collapseRun(run);
     main.append(...pendingNodes(session));
+    turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from) };
     paintPins();
+  }
+  // ---------------------------------------------------------------- drawing the turns again only when they changed (DESIGN.md, 2026-11-05)
+  // A build arrives every few seconds while the fleet works, and most builds change another conversation. Drawing the conversation on screen
+  // again for each one allocates its whole DOM (33,000 nodes for the largest) for nothing, so applyPayload asks turnsUnchanged first.
+  // turnsDrawn is what #main holds: the session's id, the turns it was drawn from and what the drawing read besides them; null when #main holds
+  // anything else (another view, no turns, a notice).
+  let turnsDrawn = null;
+  const turnSigs = new WeakMap();  // a turn -> its content as text, made once: a turn that is the same object as before needs no comparing
+  const turnSig = ex => { let sig = turnSigs.get(ex); if (sig === undefined) { sig = JSON.stringify(ex); turnSigs.set(ex, sig); } return sig; };
+  // What drawing the turns reads besides the turns themselves: the documents their chips name, and where kept tool output starts.
+  function turnsContext(exs, documents, stepsFrom) {
+    const ids = new Set();
+    for (const ex of exs) { for (const id of ex.documents || []) ids.add(id); for (const id of ex.input_documents || []) ids.add(id); }
+    const held = id => { const d = documents && documents[id]; return d ? [id, d.dir, d.name, d.kind] : [id]; };
+    return JSON.stringify([stepsFrom || 0, [...ids].map(held)]);
+  }
+  // Whether the turns of the session now on screen are the ones #main was drawn from: the same count and, turn by turn, the same object
+  // or the same content (a full page read gives new objects with the same content), and the same context. The answer is the turns' own
+  // state, so a controls-only redraw is exact; it is never true for a conversation drawn for the first time.
+  function turnsUnchanged(session) {
+    if (!turnsDrawn || !session || turnsDrawn.sid !== session.id || !Array.isArray(session.exchanges) || turnsDrawn.exchanges.length !== session.exchanges.length) return false;
+    for (let i = 0; i < session.exchanges.length; i++) {
+      const was = turnsDrawn.exchanges[i], now = session.exchanges[i];
+      if (was !== now && turnSig(was) !== turnSig(now)) return false;
+    }
+    return turnsDrawn.context === turnsContext(session.exchanges, data.documents, data.steps_from);
   }
   // Opening a conversation starts at its latest turn, placed under the bar so it reads from its first line.
   // Wake-ups folded after it stay as the one-line rows below.
@@ -4007,7 +4038,9 @@ __HEAD_HOSTED__
       state.open = moveTurns(first, sid, data.sessions[index], state.open, anchor);
       setAddress();
     }
-    render();
+    // A build that left the conversation on screen as it was (the usual one: another conversation changed) draws the controls and the
+    // header, and keeps the turns it has: drawing them again only fills the page's memory with discarded nodes.
+    render({ keepTurns: index >= 0 && data.sessions[index].id === sid && turnsUnchanged(data.sessions[index]) });
     if (anchor.top != null) anchor.top += document.getElementById("bar").offsetHeight - barHeight;  // a taller header must not cover the turn being read
     restoreAnchor(anchor);
     if (state.view === "reader" && !anchor.bottom && index >= 0 && mark(data.sessions[state.session]) !== before) { link.newer = true; placeNewReply(); }
@@ -4192,6 +4225,7 @@ __HEAD_HOSTED__
   // Runs show once the view has what it needs: at once when it has (always on the local page).
   function whenReady(show) {
     if (!missing()) { show(); return; }
+    turnsDrawn = null;
     document.getElementById("main").replaceChildren($("div", "empty", "Loading…"));
     ensure().then(show, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load this: ${e.message}`)));
   }
@@ -4278,19 +4312,21 @@ __HEAD_HOSTED__
   // hidden, and a page left on it goes back to the conversation. The hosted copy's index says so when it was built without it
   // (and an index from before the switch says nothing, and keeps its tab).
   const fleetOn = () => data.fleet_timeline !== false;
-  function render() {
-    if (missing()) { whenReady(render); return; }  // the hosted copy loads first
+  function render({ keepTurns = false } = {}) {
+    if (missing()) { turnsDrawn = null; whenReady(() => render()); return; }  // the hosted copy loads first
     pruneKept();
     document.getElementById("tab-fleet").hidden = !fleetOn();
     if (!fleetOn() && state.view === "fleet") state.view = "reader";
-    reveals.clear();
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
+    // The turns stay only on the reader view with no search open (a search marks the turns, and runs again over the new data).
+    keepTurns = keepTurns && state.view === "reader" && !look.open && !link.opening;
+    if (!keepTurns) reveals.clear();  // the openers of the turns drawn now: kept turns keep theirs
     document.body.classList.toggle("docmode", state.view === "doc");
     document.body.classList.toggle("docwide", state.view === "doc" && expandedNow());
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
     document.getElementById("tab-doc").textContent = docsLabel(data.sessions[state.session]);
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
-    if (state.view === "reader") renderReader(); else { if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
+    if (state.view === "reader") renderReader(keepTurns); else { turnsDrawn = null; if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
     paintSheetLink();
     refreshSearch();  // the page was drawn again: the query runs on it as it is now

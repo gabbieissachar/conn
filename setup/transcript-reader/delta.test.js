@@ -220,3 +220,54 @@ test('the route answers a page that holds a build the server has seen with only 
     assert.strictEqual((await route('name=prototype.html&have=10', { 'x-transcript-reader-token': token, Host: 'evil.example:' + port })).status, 403);
   } finally { server.close(); }
 });
+
+// ---- the page keeps the turns it drew when a build leaves them as they were (turnsUnchanged, template.html) ----
+
+const keepFrom = source.indexOf('let turnsDrawn = null;');
+const keepSource = source.slice(keepFrom, source.indexOf('\n  }\n', source.indexOf('function turnsUnchanged(')) + 5);
+// The page's own lines, on a page whose `data` is the build under test. `draw` stands for renderReader leaving what it drew behind.
+function keeper(data) {
+  const context = { data, JSON, Array, Set, WeakMap, Boolean };
+  vm.createContext(context);
+  vm.runInContext(keepSource + `
+    this.draw = (session) => { turnsDrawn = { sid: session.id, exchanges: session.exchanges, context: turnsContext(session.exchanges, data.documents, data.steps_from) }; };
+    this.unchanged = (session) => turnsUnchanged(session);
+    this.forget = () => { turnsDrawn = null; };`, context);
+  return context;
+}
+
+test('a build that changes another conversation leaves the turns on screen as they were, whether it came as a delta or as the full page', () => {
+  const a = build(10);
+  const b = build(11);
+  b.sessions[1].exchanges.push(turn(3));  // another conversation got a reply; the one on screen is 'a'
+  const page = keeper(clone(a));
+  const onScreen = page.data.sessions[0];
+  page.draw(onScreen);
+  const { d } = update(a, b);
+  page.data = pageMerge(page.data, clone(d));  // not mergeDelta above: that one copies its answer, and these are about the objects
+  assert.strictEqual(page.data.sessions[0].exchanges, onScreen.exchanges, 'a delta keeps the turns it did not change, the same objects');
+  assert.strictEqual(page.unchanged(page.data.sessions[0]), true, 'a delta');
+  page.data = clone(b);  // the full page: new objects with the same content
+  assert.notStrictEqual(page.data.sessions[0].exchanges[0], onScreen.exchanges[0]);
+  assert.strictEqual(page.unchanged(page.data.sessions[0]), true, 'the full page, by content');
+});
+
+test('the turns are drawn again when one of them, their number, the documents they name or the conversation changed, and the first time', () => {
+  const withDocs = (generated) => { const x = build(generated); x.sessions[0].exchanges[1].documents = ['d1']; return x; };
+  const a = withDocs(10);
+  const page = keeper(clone(a));
+  assert.strictEqual(page.unchanged(page.data.sessions[0]), false, 'nothing was drawn yet');
+  page.draw(page.data.sessions[0]);
+  const next = (change) => { const x = clone(a); x.generated = 11; change(x); page.data = x; return page.unchanged(x.sessions[0]); };
+  assert.strictEqual(next(() => {}), true, 'nothing changed');
+  assert.strictEqual(next((x) => x.sessions[0].exchanges.push(turn(5))), false, 'a new turn');
+  assert.strictEqual(next((x) => x.sessions[0].exchanges.pop()), false, 'a turn fewer');
+  assert.strictEqual(next((x) => { x.sessions[0].exchanges[4].reply += ' and more'; }), false, 'the last reply grew');
+  assert.strictEqual(next((x) => { x.sessions[0].exchanges[0].verdict = 'needs-you'; }), false, 'an earlier turn changed in place');
+  assert.strictEqual(next((x) => { x.documents.d1 = doc('d1', { name: 'moved.html', dir: '/elsewhere' }); }), false, 'a document a chip names moved');
+  assert.strictEqual(next((x) => { x.documents.d9 = doc('d9'); }), true, 'a document no turn names does not matter');
+  assert.strictEqual(next((x) => { x.steps_from = 7; }), false, 'where kept tool output starts');
+  assert.strictEqual(next((x) => { x.sessions[0].id = 'a2'; }), false, 'a /clear gave the conversation a new session');
+  page.forget();
+  assert.strictEqual(page.unchanged(a.sessions[0]), false, 'what was on screen is gone (another view, a notice)');
+});
