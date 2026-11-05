@@ -222,20 +222,21 @@ def encode(value) -> bytes:
 class Document:
     """A document the page offers: its JSON, what the page's three lists of files are made from, and its record for the lite page (no text)."""
 
-    __slots__ = ("key", "json", "lite", "kind", "lazy", "path")
+    __slots__ = ("key", "json", "lite", "kind", "lazy", "path", "dir", "entry")
 
     def __init__(self, record: dict) -> None:
         self.key, self.json = record["id"], encode(record)
         self.lite = encode(builder.lite_document(record))
-        self.kind, self.lazy, self.path = record.get("kind"), bool(record.get("lazy")), record["path"]
+        self.entry = encode(record["id"]) + b":" + self.lite  # as the lite object lists it
+        self.kind, self.lazy, self.path, self.dir = record.get("kind"), bool(record.get("lazy")), record["path"], str(record.get("dir"))
 
 
 class Thread:
     """One conversation as the page shows it, kept (see the module's text)."""
 
-    __slots__ = ("key", "reads", "head", "turns", "agent", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats", "entry", "glance", "docs_lite", "md", "live")
+    __slots__ = ("key", "reads", "head", "turns", "agent", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats", "entry", "glance", "docs_lite", "named", "md", "sheet", "live")
 
-    def __init__(self, key: tuple, reads: Reads, session: dict, documents: dict[str, dict], has_outputs: bool) -> None:
+    def __init__(self, key: tuple, reads: Reads, session: dict, documents: dict[str, dict], has_outputs: bool, sheet: "builder.LiveSheet | None" = None) -> None:
         exchanges = session["exchanges"]
         self.key, self.reads = key, reads
         # The start of its JSON, up to where its turns begin; the pane, the leader's task files and the rest follow them (build).
@@ -250,8 +251,10 @@ class Thread:
         # files it names without their text (by id, in id order) and the markdown ones' paths, and the tail and hash of the object last made.
         self.entry, self.glance = builder.conversation_summary(session)
         named = sorted(self.documents, key=lambda document: document.key)
-        self.docs_lite = b"{" + b",".join(encode(document.key) + b":" + document.lite for document in named) + b"}"
+        self.docs_lite = b"{" + b",".join(document.entry for document in named) + b"}"
+        self.named = {document.key: document for document in named}
         self.md = {document.key: document.path for document in named if not document.kind}
+        self.sheet = sheet  # its answer sheet, which the lite page shows (None when no reply asks for keyed answers)
         self.live: tuple[bytes, str] | None = None
         count = lambda test: sum(1 for e in exchanges if test(e))
         self.stats = (
@@ -277,7 +280,8 @@ def derive(home: dict, chain: list[Path], parent: Path | None, cache: Path, key:
         builder.mark_sheets([session])
         documents = builder.attach_documents([session], html=True, images=True)
     outputs = tool_steps.take_outputs(session["exchanges"])
-    return (Thread(key, reads, session, documents, bool(outputs)),
+    sheet = builder.session_sheet(chain, cache)  # outside the recording, as the logs above are: the reader's own cache files are not what the page is made of
+    return (Thread(key, reads, session, documents, bool(outputs), sheet),
             plain({"outputs": outputs}).encode("utf-8", "replace") if outputs else None)
 
 
@@ -470,16 +474,30 @@ def build(args: argparse.Namespace) -> Built:
         b'},"closed":' + encode(closed) + b',"fleet_timeline":false}',
     ]
     # The lite page's conversations, in the page's order: each object is the conversation's own pieces (kept bytes) with the leader and the
-    # named files after them, hashed only when one of those changed since the last build.
+    # files it lists after them (the ones it names, and for a leader every file of its home's task folders), hashed only when one of those
+    # changed since the last build.
     lite = []
+    in_task_folders: dict[str, list[Document]] = {}   # a leader's folder as the page shows it -> the documents under its home's data/
+    md_files = {}
     for number in order:
         thread = kept[number]
-        tail = (b',"agent":' + encode(thread.agent) if thread.agent else b"") + (b',"leader":' + encode(leaders[number]) if leaders[number] else b"") + b',"documents":' + thread.docs_lite + b"}"
+        docs, md = thread.docs_lite, thread.md
+        if leaders[number]:
+            root = leaders[number]["dir"] + "/data/"
+            if root not in in_task_folders:
+                in_task_folders[root] = [document for document in documents.values() if document.dir.startswith(root)]
+            added = [document for document in in_task_folders[root] if document.key not in thread.named]
+            if added:
+                every = sorted([*thread.named.values(), *added], key=lambda document: document.key)
+                docs = b"{" + b",".join(document.entry for document in every) + b"}"
+                md = {document.key: document.path for document in every if not document.kind}
+        md_files.update(md)
+        tail = (b',"agent":' + encode(thread.agent) if thread.agent else b"") + (b',"leader":' + encode(leaders[number]) if leaders[number] else b"") + b',"documents":' + docs + b"}"
         if thread.live is None or thread.live[0] != tail:
             thread.live = (tail, builder.pieces_stamp([thread.head, thread.turns, tail]))
         lite.append(builder.LiveConversation(thread.entry, thread.glance, labels.get(thread.newest), bool(reopened & set(thread.ids)),
-                                             [thread.head, thread.turns, tail], thread.live[1]))
-    built.live = builder.LiveBuild(started, since, [home["id"] for home in homes], closed, lite, {key: path for thread in kept for key, path in thread.md.items()})
+                                             [thread.head, thread.turns, tail], thread.live[1], thread.sheet))
+    built.live = builder.LiveBuild(started, since, [home["id"] for home in homes], closed, lite, md_files)
     built.files = [(builder.HTML_FILES, json.dumps({d.key: d.path for d in documents.values() if d.kind == "html"})),
                    (builder.IMAGE_FILES, json.dumps({d.key: d.path for d in documents.values() if d.kind == "image"})),
                    (builder.MD_FILES, json.dumps({d.key: d.path for d in documents.values() if d.lazy}))]

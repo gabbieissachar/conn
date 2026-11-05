@@ -20,10 +20,15 @@
 //                                                   the lite page: the reader page's code in mode "live", which opens one conversation
 //                                                   (#s=<id>) and loads only that one, from the objects below; served and token-filled like
 //                                                   any page, and live like the local page (state poll, events wait, Follow, Send)
-//   GET  /setup/transcript-reader/out/live/{index.json,s/*}
-//                                                   the objects every build writes for it (build_prototype.write_live): the index of the
-//                                                   listed conversations and one conversation's entry, to its own token-bearing fetches
-//                                                   only. Read from files: nothing here parses the 34 MB page or asks the worker.
+//   GET  /setup/transcript-reader/out/live/sheet.html
+//                                                   the lite page's answer sheet: the sheet's page in mode "live", which shows the sheet of the
+//                                                   conversation it is opened on (#q=<session>:<time> or #s=<id>), sends straight to the pane
+//                                                   as the local sheet does, and links back to the conversation; served like any page
+//   GET  /setup/transcript-reader/out/live/{index.json,s/*,a/*}
+//                                                   the objects every build writes for them (build_prototype.write_live): the index of the
+//                                                   listed conversations, one conversation's entry (s/) and one conversation's answer sheet
+//                                                   (a/), to their own token-bearing fetches only. Read from files: nothing here parses the
+//                                                   34 MB page or asks the worker.
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
@@ -166,12 +171,12 @@ const copySyncLib = require('./copysync');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'live/sheet.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {
-  // The lite page's (out/live/): the index and one conversation each. Its markdown listing (md-files.json) is read by md-open, never served.
-  live: { re: /^(?:index|s\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
+  // The lite page's (out/live/): the index, and one conversation's entry (s/) and answer sheet (a/) each. Its markdown listing (md-files.json) is read by md-open, never served.
+  live: { re: /^(?:index|[sa]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
   hosted: { re: /^(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
   bucket: { re: /^(?:(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };

@@ -35,14 +35,16 @@ async function start({ withPage = false, watch = false } = {}) {
   const outDir = path.join(root, 'setup', 'transcript-reader', 'out');
   const home = path.join(base, 'home');
   const temp = path.join(base, 'temp');
-  for (const dir of [path.join(outDir, 'live', 's'), home, temp]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [path.join(outDir, 'live', 's'), path.join(outDir, 'live', 'a'), home, temp]) fs.mkdirSync(dir, { recursive: true });
   const notes = path.join(home, 'notes.md');
   fs.writeFileSync(notes, '# Notes\n\nThe plan.\n');
   fs.writeFileSync(path.join(home, 'secret.txt'), 'not markdown');
   const live = path.join(outDir, 'live');
   fs.writeFileSync(path.join(live, 'index.html'), shell('lite page'));
-  fs.writeFileSync(path.join(live, 'index.json'), JSON.stringify({ as_of: 5, conversations: [{ id: A, object: `s/${A}.json`, stamp: 'x' }] }));
+  fs.writeFileSync(path.join(live, 'sheet.html'), shell('lite sheet'));
+  fs.writeFileSync(path.join(live, 'index.json'), JSON.stringify({ as_of: 5, conversations: [{ id: A, object: `s/${A}.json`, stamp: 'x' }], sheets: { [A]: { object: `a/${A}.json`, stamp: 'y', list: [{ at: 1, open: 2, title: 'Two choices' }] } } }));
   fs.writeFileSync(path.join(live, 's', `${A}.json`), JSON.stringify({ id: A, exchanges: [{ at: 1, input: 'hello' }], documents: {} }));
+  fs.writeFileSync(path.join(live, 'a', `${A}.json`), JSON.stringify({ questionnaires: [{ session: A, at: 1, title: 'Two choices', cards: [{ key: 'A1', question: 'Keep the intro?' }] }] }));
   fs.writeFileSync(path.join(live, 'md-files.json'), JSON.stringify({ aaaaaaaaaa: notes, bbbbbbbbbb: path.join(home, 'secret.txt') }));
   fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify({ secret: true }));
   fs.writeFileSync(path.join(outDir, 'sessions.txt'), `${A}\n`);
@@ -102,6 +104,27 @@ test('lite: the page opens in a tab like any page, with the token in its tag, an
   } finally { await t.close(); }
 });
 
+test('lite: its answer sheet opens in a tab the same way, with the token in its tag, and never in a frame or a script\'s fetch', async () => {
+  const t = await start();
+  try {
+    const sheet = '/setup/transcript-reader/out/live/sheet.html';
+    const page = await t.open(sheet);
+    assert.equal(page.status, 200);
+    assert.equal(tokenIn(page.raw), t.token);
+    assert.match(page.raw, /lite sheet/);
+    assert.equal(page.headers['content-security-policy'], "frame-ancestors 'none'");
+    assert.equal(page.headers['x-frame-options'], 'DENY');
+    assert.equal(page.headers['cache-control'], 'no-store');
+    assert.equal((await t.request({ path: sheet, headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' } })).status, 403, 'framed');
+    assert.equal((await t.request({ path: sheet, headers: { ...FETCH } })).status, 403, 'a script\'s fetch gets no page, so no token');
+    assert.equal((await t.request({ path: sheet, headers: { ...NAVIGATE, Host: 'evil.example:80' } })).status, 403);
+    fs.unlinkSync(path.join(t.live, 'sheet.html'));
+    const missing = await t.open(sheet);
+    assert.equal(missing.status, 404);
+    assert.match(missing.raw, /reader\.py/);
+  } finally { await t.close(); }
+});
+
 test('lite: a page that is not built yet says to run reader.py, not the hosted copy\'s sync', async () => {
   const t = await start();
   try {
@@ -113,10 +136,10 @@ test('lite: a page that is not built yet says to run reader.py, not the hosted c
   } finally { await t.close(); }
 });
 
-test('lite: the index and one conversation\'s object go to the page\'s own token-bearing fetch, and to nothing else', async () => {
+test('lite: the index, one conversation\'s object and its answer sheet\'s go to the page\'s own token-bearing fetch, and to nothing else', async () => {
   const t = await start();
   try {
-    for (const name of ['index.json', `s/${A}.json`]) {
+    for (const name of ['index.json', `s/${A}.json`, `a/${A}.json`]) {
       const got = await t.asPage(OBJECTS + name);
       assert.equal(got.status, 200, name);
       assert.equal(got.raw, fs.readFileSync(path.join(t.live, name), 'utf8'), name);
@@ -130,13 +153,14 @@ test('lite: the index and one conversation\'s object go to the page\'s own token
       }
     }
     assert.equal((await t.asPage(OBJECTS + `s/${B}.json`)).status, 404, 'a conversation with no object');
+    assert.equal((await t.asPage(OBJECTS + `a/${B}.json`)).status, 404, 'a conversation with no answer sheet');
   } finally { await t.close(); }
 });
 
 test('lite: its markdown listing, the manifest and any other name or spelling are never served, nor handed to the static handler', async () => {
   const t = await start();
   try {
-    for (const name of ['md-files.json', 'manifest.json', 's/', `s/${A}.jsonl`, `s/../../manifest.json`, 'x/a.json', 'index.json.partial', 's/sub/a.json', `d/${A}.json`, `t/${A}.json`, 'f/2026-W43.json']) {
+    for (const name of ['md-files.json', 'manifest.json', 's/', `s/${A}.jsonl`, `s/../../manifest.json`, 'x/a.json', 'index.json.partial', 's/sub/a.json', 'a/', `a/${A}.jsonl`, 'a/../../manifest.json', 'a/sub/a.json', `a/.${A}.json.1.partial`, `d/${A}.json`, `t/${A}.json`, 'f/2026-W43.json']) {
       const response = await t.asPage(OBJECTS + name);
       assert.equal(response.headers['x-static'], undefined, name);
       assert.notEqual(response.status, 200, name);
@@ -250,13 +274,14 @@ test('lite: a build is taken by reading the index and the one conversation on sc
 test('lite: the page opens and polls without the hosted copy\'s sealed-copy steps, and its poll waits for its first index', () => {
   const boot = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('if (!LAZY) openReading(chooseOpening());'), PAGE_SOURCE.indexOf('async function reopenLost'));
   assert.ok(boot.includes('(HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index())'), 'no passphrase, no worker, no stored copy');
-  assert.ok(boot.includes('document.querySelector(".to-sheet").href = SHEET_PAGE;'));
+  assert.deepEqual(boot.match(/\.to-sheet/g), ['.to-sheet'], 'the hosted copy\'s link is set once; the lite page\'s is painted for each conversation (paintSheetLink)');
+  assert.ok(boot.indexOf('.to-sheet') < boot.indexOf('forgetDevice'), 'and that one is in the hosted branch, with the other hosted-only setup');
   assert.ok(boot.includes('started = true;'));
   assert.ok(boot.includes('if (!HOSTED) return;'), 'the lite page has the live poll and the wait for builds already, not the hosted copy\'s 30 seconds');
   assert.ok(PAGE_SOURCE.includes('let started = !LAZY;'));
   assert.ok(PAGE_SOURCE.includes('if (!started) return;'), 'the poll takes the state and nothing of the data before the index is in');
   assert.ok(PAGE_SOURCE.includes('stamps => started ? refreshData(false, stamps.reader) : undefined'));
-  assert.ok(PAGE_SOURCE.includes('const SHEET_PAGE = HOSTED ? "sheet.html" : MODE === "live" ? "../questionnaire.html" : "questionnaire.html";'), 'the lite page is in out/live/: the local answer sheet is a folder up');
+  assert.ok(PAGE_SOURCE.includes('const SHEET_PAGE = HOSTED || MODE === "live" ? "sheet.html" : "questionnaire.html";'), 'the lite page has a sheet of its own beside it: it does not leave for the full reader\'s');
 });
 
 test('lite: a document has an object to load only in the hosted copy; a markdown file of the lite page is read through the server when opened', () => {
@@ -338,4 +363,96 @@ test('follow: a conversation not loaded yet is loaded before it is drawn and scr
   apply();
   assert.deepEqual(order, ['load'], 'nothing is drawn or scrolled until the load is done');
   return Promise.resolve().then(() => assert.deepEqual(order, ['load', 'render', 'latest']));
+});
+
+// --------------------------------------------------------------------------------------------------- the answer sheet in the lite page
+
+// The title bar's "Answer sheet" link goes to the sheet of the conversation on screen, and only where it has one.
+function sheetLink({ mode, sheets, session = { id: 'aaaaaaaa-1111-4111-8111-111111111111' } }) {
+  const anchor = { style: { display: '' }, href: 'questionnaire.html' };
+  const world = { MODE: mode, SHEET_PAGE: mode === 'local' ? 'questionnaire.html' : 'sheet.html', encodeURIComponent, state: { session: 0 }, data: { sessions: [session], sheets }, document: { querySelector: (selector) => (selector === '.to-sheet' ? anchor : null) } };
+  vm.runInNewContext(`${fnSource('paintSheetLink')}\npaintSheetLink();`, world);
+  return anchor;
+}
+
+test('sheet: the lite page\'s title bar link goes to this conversation\'s sheet, and is not there for a conversation with none', () => {
+  assert.deepEqual(sheetLink({ mode: 'live', sheets: { [A]: { object: `a/${A}.json` } } }), { style: { display: '' }, href: 'sheet.html#s=aaaaaaaa' });
+  assert.deepEqual(sheetLink({ mode: 'live', sheets: {} }), { style: { display: 'none' }, href: 'questionnaire.html' });
+  assert.equal(sheetLink({ mode: 'live', sheets: { [B]: {} } }).style.display, 'none', 'another conversation\'s sheet is not this one\'s');
+  for (const mode of ['local', 'hosted']) assert.deepEqual(sheetLink({ mode, sheets: { [A]: {} } }), { style: { display: '' }, href: 'questionnaire.html' }, mode + ': the link is as it was');
+});
+
+test('sheet: a reply\'s "Answer sheet" link opens the lite page\'s own sheet, in the same window, on that questionnaire', () => {
+  assert.ok(PAGE_SOURCE.includes('if (sheetLink) sheetLink.href = SHEET_PAGE + "#q=" + encodeURIComponent(ex.sheet);'));
+  assert.doesNotMatch(PAGE_SOURCE, /\.\.\/questionnaire\.html/, 'nothing sends the lite page to the full reader\'s sheet');
+  assert.doesNotMatch(PAGE_SOURCE.match(/const sheetLink = .*\n/)[0], /target|_blank/, 'a link in a column stays in it');
+});
+
+const SHEET_SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'questionnaire.html'), 'utf8');
+const sheetFilled = (mode) => {
+  const done = spawnSync('python3', ['-I', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import build_prototype as b; sys.stdout.write(b.fill_template(b.SHEET_TEMPLATE, "null", sys.argv[2])[0])', path.join(__dirname, 'prototype'), mode], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(done.status, 0, done.stderr);
+  return done.stdout;
+};
+
+test('sheet: one page, three modes, and the same two questions as the reader page: loads lazily (LAZY), and is there a laptop to ask (HOSTED)', () => {
+  assert.ok(SHEET_SOURCE.includes('const MODE = "__MODE__";'));
+  assert.ok(SHEET_SOURCE.includes('const LAZY = MODE !== "local";'));
+  assert.ok(SHEET_SOURCE.includes('const HOSTED = MODE === "hosted";'));
+  for (const [mode, lazy] of [['local', false], ['hosted', true], ['live', true]]) {
+    const page = sheetFilled(mode);
+    assert.ok(page.includes(`const MODE = "${mode}";`), mode);
+    assert.equal(page.includes('const hosted = (() => {'), lazy, mode + ': the loader is in every lazy sheet');
+    assert.equal(page.includes('/*__'), false, mode + ': no slot left');
+  }
+});
+
+test('sheet: what loads lazily is asked of LAZY and what needs a laptop to queue for of HOSTED, so the lite sheet sends straight to the pane', () => {
+  assert.ok(SHEET_SOURCE.includes('let data = LAZY ? { generated: 0, questionnaires: [] } : JSON.parse('));
+  assert.ok(SHEET_SOURCE.includes('if (!LAZY) openLinked();'));
+  assert.ok(SHEET_SOURCE.includes('(HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index())'), 'no passphrase for the lite page\'s plain files');
+  assert.ok(SHEET_SOURCE.includes('const queued = await hosted.enqueue(q.session, text);'));
+  const send = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('async function sendAnswers()'), SHEET_SOURCE.indexOf('async function watchReceipt'));
+  assert.ok(send.indexOf('if (HOSTED) {') >= 0 && send.indexOf('if (HOSTED) {') < send.indexOf('hosted.enqueue'), 'only the hosted copy queues');
+  assert.ok(send.indexOf('await live.send(q.session, text)') > send.indexOf('hosted.enqueue'), 'and every other mode sends through the server\'s own send, with its checks');
+  assert.ok(SHEET_SOURCE.includes('if (!HOSTED) live.poll(async () => {'), 'the lite sheet polls Herdr\'s state for the pane to send to, as the local sheet does');
+  assert.ok(SHEET_SOURCE.includes('if (!HOSTED) live.waitForBuilds('));
+  assert.ok(SHEET_SOURCE.includes('line.hidden = !HOSTED || !data.generated;'), 'the "laptop asleep" line is the hosted copy\'s alone');
+  const renderSend = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('function renderSend()'), SHEET_SOURCE.indexOf('async function sendAnswers()'));
+  assert.ok(renderSend.indexOf('if (HOSTED) {') < renderSend.indexOf('if (!live.served)'), 'the local checks (a live pane that is not at a prompt) are what every other mode shows');
+});
+
+// The part of the sheet that scopes its list to one conversation and finds the way back.
+function sheetScope(hash, index) {
+  const source = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('const addressed = '), SHEET_SOURCE.indexOf('// The list from the index: one entry per questionnaire'));
+  return vm.runInNewContext(`${source}\n({ onlySession, inConversation })`, { URLSearchParams, location: { hash }, MODE: 'live' });
+}
+
+test('sheet: the lite sheet shows the conversation its address names and no other (#q=<session 8>:<time>, or #s=<session>)', () => {
+  const index = { conversations: [{ id: A, ids: ['00000000-0000-4000-8000-000000000000', A] }, { id: B, ids: [B] }] };
+  for (const hash of ['#q=aaaaaaaa%3A1793860599', '#q=aaaaaaaa:1793860599', '#s=aaaaaaaa', '#s=aaaaaaaa-1111-4111-8111-111111111111&q=aaaaaaaa:5']) {
+    const scope = sheetScope(hash, index);
+    assert.equal(scope.inConversation(index, A), true, hash);
+    assert.equal(scope.inConversation(index, B), false, hash);
+  }
+  assert.equal(sheetScope('#s=00000000', index).inConversation(index, A), true, 'an older session of the conversation names it too');
+  const all = sheetScope('', index);
+  assert.equal(all.onlySession, '');
+  assert.equal(all.inConversation(index, A) && all.inConversation(index, B), true, 'with no address it lists every sheet');
+});
+
+test('sheet: the lite sheet is not scoped in the hosted copy, which lists every conversation\'s', () => {
+  const source = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('const addressed = '), SHEET_SOURCE.indexOf('// The list from the index: one entry per questionnaire'));
+  const scope = vm.runInNewContext(`${source}\n({ onlySession })`, { URLSearchParams, location: { hash: '#q=aaaaaaaa:1' }, MODE: 'hosted' });
+  assert.equal(scope.onlySession, '');
+});
+
+test('sheet: the way back is the conversation the sheet is of (the hosted copy\'s is its reader), and a build is taken from the lite index where it stands', () => {
+  assert.ok(SHEET_SOURCE.includes('back.href = "index.html" + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");'));
+  assert.ok(SHEET_SOURCE.includes('if (!HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";'));
+  const refresh = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('async function refreshLive()'), SHEET_SOURCE.indexOf('// Served, the sheet takes in a rebuild where it is'));
+  assert.match(refresh, /hosted\.index\(\)/);
+  assert.match(refresh, /hosted\.pageChanged\(next\.sheet_template\)/, 'new page code reloads it');
+  assert.doesNotMatch(refresh, /live\.page\(|DOMParser/, 'never the page again: the index and the sheet\'s object');
+  assert.ok(SHEET_SOURCE.includes('const idle = () => !(document.activeElement && document.activeElement.tagName === "TEXTAREA") && !sendOnce.busy();'), 'a build is not taken while a box is typed in or a send is under way');
 });

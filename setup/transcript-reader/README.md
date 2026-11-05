@@ -268,23 +268,31 @@ Then open `http://<the Mac's Tailscale address>:8765/apps/wip-herdr-workspace-or
 
 ## The lite page and the glance feed
 
-For watching several conversations at once (Conn's tiles and columns, built against the formats below), every build that writes the reader page also writes, beside it, what a page that shows **one** conversation needs, and one small file that says how every conversation stands. Neither makes the build parse anything more: a conversation's object is its own bytes, written only when they changed.
+For watching several conversations at once (Conn's columns, at most three, and its list of open asks, built against the formats below), every build that writes the reader page also writes, beside it, what a page that shows **one** whole conversation needs (its turns, its documents and its answer sheet), and one small file that says which conversations ask you something. Neither makes the build parse anything more: a conversation's object is its own bytes, written only when they changed.
 
 ### The lite page
 
 ```
 http://localhost:8768/setup/transcript-reader/out/live/index.html#s=<session id, or its first 8 characters>
 ```
-
 The same address forms as the reader page (`#s=<id>&d=<document id>`, `#s=<id>&m=<turn id>`, "Links to one message"), on `localhost`, the tailnet address and the https address alike, served and token-filled like any page (opened in a tab or a web view, never framed). It is the reader page's own code in a third mode, so it draws the conversation exactly as the full page does, and it loads **only the conversation it is opened on** (one object, 0.1 to 4.3 MB on the owner's data) instead of the 34 MB page. A conversation picked in its session picker loads when it is picked.
 
-It is a served page in every other way: it **sends straight to the pane** through the same `send` route and every check the server makes (Herdr's state, the foreground process, the session, one message at a time, the 5-second Undo window in the page), takes **Reply**, **Comment on this**, batches and photos, **follows Herdr** when asked to, polls the state every 2 seconds for each pane's agent state, waits on `events` for a new build and takes it in about 1.5 seconds, has Pins, Stars, Search in the conversation, Documents and **Sync**. What differs from the full page:
+It is a served page in every other way: it **sends straight to the pane** through the same `send` route and every check the server makes (Herdr's state, the foreground process, the session, one message at a time, the 5-second Undo window in the page), takes **Reply**, **Comment on this**, batches and photos, **follows Herdr** when asked to, polls the state every 2 seconds for each pane's agent state, waits on `events` for a new build and takes it in about 1.5 seconds, has Pins, Stars, Search in the conversation, **Documents** (all of them, below), the **answer sheet** (below) and **Sync**. A column is therefore the whole of one conversation: nothing in it needs the full reader. What differs from the full page:
 
 - **Follow is off** until you turn it on in the page; the setting is the page's own (`tr-live-follow` in the browser's storage, apart from the full page's `tr-follow`), so a column pinned to one conversation stays on it.
 - **Search "All conversations"** looks in the conversations the page has loaded, and says how many (the others load when opened). No server route searches.
-- **Documents** lists the files the conversation names (markdown, HTML, pictures). A markdown file opens through `md-open`, as it is on disk now, and an HTML file or picture through `html-open` and `image-open`, as everywhere. The unnamed files of a leader's task folders are not listed (the full page lists them).
-- **The answer sheet** is the local one (`../questionnaire.html`): its link leaves the page for it, as the sheet's own "← Reader" returns to the full page. A native client that hosts the page should send that link to its full reader.
+- **Documents** lists the files the conversation names (markdown, HTML, pictures) and, for a leader's conversation (a run in a Firstmate home), every file of the home's task folders, named or not (`data/<task id>/`, the same files and the same By task and By folder views as the full page, with each task's title and state). A markdown file opens through `md-open`, as it is on disk now, and an HTML file or picture through `html-open` and `image-open`, as everywhere. They come in the conversation's own object, so opening Documents loads nothing more. A task folder is cut at 400 files, as in the full page, and says how many it left out.
+- **The answer sheet** is the lite sheet, `out/live/sheet.html`, in the same window as the page (below). A reply that asks for keyed answers has its "Answer sheet →" button as in the full page, and the title bar's link goes to this conversation's sheet; both open the lite sheet, never the full reader's `questionnaire.html`, and the sheet's "← Conversation" comes back to `#s=<id>`.
 - **No offline copy**, no Fleet timeline (the hosted copy has both; this has neither), and no Sync of a copy.
+
+### The lite answer sheet
+
+```
+http://localhost:8768/setup/transcript-reader/out/live/sheet.html#q=<session 8>:<time the reply was written>
+http://localhost:8768/setup/transcript-reader/out/live/sheet.html#s=<session id, or its first 8 characters>
+```
+
+The answer sheet's page (`prototype/questionnaire.html`) in the same third mode as the reader page: no transcript in it, it loads `live/index.json` and then `live/a/<conversation id>.json` (the conversation's questionnaires, as the hosted copy's `a/` object holds them), and it shows **only the conversation its address names** (`#q=` is what the reply's button writes, `#s=` what the title bar writes; with neither it lists every conversation's). It is served and live like the local sheet: the cards, **Fill recommended**, **Copy**, and **Send**, which goes straight to the pane through the same `send` route with every check the server makes (Herdr's state, a pane at a permission prompt, the foreground process, one message at a time, and a sent line is not sent twice); the pane it sends to is Herdr's, polled every 2 seconds; a new build is taken where it stands (not while a box is typed in or a send is under way), and the sheet answers "Answered" once the session holds the keyed line. Its "← Conversation" link is `index.html#s=<id>`. The page is opened in the window or column the conversation is in, which stays that conversation's; nothing in it leaves for the full reader.
 
 The page needs a server started after this change (`serve.sh restart`: the routes are in `api.js`) and one build after it (`reader.py rebuild`, or any change a page is open for), which writes `out/live/`.
 
@@ -293,18 +301,20 @@ The page needs a server started after this change (`serve.sh restart`: the route
 | File | Holds |
 |---|---|
 | `out/live/index.html` | The lite page: no transcript in it. |
-| `out/live/index.json` | The hosted index's shape (`hosted.js` reads it): `as_of` (the build time, which is the page's own stamp), `template` (the page's code hash: a page whose own differs reloads), `conversations` (below), `closed` (panes closed in the last two weeks, to offer under "Closed panes"), `fleet_timeline: false`, and empty `documents`, `weeks`, `summaries`, `stars`. |
-| `out/live/s/<id>.json` | One conversation, exactly its entry in the reader page's payload (the same bytes) less `pane` and `reopened`, plus `documents`: the files its messages and replies name, by id in id order, each as the page lists it without its `text` (`{ id, name, path, dir, mention, mtime, lazy: true }` for a markdown file, `{ ..., kind: "html" or "image", size }` for the others). |
+| `out/live/index.json` | The hosted index's shape (`hosted.js` reads it): `as_of` (the build time, which is the page's own stamp), `template` (the page's code hash: a page whose own differs reloads), `conversations` (below), `closed` (panes closed in the last two weeks, to offer under "Closed panes"), `fleet_timeline: false`, empty `documents`, `weeks`, `summaries` and `stars`, `sheet_template` (the lite answer sheet's code hash, as `template` is the page's) and `sheets` (one entry for each conversation that has an answer sheet, by its id: `{ object: "a/<id>.json", stamp, list: [{ at, open, title }] }` where `open` is how many cards no keyed answer covers yet; the hosted index's shape). |
+| `out/live/s/<id>.json` | One conversation, exactly its entry in the reader page's payload (the same bytes) less `pane` and `reopened`, plus `documents`: the files it lists, by id in id order, each as the page lists it without its `text` (`{ id, name, path, dir, mention, mtime, lazy: true }` for a markdown file, `{ ..., kind: "html" or "image", size }` for the others). The files are the ones its messages and replies name and, for a leader's conversation, every file of its home's task folders (a document whose folder is under `<home>/data/`, which is what the page's By task view lists). |
 | `out/live/md-files.json` | id to path of those markdown files, which `md-open` reads as they are on disk when one is opened (never served). |
+| `out/live/sheet.html` | The lite answer sheet: the sheet's page in mode `live`, no transcript in it. |
+| `out/live/a/<id>.json` | One conversation's answer sheet: `{ "questionnaires": [...] }`, exactly what the hosted copy's `a/<id>.json` holds (each questionnaire with its cards, the reply it came from, and the keyed answers you sent after it). Written only for a conversation whose reply asks for keyed answers, and only when its stamp changed. |
 | `out/glance.json` | The glance feed, below. |
 
 `index.json`'s `conversations`, newest activity first, one for each conversation on the reading list: `home`, `id` (the newest session's id), `ids` (every session of the conversation, oldest first), `file`, `where`, `last` (the newest turn's time), `order`, `turns`, `needs` (replies that ask you, with nothing from you after them), `pane` (the Herdr pane as of the build: `label`, `title`, `herdr`, `pane`, `status`, `live`; `live: false` is a pane that has closed, with the last label and state seen), `reopened`, `object` (`s/<id>.json`) and `stamp` (a hash of that object's bytes: a page keeps a loaded conversation while its stamp is the same).
 
-The files are written before the page's stamp (the last file a build writes), so a page woken by a new stamp finds them; a conversation's object is written only when its stamp changed, and a restarted worker does not write them again; an object no listed conversation has is removed. Like everything in `out/`, they are the owner's alone (0700 and 0600). They are served to the lite page only, to its own token-bearing fetches: `live/index.json` and `live/s/<id>.json` and nothing else under `live/`.
+The files are written before the page's stamp (the last file a build writes), so a page woken by a new stamp finds them; a conversation's object is written only when its stamp changed, and a restarted worker does not write them again; an object no listed conversation has is removed. Like everything in `out/`, they are the owner's alone (0700 and 0600). They are served to the lite page and its sheet only, to their own token-bearing fetches: `live/index.json`, `live/s/<id>.json` and `live/a/<id>.json` and nothing else under `live/` (the two pages, `live/index.html` and `live/sheet.html`, are served like any page, in a tab, never in a frame).
 
 ### The glance feed: `out/glance.json`
 
-One small file (about 1 KB for each conversation: 29 KB for the owner's 31) that a native client reads as a file, as Conn reads `stars.json` and `pane-labels.json`: no HTTP, no token. It is replaced whole through a rename, so a read never sees half of it, and it is written **only when its content changes**, so its modification time says "something changed" and an unchanged build leaves it alone.
+The glance feed says which conversations ask you something, for a native client's list of open asks (Conn's left panes). One small file (about 0.5 KB for each conversation: 16 KB for the owner's 31) that the client reads as a file, as Conn reads `stars.json` and `pane-labels.json`: no HTTP, no token. It is replaced whole through a rename, so a read never sees half of it, and it is written **only when its content changes** (a Herdr state change alone is not one: the feed holds no pane state), so its modification time says "an ask came, went or changed" and an unchanged build leaves it alone.
 
 ```json
 {
@@ -317,12 +327,9 @@ One small file (about 1 KB for each conversation: 29 KB for the owner's 31) that
       "home": "main",
       "where": "",
       "last": 1793860599.0,
-      "turns": 401,
-      "message": { "at": 1793860589.0, "text": "Go ahead with the three small ones." },
-      "reply": { "at": 1793860599.0, "text": "Refunds A and B are queued. Should I approve the 3 refunds over the cap? ...", "words": 153 },
       "open_asks": 1,
-      "ask": { "at": 1793860599.0, "lines": ["Should I approve the 3 refunds over the cap?"] },
-      "pane": { "label": "billing", "herdr": "work", "status": "idle", "live": true }
+      "ask": { "at": 1793860599.0, "uid": "t12ad57c7c69734480c8aaddb", "lines": ["Should I approve the 3 refunds over the cap?"] },
+      "pane": { "label": "billing", "herdr": "work", "live": true }
     }
   ]
 }
@@ -332,20 +339,17 @@ One small file (about 1 KB for each conversation: 29 KB for the owner's 31) that
 |---|---|
 | `as_of` | The build time (seconds since the epoch) of the build that last changed the file. |
 | `version` | The format's version: 1. A reader that does not know it should ignore the file. |
-| `conversations` | One record for each conversation on the reading list, newest activity first. |
+| `conversations` | One record for each conversation on the reading list, newest activity first. The list of open asks is the records with `open_asks > 0`; the others are there so a client sees an ask go. |
 | `id` | The conversation's id: the newest session of a pane's sessions across `/clear`. The lite page's `#s=` takes it or its first 8 characters. |
 | `ids` | Every session id of the conversation, oldest first (Herdr's `agent_session` may name any of them). |
 | `home` | The home the conversation runs under: `main`, a second mate's id, or `workspace` (your own sessions). |
 | `where` | `""` for the home's own folder, `worker copy` for a worker's isolated copy, else the folder inside the home. |
 | `last` | When the newest turn (your message or its reply) happened. |
-| `turns` | How many turns the conversation has. |
-| `message` | Your last message: `at` and `text`, its first words as one line (markup that only shapes it dropped), at most 200 characters, cut with `…`. `null` when you have written none. |
-| `reply` | The last reply, the same way: `at`, `text` (at most 280 characters), `words` (the reply's whole length). `null` when there is none yet. |
 | `open_asks` | How many replies ask you something with nothing from you after them: the count the page's header and the sidebar call "need you". |
-| `ask` | The newest open ask: `at` and `lines`, up to 3 of the reply's asking lines, each at most 200 characters. `null` when no ask is open. |
-| `pane` | The Herdr pane as of the build: `label` (the name Herdr shows), `herdr` (its session), `status` (`idle`, `working`, `blocked`, `done` or `unknown`), `live`. `null` when no pane was ever seen for it. |
+| `ask` | The newest open ask: `at` (when its reply was written), `uid` (the turn's id, which the page's `#s=<id>&m=<uid>` address opens the conversation on; `null` for a turn with none) and `lines`, up to 3, each at most 200 characters: the questions of the reply's answer sheet when it opens one, else the lines of the reply that ask. `null` when no ask is open. |
+| `pane` | Which Herdr pane runs it: `label` (the name Herdr shows), `herdr` (its session), `live` (`false` means the pane has closed and `label` is the last one seen). `null` when no pane was ever seen for it. |
 
-Two things to know when drawing it. `pane.status` is **as of the build**, which a log write or Sync starts and which is not every Herdr change: a client that has Herdr's own live state (as Conn does) should use that for the state and use this for the rest; `live: false` means the pane has closed and `label` and `status` are the last ones seen. And a conversation's gist, asks and counts are computed by the reader's rules (the page's "Needs you" chips and ask boxes come from the same turns), so a tile and the page agree.
+An ask is opened in a column or a window at `out/live/index.html#s=<id>&m=<uid>` (a document: `&d=<document id>`), and its answer sheet, when it has one, at `out/live/sheet.html#s=<id>`; all three are served at `http://localhost:8768/setup/transcript-reader/` as above. A pane's state (idle, working, blocked) is not in the feed: a client that shows it uses Herdr's own live state, which the feed would only repeat late. An ask's lines, its count and the conversation's last turn are computed by the reader's rules (the page's "Needs you" chips and ask boxes come from the same turns), so a list and the page agree.
 
 ## The hosted copy
 

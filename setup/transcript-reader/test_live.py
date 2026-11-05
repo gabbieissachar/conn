@@ -1,5 +1,6 @@
 """Tests for what every page build leaves beside the reader page for the lite page and for a native client: out/live/ (the lite page, its
-index, one object for each conversation, the list of the markdown files those name) and out/glance.json (build_prototype's section on
+index, one object for each conversation, the list of the markdown files those name, the answer sheet and one object for each conversation
+that has one) and out/glance.json (build_prototype's section on
 them, written by both build paths).
 
 Run from the repo root: python3 -m unittest setup/transcript-reader/test_live.py
@@ -67,7 +68,7 @@ class Live(Case):
     def mtimes(self):
         """The lite page's files, the glance and the page with its stamp: what these tests are about (a build also rewrites the pane cache and the lists of files)."""
         return {str(path.relative_to(self.out.parent)): path.stat().st_mtime_ns for path in sorted(self.out.parent.rglob("*"))
-                if path.is_file() and (path.parent.name in ("live", "s") or path.name in ("glance.json", "prototype.html", "prototype.stamp"))}
+                if path.is_file() and (path.parent.name in ("live", "s", "a") or path.name in ("glance.json", "prototype.html", "prototype.stamp"))}
 
     def restart(self):
         """A new process: it remembers nothing it wrote or kept, and the page it wrote is on disk."""
@@ -81,7 +82,8 @@ class Live(Case):
     def test_a_build_writes_the_lite_page_its_index_one_object_for_each_conversation_and_the_glance(self):
         self.write(derived=[A, W, M])
         names = sorted(str(path.relative_to(self.live)) for path in self.live.rglob("*") if path.is_file())
-        self.assertEqual(names, sorted(["index.html", "index.json", "md-files.json", *(f"s/{sid}.json" for sid in (A, W, M))]))
+        self.assertEqual(names, sorted(["index.html", "index.json", "md-files.json", "sheet.html", f"a/{M}.json", *(f"s/{sid}.json" for sid in (A, W, M))]),
+                         "the answer sheet has an object only for the conversation whose reply asks for keyed answers")
         self.assertTrue((self.out.parent / "glance.json").is_file())
 
     def test_the_lite_page_is_the_reader_page_in_its_live_mode_and_the_index_names_its_template(self):
@@ -166,7 +168,7 @@ class Live(Case):
         after = self.mtimes()
         changed = sorted(name for name in after if before.get(name) != after[name])
         self.assertEqual(changed, sorted(["glance.json", "live/index.json", "live/md-files.json", "prototype.html", "prototype.stamp", f"live/s/{M}.json"]),
-                         "the one object, the index, the listing, the glance and the page: no other conversation's object")
+                         "the one object, the index, the listing, the glance and the page: no other conversation's object, and no sheet (it asked nothing new)")
         self.assertIn("Anything else you need", self.object(M)["exchanges"][-1]["reply"])
         entry = next(e for e in self.index()["conversations"] if e["id"] == M)
         self.assertEqual(entry["stamp"], hashlib.sha1((self.live / f"s/{M}.json").read_bytes()).hexdigest()[:16])
@@ -178,7 +180,7 @@ class Live(Case):
         self.write(derived=[])
         self.assertEqual(self.mtimes(), before)
 
-    def test_what_herdr_says_changes_the_index_and_the_glance_but_no_object(self):
+    def test_what_herdr_says_changes_the_index_but_no_object_and_not_the_glance_unless_a_pane_comes_or_goes(self):
         self.write(derived=[A, W, M])
         before = self.mtimes()
         stamps = {entry["id"]: entry["stamp"] for entry in self.index()["conversations"]}
@@ -187,9 +189,13 @@ class Live(Case):
         self.write(derived=[])
         self.assertEqual({entry["id"]: entry["stamp"] for entry in self.index()["conversations"]}, stamps, "an object carries no pane, so its stamp stays")
         after = self.mtimes()
-        self.assertEqual(sorted(name for name in after if before.get(name) != after[name]), sorted(["glance.json", "live/index.json", "live/md-files.json", "prototype.html", "prototype.stamp"]))
+        self.assertEqual(sorted(name for name in after if before.get(name) != after[name]), sorted(["live/index.json", "live/md-files.json", "prototype.html", "prototype.stamp"]),
+                         "the glance holds no pane state: a Herdr state change leaves the file a client watches alone")
         self.assertEqual(self.index()["conversations"][0]["pane"]["status"], "idle")
-        self.assertEqual(self.glance()["conversations"][0]["pane"]["status"], "idle")
+        time.sleep(0.02)
+        self.lab.panes[A] = {**self.lab.panes[A], "label": "renamed"}
+        self.write(derived=[])
+        self.assertEqual(self.glance()["conversations"][0]["pane"]["label"], "renamed")
 
     def test_a_restarted_worker_does_not_write_every_object_again(self):
         self.write(derived=[A, W, M])
@@ -245,27 +251,25 @@ class Live(Case):
         self.assertEqual(feed["as_of"], self.index()["as_of"])
         self.assertEqual([c["id"] for c in feed["conversations"]], [e["id"] for e in self.index()["conversations"]])
         alpha = feed["conversations"][0]
-        self.assertEqual(sorted(alpha), sorted(["id", "ids", "home", "where", "last", "turns", "message", "reply", "open_asks", "ask", "pane"]))
-        self.assertEqual((alpha["id"], alpha["home"], alpha["turns"], alpha["last"]), (A, "main", 3, LAB_T0 + 670))
-        self.assertEqual(alpha["pane"], {"label": "alpha", "herdr": "lab", "status": "working", "live": True})
-
-    def test_the_glance_holds_the_gist_of_your_last_message_and_of_the_last_reply(self):
-        self.write(derived=[A, W, M])
-        alpha = self.glance()["conversations"][0]
-        # The lab's conversation: the last turn is a wake-up whose reply asks; your last message is the plan request.
-        self.assertEqual(alpha["message"], {"at": LAB_T0, "text": "Plan the login fix."})
-        self.assertEqual(alpha["reply"]["text"], "The worker needs a layout. Which one do you want?")
-        self.assertEqual(alpha["reply"]["at"], LAB_T0 + 670)
-        self.assertEqual(alpha["reply"]["words"], 10)
+        self.assertEqual(sorted(alpha), sorted(["id", "ids", "home", "where", "last", "open_asks", "ask", "pane"]), "what a list of open asks needs, and no gist of the talk")
+        self.assertEqual((alpha["id"], alpha["home"], alpha["last"]), (A, "main", LAB_T0 + 670))
+        self.assertEqual(alpha["pane"], {"label": "alpha", "herdr": "lab", "live": True}, "which pane it is, not what the pane is doing")
 
     def test_the_glance_names_how_many_asks_are_open_and_the_first_lines_of_the_newest_one(self):
         self.write(derived=[A, W, M])
         alpha = self.glance()["conversations"][0]
         self.assertEqual(alpha["open_asks"], 2)
-        self.assertEqual(alpha["ask"], {"at": LAB_T0 + 670, "lines": ["The worker needs a layout. Which one do you want?"]})
+        self.assertEqual((alpha["ask"]["at"], alpha["ask"]["lines"]), (LAB_T0 + 670, ["The worker needs a layout. Which one do you want?"]))
         worker = next(c for c in self.glance()["conversations"] if c["id"] == W)
         self.assertEqual((worker["open_asks"], worker["ask"]), (0, None))
         self.assertEqual(worker["pane"], None, "no Herdr pane was seen for it")
+
+    def test_the_ask_names_its_turn_so_a_list_can_open_the_conversation_on_it(self):
+        self.write(derived=[A, W, M])
+        alpha = self.glance()["conversations"][0]
+        turn = next(e for e in self.object(A)["exchanges"] if (e["reply_at"] or e["at"]) == alpha["ask"]["at"])
+        self.assertEqual(alpha["ask"]["uid"], turn["uid"])
+        self.assertRegex(alpha["ask"]["uid"], r"^[0-9A-Za-z_-]{6,64}$", "the form the page's #s=<id>&m=<turn> address takes")
 
     def test_an_ask_of_several_lines_gives_at_most_three_and_each_is_clipped(self):
         self.write(derived=[A, W, M])
@@ -286,7 +290,6 @@ class Live(Case):
         self.write(derived=[A, W, M])
         alpha = self.glance()["conversations"][0]
         self.assertEqual((alpha["open_asks"], alpha["ask"]), (0, None))
-        self.assertEqual(alpha["message"]["text"], "Use the left layout.")
         self.assertEqual(self.index()["conversations"][0]["needs"], 0)
 
     def test_the_glance_is_written_only_when_it_changes_and_a_restart_does_not_rewrite_it(self):
@@ -296,19 +299,133 @@ class Live(Case):
         time.sleep(0.02)
         self.restart()
         self.write(derived=[A, W, M])
-        self.assertEqual((feed.stat().st_mtime_ns, feed.read_bytes()), first, "the same gist and panes: the file a native client watches is left as it was")
-        self.lab.panes[A] = {**self.lab.panes[A], "status": "idle"}
+        self.assertEqual((feed.stat().st_mtime_ns, feed.read_bytes()), first, "the same asks and panes: the file a native client watches is left as it was")
+        self.lab.panes[A] = {**self.lab.panes[A], "label": "renamed"}
         time.sleep(0.02)
         self.write(derived=[])
         self.assertNotEqual(feed.read_bytes(), first[1])
-        self.assertEqual(self.glance()["conversations"][0]["pane"]["status"], "idle")
+        self.assertEqual(self.glance()["conversations"][0]["pane"]["label"], "renamed")
 
-    def test_the_glance_carries_no_more_of_a_conversation_than_the_gists(self):
+    def test_the_glance_carries_no_more_of_a_conversation_than_its_asks(self):
         self.write(derived=[A, W, M])
         feed = (self.out.parent / "glance.json").read_text(encoding="utf-8")
         self.assertNotIn("tool", feed)
         self.assertNotIn(str(self.lab.projects), feed, "no log path")
         self.assertLess(len(feed), 10000)
+
+    # ----------------------------------------------------------------------------------------------------- the answer sheet
+
+    def sheet_index(self):
+        return self.index()["sheets"]
+
+    def test_a_conversation_whose_reply_asks_for_keyed_answers_has_a_sheet_the_index_lists(self):
+        self.write(derived=[A, W, M])
+        sheets = self.sheet_index()
+        self.assertEqual(list(sheets), [M], "only the conversation that asks for keyed answers has one")
+        entry = sheets[M]
+        data = (self.live / "a" / f"{M}.json").read_bytes()
+        self.assertEqual(entry["object"], f"a/{M}.json")
+        self.assertEqual(entry["stamp"], hashlib.sha1(data).hexdigest()[:16], "the stamp is the hash of the object's bytes, as a conversation's is")
+        self.assertEqual(entry["list"], [{"at": LAB_T0 + 44, "open": 2, "title": "Two choices for the notes:"}], "the picker's line: when it was asked, how many cards are open, its title")
+        made = json.loads(data)
+        [questionnaire] = made["questionnaires"]
+        self.assertEqual([card["key"] for card in questionnaire["cards"]], ["A1", "A2"])
+        self.assertEqual((questionnaire["session"], questionnaire["sent"], questionnaire["at"]), (M, {}, LAB_T0 + 44))
+        self.assertIn("Reply with: A1=...; A2=...", questionnaire["reply"])
+
+    def test_the_sheet_is_what_the_local_sheet_and_the_hosted_copy_collect_for_the_conversation(self):
+        from build_questionnaire import chain_questionnaires
+        self.write(derived=[A, W, M])
+        found = chain_questionnaires(builder.session_chain(self.lab.logs[M]), self.out.parent / "parsed")
+        self.assertEqual(json.loads((self.live / "a" / f"{M}.json").read_text(encoding="utf-8")), json.loads(builder.payload_json({"questionnaires": found})))
+
+    def test_the_lite_sheet_is_the_sheets_page_in_its_live_mode_and_the_index_names_its_template(self):
+        self.write(derived=[A, W, M])
+        page = (self.live / "sheet.html").read_text(encoding="utf-8")
+        self.assertIn('const MODE = "live";', page)
+        self.assertIn("const hosted = (() => {", page, "it loads one conversation's sheet at a time with the hosted loader")
+        self.assertEqual(re.search(r'<meta name="template" content="([^"]*)">', page).group(1), self.index()["sheet_template"], "so a sheet that finds a newer index than its own code reloads")
+        self.assertNotEqual(self.index()["sheet_template"], self.index()["template"], "it is a page of its own")
+        self.assertNotIn("Keep the intro", page, "no transcript in it")
+        self.assertIn('content="__READER_TOKEN__"', page, "the server fills the token in when it serves the page")
+
+    def test_an_answer_sent_in_the_session_changes_that_sheet_and_its_conversation_and_nothing_else(self):
+        self.write(derived=[A, W, M])
+        before = self.mtimes()
+        time.sleep(0.02)
+        append_log(self.lab.logs[M], [user("A1=keep;A2=short", LAB_T0 + 800, str(self.lab.mate)), say("Thanks, applying.", LAB_T0 + 810, str(self.lab.mate))])
+        self.newer(self.lab.logs[M])
+        self.write(derived=[M])
+        after = self.mtimes()
+        self.assertEqual(sorted(name for name in after if before.get(name) != after[name]),
+                         sorted(["glance.json", "live/index.json", "live/md-files.json", "prototype.html", "prototype.stamp", f"live/s/{M}.json", f"live/a/{M}.json"]),
+                         "the conversation's object and its sheet, the index, the glance and the page: no other conversation's")
+        [questionnaire] = json.loads((self.live / "a" / f"{M}.json").read_text(encoding="utf-8"))["questionnaires"]
+        self.assertEqual(questionnaire["sent"], {"A1": "keep", "A2": "short"})
+        self.assertEqual(self.sheet_index()[M]["list"][0]["open"], 0, "answered: no card is open")
+        self.assertEqual(self.sheet_index()[M]["stamp"], hashlib.sha1((self.live / "a" / f"{M}.json").read_bytes()).hexdigest()[:16])
+
+    def test_a_reply_that_asks_nothing_keyed_leaves_the_sheet_as_it_was(self):
+        self.write(derived=[A, W, M])
+        stamp = self.sheet_index()[M]["stamp"]
+        before = self.mtimes()[f"live/a/{M}.json"]
+        time.sleep(0.02)
+        append_log(self.lab.logs[M], [user("And the notes?", LAB_T0 + 800, str(self.lab.mate)), say("Fine too. Anything else you need from me?", LAB_T0 + 810, str(self.lab.mate))])
+        self.newer(self.lab.logs[M])
+        self.write(derived=[M])
+        self.assertEqual((self.sheet_index()[M]["stamp"], self.mtimes()[f"live/a/{M}.json"]), (stamp, before))
+
+    def test_a_restarted_worker_does_not_write_every_sheet_again_and_a_sheet_taken_away_is_written_again(self):
+        self.write(derived=[A, W, M])
+        before = self.mtimes()[f"live/a/{M}.json"]
+        self.restart()
+        time.sleep(0.02)
+        self.write(derived=[A, W, M])
+        self.assertEqual(self.mtimes()[f"live/a/{M}.json"], before)
+        (self.live / "a" / f"{M}.json").unlink()
+        append_log(self.lab.logs[A], [user("Again.", LAB_T0 + 800, self.main), say("Done.", LAB_T0 + 810, self.main)])
+        self.newer(self.lab.logs[A])
+        self.write(derived=[A])
+        self.assertTrue((self.live / "a" / f"{M}.json").is_file())
+
+    def test_a_sheet_no_conversation_has_is_removed(self):
+        self.write(derived=[A, W, M])
+        stale = self.live / "a" / "gone.json"
+        stale.write_text("{}", encoding="utf-8")
+        partial = self.live / "a" / ".x.json.1.partial"
+        partial.write_text("{", encoding="utf-8")
+        append_log(self.lab.logs[A], [user("Again.", LAB_T0 + 800, self.main), say("Done.", LAB_T0 + 810, self.main)])
+        self.newer(self.lab.logs[A])
+        self.write(derived=[A])
+        self.assertFalse(stale.exists())
+        self.assertFalse(partial.exists())
+        self.assertEqual(sorted(path.name for path in (self.live / "a").iterdir()), [f"{M}.json"])
+
+    def test_the_sheets_files_are_written_before_the_index_that_names_them(self):
+        order = []
+        real = builder.write_pieces
+
+        def spy(target, pieces):
+            order.append(target.name)
+            return real(target, pieces)
+        with mock.patch.object(builder, "write_pieces", spy):
+            self.write(derived=[A, W, M])
+        self.assertGreater(order.index("index.json"), order.index(f"{M}.json"))
+        self.assertGreater(order.index("index.json"), order.index("sheet.html"))
+
+    def test_the_sheet_of_a_pane_cleared_with_clear_is_the_chains_under_the_newest_session(self):
+        from test_cache import CLEAR
+        from test_sync import write_log
+        self.write(derived=[A, W, M])
+        new = "eeeeeeee-5555-4555-8555-555555555555"
+        clear = {"type": "user", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LAB_T0 + 701)), "cwd": self.main, "message": {"role": "user", "content": CLEAR}}
+        sheet = "Which layout?\n\n| ID | Question | Answer |\n| --- | --- | --- |\n| B1 | Layout | `left` / `right` |\n\nReply with: B1=..."
+        write_log(self.lab.projects / "main" / f"{new}.jsonl", [clear, user("Carry on.", LAB_T0 + 720, self.main), say(sheet, LAB_T0 + 730, self.main)], LAB_T0 + 740)
+        self.write(derived=[new])
+        self.assertIn(new, self.sheet_index(), "the chain's newest session names the conversation, and its sheet")
+        self.assertNotIn(A, self.sheet_index())
+        [questionnaire] = json.loads((self.live / "a" / f"{new}.json").read_text(encoding="utf-8"))["questionnaires"]
+        self.assertEqual((questionnaire["session"], [card["key"] for card in questionnaire["cards"]]), (new, ["B1"]))
 
     # ------------------------------------------------------------------------------------------------ the plain build too
 
@@ -321,7 +438,9 @@ class Live(Case):
         self.assertIn("glance.json", names)
         self.assertIn("live/index.html", names)
         self.assertIn("live/index.json", names)
+        self.assertIn("live/sheet.html", names)
         self.assertEqual(sum(name.startswith("live/s/") for name in names), 3)
+        self.assertEqual([name for name in names if name.startswith("live/a/")], [f"live/a/{M}.json"])
 
     def test_a_conversations_agent_is_in_its_object_where_the_page_has_it_in_both_build_paths(self):
         """A Copilot session carries `agent` after its turns and before its leader (thread_session); the object keeps it, as the page does."""
@@ -354,6 +473,104 @@ class Live(Case):
         builder.write_page(template, {"generated": 1.0, "sessions": [], "documents": {}}, out)
         self.assertFalse((out.parent / "live").exists())
         self.assertFalse((out.parent / "glance.json").exists())
+
+
+class LiveLeader(Case):
+    """A conversation whose working folder is a Firstmate home lists that home's task folders in its lite object, as the page's By task view does."""
+
+    write, index, glance, object, mtimes = Live.write, Live.index, Live.glance, Live.object, Live.mtimes
+
+    def setUp(self):
+        super().setUp()
+        self.out = self.lab.root / "out" / "prototype.html"
+        self.live = self.out.parent / "live"
+        builder._LIVE_WRITTEN.clear()
+        self.addCleanup(builder._LIVE_WRITTEN.clear)
+        (self.lab.main / "projects").mkdir()
+        (self.lab.main / "data" / "backlog.md").write_text("## In flight\n- [ ] fix-login - Fix the login page (repo: x)\n", encoding="utf-8")
+        self.task = self.lab.main / "data" / "fix-login"
+        (self.task / "notes").mkdir(parents=True)
+        (self.task / "report.md").write_text("# Report\n", encoding="utf-8")
+        (self.task / "notes" / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        (self.task / "shot.png").write_bytes(b"\x89PNG")
+        (self.task / "sketch.html").write_text("<p>sketch</p>", encoding="utf-8")
+
+    def listed(self, sid):
+        return {record["name"]: record for record in self.object(sid)["documents"].values()}
+
+    def test_a_leaders_object_lists_the_files_of_its_homes_task_folders_named_or_not(self):
+        self.write(derived=[A, W, M])
+        listed = self.listed(A)
+        self.assertEqual(sorted(listed), ["notes.md", "plan.md", "report.md", "shot.png", "sketch.html"], "the one it names and each file of the task folder")
+        self.assertEqual({name: (record.get("kind"), record.get("lazy")) for name, record in listed.items()},
+                         {"notes.md": (None, True), "plan.md": (None, True), "report.md": (None, True), "shot.png": ("image", None), "sketch.html": ("html", None)})
+        self.assertTrue(all("text" not in record for record in listed.values()), "none with its text")
+        self.assertEqual(list(self.object(A)["documents"]), sorted(self.object(A)["documents"]), "in id order, so two builds agree")
+        self.assertEqual(sorted(Path(path).name for path in json.loads((self.live / "md-files.json").read_text(encoding="utf-8")).values()), ["notes.md", "plan.md", "report.md"],
+                         "the markdown ones are opened through md-open, as they are on disk now")
+        self.assertEqual(self.listed(W), {}, "a worker's copy is no leader's: it lists nothing it does not name")
+        self.assertIn("leader", self.object(A), "and its tasks, for the By task view")
+
+    def test_what_a_leader_lists_is_what_the_page_lists_by_task(self):
+        """The page's By task list (template.html taskDocuments) is every document whose folder is under <home>/data/ and every one the conversation named."""
+        built = self.write(derived=[A, W, M])
+        payload = json.loads(b"".join(built.payload))
+        session = next(s for s in payload["sessions"] if s["id"] == A)
+        root = session["leader"]["dir"] + "/data/"
+        named = {doc for e in session["exchanges"] for doc in (*e.get("documents", ()), *e.get("input_documents", ()))}
+        expected = sorted(named | {doc for doc, record in payload["documents"].items() if str(record["dir"]).startswith(root)})
+        self.assertEqual(sorted(self.object(A)["documents"]), expected)
+
+    def test_a_file_added_to_a_task_folder_changes_the_leaders_object_and_no_other(self):
+        self.write(derived=[A, W, M])
+        before = self.mtimes()
+        stamps = {entry["id"]: entry["stamp"] for entry in self.index()["conversations"]}
+        time.sleep(0.02)
+        (self.task / "later.md").write_text("# Later\n", encoding="utf-8")
+        self.write(derived=[])
+        after = self.mtimes()
+        self.assertEqual(sorted(name for name in after if before.get(name) != after[name]),
+                         sorted(["live/index.json", "live/md-files.json", "prototype.html", "prototype.stamp", f"live/s/{A}.json"]), "the leader's object, the index and the listing: no other conversation's")
+        self.assertIn("later.md", self.listed(A))
+        self.assertNotEqual({e["id"]: e["stamp"] for e in self.index()["conversations"]}[A], stamps[A])
+        (self.task / "later.md").unlink()
+        self.write(derived=[])
+        self.assertNotIn("later.md", self.listed(A))
+
+    def test_a_file_a_leader_named_that_another_conversation_also_names_is_listed_once(self):
+        picture = self.lab.main / "shot2.png"
+        picture.write_bytes(b"\x89PNG")
+        self.write(derived=[A, W, M])
+        self.assertEqual(sorted(self.listed(A)).count("notes.md"), 1)
+
+    def test_the_plain_build_and_the_kept_build_write_the_same_lite_files(self):
+        """Both build paths write the leader's object, the sheet, the index, the listing and the glance byte for byte."""
+        stamp = time.time()
+        plain, cached = self.lab.root / "plain" / "prototype.html", self.lab.root / "cached" / "prototype.html"
+        with mock.patch("time.time", lambda: stamp), builder.chains_frozen():
+            builder.write_page(builder.TEMPLATE, builder.build(self.args(out=plain)), plain)
+            build_cache.write(build_cache.build(self.args(out=cached)), cached)
+
+        def written(folder):
+            return {str(path.relative_to(folder.parent)): path.read_bytes() for path in sorted(folder.parent.rglob("*"))
+                    if path.is_file() and (path.name == "glance.json" or "live" in path.relative_to(folder.parent).parts)}
+        theirs, ours = written(plain), written(cached)
+        self.assertEqual(sorted(ours), sorted(theirs))
+        for name in theirs:
+            self.assertEqual(ours[name], theirs[name], name)
+        self.assertIn(f"live/a/{M}.json", ours)
+        self.assertIn("live/sheet.html", ours)
+        self.assertEqual(len(json.loads(ours[f"live/s/{A}.json"])["documents"]), 5)
+
+    def test_a_leader_that_loses_its_leader_lists_only_what_it_names(self):
+        self.write(derived=[A, W, M])
+        self.assertEqual(len(self.object(A)["documents"]), 5)
+        for child in sorted(self.lab.main.joinpath("projects").iterdir()):
+            child.unlink()
+        self.lab.main.joinpath("projects").rmdir()
+        self.newer(self.lab.logs[A])
+        self.write(derived=[A])
+        self.assertEqual(sorted(self.listed(A)), ["notes.md"])
 
 
 if __name__ == "__main__":

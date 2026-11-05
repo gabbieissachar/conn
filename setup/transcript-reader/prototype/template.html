@@ -682,7 +682,9 @@ __HEAD_HOSTED__
 /*__HOSTED__*/
   // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
   const canLive = live.served && !HOSTED;
-  const SHEET_PAGE = HOSTED ? "sheet.html" : MODE === "live" ? "../questionnaire.html" : "questionnaire.html";
+  // The answer sheet: the local page's is questionnaire.html; the hosted copy's and the lite page's are sheet.html beside the page (the lite
+  // page's shows this conversation's sheets only and links back to it, so a column or a window stays on the conversation it was opened on).
+  const SHEET_PAGE = HOSTED || MODE === "live" ? "sheet.html" : "questionnaire.html";
 /*__PINS__*/
 /*__PICKER__*/
 /*__ASKS__*/
@@ -4066,10 +4068,20 @@ __HEAD_HOSTED__
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
     if (state.view === "reader") renderReader(); else { if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
+    paintSheetLink();
     refreshSearch();  // the page was drawn again: the query runs on it as it is now
     markRead();
     renderDock();
     paintLinked();
+  }
+  // The lite page's title bar link goes to the sheet of the conversation on screen, and is there only when the conversation has one (the
+  // reader page's goes to the sheet of every conversation, and the hosted copy's is its own).
+  function paintSheetLink() {
+    if (MODE !== "live") return;
+    const session = data.sessions[state.session], anchor = document.querySelector(".to-sheet");
+    const has = Boolean(session && data.sheets && data.sheets[session.id]);
+    anchor.style.display = has ? "" : "none";
+    if (has) anchor.href = SHEET_PAGE + "#s=" + encodeURIComponent(session.id.slice(0, 8));
   }
   // "Documents (3)": the tab's text, and the name of the Documents icon in the folded header.
   function docsLabel(session) {
@@ -4255,8 +4267,6 @@ __HEAD_HOSTED__
       document.getElementById("forget").addEventListener("click", forgetDevice);
       document.getElementById("offline-download").addEventListener("click", downloadAll);
       window.addEventListener("online", () => { checkReceipts(); refreshLazy(true).catch(() => {}); });
-    } else {
-      document.querySelector(".to-sheet").href = SHEET_PAGE;  // the local answer sheet, a folder up
     }
     (HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);

@@ -7,6 +7,10 @@
   (live.js) to send the answers.
   The hosted copy's sheet (sheet.html, sync.py) is this page with no payload: it loads its folder's
   index.json and then one conversation's questionnaires at a time (hosted.js), and only copies.
+  The lite page's sheet (out/live/sheet.html, build_prototype.write_live) is the same page in mode "live": it loads
+  the same way, from the lite page's index.json and a/<conversation>.json, but it is served and live like this one:
+  Send goes straight to the pane, and a build is taken where it is. It is opened from a conversation of the lite
+  page (#q=<session>:<time>, or #s=<session>), shows only that conversation's sheets, and links back to it.
 -->
 <html lang="en">
 <head>
@@ -141,14 +145,17 @@ __HEAD_HOSTED__
 <script>
 (() => {
   "use strict";
-  // The hosted copy's sheet: no payload; the list comes from index.json and each conversation's
-  // questionnaires load when one is picked. Copy copies the answer line; Send queues it for the laptop, which
-  // sends it to the session's pane when it is awake and writes a receipt this page then shows.
-  const HOSTED = "__MODE__" === "hosted";
+  // Two questions, as in the reader page: does the list come from an index and each conversation's questionnaires load when one is
+  // picked, with no payload (LAZY: the hosted copy's sheet, and the lite page's), and is there a laptop to ask (HOSTED: only the
+  // hosted copy's, where Send queues the line for the laptop, which sends it to the session's pane when it is awake and writes a
+  // receipt this page then shows). The lite page's sheet is lazy and not hosted: it sends straight to the pane, as the local sheet does.
+  const MODE = "__MODE__";  // "local", "hosted" or "live"
+  const LAZY = MODE !== "local";
+  const HOSTED = MODE === "hosted";
 /*__LIVE__*/
 /*__SENDONCE__*/
 /*__HOSTED__*/
-  let data = HOSTED ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
+  let data = LAZY ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   // When the laptop built the copy: the time alone today, with the day before that.
   const builtAt = s => new Date(s * 1000).toDateString() === new Date().toDateString()
@@ -434,7 +441,7 @@ __HEAD_HOSTED__
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
-    if (!q) { main.append($("div", "empty", "No answer sheet found in the listed sessions.")); return; }
+    if (!q) { main.append($("div", "empty", onlySession ? "This conversation has no answer sheet: no reply of it asks for keyed answers." : "No answer sheet found in the listed sessions.")); return; }
     if (!q.cards) { main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
     const meta = document.getElementById("meta");
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
@@ -495,12 +502,18 @@ __HEAD_HOSTED__
     line.textContent = hosted.outdated() || (old ? `Laptop asleep or not syncing since ${builtAt(data.generated)}` : `As of ${builtAt(data.generated)}`);
     line.title = `The laptop built this copy at ${fmtWhen(data.generated)}; the cards and the Herdr states are as of then.`;
   }
+  // The lite page's sheet is one conversation's: the one its address names (#q=<session 8>:<time>, or #s=<session>), which it links back to.
+  // A hosted copy's lists every conversation that has one.
+  const addressed = new URLSearchParams(location.hash.slice(1));
+  const onlySession = MODE === "live" ? (addressed.get("s") || (addressed.get("q") || "").split(":")[0]).toLowerCase() : "";
+  const inConversation = (index, session) => !onlySession || ((index.conversations || []).find(c => c.id === session) || { ids: [session] }).ids.some(id => id.startsWith(onlySession));
   // The list from the index: one entry per questionnaire, its cards loaded with its conversation's sheet.
   function hostedList(index, before = []) {
     const panes = new Map((index.conversations || []).map(c => [c.id, c.pane || null]));
     const kept = new Map(before.filter(q => q.cards).map(q => [storeKey(q), q]));
     const list = [];
     for (const [session, sheet] of Object.entries(index.sheets || {})) {
+      if (!inConversation(index, session)) continue;
       for (const item of sheet.list) {
         const old = kept.get(`tr-q:${session}:${Math.round(item.at || 0)}`);
         list.push(old && old.sheet.stamp === sheet.stamp ? { ...old, pane: panes.get(session) } : { session, at: item.at, open: item.open, title: item.title, pane: panes.get(session), cards: null, sheet });
@@ -513,8 +526,11 @@ __HEAD_HOSTED__
     if (!found) throw new Error("this answer sheet is not in its conversation's copy any more");
     Object.assign(q, found, { pane: q.pane, sheet: q.sheet });
   }
-  if (HOSTED) {
-    document.querySelector(".title a").href = "index.html";
+  if (LAZY) {
+    // The way back: the hosted copy's reader, or the lite page on the conversation this sheet is of.
+    const back = document.querySelector(".title a");
+    back.href = "index.html" + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");
+    if (!HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";
   }
   fillPick();
   pick.addEventListener("change", () => {
@@ -532,34 +548,45 @@ __HEAD_HOSTED__
     save(); render();
   });
   // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
-  const wanted = decodeURIComponent((location.hash.match(/^#q=(.+)$/) || [])[1] || "");
+  const wanted = addressed.get("q") || "";
   function openLinked() {
     const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
     if (linked >= 0) { state.q = linked; pick.value = String(linked); }
     render();
   }
-  if (!HOSTED) openLinked();
+  if (!LAZY) openLinked();
   else {
-    // A sealed copy is opened first (the reader's shell may have remembered the key on this device).
-    hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
+    // The newer index's list and, when the sheet on screen changed, its cards again, at the same scroll position.
+    async function takeIndex(next) {
+      const shown = qs[state.q], before = JSON.stringify(shown);
+      data = { generated: next.as_of || 0, index: next }; qs = hostedList(next, qs);
+      Object.keys(answers).forEach(k => delete answers[k]);
+      const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
+      state.q = index >= 0 ? index : 0;
+      fillPick(); paintAsOf();
+      if (qs[state.q] && !qs[state.q].cards) await openSheet(qs[state.q]);
+      if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); } else renderDock();
+    }
+    // A sealed copy is opened first (the reader's shell may have remembered the key on this device); the lite page's files are plain.
+    (HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index()).then(index => {
       data = { generated: index.as_of || 0, index }; qs = hostedList(index);
       fillPick(); paintAsOf(); openLinked();
+      if (!HOSTED) { liveRefresh = refreshLive; return; }
       // Every 30 seconds while visible: a newer index brings the new list, and the open questionnaire
       // again when its sheet changed. New page code reloads it.
       hosted.poll(async () => {
         const next = await hosted.index();
         if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.sheet_template); if (!hosted.outdated()) return; }
         if ((next.as_of || 0) <= data.generated) { paintAsOf(); renderDock(); return; }  // the time passes on an unchanged copy
-        const shown = qs[state.q], before = JSON.stringify(shown);
-        data = { generated: next.as_of || 0, index: next }; qs = hostedList(next, qs);
-        Object.keys(answers).forEach(k => delete answers[k]);
-        const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
-        state.q = index >= 0 ? index : 0;
-        fillPick(); paintAsOf();
-        if (qs[state.q] && !qs[state.q].cards) await openSheet(qs[state.q]);
-        if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); } else renderDock();
+        await takeIndex(next);
       });
     }, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load the answer sheets: ${e.message}`)));
+    // The lite page's sheet takes in a build as the local one does (below): from the index the build wrote, which new page code reloads.
+    async function refreshLive() {
+      const next = await hosted.index();
+      if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.sheet_template); return; }
+      if ((next.as_of || 0) > data.generated) await takeIndex(next);
+    }
   }
   // Served, the sheet takes in a rebuild where it is: the open questionnaire is redrawn
   // only when it changed, at the same scroll position, and never while a text box is
@@ -579,14 +606,20 @@ __HEAD_HOSTED__
     if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); }
     else renderDock();
   }
+  // The lite page's sheet has nothing to refresh until its first index has come (liveRefresh is set then).
+  let liveRefresh = null;
+  const idle = () => !(document.activeElement && document.activeElement.tagName === "TEXTAREA") && !sendOnce.busy();
   if (!HOSTED) live.poll(async () => {
     const s = await live.state(false);
     link.pane = s.panes || {}; renderSend();
+    if (MODE === "live") { if (liveRefresh && idle() && s.stamps && s.stamps.reader > data.generated) await liveRefresh(); return; }
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
     if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !sendOnce.busy()) await refresh();
   });
-  // A newer sheet is taken as soon as the server publishes it (see live.waitForBuilds), by the same rule.
-  if (!HOSTED) live.waitForBuilds(() => ({ sheet: data.generated }), async () => {
+  // A newer sheet is taken as soon as the server publishes it (see live.waitForBuilds), by the same rule. The lite page's is made by the
+  // same build as its reader page, so it waits on that build's stamp.
+  if (!HOSTED) live.waitForBuilds(() => MODE === "live" ? { reader: data.generated } : { sheet: data.generated }, async () => {
+    if (MODE === "live") { if (liveRefresh && idle()) await liveRefresh(); return; }
     const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
     if (!typing && !sendOnce.busy()) await refresh();
   });

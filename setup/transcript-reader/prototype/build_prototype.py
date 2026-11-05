@@ -69,6 +69,7 @@ ADDRESS_SCRIPT = HERE / "address.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
 SEAL_SCRIPT = HERE / "seal.js"
+SHEET_TEMPLATE = HERE / "questionnaire.html"  # the answer sheet's page (build_questionnaire.py fills it); the lite page's sheet is the same page in mode "live"
 DEFAULT_OUT = HERE.parent / "out" / "prototype.html"
 HTML_FILES = "html-files.json"  # beside the page: id -> path of each HTML file it offers to open (api.js reads it)
 IMAGE_FILES = "image-files.json"  # the same for each image file it offers to show (api.js reads it)
@@ -3073,10 +3074,15 @@ def write_step_outputs(sessions: list[dict], folder: Path) -> None:
 #   live/index.json   the hosted index's shape (hosted.js reads it): one entry for each listed conversation, newest activity first, with
 #                     its Herdr pane as of the build, its counts and the stamp of its object
 #   live/s/<id>.json  one conversation, exactly its entry in the page's payload (the same bytes) but for its pane and reopened flag, which
-#                     the index carries, plus `documents`: the files its messages and replies name, without their text
+#                     the index carries, plus `documents`: the files it lists, without their text (the ones its messages and replies name
+#                     and, for a leader's conversation, every file of its home's task folders: the page's By task view)
 #   live/md-files.json  id -> path of those markdown files, which md-open (api.js) reads as they are on disk when one is opened
-#   glance.json       one small record for each listed conversation (id, pane, last turn, the gist of your last message and of the last
-#                     reply, the first lines of the newest open ask, how many asks are open), for a native client that reads a file
+#   live/sheet.html   the answer sheet of the lite page: questionnaire.html in mode "live" (one conversation's sheet at a time, sends straight
+#                     to the pane); the page's "Answer sheet" links open it in the same window, and it links back
+#   live/a/<id>.json  one conversation's answer sheet (its questionnaires, as the hosted copy's a/ object has them), written for the
+#                     conversations that have one; the index lists them under `sheets`
+#   glance.json       one small record for each listed conversation (id, pane, last turn, how many asks are open and the first lines of the
+#                     newest one), for a native client that reads a file: Conn's list of open asks
 #
 # A conversation's object is written only when its bytes changed (its stamp, a hash of them, is in the index), so a rebuild after one
 # reply writes one object, the index and the glance, and never parses anything. The files are written before the page's stamp, so a page
@@ -3085,7 +3091,7 @@ LIVE_DIR = "live"
 GLANCE = "glance.json"
 LIVE_MD_FILES = "md-files.json"
 LIVE_VERSION = 1
-GIST_MESSAGE, GIST_REPLY, ASK_LINE, ASK_LINES = 200, 280, 200, 3
+ASK_LINE, ASK_LINES = 200, 3
 
 
 def gist(text: str, limit: int) -> str:
@@ -3098,7 +3104,7 @@ def gist(text: str, limit: int) -> str:
 
 def conversation_summary(session: dict) -> tuple[dict, dict]:
     """(entry, glance) of one conversation, from its turns alone: the index's entry without its pane and stamp (the hosted
-    index's fields: last activity, ask count, turns), and the glance feed's record without its pane."""
+    index's fields: last activity, ask count, turns), and the glance feed's record without its pane (what a list of open asks needs)."""
     exchanges = session["exchanges"]
     open_asks = [e for e in exchanges if e.get("verdict") == "needs-you" and (e.get("ask_state") or "open") == "open"]
     entry = {key: session[key] for key in ("home", "id", "ids", "file", "where")}
@@ -3108,21 +3114,18 @@ def conversation_summary(session: dict) -> tuple[dict, dict]:
         turns=len(exchanges),
         needs=len(open_asks),
     )
-    mine = next((e for e in reversed(exchanges) if e.get("source") == "captain" and (e.get("input") or "").strip()), None)
-    replied = next((e for e in reversed(exchanges) if (e.get("reply") or "").strip()), None)
     asking = open_asks[-1] if open_asks else None
     ask_lines = []
     if asking:
+        # A reply that opens an answer sheet asks its cards' questions; any other asks in the lines the reply asks them in.
         lines = asking["reply"].splitlines()
-        ask_lines = [gist(lines[n], ASK_LINE) for n in asking.get("ask_lines") or [] if n < len(lines)]
+        ask_lines = [gist(card["q"], ASK_LINE) for card in asking.get("sheet_cards") or []] or [gist(lines[n], ASK_LINE) for n in asking.get("ask_lines") or [] if n < len(lines)]
         ask_lines = [line for line in ask_lines if line][:ASK_LINES]
     glance = {
         "id": session["id"], "ids": session["ids"], "home": session["home"], "where": session["where"],
-        "last": entry["last"], "turns": entry["turns"],
-        "message": {"at": mine["at"], "text": gist(mine["input"], GIST_MESSAGE)} if mine else None,
-        "reply": {"at": replied["reply_at"] or replied["at"], "text": gist(replied["reply"], GIST_REPLY), "words": replied.get("reply_words", 0)} if replied else None,
+        "last": entry["last"],
         "open_asks": entry["needs"],
-        "ask": {"at": asking["reply_at"] or asking["at"], "lines": ask_lines} if asking else None,
+        "ask": {"at": asking["reply_at"] or asking["at"], "uid": asking.get("uid") if isinstance(asking.get("uid"), str) else None, "lines": ask_lines} if asking else None,
     }
     return entry, glance
 
@@ -3138,18 +3141,44 @@ def lite_document(record: dict) -> dict:
 
 
 def lite_documents(documents: dict[str, dict], session: dict) -> dict[str, dict]:
-    """The files one conversation's messages and replies name, by id in id order, as lite_document gives them."""
+    """The files one conversation lists, by id in id order, as lite_document gives them: the ones its messages and replies name and, for a
+    leader's conversation (a run in a Firstmate home), every file of the home's task folders, named or not, as the page's By task view lists
+    them (template.html taskDocuments: a document whose folder is under <home>/data/)."""
     named = {doc for exchange in session["exchanges"] for doc in (*exchange.get("documents", ()), *exchange.get("input_documents", ()))}
+    leader = session.get("leader")
+    if leader:
+        root = leader["dir"] + "/data/"
+        named |= {doc for doc, record in documents.items() if str(record.get("dir")).startswith(root)}
     return {doc: lite_document(documents[doc]) for doc in sorted(named) if doc in documents}
 
 
+def session_sheet(chain: list[Path], cache: Path | None) -> "LiveSheet | None":
+    """The conversation's answer sheet for the lite page (its pane's questionnaires across a /clear chain, as the local sheet and the hosted
+    copy's a/ objects collect them), or None when no reply of it asks for keyed answers."""
+    from build_questionnaire import chain_questionnaires, list_entry  # it imports this module, so only here
+    found = chain_questionnaires(chain, cache, kept=True)
+    if not found:
+        return None
+    piece = payload_json({"questionnaires": found}).encode("utf-8")
+    return LiveSheet([list_entry(q) for q in found], piece, pieces_stamp([piece]))
+
+
+class LiveSheet:
+    """One conversation's answer sheet as the lite page keeps it: the picker's line for each questionnaire, the object's bytes and their hash."""
+
+    __slots__ = ("list", "piece", "stamp")
+
+    def __init__(self, entries: list[dict], piece: bytes, stamp: str) -> None:
+        self.list, self.piece, self.stamp = entries, piece, stamp
+
+
 class LiveConversation:
-    """One conversation of a build, ready to write: its index entry, its glance record, and its object as pieces of bytes with their hash."""
+    """One conversation of a build, ready to write: its index entry, its glance record, its object as pieces of bytes with their hash, and its answer sheet (or None)."""
 
-    __slots__ = ("id", "entry", "glance", "pane", "reopened", "pieces", "stamp")
+    __slots__ = ("id", "entry", "glance", "pane", "reopened", "pieces", "stamp", "sheet")
 
-    def __init__(self, entry: dict, glance: dict, pane: dict | None, reopened: bool, pieces: list[bytes], stamp: str) -> None:
-        self.id, self.entry, self.glance, self.pane, self.reopened, self.pieces, self.stamp = entry["id"], entry, glance, pane, reopened, pieces, stamp
+    def __init__(self, entry: dict, glance: dict, pane: dict | None, reopened: bool, pieces: list[bytes], stamp: str, sheet: "LiveSheet | None" = None) -> None:
+        self.id, self.entry, self.glance, self.pane, self.reopened, self.pieces, self.stamp, self.sheet = entry["id"], entry, glance, pane, reopened, pieces, stamp, sheet
 
 
 def pieces_stamp(pieces: list[bytes]) -> str:
@@ -3168,9 +3197,9 @@ class LiveBuild:
         self.generated, self.since, self.homes, self.closed, self.conversations, self.md_files = generated, since, homes, closed, conversations, md_files
 
 
-def live_from_payload(payload: dict) -> LiveBuild:
+def live_from_payload(payload: dict, cache: Path | None = None) -> LiveBuild:
     """The LiveBuild of a plain build's payload (build), made the way build_cache makes its own: an object is the session as the page holds it,
-    less its pane and reopened flag, plus the named files without their text."""
+    less its pane and reopened flag, plus the files it lists without their text; <cache> is the folder of parsed logs the answer sheets are read through."""
     documents = payload.get("documents") or {}
     found = []
     md_files: dict[str, str] = {}
@@ -3180,7 +3209,8 @@ def live_from_payload(payload: dict) -> LiveBuild:
         body = {key: value for key, value in session.items() if key not in ("pane", "reopened")}
         piece = payload_json({**body, "documents": lite}).encode("utf-8")
         md_files.update({doc: record["path"] for doc, record in lite.items() if record.get("lazy") and record.get("path")})
-        found.append(LiveConversation(entry, glance, session.get("pane"), bool(session.get("reopened")), [piece], pieces_stamp([piece])))
+        sheet = session_sheet(session_chain(Path(session["file"])), cache)
+        found.append(LiveConversation(entry, glance, session.get("pane"), bool(session.get("reopened")), [piece], pieces_stamp([piece]), sheet))
     return LiveBuild(payload["generated"], payload.get("since") or 0, payload.get("homes") or [], payload.get("closed") or [], found, md_files)
 
 
@@ -3207,6 +3237,18 @@ def live_shell() -> tuple[str, str]:
     return _SHELL["page"], _SHELL["hash"]
 
 
+_SHEET_SHELL: dict = {"versions": None, "page": "", "hash": ""}
+
+
+def live_sheet_shell() -> tuple[str, str]:
+    """The lite page's answer sheet (the sheet's page in mode "live") and its template hash, kept the same way."""
+    versions = tuple(file_version(path) for path in (SHEET_TEMPLATE, MARKDOWN_IT_SCRIPT, *sorted(HERE.glob("*.js"))))
+    if _SHEET_SHELL["versions"] != versions:
+        page, digest = fill_template(SHEET_TEMPLATE, "null", "live")
+        _SHEET_SHELL.update(versions=versions, page=page, hash=digest)
+    return _SHEET_SHELL["page"], _SHEET_SHELL["hash"]
+
+
 # Per folder, what this process last wrote there: conversation id -> stamp, the glance (as written, but for its build time), and the shell's hash.
 _LIVE_WRITTEN: dict[Path, dict] = {}
 
@@ -3215,18 +3257,22 @@ def live_memory(folder: Path) -> dict:
     """What <folder> held when this process first looked, so a restarted worker does not write every conversation again: the stamps
     in its index for the objects that are there, and its glance."""
     if folder not in _LIVE_WRITTEN:
-        memory = {"stamps": {}, "glance": None, "shell": None}
+        memory = {"stamps": {}, "sheets": {}, "glance": None, "shell": None, "sheet_shell": None}
         try:
-            for entry in json.loads((folder / LIVE_DIR / "index.json").read_text(encoding="utf-8")).get("conversations") or []:
+            index = json.loads((folder / LIVE_DIR / "index.json").read_text(encoding="utf-8"))
+            for entry in index.get("conversations") or []:
                 if isinstance(entry, dict) and isinstance(entry.get("id"), str) and (folder / LIVE_DIR / "s" / f"{entry['id']}.json").is_file():
                     memory["stamps"][entry["id"]] = entry.get("stamp")
+            for sid, sheet in (index.get("sheets") or {}).items():
+                if isinstance(sheet, dict) and (folder / LIVE_DIR / "a" / f"{sid}.json").is_file():
+                    memory["sheets"][sid] = sheet.get("stamp")
         except (OSError, ValueError, AttributeError):
-            memory["stamps"] = {}
-        try:
-            shell = (folder / LIVE_DIR / "index.html").read_text(encoding="utf-8")
-            memory["shell"] = hashlib.sha1(shell.encode("utf-8")).hexdigest()
-        except OSError:
-            pass
+            memory["stamps"], memory["sheets"] = {}, {}
+        for name, page in (("shell", "index.html"), ("sheet_shell", "sheet.html")):
+            try:
+                memory[name] = hashlib.sha1((folder / LIVE_DIR / page).read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+            except OSError:
+                pass
         try:
             kept = json.loads((folder / GLANCE).read_text(encoding="utf-8"))
             kept.pop("as_of", None)
@@ -3243,13 +3289,20 @@ def write_live(folder: Path, build: LiveBuild) -> int:
     memory = live_memory(folder)
     live = folder / LIVE_DIR
     private_folder(live / "s")
+    private_folder(live / "a")
     page, template = live_shell()
     shell_hash = hashlib.sha1(page.encode("utf-8")).hexdigest()
     if memory["shell"] != shell_hash or not (live / "index.html").is_file():
         write_pieces(live / "index.html", [page.encode("utf-8")])
         memory["shell"] = shell_hash
+    sheet_page, sheet_template = live_sheet_shell()
+    sheet_hash = hashlib.sha1(sheet_page.encode("utf-8")).hexdigest()
+    if memory["sheet_shell"] != sheet_hash or not (live / "sheet.html").is_file():
+        write_pieces(live / "sheet.html", [sheet_page.encode("utf-8")])
+        memory["sheet_shell"] = sheet_hash
     wrote = 0
     entries = []
+    sheets = {}
     for conv in build.conversations:
         target = live / "s" / f"{conv.id}.json"
         if memory["stamps"].get(conv.id) != conv.stamp or not target.is_file():
@@ -3257,20 +3310,28 @@ def write_live(folder: Path, build: LiveBuild) -> int:
             memory["stamps"][conv.id] = conv.stamp
             wrote += 1
         entries.append({**conv.entry, "pane": conv.pane, "reopened": conv.reopened, "object": f"s/{conv.id}.json", "stamp": conv.stamp})
-    kept = {f"{conv.id}.json" for conv in build.conversations}
-    for old in (live / "s").iterdir():
-        if old.name not in kept and (old.suffix == ".json" or old.name.endswith(".partial")):
-            old.unlink(missing_ok=True)
+        if conv.sheet:
+            sheet_target = live / "a" / f"{conv.id}.json"
+            if memory["sheets"].get(conv.id) != conv.sheet.stamp or not sheet_target.is_file():
+                write_pieces(sheet_target, [conv.sheet.piece])
+                memory["sheets"][conv.id] = conv.sheet.stamp
+            sheets[conv.id] = {"object": f"a/{conv.id}.json", "stamp": conv.sheet.stamp, "list": conv.sheet.list}
+    for folder_name, kept in (("s", {f"{conv.id}.json" for conv in build.conversations}), ("a", {f"{sid}.json" for sid in sheets})):
+        for old in (live / folder_name).iterdir():
+            if old.name not in kept and (old.suffix == ".json" or old.name.endswith(".partial")):
+                old.unlink(missing_ok=True)
     for gone in set(memory["stamps"]) - {conv.id for conv in build.conversations}:
         del memory["stamps"][gone]
+    for gone in set(memory["sheets"]) - set(sheets):
+        del memory["sheets"][gone]
     # Newest activity first, as the page lists its chosen sessions (the order of its payload).
     entries.sort(key=lambda entry: entry["order"], reverse=True)
-    index = {"version": LIVE_VERSION, "live": True, "as_of": build.generated, "since": build.since, "template": template, "homes": build.homes,
-             "summaries": [], "conversations": entries, "stars": [], "documents": {}, "weeks": {}, "sheets": {}, "closed": build.closed, "fleet_timeline": False}
+    index = {"version": LIVE_VERSION, "live": True, "as_of": build.generated, "since": build.since, "template": template, "sheet_template": sheet_template, "homes": build.homes,
+             "summaries": [], "conversations": entries, "stars": [], "documents": {}, "weeks": {}, "sheets": sheets, "closed": build.closed, "fleet_timeline": False}
     write_pieces(live / LIVE_MD_FILES, [json.dumps(build.md_files).encode("utf-8")])
     write_pieces(live / "index.json", [payload_json(index).encode("utf-8")])
     feed = {"version": LIVE_VERSION, "conversations": [
-        {**conv.glance, "pane": {key: conv.pane[key] for key in ("label", "herdr", "status", "live") if key in conv.pane} if conv.pane else None}
+        {**conv.glance, "pane": {key: conv.pane[key] for key in ("label", "herdr", "live") if key in conv.pane} if conv.pane else None}
         for conv in sorted(build.conversations, key=lambda c: c.entry["order"], reverse=True)]}
     body = json.dumps(feed, ensure_ascii=False, separators=(",", ":"))
     if memory["glance"] != body or not (folder / GLANCE).is_file():
@@ -3321,7 +3382,7 @@ def write_page(template: Path, payload: dict, out: Path, only_if_changed: bool =
         page, _ = fill_template(template, data)
         # The lite page's objects and the glance feed (the section above), before the page and its stamp: a page woken by the stamp finds them.
         if "sessions" in payload and template == TEMPLATE:
-            write_live(out.parent, live_from_payload(payload))
+            write_live(out.parent, live_from_payload(payload, out.parent / "parsed"))
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)

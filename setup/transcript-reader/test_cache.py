@@ -7,6 +7,7 @@ must not be built again. Fixtures are synthetic (test_sync's lab).
 """
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -64,8 +65,21 @@ class Case(unittest.TestCase):
             for session in payload["sessions"]:
                 tool_steps.take_outputs(session["exchanges"])  # write_page moves the tool output aside before it writes the page
             expected = builder.payload_json(payload).encode("utf-8")
+            plain_live = builder.live_from_payload(payload, Path(args.out).parent / "parsed")
             built = build_cache.build(args)
+        self.same_live(plain_live, built.live)
         return expected, b"".join(built.payload), built
+
+    def same_live(self, expected, got):
+        """What the lite page and the glance are made of agrees too: each conversation's object, answer sheet, glance record and index entry, and the markdown listing."""
+        self.assertEqual([c.id for c in got.conversations], [c.id for c in expected.conversations])
+        for one, other in zip(got.conversations, expected.conversations):
+            self.assertEqual(b"".join(one.pieces), b"".join(other.pieces), f"the object of {one.id}")
+            self.assertEqual(one.stamp, other.stamp, one.id)
+            self.assertEqual((one.entry, one.glance, one.pane, one.reopened), (other.entry, other.glance, other.pane, other.reopened), one.id)
+            self.assertEqual(None if one.sheet is None else (one.sheet.list, one.sheet.piece, one.sheet.stamp), None if other.sheet is None else (other.sheet.list, other.sheet.piece, other.sheet.stamp), f"the sheet of {one.id}")
+        self.assertEqual(json.dumps(got.md_files), json.dumps(expected.md_files))
+        self.assertEqual((got.homes, got.closed, got.since), (expected.homes, expected.closed, expected.since))
 
     def same(self, sessions=None, derived=None):
         """The two builds agree; and, with <derived>, exactly these conversations were built anew by the build from kept ones."""
