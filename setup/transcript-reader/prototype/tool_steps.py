@@ -222,7 +222,8 @@ def patch_blocks(patch: str, cwd: str = "") -> list[dict]:
     """The tool_use blocks (name and input, as a Claude edit has them) of a Copilot `apply_patch` string.
 
     The patch is `*** Begin Patch`, then for each file `*** Add File: path` (every line `+text`), `*** Update File: path`
-    (hunks of ` kept`, `-removed` and `+added` lines, each hunk opened by an `@@` line) or `*** Delete File: path`, then
+    (hunks of ` kept`, `-removed` and `+added` lines, each hunk opened by an `@@` line, and optionally `*** Move to: path`) or
+    `*** Delete File: path`, then
     `*** End Patch`. An added file is a Write, an updated one a MultiEdit with one edit per hunk, a deleted one a Delete.
     A relative path starts from <cwd>. Text that is no patch gives no block.
     """
@@ -258,6 +259,9 @@ def patch_blocks(patch: str, cwd: str = "") -> list[dict]:
                 current = {"name": "MultiEdit", "input": {"file_path": path}, "hunks": []}
             else:
                 current = {"name": "Delete", "input": {"file_path": path}}
+            continue
+        if current is not None and current["name"] == "MultiEdit" and line.startswith("*** Move to:"):
+            current["input"]["move_to"] = place(line[len("*** Move to:"):])  # kept so make_step checks it as it checks the source
             continue
         if current is None or line.startswith(("*** Begin Patch", "*** End Patch", "*** End of File", "*** Move to:")):
             if line.startswith("*** End Patch"):
@@ -340,7 +344,8 @@ def make_step(block: dict, at: float | None, notes: int) -> dict:
         path = tool_input["path"]
     if path:
         step["p"] = path
-    paths = [str(tool_input[key]) for key in ("file_path", "notebook_path", "path") if isinstance(tool_input.get(key), str) and tool_input[key]]
+    # move_to is where a patch moves the file it updates: either end being a dotfile or credential path hides the step.
+    paths = [str(tool_input[key]) for key in ("file_path", "notebook_path", "path", "move_to") if isinstance(tool_input.get(key), str) and tool_input[key]]
     if any(sensitive_path(p) for p in paths) or (name == "Bash" and touches_secrets(command)):
         step["h"] = 1
         return step  # the row says what it touched; no diff, and apply_result keeps none of its output

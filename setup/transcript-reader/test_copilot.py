@@ -184,6 +184,27 @@ class CopilotParserTest(unittest.TestCase):
         self.assertEqual(turn["steps"][0].get("h"), 1)
         self.assertNotIn("made-up-value", json.dumps(turn))
 
+    def test_a_patch_that_moves_a_file_to_or_from_a_secret_path_keeps_no_text(self):
+        for source, target in (("notes/a.md", ".env"), (".npmrc", "notes/b.md")):
+            patch = f"*** Begin Patch\n*** Update File: {source}\n*** Move to: {target}\n@@\n-old made-up-value\n+new made-up-value\n*** End Patch"
+            records = [start_event(), typed("x", 1), reply(2, tools=[request("p", "apply_patch", patch)]), done("p", 3, "made-up-value"), reply(4, "Done.")]
+            (turn,) = exchanges_of(records)
+            with self.subTest(source=source, target=target):
+                self.assertEqual(turn["steps"][0].get("h"), 1)
+                self.assertNotIn("made-up-value", json.dumps(turn))
+        blocks = builder.tool_steps.patch_blocks("*** Begin Patch\n*** Update File: a.py\n*** Move to: b.py\n-x\n+y\n*** End Patch", "/w")
+        self.assertEqual(blocks[0]["input"]["move_to"], "/w/b.py")
+
+    def test_a_search_naming_a_secret_place_among_several_keeps_no_output(self):
+        for args in ({"pattern": "KEY", "paths": ["/work/demo/src", "/home/me/.ssh"]}, {"pattern": "KEY", "paths": ["/work/demo/src"], "glob": "**/.env"}):
+            records = [start_event(), typed("x", 1), reply(2, tools=[request("a", "rg", args)]), done("a", 3, "id_rsa: made-up-secret"), reply(4, "Done.")]
+            (turn,) = exchanges_of(records)
+            with self.subTest(args=args):
+                self.assertEqual(turn["steps"][0].get("h"), 1)
+                self.assertNotIn("made-up-secret", json.dumps(turn))
+        (turn,) = exchanges_of([start_event(), typed("x", 1), reply(2, tools=[request("a", "rg", {"pattern": "k", "paths": ["/w/a", "/w/b"]})]), done("a", 3, "hit"), reply(4, "ok")])
+        self.assertEqual((turn["steps"][0].get("h"), turn["steps"][0]["out"]), (None, "hit"))
+
     def test_reasoning_before_a_step_is_a_working_note_and_the_one_before_the_answer_is_not_part_of_the_reply(self):
         records = [
             start_event(), typed("explain", 1),

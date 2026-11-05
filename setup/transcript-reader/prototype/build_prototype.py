@@ -599,8 +599,10 @@ def copilot_tool_blocks(name, arguments, cwd: str = "") -> list[dict]:
         value = args.get(key)
         return str(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
 
-    paths = args.get("paths") if isinstance(args.get("paths"), list) else []
-    where = next((path for path in paths if isinstance(path, str) and path), "")
+    paths = [path for path in (args.get("paths") if isinstance(args.get("paths"), list) else []) if isinstance(path, str) and path]
+    # A search may name several places and a glob; the step shows one. If any of them is a dotfile or a credential path, that one is
+    # shown, so make_step hides the step's output as it does for Claude's search of such a path.
+    where = next((path for path in [*paths, text("glob")] if path and tool_steps.sensitive_path(path)), paths[0] if paths else "")
     mapped = COPILOT_TOOLS.get(name)
     if mapped == "Bash":
         tool_input = {"command": text("command"), "description": text("description")}
