@@ -470,6 +470,7 @@ __HEAD_HOSTED__
   .dock-row button.alt { background: var(--paper); color: var(--you); padding: 7px 10px; }
   .dock-batch { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; margin-bottom: 5px; }
   .dock-batch .dock-head button:first-child { flex: 1; min-width: 0; text-align: left; color: var(--ink); font-weight: 600; }
+  .dock-batch .dock-head button.armed { color: var(--open); font-weight: 600; }
   .dock-batch ol { list-style: none; margin: 3px 0 0; padding: 0; max-height: 28vh; overflow-y: auto; }
   .dock-batch li { display: flex; gap: 6px; align-items: baseline; font-size: 13px; padding: 4px 0; border-top: 1px solid var(--line); }
   .dock-batch .n { color: var(--faint); font-variant-numeric: tabular-nums; }
@@ -647,7 +648,7 @@ __HEAD_HOSTED__
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
 <div class="dock" id="dock" hidden><div class="dock-inner">
   <div class="dock-batch" id="dock-batch" hidden>
-    <div class="dock-head"><button id="dock-batch-toggle" type="button" aria-expanded="true" aria-controls="dock-batch-list"></button><button id="dock-batch-clear" type="button" title="Remove every comment from the batch">Clear all</button></div>
+    <div class="dock-head"><button id="dock-batch-toggle" type="button" aria-expanded="true" aria-controls="dock-batch-list"></button><button id="dock-batch-clear" type="button" title="Remove every comment from the batch">Clear all</button><button id="dock-batch-keep" type="button" title="Keep the batch" hidden>Keep</button></div>
     <ol id="dock-batch-list"></ol>
   </div>
   <div class="dock-preview" id="dock-preview" hidden><div class="dock-label">Sends exactly:</div><div class="dock-line" id="dock-preview-text"></div></div>
@@ -2329,7 +2330,7 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null };
+  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, clearing: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
   // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
   const photos = attach.makeStore();
@@ -2501,9 +2502,15 @@ __HEAD_HOSTED__
     const items = batchOf(session.id);
     dock("batch").hidden = !items.length;
     if (!items.length) link.batchOpen = false;
-    const sig = JSON.stringify([session.id, link.batchOpen, items, Boolean(link.hold)]);
+    if (!items.length && link.clearing) { clearTimeout(link.clearing.timer); link.clearing = null; }  // a question about a batch that is gone
+    const armed = clearArmed(session.id, items.length);
+    const sig = JSON.stringify([session.id, link.batchOpen, items, Boolean(link.hold), armed]);
     if (!items.length || sig === link.batchSig) return;
     link.batchSig = sig;
+    const clear = dock("batch-clear");
+    clear.textContent = armed ? `Remove ${items.length === 1 ? "it" : "all " + items.length}?` : "Clear all";
+    clear.classList.toggle("armed", armed);
+    dock("batch-keep").hidden = !armed;
     const toggle = dock("batch-toggle");
     toggle.textContent = `${link.batchOpen ? "▾" : "▸"} Batch · ${items.length} comment${items.length === 1 ? "" : "s"} to send together`;
     toggle.setAttribute("aria-expanded", String(link.batchOpen));
@@ -3024,11 +3031,28 @@ __HEAD_HOSTED__
   dock("send").addEventListener("click", () => { if (heldHere()) undoHold(); else sendDock(); });
   dock("add").addEventListener("click", () => { if (heldHere()) sendNow(); else { addToBatch(); dock("text").focus(); } });
   dock("batch-toggle").addEventListener("click", () => { link.batchOpen = !link.batchOpen; renderDock(); });
+  // Clear all asks in the page, never with confirm(): a browser that does not show a native dialog (the Integrated Browser of VS Code answers
+  // it "no" at once) left the button doing nothing. The first press arms it ("Remove all 3?" in red, with Keep beside it) for CLEAR_ASK_MS,
+  // the second removes the batch. The batch changing or another session being opened disarms it: it never removes more than was asked about.
+  const CLEAR_ASK_MS = 6000;
+  const clearArmed = (sid, n) => Boolean(link.clearing) && link.clearing.sid === sid && link.clearing.n === n;
+  function disarmClear() {
+    if (!link.clearing) return;
+    clearTimeout(link.clearing.timer); link.clearing = null; renderDock();
+  }
   dock("batch-clear").addEventListener("click", () => {
     const session = dockSession(), n = session ? batchOf(session.id).length : 0;
-    if (link.hold || !n || !confirm(`Remove all ${n} comment${n === 1 ? "" : "s"} from the batch?`)) return;
+    if (link.hold || !n) return;
+    if (!clearArmed(session.id, n)) {
+      disarmClear();
+      link.clearing = { sid: session.id, n, timer: setTimeout(disarmClear, CLEAR_ASK_MS) };
+      renderDock();
+      return;
+    }
+    clearTimeout(link.clearing.timer); link.clearing = null;
     saveBatch(session.id, []); link.editing = null; saveDraft(); renderDock();
   });
+  dock("batch-keep").addEventListener("click", disarmClear);
   dock("preview-toggle").addEventListener("click", () => { link.preview = !link.preview; renderDock(); });
   dock("copy").addEventListener("click", copyDock);
   // Photos. Why none can be added here, or "": the hosted copy's queue carries text only (its words are sealed, and a photo is far past the
