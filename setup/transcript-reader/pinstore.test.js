@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { create, createStars, defaultFile, defaultStarsFile, PinError, MAX_PINS, MAX_STARS, MAX_DESCRIPTION } = require('./pinstore');
+const { create, createStars, createSheetFlags, defaultFile, defaultStarsFile, defaultSheetFlagsFile, PinError, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_DESCRIPTION } = require('./pinstore');
 
 const K1 = 'abcdef12-3456-4789-8abc-def012345678:in';
 const K2 = 'abcdef12-3456-4789-8abc-def012345678:reply';
@@ -155,4 +155,38 @@ test('stars: bad input is refused and writes nothing; the cap holds; a file that
   assert.deepEqual(mixed.read(), { rev: 0, stars: [] });
   mixed.change({ op: 'star', conv: CONV });
   assert.equal(JSON.parse(fs.readFileSync(other + '.unreadable', 'utf8')).rev, 3);
+});
+
+test('sheet marks: a third file beside the pins, holding a turn id, its conversation, the reply time and the kind of mark, never any text', () => {
+  assert.equal(defaultSheetFlagsFile({}), path.join(os.homedir(), '.config', 'pmos-transcript-reader', 'sheet-flags.json'));
+  assert.equal(defaultSheetFlagsFile({ PMOS_READER_SHEET_FLAGS: '/somewhere/else.json' }), '/somewhere/else.json');
+  const folder = fresh();
+  const own = path.join(folder, 'pmos-transcript-reader');
+  fs.mkdirSync(own, { mode: 0o755 });
+  fs.chmodSync(own, 0o755);
+  const file = path.join(own, 'sheet-flags.json');
+  const store = createSheetFlags({ file, now: () => 5_000_000 });
+  assert.deepEqual(store.read(), { rev: 0, flags: [] });
+  const mark = { op: 'flag', key: K2, conv: CONV, at: 1700000000, kind: 'wrong' };
+  assert.deepEqual(store.change(mark), { rev: 1, flags: [{ key: K2, conv: CONV, at: 1700000000, kind: 'wrong', flagged: 5000 }] });
+  assert.deepEqual(store.change(mark).rev, 1, 'marking again changes nothing');
+  assert.deepEqual(createSheetFlags({ file }).read().flags.map((flag) => flag.key), [K2], 'a restarted server sees it');
+  assert.equal(mode(file), 0o600);
+  assert.equal(mode(own), 0o700);
+  assert.deepEqual(store.change({ op: 'unflag', key: 'zzzzzzzz-3456-4789-8abc-def012345678:reply' }).rev, 1);
+  assert.deepEqual(store.change({ op: 'unflag', key: K2 }), { rev: 2, flags: [] });
+  assert.equal(fs.existsSync(path.join(own, 'pins.json')) || fs.existsSync(path.join(own, 'stars.json')), false, 'the other files are not touched');
+});
+
+test('sheet marks: only a reply can be marked, with a known kind; bad input writes nothing; the cap holds', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'pmos-transcript-reader', 'sheet-flags.json');
+  const store = createSheetFlags({ file });
+  const good = { op: 'flag', key: K2, conv: CONV, at: 1, kind: 'missing' };
+  for (const body of [null, [], {}, { op: 'flag' }, { ...good, key: K1 }, { ...good, kind: 'other' }, { ...good, kind: undefined }, { ...good, conv: '../x' }, { ...good, at: 'now' }, { ...good, text: 'x' }, { op: 'pin', key: K2 }, { op: 'unflag', key: K1 }]) {
+    assert.throws(() => store.change(body), PinError, JSON.stringify(body));
+  }
+  assert.equal(fs.existsSync(file), false);
+  for (let i = 0; i < MAX_FLAGS; i += 1) store.change({ ...good, key: `abcdef12-3456-4789-8abc-${String(i).padStart(12, '0')}:reply` });
+  assert.throws(() => store.change({ ...good, key: 'abcdef12-3456-4789-8abc-ffffffffffff:reply' }), (e) => e instanceof PinError && e.status === 409 && e.code === 'too_many');
 });

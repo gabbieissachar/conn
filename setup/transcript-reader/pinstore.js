@@ -16,6 +16,14 @@
 //   { "version": 1, "rev": 3, "stars": [{ "conv": "<conversation id>", "starred": <epoch> }] }
 //
 // PMOS_READER_STARS names another file; the default is ~/.config/pmos-transcript-reader/stars.json.
+//
+// The replies the owner marked from the page as "this should be an answer sheet" (kind "missing") or "this sheet is wrong" (kind
+// "wrong") are kept the same way, in a third file, by turn id and never with the reply's text; reader.py sheet-flags reads it to
+// show the flagged replies and their shape for a parser fixture:
+//
+//   { "version": 1, "rev": 2, "flags": [{ "key": "<turn id>:reply", "conv": "<conversation id>", "at": <reply time>, "kind": "missing|wrong", "flagged": <epoch> }] }
+//
+// PMOS_READER_SHEET_FLAGS names another file; the default is ~/.config/pmos-transcript-reader/sheet-flags.json.
 
 const fs = require('fs');
 const os = require('os');
@@ -28,6 +36,7 @@ const KEY_RE = /^[0-9A-Za-z_-]{8,80}:(?:in|reply)$/;
 const CONV_RE = /^[0-9A-Za-z_-]{1,64}$/;
 const MAX_PINS = 1000;
 const MAX_STARS = 200;
+const MAX_FLAGS = 500;
 const MAX_DESCRIPTION = 80;
 
 class PinError extends Error {
@@ -44,6 +53,10 @@ function defaultFile(env = process.env) {
 
 function defaultStarsFile(env = process.env) {
   return env.PMOS_READER_STARS || path.join(os.homedir(), '.config', FOLDER, 'stars.json');
+}
+
+function defaultSheetFlagsFile(env = process.env) {
+  return env.PMOS_READER_SHEET_FLAGS || path.join(os.homedir(), '.config', FOLDER, 'sheet-flags.json');
 }
 
 // What a list of kept things is: the file's list name, its add and remove operations, the field that names an
@@ -92,6 +105,22 @@ const STARS = {
   checkAdd: () => {},
   make: (body, epoch) => ({ conv: body.conv, starred: epoch }),
   valid: (star) => Boolean(star) && typeof star === 'object' && CONV_RE.test(star.conv) && Number.isFinite(star.starred),
+};
+
+// A reply marked from the page: its turn id (the pin's key, for the reply), the conversation, when the reply was written and which way it
+// went wrong. No text of the reply is kept.
+const SHEET_FLAGS = {
+  list: 'flags', add: 'flag', remove: 'unflag', id: 'key', addFields: ['key', 'conv', 'at', 'kind'], max: MAX_FLAGS,
+  tooMany: 'Too many marked replies: clear some first.',
+  checkId: (body) => { if (typeof body.key !== 'string' || !KEY_RE.test(body.key) || !body.key.endsWith(':reply')) throw new PinError('Invalid message id.'); },
+  checkAdd: (body) => {
+    if (typeof body.conv !== 'string' || !CONV_RE.test(body.conv)) throw new PinError('Invalid conversation id.');
+    if (!Number.isFinite(body.at)) throw new PinError('Invalid time.');
+    if (body.kind !== 'missing' && body.kind !== 'wrong') throw new PinError('Invalid mark.');
+  },
+  make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, kind: body.kind, flagged: epoch }),
+  valid: (flag) => Boolean(flag) && typeof flag === 'object' && KEY_RE.test(flag.key) && CONV_RE.test(flag.conv)
+    && Number.isFinite(flag.at) && (flag.kind === 'missing' || flag.kind === 'wrong') && Number.isFinite(flag.flagged),
 };
 
 function createList(kind, { file, now = () => Date.now() }) {
@@ -178,5 +207,6 @@ function createList(kind, { file, now = () => Date.now() }) {
 
 const create = (options = {}) => createList(PINS, { file: defaultFile(), ...options });
 const createStars = (options = {}) => createList(STARS, { file: defaultStarsFile(), ...options });
+const createSheetFlags = (options = {}) => createList(SHEET_FLAGS, { file: defaultSheetFlagsFile(), ...options });
 
-module.exports = { create, createStars, defaultFile, defaultStarsFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS, MAX_DESCRIPTION };
+module.exports = { create, createStars, createSheetFlags, defaultFile, defaultStarsFile, defaultSheetFlagsFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_DESCRIPTION };

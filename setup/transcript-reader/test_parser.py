@@ -820,6 +820,16 @@ class AskStateTest(unittest.TestCase):
         session = {"id": "abcdef12-0000", "exchanges": self.marked([wrote("Review it", 0), said(GRILL, 1)])}
         builder.mark_sheets([session])
         self.assertEqual([c["key"] for c in session["exchanges"][0]["sheet_cards"]], ["A1", "A2"])
+        self.assertEqual(session["exchanges"][0]["sheet_count"], 2)
+
+    def test_a_sheet_of_more_than_eight_questions_says_how_many_there_are(self):
+        # sheet_cards stops at eight (the reply's ask box); the page says "9 questions" and "5 more in the answer sheet" from sheet_count.
+        reply = (Path(__file__).resolve().parent / "answer-sheet-fixtures" / "key-call-recommended-table.md").read_text(encoding="utf-8")
+        session = {"id": "abcdef12-0000", "exchanges": self.marked([wrote("Review it", 0), said(reply, 1)])}
+        builder.mark_sheets([session])
+        exchange = session["exchanges"][0]
+        self.assertEqual(len(exchange["sheet_cards"]), 8)
+        self.assertEqual(exchange["sheet_count"], 9)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,10 @@
 //   GET  /api/transcript-reader/stars               the starred sessions of the picker (the same store, in a file
 //                                                   beside the pins) and their revision
 //   POST /api/transcript-reader/stars               { op: "star", conv } or { op: "unstar", conv }
+//   GET  /api/transcript-reader/sheet-flags         the replies marked "should be an answer sheet" or "this sheet is wrong" (a third
+//                                                   file beside the pins; turn ids only, never a reply's text) and their revision
+//   POST /api/transcript-reader/sheet-flags         { op: "flag", key, conv, at, kind: "missing"|"wrong" } or { op: "unflag", key }
+//   POST /api/transcript-reader/rerender            {}: builds the pages again now (the worker starts from the code on disk), answers when built
 //   POST /api/transcript-reader/send                { session_id, text[, images] }: empties the input box
 //                                                   of the one live Herdr pane running that
 //                                                   session, then sends the text there. images are the ids
@@ -137,7 +141,7 @@
 // (worker.js), which falls back to a fresh reader.py for a request it cannot take. Each rebuild also leaves the lite page's files in out/live/
 // and the glance feed in out/glance.json (build_prototype.write_live); this module serves the first and never reads the second. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
-// every live Claude pane's session not yet listed, except one a person closed or removed. The pins and stars files are the only things written outside out/, and only on a pin, an unpin, a star or an unstar.
+// every live Claude pane's session not yet listed, except one a person closed or removed. The pins, stars and sheet-flags files are the only things written outside out/, and only on a pin, an unpin, a star, an unstar, a mark or a cleared mark.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
@@ -440,6 +444,7 @@ function create({
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
   pinsFile = pinstore.defaultFile(env),
   starsFile = pinstore.defaultStarsFile(env),
+  sheetFlagsFile = pinstore.defaultSheetFlagsFile(env),
   // Where an HTML file may be shown from, as in build_prototype.resolve_mention: the home folder and the temp folders.
   homeDir = os.homedir(), tempRoots = ['/tmp', os.tmpdir()],
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
@@ -499,6 +504,7 @@ function create({
   let sending = false;
   const pins = pinstore.create({ file: pinsFile, now });
   const stars = pinstore.createStars({ file: starsFile, now });
+  const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
 
@@ -1054,7 +1060,7 @@ function create({
       }
     }
     return {
-      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev, stars: stars.read().rev },
+      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev, stars: stars.read().rev, flags: sheetFlags.read().rev },
       focus: focused && {
         ...focused,
         listed: focused.session_id ? ids.includes(focused.session_id) : false,
@@ -1099,6 +1105,15 @@ function create({
     if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
     build.paneClosed = false;
     return { synced: now() / 1000, ...(await state(body.follow === true)) };
+  }
+
+  // The Re-render button of a marked reply: a rebuild of every page now, whether or not a log looks newer. It waits for one already running.
+  async function rerender(body) {
+    if (Object.keys(body).length) throw new RequestError('Unknown field.');
+    while (build.running) await build.running.done;
+    const result = await runReader(['rebuild']);
+    if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
+    return { rendered: now() / 1000, stamp: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp') };
   }
 
   // ------------------------------------------------------------ reopen, close
@@ -1593,6 +1608,21 @@ function create({
     }
     if (pathname === API + 'stars' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...stars.change(await readJsonBody(req)) });
+      return;
+    }
+    // The replies marked "should be an answer sheet" or "this sheet is wrong" (reader.py sheet-flags lists them), and one change to them.
+    if (pathname === API + 'sheet-flags' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...sheetFlags.read() });
+      return;
+    }
+    if (pathname === API + 'sheet-flags' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...sheetFlags.change(await readJsonBody(req)) });
+      return;
+    }
+    // Build the pages again now, with the sheet finder as it is on disk (the worker starts again from changed code), so a reply marked
+    // wrong or missing shows what the finder makes of it today. Answers when the pages are built.
+    if (pathname === API + 'rerender' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...(await rerender(await readJsonBody(req))) });
       return;
     }
     if (pathname === API + 'send' && req.method === 'POST') {

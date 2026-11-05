@@ -1374,6 +1374,7 @@ def mark_sheets(sessions: list[dict]) -> None:
             if questionnaire:
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
                 exchange["sheet_cards"] = sheet_cards(questionnaire)
+                exchange["sheet_count"] = len(questionnaire["cards"])  # sheet_cards stops at 8; the page says how many questions there are
 
 
 def build(args) -> dict:

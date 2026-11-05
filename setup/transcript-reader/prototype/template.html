@@ -101,7 +101,7 @@ __HEAD_HOSTED__
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   /* One pressed style for every toggle, in the "you" blue: yellow belongs to "Needs you" alone, so a switched-on Follow Herdr or Pin never reads as an ask. */
-  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
+  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .sheet-flag[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy says when the laptop built it, and says so louder once that is old. */
@@ -413,6 +413,19 @@ __HEAD_HOSTED__
   /* Pin: on a message and on a reply, then the list of pins in the header. */
   .pin { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .reply-to { margin-left: 0; }
+  /* Marking a reply's answer sheet wrong or missing: a small button after Reply, and the panel it opens under the reply's header line. */
+  .sheet-flag { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+  .sheet-flag:focus-visible, .sheetfix button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .sheetfix { margin: 4px 0 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--wash); font-size: 13px; color: var(--ink); }
+  .sheetfix .line { margin: 0 0 6px; }
+  .sheetfix .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sheetfix button { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 2px 10px; font-size: 12px; color: var(--ink); }
+  .sheetfix button.primary { border-color: var(--you); color: var(--you); font-weight: 600; }
+  .sheetfix button:disabled { opacity: .5; }
+  .sheetfix .say { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+  .sheetfix .say.bad { color: var(--open); }
+  .sheetfix .hint { margin: 6px 0 0; font-size: 12px; color: var(--faint); }
+  @media (pointer: coarse) { .sheet-flag, .sheetfix button { min-height: 44px; } }
   .pin:focus-visible, .pin-item:focus-visible, .pin-x:focus-visible, .reply-to:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   #pins-panel { min-width: 0; margin-top: 4px; }
   .pins { margin-top: 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 6px 8px; }
@@ -784,6 +797,76 @@ __HEAD_HOSTED__
     if (ex.answered_below) return $("span", "chip reminder", "Answered below");
     return $("span", "chip reminder", "No reply");
   }
+  // ---------------------------------------------------------------- marking a reply's answer sheet wrong or missing (DESIGN.md, 2026-11-05)
+  // A reply that has a sheet can be marked "this sheet is wrong"; a reply that should have one and has none, "this should be an answer
+  // sheet". The mark is kept by the reply's id (sheetFlags, the server's third file) and listed by reader.py sheet-flags, which also prints
+  // the reply's shape, so the case can join the sheet finder's tests. Re-render builds the pages again now, to see what the finder makes
+  // of the reply today. Offered on the served page, for a reply that has a sheet, asks something of you, or reads like a keyed-answer reply.
+  const SHEET_HINT = /\b[A-Z]\d{1,2}\s*=|\breply (?:with|like)\b/i;
+  const flagKey = ex => ex.uid ? `${ex.uid}:reply` : "";
+  const sheetFixOffered = (ex, sid) => canLive && Boolean(sid && ex.reply && flagKey(ex) && (ex.sheet || ex.verdict === "needs-you" || SHEET_HINT.test(ex.reply)));
+  const sheetFixSays = new Map();  // flag key -> { text, bad }: what the last Re-render or mark said, kept across the page drawing itself again
+  const sheetFixData = new WeakMap();  // a panel -> { ex, sid, key }
+  const questions = ex => { const n = ex.sheet_count || (ex.sheet_cards || []).length; return `${n} question${n === 1 ? "" : "s"}`; };
+  const findExchange = uid => { for (const s of data.sessions) for (const e of s.exchanges) if (e.uid === uid) return e; return null; };
+  function paintSheetFix(panel) {
+    const held = sheetFixData.get(panel);
+    if (!held) return;
+    const { ex, sid, key } = held, flag = sheetFlags.all().find(f => f.key === key), busy = sheetFixSays.get(key + ":busy");
+    const now = ex.sheet ? `It has an answer sheet with ${questions(ex)}.` : "It has no answer sheet.";
+    const said = sheetFixSays.get(key);
+    const button = (label, title, on, primary) => { const b = $("button", primary ? "primary" : null, label); b.type = "button"; b.title = title; b.disabled = Boolean(busy); b.addEventListener("click", on); return b; };
+    const acts = $("div", "acts");
+    if (flag) acts.append(button("Clear mark", "Take the mark off this reply", () => markSheet(held, false)));
+    else acts.append(button(ex.sheet ? "Mark: this sheet is wrong" : "Mark: this should be a sheet", "Keep this reply for the sheet finder's tests (reader.py sheet-flags)", () => markSheet(held, true), true));
+    acts.append(button("Re-render", "Build the pages again now, with the sheet finder as it is on disk", () => rerenderSheet(held)));
+    const line = flag
+      ? `Marked ${flag.kind === "wrong" ? "as a wrong sheet" : "as a reply that should have a sheet"}, ${fmtWhen(flag.flagged)}. ${now}`
+      : `Not marked. ${now}`;
+    const say = said || busy ? $("p", "say" + (said && said.bad ? " bad" : ""), busy ? sheetFixSays.get(key + ":busy") : said.text) : null;
+    say && say.setAttribute("role", "status");
+    panel.replaceChildren($("p", "line", line), acts, ...(say ? [say] : []),
+      $("p", "hint", "A marked reply is kept for the finder's tests: reader.py sheet-flags lists them and prints a reply's shape with its words masked."));
+  }
+  function paintSheetFixes() {
+    document.querySelectorAll(".sheetfix").forEach(paintSheetFix);
+    document.querySelectorAll("button.sheet-flag").forEach(b => b.setAttribute("aria-pressed", String(sheetFlags.has(b.dataset.flag))));
+  }
+  async function markSheet({ ex, sid, key }, on) {
+    sheetFixSays.delete(key);
+    try { if (on !== sheetFlags.has(key)) await sheetFlags.toggle(key, { conv: sid, at: ex.reply_at || ex.at, kind: ex.sheet ? "wrong" : "missing" }); }
+    catch (e) { sheetFixSays.set(key, { text: e.message, bad: true }); }
+    paintSheetFixes();
+  }
+  async function rerenderSheet({ key }) {
+    sheetFixSays.delete(key);
+    sheetFixSays.set(key + ":busy", "Drawing it again…");
+    paintSheetFixes();
+    try {
+      await live.rerender();
+      await refreshData(true);
+      const now = findExchange(key.split(":")[0]);
+      sheetFixSays.set(key, { text: now ? (now.sheet ? `Drawn again: it is an answer sheet with ${questions(now)}.` : "Drawn again: still no answer sheet.") : "Drawn again, but this reply is no longer on the page." });
+    } catch (e) { sheetFixSays.set(key, { text: `Could not draw it again: ${e.message}`, bad: true }); }
+    sheetFixSays.delete(key + ":busy");
+    paintSheetFixes();
+  }
+  function sheetFixControl(ex, sid, key) {
+    const flag = flagKey(ex), open = state.open.has(key + ":sheetfix");
+    const button = $("button", "sheet-flag", "Sheet"); button.type = "button"; button.dataset.flag = flag;
+    button.title = ex.sheet ? "This reply's answer sheet: mark it wrong, or draw it again" : "This reply has no answer sheet: mark it as one that should have it, or draw it again";
+    button.setAttribute("aria-expanded", String(open)); button.setAttribute("aria-pressed", String(sheetFlags.has(flag)));
+    const panel = $("div", "sheetfix"); panel.hidden = !open;
+    sheetFixData.set(panel, { ex, sid, key: flag });
+    button.addEventListener("click", () => {
+      const show = panel.hidden;
+      panel.hidden = !show; button.setAttribute("aria-expanded", String(show));
+      if (show) { state.open.add(key + ":sheetfix"); paintSheetFix(panel); } else state.open.delete(key + ":sheetfix");
+    });
+    if (open) paintSheetFix(panel);
+    return { button, panel };
+  }
+  sheetFlags.onChange(paintSheetFixes);
   // key names the turn for state.open; sid, when given, makes the reply answerable from here.
   function replyCard(ex, key, sid) {
     const open = isOpen(ex);
@@ -803,7 +886,10 @@ __HEAD_HOSTED__
       to.addEventListener("click", () => useTarget(target(selectedPassage(card)), to));
       who.append(to);
     }
+    const fix = sheetFixOffered(ex, sid) ? sheetFixControl(ex, sid, key) : null;
+    if (fix) who.append(fix.button);
     card.append(who);
+    if (fix) card.append(fix.panel);
     // Only an open ask is marked, and only once: by the box below while the reply is clipped (the clip would hide the
     // asks), else by the highlight in the body. A reply that opens an answer sheet lists that sheet's questions with
     // their recommended defaults in the box, and the "Answer sheet" link sits right under it.
@@ -820,7 +906,7 @@ __HEAD_HOSTED__
           if (c.rec) { const r = $("span", "rec"); r.innerHTML = " - recommended: " + inline(c.rec); d.append(r); }
           box.append(d);
         });
-        if (cards.length > 4) box.append($("div", "notes", `and ${cards.length - 4} more in the answer sheet`));
+        if ((ex.sheet_count || cards.length) > 4) box.append($("div", "notes", `and ${(ex.sheet_count || cards.length) - 4} more in the answer sheet`));
       } else {
         const lines = ex.reply.split("\n");
         later.slice(0, 3).forEach(n => { const d = $("div"); d.innerHTML = inline((lines[n] || "").replace(/^\s*(?:[-*]|\d+[.)])\s+/, "")); box.append(d); });
@@ -3850,6 +3936,7 @@ __HEAD_HOSTED__
     link.syncedAt = Date.now() / 1000; link.syncFail = null;
     pins.refresh(s.stamps && s.stamps.pins);
     stars.refresh(s.stamps && s.stamps.stars);
+    sheetFlags.refresh(s.stamps && s.stamps.flags);
   }
   // The server (or the hosted copy's folder) stopped answering: after a few seconds the page says so, with since when.
   const syncFailing = () => Boolean(link.syncFail) && Date.now() - link.syncFail.since > 8000;
@@ -4284,6 +4371,7 @@ __HEAD_HOSTED__
   });
   pins.load().then(paintPins);
   stars.load().then(paintStars);
+  if (canLive) sheetFlags.load().then(paintSheetFixes);
   if (!LAZY) openReading(chooseOpening());
   else {
     // A lazy page holds no transcript: a sealed copy is opened first (the hosted copy), then the list comes from index.json, then the

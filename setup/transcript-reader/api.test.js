@@ -75,7 +75,8 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   // The pins file lives outside the repo; a test gets one inside its own temporary folder, never the owner's.
   const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
   const starsFile = path.join(base, 'config', 'pmos-transcript-reader', 'stars.json');
-  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, copilotHomeDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  const sheetFlagsFile = path.join(base, 'config', 'pmos-transcript-reader', 'sheet-flags.json');
+  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, copilotHomeDir, pinsFile, starsFile, sheetFlagsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -145,7 +146,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, sheetFlagsFile: tree.sheetFlagsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -2413,5 +2414,49 @@ test('mixed panes: panes Herdr gave no session id each map to their own session,
     const copilot = await t.send({ session_id: K1, text: 'to the copilot pane' });
     assert.equal(copilot.status, 409);
     assert.equal(t.herdr.agentCalls().length, 0, 'nothing reached any pane for the Copilot session');
+  } finally { await t.close(); }
+});
+
+test('sheet marks: a reply marked "missing" or "wrong" is kept by turn id in its own owner-only file, and the state carries the revision', async () => {
+  const t = await start();
+  try {
+    const TURN = 't52c0a60fd3697281cd4ebd17:reply';
+    assert.deepEqual((await t.get('sheet-flags')).json, { status: 'ok', rev: 0, flags: [] });
+    assert.equal((await t.state()).json.stamps.flags, 0);
+    const marked = await t.post('sheet-flags', { op: 'flag', key: TURN, conv: A, at: 1793865300, kind: 'missing' });
+    assert.equal(marked.status, 200, marked.raw);
+    assert.equal(marked.json.rev, 1);
+    assert.deepEqual(marked.json.flags.map(({ key, conv, kind }) => [key, conv, kind]), [[TURN, A, 'missing']]);
+    assert.equal((await t.post('sheet-flags', { op: 'flag', key: TURN, conv: A, at: 1793865300, kind: 'missing' })).json.rev, 1, 'marking again changes nothing');
+    assert.equal((await t.state()).json.stamps.flags, 1);
+    assert.equal((await t.state()).json.stamps.pins, 0, 'a mark is not a pin');
+    const mode = (file) => fs.statSync(file).mode & 0o777;
+    assert.equal(mode(t.tree.sheetFlagsFile), 0o600);
+    assert.equal(mode(path.dirname(t.tree.sheetFlagsFile)), 0o700);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(t.tree.sheetFlagsFile, 'utf8')).flags[0]), ['key', 'conv', 'at', 'kind', 'flagged'], 'ids, times and the kind of mark: no text of a reply');
+    // Only a reply can be marked, with a known kind; nothing else is accepted and nothing is written for it.
+    for (const body of [{ op: 'flag', key: 't52c0a60fd3697281cd4ebd17:in', conv: A, at: 1, kind: 'wrong' }, { op: 'flag', key: TURN, conv: A, at: 1, kind: 'bad' }, { op: 'flag', key: TURN, conv: '../x', at: 1, kind: 'wrong' }, { op: 'flag', key: TURN, conv: A, kind: 'wrong' }, { op: 'flag', key: TURN, conv: A, at: 1, kind: 'wrong', text: 'a reply' }]) {
+      assert.equal((await t.post('sheet-flags', body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await t.get('sheet-flags')).json.rev, 1);
+    assert.equal((await t.post('sheet-flags', { op: 'unflag', key: TURN })).json.rev, 2);
+    assert.deepEqual((await t.get('sheet-flags')).json.flags, []);
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/sheet-flags', headers: { 'Content-Type': 'application/json' }, body: { op: 'unflag', key: TURN } })).status, 403, 'the same guard as every route');
+  } finally { await t.close(); }
+});
+
+test('rerender: builds the pages again now, after a running build, and says plainly when the build fails', async () => {
+  const t = await start();
+  try {
+    const done = await t.post('rerender', {});
+    assert.equal(done.status, 200, done.raw);
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+    assert.ok(Number.isFinite(done.json.rendered));
+    assert.equal((await t.post('rerender', { extra: 1 })).status, 400, 'it takes nothing');
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'Traceback\nboom', timedOut: false, truncated: false };
+    const failed = await t.post('rerender', {});
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'rebuild_failed');
+    assert.match(failed.json.message, /boom/);
   } finally { await t.close(); }
 });

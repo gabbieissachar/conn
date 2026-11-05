@@ -60,7 +60,7 @@
       }
     }
     // What an add sends: the item without the time the server stamps.
-    const fields = p => { const { pinned, starred, ...rest } = p; return rest; };
+    const fields = p => { const { pinned, starred, flagged, ...rest } = p; return rest; };
     // Another tab or page changed the file (the poll reads its revision) or this browser's store: take the new list.
     async function refresh(stamp) {
       if (where !== "file" || stamp == null || stamp === rev) return;
@@ -123,4 +123,12 @@
     id: "conv", add: "star", remove: "unstar", noun: "stars", undo: "unstar", max: 200,
     make: conv => ({ conv, starred: Date.now() / 1000 }),
     sound: p => Boolean(p) && typeof p.conv === "string" && Number.isFinite(p.starred),
+  });
+  // The replies marked from the page as "should be an answer sheet" (kind "missing") or "this sheet is wrong" (kind "wrong"): the reply's
+  // key (the pin's, for the reply), its conversation, its time and the kind. reader.py sheet-flags lists them for the sheet finder's tests.
+  const sheetFlags = kept({
+    storage: "sheetflags", ask: { list: () => live.flagsList(), change: c => live.flagsChange(c) },
+    id: "key", add: "flag", remove: "unflag", noun: "flags", undo: "clear", max: 500,
+    make: (key, more) => ({ key, ...more, flagged: Date.now() / 1000 }),
+    sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && (p.kind === "missing" || p.kind === "wrong") && Number.isFinite(p.flagged),
   });

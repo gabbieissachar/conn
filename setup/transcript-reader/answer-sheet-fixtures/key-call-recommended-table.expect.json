@@ -1,0 +1,17 @@
+{
+  "why": "Flagged 2026-11-04: a reply with a Key | Call | Recommended table, the choices as `a` ... ; `b` ... inside the Call cell, and 'Reply like'. It must open as an answer sheet.",
+  "sheet": true,
+  "cards": [
+    {"key": "R1", "question": "Restore the strict option checks in the local script now", "options": [["a", "yes, the job owner does it now", true], ["b", "wait for the new build", false]], "recommended": "`a`, since any run there can hit it today"},
+    {"key": "R2", "question": "Which code the build starts from. The shared `main` has the strict checks but lacks the new lookup fixes; the local copy has those fixes but lost the checks.", "options": [["a", "the owner merges both into one base first", true], ["b", "build on the shared `main` without the fixes", false]], "recommended": "the owner merges both into one base first"},
+    {"key": "R3", "question": "Regions in the first version. Four regions have no expected host, so the host check is silently skipped for them.", "options": [["a", "only regions with a host check (north and east, and the others already configured)", true], ["b", "all, after their hosts are added", false]], "recommended": "only regions with a host check (north and east, and the others already configured)"},
+    {"key": "R4", "question": "A run that exits successfully but reports `ok=false` or failed rows", "options": [["a", "treat it as a hard stop", true], ["b", "trust the exit code", false]], "recommended": "treat it as a hard stop"},
+    {"key": "R5", "question": "Receipt check when the endpoint is missing or errors", "options": [["a", "fail and stop", true], ["b", "keep today's \"not found\" plus success", false]], "recommended": "fail and stop"},
+    {"key": "R6", "question": "Account input", "options": [["a", "numeric account id only", true], ["b", "also accept an alias that a script resolves", false]], "recommended": "`a` for the first version"},
+    {"key": "R7", "question": "Who sets the setup values and `EXPORT_SETUP_FILE` for the workflow", "options": [["a", "the job owner", true], ["b", "you", false]], "recommended": "the job owner"},
+    {"key": "R8", "question": "How old an event can be before a person must approve replaying it. The scripts have no age limit today", "options": [["a", "7 days", false], ["b", "30 days", false], ["c", "give a number", false]], "recommended": "your call, since partner retention rules apply"},
+    {"key": "R9", "question": "If sending is ever automated, add a second approval after the receipt check", "options": [["a", "yes", true], ["b", "no", false]], "recommended": "yes"}
+  ],
+  "locked": ["G1"],
+  "resolved": []
+}

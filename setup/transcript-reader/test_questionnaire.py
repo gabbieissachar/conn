@@ -4,6 +4,7 @@ Run from the repo root: python3 -m unittest setup/transcript-reader/test_questio
 Fixtures are synthetic replies in the review's shapes; no real transcript is used.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -319,6 +320,37 @@ class NotAQuestionnaireTest(unittest.TestCase):
     def test_sent_answers(self):
         self.assertEqual(sent_answers("A1=accept;A3=pricing stays with BD; A2=inline"),
                          {"A1": "accept", "A3": "pricing stays with BD", "A2": "inline"})
+
+
+# Replies the owner flagged from the reader page as "this should be an answer sheet" (or "this sheet is wrong"), kept as fixtures:
+# answer-sheet-fixtures/<name>.md is invented text in the real shape (never the private reply), <name>.expect.json what the sheet must
+# be. A new flagged case is two files; reader.py sheet-flags --shape prints the shape of a flagged reply with its words masked.
+FIXTURES = Path(__file__).resolve().parent / "answer-sheet-fixtures"
+
+
+def shown(card):
+    return {"key": card["key"], "question": card["question"], "options": [[o["value"], o["note"], o["recommended"]] for o in card["options"]],
+            "recommended": card["recommended"]}
+
+
+class FlaggedFixturesTest(unittest.TestCase):
+    def test_there_are_fixtures_and_each_has_its_expectation(self):
+        names = sorted(path.stem for path in FIXTURES.glob("*.md"))
+        self.assertTrue(names)
+        self.assertEqual(names, sorted(path.name[: -len(".expect.json")] for path in FIXTURES.glob("*.expect.json")))
+
+    def test_each_flagged_reply_gives_the_sheet_it_was_flagged_for(self):
+        for path in sorted(FIXTURES.glob("*.md")):
+            with self.subTest(fixture=path.stem):
+                expect = json.loads(path.with_name(path.stem + ".expect.json").read_text(encoding="utf-8"))
+                found = parse_questionnaire(path.read_text(encoding="utf-8"))
+                if not expect["sheet"]:
+                    self.assertIsNone(found, expect.get("why"))
+                    continue
+                self.assertIsNotNone(found, expect.get("why"))
+                self.assertEqual([shown(card) for card in found["cards"]], expect["cards"])
+                self.assertEqual([item["key"] for item in found["locked"]], expect.get("locked", []))
+                self.assertEqual([item["key"] for item in found["resolved"]], expect.get("resolved", []))
 
 
 if __name__ == "__main__":

@@ -80,6 +80,11 @@
     // The starred sessions of the picker, kept the same way, and one change to them.
     const starsList = () => call("stars");
     const starsChange = change => call("stars", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    // The replies marked "should be an answer sheet" or "this sheet is wrong", kept the same way (turn ids only), and one change to them.
+    const flagsList = () => call("sheet-flags");
+    const flagsChange = change => call("sheet-flags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    // Build the pages again now (the sheet finder as it is on disk), answering once they are built.
+    const rerender = () => call("rerender", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     // Reopen a session whose pane has closed, to read it again, or close one; both answer once the page is rebuilt.
     const changeList = (command, sessionId) => call(command, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
     // tick runs every 2 seconds while the page is visible, and at once when it is shown again.
@@ -154,5 +159,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

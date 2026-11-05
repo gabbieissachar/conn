@@ -17,6 +17,10 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude, Codex or Copilot panes a Sync found
                                                              that are not listed), then rebuild only; one a person
                                                              closed or removed is skipped
+  python3 setup/transcript-reader/reader.py sheet-flags [--shape <turn id>]
+                                                             the replies marked in the page as "should be an answer sheet" or "this
+                                                             sheet is wrong" and what the sheet finder makes of each now; --shape
+                                                             prints one reply's shape with its words masked, to write a parser fixture
   python3 setup/transcript-reader/reader.py worker           stay running and take rebuild, follow, adopt, reopen and
                                                              close from the reader's server on standard input, one JSON
                                                              line each (the server starts this); what one build learns
@@ -555,6 +559,9 @@ def main(argv: list[str]) -> int:
         return 0
     if command == "worker" and (not names or (len(names) == 2 and names[0] == "--replay")):
         return worker(names[1] if names else None)
+    if command == "sheet-flags":
+        import sheet_flags  # the replies marked from the page as "should be an answer sheet" or "this sheet is wrong"
+        return sheet_flags.main(names)
     ids = read_list()
     if command == "refresh":
         return rebuild(ids)

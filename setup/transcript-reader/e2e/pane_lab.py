@@ -13,7 +13,8 @@ reported by Herdr WITHOUT a session id, two of those in one working folder.
 
   tab "cp-ontology-learning"        a Copilot CLI pane          (no Herdr session id; the process log names the session)
   tab "cp-ontology-search"          Claude under another config folder (~/.claude-personal; no id), and a shell pane beside it
-  tab "cp-whatapps-tool"            Claude under ~/.claude, the same working folder as the one above (no id)
+  tab "cp-whatapps-tool"            Claude under ~/.claude, the same working folder as the one above (no id); its latest reply is a
+                                    keyed-answer reply with a Key | Call | Recommended table (answer-sheet-fixtures/)
   tab "fm-adjoe-wrong-trip-split-fix"  a Codex pane             (no id; mapped by its working folder)
   tabs "crew-1" .. "crew-8"         Claude panes whose session id Herdr does know
 
@@ -43,6 +44,7 @@ TOOL = "700100aa-0003-4000-8000-000000000003"      # Claude under ~/.claude, sam
 CODEX = "c0de0000-0004-4000-8000-000000000004"
 CREW = [f"c4e70000-{n:04d}-4000-8000-{n:012d}" for n in range(1, 9)]
 
+KEYED_REPLY = READER / "answer-sheet-fixtures" / "key-call-recommended-table.md"
 WORK = "/lab/personal-work"
 SPLIT = "/lab/split-fix"
 
@@ -51,14 +53,14 @@ def iso(at):
     return datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def claude_log(path, name, minutes_ago, cwd):
-    """A Claude Code session log with two exchanges whose last reply is `minutes_ago` old."""
+def claude_log(path, name, minutes_ago, cwd, latest=None):
+    """A Claude Code session log with two exchanges whose last reply is `minutes_ago` old (`latest` is that reply's text, when given)."""
     at = NOW - minutes_ago * 60
     records = [
         {"type": "user", "uuid": f"u-{name}-1", "timestamp": iso(at - 20), "cwd": cwd, "message": {"role": "user", "content": f"First question in {name}"}},
         {"type": "assistant", "timestamp": iso(at - 15), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": f"First answer in {name}."}]}},
         {"type": "user", "uuid": f"u-{name}-2", "timestamp": iso(at - 10), "cwd": cwd, "message": {"role": "user", "content": f"Second question in {name}"}},
-        {"type": "assistant", "timestamp": iso(at), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": f"Latest answer in {name}."}]}},
+        {"type": "assistant", "timestamp": iso(at), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": latest or f"Latest answer in {name}."}]}},
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
@@ -113,7 +115,8 @@ def main(folder: Path) -> None:
     # The four sessions the owner was picking between, in the middle of the list.
     claude_log(personal / "projects" / "-lab-personal-work" / f"{SEARCH}.jsonl", "search", 30, WORK)
     pids["search"] = sleeper(); record(personal, pids["search"], SEARCH)
-    claude_log(primary / "projects" / "-lab-personal-work" / f"{TOOL}.jsonl", "tool", 40, WORK)
+    # The tool pane's latest reply is a keyed-answer reply in the shape an owner flagged (invented text, kept as a parser fixture too).
+    claude_log(primary / "projects" / "-lab-personal-work" / f"{TOOL}.jsonl", "tool", 40, WORK, latest=KEYED_REPLY.read_text(encoding="utf-8"))
     pids["tool"] = sleeper(); record(primary, pids["tool"], TOOL)
     copilot_session(home, COPILOT, 20, WORK)
     pids["copilot"] = sleeper()

@@ -127,6 +127,28 @@ def recommended_choices(cell: str) -> list[dict]:
     return []
 
 
+# "`a` yes, do it now; `b` wait for the build" - choices lettered in backticks, each followed by its words, inside one cell.
+INLINE_MARK = re.compile(r"`([a-h])`")
+
+
+def inline_options(cell: str) -> tuple[str, list[dict]]:
+    """A cell that holds its question and its lettered choices together (`Fix it now: `a` yes; `b` wait`): the question before the first
+    choice, and each choice with its words. Only backticked letters that run on from `a` (a, b, c, in order) are choices, so code the
+    question quotes (`ok=false`, `main`) is never cut. (cell, []) when the cell has fewer than two."""
+    run, want = [], "a"
+    for mark in INLINE_MARK.finditer(cell):
+        if mark.group(1) == want:
+            run.append(mark)
+            want = chr(ord(want) + 1)
+    if len(run) < 2:
+        return cell, []
+    options = []
+    for index, mark in enumerate(run):
+        end = run[index + 1].start() if index + 1 < len(run) else len(cell)
+        options.append(option(mark.group(1), strip_md(cell[mark.end(): end]).strip(" ;.,")))
+    return strip_md(cell[: run[0].start()]).strip(" :;"), options
+
+
 # Answers a reply offers for any card: "You can also write `needs explanation`", "answer `defer` or `explain`".
 EXTRA_LINE = re.compile(r"\b(?:you can also|also (?:write|answer|reply)|use|write|answer)\b[^\n]*`", re.I)
 PLACEHOLDER = re.compile(r"\.\.\.|…|<[^>]*>")
@@ -197,8 +219,15 @@ def table_card(key: str, get, header: list[str]) -> dict:
     question itself; a card with none of these is answered by writing one."""
     rec_col = column(header, "recommend")
     answer_col = next((i for i, name in enumerate(header) if "answer" in name), None)
-    question = strip_md(get(column(header, "decision", "question", "change")))
+    question_cell = get(column(header, "decision", "question", "change", "call"))
+    question = strip_md(question_cell)
     options = recommended_choices(get(rec_col))
+    # The question cell may hold the choices too (`...: `a` yes; `b` no`): they come with their words, and the recommended cell only marks one.
+    inline_question, inline = inline_options(question_cell)
+    if inline:
+        question = inline_question
+        marked_values = {o["value"] for o in options}
+        options = [{**o, "recommended": o["recommended"] or o["value"] in marked_values} for o in inline]
     for col in dict.fromkeys(c for c in (answer_col, column(header, "other", "option", "choice")) if c is not None and c != rec_col):
         found = cell_choices(get(col))
         if found:
@@ -228,7 +257,7 @@ def _parse_questionnaire(reply: str) -> dict | None:
     line and the extra answers the reply allows (`needs explanation`).
     """
     lines = reply.splitlines()
-    reply_line = next((line for line in reversed(lines) if re.search(r"\breply with\b", line, re.I) and re.search(rf"{KEY}\s*=", line)), "")
+    reply_line = next((line for line in reversed(lines) if re.search(r"\breply (?:with|like)\b", line, re.I) and re.search(rf"{KEY}\s*=", line)), "")
     asked = set(re.findall(rf"\b({KEY})\s*=", reply_line))
     cards, resolved, locked, used = [], [], [], set()
     first_block = len(lines)
@@ -241,7 +270,7 @@ def _parse_questionnaire(reply: str) -> dict | None:
     option_tables: dict[str, list[dict]] = {}
 
     for start, end, header, rows in tables(lines):
-        key_col = column(header, "id", "card")
+        key_col = column(header, "id", "card", "key")
         if key_col is None:
             # An "Option" table under a card's explaining heading lists that card's choices.
             owner = max(((at, key) for key, (at, _) in explained.items() if at < start), default=None)
