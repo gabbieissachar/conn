@@ -13,12 +13,18 @@
 //                    "process": [ { "pid": 1001, "argv0": "claude", "cwd": "/work" } ] } ] } ] }
 
 const fs = require('fs');
+const path = require('path');
 
 const world = JSON.parse(fs.readFileSync(process.env.FAKE_HERDR_WORLD, 'utf8'));
 const log = process.env.FAKE_HERDR_LOG || '';
 const args = process.argv.slice(2);
 const out = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const note = (line) => { if (log) fs.appendFileSync(log, line + '\n'); };
+
+// <FAKE_HERDR_DIR>/control.json, read on every call: { "delay_ms": n } makes each `agent send-keys` (the first step of a send, which empties the pane's
+// input box, in 25 calls) take n ms, as a real pane does; { "fail_prompt": true } makes `agent prompt` fail.
+const control = (() => { try { return JSON.parse(fs.readFileSync(path.join(process.env.FAKE_HERDR_DIR || '', 'control.json'), 'utf8')); } catch (e) { return {}; } })();
+const wait = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 const rest = args[0] === '--session' ? args.slice(2) : args;
 const named = args[0] === '--session' ? args[1] : null;
@@ -42,6 +48,7 @@ else if (rest[0] === 'pane' && rest[1] === 'process-info') {
   const pane = session.panes.find((entry) => entry.pane_id === rest[rest.indexOf('--pane') + 1]);
   if (!pane) { process.stderr.write('fake herdr: no such pane\n'); process.exit(1); }
   out({ result: { process_info: { cwd: pane.cwd, foreground_processes: pane.process || [] } } });
-} else if (rest[0] === 'agent' && rest[1] === 'prompt') { note(`PROMPT ${named} ${rest[2]} ${rest.slice(3).join(' ')}`); out({}); }
-else if (rest[0] === 'agent' && rest[1] === 'send-keys') { note(`KEYS ${named} ${rest[2]} ${rest.slice(3).join(' ')}`); out({}); }
+} else if (rest[0] === 'agent' && rest[1] === 'prompt' && control.fail_prompt) { note(`PROMPT-REFUSED ${named} ${rest[2]}`); process.stderr.write('fake herdr: the pane refused the prompt\n'); process.exit(1); }
+else if (rest[0] === 'agent' && rest[1] === 'prompt') { note(`PROMPT ${named} ${rest[2]} ${rest.slice(3).join(' ')}`); out({}); }
+else if (rest[0] === 'agent' && rest[1] === 'send-keys') { wait(control.delay_ms); note(`KEYS ${named} ${rest[2]} ${rest.slice(3).join(' ')}`); out({}); }
 else { process.stderr.write('fake herdr: unexpected ' + args.join(' ') + '\n'); process.exit(1); }

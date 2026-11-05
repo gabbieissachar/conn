@@ -304,6 +304,7 @@ function deliverWorld({ hosted = false, upload, send } = {}) {
     markTarget: () => {}, saveDraft: () => {}, growDock: () => {}, draftOf: () => null, drafts: world.drafts, keep: () => {},
   };
   vm.createContext(sandbox);
+  vm.runInContext(pageFunction('takeSentFromComposer'), sandbox);
   vm.runInContext(pageFunction('deliverDock', true), sandbox);
   world.photos = photos;
   world.deliver = (args) => sandbox.deliverDock(args);
@@ -378,6 +379,41 @@ test('page Send: a text-only message still goes as it did, with no ids and the w
   assert.deepEqual(sends, [['s1', 'just words', []]]);
   assert.equal(w.link.pending[0].text, 'just words');
   assert.equal(w.link.result.text, 'Sent to alpha at 10:42.');
+});
+
+test('page Send: the words leave the box when the send starts, not when the pane answers, and come back only if it fails', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const w = deliverWorld({ upload: async () => { throw new Error('nothing to upload'); }, send: async () => { await gate; return { label: 'alpha', status: 'idle' }; } });
+  w.box = 'send me';
+  const done = w.deliver({ sid: 's1', text: 'send me', sentItems: [], sentBox: 'send me', pointed: false, sentPhotos: [] });
+  assert.equal(w.box, '', 'emptied at once, while the pane is still taking the message');
+  assert.equal(w.link.sending, true);
+  w.box = 'the next one';
+  release();
+  await done;
+  assert.equal(w.box, 'the next one', 'what was typed meanwhile is left alone when the send lands');
+  assert.equal(w.link.result.ok, true);
+});
+
+test('page Send: a send that fails puts the words back in an empty box, and into the batch when something else was typed meanwhile', async () => {
+  const refused = () => Object.assign(new Error('Herdr did not accept the message.'), { status: 502 });
+  const empty = deliverWorld({ upload: async () => ({}), send: async () => { throw refused(); } });
+  empty.box = 'try again';
+  await empty.deliver({ sid: 's1', text: 'try again', sentItems: [], sentBox: 'try again', pointed: false, sentPhotos: [] });
+  assert.equal(empty.box, 'try again', 'back in the box');
+  assert.equal(empty.link.result.ok, false);
+  assert.deepEqual(empty.batchSaved, [], 'the batch is not touched');
+  let fail;
+  const busy = deliverWorld({ upload: async () => ({}), send: async () => { await new Promise((resolve) => { fail = resolve; }); throw refused(); } });
+  busy.box = 'first words';
+  const done = busy.deliver({ sid: 's1', text: 'first words', sentItems: [], sentBox: 'first words', pointed: false, sentPhotos: [] });
+  assert.equal(busy.box, '');
+  busy.box = 'typed while it went';
+  fail();
+  await done;
+  assert.equal(busy.box, 'typed while it went', 'the new words stay in the box');
+  assert.deepEqual(busy.batchSaved, [['s1', 1]], 'and the refused ones wait in the batch');
 });
 
 // sendDock with the parts around it replaced: it must start the Undo window for a message of only photos, and refuse one of nothing.

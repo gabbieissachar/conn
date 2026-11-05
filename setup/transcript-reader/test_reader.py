@@ -1597,6 +1597,19 @@ class PageShellTest(unittest.TestCase):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("tr-docwide", sheet)
 
+    def test_both_copies_empty_the_message_box_when_a_send_starts_and_put_it_back_only_when_the_send_fails(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            body = re.search(r"async function deliverDock\(.*?\n  \}\n", script, re.S).group(0)
+            # The box, the pointer and the batch go before anything is awaited (Send now, or the end of the Undo window), not when the pane answers.
+            self.assertIn("const putBack = takeSentFromComposer({ sid, sentItems, sentBox });", body, mode)
+            self.assertLess(body.index("takeSentFromComposer("), body.index("await "), mode)
+            self.assertIn("putBack(); redrawPending(true);", body, mode)
+            self.assertNotIn('dock("text").value = ""', body, mode + ": the success path no longer empties the box")
+            self.assertNotIn("saveBatch(sid, withoutSentItems", body, mode + ": nor the batch")
+            # The Undo window itself still keeps the words in a locked box.
+            self.assertIn("dock(\"text\").readOnly = held;", script, mode)
+
     def test_both_copies_draw_markdown_through_the_vendored_parser_and_the_answer_sheet_keeps_its_own(self):
         for mode, page in self.pages():
             script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)

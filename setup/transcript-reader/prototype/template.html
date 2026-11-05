@@ -2837,8 +2837,8 @@ __HEAD_HOSTED__
     // These end, reset, shrink or sign out the session, so they ask first.
     const command = (text.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
     if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${SESSION_COMMANDS[command]}.`)) return;
-    // What this send carries. The box stays as it is (locked) through the window and while the send runs (emptying the pane's
-    // input box first takes a second or more), so only these are removed when it has gone.
+    // What this send carries. The box stays as it is (locked) through the Undo window, so Undo has the words to give back; when the window
+    // ends or Send now is pressed, the send starts and deliverDock empties the box at once (takeSentFromComposer).
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
     const now = Date.now() / 1000;
     const hold = { id: newHoldId(), sid, text, photos: sentPhotos.length, at: now, deadline: now + UNDO_SECONDS, sentItems, sentBox, pointed };
@@ -2850,11 +2850,37 @@ __HEAD_HOSTED__
     renderDock();
     redrawPending(pointed);
   }
+  // The moment a send leaves the page for the pane (Send now, or the Undo window ending) what it carries comes out of the message box, the
+  // pointer chip and the batch: the faded copy in the conversation shows it from then on, and the box is free for the next message even
+  // while the pane is still taking this one (emptying its input box first takes a second or more). Returns what puts it all back, for a send
+  // that fails: into the box when the box is empty, else into the batch, so nothing typed meanwhile is overwritten.
+  function takeSentFromComposer({ sid, sentItems, sentBox }) {
+    const holds = session => Boolean(session && (session.ids || [session.id]).includes(sid));
+    const here = holds(dockSession()), saved = draftOf(sid), target = link.target, editing = link.editing;
+    let boxTaken = false;
+    if (here && dock("text").value === sentBox) {
+      dock("text").value = ""; link.editing = null; link.target = null; markTarget(); saveDraft(); growDock(); boxTaken = true;
+    } else if (saved && saved.text === sentBox) {
+      delete drafts[sid]; keep("tr-drafts", drafts); boxTaken = true;
+    }
+    if (sentItems.length) saveBatch(sid, withoutSentItems(batchOf(sid), sentItems));
+    return () => {
+      if (sentItems.length) saveBatch(sid, sentItems.concat(batchOf(sid)));
+      if (!boxTaken) return;
+      const now = dockSession();
+      if (holds(now) && here) {
+        if (!dock("text").value && !link.target) { dock("text").value = sentBox; link.target = target; link.editing = editing; markTarget(); saveDraft(); growDock(); return; }
+      } else if (!draftOf(sid) && saved) { drafts[sid] = saved; keep("tr-drafts", drafts); return; }
+      if (sentBox.trim()) saveBatch(sid, batchOf(sid).concat({ sid, title: "Message", passage: "", typed: sentBox, pointer: "", bare: "" }));
+    };
+  }
   async function deliverDock({ sid, text, sentItems, sentBox, pointed, sentPhotos = [] }) {
     // Taken when the send starts: the log stamps the message when the pane receives it, which is
     // before Herdr answers (emptying the pane's input box first takes a second or more).
     const at = Date.now() / 1000;
-    link.sending = true; link.result = null; link.uploading = ""; link.flight = { sid, text, photos: sentPhotos.length }; redrawPending(pointed);
+    link.sending = true; link.result = null; link.uploading = ""; link.flight = { sid, text, photos: sentPhotos.length };
+    const putBack = takeSentFromComposer({ sid, sentItems, sentBox });
+    redrawPending(pointed);
     try {
       // The hosted copy queues it: the laptop sends it when it is awake and the pane is ready.
       const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
@@ -2870,21 +2896,13 @@ __HEAD_HOSTED__
       // agent: what Herdr said the agent was doing when the message went in (a working agent holds it as a queued message).
       link.pending.push({ sid, text: sent.text || text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
       keepQueued();
-      saveBatch(sid, withoutSentItems(batchOf(sid), sentItems));
       photos.drop(sid, sentPhotos);
-      const onScreen = dockSession();
-      if (onScreen && (onScreen.ids || [onScreen.id]).includes(sid) && dock("text").value === sentBox) {
-        dock("text").value = ""; link.editing = null;
-        link.target = null; markTarget(); saveDraft(); growDock();
-      } else if (draftOf(sid) && draftOf(sid).text === sentBox) {
-        delete drafts[sid]; keep("tr-drafts", drafts);
-      }
       setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, HOSTED ? 8000 : 4000);
       // A plain message shows at the end, where its reply will come. A reply to an older turn
       // keeps your place there; the faded message waits at the end.
       link.flight = null;
       redrawPending(pointed);
-    } catch (e) { link.flight = null; link.uploading = ""; link.result = { ok: false, text: e.message }; redrawPending(true); }
+    } catch (e) { link.flight = null; link.uploading = ""; link.result = { ok: false, text: e.message }; putBack(); redrawPending(true); }
     link.sending = false; renderDock();
   }
   // A sent message shows at once, faded, until the session's log has it: one of your messages
