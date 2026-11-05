@@ -594,30 +594,58 @@ def build_record(
     return record
 
 
+def explicit_pane_info(args: argparse.Namespace) -> PaneInfo:
+    return PaneInfo(
+        herdr_session=args.herdr_session or current_herdr_session(),
+        pane_id=args.pane_id,
+        workspace_id=args.workspace_id,
+        tab_id=args.tab_id,
+        cwd=normalize_path(args.cwd),
+        foreground_cwd=normalize_path(args.cwd),
+    )
+
+
+def resolve_target_pane(args: argparse.Namespace) -> tuple[PaneInfo | None, int | None]:
+    """Pick the pane a register-style command acts on.
+
+    Explicit --pane-id, --workspace-id and --tab-id are authoritative: when all three are given
+    they are used as they are, with or without --allow-no-herdr, and the pane Herdr reports as
+    "current" is never consulted. That answer depends on the caller's environment (outside a pane
+    it is the focused pane of the default session), so it must not override what the caller asked for.
+    A partial set is an error rather than a silent mix with the current pane.
+    Without explicit ids the pane comes from Herdr, as before.
+    """
+    explicit = [args.pane_id, args.workspace_id, args.tab_id]
+    if any(explicit):
+        if not all(explicit):
+            print(
+                "--pane-id, --workspace-id, and --tab-id must be given together; "
+                "refusing to mix explicit ids with the current pane",
+                file=sys.stderr,
+            )
+            return None, 2
+        return explicit_pane_info(args), None
+    pane = current_pane_info()
+    if not pane:
+        if args.allow_no_herdr:
+            print(
+                "explicit --pane-id, --workspace-id, and --tab-id are required with --allow-no-herdr",
+                file=sys.stderr,
+            )
+        else:
+            print("not inside a reachable herdr pane; use --allow-no-herdr with explicit ids", file=sys.stderr)
+        return None, 2
+    return pane, None
+
+
 def register(args: argparse.Namespace) -> int:
     validate_session_id(args.session_id)
     if args.client == "claude" and not claude_session_exists(args.session_id):
         print("Claude session ID is not present in the local session store", file=sys.stderr)
         return 2
-    pane = current_pane_info()
-    if not pane and not args.allow_no_herdr:
-        print("not inside a reachable herdr pane; use --allow-no-herdr with explicit ids", file=sys.stderr)
-        return 2
-    if not pane:
-        if not (args.pane_id and args.workspace_id and args.tab_id):
-            print(
-                "explicit --pane-id, --workspace-id, and --tab-id are required with --allow-no-herdr",
-                file=sys.stderr,
-            )
-            return 2
-        pane = PaneInfo(
-            herdr_session=args.herdr_session or current_herdr_session(),
-            pane_id=args.pane_id,
-            workspace_id=args.workspace_id,
-            tab_id=args.tab_id,
-            cwd=normalize_path(args.cwd),
-            foreground_cwd=normalize_path(args.cwd),
-        )
+    pane, error = resolve_target_pane(args)
+    if error is not None:
+        return error
 
     cwd = normalize_path(args.cwd) or pane.foreground_cwd or pane.cwd or normalize_path(os.getcwd())
     if not cwd:
@@ -707,25 +735,9 @@ def remove_record(args: argparse.Namespace) -> int:
 
 
 def capture_missing(args: argparse.Namespace) -> int:
-    pane = current_pane_info()
-    if not pane and not args.allow_no_herdr:
-        print("not inside a reachable herdr pane; use --allow-no-herdr with explicit ids", file=sys.stderr)
-        return 2
-    if not pane:
-        if not (args.pane_id and args.workspace_id and args.tab_id):
-            print(
-                "explicit --pane-id, --workspace-id, and --tab-id are required with --allow-no-herdr",
-                file=sys.stderr,
-            )
-            return 2
-        pane = PaneInfo(
-            herdr_session=args.herdr_session or current_herdr_session(),
-            pane_id=args.pane_id,
-            workspace_id=args.workspace_id,
-            tab_id=args.tab_id,
-            cwd=normalize_path(args.cwd),
-            foreground_cwd=normalize_path(args.cwd),
-        )
+    pane, error = resolve_target_pane(args)
+    if error is not None:
+        return error
 
     cwd = normalize_path(args.cwd) or pane.foreground_cwd or pane.cwd or normalize_path(os.getcwd())
     if not cwd:

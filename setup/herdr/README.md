@@ -61,6 +61,11 @@ herdr-agent-register codex <session_id>
 herdr-agent-register claude <session_id>
 ```
 
+To register a different pane (for example from outside Herdr), pass all three of
+`--pane-id`, `--workspace-id` and `--tab-id`, plus `--herdr-session`. Explicit ids
+are used as given and the pane Herdr calls current is never consulted; giving only
+some of the three is an error. `herdr-agent-capture-missing` follows the same rule.
+
 List registered replay targets. The first column is the Herdr session:
 
 ```sh
