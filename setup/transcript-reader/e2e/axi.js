@@ -17,10 +17,12 @@ function make(sessionName) {
   const check = (ok, what, detail = '') => { results.push({ ok: Boolean(ok), what, detail }); process.stdout.write(`${ok ? 'PASS' : 'FAIL'}  ${what}${detail ? '  ' + detail : ''}\n`); };
   const axi = (...args) => {
     try { return execFileSync('chrome-devtools-axi', args, { encoding: 'utf8', timeout: 90000, env: { ...process.env, CHROME_DEVTOOLS_AXI_SESSION: SESSION } }); }
-    catch (error) { throw new Error(`chrome-devtools-axi ${args.slice(0, 2).join(' ')}: ${String(error.stdout || error.stderr || error.message).trim().slice(0, 300)}`); }
+    catch (error) { throw new Error(`chrome-devtools-axi ${args.slice(0, 2).join(' ')}: ${String(error.stdout || error.stderr || error.message).trim().slice(-300)}`); }
   };
   // What the page's expression answered: the tool prints it as a JSON string, once or twice over.
   function ev(expression) {
+    // chrome-devtools-axi drops an argument of about 1000 characters or more without a word: say so instead of a bare failure.
+    if (expression.length > 900) throw new Error(`the expression is ${expression.length} characters long: split it (chrome-devtools-axi drops arguments of about 1000 and more)`);
     const line = axi('eval', `JSON.stringify((() => { ${expression} })())`).split('\n').find((l) => l.startsWith('result: '));
     if (!line) throw new Error('no result for: ' + expression);
     let value = JSON.parse(line.slice('result: '.length));

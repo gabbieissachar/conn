@@ -153,5 +153,21 @@
       }
       return out;
     }
-    return { SINGLE, OTHER, kindOf, title, above, tail, groups, isLeader, pref, mode, taskOf, inside, task, taskText, where, taskGroups, opened, words, narrowing, counts, find, marks };
+    // A document's contents list above it (a phone, a narrow window) is opened by a tap and closed by one, and the page draws itself again with
+    // every build while an agent writes. The list is a new element each time, so what the owner chose is kept here, by document: a list opened
+    // stays open through every redraw until it is closed or an item is chosen, and another document starts folded. <beside> is the wide layout,
+    // where the list is always open and nothing is learned from it.
+    function tocKeeper() {
+      let key = null, open = false;
+      return {
+        opened(k, beside) { if (k !== key) { key = k; open = false; } return Boolean(beside) || open; },
+        set(k, value) { if (k === key) open = Boolean(value); },
+      };
+    }
+    // The expanded Documents view (wide windows): the file takes the width and the panel beside it shows the file browser or the contents. Both
+    // choices are the owner's and are kept in the browser; the panel shows the contents by default, and only for a file that has a contents list.
+    const expandedPref = stored => stored === "1";
+    const sidePref = stored => stored === "files" ? "files" : "contents";
+    const sideShows = (want, hasContents) => want === "contents" && hasContents ? "contents" : "files";
+    return { tocKeeper, expandedPref, sidePref, sideShows, SINGLE, OTHER, kindOf, title, above, tail, groups, isLeader, pref, mode, taskOf, inside, task, taskText, where, taskGroups, opened, words, narrowing, counts, find, marks };
   })();

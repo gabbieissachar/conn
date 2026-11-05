@@ -246,3 +246,43 @@ test('opened: the newest task opens on a wide screen, and the task holding the o
   assert.deepEqual(Array.from(docfiles.opened(groups, null, false)), [], 'a phone starts with every task folded');
   assert.deepEqual(Array.from(docfiles.opened(groups, 'd2', false)), ['c']);
 });
+
+test('tocKeeper: a contents list the owner opened stays open through every redraw, until it is closed or an item is chosen', () => {
+  const keep = docfiles.tocKeeper();
+  assert.equal(keep.opened('s:a', false), false, 'a document opens with its list folded');
+  keep.set('s:a', true);  // a tap on Contents
+  for (let build = 0; build < 5; build++) assert.equal(keep.opened('s:a', false), true, `redraw ${build}: the list the owner opened is still open`);
+  keep.set('s:a', false);  // a tap on it again, or on an item
+  assert.equal(keep.opened('s:a', false), false, 'closed by the owner, it stays closed through the redraws');
+  assert.equal(keep.opened('s:a', false), false);
+});
+
+test('tocKeeper: another document starts folded, and a stale element cannot change the one on screen', () => {
+  const keep = docfiles.tocKeeper();
+  keep.opened('s:a', false); keep.set('s:a', true);
+  assert.equal(keep.opened('s:b', false), false, 'the next document does not inherit an open list');
+  keep.set('s:a', true);  // the old document's element reporting late
+  assert.equal(keep.opened('s:b', false), false);
+  assert.equal(keep.opened('s:a', false), false, 'and going back to the first one starts it folded too');
+});
+
+test('tocKeeper: beside the file (a wide window) the list is always open, and nothing is learned from it', () => {
+  const keep = docfiles.tocKeeper();
+  assert.equal(keep.opened('s:a', true), true);
+  keep.set('s:a', false);
+  assert.equal(keep.opened('s:a', true), true, 'beside the file it is open whatever was set');
+  assert.equal(keep.opened('s:a', false), false, 'narrowed, it is folded: the wide layout never recorded an opening');
+});
+
+test('the expanded view and its panel: the contents by default, the choice kept, and the file browser for a file with no contents list', () => {
+  assert.equal(docfiles.expandedPref(null), false, 'expanded is off until the owner turns it on');
+  assert.equal(docfiles.expandedPref('0'), false);
+  assert.equal(docfiles.expandedPref('1'), true);
+  assert.equal(docfiles.sidePref(null), 'contents');
+  assert.equal(docfiles.sidePref('files'), 'files');
+  assert.equal(docfiles.sidePref('rubbish'), 'contents');
+  assert.equal(docfiles.sideShows('contents', true), 'contents');
+  assert.equal(docfiles.sideShows('files', true), 'files');
+  assert.equal(docfiles.sideShows('contents', false), 'files', 'a page or picture has no contents: the file browser shows');
+  assert.equal(docfiles.sideShows('files', false), 'files');
+});

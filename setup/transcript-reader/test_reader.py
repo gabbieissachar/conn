@@ -1586,6 +1586,17 @@ class PageShellTest(unittest.TestCase):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("tr-docgroup", sheet)
 
+    def test_both_copies_keep_the_contents_list_open_through_redraws_and_have_an_expanded_view_with_a_panel_of_files_or_contents(self):
+        for mode, page in self.pages():
+            script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+            for needle in ("const tocKeep = docfiles.tocKeeper();", "toc.open = tocKeep.opened(key, sideToc.matches);", 'toc.addEventListener("toggle"',
+                           'localStorage.getItem("tr-docwide")', 'localStorage.setItem("tr-docside", docSide)', "docfiles.sideShows(docSide, Boolean(shell.toc))",
+                           "const expandedNow = () => docExpanded && wideDoc();", 'document.body.classList.toggle("docwide"'):
+                self.assertIn(needle, script, mode)
+            self.assertNotIn("toc.open = sideToc.matches;  // folded above", script, "a redraw must not fold the list again (" + mode + ")")
+        sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
+        self.assertNotIn("tr-docwide", sheet)
+
     def test_both_copies_draw_markdown_through_the_vendored_parser_and_the_answer_sheet_keeps_its_own(self):
         for mode, page in self.pages():
             script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)

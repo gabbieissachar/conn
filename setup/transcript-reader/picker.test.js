@@ -424,7 +424,8 @@ test('page: the folded header shows the icons, the answer sheet link turns into 
 
 test('page: the Documents view has the Conversation\'s header row, with the document picker where the session picker is, kept across renders', () => {
   const page = pageSource();
-  const render = fnBody(page, 'renderDocView');
+  const render = fnBody(page, 'renderDocViewIn');
+  assert.match(fnBody(page, 'renderDocView'), /renderDocViewIn\(\);/, 'the view is drawn by renderDocViewIn, then the panel');
   assert.match(render, /pickerRow\(controls, session\)/, 'the same helper as the Conversation');
   assert.match(fnBody(page, 'renderReader'), /pickerRow\(controls, session\)/);
   assert.doesNotMatch(render, /controls\.replaceChildren\(\)/, 'the controls are not emptied: that would take the picker out of the page and close its open list');

@@ -24,6 +24,9 @@ Replies are timed so the four panes above sit in the middle of the picker, and c
 LAB_FILLERS=<n> adds n more listed conversations without a pane, and LAB_BIG_EXCHANGES=<n> makes each crew conversation n exchanges long, so a
 check can run at the size of the owner's reading list (about 90 conversations, the biggest about 900 exchanges).
 
+LAB_DOCS=<n> writes n markdown files (a few headings each, long enough to scroll) and one HTML page into <home>/lab-docs/ and makes crew-1's latest reply
+name them, so its Documents view lists them.
+
 Prints one JSON line: what the driver needs.
 """
 
@@ -106,6 +109,27 @@ def codex_rollout(home, sid, minutes_ago, cwd):
     os.utime(path, (at, at))
 
 
+def lab_docs(home, count):
+    """`count` markdown files of invented text under <home>/lab-docs/, each with six headings, and one HTML page; the paths."""
+    folder = home / "lab-docs"
+    paths = []
+    if count:
+        folder.mkdir(parents=True, exist_ok=True)
+        sketch = folder / "sketch.html"  # a page, named first: it has no contents list
+        sketch.write_text("<!doctype html><title>Sketch</title><body style=\"font-family:sans-serif\"><h1>A sketch</h1><p>Invented page for the lab.</p></body>\n", encoding="utf-8")
+        paths.append(str(sketch))
+    for n in range(1, count + 1):
+        folder.mkdir(parents=True, exist_ok=True)
+        parts = [f"# Notes {n}\n\nA short opening for notes {n}.\n"]
+        for h in range(1, 7):
+            parts.append(f"## Part {h} of notes {n}\n\n" + "\n\n".join(f"A paragraph of invented text in part {h}, line {k}. " * 6 for k in range(4)) + "\n")
+            parts.append(f"### Detail {h}.1\n\nA closing paragraph of detail {h}.1. " * 3 + "\n")
+        path = folder / f"notes-{n}.md"
+        path.write_text("\n".join(parts), encoding="utf-8")
+        paths.append(str(path))
+    return paths
+
+
 def sleeper():
     """A process the reader can see is alive; the driver stops it."""
     return subprocess.Popen(["sleep", "6000"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True).pid
@@ -139,9 +163,11 @@ def main(folder: Path) -> None:
     # The crew: three newer than the four above, five older.
     ages = [5, 10, 15, 60, 70, 80, 90, 100]
     big = int(os.environ.get("LAB_BIG_EXCHANGES", "2"))  # exchanges in each crew conversation (a real leader's runs to about 900)
+    docs = lab_docs(home, int(os.environ.get("LAB_DOCS", "0")))
     for n, sid in enumerate(CREW):
         cwd = f"/lab/crew-{n + 1}"
-        claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big)
+        named = ("The notes are written:\n\n" + "\n".join(f"- `{d}`" for d in docs)) if docs and n == 0 else None
+        claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named)
         pids[f"crew-{n + 1}"] = sleeper(); record(primary, pids[f"crew-{n + 1}"], sid)
 
     tabs = [{"tab_id": "w1:t1", "label": "cp-ontology-learning"}, {"tab_id": "w1:t2", "label": "cp-ontology-search"}, {"tab_id": "w1:t3", "label": "cp-whatapps-tool"},

@@ -90,7 +90,8 @@ test('prose stops at --measure (35rem, about 75 characters) in a reply and in a 
 test('a document\'s contents list sits beside it from 1180 px, opened, and above it folded below that', () => {
   assert.match(STYLE, /@media \(min-width: 1180px\) \{\s*\.docview \{ display: grid; grid-template-columns: minmax\(0, calc\(var\(--measure\) \+ 36px\)\) minmax\(12rem, 16rem\);/);
   assert.match(PAGE, /const sideToc = matchMedia\("\(min-width: 1180px\)"\);/);
-  assert.equal((PAGE.match(/toc\.open = sideToc\.matches;/g) || []).length, 2, 'opened on draw, and kept open after a jump');
+  assert.equal((PAGE.match(/toc\.open = tocKeep\.opened\(key, sideToc\.matches\);/g) || []).length, 1, 'opened on draw beside the file, else as the owner left it');
+  assert.equal((PAGE.match(/toc\.open = sideToc\.matches; tocKeep\.set\(key, toc\.open\);/g) || []).length, 1, 'kept open after a jump beside the file, closed on a phone, and remembered');
   assert.match(PAGE, /sideToc\.addEventListener\("change", \(\) => \{ if \(state\.view === "doc"\) render\(\); \}\);/);
 });
 

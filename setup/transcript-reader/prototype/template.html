@@ -259,6 +259,7 @@ __HEAD_HOSTED__
   @supports (overflow: clip) { .filespane { overflow: clip; } }  /* the folder headings' grey stops at the rounded corners, and the find box still sticks */
   .docshell.view-list .docpane, .docshell.view-file .filespane { display: none; }
   .docpane { min-width: 0; }
+  .docside { display: none; }
   .fp-filter { position: sticky; top: var(--bar-h, 110px); z-index: 2; background: var(--paper); padding: 9px 12px 8px; border-bottom: 1px solid var(--line); border-radius: 12px 12px 0 0; }
   .qbox { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 0 8px; }
   .qbox:focus-within { outline: 2px solid var(--you); outline-offset: -1px; }
@@ -312,6 +313,22 @@ __HEAD_HOSTED__
     .docshell.view-list .docpane, .docshell.view-file .filespane { display: block; }
     .filespane { position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); overflow-y: auto; overscroll-behavior: contain; }
     .fp-filter { top: 0; }
+    /* Expanded: the file has the width, and one panel on its right switches between the file browser (moved there from the left) and the file's contents. */
+    .docmode.docwide { --col: 96rem; }
+    .docshell.expanded { grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem); }
+    .docshell.expanded .docpane { grid-column: 1; grid-row: 1; }
+    .docshell.expanded .docside { grid-column: 2; grid-row: 1; }
+    .docside { display: flex; flex-direction: column; min-width: 0; position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .ds-tabs { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex: none; }
+    .ds-tabs .btn { flex: 1 1 0; text-align: center; margin: 0; }
+    .ds-tabs .btn:disabled { opacity: .5; cursor: default; }
+    .ds-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative; }
+    .docside .filespane { position: static; max-height: none; overflow: visible; border: 0; border-radius: 0; background: none; }
+    .docside .fp-filter { border-radius: 0; }
+    .docshell.expanded .docview { display: block; }
+    .docshell.expanded .docview .doc-md { --measure: 52rem; }
+    .toc.side { position: static; z-index: auto; background: none; margin: 0; }
+    .toc.side nav { max-height: none; overflow: visible; border: 0; border-radius: 0; margin: 0; padding: 6px 0 10px; background: none; }
   }
   .btn.sheet { display: inline-block; margin: 6px 0 2px; text-decoration: none; color: var(--you); border-color: var(--you); font-weight: 600; }
   .btn.sheet.done { color: var(--muted); border-color: var(--line); font-weight: 400; }
@@ -3448,6 +3465,12 @@ __HEAD_HOSTED__
   // words typed, the folders opened and the place in the list stay. Folders are not kept across sessions: each opens its own list.
   const docList = { sid: null, q: "", kind: "all", open: null, shell: null, scroll: 0 };
   let docReveal = null;  // a file opened from outside the list: its folder opens when the list is next drawn
+  // The contents list above a phone's document stays as the owner left it through the redraws of every build (docfiles.tocKeeper).
+  const tocKeep = docfiles.tocKeeper();
+  // The expanded view (a wide window): the file has the width and one panel beside it shows the file browser or the contents. Kept in this browser.
+  let docExpanded = false, docSide = "contents";
+  try { docExpanded = docfiles.expandedPref(localStorage.getItem("tr-docwide")); docSide = docfiles.sidePref(localStorage.getItem("tr-docside")); } catch (e) { /* defaults */ }
+  const expandedNow = () => docExpanded && wideDoc();
   const DOC_ICON = { md: "▤", html: "◧", image: "▣" };
   const DOC_KINDS = [["all", "All"], ["md", "Docs"], ["html", "Pages"], ["image", "Pictures"]];
   // A list's time: the clock alone today, else the day and the clock.
@@ -3605,7 +3628,18 @@ __HEAD_HOSTED__
     bar.append(box, chips);
     files.append(mode, bar, info, list);
     node.append(files, pane);
-    const shell = { node, files, pane, chips, clear, count, act, list, mode, input, groups: [], matching: false, sign: "" };
+    // The panel beside the file in the expanded view: Files | Contents over what the choice shows (the file browser moves in from the left;
+    // the contents list is the file's own, drawn with it). Not in the page until the view is expanded.
+    const side = $("aside", "docside"); side.setAttribute("aria-label", "Files and contents");
+    const tabs = $("div", "ds-tabs"); tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "What the panel shows");
+    const tabFiles = $("button", "btn", "Files"), tabContents = $("button", "btn", "Contents");
+    tabFiles.dataset.side = "files"; tabContents.dataset.side = "contents";
+    for (const b of [tabFiles, tabContents]) { b.type = "button"; tabs.append(b); }
+    const sideBody = $("div", "ds-body");
+    side.append(tabs, sideBody);
+    const shell = { node, files, pane, chips, clear, count, act, list, mode, input, groups: [], matching: false, sign: "",
+      side, sideBody, tabFiles, tabContents, toc: null, sideShown: null, sideScroll: {} };
+    for (const b of [tabFiles, tabContents]) b.addEventListener("click", () => setDocSide(b.dataset.side));
     input.addEventListener("input", () => { docList.q = input.value; paintFiles(shell); });
     input.addEventListener("keydown", e => { if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; docList.q = ""; paintFiles(shell); } });
     clear.addEventListener("click", () => { input.value = ""; docList.q = ""; paintFiles(shell); input.focus(); });
@@ -3617,7 +3651,46 @@ __HEAD_HOSTED__
     });
     return shell;
   }
+  // The expanded view's layout: the panel (with the file browser in it) beside the file, or the file browser back on the left.
+  function arrangeDocShell(shell, expanded) {
+    shell.node.classList.toggle("expanded", expanded);
+    if (expanded) {
+      if (shell.files.parentNode === shell.node) shell.files.remove();
+      if (shell.side.parentNode !== shell.node) shell.node.append(shell.side);
+    } else {
+      if (shell.side.parentNode) shell.side.remove();
+      if (shell.files.parentNode !== shell.node) shell.node.prepend(shell.files);
+      shell.sideShown = null;
+    }
+  }
+  // What the panel shows now: the file browser, or the contents of the file on screen (only a file that has headings). The place in each is kept.
+  function paintSide(shell) {
+    if (!shell.node.classList.contains("expanded")) return;
+    const show = docfiles.sideShows(docSide, Boolean(shell.toc));
+    for (const b of [shell.tabFiles, shell.tabContents]) b.setAttribute("aria-pressed", String(b.dataset.side === show));
+    shell.tabContents.disabled = !shell.toc;
+    shell.tabContents.title = shell.toc ? "The headings of this file" : "This file has no contents list";
+    shell.tabFiles.title = "The files this conversation names";
+    if (shell.sideShown) shell.sideScroll[shell.sideShown] = shell.sideBody.scrollTop;
+    shell.sideBody.replaceChildren(show === "files" ? shell.files : shell.toc);
+    shell.sideBody.scrollTop = shell.sideScroll[show] || 0;
+    shell.sideShown = show;
+  }
+  function setDocSide(which) {
+    docSide = docfiles.sidePref(which);
+    try { localStorage.setItem("tr-docside", docSide); } catch (e) { /* not kept */ }
+    if (docList.shell) paintSide(docList.shell);
+  }
+  function setDocExpanded(on) {
+    docExpanded = Boolean(on);
+    try { localStorage.setItem("tr-docwide", docExpanded ? "1" : "0"); } catch (e) { /* not kept */ }
+    render();
+  }
   function renderDocView() {
+    renderDocViewIn();
+    if (docList.shell) paintSide(docList.shell);
+  }
+  function renderDocViewIn() {
     const session = data.sessions[state.session];
     const docs = listedDocuments(session);
     pickDoc(session);
@@ -3646,7 +3719,10 @@ __HEAD_HOSTED__
     let shell = docList.shell;
     if (!shell || shell.node.parentNode !== main) { fileView = null; main.replaceChildren(); shell = docList.shell = docShell(); main.append(shell.node); }
     const onFile = onFilePage(session);
+    const expanded = expandedNow();
     shell.node.className = "docshell " + (onFile ? "view-file" : "view-list");
+    shell.toc = null;
+    arrangeDocShell(shell, expanded);
     paintFiles(shell);
     const pane = shell.pane;
     const keep = Boolean(onFile && (d.kind === "html" || d.kind === "image") && fileView && fileView.key === session.id + ":" + d.id && fileView.node.parentNode === pane);
@@ -3666,6 +3742,12 @@ __HEAD_HOSTED__
       const files = $("button", "btn", `‹ Files (${docs.length})`); files.title = "The files this session names";
       files.addEventListener("click", showDocList);
       row.append(files);
+    }
+    if (wideDoc()) {
+      const expand = $("button", "btn", "Expand"); expand.type = "button"; expand.setAttribute("aria-pressed", String(expanded));
+      expand.title = expanded ? "Back to the file list beside the file" : "Give the file the width. The file list moves into the panel on its right, which switches between Files and Contents";
+      expand.addEventListener("click", () => setDocExpanded(!docExpanded));
+      row.append(expand);
     }
     row.append(...(entry.unnamed ? [message] : [back, message]));  // a file no turn named has no turn to go back to
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
@@ -3706,8 +3788,10 @@ __HEAD_HOSTED__
     body.append(md);
     replyTargets.set(body, passage => target(passage, sectionAt(md.headings)));
     message.addEventListener("click", () => useTarget(target(selectedPassage(body), selectedPassage(body) ? sectionAt(md.headings) : ""), message));
-    const toc = $("details", "toc");
-    toc.append($("summary", null, `Contents (${md.headings.length})`));
+    // The contents list: above the file in a folded <details> (open beside it where the window is wide enough, CSS 1180px), kept as the owner
+    // left it through redraws; in the expanded view it is the panel's Contents, which is the file's own list drawn once per redraw.
+    const key = session.id + ":" + d.id;
+    const toc = expanded ? null : $("details", "toc");
     const list = $("nav"); list.setAttribute("aria-label", "Contents");
     const minLevel = Math.min(...md.headings.map(h => h.level));
     md.headings.filter(h => h.level <= minLevel + 2).forEach(h => {
@@ -3715,14 +3799,20 @@ __HEAD_HOSTED__
       a.addEventListener("click", e => {
         e.preventDefault();
         h.el.scrollIntoView({ block: "start" });
-        toc.open = sideToc.matches;
+        if (toc) { toc.open = sideToc.matches; tocKeep.set(key, toc.open); }
       });
       h.toc = a; list.append(a);
     });
     if (!md.headings.length) list.append($("div", "notes", "This file has no headings."));
-    toc.append(list);
-    toc.open = sideToc.matches;  // folded above the file; open beside it where the window is wide enough for the column and the list (CSS, 1180px)
-    view.append(toc, body);
+    if (toc) {
+      toc.append($("summary", null, `Contents (${md.headings.length})`), list);
+      toc.open = tocKeep.opened(key, sideToc.matches);
+      toc.addEventListener("toggle", () => { if (!sideToc.matches) tocKeep.set(key, toc.open); });
+      view.append(toc, body);
+    } else {
+      if (md.headings.length) { shell.toc = $("div", "toc side"); shell.toc.append(list); }
+      view.append(body);
+    }
     pane.append(view);
     docSpy.headings = md.headings;
     spyDoc();
@@ -3747,7 +3837,8 @@ __HEAD_HOSTED__
     docSpy.headings.forEach(h => { if (h.toc) h.toc.removeAttribute("aria-current"); });
     if (current) {
       current.toc.setAttribute("aria-current", "true");
-      const nav = current.toc.parentElement, top = current.toc.offsetTop - nav.offsetTop;
+      // The list scrolls itself above or beside the file; in the expanded view's panel the panel scrolls.
+      const panel = current.toc.closest(".ds-body"), nav = panel || current.toc.parentElement, top = panel ? current.toc.offsetTop : current.toc.offsetTop - nav.offsetTop;
       if (top < nav.scrollTop || top > nav.scrollTop + nav.clientHeight - 30) nav.scrollTop = top - nav.clientHeight / 3;
     }
   }
@@ -4177,6 +4268,7 @@ __HEAD_HOSTED__
     reveals.clear();
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
     document.body.classList.toggle("docmode", state.view === "doc");
+    document.body.classList.toggle("docwide", state.view === "doc" && expandedNow());
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
     document.getElementById("tab-doc").textContent = docsLabel(data.sessions[state.session]);
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
