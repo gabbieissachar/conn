@@ -323,6 +323,30 @@ class Live(Case):
         self.assertIn("live/index.json", names)
         self.assertEqual(sum(name.startswith("live/s/") for name in names), 3)
 
+    def test_a_conversations_agent_is_in_its_object_where_the_page_has_it_in_both_build_paths(self):
+        """A Copilot session carries `agent` after its turns and before its leader (thread_session); the object keeps it, as the page does."""
+        real = builder.thread_session
+
+        def tagged(home, chain, loaded, parent):
+            session = real(home, chain, loaded, parent)
+            if session["id"] == A:
+                leader = session.pop("leader", None)
+                session["agent"] = "copilot"
+                if leader:
+                    session["leader"] = leader
+            return session
+        stamp = time.time()
+        plain, cached = self.lab.root / "plain" / "prototype.html", self.lab.root / "cached" / "prototype.html"
+        with mock.patch.object(builder, "thread_session", tagged), mock.patch("time.time", lambda: stamp), builder.chains_frozen():
+            builder.write_page(builder.TEMPLATE, builder.build(self.args(out=plain)), plain)
+            build_cache.write(build_cache.build(self.args(out=cached)), cached)
+        one, other = (folder.parent / "live" / "s" / f"{A}.json" for folder in (plain, cached))
+        self.assertEqual(one.read_bytes(), other.read_bytes())
+        made = json.loads(one.read_text(encoding="utf-8"))
+        self.assertEqual(made["agent"], "copilot")
+        self.assertLess(list(made).index("exchanges"), list(made).index("agent"))
+        self.assertLess(list(made).index("agent"), list(made).index("documents"))
+
     def test_a_template_that_is_not_the_reader_page_writes_no_lite_page(self):
         template = self.lab.root / "t.html"
         template.write_text("<script>x</script>__PAYLOAD__", encoding="utf-8")
