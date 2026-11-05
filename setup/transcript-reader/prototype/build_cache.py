@@ -232,7 +232,7 @@ class Document:
 class Thread:
     """One conversation as the page shows it, kept (see the module's text)."""
 
-    __slots__ = ("key", "reads", "head", "turns", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats")
+    __slots__ = ("key", "reads", "head", "turns", "agent", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats")
 
     def __init__(self, key: tuple, reads: Reads, session: dict, documents: dict[str, dict], has_outputs: bool) -> None:
         exchanges = session["exchanges"]
@@ -240,6 +240,7 @@ class Thread:
         # The start of its JSON, up to where its turns begin; the pane, the leader's task files and the rest follow them (build).
         self.head = encode({name: session[name] for name in ("home", "id", "ids", "file", "where")})[:-1] + b',"exchanges":'
         self.turns = encode(exchanges)
+        self.agent = session.get("agent")  # "copilot" for a Copilot session, else absent: after the turns and before the leader, as thread_session adds it
         self.leader = session.get("leader")
         self.documents = [Document(record) for record in documents.values()]
         self.activity = max((e["reply_at"] or e["at"] or 0) for e in exchanges) if exchanges else 0
@@ -449,7 +450,8 @@ def build(args: argparse.Namespace) -> Built:
     for number in order:
         thread = kept[number]
         sessions += [b"," if sessions else b"", thread.head, thread.turns,
-                     (b',"leader":' + encode(leaders[number]) if leaders[number] else b"") + b',"pane":' + encode(labels.get(thread.newest))
+                     (b',"agent":' + encode(thread.agent) if thread.agent else b"") + (b',"leader":' + encode(leaders[number]) if leaders[number] else b"")
+                     + b',"pane":' + encode(labels.get(thread.newest))
                      + b',"reopened":' + (b"true" if reopened & set(thread.ids) else b"false") + b"}"]
     built.payload = [
         b'{"generated":', encode(started), b',"since":' + encode(since) + b',"homes":' + encode([home["id"] for home in homes]) + b',"sessions":[',

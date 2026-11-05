@@ -89,6 +89,42 @@ Send waits 1.2 seconds before clearing the composer and calling `herdr agent pro
 The local API tests use fake Herdr panes and throwaway Codex rollout metadata; no real crew pane receives a test message.
 Hosted and phone copies are not expanded by this change.
 
+## Copilot CLI panes, read only (2026-11-05)
+
+The captain asked for a pane that runs GitHub's Copilot CLI (`cp-ontology-learning`) to read in the reader like a Claude or Codex one.
+Herdr already reports such a pane as `agent: "copilot"`, but with no session id, and `api.js` only listed Claude and Codex panes.
+This ship reads a Copilot conversation; it never sends to one (see "Send" below).
+
+**The files.** Copilot keeps `~/.copilot/session-state/<session id>/events.jsonl` for each session: one JSON record per line, `{type, data, id, timestamp, parentId}`, first record `session.start` (its `data.context.cwd` is the working folder). `PMOS_READER_COPILOT_HOME` (Python) and `copilotHomeDir` (`api.js`) name another home for tests and labs. The records the parser reads, and nothing else:
+
+| Record | Becomes |
+|---|---|
+| `user.message` | A turn's message: `data.content`, what was typed. Never `transformedContent`, which wraps it in the date and any skill's text. `delivery: "steering"` marks one sent while the agent was busy, which starts an absorbed turn as for Claude. The record's `messageId` is the turn id, so pins hold. |
+| `assistant.message` | `content` is a working note when a tool call follows it in the turn and the reply when none does. `reasoningText` (the plaintext summary; `reasoningOpaque` and `encryptedContent` are never read) is a working note only when a tool call follows it; the summary before the final answer is dropped, so it never joins the reply. A summary's bold heading line loses its asterisks (notes are drawn as plain text). `toolRequests` make the steps. |
+| `tool.execution_start`, `tool.execution_complete` | A step for a call no message requested (the `copilot_*` tools are logged only here), and every call's result. A call that failed, or a shell call with a nonzero `shellExecution.exitCode`, is a failed step. |
+| `session.compaction_complete` | The same "Earlier context was summarised" divider Claude's compaction leaves. The turn that was running goes on after it. |
+
+Anything with a top-level `agentId` (a helper agent's own prompt and replies) or a `parentToolCallId` stays out: the conversation holds the `task` call that ran it and its result. Hooks, usage, the system prompt, permission and model records are never looked at.
+
+**Tool steps.** The parser renames each Copilot call to the Claude tool it is drawn as (`bash` to Bash, `view` to Read, `rg` and `glob` to Grep and Glob, `web_fetch`, `skill`, `task`, `ask_user` and so on; `COPILOT_TOOLS` in `build_prototype.py`) so `tool_steps.py` makes the step, its summary, its failed-output tail and its dotfile and credential redaction exactly as it does for Claude. The step sheet still names the tool as Copilot's log has it (`n`). `apply_patch` carries its whole patch as one string; `tool_steps.patch_blocks` turns each file in it into a Write or MultiEdit (one edit per hunk) or a Delete, so the page draws the same diffs. Tools the reader has no mapping for (the browser and Playwright tools, MCP tools) are "Tool" steps named as the log has them.
+
+**Which session a pane shows.** `agent_session` is absent for a Copilot pane, so the reader asks `herdr pane process-info` for the pane's foreground and takes the `copilot` process's pid. Where Codex is matched by working folder, that cannot work here: the folder holds every Copilot session ever started in it, and a `/resume` shows an older one while the process stays the same. What the process does leave behind:
+
+- Its own log, `~/.copilot/logs/process-<start ms>-<pid>.log`, gets `<time> [INFO] Registering foreground session: <id>` when the process starts on a session and again at each `/resume` and `/new`. The newest such line is the pane's session. Checked on the live pane: the process started on an empty new session, `/resume` moved it to `75c5495c`, and the pane title and conversation were that one's.
+- **That log is rotated at 10 MB** (`...<pid>.1.log`) and some builds fill it with thousands of lines a minute, so the line can be in the rotated file or be gone within minutes. The reader therefore reads every file of the process (only what each gained since the last look, and from the start when a rotation put another file at the name: its inode changed), keeps the newest line any look saw, and writes it to `out/copilot-panes.json` under `<start>-<pid>`. `api.js` and `build_prototype.py` both read and write that record, so a later look in either, with the logs rotated away, still knows. Entries older than 14 days are dropped.
+- `session-state/<id>/inuse.<pid>.lock` names the session the process *started* on, so it is the last resort, and only for a session that has an `events.jsonl`: here it would name the empty session the process opened before the `/resume`.
+- Otherwise the pane maps to nothing. It is never guessed from a label, a title or a working folder.
+
+Limit, stated plainly: a pane whose process was resumed and never looked at while its log still held the line, and whose log has since been rotated twice, shows no conversation until the next `/resume` or `/new` writes a new line. The reader's server looks every 2 seconds while a page is open, so this needs a page closed for roughly the time a spammy log takes to fill 20 MB.
+
+**Session ids.** Every Claude and Codex log is named for its session, so `path.stem` was the id. A Copilot conversation is `events.jsonl` inside the folder named for the session, so `build_prototype.log_key` and `log_session_id` (and `canonicalSessionId` in `api.js`) take the folder's name; the parsed-log cache is named by it, and `reader.py add`, `follow`, `adopt` and the reading list take a Copilot id, a prefix or the events path as they do any other. A Copilot session never joins a Claude `/clear` chain, and `pane_neighbours` leaves its log out of one.
+
+**Send.** The reader must never send to a Copilot pane. The page's message bar says "Sending to Copilot is not supported yet. Copy still works." first in its chain of reasons, on every copy (served, hosted, offline), in plain text rather than the fault colour, and the Send button is off. If a request gets through anyway (a stale page, the hosted copy's queue, a `curl`), `sendPrompt` and the hosted queue route refuse with the same sentence (409, code `copilot_send_unsupported`) as their first act after the reading-list check: the session's log is looked up on disk, so Herdr is not asked anything and no key or text is sent. A sealed queued request cannot be read on the way in, so `drain.js` hits the same refusal when it sends it and writes it back as a refused receipt. Tests: `api.test.js` ("Copilot: ..."), `copilot.test.js`.
+
+What Send for Copilot would take (not built): Herdr's `agent prompt` as the transport, but its text box has to be known: whether Ctrl+K and Ctrl+U empty it (Claude's box does; Codex needed a 1.2 s pause for its `$` popup, and Copilot has `/` and `@` popups of its own), whether Enter submits a pasted multi-line message, how a message sent mid-turn is queued (`delivery: "steering"` suggests Copilot has a notion of it), and what Herdr's `blocked` state means for its permission prompts. `checkForeground` would use the pid-to-session mapping above. All of it has to be tried on a throwaway Copilot pane, never a real one.
+
+**Not changed.** Claude and Codex behaviour, and the parsed-log cache of their logs. The hosted and phone copies were not expanded: a Copilot session on the reading list builds into them as any conversation does (checked with `sync.py --build-only --session <id>`: its object carries `agent: "copilot"`, so the shell's message bar says the same), but the default scope of `sync.py` (fleet homes, `~/workspace`, live panes) lists Claude logs only, so a Copilot session reaches the hosted copy only through `--reading-list` or `--session`. Taking Copilot sessions into the default scope would mean listing `session-state/*/events.jsonl` in `sync.py`'s scope walk and the pane test it applies.
+
 ## Documents, code boxes and cleared sessions (2026-10-21)
 
 The captain asked for three things while trying the prototype:

@@ -45,7 +45,7 @@ class Case(unittest.TestCase):
         real = build_cache.derive
 
         def derive(home, chain, parent, cache, key):
-            self.derived.append(chain[-1].stem)
+            self.derived.append(builder.log_key(chain[-1]))
             return real(home, chain, parent, cache, key)
         patch = mock.patch.object(build_cache, "derive", derive)
         patch.start()
@@ -89,6 +89,17 @@ class SameAsFromNothing(Case):
         self.same(derived=[A, W, M])
         built = self.same(derived=[])
         self.assertIn(b'"id":"' + A.encode() + b'"', b"".join(built.payload))
+
+    def test_a_copilot_conversation_is_kept_with_its_agent_mark_as_a_build_from_nothing_has_it(self):
+        from test_copilot import SID, reply, start_event, typed, write_session
+        home = self.lab.root / "copilot"
+        write_session(home, SID, [start_event(), typed("Is it read only?", 1), reply(2, "Yes, it is.")])
+        with mock.patch.object(builder, "COPILOT_HOME", home), mock.patch.object(builder, "_COPILOT_INDEX", None):
+            built = self.same(sessions=[A, SID], derived=[A, SID])
+            payload = b"".join(built.payload)
+            self.assertEqual(payload.count(b'"agent":"copilot"'), 1, "only the Copilot conversation carries the mark")
+            self.assertIn(b"Yes, it is.", payload)
+            self.same(sessions=[A, SID], derived=[])
 
     def test_a_new_turn_builds_that_conversation_again_and_no_other(self):
         self.same()

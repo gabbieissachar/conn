@@ -206,6 +206,12 @@ const copyId = (root) => crypto.createHash('sha256').update(fs.realpathSync(root
 const TOKEN_SLOT = '__READER_TOKEN__';
 const TOKEN_META = '<meta name="reader-token" content="' + TOKEN_SLOT + '">';
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const COPILOT_EVENTS = 'events.jsonl';
+const COPILOT_SEND_REFUSAL = 'Sending to Copilot is not supported yet.';
+// What a running Copilot process writes to its own log each time it shows a session: at its start, and at every /resume and /new.
+const COPILOT_REGISTERED_RE = /(\d{4}-\d\d-\d\dT[\d:.]+Z) \[[A-Z]+\] Registering foreground session: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g;
+const COPILOT_PANES_KEEP_DAYS = 14;
+const COPILOT_LOG_READ_MAX = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_RE = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/;
 const PANE_ID_RE = /^w[A-Za-z0-9]{1,10}:p[A-Za-z0-9]{1,10}$/;
 // Newline and tab are the only control characters a message may carry, so no escape
@@ -381,6 +387,8 @@ function create({
   herdrBin = 'herdr', pythonBin = 'python3', projectsDir = path.join(os.homedir(), '.claude', 'projects'),
   claudeSessionsDir = path.join(os.homedir(), '.claude', 'sessions'),
   codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions'),
+  // The Copilot CLI's home: session-state/<session id>/events.jsonl is a conversation, logs/process-<start>-<pid>.log a running process's own log.
+  copilotHomeDir = path.join(os.homedir(), '.copilot'),
   outDir = path.join(root, 'setup', 'transcript-reader', 'out'), token,
   pinsFile = pinstore.defaultFile(env),
   starsFile = pinstore.defaultStarsFile(env),
@@ -426,6 +434,7 @@ function create({
   function canonicalSessionId(value) {
     if (typeof value !== 'string') return null;
     if (SESSION_ID_RE.test(value)) return value;
+    if (path.basename(value) === COPILOT_EVENTS && SESSION_ID_RE.test(path.basename(path.dirname(value)))) return path.basename(path.dirname(value));
     const match = CODEX_ROLLOUT_RE.exec(path.basename(value));
     return match ? match[1] : null;
   }
@@ -473,8 +482,30 @@ function create({
     }
     const codex = codexRollouts().find((entry) => entry.session === sessionId);
     if (codex) { logPaths.set(sessionId, codex.file); return codex.file; }
+    const copilot = copilotLog(sessionId);
+    if (copilot) { logPaths.set(sessionId, copilot); return copilot; }
     return null;
   }
+
+  // A Copilot session's events.jsonl, or null: the folder is named for the session, and the file's first record says it is that session's.
+  function copilotLog(sessionId) {
+    if (!SESSION_ID_RE.test(sessionId || '')) return null;
+    const file = path.join(copilotHomeDir, 'session-state', sessionId, COPILOT_EVENTS);
+    let first = null;
+    try {
+      // Only its start: a conversation file is megabytes, and the first record is under a kilobyte.
+      const handle = fs.openSync(file, 'r');
+      try {
+        const buffer = Buffer.alloc(65536);
+        const read = fs.readSync(handle, buffer, 0, buffer.length, 0);
+        first = parseJson(buffer.subarray(0, read).toString('utf8').split('\n', 1)[0]);
+      } finally { fs.closeSync(handle); }
+    } catch { return null; }
+    return first && first.type === 'session.start' && first.data && first.data.sessionId === sessionId ? file : null;
+  }
+
+  // Whether a session's log is a Copilot conversation. Known from its file alone, so no Herdr is asked.
+  const isCopilotSession = (sessionId) => { const file = logPath(sessionId); return Boolean(file) && path.basename(file) === COPILOT_EVENTS; };
 
   function codexRollouts() {
     const found = [];
@@ -547,6 +578,110 @@ function create({
     return found;
   }
 
+  // The Copilot process in the pane's foreground, or null.
+  function copilotProcess(processInfo) {
+    const processes = Array.isArray(processInfo && processInfo.foreground_processes) ? processInfo.foreground_processes : [];
+    return processes.find((item) => {
+      if (!item || !Number.isInteger(item.pid)) return false;
+      const command = String(item.command || item.cmdline || '').split(/\s+/)[0];
+      return path.basename(String(item.argv0 || '')) === 'copilot' || path.basename(command) === 'copilot';
+    }) || null;
+  }
+
+  // A Copilot process writes `<time> [INFO] Registering foreground session: <id>` to its own log when it starts on a session and again
+  // at each /resume and /new, so the newest such line names the session its pane shows. That log is rotated at 10 MB into
+  // process-<start>-<pid>.1.log (and fills thousands of lines a minute in a fault of some builds), so the line can end up in the
+  // rotated file or be gone. So every file of the process is read, the newest line any look saw is kept, and it is written to
+  // out/copilot-panes.json (a process's key is its start time and pid), which the next look here or in build_prototype.py reads when
+  // the logs no longer say. Each look reads only what a log gained since the last one (and a line the last look ended in the middle of, whole).
+  const copilotScans = new Map();
+  const copilotSeen = new Map();
+  const copilotPanesFile = () => path.join(outDir, 'copilot-panes.json');
+  function copilotLogMarker(file) {
+    let stat;
+    try { stat = fs.statSync(file); } catch { return null; }
+    const size = stat.size;
+    let [inode, done, found] = copilotScans.get(file) || [stat.ino, 0, null];
+    if (inode !== stat.ino || size < done) { done = 0; found = null; }  // a rotation put another file at this name: read it from its start
+    if (size > done) {
+      const start = Math.max(0, done - 160, size - COPILOT_LOG_READ_MAX);
+      let text;
+      try {
+        const handle = fs.openSync(file, 'r');
+        try {
+          const buffer = Buffer.alloc(size - start);
+          const read = fs.readSync(handle, buffer, 0, buffer.length, start);
+          text = buffer.subarray(0, read).toString('latin1');
+        } finally { fs.closeSync(handle); }
+      } catch { return found; }
+      for (const match of text.matchAll(COPILOT_REGISTERED_RE)) {
+        const marker = [match[1], match[2]];
+        if (!found || marker[0] + marker[1] >= found[0] + found[1]) found = marker;
+      }
+      copilotScans.set(file, [stat.ino, size, found]);
+    }
+    return found;
+  }
+
+  const copilotPanesRead = () => { try { const value = parseJson(fs.readFileSync(copilotPanesFile(), 'utf8')); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } };
+
+  function copilotPanesRemember(key, marker) {
+    const cutoff = now() - COPILOT_PANES_KEEP_DAYS * 86400 * 1000;
+    const kept = {};
+    for (const [k, v] of Object.entries(copilotPanesRead())) if (v && typeof v === 'object' && Number(k.split('-')[0]) >= cutoff) kept[k] = v;
+    kept[key] = { at: marker[0], session: marker[1] };
+    try {
+      fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
+      const partial = copilotPanesFile() + '.' + process.pid + '.partial';
+      fs.writeFileSync(partial, JSON.stringify(kept, null, 1), { mode: 0o600 });
+      fs.renameSync(partial, copilotPanesFile());
+    } catch { /* the next look writes it again */ }
+  }
+
+  // The session the pane's Copilot process shows: the newest session its logs or an earlier look registered for it, else the session
+  // folder holding its inuse.<pid>.lock when that has a conversation (the lock names only the session the process started on, so a
+  // /resume leaves it behind). Null when neither says: never guessed from a label or a folder.
+  function copilotSessionForProcessInfo(processInfo) {
+    const proc = copilotProcess(processInfo);
+    if (!proc) return null;
+    const logsDir = path.join(copilotHomeDir, 'logs');
+    const state = path.join(copilotHomeDir, 'session-state');
+    let files = [];
+    try {
+      files = fs.readdirSync(logsDir)
+        .map((name) => ({ name, match: /^process-(\d+)-(\d+)(?:\.\d+)?\.log$/.exec(name) }))
+        .filter((entry) => entry.match && Number(entry.match[2]) === proc.pid)
+        .map((entry) => ({ start: Number(entry.match[1]), file: path.join(logsDir, entry.name) }));
+    } catch { /* no logs folder */ }
+    if (files.length) {  // the process that runs now is the latest one to have had this pid
+      const started = Math.max(...files.map((entry) => entry.start));
+      const key = started + '-' + proc.pid;
+      let known = copilotSeen.get(key) || null;
+      if (!known) {
+        const stored = copilotPanesRead()[key];
+        if (stored && typeof stored.at === 'string' && typeof stored.session === 'string') known = [stored.at, stored.session];
+      }
+      let best = known;
+      for (const entry of files) {
+        const marker = entry.start === started ? copilotLogMarker(entry.file) : null;
+        if (marker && (!best || marker[0] + marker[1] > best[0] + best[1])) best = marker;
+      }
+      if (best && (!known || best[0] !== known[0] || best[1] !== known[1])) copilotPanesRemember(key, best);
+      if (best) {
+        copilotSeen.set(key, best);
+        if (SESSION_ID_RE.test(best[1]) && fs.existsSync(path.join(state, best[1]))) return best[1];
+      }
+    }
+    let locks = [];
+    try {
+      locks = fs.readdirSync(state)
+        .filter((name) => SESSION_ID_RE.test(name) && fs.existsSync(path.join(state, name, COPILOT_EVENTS)) && fs.existsSync(path.join(state, name, 'inuse.' + proc.pid + '.lock')))
+        .map((name) => ({ name, at: mtimeMs(path.join(state, name, 'inuse.' + proc.pid + '.lock')) }))
+        .sort((a, b) => b.at - a.at);
+    } catch { /* no session folder */ }
+    return locks.length ? locks[0].name : null;
+  }
+
   function codexProcess(processInfo) {
     const processes = Array.isArray(processInfo && processInfo.foreground_processes) ? processInfo.foreground_processes : [];
     return processes.find((item) => {
@@ -576,13 +711,21 @@ function create({
   async function checkSessions(session) {
     const running = runningClaude();
     const hasCodex = session.panes.some((pane) => pane.agent === 'codex');
-    if (!running.size && !hasCodex) return session;
+    const hasCopilot = session.panes.some((pane) => pane.agent === 'copilot');
+    if (!running.size && !hasCodex && !hasCopilot) return session;
     const held = new Set(running.values());
     for (const pane of session.panes) {
       if (pane.agent === 'codex') {
         const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
         const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
         pane.session_id = codexSessionForProcessInfo(info, pane.session_id);
+        continue;
+      }
+      if (pane.agent === 'copilot') {
+        // Herdr names no session for a Copilot pane.
+        const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
+        const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
+        pane.session_id = copilotSessionForProcessInfo(info);
         continue;
       }
       const retained = !pane.agent && pane.session_id;
@@ -864,7 +1007,7 @@ function create({
 
   // ------------------------------------------------------------------- sync
 
-  // The sessions running in a Herdr pane with Claude or Codex that the reading list lacks and has a log to read, and that no
+  // The sessions running in a Herdr pane with Claude, Codex or Copilot that the reading list lacks and has a log to read, and that no
   // person took off the list. Only listing them changes the list; the panes are not touched.
   function unlistedLive(sessions) {
     const skip = new Set([...listed(), ...closedByHand()]);
@@ -873,13 +1016,13 @@ function create({
       for (const pane of session.panes) {
         const id = pane.session_id;
         const codex = id && codexRollouts().some((entry) => entry.session === id);
-        if ((pane.agent === 'claude' || pane.agent === 'codex' || codex) && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
+        if ((pane.agent === 'claude' || pane.agent === 'codex' || pane.agent === 'copilot' || codex) && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
       }
     }
     return found;
   }
 
-  // What the Sync button asks for: Herdr is read again now (not from the last scan), every live Claude or Codex pane's session
+  // What the Sync button asks for: Herdr is read again now (not from the last scan), every live Claude, Codex or Copilot pane's session
   // not yet listed is listed (reader.py adopt, as follow lists the focused one, so /clear joins and labels work the
   // same), the pages are rebuilt from the session logs and the fleet records whether or not a log looks newer, and
   // the answer is state's, once it is done. That is the same read-only rebuild a changed log starts, so the reading
@@ -1053,6 +1196,8 @@ function create({
     if (files.length && typed.startsWith('/')) throw new RequestError('A command goes on its own, so it cannot carry photos.', 400, 'command_with_photos');
     const text = withPhotos(typed, files);
     if (!(sendable ? sendable() : listed()).includes(sessionId)) throw new RequestError('That session is not on the reading list.', 409, 'not_listed');
+    // A Copilot session is read only. This is known from its log, so nothing is asked of Herdr and no key reaches a pane.
+    if (isCopilotSession(sessionId)) throw new RequestError(COPILOT_SEND_REFUSAL, 409, 'copilot_send_unsupported');
     const sessions = await scan({ fresh: true });
     const matches = sessions.flatMap((session) => session.panes.filter((p) => p.session_id === sessionId).map((p) => ({ ...p, herdr: session.name })));
     if (!matches.length) throw new RequestError('No live Herdr pane is running that session, so nothing was sent.', 409, 'no_pane');
@@ -1099,6 +1244,7 @@ function create({
       if (body.data !== undefined || !object || typeof object !== 'object' || Array.isArray(object)) throw new RequestError('Invalid request.');
       for (const key of Object.keys(object)) if (!['session_id', 'text', 'at'].includes(key)) throw new RequestError('Unknown field.');
       if (typeof object.session_id !== 'string' || !SESSION_ID_RE.test(object.session_id)) throw new RequestError('Invalid session id.');
+      if (isCopilotSession(object.session_id)) throw new RequestError(COPILOT_SEND_REFUSAL, 409, 'copilot_send_unsupported');
       if (!Number.isFinite(object.at)) throw new RequestError('Invalid time.');
       bytes = Buffer.from(JSON.stringify({ id: body.id, session_id: object.session_id, text: checkText(object.text), at: object.at }), 'utf8');
       name = body.id + '.json';

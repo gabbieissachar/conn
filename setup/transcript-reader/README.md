@@ -1,6 +1,6 @@
 # Transcript reader
 
-Reads Firstmate Claude Code and Codex session logs back as a conversation, and lets you answer a reply in its own Herdr pane.
+Reads Firstmate Claude Code, Codex and GitHub Copilot CLI session logs back as a conversation, and lets you answer a reply in its own Herdr pane (Claude and Codex panes; a Copilot session is read only).
 Design and decisions: `DESIGN.md`.
 
 ## Run it
@@ -38,6 +38,17 @@ It ignores encrypted reasoning content and duplicate `event_msg` records.
 Send checks that the exact Codex rollout still owns the pane's foreground before it clears the input and prompts it.
 A leading `$` waits 1.2 seconds before submission so Codex skill autocomplete can settle.
 This rollout covers local pane discovery and Send; hosted and phone behavior remains unchanged.
+
+### Copilot panes (read only)
+
+A Herdr pane that runs GitHub's Copilot CLI (`agent: copilot`) shows up like a Claude or Codex one, and its conversation reads the same way, live as the session goes on.
+The reader reads `~/.copilot/session-state/<session id>/events.jsonl`: your messages (what you typed, not the text the model was given), Copilot's replies, its tool steps (shell commands, file views, searches, patches with their diffs, questions asked, helper agents) and the working notes it wrote before a step.
+Encrypted reasoning, the system prompt and a helper agent's own turns are never read.
+Which session a pane shows comes from the pane's `copilot` process: its own log registers the session at each start, `/resume` and `/new`, and the reader keeps the newest one it saw in `out/copilot-panes.json` because that log is rotated at 10 MB. A pane whose session cannot be told is left unmapped, never guessed.
+`reader.py add <id, 8-character prefix or events.jsonl path>` and Sync's listing of live panes take a Copilot session like any other.
+**Send is off.** The message bar says "Sending to Copilot is not supported yet. Copy still works.", and the server refuses with the same words before it asks Herdr anything, so no key or text can reach a Copilot pane.
+The hosted and phone copies take a listed Copilot session as they take any other, with Send off there too; `sync.py`'s default scope still lists Claude logs only.
+Details and the limits: `DESIGN.md`, "Copilot CLI panes, read only".
 - **Pins messages.** **Pin** on a message or a reply keeps it; **Pins · n** in the controls lists this conversation's pins or all of them, and a click goes to the message (opening the wake-up run that hides it, in place: a conversation already on screen is not drawn again). A pin names the message by its turn's id from the session log, so it holds across rebuilds and `/clear`. Each pin can carry an optional owner-written description, editable from its row; without one, the list uses the first meaningful line of the message or reply. Pins are kept in `~/.config/pmos-transcript-reader/pins.json` (`PMOS_READER_PINS` moves it), outside the repo, owner-only (folder 0700, file 0600), holding no message text. A page that cannot reach the server (a file copy, a server that predates pins) keeps them in this browser, and moves them into the file once it can. The hosted copy keeps them in the browser, per viewer.
 - **Stars sessions.** The star beside the session picker (in the folded header and in the controls) stars or unstars the session on screen; starred sessions sit in a **Starred** group at the top of the picker, each marked with a star, ahead of the running sessions and Closed panes. A star names the conversation, so it holds across rebuilds, Sync and `/clear`. Stars are kept like pins, in `~/.config/pmos-transcript-reader/stars.json` (`PMOS_READER_STARS` moves it), outside the repo and owner-only, holding no text, or in this browser when the server cannot be reached (the hosted copy, always).
 - **Follows Herdr.** With "Follow Herdr" on, the reader shows the session of the pane Herdr has focused. A session not on the reading list is added. While you write in the message bar, the switch waits until you send or leave the box, and the bar says where Herdr is. The session the page opens on wins over the first focus when the address names it (`#s=…`, which the page keeps up to date) or when this tab read it last (a reload, or the answer sheet's "← Reader").
@@ -358,7 +369,7 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
 node --test setup/transcript-reader/*.test.js
 ```
 

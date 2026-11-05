@@ -334,8 +334,8 @@ class Build:
 
     def has_wanted_seed(self, seeds: list[Path]) -> bool:
         """Whether a scope with no live panes still has a real starred conversation to keep."""
-        return any(self.wanted(builder.canonical_session_id(chain[-1].stem) or chain[-1].stem,
-                               [builder.canonical_session_id(member.stem) or member.stem for member in chain])
+        return any(self.wanted(builder.log_session_id(chain[-1]),
+                               [builder.log_session_id(member) for member in chain])
                    for seed in seeds if (chain := builder.session_chain(seed)))
 
     @staticmethod
@@ -463,8 +463,8 @@ class Build:
                         todo.append(member)
             covered.update(names)
             home = builder.session_home(self.homes + ([self.workspace] if self.workspace else []), first_cwd(Path(seed)))
-            cid = builder.canonical_session_id(chain[-1].stem) or chain[-1].stem
-            ids = [builder.canonical_session_id(member.stem) or member.stem for member in chain]
+            cid = builder.log_session_id(chain[-1])
+            ids = [builder.log_session_id(member) for member in chain]
             if self.wanted(cid, ids):
                 chains[cid] = (home, chain)
         for cid, (home, chain) in chains.items():
@@ -982,8 +982,8 @@ def preview(args) -> int:
             continue
         chain = builder.session_chain(seed)
         covered.update(str(member) for member in chain)
-        cid = builder.canonical_session_id(chain[-1].stem) or chain[-1].stem
-        ids = [builder.canonical_session_id(member.stem) or member.stem for member in chain]
+        cid = builder.log_session_id(chain[-1])
+        ids = [builder.log_session_id(member) for member in chain]
         home = builder.session_home(build.homes + ([build.workspace] if build.workspace else []), first_cwd(seed))
         pane = cache.get(cid) or {}
         sizes = [member.stat().st_size for member in chain if member.is_file()]

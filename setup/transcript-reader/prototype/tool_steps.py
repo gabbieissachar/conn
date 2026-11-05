@@ -24,6 +24,9 @@ A step is a dict with short keys (there are tens of thousands of them, so the na
   h    1 when the call touched a dotfile or a credential path: the row stays, nothing of its text is kept
   out  the output text (at most OUTPUT_CHARS), only until take_outputs moves it out of the turn
 
+Copilot's `apply_patch` call carries its whole patch as one string; patch_blocks turns it into the same Write and MultiEdit
+inputs a Claude edit has, so its steps and diffs are drawn by the code above.
+
 Only `message.content` of a tool_result record is read. Its `toolUseResult` is a second copy of the same output
 (about a fifth of a log's size) and is never looked at.
 """
@@ -210,6 +213,76 @@ def edit_pairs(name: str, tool_input: dict) -> list[tuple[str, str]]:
     return [(str(tool_input.get("old_string") or ""), str(tool_input.get("new_string") or ""))]
 
 
+# ------------------------------------------------------------------ Copilot patches
+
+PATCH_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File: (.+?)\s*$")
+
+
+def patch_blocks(patch: str, cwd: str = "") -> list[dict]:
+    """The tool_use blocks (name and input, as a Claude edit has them) of a Copilot `apply_patch` string.
+
+    The patch is `*** Begin Patch`, then for each file `*** Add File: path` (every line `+text`), `*** Update File: path`
+    (hunks of ` kept`, `-removed` and `+added` lines, each hunk opened by an `@@` line) or `*** Delete File: path`, then
+    `*** End Patch`. An added file is a Write, an updated one a MultiEdit with one edit per hunk, a deleted one a Delete.
+    A relative path starts from <cwd>. Text that is no patch gives no block.
+    """
+    blocks: list[dict] = []
+    current: dict | None = None
+    hunk: dict | None = None
+
+    def place(path: str) -> str:
+        path = path.strip()
+        return path if path.startswith("/") or not cwd else cwd.rstrip("/") + "/" + path
+
+    def close() -> None:
+        nonlocal current, hunk
+        if current is None:
+            return
+        if current["name"] == "Write":
+            current["input"]["content"] = "\n".join(current.pop("lines"))
+        elif current["name"] == "MultiEdit":
+            current["input"]["edits"] = [{"old_string": "\n".join(h["old"]), "new_string": "\n".join(h["new"])} for h in current.pop("hunks")]
+        else:
+            current.pop("lines", None)
+        blocks.append(current)
+        current, hunk = None, None
+
+    for line in patch.splitlines():
+        head = PATCH_FILE.match(line)
+        if head:
+            close()
+            action, path = head.group(1), place(head.group(2))
+            if action == "Add":
+                current = {"name": "Write", "input": {"file_path": path}, "lines": []}
+            elif action == "Update":
+                current = {"name": "MultiEdit", "input": {"file_path": path}, "hunks": []}
+            else:
+                current = {"name": "Delete", "input": {"file_path": path}}
+            continue
+        if current is None or line.startswith(("*** Begin Patch", "*** End Patch", "*** End of File", "*** Move to:")):
+            if line.startswith("*** End Patch"):
+                close()
+            continue
+        if current["name"] == "Write":
+            current["lines"].append(line[1:] if line.startswith("+") else line)
+        elif current["name"] == "MultiEdit":
+            if line.startswith("@@") or hunk is None:
+                hunk = {"old": [], "new": []}
+                current["hunks"].append(hunk)
+                if line.startswith("@@"):
+                    continue
+            if line.startswith("-"):
+                hunk["old"].append(line[1:])
+            elif line.startswith("+"):
+                hunk["new"].append(line[1:])
+            else:  # a kept line: a space and its text, or a bare empty line
+                kept = line[1:] if line.startswith(" ") else line
+                hunk["old"].append(kept)
+                hunk["new"].append(kept)
+    close()
+    return blocks
+
+
 # ------------------------------------------------------------------ steps
 
 def summary_of(kind: str, name: str, tool_input: dict) -> tuple[str, str]:
@@ -225,6 +298,8 @@ def summary_of(kind: str, name: str, tool_input: dict) -> tuple[str, str]:
         return "Stop a background command", get("shell_id", "bash_id")
     if kind in ("read", "edited", "wrote"):
         return short_path(get("file_path", "notebook_path", "path")), ""
+    if name == "Delete":
+        return "Delete " + short_path(get("file_path")), ""
     if name == "Grep":
         pattern, where = get("pattern"), get("path")
         return pattern + (f" in {short_path(where)}" if where else ""), pattern

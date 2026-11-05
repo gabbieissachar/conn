@@ -1464,7 +1464,7 @@ __HEAD_HOSTED__
     const pane = session && session.pane;
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
-    const where = session ? `${session.home === "workspace" ? "Your workspace" : homeName(session.home) + " home"}${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}` : "";
+    const where = session ? `${session.home === "workspace" ? "Your workspace" : homeName(session.home) + " home"}${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}${session.agent === "copilot" ? " · Copilot, read only" : ""}` : "";
     // The hosted copy has the agent's state as Herdr reported it when the laptop built the copy.
     const stated = HOSTED && pane && pane.live && session ? sessionStatus(session, true) : "";
     const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
@@ -2564,7 +2564,9 @@ __HEAD_HOSTED__
     // The hosted copy knows the pane as of its build; the laptop checks the pane again when it sends.
     const pane = HOSTED ? (session.pane && session.pane.live ? session.pane : null) : link.panes ? link.panes[session.id] : null;
     let reason = "";
-    if (HOSTED) reason = !session.pane ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
+    // A Copilot session is read only: its pane takes no messages from here, on any copy.
+    if (session.agent === "copilot") reason = "Sending to Copilot is not supported yet. Copy still works.";
+    else if (HOSTED) reason = !session.pane ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
       : !session.pane.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
     else if (!canLive) reason = "Read-only copy: open the served page to send.";
     else if (link.panes === undefined) reason = "Connecting to the local server…";
@@ -2616,7 +2618,7 @@ __HEAD_HOSTED__
     count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
     count.classList.toggle("bad", over);
     const status = dock("status");
-    status.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane)));
+    status.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane && session.agent !== "copilot")));  // a Copilot session is read only: that is a plain note, not a fault
     status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : link.result ? link.result.text : reason || (HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
       : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${pics.length ? " · " + attach.photos(pics.length) : ""}${link.sending ? " · " + (link.uploading || "sending…") : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);

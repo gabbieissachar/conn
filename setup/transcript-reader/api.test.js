@@ -33,6 +33,24 @@ function writeCodexLog(tree, id, cwd) {
   return file;
 }
 
+// A Copilot session as the CLI keeps it: session-state/<id>/events.jsonl, whose first record is session.start, with invented text.
+function writeCopilotSession(tree, id, cwd, extra = []) {
+  const file = path.join(tree.copilotHomeDir, 'session-state', id, 'events.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const records = [{ type: 'session.start', timestamp: '2026-11-05T05:44:57.259Z', data: { sessionId: id, version: 1, producer: 'copilot-agent', context: { cwd } } }, ...extra];
+  fs.writeFileSync(file, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+  return file;
+}
+// What a running Copilot process writes to logs/process-<start>-<pid>[.1].log: a line at its start and at each /resume.
+const COPILOT_START = 1793858520238;
+function writeCopilotLog(tree, pid, lines, name = `process-${COPILOT_START}-${pid}.log`) {
+  const file = path.join(tree.copilotHomeDir, 'logs', name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, lines.join('\n') + '\n');
+  return file;
+}
+const registering = (id, time) => `${time} [INFO] Registering foreground session: ${id}`;
+
 function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'transcript-reader-'));
   const root = path.join(base, 'repo');
@@ -40,6 +58,7 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   const projectsDir = path.join(base, 'projects');
   const claudeSessionsDir = path.join(base, 'sessions');  // no running Claude unless a test writes one
   const codexSessionsDir = path.join(base, 'codex-sessions');  // no Codex rollout unless a test writes one
+  const copilotHomeDir = path.join(base, 'copilot');  // no Copilot session unless a test writes one
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(projectsDir, '-Users-someone-home'), { recursive: true });
   fs.mkdirSync(codexSessionsDir, { recursive: true });
@@ -56,7 +75,7 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   // The pins file lives outside the repo; a test gets one inside its own temporary folder, never the owner's.
   const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
   const starsFile = path.join(base, 'config', 'pmos-transcript-reader', 'stars.json');
-  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, copilotHomeDir, pinsFile, starsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -126,7 +145,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -2038,5 +2057,165 @@ test('Codex: Sync adopts an unlisted live Codex pane, and a changed foreground s
     assert.equal(refused.status, 409);
     assert.equal(refused.json.code, 'other_session');
     assert.equal(t.herdr.prompts().length, 0);
+  } finally { await t.close(); }
+});
+
+// ---------------------------------------------------------------- Copilot panes: reading only
+
+const K1 = 'c1c1c1c1-0000-4000-8000-000000000001';  // Copilot sessions, each with a conversation file and no Claude log
+const K2 = 'c2c2c2c2-0000-4000-8000-000000000002';
+const K3 = 'c3c3c3c3-0000-4000-8000-000000000003';
+const listCopilot = (tree, ...ids) => fs.writeFileSync(path.join(tree.outDir, 'sessions.txt'), ids.join('\n') + '\n');
+const later = async (t, ms = 5000) => { t.tick(ms); await new Promise((resolve) => setTimeout(resolve, 20)); };  // past the scan's reuse
+
+// A Copilot pane in the first slot: Herdr names the agent but no session, and the process that runs in it is `copilot`.
+const copilotPane = (herdr, tree, pid = 9101, slot = 0) => {
+  herdr.panes[slot] = { ...herdr.panes[slot], agent: 'copilot', agent_session: undefined };
+  herdr.processInfo[herdr.panes[slot].pane_id] = [{ pid: 11, argv0: 'security', cwd: '/bin' }, { pid, argv0: 'copilot', cwd: tree.root }];
+};
+
+test('Copilot: a live pane maps to the session its process registered last, and its conversation file is the log', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    writeCopilotSession(tree, K2, tree.root);
+    writeCopilotLog(tree, 9101, [registering(K2, '2026-11-05T06:02:00.276Z'), 'noise', registering(K1, '2026-11-05T06:02:21.271Z')]);
+    copilotPane(herdr, tree);
+    listCopilot(tree, K1, K2);
+  } });
+  try {
+    const state = await t.state();
+    assert.equal(state.status, 200);
+    assert.equal(state.json.panes[K1].status, 'idle');
+    assert.equal(state.json.panes[K1].label, 'leader-alpha');
+    assert.ok(!(K2 in state.json.panes), 'the session the pane left is shown by no pane');
+    assert.equal(state.json.focus.session_id, K1);
+    assert.equal(state.json.focus.readable, true);
+    assert.equal(state.json.focus.listed, true);
+  } finally { await t.close(); }
+});
+
+test('Copilot: the line in a rotated log counts, a later look keeps what an earlier one saw, and a new line moves the pane on', async () => {
+  let rotated;
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    writeCopilotSession(tree, K2, tree.root);
+    writeCopilotLog(tree, 9101, ['only noise, written after the rotation']);
+    rotated = writeCopilotLog(tree, 9101, [registering(K1, '2026-11-05T06:02:21.271Z')], `process-${COPILOT_START}-9101.1.log`);
+    copilotPane(herdr, tree);
+    listCopilot(tree, K1, K2);
+  } });
+  try {
+    assert.equal((await t.state()).json.focus.session_id, K1);
+    const kept = JSON.parse(fs.readFileSync(path.join(t.tree.outDir, 'copilot-panes.json'), 'utf8'));
+    assert.deepEqual(kept, { [`${COPILOT_START}-9101`]: { at: '2026-11-05T06:02:21.271Z', session: K1 } });
+    fs.writeFileSync(rotated, 'the rotated file is itself replaced and says nothing\n');
+    await later(t);
+    assert.equal((await t.state()).json.focus.session_id, K1, 'nothing newer was written, so the session stands');
+    fs.appendFileSync(path.join(t.tree.copilotHomeDir, 'logs', `process-${COPILOT_START}-9101.log`), registering(K2, '2026-11-05T06:30:00.000Z') + '\n');
+    await later(t);
+    assert.equal((await t.state()).json.focus.session_id, K2);
+  } finally { await t.close(); }
+});
+
+test('Copilot: a log rotated and grown past its old size is read from its start', async () => {
+  let live;
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    writeCopilotSession(tree, K2, tree.root);
+    live = writeCopilotLog(tree, 9101, [registering(K1, '2026-11-05T06:02:21.271Z')]);
+    copilotPane(herdr, tree);
+    listCopilot(tree, K1, K2);
+  } });
+  try {
+    assert.equal((await t.state()).json.focus.session_id, K1);
+    const fresh = live + '.tmp';  // the rotation: another file at the name, already bigger than the one looked at
+    fs.writeFileSync(fresh, registering(K2, '2026-11-05T06:50:00.000Z') + '\n' + 'noise\n'.repeat(500));
+    fs.renameSync(fresh, live);
+    await later(t);
+    assert.equal((await t.state()).json.focus.session_id, K2);
+  } finally { await t.close(); }
+});
+
+test('Copilot: with its logs gone, what an earlier look wrote down names the session, and the lock does only when its session has a conversation', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    fs.writeFileSync(path.join(tree.outDir, 'copilot-panes.json'), JSON.stringify({ [`${COPILOT_START}-9101`]: { at: '2026-11-05T06:02:21.271Z', session: K1 } }));
+    writeCopilotLog(tree, 9101, ['nothing registered in this file']);
+    copilotPane(herdr, tree);
+    // A Copilot process with no log at all, holding the lock of a session that was started and never typed in.
+    copilotPane(herdr, tree, 9102, 1);
+    fs.mkdirSync(path.join(tree.copilotHomeDir, 'session-state', K2), { recursive: true });
+    fs.writeFileSync(path.join(tree.copilotHomeDir, 'session-state', K2, 'inuse.9102.lock'), '9102');
+    // And one whose lock session has a conversation.
+    copilotPane(herdr, tree, 9103, 2);
+    writeCopilotSession(tree, K3, tree.root);
+    fs.writeFileSync(path.join(tree.copilotHomeDir, 'session-state', K3, 'inuse.9103.lock'), '9103');
+    listCopilot(tree, K1, K2, K3);
+  } });
+  try {
+    const state = await t.state();
+    assert.deepEqual(Object.keys(state.json.panes).sort(), [K1, K3]);
+  } finally { await t.close(); }
+});
+
+test('Copilot: Send is refused plainly before Herdr is asked anything, on the page\'s route and on the queue\'s', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    writeCopilotLog(tree, 9101, [registering(K1, '2026-11-05T06:02:21.271Z')]);
+    copilotPane(herdr, tree);
+    listCopilot(tree, K1, B);
+  } });
+  try {
+    assert.equal((await t.state()).json.focus.session_id, K1);
+    t.herdr.calls.length = 0;
+    const refused = await t.send({ session_id: K1, text: 'hello' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.json.code, 'copilot_send_unsupported');
+    assert.equal(refused.json.message, 'Sending to Copilot is not supported yet.');
+    assert.deepEqual(t.herdr.calls, [], 'nothing was asked of Herdr, so no key or text could reach the pane');
+    const queued = await t.post('queue', { copy: 'hosted', id: Q, object: { session_id: K1, text: 'hello', at: Date.now() / 1000 } });
+    assert.equal(queued.status, 409);
+    assert.equal(queued.json.code, 'copilot_send_unsupported');
+    assert.equal(fs.existsSync(path.join(t.tree.outDir, 'hosted', 'q', Q + '.json')), false, 'nothing was queued for the laptop to send later');
+    assert.deepEqual(t.herdr.keys().concat(t.herdr.prompts()), []);
+    // A Claude session is sent to as before.
+    const sent = await t.send({ session_id: B, text: 'hello' });
+    assert.equal(sent.status, 200, sent.raw);
+    assert.equal(t.herdr.prompts().length, 1);
+  } finally { await t.close(); }
+});
+
+test('Copilot: Sync lists a live Copilot pane the reading list lacks, and Follow reads the focused one', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    writeCopilotLog(tree, 9101, [registering(K1, '2026-11-05T06:02:21.271Z')]);
+    copilotPane(herdr, tree);
+    listCopilot(tree, B);
+  } });
+  try {
+    const synced = await t.post('sync', {});
+    assert.equal(synced.status, 200, synced.raw);
+    assert.ok(t.herdr.readerRuns().some((run) => run[0] === 'adopt' && run.includes(K1)), 'Sync should adopt the Copilot session');
+    const followed = await t.state(true);
+    assert.equal(followed.json.focus.session_id, K1);
+    assert.equal(followed.json.focus.readable, true);
+  } finally { await t.close(); }
+});
+
+test('Copilot: a conversation file is the log only when its first record says it belongs to the folder it is in', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeCopilotSession(tree, K1, tree.root);
+    const forged = path.join(tree.copilotHomeDir, 'session-state', K2, 'events.jsonl');
+    fs.mkdirSync(path.dirname(forged), { recursive: true });
+    fs.writeFileSync(forged, JSON.stringify({ type: 'session.start', data: { sessionId: K3, context: { cwd: tree.root } } }) + '\n');
+    copilotPane(herdr, tree);
+    herdr.processInfo['w1:p1'] = [{ pid: 9101, argv0: 'copilot', cwd: tree.root }];
+    fs.mkdirSync(path.join(tree.copilotHomeDir, 'session-state', K2), { recursive: true });
+    fs.writeFileSync(path.join(tree.copilotHomeDir, 'session-state', K2, 'inuse.9101.lock'), '9101');
+    listCopilot(tree, K1, K2);
+  } });
+  try {
+    const state = await t.state(true);
+    assert.equal(state.json.focus.readable, false, 'the forged file is not a log, so the pane is not readable');
   } finally { await t.close(); }
 });

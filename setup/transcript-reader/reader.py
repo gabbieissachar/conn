@@ -14,7 +14,7 @@ Usage (from the repo root):
   python3 setup/transcript-reader/reader.py reopen <id>      list one full session id whose pane has closed, kept
                                                              until closed, then rebuild only (the page's picker)
   python3 setup/transcript-reader/reader.py close <id>       take one full session id off the list, then rebuild only
-  python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude or Codex panes a Sync found
+  python3 setup/transcript-reader/reader.py adopt <id>...    list full session ids (the live Claude, Codex or Copilot panes a Sync found
                                                              that are not listed), then rebuild only; one a person
                                                              closed or removed is skipped
   python3 setup/transcript-reader/reader.py worker           stay running and take rebuild, follow, adopt, reopen and
@@ -116,21 +116,22 @@ def write_list(ids: list[str]) -> None:
 def session_files(projects: Path, prefix: str) -> list[Path]:
     claude = list(projects.glob(f"*/{prefix}*.jsonl"))
     codex = builder.codex_session_files(prefix)
-    return sorted({*claude, *codex})
+    copilot = builder.copilot_session_files(prefix)
+    return sorted({*claude, *codex, *copilot})
 
 
 def resolve(name: str, panes: dict[str, dict], projects: Path = builder.PROJECTS) -> str:
     """The session id that <name> means. Raises ValueError with a readable reason."""
     path = Path(name).expanduser()
     if path.suffix == ".jsonl" and path.is_file():
-        return builder.canonical_session_id(path.stem) or path.stem
+        return builder.log_session_id(path)
     canonical = builder.canonical_session_id(name)
     if canonical and canonical != name:
         if session_files(projects, canonical):
             return canonical
         raise ValueError(f"no session log found for {name}")
     if PREFIX.match(name):
-        ids = sorted({builder.canonical_session_id(p.stem) or p.stem for p in session_files(projects, name)})
+        ids = sorted({builder.log_session_id(p) for p in session_files(projects, name)})
         if len(ids) == 1:
             return ids[0]
         if len(ids) > 1:
@@ -182,7 +183,7 @@ def forget_closed(sids: set[str]) -> None:
 def chain_members(sid: str) -> set[str]:
     """The session and every session its pane ran across /clear, as `close` takes them off together."""
     path = builder.find_session_file(sid)
-    return {sid} | ({builder.canonical_session_id(member.stem) or member.stem for member in builder.session_chain(path)} if path else set())
+    return {sid} | ({builder.log_session_id(member) for member in builder.session_chain(path)} if path else set())
 
 
 class PaneView:
@@ -203,7 +204,7 @@ class PaneView:
 
     def members(self, sid: str) -> list[str]:
         path = builder.find_session_file(sid)
-        return [builder.canonical_session_id(member.stem) or member.stem for member in builder.session_chain(path)] if path else [sid]
+        return [builder.log_session_id(member) for member in builder.session_chain(path)] if path else [sid]
 
     def pane_left(self, member: str) -> str | None:
         """Why the pane this session was last seen in no longer runs it, or None while it may. A pane
@@ -340,7 +341,7 @@ def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
     newest = []
     for sid in present:
         chain = builder.session_chain(builder.find_session_file(sid))
-        newest.append(builder.canonical_session_id(chain[-1].stem) or chain[-1].stem)
+        newest.append(builder.log_session_id(chain[-1]))
     added = [sid for sid in dict.fromkeys(newest) if sid not in ids]
     if added:
         ids += added

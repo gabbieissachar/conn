@@ -3,7 +3,7 @@
 
 Throwaway prototype for the design checkpoint in ../DESIGN.md. It only reads:
 Claude Code session logs under ~/.claude/projects, Codex rollout logs under
-~/.codex/sessions, the Firstmate fleet
+~/.codex/sessions, GitHub Copilot CLI session logs under ~/.copilot/session-state, the Firstmate fleet
 records under each home's state/ folder, and Herdr's live pane list (for the
 pane labels). It writes only the page and, beside it, a cache of pane labels
 so a closed pane keeps its name and a cache of each log's parsed turns (parsed/)
@@ -79,6 +79,10 @@ STEP_OUTPUTS = "steps"  # beside the page: one <conversation id>.json of each co
 PROJECTS = Path(os.environ["PMOS_READER_PROJECTS"]) if os.environ.get("PMOS_READER_PROJECTS") else Path.home() / ".claude" / "projects"
 # Codex stores one rollout JSONL per session. The optional override keeps parser tests and isolated labs away from a real home.
 CODEX_SESSIONS = Path(os.environ["PMOS_READER_CODEX_SESSIONS"]) if os.environ.get("PMOS_READER_CODEX_SESSIONS") else Path.home() / ".codex" / "sessions"
+# The Copilot CLI keeps one folder per session under <home>/session-state/<session id>/, whose events.jsonl is the conversation. The
+# optional override keeps parser tests and isolated labs away from a real home.
+COPILOT_HOME = Path(os.environ["PMOS_READER_COPILOT_HOME"]) if os.environ.get("PMOS_READER_COPILOT_HOME") else Path.home() / ".copilot"
+COPILOT_EVENTS = "events.jsonl"
 MAIN_HOME = Path.home() / "fm-homes" / "pmos"
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 CODEX_ROLLOUT_RE = re.compile(r"^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$")
@@ -572,6 +576,159 @@ def codex_session_exchanges(records) -> list[dict]:
     return exchanges
 
 
+# Copilot's tool names, in the words of the Claude tool each one is drawn as (tool_steps.KINDS).
+COPILOT_TOOLS = {"bash": "Bash", "read_bash": "BashOutput", "stop_bash": "KillShell", "view": "Read", "rg": "Grep", "glob": "Glob",
+                 "web_fetch": "WebFetch", "tool_search_tool": "ToolSearch", "skill": "Skill", "task": "Agent", "ask_user": "AskUserQuestion"}
+COPILOT_HEADING = re.compile(r"^\*\*(.+?)\*\*[ \t]*$", re.M)
+
+
+def copilot_thought_text(value) -> str:
+    """A Copilot reasoning summary as a plain working note: its bold heading lines lose their asterisks (a note is drawn as plain text)."""
+    return COPILOT_HEADING.sub(r"\1", value).strip() if isinstance(value, str) else ""
+
+
+def copilot_tool_blocks(name, arguments, cwd: str = "") -> list[dict]:
+    """The tool_use blocks (name and input in a Claude call's words) of one Copilot tool call, so tool_steps draws them as it does a
+    Claude step. A patch is one call that touches several files, so it makes one block for each."""
+    name = str(name or "tool")
+    if name == "apply_patch":
+        return tool_steps.patch_blocks(arguments if isinstance(arguments, str) else "", cwd) or [{"name": name, "input": {}}]
+    args = arguments if isinstance(arguments, dict) else {}
+
+    def text(key: str) -> str:
+        value = args.get(key)
+        return str(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
+
+    paths = args.get("paths") if isinstance(args.get("paths"), list) else []
+    where = next((path for path in paths if isinstance(path, str) and path), "")
+    mapped = COPILOT_TOOLS.get(name)
+    if mapped == "Bash":
+        tool_input = {"command": text("command"), "description": text("description")}
+    elif mapped == "BashOutput":
+        tool_input = {"bash_id": text("shellId")}
+    elif mapped == "KillShell":
+        tool_input = {"shell_id": text("shellId")}
+    elif mapped == "Read":
+        tool_input = {"file_path": text("path")}
+    elif mapped in ("Grep", "Glob"):
+        tool_input = {"pattern": text("pattern"), **({"path": where} if where else {})}
+    elif mapped == "WebFetch":
+        tool_input = {"url": text("url")}
+    elif mapped == "ToolSearch":
+        tool_input = {"query": text("query")}
+    elif mapped == "Skill":
+        tool_input = {"skill": text("skill")}
+    elif mapped == "Agent":
+        tool_input = {"description": text("description") or text("name"), "subagent_type": text("agent_type"), "prompt": text("prompt")}
+    elif mapped == "AskUserQuestion":
+        tool_input = {"questions": [{"question": text("message")}]}
+    else:
+        return [{"name": name, "input": args}]
+    return [{"name": mapped, "input": tool_input}]
+
+
+def copilot_session_exchanges(records) -> list[dict]:
+    """Split a Copilot CLI session (its events.jsonl) into the reader's existing exchange model.
+
+    What is read: `user.message` (the typed text, never `transformedContent`, which wraps it in the date and any skill's text),
+    `assistant.message` (its content, its plaintext `reasoningText` and its `toolRequests`), `tool.execution_start` and
+    `tool.execution_complete` (a call the message did not request, and every call's result) and `session.compaction_complete`.
+    Everything else (hooks, usage, the system prompt, permission records, `reasoningOpaque` and `encryptedContent`) is never
+    looked at. A helper agent's own events carry an `agentId`, and its prompt and replies stay out: the conversation holds
+    the `task` call that ran it and that call's result.
+
+    A message sent while the agent was busy has `delivery: "steering"` and starts an absorbed exchange. A reasoning summary is a
+    working note only when a tool call follows it in the turn; the one that comes before the final answer is not part of it.
+    """
+    exchanges: list[dict] = []
+    current = None
+    calls: dict[str, list[dict]] = {}  # tool call id -> its steps (a patch has one for each file), so a result finds them
+    cwd = ""
+
+    def add_call(call_id, name, arguments, at, turn) -> None:
+        if turn is None or not isinstance(call_id, str) or call_id in calls:
+            return
+        steps = []
+        for block in copilot_tool_blocks(name, arguments, turn.get("cwd") or cwd):
+            turn["events"].append(("tool", block["name"], None))
+            turn["tools"] += 1
+            step = tool_steps.make_step(block, at, turn["texts"])
+            step["n"] = str(name or "tool")  # the step sheet names the tool as Copilot's log has it
+            turn.setdefault("steps", []).append(step)
+            steps.append(step)
+            turn.setdefault("touched", []).extend(tool_documents(block.get("input"), turn.get("cwd") or cwd))
+        calls[call_id] = steps
+
+    for record in records:
+        data = record.get("data")
+        if record.get("agentId") or not isinstance(data, dict) or data.get("parentToolCallId"):
+            continue
+        kind = record.get("type")
+        timestamp = record.get("timestamp")
+        at = iso_to_epoch(timestamp)
+        if kind in ("session.start", "session.resume"):
+            where = (data.get("context") or {}).get("cwd") if isinstance(data.get("context"), dict) else None
+            if isinstance(where, str) and where:
+                cwd = where
+        elif kind == "user.message":
+            text = data.get("content")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            source, sub, label = classify_input(text, None, False)
+            current = new_exchange(source, sub, label, clean_input(text), timestamp, absorbed=data.get("delivery") == "steering" and current is not None,
+                                   uid=turn_id({"uuid": data.get("messageId")}, text))
+            current["signal_task"] = signal_task(text) if source == "wake" else None
+            if cwd:
+                current["cwd"] = cwd
+            exchanges.append(current)
+        elif kind == "assistant.message" and current is not None:
+            thought = copilot_thought_text(data.get("reasoningText"))
+            if thought:
+                current["events"].append(("thought", thought, at))
+                current["texts"] += 1
+            content = data.get("content")
+            if isinstance(content, str) and content.strip():
+                current["events"].append(("text", content, at))
+                current["texts"] += 1
+            for request in data.get("toolRequests") or []:
+                if isinstance(request, dict):
+                    add_call(request.get("toolCallId"), request.get("name"), request.get("arguments"), at, current)
+        elif kind == "tool.execution_start":
+            add_call(data.get("toolCallId"), data.get("toolName"), data.get("arguments"), at, current)
+        elif kind == "tool.execution_complete":
+            steps = calls.get(data.get("toolCallId"))
+            if not steps:
+                continue
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            error = data.get("error") if isinstance(data.get("error"), dict) else {}
+            shell = data.get("shellExecution") if isinstance(data.get("shellExecution"), dict) else {}
+            exit_code = shell.get("exitCode")
+            failed = data.get("success") is False or (isinstance(exit_code, int) and exit_code != 0)
+            output = result.get("content") if isinstance(result.get("content"), str) else ""
+            for step in steps:
+                tool_steps.apply_result(step, {"content": output or str(error.get("message") or ""), "is_error": failed})
+        elif kind == "session.compaction_complete" and data.get("success") is not False:
+            divider = new_exchange("session", "compacted", "Earlier context was summarised", "", timestamp)
+            exchanges.append(divider)  # the turn that was running goes on after it, so it stays the current one
+    for exchange in exchanges:
+        # A reasoning summary that no tool call follows led to the final answer, not to a step.
+        events = exchange["events"]
+        last_tool = max((i for i, event in enumerate(events) if event[0] == "tool"), default=-1)
+        exchange["events"] = [("text", *event[1:]) if event[0] == "thought" else event
+                              for i, event in enumerate(events) if event[0] != "thought" or i < last_tool]
+        finish_exchange(exchange)
+    for i, exchange in enumerate(exchanges):
+        later = exchanges[i + 1:]
+        run = next((n for n, item in enumerate(later) if not item["absorbed"]), len(later))
+        exchange["answered_below"] = not exchange["reply"] and any(item["reply"] for item in later[:run])
+    if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
+        exchanges[-1]["folded"] = False
+    latest = next((item for item in reversed(exchanges) if item["reply"]), None)
+    if latest:
+        latest["folded"] = False
+    return exchanges
+
+
 def finish_exchange(exchange: dict) -> None:
     events = exchange.pop("events")
     exchange.pop("texts", None)
@@ -656,11 +813,26 @@ def project_folder(home: Path) -> Path:
 
 
 def canonical_session_id(value: str) -> str | None:
-    """Return a native session id, including when Codex reported its rollout filename."""
+    """Return a native session id, including when Codex reported its rollout filename or a Copilot events.jsonl was named."""
     if SESSION_ID_RE.fullmatch(value):
         return value
-    match = CODEX_ROLLOUT_RE.fullmatch(Path(value).name)
+    named = Path(value)
+    if named.name == COPILOT_EVENTS and SESSION_ID_RE.fullmatch(named.parent.name):
+        return named.parent.name
+    match = CODEX_ROLLOUT_RE.fullmatch(named.name)
     return match.group(1) if match else None
+
+
+def log_key(path: Path) -> str:
+    """What a session log is called: its file name without the suffix, except that every Copilot conversation is an events.jsonl
+    inside a folder named for the session, so that folder's name is the key."""
+    return path.parent.name if path.name == COPILOT_EVENTS and SESSION_ID_RE.fullmatch(path.parent.name) else path.stem
+
+
+def log_session_id(path: Path) -> str:
+    """The native session id of a log: a Claude log's own name, a Codex rollout's id, a Copilot session's folder name."""
+    key = log_key(path)
+    return canonical_session_id(key) or key
 
 
 _CODEX_INDEX: tuple[float, Path, list[Path], dict[str, Path], dict[str, Path]] | None = None
@@ -719,12 +891,63 @@ def is_codex_log(path: Path) -> bool:
     return codex_metadata(path) is not None
 
 
+_COPILOT_INDEX: tuple[float, Path, list[Path], dict[str, Path]] | None = None
+
+
+def copilot_metadata(path: Path) -> dict | None:
+    """The identity of a Copilot session's events.jsonl, from its first record (session.start) and without reading the conversation."""
+    if path.name != COPILOT_EVENTS or not SESSION_ID_RE.fullmatch(path.parent.name):
+        return None
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            record = json.loads(handle.readline())
+    except (OSError, json.JSONDecodeError):
+        return None
+    data = record.get("data") if isinstance(record, dict) else None
+    if not isinstance(data, dict) or record.get("type") != "session.start" or data.get("sessionId") != path.parent.name:
+        return None
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    cwd = context.get("cwd")
+    return {"session": path.parent.name, "cwd": os.path.realpath(cwd) if isinstance(cwd, str) and cwd else "", "timestamp": record.get("timestamp") or ""}
+
+
+def is_copilot_log(path: Path) -> bool:
+    """Whether <path> is the events.jsonl of a Copilot CLI session the reader accepts."""
+    return copilot_metadata(path) is not None
+
+
+def copilot_log_index() -> tuple[list[Path], dict[str, Path]]:
+    """Copilot sessions' events.jsonl files and each one by its session id, newest first."""
+    global _COPILOT_INDEX
+    now = time.monotonic()
+    state = COPILOT_HOME / "session-state"
+    if _COPILOT_INDEX and _COPILOT_INDEX[1] == state and now - _COPILOT_INDEX[0] < LOG_LIST_REUSE:
+        return _COPILOT_INDEX[2:]
+    logs, by_id = [], {}
+    try:
+        candidates = sorted(state.glob(f"*/{COPILOT_EVENTS}"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        candidates = []
+    for path in candidates:
+        metadata = copilot_metadata(path)
+        if metadata:
+            logs.append(path)
+            by_id.setdefault(metadata["session"], path)
+    _COPILOT_INDEX = (now, state, logs, by_id)
+    return logs, by_id
+
+
+def copilot_session_files(prefix: str = "") -> list[Path]:
+    """Copilot events.jsonl files whose session id starts with <prefix>."""
+    return sorted(path for session, path in copilot_log_index()[1].items() if session.startswith(prefix))
+
+
 def find_session_file(session: str) -> Path | None:
     candidate = Path(session).expanduser()
     if candidate.is_file():
         return candidate
     canonical = canonical_session_id(session) or session
-    return log_index()[1].get(canonical) or codex_log_index()[1].get(canonical)
+    return log_index()[1].get(canonical) or codex_log_index()[1].get(canonical) or copilot_log_index()[1].get(canonical)
 
 
 def home_sessions(home: Path, since: float, limit: int = 4) -> list[Path]:
@@ -898,14 +1121,14 @@ def chain_exchanges(chain: list[Path], loaded: dict[Path, dict]) -> list[dict]:
             ended = member != path
             after = chain[chain.index(member) + 1] if ended else None
             how = "cleared later" if after and cleared_at(head_records(after)) is not None else "until Claude restarted"
-            label = f"Session {member.stem[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
+            label = f"Session {log_key(member)[:8]}" + (f", {how}; replies go to the newest" if ended else ", the newest in this pane")
             divider = new_exchange("session", "cleared" if ended else "current", label, "", None)
             divider["at"] = loaded[member]["first_time"]
             finish_exchange(divider)
             part.insert(0, divider)
             if ended:
                 for exchange in part[1:]:
-                    exchange["from_session"] = member.stem
+                    exchange["from_session"] = log_key(member)
         if member == path:
             mark_compacted_away(part)
         exchanges += part
@@ -942,10 +1165,12 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     where = Path(cwd).relative_to(home["home"]).as_posix() if cwd.startswith(str(home["home"]) + "/") else ""
     if where.startswith("state/.treehouse/"):
         where = "worker copy"  # a worker's isolated copy, not the home's own clone
-    session_id = canonical_session_id(path.stem) or path.stem
-    ids = [canonical_session_id(member.stem) or member.stem for member in chain]
+    session_id = log_session_id(path)
+    ids = [log_session_id(member) for member in chain]
     session = {"home": home["id"], "id": session_id, "ids": ids, "file": str(path), "where": where,
                "exchanges": exchanges}
+    if is_copilot_log(path):
+        session["agent"] = "copilot"  # the page turns Send off for it: only Claude and Codex panes can be sent to
     leader = leader_info(cwd)
     if leader:
         session["leader"] = leader
@@ -1227,6 +1452,128 @@ def codex_pane_session(claimed: str | None, process_info: dict | None) -> str | 
     return None
 
 
+def copilot_process(process: dict) -> bool:
+    """Whether a foreground process is the Copilot CLI (a process named copilot)."""
+    command = str(process.get("command") or process.get("cmdline") or "").split(None, 1)
+    return Path(str(process.get("argv0") or "")).name == "copilot" or bool(command and Path(command[0]).name == "copilot")
+
+
+# A Copilot process writes `<time> [INFO] Registering foreground session: <id>` to its own log when it starts on a session and again at
+# each /resume and /new, so the newest such line names the session its pane shows. That log is rotated at 10 MB into
+# process-<start>-<pid>.1.log (and fills thousands of lines a minute in a fault of some builds), so the line can end up in the rotated file
+# or be gone. The reader therefore reads every file of the process, keeps the newest line any look saw, and writes it to
+# COPILOT_PANES_FILE (a process's key is its start time and pid), which the next look, here or in api.js, reads when the logs no longer say.
+COPILOT_PROCESS_LOG = re.compile(r"process-(\d+)-(\d+)(?:\.\d+)?\.log")
+COPILOT_REGISTERED = re.compile(rb"(\d{4}-\d\d-\d\dT[\d:.]+Z) \[[A-Z]+\] Registering foreground session: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+COPILOT_LOG_READ_MAX = 64 * 1024 * 1024  # a process log is read up to this much of its end, at the first look
+COPILOT_PANES_FILE = DEFAULT_OUT.parent / "copilot-panes.json"
+COPILOT_PANES_KEEP_DAYS = 14
+_COPILOT_LOG_SCAN: dict[Path, tuple[int, int, tuple[str, str] | None]] = {}  # a process log -> (its inode, bytes read so far, its newest marker)
+_COPILOT_SEEN: dict[str, tuple[str, str]] = {}  # "<start>-<pid>" -> the newest (time, session) marker any look saw
+
+
+def copilot_log_marker(log: Path) -> tuple[str, str] | None:
+    """(time, session id) of the newest registering line in one process log. Each look reads only what the log gained since
+    the last one (and a line the last look ended in the middle of, whole)."""
+    try:
+        info = log.stat()
+    except OSError:
+        return None
+    size = info.st_size
+    inode, done, found = _COPILOT_LOG_SCAN.get(log, (info.st_ino, 0, None))
+    if inode != info.st_ino or size < done:
+        done, found = 0, None  # a rotation put another file at this name: read it from its start
+    if size > done:
+        start = max(0, done - 160, size - COPILOT_LOG_READ_MAX)
+        try:
+            with log.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(size - start)
+        except OSError:
+            return found
+        for match in COPILOT_REGISTERED.finditer(data):
+            marker = (match.group(1).decode(), match.group(2).decode())
+            if found is None or marker >= found:
+                found = marker
+        _COPILOT_LOG_SCAN[log] = (info.st_ino, size, found)
+    return found
+
+
+def copilot_panes_read() -> dict:
+    try:
+        value = json.loads(COPILOT_PANES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def copilot_panes_remember(key: str, marker: tuple[str, str]) -> None:
+    """Keep a process's newest marker, dropping the processes of the last COPILOT_PANES_KEEP_DAYS' older neighbours."""
+    stored = copilot_panes_read()
+    cutoff = (time.time() - COPILOT_PANES_KEEP_DAYS * 86400) * 1000
+    stored = {k: v for k, v in stored.items() if isinstance(v, dict) and k.split("-", 1)[0].isdigit() and int(k.split("-", 1)[0]) >= cutoff}
+    stored[key] = {"at": marker[0], "session": marker[1]}
+    try:
+        private_folder(COPILOT_PANES_FILE.parent)
+        write_private(COPILOT_PANES_FILE, json.dumps(stored, indent=1, sort_keys=True))
+    except OSError:
+        pass
+
+
+def copilot_pid_session(pid: int) -> str | None:
+    """The session the Copilot process <pid> shows: the newest session its logs or an earlier look registered for it, else the session
+    folder holding its inuse.<pid>.lock when that has a conversation (the lock names only the session the process started on, so a
+    /resume leaves it behind). None when neither says: never guessed from a label or a folder."""
+    state = COPILOT_HOME / "session-state"
+    files = []
+    try:
+        for log in (COPILOT_HOME / "logs").iterdir():
+            match = COPILOT_PROCESS_LOG.fullmatch(log.name)
+            if match and int(match.group(2)) == pid:
+                files.append((int(match.group(1)), log))
+    except OSError:
+        pass
+    if files:  # the process that runs now is the latest one to have had this pid
+        started = max(start for start, _ in files)
+        key = f"{started}-{pid}"
+        known = _COPILOT_SEEN.get(key)
+        if known is None:
+            stored = copilot_panes_read().get(key)
+            if isinstance(stored, dict) and isinstance(stored.get("at"), str) and isinstance(stored.get("session"), str):
+                known = (stored["at"], stored["session"])
+        best = known
+        for start, log in files:
+            marker = copilot_log_marker(log) if start == started else None
+            if marker and (best is None or marker > best):
+                best = marker
+        if best and best != known:
+            copilot_panes_remember(key, best)
+        if best:
+            _COPILOT_SEEN[key] = best
+            if SESSION_ID_RE.fullmatch(best[1]) and (state / best[1]).is_dir():
+                return best[1]
+    locks = []
+    try:
+        for lock in state.glob(f"*/inuse.{pid}.lock"):
+            if SESSION_ID_RE.fullmatch(lock.parent.name) and (lock.parent / COPILOT_EVENTS).is_file():
+                locks.append((lock.stat().st_mtime, lock.parent.name))
+    except OSError:
+        pass
+    return max(locks)[1] if locks else None
+
+
+def copilot_pane_session(process_info: dict | None) -> str | None:
+    """Map a live Copilot pane to the session its foreground Copilot process shows, or None (never guessed from a label or a folder)."""
+    if not process_info:
+        return None
+    for process in process_info.get("foreground_processes") or []:
+        if isinstance(process, dict) and copilot_process(process) and isinstance(process.get("pid"), int):
+            found = copilot_pid_session(process["pid"])
+            if found:
+                return found
+    return None
+
+
 def herdr_panes() -> dict[str, dict]:
     """Session id -> the Herdr pane running it, from every running Herdr session (see herdr_inventory)."""
     return herdr_inventory()[0]
@@ -1259,7 +1606,7 @@ def herdr_inventory() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
     session could not be read, since a pane missing from a partial list has not closed.
 
     Read-only: `herdr session list`, `pane list`, `tab list`, and `pane process-info` for
-    Claude or Codex panes when their identity needs checking. No Herdr, no labels.
+    Claude, Codex or Copilot panes when their identity needs checking. No Herdr, no labels.
     """
     if _FROZEN is not None and _FROZEN_PANES:
         panes, pane_ids = _FROZEN_PANES[0]
@@ -1312,6 +1659,9 @@ def read_herdr() -> tuple[dict[str, dict], set[tuple[str, str]] | None]:
                 info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
                 actual = codex_pane_session(claimed, info)
                 pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": actual}
+            if pane.get("agent") == "copilot" and pane.get("pane_id"):  # Herdr names no session for a Copilot pane
+                info = ((call("--session", name, "pane", "process-info", "--pane", pane["pane_id"]) or {}).get("result") or {}).get("process_info")
+                pane["agent_session"] = {**(pane.get("agent_session") or {}), "value": copilot_pane_session(info)}
             # Herdr also keeps the session id of an agent that has exited: the pane then names no agent at all
             # and its state is unknown, while its shell runs in the foreground. So a session id no running
             # Claude holds is checked against the pane's foreground whether or not Herdr still names Claude.
@@ -1407,7 +1757,7 @@ def closed_panes(cache_path: Path, live: dict[str, dict], shown: set[str], days:
         if item["id"] in joined:
             continue
         if sum(other["herdr"] == item["herdr"] and other["label"] == item["label"] for other in found) > 1:
-            joined.update(member.stem for member in session_chain(item["path"]))
+            joined.update(log_key(member) for member in session_chain(item["path"]))
         offered.append({k: v for k, v in item.items() if k != "path"})
     return offered[:limit]
 
@@ -2034,7 +2384,7 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
     a caller may change the turns it gets.
     """
     version = file_version(path)
-    saved = cache / f"{path.stem}.json" if cache else None
+    saved = cache / f"{log_key(path)}.json" if cache else None
     if saved and version:
         try:
             entry = json.loads(saved.read_text(encoding="utf-8"))
@@ -2046,6 +2396,7 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
             pass
     seen = {"first_time": None, "cwd": ""}
     codex = is_codex_log(path)
+    copilot = is_copilot_log(path)
 
     def records():
         for record in iter_jsonl(path):
@@ -2057,10 +2408,14 @@ def parsed_log(path: Path, cache: Path | None) -> dict:
                 payload = record.get("payload") or {}
                 if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
                     seen["cwd"] = payload["cwd"]
+            if not seen["cwd"] and copilot:
+                context = (record.get("data") or {}).get("context")
+                if isinstance(context, dict) and isinstance(context.get("cwd"), str):
+                    seen["cwd"] = context["cwd"]
             yield record
 
     try:
-        parser = codex_session_exchanges if codex else session_exchanges
+        parser = copilot_session_exchanges if copilot else codex_session_exchanges if codex else session_exchanges
         log = {"exchanges": parser(records()), **seen}
     except OSError:
         log = {"exchanges": [], "first_time": None, "cwd": ""}
@@ -2455,7 +2810,7 @@ def chains_frozen():
 def session_chain(path: Path, limit: int = 20) -> list[Path]:
     """The sessions one Claude Code pane ran across /clear, or across Claude restarted in the
     same pane, oldest first, including <path>."""
-    if is_codex_log(path):
+    if is_codex_log(path) or is_copilot_log(path):
         return [path]
     if _FROZEN is not None:
         if (path, limit) not in _FROZEN:
@@ -2516,7 +2871,7 @@ def pane_neighbours(path: Path) -> list[Path]:
     if not mine:
         return []
     found = (find_session_file(sid) for sid, entry in _PANE_HISTORY.items() if sid != path.stem and same_pane(mine, entry))
-    return [log for log in found if log]
+    return [log for log in found if log and not is_copilot_log(log)]  # a Copilot session never joins a Claude chain
 
 
 def pane_cleared_from(path: Path, clear_time: float) -> Path | None:
