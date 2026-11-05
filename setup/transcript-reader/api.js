@@ -141,7 +141,7 @@
 // (worker.js), which falls back to a fresh reader.py for a request it cannot take. Each rebuild also leaves the lite page's files in out/live/
 // and the glance feed in out/glance.json (build_prototype.write_live); this module serves the first and never reads the second. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
-// every live Claude pane's session not yet listed, except one a person closed or removed. The pins, stars and sheet-flags files are the only things written outside out/, and only on a pin, an unpin, a star, an unstar, a mark or a cleared mark.
+// every live Claude pane's session not yet listed, except one a person closed or removed. The one other change to the list that is not a click is a pane that a listed conversation ran in moving on to a new session (a /clear): the new session is listed (adopt) once it has a log. The pins, stars and sheet-flags files are the only things written outside out/, and only on a pin, an unpin, a star, an unstar, a mark or a cleared mark.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
 // the hosted copy's queue: queue writes the request to a folder and drain.js sends it later
 // through this module's own sendPrompt, so both routes check the pane the same way.
@@ -890,6 +890,20 @@ function create({
     return built === null || (build.newest > built * 1000 && build.newest > build.rebuiltFor);
   }
 
+  // List the session a listed pane moved on to (see paneRuns) once it has a log. True when it started the rebuild that lists it.
+  function adoptCleared(ids) {
+    for (const [id, seen] of cleared) {
+      if (ids.includes(id) || now() - seen.at > CLEARED_GIVE_UP_MS) { cleared.delete(id); continue; }
+      if (build.running || !logPath(id)) continue;  // no log yet: looked at again with the next look at the panes or the logs
+      const failed = build.failedAdds.get(id);
+      if (failed && now() - failed <= RETRY_AFTER_FAILURE_MS) continue;
+      if (waitForTurn()) return true;
+      runReader(['adopt', id], id);
+      return true;
+    }
+    return false;
+  }
+
   // Rebuild when a listed session's log is newer than the page or its pane closed, or add the focused session.
   function maybeRebuild(ids, focused, follow) {
     if (build.running || now() - build.lastEnd < REBUILD_GAP_MS) return;
@@ -898,6 +912,7 @@ function create({
       if (!failed || now() - failed > RETRY_AFTER_FAILURE_MS) { runReader(['follow', focused.session_id], focused.session_id); return; }
     }
     if (build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS) return;
+    if (adoptCleared(ids)) return;
     if ((ids.length || build.paneClosed) && (build.paneClosed || logsNewer(ids))) {
       if (waitForTurn()) return;
       build.paneClosed = false; build.rebuiltFor = build.newest; runReader(['rebuild']);
@@ -956,7 +971,8 @@ function create({
     syncFolders();
     if (!build.running && now() - build.lastEnd >= REBUILD_GAP_MS && !(build.failedAt && now() - build.failedAt < RETRY_AFTER_FAILURE_MS)) {
       const ids = listed();
-      if (ids.length && logsNewer(ids) && !waitForTurn()) { build.rebuiltFor = build.newest; runReader(['rebuild']); }
+      if (adoptCleared(ids)) { /* the new session of a cleared pane is being listed */ }
+      else if (ids.length && logsNewer(ids) && !waitForTurn()) { build.rebuiltFor = build.newest; runReader(['rebuild']); }
     }
     answerWaiters();
   }
@@ -1029,9 +1045,29 @@ function create({
     if (readerWorker) readerWorker.stop();
   }
 
+  // A listed conversation whose pane now runs a session that is not listed (a /clear, a /new, an agent started again in the pane), by the
+  // new session's id: when it was first seen, and the session the pane ran before. The new session is listed (reader.py adopt) as soon as its
+  // log exists, which can be after the pane already runs it (the first message after a clear writes it), and nothing else may be about to
+  // rebuild: a quiet fleet writes no other log. Followed by the look in maybeRebuild and the sweep (adoptCleared).
+  const paneRuns = new Map();  // `${Herdr session}|${pane id}` -> the session last seen running there
+  const cleared = new Map();
+  const CLEARED_GIVE_UP_MS = 30 * 60 * 1000;
+
   function notePaneChanges(ids, sessions) {
     if (!sessions.length) return;  // Herdr not answering says nothing about panes
     const live = new Set(sessions.flatMap((session) => session.panes.map((pane) => pane.session_id)));
+    const byHand = closedByHand();
+    for (const session of sessions) {
+      for (const pane of session.panes) {
+        if (!pane.session_id) continue;  // an agent between sessions keeps what it ran before
+        const key = session.name + '|' + pane.pane_id;
+        const before = paneRuns.get(key);
+        paneRuns.set(key, pane.session_id);
+        if (before && before !== pane.session_id && ids.includes(before) && !ids.includes(pane.session_id) && !byHand.includes(pane.session_id)) {
+          cleared.set(pane.session_id, { at: now(), from: before });
+        }
+      }
+    }
     for (const id of seenLive) {
       if (live.has(id)) continue;
       seenLive.delete(id);

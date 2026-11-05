@@ -2460,3 +2460,74 @@ test('rerender: builds the pages again now, after a running build, and says plai
     assert.match(failed.json.message, /boom/);
   } finally { await t.close(); }
 });
+
+// A /clear in a pane the reader lists. The process record (and Herdr) name the new session at once; its log may appear a moment later, or
+// only when the first prompt is typed. The conversation must continue in it whenever it does: nothing but the state's own looks are
+// around to notice (a quiet fleet writes no other log that would start a rebuild).
+const CLEARED = 'dd0dd0dd-5555-4555-8555-555555555555';
+const clearedWorld = (herdr, tree) => {
+  fs.mkdirSync(tree.claudeSessionsDir, { recursive: true });
+  const record = (sessionId) => fs.writeFileSync(path.join(tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId, cwd: tree.root }));
+  record(A);
+  herdr.processInfo['w1:p1'] = [{ pid: process.pid, argv0: 'claude' }];
+  return { record };
+};
+const adoptions = (t) => t.herdr.readerRuns().filter((run) => run[0] === 'adopt');
+
+test('clear: a listed pane that runs a new session is adopted once the new session has a log, however late the log comes', async () => {
+  let world;
+  const t = await start({ options: (herdr, tree) => { world = clearedWorld(herdr, tree); return {}; } });
+  try {
+    assert.equal((await t.state()).json.panes[A].label, 'leader-alpha', 'the pane runs A, which is listed');
+    // /clear: the record names the new session; its log does not exist yet.
+    world.record(CLEARED);
+    t.tick(5000);
+    await t.state(); await t.settle();
+    t.tick(5000);
+    await t.state(); await t.settle();
+    assert.deepEqual(adoptions(t), [], 'nothing to list while the new session has no log');
+    // The log appears (the first message after the clear), with no other log changing anywhere.
+    fs.writeFileSync(t.tree.logOf(CLEARED), '{}\n');
+    t.tick(5000);
+    await t.state(); await t.settle();
+    assert.deepEqual(adoptions(t), [['adopt', CLEARED]], 'the new session is listed so the conversation continues in it');
+    // And not again once it is listed.
+    fs.writeFileSync(path.join(t.tree.outDir, 'sessions.txt'), `${A}\n${B}\n${CLEARED}\n`);
+    t.tick(5000);
+    await t.state(); await t.settle();
+    assert.deepEqual(adoptions(t), [['adopt', CLEARED]]);
+  } finally { await t.close(); }
+});
+
+test('clear: a pane whose earlier session was not on the list is not listed because it changed session', async () => {
+  let world;
+  const t = await start({ options: (herdr, tree) => {
+    world = clearedWorld(herdr, tree);
+    fs.writeFileSync(path.join(tree.outDir, 'sessions.txt'), `${B}\n`);  // A is not read
+    return {};
+  } });
+  try {
+    await t.state();
+    world.record(CLEARED);
+    fs.writeFileSync(t.tree.logOf(CLEARED), '{}\n');
+    t.tick(5000);
+    await t.state(); await t.settle();
+    t.tick(5000);
+    await t.state(); await t.settle();
+    assert.deepEqual(adoptions(t), [], 'only a conversation the owner reads continues by itself; the others wait for Sync or Follow');
+  } finally { await t.close(); }
+});
+
+test('clear: a session the owner took off the list is not brought back by its pane clearing', async () => {
+  let world;
+  const t = await start({ options: (herdr, tree) => { world = clearedWorld(herdr, tree); return {}; } });
+  try {
+    await t.state();
+    fs.writeFileSync(path.join(t.tree.outDir, 'closed.txt'), `${CLEARED}\n`);
+    world.record(CLEARED);
+    fs.writeFileSync(t.tree.logOf(CLEARED), '{}\n');
+    t.tick(5000);
+    await t.state(); await t.settle();
+    assert.deepEqual(adoptions(t), []);
+  } finally { await t.close(); }
+});

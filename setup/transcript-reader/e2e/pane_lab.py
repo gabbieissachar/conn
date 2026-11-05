@@ -21,6 +21,9 @@ reported by Herdr WITHOUT a session id, two of those in one working folder.
 Every agent process is a `sleep` the lab starts (its pid goes in the records the reader reads, so it counts as alive); the driver stops them.
 Replies are timed so the four panes above sit in the middle of the picker, and crew-8 is the oldest, last in the list.
 
+LAB_FILLERS=<n> adds n more listed conversations without a pane, and LAB_BIG_EXCHANGES=<n> makes each crew conversation n exchanges long, so a
+check can run at the size of the owner's reading list (about 90 conversations, the biggest about 900 exchanges).
+
 Prints one JSON line: what the driver needs.
 """
 
@@ -53,10 +56,17 @@ def iso(at):
     return datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def claude_log(path, name, minutes_ago, cwd, latest=None):
-    """A Claude Code session log with two exchanges whose last reply is `minutes_ago` old (`latest` is that reply's text, when given)."""
+def claude_log(path, name, minutes_ago, cwd, latest=None, exchanges=2):
+    """A Claude Code session log with `exchanges` exchanges (two by default) whose last reply is `minutes_ago` old (`latest` is that reply's text, when given)."""
     at = NOW - minutes_ago * 60
-    records = [
+    earlier = []
+    for n in range(exchanges - 2):
+        base = at - 3600 - (exchanges - n) * 30
+        earlier += [
+            {"type": "user", "uuid": f"u-{name}-e{n}", "timestamp": iso(base), "cwd": cwd, "message": {"role": "user", "content": f"Earlier question {n} in {name}"}},
+            {"type": "assistant", "timestamp": iso(base + 10), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": f"Earlier answer {n} in {name}. " + "A sentence of the answer. " * 20}]}},
+        ]
+    records = earlier + [
         {"type": "user", "uuid": f"u-{name}-1", "timestamp": iso(at - 20), "cwd": cwd, "message": {"role": "user", "content": f"First question in {name}"}},
         {"type": "assistant", "timestamp": iso(at - 15), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": f"First answer in {name}."}]}},
         {"type": "user", "uuid": f"u-{name}-2", "timestamp": iso(at - 10), "cwd": cwd, "message": {"role": "user", "content": f"Second question in {name}"}},
@@ -128,9 +138,10 @@ def main(folder: Path) -> None:
     pids["codex"] = sleeper()
     # The crew: three newer than the four above, five older.
     ages = [5, 10, 15, 60, 70, 80, 90, 100]
+    big = int(os.environ.get("LAB_BIG_EXCHANGES", "2"))  # exchanges in each crew conversation (a real leader's runs to about 900)
     for n, sid in enumerate(CREW):
         cwd = f"/lab/crew-{n + 1}"
-        claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd)
+        claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big)
         pids[f"crew-{n + 1}"] = sleeper(); record(primary, pids[f"crew-{n + 1}"], sid)
 
     tabs = [{"tab_id": "w1:t1", "label": "cp-ontology-learning"}, {"tab_id": "w1:t2", "label": "cp-ontology-search"}, {"tab_id": "w1:t3", "label": "cp-whatapps-tool"},
@@ -158,7 +169,13 @@ def main(folder: Path) -> None:
     subprocess.run(["rsync", "-a", "--exclude", "out", "--exclude", "__pycache__", "--exclude", "e2e", f"{READER}/", f"{code}/"], check=True)
     subprocess.run(["rsync", "-a", "--exclude", "test", "--exclude", "__pycache__", f"{READER.parent / 'herdr-organizer'}/", f"{code.parent / 'herdr-organizer'}/"], check=True)
     (code / "out").mkdir(exist_ok=True)
-    listed = [COPILOT, SEARCH, TOOL, CODEX, *CREW]
+    # LAB_FILLERS other listed conversations with no pane, as the owner's reading list has dozens: each its own project folder and log.
+    fillers = []
+    for n in range(int(os.environ.get("LAB_FILLERS", "0"))):
+        sid = f"f111e700-{n:04d}-4000-8000-{n:012d}"
+        claude_log(primary / "projects" / f"-lab-filler-{n}" / f"{sid}.jsonl", f"filler-{n}", 200 + n, f"/lab/filler-{n}", exchanges=max(2, big // 4))
+        fillers.append(sid)
+    listed = [COPILOT, SEARCH, TOOL, CODEX, *CREW, *fillers]
     (code / "out" / "sessions.txt").write_text("".join(f"{sid}\n" for sid in listed), encoding="utf-8")
     (folder / "bin").mkdir(exist_ok=True)
     herdr = folder / "bin" / "herdr"

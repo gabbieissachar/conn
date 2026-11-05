@@ -226,6 +226,10 @@ class PaneView:
         if key not in self.listed or not builder.same_life(entry, builder.HERDR_LIVES.get(entry.get("herdr"))):
             return "its Herdr pane has closed"
         if key in self.occupant:  # closed() has seen that none of this conversation's sessions is it
+            # A /clear starts a session whose log may not exist yet (the first message writes it). The conversation continues in it, so
+            # it is not dropped now: the server lists the new session when its log appears (api.js, adoptCleared).
+            if not builder.find_session_file(self.occupant[key]):
+                return None
             return "its pane runs another session now"
         started = builder.HERDR_STARTS.get(entry.get("herdr"))
         if started is not None and time.time() - started > HERDR_GRACE:

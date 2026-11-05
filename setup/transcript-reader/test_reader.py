@@ -448,6 +448,22 @@ class ClosedPanesTest(unittest.TestCase):
         self.assertEqual(reader.drop_closed([A]), [])
         self.assertEqual(builder.read_ids(reader.DROPPED), [A], "and it is offered under Closed panes, listed again if it runs again")
 
+    def test_a_pane_that_runs_a_session_with_no_log_yet_has_not_left_its_session(self):
+        # A /clear: the pane runs a new session before that session's log exists. Dropping A now would take the conversation off the list at
+        # the moment it is about to continue, and nothing would list the new session when its log appears.
+        self.seen(A)
+        fresh = "dddddddd-4444-4444-8444-444444444444"  # no log under projects/
+        self.live = {fresh: {**PANES[B], "pane": "w1:p1"}}
+        self.listed = {("work", "w1:p1")}
+        view = reader.PaneView()
+        self.assertIsNone(view.why_closed(A), "its pane runs a session the reader cannot read yet")
+        self.assertEqual(reader.drop_closed([A]), [A])
+        self.assertFalse(reader.DROPPED.exists())
+        # Once that session has a log that is not A's conversation, the pane has moved on, as it always did.
+        (builder.PROJECTS / "-Users-someone-home" / f"{fresh}.jsonl").write_text("{}\n", encoding="utf-8")
+        builder._LOG_INDEX.clear()  # the worker forgets which logs exist before every request
+        self.assertEqual(reader.PaneView().why_closed(A), "its pane runs another session now")
+
     def test_a_cleared_session_stays_while_a_later_session_of_its_conversation_runs_in_the_pane(self):
         folder = builder.PROJECTS / "-Users-someone-home"
         self.chains = {A: [folder / f"{A}.jsonl", folder / f"{B}.jsonl"]}
