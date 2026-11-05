@@ -33,6 +33,7 @@ Opened in a supported browser, the page:
 The local reader discovers native Codex CLI rollouts under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.
 It maps a Herdr Codex pane to the root rollout whose `session_meta` has `source: "cli"` and the same foreground working directory.
 Subagent rollouts are excluded because their source is not `cli`.
+Only the first line of each rollout is read, and it is remembered by file path, mtime and size, so listing a large `~/.codex/sessions` does not read the conversations.
 The parser reads user and assistant messages, Codex tool calls and results, and plaintext reasoning summaries.
 It ignores encrypted reasoning content and duplicate `event_msg` records.
 Send checks that the exact Codex rollout still owns the pane's foreground before it clears the input and prompts it.

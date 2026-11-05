@@ -2033,6 +2033,103 @@ test('Codex: a rollout filename already in the reading list becomes one native s
   } finally { await t.close(); }
 });
 
+// What the server asks of the file system while a test runs: the bytes read from Codex rollouts (by path), how many rollouts were
+// opened, and how many times the Codex sessions folder was listed.
+function watchRollouts(codexDir, body) {
+  const seen = { bytes: 0, opened: new Set(), opens: 0, walks: 0 };
+  const { openSync, readSync, readFileSync, readdirSync } = fs;
+  const handles = new Map();
+  const isRollout = (file) => typeof file === 'string' && path.basename(file).startsWith('rollout-') && file.startsWith(codexDir);
+  fs.openSync = function (file, ...rest) { const fd = openSync.call(this, file, ...rest); if (isRollout(file)) { handles.set(fd, file); seen.opens += 1; seen.opened.add(file); } return fd; };
+  fs.readSync = function (fd, ...rest) { const read = readSync.call(this, fd, ...rest); if (handles.has(fd)) seen.bytes += read; return read; };
+  fs.readFileSync = function (file, ...rest) { if (isRollout(file)) { seen.opens += 1; seen.opened.add(file); } const data = readFileSync.call(this, file, ...rest); if (isRollout(file)) seen.bytes += data.length; return data; };
+  fs.readdirSync = function (dir, ...rest) { if (dir === codexDir) seen.walks += 1; return readdirSync.call(this, dir, ...rest); };
+  const restore = () => { fs.openSync = openSync; fs.readSync = readSync; fs.readFileSync = readFileSync; fs.readdirSync = readdirSync; };
+  return Promise.resolve().then(() => body(seen)).finally(restore);
+}
+
+// A rollout as Codex keeps it: the session_meta record first, then a conversation that is megabytes long.
+function writeBigCodexLog(tree, id, cwd, bodyBytes) {
+  const file = writeCodexLog(tree, id, cwd);
+  fs.appendFileSync(file, JSON.stringify({ type: 'event_msg', payload: { text: 'x'.repeat(1000) } }) + '\n');
+  const line = JSON.stringify({ type: 'response_item', payload: { text: 'y'.repeat(1000) } }) + '\n';
+  for (let written = 0; written < bodyBytes; written += line.length) fs.appendFileSync(file, line);
+  return file;
+}
+
+test('Codex: a rollout is read from its start only, and read again only when it changes', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    writeBigCodexLog(tree, A, tree.root, 3 * 1024 * 1024);
+    writeBigCodexLog(tree, B, path.join(tree.root, 'other'), 3 * 1024 * 1024);
+    herdr.panes[0] = { ...herdr.panes[0], agent: 'codex', agent_session: { value: null } };
+    herdr.panes[1] = { ...herdr.panes[1], agent: 'codex', agent_session: { value: null } };
+    herdr.processInfo['w1:p1'] = [{ pid: 9001, argv0: 'codex', cwd: tree.root }];
+    herdr.processInfo['w1:p2'] = [{ pid: 9002, argv0: 'codex', cwd: path.join(tree.root, 'other') }];
+    return { pause: async () => {} };
+  } });
+  try {
+    await watchRollouts(t.tree.codexSessionsDir, async (seen) => {
+      const first = await t.state();
+      assert.equal(first.status, 200);
+      assert.deepEqual(Object.keys(first.json.panes).sort(), [A, B], 'both panes map to their rollouts');
+      assert.equal(seen.opened.size, 2);
+      assert.ok(seen.bytes <= 2 * 64 * 1024, `only the start of each rollout is read, got ${seen.bytes} bytes of 6 MB`);
+      const before = seen.opens;
+      t.tick(5000);
+      assert.equal((await t.post('sync', {})).status, 200);
+      t.tick(5000);
+      assert.equal((await t.state()).status, 200);
+      assert.equal(seen.opens, before, 'an unchanged rollout is not opened again');
+      // A rollout that grows is read again, and the other is not.
+      fs.appendFileSync(path.join(t.tree.codexSessionsDir, '2026', '11', '02', 'rollout-' + A + '.jsonl'), JSON.stringify({ type: 'event_msg', payload: { text: 'more' } }) + '\n');
+      t.tick(5000);
+      assert.equal((await t.state()).status, 200);
+      assert.equal(seen.opens, before + 1, 'only the rollout that changed is read again');
+    });
+  } finally { await t.close(); }
+});
+
+test('Codex: a session_meta first line longer than one chunk still names its session', async () => {
+  const t = await start({ options: (herdr, tree) => {
+    const file = path.join(tree.codexSessionsDir, '2026', '11', '02', 'rollout-' + A + '.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id: A, cwd: tree.root, source: 'cli', base_instructions: 'z'.repeat(150 * 1024) } }) + '\n' + '{}\n');
+    herdr.panes[0] = { ...herdr.panes[0], agent: 'codex', agent_session: { value: null } };
+    herdr.processInfo['w1:p1'] = [{ pid: 9001, argv0: 'codex', cwd: tree.root }];
+  } });
+  try {
+    const state = await t.state();
+    assert.equal(state.json.panes[A].status, 'idle');
+  } finally { await t.close(); }
+});
+
+test('Codex: the rollouts are listed once for a scan, however many Codex panes it holds', async () => {
+  const walks = async (paneCount) => {
+    const t = await start({ options: (herdr, tree) => {
+      const cwds = [];
+      for (let i = 0; i < paneCount; i += 1) {
+        const id = `cccccccc-0000-4000-8000-00000000000${i}`;
+        const cwd = path.join(tree.root, 'pane' + i);
+        cwds.push(cwd);
+        writeCodexLog(tree, id, cwd);
+      }
+      herdr.panes = cwds.map((cwd, i) => ({ pane_id: 'w1:p' + (i + 1), tab_id: 'w1:t' + (i + 1), label: 'codex ' + i, agent: 'codex', agent_status: 'idle', agent_session: { value: null } }));
+      herdr.processInfo = Object.fromEntries(cwds.map((cwd, i) => ['w1:p' + (i + 1), [{ pid: 9100 + i, argv0: 'codex', cwd }]]));
+      herdr.focused = 'w1:p1';
+    } });
+    try {
+      return await watchRollouts(t.tree.codexSessionsDir, async (seen) => {
+        const scanned = await t.state();
+        assert.equal(scanned.status, 200);
+        return seen.walks;
+      });
+    } finally { await t.close(); }
+  };
+  const one = await walks(1);
+  const six = await walks(6);
+  assert.equal(six, one, `six Codex panes list the sessions folder as often as one does (${one} then ${six})`);
+});
+
 test('Codex: Sync adopts an unlisted live Codex pane, and a changed foreground session is rejected', async () => {
   const t = await start({ options: (herdr, tree) => {
     writeCodexLog(tree, A, tree.root);

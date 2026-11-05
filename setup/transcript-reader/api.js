@@ -569,8 +569,47 @@ function create({
   // Whether a session's log is a Copilot conversation. Known from its file alone, so no Herdr is asked.
   const isCopilotSession = (sessionId) => { const file = logPath(sessionId); return Boolean(file) && path.basename(file) === COPILOT_EVENTS; };
 
+  // What a Codex rollout's first line says, cached by file path with the file's mtime and size: a rollout is megabytes (a long
+  // conversation, 2 GB across the owner's 886 files) and only its first line, a session_meta record of a few kilobytes, is read. A
+  // rollout that grows is read again from its start, which is cheap; one that has not changed is not opened. A value is the rollout's
+  // entry, or null for a file that is not a CLI session.
+  const rolloutHeads = new Map();
+  const ROLLOUT_HEAD_CHUNK = 64 * 1024;
+  const ROLLOUT_HEAD_MAX = 4 * 1024 * 1024;  // a first line longer than this is not a session_meta record
+
+  // The first line of a file, read from its start in 64 KB pieces until a newline, or null.
+  function firstLine(file) {
+    const handle = fs.openSync(file, 'r');
+    try {
+      const chunks = [];
+      let total = 0;
+      while (total < ROLLOUT_HEAD_MAX) {
+        const buffer = Buffer.alloc(ROLLOUT_HEAD_CHUNK);
+        const read = fs.readSync(handle, buffer, 0, buffer.length, total);
+        if (read <= 0) break;
+        chunks.push(buffer.subarray(0, read));
+        total += read;
+        if (buffer.subarray(0, read).includes(10)) break;
+      }
+      return Buffer.concat(chunks).toString('utf8').split('\n', 1)[0];
+    } finally { fs.closeSync(handle); }
+  }
+
+  function rolloutEntry(file, stat) {
+    let first;
+    try { first = parseJson(firstLine(file)); } catch { first = null; }
+    const payload = first && first.payload;
+    const session = payload && (payload.id || payload.session_id);
+    const cwd = payload && payload.cwd;
+    if (!(first && first.type === 'session_meta' && payload && payload.source === 'cli' && SESSION_ID_RE.test(session || '') && typeof cwd === 'string' && cwd)) return null;
+    let realCwd;
+    try { realCwd = fs.realpathSync.native(cwd); } catch { realCwd = path.resolve(cwd); }
+    return { file, session, cwd: realCwd, mtime: stat.mtimeMs };
+  }
+
   function codexRollouts() {
     const found = [];
+    const seen = new Set();
     const walk = (folder) => {
       let entries;
       try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
@@ -578,24 +617,26 @@ function create({
         const file = path.join(folder, entry.name);
         if (entry.isDirectory()) walk(file);
         else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-          let first;
-          try { first = parseJson(fs.readFileSync(file, { encoding: 'utf8', flag: 'r' }).split('\n', 1)[0]); } catch { first = null; }
-          const payload = first && first.payload;
-          const session = payload && (payload.id || payload.session_id);
-          const cwd = payload && payload.cwd;
-          if (first && first.type === 'session_meta' && payload && payload.source === 'cli' && SESSION_ID_RE.test(session || '') && typeof cwd === 'string' && cwd) {
-            let mtime = 0;
-            try { mtime = fs.statSync(file).mtimeMs; } catch { /* a live rollout may disappear */ }
-            let realCwd;
-            try { realCwd = fs.realpathSync.native(cwd); } catch { realCwd = path.resolve(cwd); }
-            found.push({ file, session, cwd: realCwd, mtime });
+          let stat;
+          try { stat = fs.statSync(file); } catch { continue; }  // a live rollout may disappear
+          seen.add(file);
+          let head = rolloutHeads.get(file);
+          if (!head || head.mtimeMs !== stat.mtimeMs || head.size !== stat.size) {
+            head = { mtimeMs: stat.mtimeMs, size: stat.size, entry: rolloutEntry(file, stat) };
+            rolloutHeads.set(file, head);
           }
+          if (head.entry) found.push(head.entry);
         }
       }
     };
     walk(codexSessionsDir);
+    for (const file of rolloutHeads.keys()) if (!seen.has(file)) rolloutHeads.delete(file);
     return found.sort((a, b) => b.mtime - a.mtime);
   }
+
+  // The rollouts, listed on the first ask and kept for the rest of one pass (a scan, a sync): a list per pane would walk the
+  // sessions folder once for each.
+  const rolloutsOnce = () => { let list = null; return () => (list || (list = codexRollouts())); };
 
   function mtimeMs(file) {
     try { return fs.statSync(file).mtimeMs; } catch { return 0; }
@@ -612,12 +653,13 @@ function create({
       const listing = await runner(herdrBin, ['session', 'list', '--json'], { env: runEnv(), timeoutMs: 5000 });
       const names = ((listing.code === 0 && parseJson(listing.stdout)) || {}).sessions || [];
       const sessions = [];
+      const rollouts = rolloutsOnce();
       for (const entry of names) {
         // The default session is never addressed, as in the organizer; a name must never read as an option.
         if (!entry || !entry.running || entry.default || typeof entry.name !== 'string' || !SESSION_NAME_RE.test(entry.name)) continue;
         const result = await runner(herdrBin, ['--session', entry.name, 'api', 'snapshot'], { env: runEnv(), timeoutMs: 5000 });
         const snapshot = (((result.code === 0 && parseJson(result.stdout)) || {}).result || {}).snapshot;
-        if (snapshot) sessions.push(await checkSessions(readSnapshot(entry.name, snapshot)));
+        if (snapshot) sessions.push(await checkSessions(readSnapshot(entry.name, snapshot), rollouts));
       }
       scanned = { at: now(), sessions };
       return sessions;
@@ -757,14 +799,14 @@ function create({
     }) || null;
   }
 
-  function codexSessionForProcessInfo(processInfo, claimed = null) {
+  function codexSessionForProcessInfo(processInfo, claimed = null, rollouts = codexRollouts) {
     const process = codexProcess(processInfo);
     if (!process) return null;
     const cwd = process.cwd || (processInfo && processInfo.cwd);
     if (typeof cwd !== 'string' || !cwd) return null;
     let realCwd;
     try { realCwd = fs.realpathSync.native(cwd); } catch { realCwd = path.resolve(cwd); }
-    const match = codexRollouts().find((entry) => entry.cwd === realCwd);
+    const match = rollouts().find((entry) => entry.cwd === realCwd);
     if (match) return match.session;
     return null;
   }
@@ -774,7 +816,7 @@ function create({
   // has exited, the pane then naming no agent at all. A pane with such an id that no running
   // Claude holds takes the session of its foreground Claude process, or none when the pane is
   // back at its shell. Read-only: `herdr pane process-info`, asked only for such panes.
-  async function checkSessions(session) {
+  async function checkSessions(session, rollouts = rolloutsOnce()) {
     const running = runningClaude();
     const hasCodex = session.panes.some((pane) => pane.agent === 'codex');
     const hasCopilot = session.panes.some((pane) => pane.agent === 'copilot');
@@ -784,7 +826,7 @@ function create({
       if (pane.agent === 'codex') {
         const result = await runner(herdrBin, ['--session', session.name, 'pane', 'process-info', '--pane', pane.pane_id], { env: runEnv(), timeoutMs: 5000 });
         const info = ((((result.code === 0 && parseJson(result.stdout)) || {}).result) || {}).process_info;
-        pane.session_id = codexSessionForProcessInfo(info, pane.session_id);
+        pane.session_id = codexSessionForProcessInfo(info, pane.session_id, rollouts);
         continue;
       }
       if (pane.agent === 'copilot') {
@@ -1114,10 +1156,11 @@ function create({
   function unlistedLive(sessions) {
     const skip = new Set([...listed(), ...closedByHand()]);
     const found = [];
+    const rollouts = rolloutsOnce();
     for (const session of sessions) {
       for (const pane of session.panes) {
         const id = pane.session_id;
-        const codex = id && codexRollouts().some((entry) => entry.session === id);
+        const codex = id && rollouts().some((entry) => entry.session === id);
         if ((pane.agent === 'claude' || pane.agent === 'codex' || pane.agent === 'copilot' || codex) && id && !skip.has(id) && logPath(id)) { skip.add(id); found.push(id); }
       }
     }
