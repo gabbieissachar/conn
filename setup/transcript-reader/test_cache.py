@@ -473,6 +473,8 @@ class Writing(Case):
                     self.assertEqual(ours[name], theirs[name], f"{name}, round {number}")
             self.assertIn("prototype.html", ours)
             self.assertIn("html-files.json", ours)
+            for name in ("glance.json", "live/index.html", "live/index.json", "live/md-files.json", f"live/s/{A}.json"):
+                self.assertIn(name, ours, f"the lite page's files and the glance are written the same way: {name}")
 
     def test_a_page_that_is_the_one_already_written_leaves_it_and_its_stamp_alone(self):
         out = self.lab.root / "out" / "prototype.html"

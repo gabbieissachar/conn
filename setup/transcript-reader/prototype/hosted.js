@@ -259,15 +259,19 @@
     // ones holding items never marked settled.
     const weeks = idx => Object.keys(idx.weeks || {}).sort().filter(key => idx.weeks[key].to >= idx.since || idx.weeks[key].open > 0);
     const weeksSig = idx => JSON.stringify(weeks(idx).map(key => [key, idx.weeks[key].stamp]));
+    // The data object the page holds, as data() last made it: a conversation that loads afterwards (the lite page's) adds its files to it.
+    let latest = null;
     // The page's data from an index (the local page's payload, less what loads on demand): each
     // conversation keeps the turns already loaded while its stamp is the same, each document its
     // text, and the fleet records stay while no week the timeline shows has changed.
+    // The lite page's index (the server's out/live/index.json) names no documents: each conversation's own object lists the files it names
+    // (`documents`, without their text), which join the page's documents when the conversation loads and stay with it while its stamp is the same.
     function data(idx, previous) {
       const before = new Map(((previous && previous.sessions) || []).map(s => [s.object, s]));
       const sessions = (idx.conversations || []).map(entry => {
         const old = before.get(entry.object);
         const same = old && old.stamp === entry.stamp;
-        return { ...entry, exchanges: same ? old.exchanges : null, ...(same && old.leader ? { leader: old.leader } : {}) };
+        return { ...entry, exchanges: same ? old.exchanges : null, ...(same && old.leader ? { leader: old.leader } : {}), ...(same && old.docMeta ? { docMeta: old.docMeta } : {}) };
       });
       const documents = {};
       for (const [id, meta] of Object.entries(idx.documents || {})) {
@@ -275,10 +279,11 @@
         // A picture the copy leaves out (sync.py) has no object to load: its text stays empty and the page says why.
         documents[id] = { ...meta, text: meta.left_out ? "" : old && old.stamp === meta.stamp ? old.text : null };
       }
+      for (const session of sessions) if (session.docMeta) for (const [id, meta] of Object.entries(session.docMeta)) documents[id] = { ...meta };
       const sig = weeksSig(idx);
-      return {
+      return latest = {
         generated: idx.as_of || 0, since: idx.since || 0, steps_from: idx.steps_from || 0, homes: idx.homes || [], summaries: idx.summaries || [], stars: idx.stars || [],
-        template: idx.template, sheetTemplate: idx.sheet_template, fleet_timeline: idx.fleet_timeline !== false, sheets: idx.sheets || {}, chosen: true, closed: [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
+        template: idx.template, sheetTemplate: idx.sheet_template, fleet_timeline: idx.fleet_timeline !== false, sheets: idx.sheets || {}, chosen: true, closed: idx.closed || [], sessions, documents, weeks: idx.weeks || {}, weeksSig: sig,
         fleet: previous && previous.weeksSig === sig ? previous.fleet : null,
       };
     }
@@ -287,6 +292,10 @@
         const loaded = await object(session);
         session.exchanges = loaded.exchanges || [];
         if (loaded.leader) session.leader = loaded.leader;  // a leader's tasks, for the Documents view's By task grouping
+        if (loaded.documents) {  // the lite page's: the files this conversation names, to list and to open through the server
+          session.docMeta = loaded.documents;
+          if (latest) for (const [id, meta] of Object.entries(loaded.documents)) latest.documents[id] = { ...meta };
+        }
       }
       return session;
     }

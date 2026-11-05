@@ -213,7 +213,9 @@ class FirstBuildTest(unittest.TestCase):
 
     def test_the_shell_is_the_reader_page_with_no_transcript_in_it(self):
         page = (self.lab.out / "index.html").read_text(encoding="utf-8")
-        self.assertIn('const HOSTED = "hosted" === "hosted";', page)
+        # The hosted shell is both lazy (one conversation at a time) and without a laptop (its send queues): the page's two flags.
+        for line in ('const MODE = "hosted";', 'const LAZY = MODE !== "local";', 'const HOSTED = MODE === "hosted";'):
+            self.assertIn(line, page)
         self.assertIn('<script id="payload" type="application/json">null</script>', page)
         self.assertIn(f'<meta name="template" content="{self.index["template"]}">', page)
         self.assertNotIn("Plan the login fix", page)

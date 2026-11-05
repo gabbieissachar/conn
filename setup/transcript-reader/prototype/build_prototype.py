@@ -3007,7 +3007,8 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
 
     The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, attach.js, commentkey.js, the vendored markdown-it with markdown.js,
     steps.js, find.js, docfiles.js and address.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
-    there, and the script reads the mode from __MODE__.
+    there, and the script reads the mode from __MODE__. Mode "live" (the lite page, out/live/index.html) pastes the same two: it loads one
+    conversation at a time like the hosted shell and is the served page in every other way (README, "The lite page").
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
@@ -3025,7 +3026,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ADDRESS__*/", ADDRESS_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
-    page = page.replace("/*__HOSTED__*/", hosted if mode == "hosted" else "const hosted = null;")
+    page = page.replace("/*__HOSTED__*/", hosted if mode in ("hosted", "live") else "const hosted = null;")
     page = page.replace("__MODE__", mode)
     # The hosted shell is also installed on a phone (a worker keeps it, a manifest and icon add it to the Home Screen), which its content
     # policy must allow. The reader page also shows an image a reply names in an <img>: from its own server, or in the copy from the image's
@@ -3060,6 +3061,222 @@ def write_step_outputs(sessions: list[dict], folder: Path) -> None:
     for old in folder.glob("*.json"):
         if old.name not in listed:
             old.unlink(missing_ok=True)
+
+
+# ------------------------------------------------------------ the lite page's objects and the glance feed (out/live/, out/glance.json)
+#
+# Every build that writes the reader page also writes, beside it, what a page that shows ONE conversation needs, so that such a page
+# neither holds nor parses the 34 MB page:
+#
+#   live/index.html   the lite page: the reader page's own code in mode "live" (template.html: it loads one conversation at a time, as the
+#                     hosted shell does, and sends, follows and refreshes as the served page does)
+#   live/index.json   the hosted index's shape (hosted.js reads it): one entry for each listed conversation, newest activity first, with
+#                     its Herdr pane as of the build, its counts and the stamp of its object
+#   live/s/<id>.json  one conversation, exactly its entry in the page's payload (the same bytes) but for its pane and reopened flag, which
+#                     the index carries, plus `documents`: the files its messages and replies name, without their text
+#   live/md-files.json  id -> path of those markdown files, which md-open (api.js) reads as they are on disk when one is opened
+#   glance.json       one small record for each listed conversation (id, pane, last turn, the gist of your last message and of the last
+#                     reply, the first lines of the newest open ask, how many asks are open), for a native client that reads a file
+#
+# A conversation's object is written only when its bytes changed (its stamp, a hash of them, is in the index), so a rebuild after one
+# reply writes one object, the index and the glance, and never parses anything. The files are written before the page's stamp, so a page
+# woken by the stamp finds them. Both build paths (build_cache.write and write_page) call write_live with the same pieces.
+LIVE_DIR = "live"
+GLANCE = "glance.json"
+LIVE_MD_FILES = "md-files.json"
+LIVE_VERSION = 1
+GIST_MESSAGE, GIST_REPLY, ASK_LINE, ASK_LINES = 200, 280, 200, 3
+
+
+def gist(text: str, limit: int) -> str:
+    """The first words of a message or reply as one line: the markup that only shapes it (heading, quote, list and emphasis marks)
+    dropped, the lines joined, clipped with an ellipsis."""
+    lines = (re.sub(r"\s+", " ", re.sub(r"[*`]", "", re.sub(r"^[\s#>*\-\d.)|]+", "", line))).strip() for line in (text or "").splitlines())
+    joined = " ".join(line for line in lines if line)
+    return joined if len(joined) <= limit else joined[: limit - 1].rstrip() + "…"
+
+
+def conversation_summary(session: dict) -> tuple[dict, dict]:
+    """(entry, glance) of one conversation, from its turns alone: the index's entry without its pane and stamp (the hosted
+    index's fields: last activity, ask count, turns), and the glance feed's record without its pane."""
+    exchanges = session["exchanges"]
+    open_asks = [e for e in exchanges if e.get("verdict") == "needs-you" and (e.get("ask_state") or "open") == "open"]
+    entry = {key: session[key] for key in ("home", "id", "ids", "file", "where")}
+    entry.update(
+        last=max((max(e["reply_at"] or 0, e["at"] or 0) for e in exchanges), default=0),
+        order=max(((e["reply_at"] or e["at"] or 0) for e in exchanges), default=0),
+        turns=len(exchanges),
+        needs=len(open_asks),
+    )
+    mine = next((e for e in reversed(exchanges) if e.get("source") == "captain" and (e.get("input") or "").strip()), None)
+    replied = next((e for e in reversed(exchanges) if (e.get("reply") or "").strip()), None)
+    asking = open_asks[-1] if open_asks else None
+    ask_lines = []
+    if asking:
+        lines = asking["reply"].splitlines()
+        ask_lines = [gist(lines[n], ASK_LINE) for n in asking.get("ask_lines") or [] if n < len(lines)]
+        ask_lines = [line for line in ask_lines if line][:ASK_LINES]
+    glance = {
+        "id": session["id"], "ids": session["ids"], "home": session["home"], "where": session["where"],
+        "last": entry["last"], "turns": entry["turns"],
+        "message": {"at": mine["at"], "text": gist(mine["input"], GIST_MESSAGE)} if mine else None,
+        "reply": {"at": replied["reply_at"] or replied["at"], "text": gist(replied["reply"], GIST_REPLY), "words": replied.get("reply_words", 0)} if replied else None,
+        "open_asks": entry["needs"],
+        "ask": {"at": asking["reply_at"] or asking["at"], "lines": ask_lines} if asking else None,
+    }
+    return entry, glance
+
+
+def lite_document(record: dict) -> dict:
+    """A document's record as the lite page's conversation object lists it: without its text. A markdown file is `lazy`, which the page
+    reads through md-open as it is on disk when it is opened; an HTML file or a picture keeps its kind and size, and the page shows it
+    through html-open or image-open as it does anywhere."""
+    lite = {key: value for key, value in record.items() if key != "text"}
+    if not lite.get("kind"):
+        lite["lazy"] = True
+    return lite
+
+
+def lite_documents(documents: dict[str, dict], session: dict) -> dict[str, dict]:
+    """The files one conversation's messages and replies name, by id in id order, as lite_document gives them."""
+    named = {doc for exchange in session["exchanges"] for doc in (*exchange.get("documents", ()), *exchange.get("input_documents", ()))}
+    return {doc: lite_document(documents[doc]) for doc in sorted(named) if doc in documents}
+
+
+class LiveConversation:
+    """One conversation of a build, ready to write: its index entry, its glance record, and its object as pieces of bytes with their hash."""
+
+    __slots__ = ("id", "entry", "glance", "pane", "reopened", "pieces", "stamp")
+
+    def __init__(self, entry: dict, glance: dict, pane: dict | None, reopened: bool, pieces: list[bytes], stamp: str) -> None:
+        self.id, self.entry, self.glance, self.pane, self.reopened, self.pieces, self.stamp = entry["id"], entry, glance, pane, reopened, pieces, stamp
+
+
+def pieces_stamp(pieces: list[bytes]) -> str:
+    digest = hashlib.sha1()
+    for piece in pieces:
+        digest.update(piece)
+    return digest.hexdigest()[:16]
+
+
+class LiveBuild:
+    """What one build leaves for the lite page and the glance feed."""
+
+    __slots__ = ("generated", "since", "homes", "closed", "conversations", "md_files")
+
+    def __init__(self, generated: float, since: float, homes: list, closed: list, conversations: list[LiveConversation], md_files: dict[str, str]) -> None:
+        self.generated, self.since, self.homes, self.closed, self.conversations, self.md_files = generated, since, homes, closed, conversations, md_files
+
+
+def live_from_payload(payload: dict) -> LiveBuild:
+    """The LiveBuild of a plain build's payload (build), made the way build_cache makes its own: an object is the session as the page holds it,
+    less its pane and reopened flag, plus the named files without their text."""
+    documents = payload.get("documents") or {}
+    found = []
+    md_files: dict[str, str] = {}
+    for session in payload["sessions"]:
+        entry, glance = conversation_summary(session)
+        lite = lite_documents(documents, session)
+        body = {key: value for key, value in session.items() if key not in ("pane", "reopened")}
+        piece = payload_json({**body, "documents": lite}).encode("utf-8")
+        md_files.update({doc: record["path"] for doc, record in lite.items() if record.get("lazy") and record.get("path")})
+        found.append(LiveConversation(entry, glance, session.get("pane"), bool(session.get("reopened")), [piece], pieces_stamp([piece])))
+    return LiveBuild(payload["generated"], payload.get("since") or 0, payload.get("homes") or [], payload.get("closed") or [], found, md_files)
+
+
+def write_pieces(target: Path, pieces: list[bytes]) -> None:
+    """<target> as an owner-only file of these pieces, in one rename (a reader never sees half of one)."""
+    partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
+    private_folder(partial.parent)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.writelines(pieces)
+    os.replace(partial, target)
+
+
+_SHELL: dict = {"versions": None, "page": "", "hash": ""}
+
+
+def live_shell() -> tuple[str, str]:
+    """The lite page and its template hash, kept until the template or a script that goes into it changes."""
+    versions = tuple(file_version(path) for path in (TEMPLATE, MARKDOWN_IT_SCRIPT, *sorted(HERE.glob("*.js"))))
+    if _SHELL["versions"] != versions:
+        page, digest = fill_template(TEMPLATE, "null", "live")
+        _SHELL.update(versions=versions, page=page, hash=digest)
+    return _SHELL["page"], _SHELL["hash"]
+
+
+# Per folder, what this process last wrote there: conversation id -> stamp, the glance (as written, but for its build time), and the shell's hash.
+_LIVE_WRITTEN: dict[Path, dict] = {}
+
+
+def live_memory(folder: Path) -> dict:
+    """What <folder> held when this process first looked, so a restarted worker does not write every conversation again: the stamps
+    in its index for the objects that are there, and its glance."""
+    if folder not in _LIVE_WRITTEN:
+        memory = {"stamps": {}, "glance": None, "shell": None}
+        try:
+            for entry in json.loads((folder / LIVE_DIR / "index.json").read_text(encoding="utf-8")).get("conversations") or []:
+                if isinstance(entry, dict) and isinstance(entry.get("id"), str) and (folder / LIVE_DIR / "s" / f"{entry['id']}.json").is_file():
+                    memory["stamps"][entry["id"]] = entry.get("stamp")
+        except (OSError, ValueError, AttributeError):
+            memory["stamps"] = {}
+        try:
+            shell = (folder / LIVE_DIR / "index.html").read_text(encoding="utf-8")
+            memory["shell"] = hashlib.sha1(shell.encode("utf-8")).hexdigest()
+        except OSError:
+            pass
+        try:
+            kept = json.loads((folder / GLANCE).read_text(encoding="utf-8"))
+            kept.pop("as_of", None)
+            memory["glance"] = json.dumps(kept, ensure_ascii=False, separators=(",", ":"))
+        except (OSError, ValueError, AttributeError):
+            pass
+        _LIVE_WRITTEN[folder] = memory
+    return _LIVE_WRITTEN[folder]
+
+
+def write_live(folder: Path, build: LiveBuild) -> int:
+    """The lite page's files and the glance feed under <folder> (the folder of the reader page): see the section's text. Returns how many
+    conversation objects it wrote. Called with the page's lock held and before the page's stamp is written."""
+    memory = live_memory(folder)
+    live = folder / LIVE_DIR
+    private_folder(live / "s")
+    page, template = live_shell()
+    shell_hash = hashlib.sha1(page.encode("utf-8")).hexdigest()
+    if memory["shell"] != shell_hash or not (live / "index.html").is_file():
+        write_pieces(live / "index.html", [page.encode("utf-8")])
+        memory["shell"] = shell_hash
+    wrote = 0
+    entries = []
+    for conv in build.conversations:
+        target = live / "s" / f"{conv.id}.json"
+        if memory["stamps"].get(conv.id) != conv.stamp or not target.is_file():
+            write_pieces(target, conv.pieces)
+            memory["stamps"][conv.id] = conv.stamp
+            wrote += 1
+        entries.append({**conv.entry, "pane": conv.pane, "reopened": conv.reopened, "object": f"s/{conv.id}.json", "stamp": conv.stamp})
+    kept = {f"{conv.id}.json" for conv in build.conversations}
+    for old in (live / "s").iterdir():
+        if old.name not in kept and (old.suffix == ".json" or old.name.endswith(".partial")):
+            old.unlink(missing_ok=True)
+    for gone in set(memory["stamps"]) - {conv.id for conv in build.conversations}:
+        del memory["stamps"][gone]
+    # Newest activity first, as the page lists its chosen sessions (the order of its payload).
+    entries.sort(key=lambda entry: entry["order"], reverse=True)
+    index = {"version": LIVE_VERSION, "live": True, "as_of": build.generated, "since": build.since, "template": template, "homes": build.homes,
+             "summaries": [], "conversations": entries, "stars": [], "documents": {}, "weeks": {}, "sheets": {}, "closed": build.closed, "fleet_timeline": False}
+    write_pieces(live / LIVE_MD_FILES, [json.dumps(build.md_files).encode("utf-8")])
+    write_pieces(live / "index.json", [payload_json(index).encode("utf-8")])
+    feed = {"version": LIVE_VERSION, "conversations": [
+        {**conv.glance, "pane": {key: conv.pane[key] for key in ("label", "herdr", "status", "live") if key in conv.pane} if conv.pane else None}
+        for conv in sorted(build.conversations, key=lambda c: c.entry["order"], reverse=True)]}
+    body = json.dumps(feed, ensure_ascii=False, separators=(",", ":"))
+    if memory["glance"] != body or not (folder / GLANCE).is_file():
+        write_pieces(folder / GLANCE, [json.dumps({"as_of": build.generated, **feed}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")])
+        memory["glance"] = body
+    return wrote
 
 
 # A page written by this process, and what it was made of apart from its build time (write_page, only_if_changed).
@@ -3102,6 +3319,9 @@ def write_page(template: Path, payload: dict, out: Path, only_if_changed: bool =
         lazy = json.dumps({doc["id"]: doc["path"] for doc in payload["documents"].values() if doc.get("lazy")}) if "documents" in payload else ""
         files = [(out.with_name(HTML_FILES), listed("html")), (out.with_name(IMAGE_FILES), listed("image")), (out.with_name(MD_FILES), lazy)] if "documents" in payload else []
         page, _ = fill_template(template, data)
+        # The lite page's objects and the glance feed (the section above), before the page and its stamp: a page woken by the stamp finds them.
+        if "sessions" in payload and template == TEMPLATE:
+            write_live(out.parent, live_from_payload(payload))
         for target, text in (*files, (out, page), (stamp, repr(payload["generated"]))):
             partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
             write_private(partial, text)

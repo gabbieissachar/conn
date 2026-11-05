@@ -1298,7 +1298,7 @@ class PageShellTest(unittest.TestCase):
     """What the page's header and script hold, checked on the filled-in page (there is no browser in the suite)."""
 
     def pages(self):
-        for mode in ("local", "hosted"):
+        for mode in ("local", "hosted", "live"):
             page, _ = builder.fill_template(builder.TEMPLATE, "null", mode)
             yield mode, page
 
@@ -1341,10 +1341,15 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("resumeSendHandoff(saved, current && current.id", page, mode)
             self.assertIn('if (decision.action === "discard")', page, mode)
             self.assertIn("clearSendHandoff(hold.id); endHold();", page, mode)
-        local, hosted = (page for _, page in self.pages())
+        local, hosted, lite = (page for _, page in self.pages())
         self.assertIn('const hosted = null;', local)
         self.assertNotIn("function cancel(id)", local, "the local page has no queue to take a message back from")
         self.assertIn("async function cancel(id)", hosted)
+        # The lite page loads like the hosted shell, so it carries the loader (and the queue's code with it), but it is not the hosted copy:
+        # its message bar sends straight to the pane, through the server's own checks (live.send), never through the queue (HOSTED is false).
+        self.assertIn("async function cancel(id)", lite)
+        self.assertIn('const HOSTED = MODE === "hosted";', lite)
+        self.assertIn("const queued = HOSTED ? await hosted.enqueue(sid, text) : null;", lite)
 
     def test_a_session_switched_to_during_another_sessions_undo_window_cannot_send_and_says_why(self):
         for mode, page in self.pages():

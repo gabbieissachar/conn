@@ -668,14 +668,21 @@ __HEAD_HOSTED__
 <script>
 (() => {
   "use strict";
-  // The hosted copy's shell has no payload: it loads index.json, then what the view needs. It has no
-  // Follow, Reopen or Close; its message bar queues a send (hosted.enqueue) for the laptop's sync to
-  // deliver when it is awake, and shows what the laptop answered.
-  const HOSTED = "__MODE__" === "hosted";
+  // Three pages are made from this one: the local page (its payload holds every conversation), the hosted copy's shell and the lite page.
+  // The hosted shell and the lite page have no payload: they load an index.json, then one conversation at a time (hosted.js). That is one
+  // question, LAZY. Whether there is a laptop to ask is another, HOSTED: the hosted copy has none, so it has no Follow, Reopen, Close or
+  // Sync of its own, and its message bar queues a send (hosted.enqueue) for the laptop's sync to deliver when it is awake and shows what
+  // the laptop answered. The lite page (out/live/index.html) is LAZY and not HOSTED: it is served by the reader's own server, so it sends
+  // straight to the pane (every check the server makes), follows Herdr, polls the state every 2 seconds and waits on the server's events,
+  // and only its conversations come one at a time, from the objects each build writes beside it.
+  const MODE = "__MODE__";  // "local", "hosted" or "live"
+  const LAZY = MODE !== "local";
+  const HOSTED = MODE === "hosted";
 /*__LIVE__*/
 /*__HOSTED__*/
   // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
   const canLive = live.served && !HOSTED;
+  const SHEET_PAGE = HOSTED ? "sheet.html" : MODE === "live" ? "../questionnaire.html" : "questionnaire.html";
 /*__PINS__*/
 /*__PICKER__*/
 /*__ASKS__*/
@@ -687,8 +694,8 @@ __HEAD_HOSTED__
 /*__ADDRESS__*/
 /*__SELECTCOPY__*/
   const selectCopy = readerSelectCopy;
-  // The hosted shell starts empty until its index.json arrives.
-  let data = HOSTED ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
+  // A lazy page starts empty until its index.json arrives.
+  let data = LAZY ? hosted.data({}, null) : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
   let detailCount = 0;
   // What hides text on screen, each with its own opener, so a pin or a search match opens only what hides it, in place,
@@ -698,7 +705,11 @@ __HEAD_HOSTED__
   const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
   const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, docPage: "list" };
-  try { state.follow = localStorage.getItem("tr-follow") !== "0"; } catch (e) { /* default: follow */ }
+  // The lite page is opened on one conversation (a column that is pinned to it) and stays there until Follow is turned on for it, in its own
+  // setting; the local page follows unless it was turned off.
+  const FOLLOW_KEY = MODE === "live" ? "tr-live-follow" : "tr-follow";
+  state.follow = MODE !== "live";
+  try { state.follow = MODE === "live" ? localStorage.getItem(FOLLOW_KEY) === "1" : localStorage.getItem(FOLLOW_KEY) !== "0"; } catch (e) { /* the default */ }
   try { state.copySelection = localStorage.getItem("tr-copy-selection") !== "0"; } catch (e) { /* default: copy */ }
   // A phone's width. The header starts folded there, on every view (an HTML file gets the whole screen under one line of it), so the
   // conversation has the screen; the controls are one tap away. What the owner chose in this browser wins over that: open or folded
@@ -815,8 +826,8 @@ __HEAD_HOSTED__
     }
     const settled = askState(ex) === "settled";
     const sheetLink = ex.sheet ? $("a", "btn sheet" + (settled ? " done" : ""), settled ? "Answered · open the answer sheet" : "Answer sheet →") : null;
-    // The hosted copy's answer sheet is sheet.html beside it.
-    if (sheetLink) sheetLink.href = (HOSTED ? "sheet.html" : "questionnaire.html") + "#q=" + encodeURIComponent(ex.sheet);
+    // The hosted copy's answer sheet is sheet.html beside it; the lite page's is the local one, a folder up.
+    if (sheetLink) sheetLink.href = SHEET_PAGE + "#q=" + encodeURIComponent(ex.sheet);
     let body = null, notesNode = null;
     const place = isClipped => {
       card.classList.toggle("boxed", isClipped);
@@ -1758,9 +1769,9 @@ __HEAD_HOSTED__
     }
     host.replaceChildren(panel);
     paintBar();
-    if (HOSTED) loadPinned(rows);
+    if (LAZY) loadPinned(rows);
   }
-  // The hosted copy holds a conversation only once it is opened: the pinned ones load in the background so the list can say what each says.
+  // A lazy page holds a conversation only once it is opened: the pinned ones load in the background so the list can say what each says.
   let pinLoading = false;
   async function loadPinned(rows) {
     if (pinLoading) return;
@@ -1774,7 +1785,7 @@ __HEAD_HOSTED__
   // wake-up), scrolled under the header. A conversation already on screen is not drawn again.
   async function openPin(p) {
     let at = pinLocator()(p);
-    if (!at && HOSTED && pinSession(p) >= 0) {
+    if (!at && LAZY && pinSession(p) >= 0) {
       try { await hosted.conversation(data.sessions[pinSession(p)]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
       at = pinLocator()(p);
     }
@@ -1868,7 +1879,7 @@ __HEAD_HOSTED__
       }
       if (si < 0) { link.listing = { text: `Session ${asked.session.slice(0, 8)} is not on the reader any more, so this stays on the conversation open.` }; renderLive(); return; }
     }
-    if (!data.sessions[si].exchanges) {  // the hosted copy loads a conversation when it is asked for
+    if (!data.sessions[si].exchanges) {  // a lazy page loads a conversation when it is asked for
       try { await hosted.conversation(data.sessions[si]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
     }
     state.pinsOpen = false;
@@ -1971,11 +1982,11 @@ __HEAD_HOSTED__
     sq("list").setAttribute("aria-pressed", String(look.list && n > 0));
     document.querySelectorAll("#search [data-scope]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.scope === look.scope)));
     document.querySelectorAll("#search [data-who]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.who === look.who)));
-    // What "All conversations" reaches: the reading list here; in the hosted copy only what this device has loaded.
+    // What "All conversations" reaches: the reading list on the local page; on a lazy page only what it has loaded.
     const loaded = data.sessions.filter(s => s.exchanges).length, listed = data.sessions.length;
     const note = sq("note");
     note.textContent = look.q.trim() && !parsed.ok ? "Type at least two characters." : look.scope !== "all" ? ""
-      : HOSTED && loaded < listed ? `Looks in the conversations this device has loaded (${loaded} of ${listed}). Open a conversation to load it.` : `Looks in ${plural(loaded, "conversation")} on the reader.`;
+      : LAZY && loaded < listed ? `Looks in the conversations this ${HOSTED ? "device" : "page"} has loaded (${loaded} of ${listed}). Open a conversation to load it.` : `Looks in ${plural(loaded, "conversation")} on the reader.`;
     note.hidden = !note.textContent;
     paintHitList();
     if (bar.offsetHeight !== before) restoreMainAnchor(anchor);
@@ -2280,9 +2291,9 @@ __HEAD_HOSTED__
       if (detail.childElementCount) { detail.replaceChildren(); text.classList.add("collapsed"); return; }
       text.classList.remove("collapsed");
       if (ev.kind === "status" || ev.kind === "inbox") detail.append(renderMarkdown(ev.text));
-      // The hosted copy loads the conversation that holds the turn when it is asked for.
+      // A lazy page loads the conversation that holds the turn when it is asked for.
       const owner = turnSession(ev);
-      if (findTurn(ev) || (HOSTED && owner)) {
+      if (findTurn(ev) || (LAZY && owner)) {
         const btn = $("button", "more", ev.kind === "status" ? "Show how the home handled it" : ev.kind === "inbox" ? "Show the turn that received it" : "Show the whole turn");
         const slot = $("div");
         const show = () => { const turn = findTurn(ev); if (turn) slot.append(exchangeNode({ ...turn, folded: false }, `detail-${detailCount++}`, null)); };
@@ -3654,7 +3665,7 @@ __HEAD_HOSTED__
   // Follow Herdr on or off: the button in the controls and the one in the folded header are this one switch.
   function toggleFollow() {
     state.follow = !state.follow; link.seenSeq = null;
-    try { localStorage.setItem("tr-follow", state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
+    try { localStorage.setItem(FOLLOW_KEY, state.follow ? "1" : "0"); } catch (e) { /* not kept */ }
     render();
   }
   document.getElementById("follow-quick").addEventListener("click", toggleFollow);
@@ -3721,6 +3732,7 @@ __HEAD_HOSTED__
   }
   async function takeBuild(now, stamp) {
     if (!now && stamp !== null && stamp <= data.generated) return;
+    if (LAZY && !HOSTED) { await refreshLazy(now); return; }  // the lite page: never the 34 MB page, nor a delta of it
     const sel = window.getSelection();
     if (!now && sel && !sel.isCollapsed) return;  // a passage is being picked; refresh on a later tick
     const name = location.pathname.split("/").pop();
@@ -3777,10 +3789,11 @@ __HEAD_HOSTED__
     if (state.view === "reader" && !anchor.bottom && index >= 0 && mark(data.sessions[state.session]) !== before) { link.newer = true; placeNewReply(); }
   }
   // Switch to the session Herdr focused, once per focus change. An address that names a
-  // session (#s=...) wins over the focus found when the page opens.
+  // session (#s=...) wins over the focus found when the page opens, which is the first one seen even with Follow off (a page opened
+  // with Follow off, as the lite page is, goes where Herdr is when Follow is turned on, as the switch says).
   function applyFocus() {
     const f = link.focus;
-    if (!state.follow || !f) { link.held = null; return; }
+    if (!state.follow || !f) { link.held = null; if (f) link.first = false; return; }
     if (f.seq !== link.seenSeq) {
       const keep = link.first && link.keepOpening;
       link.seenSeq = f.seq;
@@ -3798,8 +3811,8 @@ __HEAD_HOSTED__
     if (index === state.session && state.view !== "fleet") return;  // reading its conversation or a document already
     state.session = index; state.view = "reader";
     setAddress();
-    render();
-    showLatest();
+    // A lazy page loads that conversation first (whenReady draws at once when it holds it, as the local page always does).
+    whenReady(() => { render(); showLatest(); });
   }
   const writing = () => document.activeElement === dock("text") && Boolean(dockTyped());
   // What the server answered about Herdr and the build, from the poll or from Sync.
@@ -3815,10 +3828,13 @@ __HEAD_HOSTED__
     link.syncFail = link.syncFail || { since: Date.now(), message: e.message };
     if (syncFailing()) { renderLive(); paintSync(); }
   }
+  // A lazy page that is served (the lite page) holds nothing until its first index is in: its poll and its wait for builds start then.
+  let started = !LAZY;
   if (!HOSTED) live.poll(async () => {
     let s;
     try { s = await live.state(state.follow); } catch (e) { noteSyncFail(e); throw e; }
     takeState(s);
+    if (!started) return;
     markRead();
     labelSessions();
     if (s.stamps && s.stamps.reader && s.stamps.reader > data.generated) await refreshData(false, s.stamps.reader);
@@ -3827,7 +3843,7 @@ __HEAD_HOSTED__
     paintSync();
   });
   // A new build is taken the moment the server publishes it, not at the next tick: the reply shows as soon as it is built.
-  if (!HOSTED) live.waitForBuilds(() => ({ reader: data.generated }), stamps => refreshData(false, stamps.reader));
+  if (!HOSTED) live.waitForBuilds(() => ({ reader: data.generated }), stamps => started ? refreshData(false, stamps.reader) : undefined);
   // The Sync button: take everything again now, not at the next poll. The local page asks the server to read
   // Herdr again and rebuild from the session logs and the fleet records (all read-only; it writes only out/),
   // then swaps in the list (a live Claude pane not yet on it is added first), each session's live or ended state and
@@ -3845,7 +3861,7 @@ __HEAD_HOSTED__
           try { outcome = await hosted.build(state => { link.copy = { state }; paintSync(); }); } catch (e) { if (!e.network) throw e; outcome = { built: false, message: e.message }; }
           link.copy = outcome.built ? null : { state: "failed", message: outcome.message };
         }
-        await refreshHosted(true);
+        await refreshLazy(true);
       } else {
         let answer;
         try { answer = await live.sync(state.follow); } catch (e) {
@@ -3926,17 +3942,19 @@ __HEAD_HOSTED__
     location.reload();
   }
 
-  // ---------------------------------------------------------------- hosted copy: load what the view needs
-  // Whether the view on screen needs an object not loaded yet: the conversation, its document or
-  // the fleet records. Never on the local page, whose payload holds everything.
+  // ---------------------------------------------------------------- lazy pages: load what the view needs
+  // Whether the view on screen needs an object not loaded yet: the conversation, its document or the fleet records. Never on the local
+  // page, whose payload holds everything. A document has an object only in the hosted copy: the lite page's files (their records came with
+  // the conversation) are read through the server when opened, as on the local page.
+  const hasObject = id => Boolean(id && data.documents[id] && data.documents[id].object);
   function missing() {
-    if (!HOSTED) return false;
+    if (!LAZY) return false;
     if (state.view === "fleet" && fleetOn()) return !data.fleet;
     const session = data.sessions[state.session];
     if (!session) return false;
     if (!session.exchanges) return true;
     const id = state.view === "doc" && onFilePage(session) ? pickDoc(session) : null;  // the list alone needs no file's text
-    return Boolean(id && data.documents[id].text == null);
+    return Boolean(hasObject(id) && data.documents[id].text == null);
   }
   async function ensure() {
     if (state.view === "fleet" && fleetOn()) { await hosted.fleet(data); return; }
@@ -3944,7 +3962,7 @@ __HEAD_HOSTED__
     if (!session) return;
     await hosted.conversation(session);
     const id = state.view === "doc" && onFilePage(session) ? pickDoc(session) : null;
-    if (id) await hosted.documentText(data.documents[id]);
+    if (hasObject(id)) await hosted.documentText(data.documents[id]);
   }
   // Runs show once the view has what it needs: at once when it has (always on the local page).
   function whenReady(show) {
@@ -3996,15 +4014,15 @@ __HEAD_HOSTED__
     text.textContent = failing ? `Not syncing since ${fmtClock(link.syncFail.since / 1000)}: ${link.syncFail.message}` : `${synced[0].toUpperCase()}${synced.slice(1)}`;
     text.title = `Built ${fmtWhen(when)}. Each sync lists live Claude panes not yet on the list, and reads the session list, each session's live or ended state and every session's newest turns again.`;
   }
-  // Every 30 seconds while visible: a newer index brings the new list, and the conversation on
-  // screen again when its stamp changed, swapped in where you are reading. New page code reloads.
-  async function refreshHosted(now = false) {
+  // A newer index brings the new list, and the conversation on screen again when its stamp changed, swapped in where you are reading. New page
+  // code reloads. The hosted copy asks every 30 seconds while visible; the lite page when the server says a build is there (refreshData).
+  async function refreshLazy(now = false) {
     const sel = window.getSelection();
     const next = sel && !sel.isCollapsed && !now ? null : await hosted.index();  // a passage is being picked: later
     // Only an answer from the laptop is a sync; the copy this device keeps, read with the laptop away, is not.
     if (next && !hosted.offline().fromDevice) { link.syncedAt = Date.now() / 1000; link.syncFail = null; }
-    if (next) offline.index = next;
-    if (next && !hosted.offline().fromDevice) hosted.keepFresh(next).then(paintOffline, () => {});
+    if (HOSTED && next) offline.index = next;
+    if (HOSTED && next && !hosted.offline().fromDevice) hosted.keepFresh(next).then(paintOffline, () => {});
     if (next && next.template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.template); if (!hosted.outdated()) return; }
     if (next && next.as_of > data.generated) {
       const fresh = hosted.data(next, data);
@@ -4012,9 +4030,9 @@ __HEAD_HOSTED__
       const reading = fresh.sessions.find(s => (s.ids || [s.id]).includes(sid));
       if (reading) await hosted.conversation(reading);
       const doc = state.view === "doc" && fresh.documents[state.doc];
-      if (doc) await hosted.documentText(doc);
+      if (doc && doc.object) await hosted.documentText(doc);
       if (state.view === "fleet") await hosted.fleet(fresh);
-      stars.replace(fresh.stars || []);
+      if (HOSTED) stars.replace(fresh.stars || []);
       applyPayload(fresh);
       link.copy = null;  // the copy the laptop failed to build is not the news any more: a newer one is on screen
     }
@@ -4169,8 +4187,8 @@ __HEAD_HOSTED__
     if (e.key === "/" && data.sessions[state.session]) { e.preventDefault(); openSearch("here"); }
   });
   const biggest = () => data.sessions.reduce((best, s, i) => s.exchanges.filter(e => e.source === "captain").length > (data.sessions[best]?.exchanges.filter(e => e.source === "captain").length ?? -1) ? i : best, 0);
-  // The hosted copy opens on the newest conversation with a reply that waits on you (hosted.waiting),
-  // else the newest one (it cannot follow Herdr).
+  // A lazy page opens on the newest conversation with a reply that waits on you (hosted.waiting), else the newest one (the hosted
+  // copy cannot follow Herdr, and the lite page follows only when asked to).
   const waitingFirst = () => Math.max(0, data.sessions.findIndex(s => hosted.waiting(s) > 0));
   // The conversation and view the page opens on; returns what this tab saved before a reload.
   function chooseOpening() {
@@ -4191,7 +4209,7 @@ __HEAD_HOSTED__
     const closedHere = lost && handClosed.some(id => id.startsWith(lost));
     link.opening = lost && live.served && !HOSTED && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
     if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
-    state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : HOSTED ? waitingFirst() : data.chosen ? 0 : biggest();
+    state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : LAZY ? waitingFirst() : data.chosen ? 0 : biggest();
     if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; state.docPage = "file"; docReveal = wantedDoc; }
     // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
     // Decided here, before the page writes its own address below.
@@ -4227,26 +4245,32 @@ __HEAD_HOSTED__
   });
   pins.load().then(paintPins);
   stars.load().then(paintStars);
-  if (!HOSTED) openReading(chooseOpening());
+  if (!LAZY) openReading(chooseOpening());
   else {
-    // The shell holds no transcript: a sealed copy is opened first, then the list comes from
-    // index.json, then the conversation opened on.
-    document.querySelector(".to-sheet").href = "sheet.html";  // the hosted copy's answer sheet
-    dock("send").title = "Queue this for the laptop, which sends it to the session's Herdr pane when it is awake and the agent is ready (Enter; Shift+Enter for a new line)";
-    document.getElementById("forget").addEventListener("click", forgetDevice);
-    document.getElementById("offline-download").addEventListener("click", downloadAll);
-    window.addEventListener("online", () => { checkReceipts(); refreshHosted(true).catch(() => {}); });
-    hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null).then(() => hosted.index()).then(index => {
+    // A lazy page holds no transcript: a sealed copy is opened first (the hosted copy), then the list comes from index.json, then the
+    // conversation opened on. The lite page has nothing to open: its index and objects are served beside it like the page itself.
+    if (HOSTED) {
+      document.querySelector(".to-sheet").href = "sheet.html";  // the hosted copy's answer sheet
+      dock("send").title = "Queue this for the laptop, which sends it to the session's Herdr pane when it is awake and the agent is ready (Enter; Shift+Enter for a new line)";
+      document.getElementById("forget").addEventListener("click", forgetDevice);
+      document.getElementById("offline-download").addEventListener("click", downloadAll);
+      window.addEventListener("online", () => { checkReceipts(); refreshLazy(true).catch(() => {}); });
+    } else {
+      document.querySelector(".to-sheet").href = SHEET_PAGE;  // the local answer sheet, a folder up
+    }
+    (HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index()).then(index => {
       data = hosted.data(index, null);
-      stars.replace(data.stars || []);
+      if (HOSTED) stars.replace(data.stars || []);
       offline.index = index;
-      if (!hosted.offline().fromDevice) { link.syncedAt = Date.now() / 1000; hosted.keepFresh(index).then(paintOffline, () => {}); }
+      if (!hosted.offline().fromDevice) { link.syncedAt = Date.now() / 1000; if (HOSTED) hosted.keepFresh(index).then(paintOffline, () => {}); }
       paintSync();
       const saved = chooseOpening();
       whenReady(() => {
         openReading(saved);
+        started = true;
+        if (!HOSTED) return;  // served: the poll and the wait for builds are already running, and take a build that came while this loaded at their next turn
         hosted.poll(async () => {
-          try { await refreshHosted(); } catch (e) { noteSyncFail(e); throw e; }
+          try { await refreshLazy(); } catch (e) { noteSyncFail(e); throw e; }
           await checkReceipts();
         });
         setInterval(() => { if (!document.hidden) checkReceipts(); }, 4000);
@@ -4267,6 +4291,7 @@ __HEAD_HOSTED__
     if (index >= 0) state.session = index;
     const opened = data.sessions[state.session];
     const same = index >= 0 && saved && (opened.ids || [opened.id]).includes(saved.session);
+    if (missing()) await new Promise(resolve => whenReady(resolve));  // a lazy page loads the conversation before it draws it
     if (same) state.open = moveTurns(saved.first, saved.session, opened, saved.open || [], saved.anchor);
     restoreSendHandoff();
     setAddress();

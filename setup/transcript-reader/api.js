@@ -16,6 +16,14 @@
 //   GET  /setup/transcript-reader/out/bucket/...    the sealed copy (sync.py --seal):
 //                                                   its shell, k/params.json and the
 //                                                   *.enc objects, the same ways
+//   GET  /setup/transcript-reader/out/live/index.html
+//                                                   the lite page: the reader page's code in mode "live", which opens one conversation
+//                                                   (#s=<id>) and loads only that one, from the objects below; served and token-filled like
+//                                                   any page, and live like the local page (state poll, events wait, Follow, Send)
+//   GET  /setup/transcript-reader/out/live/{index.json,s/*}
+//                                                   the objects every build writes for it (build_prototype.write_live): the index of the
+//                                                   listed conversations and one conversation's entry, to its own token-bearing fetches
+//                                                   only. Read from files: nothing here parses the 34 MB page or asks the worker.
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
@@ -71,7 +79,8 @@
 //   POST /api/transcript-reader/image-open          { id }: the same for an image file the page offers (listed in
 //                                                   out/image-files.json): { url, name, size, mtime }
 //   POST /api/transcript-reader/md-open             { id }: the same for a markdown file the page lists without its text (out/md-files.json:
-//                                                   the files of a leader's task folders that no conversation named), checked now and
+//                                                   the files of a leader's task folders that no conversation named; out/live/md-files.json:
+//                                                   the files the lite page's conversations name), checked now and
 //                                                   read: { text, name, size, mtime }. Read only.
 //   GET  /api/transcript-reader/html/<key>/<file>   that file, and the files beside it and below it that it names, as
 //                                                   they are on disk now, for the page to show in a sandboxed frame
@@ -120,7 +129,8 @@
 // Herdr has focused to the reading list while a page follows focus. While a page is open (it polls, or waits on events) the
 // server itself watches the folders of the listed logs and starts the rebuild when one changes, rather than at the page's
 // next poll; with no page open it watches nothing and rebuilds nothing. The rebuilds run in one reader.py that stays running
-// (worker.js), which falls back to a fresh reader.py for a request it cannot take. reopen and close
+// (worker.js), which falls back to a fresh reader.py for a request it cannot take. Each rebuild also leaves the lite page's files in out/live/
+// and the glance feed in out/glance.json (build_prototype.write_live); this module serves the first and never reads the second. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
 // every live Claude pane's session not yet listed, except one a person closed or removed. The pins and stars files are the only things written outside out/, and only on a pin, an unpin, a star or an unstar.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
@@ -156,10 +166,12 @@ const copySyncLib = require('./copysync');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {
+  // The lite page's (out/live/): the index and one conversation each. Its markdown listing (md-files.json) is read by md-open, never served.
+  live: { re: /^(?:index|s\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
   hosted: { re: /^(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json$/, type: 'application/json; charset=utf-8' },
   bucket: { re: /^(?:(?:index|[sdfart]\/[A-Za-z0-9_-]{1,64})\.json\.enc|k\/params\.json)$/, type: 'application/octet-stream' },
 };
@@ -176,6 +188,7 @@ const HTML_ROUTE = API + 'html/';
 const HTML_FILES = 'html-files.json';  // beside the page: id -> path (build_prototype.write_page)
 const IMAGE_FILES = 'image-files.json';  // the same for the images the page offers
 const MD_FILES = 'md-files.json';  // the same for the markdown files the page lists without their text (a leader's task folders)
+const LIVE_MD_FILES = 'live/md-files.json';  // and for the markdown files the lite page's conversations name: it lists them without their text too
 const HTML_ID_RE = /^[0-9a-f]{10}$/;
 const HTML_PAGE_RE = /\.html?$/i;
 const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
@@ -1369,18 +1382,22 @@ function create({
   // comes from the page's own build (never from the request), so only a file a listed conversation named, or that sits in a listed
   // leader's task folder, opens.
   const OPENABLE = {
-    html: { listing: HTML_FILES, type: HTML_PAGE_RE, limit: MAX_HTML_BYTES, not: ['That is not an HTML file.', 'not_html'] },
-    image: { listing: IMAGE_FILES, type: IMAGE_FILE_RE, limit: MAX_IMAGE_BYTES, not: ['That is not an image file.', 'not_image'] },
-    md: { listing: MD_FILES, type: MD_FILE_RE, limit: MAX_DOC_BYTES, not: ['That is not a markdown file.', 'not_markdown'] },
+    html: { listing: [HTML_FILES], type: HTML_PAGE_RE, limit: MAX_HTML_BYTES, not: ['That is not an HTML file.', 'not_html'] },
+    image: { listing: [IMAGE_FILES], type: IMAGE_FILE_RE, limit: MAX_IMAGE_BYTES, not: ['That is not an image file.', 'not_image'] },
+    md: { listing: [MD_FILES, LIVE_MD_FILES], type: MD_FILE_RE, limit: MAX_DOC_BYTES, not: ['That is not a markdown file.', 'not_markdown'] },
   };
   // The file the page asked for by its id, from the listing the last build wrote and checked now: still there, of the kind the listing is
   // for, inside the home or a temp folder, and within the limit.
   function listedFile(body, rules) {
     for (const key of Object.keys(body)) if (key !== 'id') throw new RequestError('Unknown field.');
     if (typeof body.id !== 'string' || !HTML_ID_RE.test(body.id)) throw new RequestError('Invalid file id.');
-    let listing = null;
-    try { listing = parseJson(fs.readFileSync(path.join(outDir, rules.listing), 'utf8')); } catch { listing = null; }
-    const named = listing && typeof listing === 'object' && Object.hasOwn(listing, body.id) ? listing[body.id] : null;
+    // The first listing that names the id: the page's own, then (for markdown) the lite page's.
+    let named = null;
+    for (const name of rules.listing) {
+      let listing = null;
+      try { listing = parseJson(fs.readFileSync(path.join(outDir, name), 'utf8')); } catch { listing = null; }
+      if (listing && typeof listing === 'object' && Object.hasOwn(listing, body.id)) { named = listing[body.id]; break; }
+    }
     if (typeof named !== 'string' || !path.isAbsolute(named)) throw new RequestError('That file is not on the page. Sync to rebuild it.', 404, 'not_listed');
     let real;
     let stat;

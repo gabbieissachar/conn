@@ -220,19 +220,20 @@ def encode(value) -> bytes:
 
 
 class Document:
-    """A document the page offers: its JSON, and what the page's three lists of files are made from."""
+    """A document the page offers: its JSON, what the page's three lists of files are made from, and its record for the lite page (no text)."""
 
-    __slots__ = ("key", "json", "kind", "lazy", "path")
+    __slots__ = ("key", "json", "lite", "kind", "lazy", "path")
 
     def __init__(self, record: dict) -> None:
         self.key, self.json = record["id"], encode(record)
+        self.lite = encode(builder.lite_document(record))
         self.kind, self.lazy, self.path = record.get("kind"), bool(record.get("lazy")), record["path"]
 
 
 class Thread:
     """One conversation as the page shows it, kept (see the module's text)."""
 
-    __slots__ = ("key", "reads", "head", "turns", "agent", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats")
+    __slots__ = ("key", "reads", "head", "turns", "agent", "leader", "documents", "activity", "ids", "newest", "has_outputs", "stats", "entry", "glance", "docs_lite", "md", "live")
 
     def __init__(self, key: tuple, reads: Reads, session: dict, documents: dict[str, dict], has_outputs: bool) -> None:
         exchanges = session["exchanges"]
@@ -245,6 +246,13 @@ class Thread:
         self.documents = [Document(record) for record in documents.values()]
         self.activity = max((e["reply_at"] or e["at"] or 0) for e in exchanges) if exchanges else 0
         self.ids, self.newest, self.has_outputs = session["ids"], session["id"], has_outputs
+        # What the lite page and the glance feed need of it (build_prototype's section on them): its index entry and glance record, the
+        # files it names without their text (by id, in id order) and the markdown ones' paths, and the tail and hash of the object last made.
+        self.entry, self.glance = builder.conversation_summary(session)
+        named = sorted(self.documents, key=lambda document: document.key)
+        self.docs_lite = b"{" + b",".join(encode(document.key) + b":" + document.lite for document in named) + b"}"
+        self.md = {document.key: document.path for document in named if not document.kind}
+        self.live: tuple[bytes, str] | None = None
         count = lambda test: sum(1 for e in exchanges if test(e))
         self.stats = (
             f"{session['home']:<34} {session['id'][:8]} exchanges={len(exchanges)} captain={count(lambda e: e['source'] == 'captain')} "
@@ -327,11 +335,12 @@ def frame() -> tuple[bytes, bytes]:
 class Built:
     """A build's result, ready to write: the page's payload as the pieces it is made of, and the files that go beside it."""
 
-    __slots__ = ("generated", "payload", "files", "outputs", "output_ids", "stats")
+    __slots__ = ("generated", "payload", "live", "files", "outputs", "output_ids", "stats")
 
     def __init__(self, generated: float) -> None:
         self.generated = generated
         self.payload: list[bytes] = []
+        self.live: builder.LiveBuild | None = None   # what the lite page and the glance feed are made of (build_prototype.write_live)
         self.files: list[tuple[str, str]] = []
         self.outputs: dict[str, bytes] = {}     # the tool output of the conversations built anew: conversation id -> its file
         self.output_ids: set[str] = set()       # every conversation that has tool output now
@@ -460,6 +469,17 @@ def build(args: argparse.Namespace) -> Built:
         *(piece for number, document in enumerate(documents.values()) for piece in (b"," if number else b"", encode(document.key), b":", document.json)),
         b'},"closed":' + encode(closed) + b',"fleet_timeline":false}',
     ]
+    # The lite page's conversations, in the page's order: each object is the conversation's own pieces (kept bytes) with the leader and the
+    # named files after them, hashed only when one of those changed since the last build.
+    lite = []
+    for number in order:
+        thread = kept[number]
+        tail = (b',"agent":' + encode(thread.agent) if thread.agent else b"") + (b',"leader":' + encode(leaders[number]) if leaders[number] else b"") + b',"documents":' + thread.docs_lite + b"}"
+        if thread.live is None or thread.live[0] != tail:
+            thread.live = (tail, builder.pieces_stamp([thread.head, thread.turns, tail]))
+        lite.append(builder.LiveConversation(thread.entry, thread.glance, labels.get(thread.newest), bool(reopened & set(thread.ids)),
+                                             [thread.head, thread.turns, tail], thread.live[1]))
+    built.live = builder.LiveBuild(started, since, [home["id"] for home in homes], closed, lite, {key: path for thread in kept for key, path in thread.md.items()})
     built.files = [(builder.HTML_FILES, json.dumps({d.key: d.path for d in documents.values() if d.kind == "html"})),
                    (builder.IMAGE_FILES, json.dumps({d.key: d.path for d in documents.values() if d.kind == "image"})),
                    (builder.MD_FILES, json.dumps({d.key: d.path for d in documents.values() if d.lazy}))]
@@ -491,12 +511,13 @@ def write(built: Built, out: Path) -> bool:
         except (OSError, ValueError):
             pass
         # (A conversation built anew has its tool output to write, though its page may be as it was: its file had been taken away.)
-        if not built.outputs and _WRITTEN.get(out) == same and out.is_file() and stamp.is_file():
+        if not built.outputs and _WRITTEN.get(out) == same and out.is_file() and stamp.is_file() and (out.parent / builder.LIVE_DIR / "index.json").is_file():
             return True
         try:
             write_outputs(built, out.with_name(builder.STEP_OUTPUTS))
             for name, text in built.files:
                 replace(out.with_name(name), [text.encode("utf-8")])
+            builder.write_live(out.parent, built.live)   # the lite page's files and the glance feed, before the page and its stamp
             replace(out, [head, *built.payload, tail])
             replace(stamp, [repr(built.generated).encode("utf-8")])
         except BaseException:

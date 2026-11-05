@@ -266,6 +266,87 @@ Then open `http://<the Mac's Tailscale address>:8765/apps/wip-herdr-workspace-or
 - **When it will not open.** The passcode page says why in words, and each sign-in attempt is one line in `/tmp/pmos-serve-8765.log` on the Mac. A browser on the Mac itself may be sent through a corporate proxy that blocks tailnet addresses; use `localhost` there.
 - **Sign out.** `http://<address>:8765/herdr-organizer/signout`.
 
+## The lite page and the glance feed
+
+For watching several conversations at once (Conn's tiles and columns, built against the formats below), every build that writes the reader page also writes, beside it, what a page that shows **one** conversation needs, and one small file that says how every conversation stands. Neither makes the build parse anything more: a conversation's object is its own bytes, written only when they changed.
+
+### The lite page
+
+```
+http://localhost:8768/setup/transcript-reader/out/live/index.html#s=<session id, or its first 8 characters>
+```
+
+The same address forms as the reader page (`#s=<id>&d=<document id>`, `#s=<id>&m=<turn id>`, "Links to one message"), on `localhost`, the tailnet address and the https address alike, served and token-filled like any page (opened in a tab or a web view, never framed). It is the reader page's own code in a third mode, so it draws the conversation exactly as the full page does, and it loads **only the conversation it is opened on** (one object, 0.1 to 4.3 MB on the owner's data) instead of the 34 MB page. A conversation picked in its session picker loads when it is picked.
+
+It is a served page in every other way: it **sends straight to the pane** through the same `send` route and every check the server makes (Herdr's state, the foreground process, the session, one message at a time, the 5-second Undo window in the page), takes **Reply**, **Comment on this**, batches and photos, **follows Herdr** when asked to, polls the state every 2 seconds for each pane's agent state, waits on `events` for a new build and takes it in about 1.5 seconds, has Pins, Stars, Search in the conversation, Documents and **Sync**. What differs from the full page:
+
+- **Follow is off** until you turn it on in the page; the setting is the page's own (`tr-live-follow` in the browser's storage, apart from the full page's `tr-follow`), so a column pinned to one conversation stays on it.
+- **Search "All conversations"** looks in the conversations the page has loaded, and says how many (the others load when opened). No server route searches.
+- **Documents** lists the files the conversation names (markdown, HTML, pictures). A markdown file opens through `md-open`, as it is on disk now, and an HTML file or picture through `html-open` and `image-open`, as everywhere. The unnamed files of a leader's task folders are not listed (the full page lists them).
+- **The answer sheet** is the local one (`../questionnaire.html`): its link leaves the page for it, as the sheet's own "← Reader" returns to the full page. A native client that hosts the page should send that link to its full reader.
+- **No offline copy**, no Fleet timeline (the hosted copy has both; this has neither), and no Sync of a copy.
+
+The page needs a server started after this change (`serve.sh restart`: the routes are in `api.js`) and one build after it (`reader.py rebuild`, or any change a page is open for), which writes `out/live/`.
+
+### What a build writes
+
+| File | Holds |
+|---|---|
+| `out/live/index.html` | The lite page: no transcript in it. |
+| `out/live/index.json` | The hosted index's shape (`hosted.js` reads it): `as_of` (the build time, which is the page's own stamp), `template` (the page's code hash: a page whose own differs reloads), `conversations` (below), `closed` (panes closed in the last two weeks, to offer under "Closed panes"), `fleet_timeline: false`, and empty `documents`, `weeks`, `summaries`, `stars`. |
+| `out/live/s/<id>.json` | One conversation, exactly its entry in the reader page's payload (the same bytes) less `pane` and `reopened`, plus `documents`: the files its messages and replies name, by id in id order, each as the page lists it without its `text` (`{ id, name, path, dir, mention, mtime, lazy: true }` for a markdown file, `{ ..., kind: "html" or "image", size }` for the others). |
+| `out/live/md-files.json` | id to path of those markdown files, which `md-open` reads as they are on disk when one is opened (never served). |
+| `out/glance.json` | The glance feed, below. |
+
+`index.json`'s `conversations`, newest activity first, one for each conversation on the reading list: `home`, `id` (the newest session's id), `ids` (every session of the conversation, oldest first), `file`, `where`, `last` (the newest turn's time), `order`, `turns`, `needs` (replies that ask you, with nothing from you after them), `pane` (the Herdr pane as of the build: `label`, `title`, `herdr`, `pane`, `status`, `live`; `live: false` is a pane that has closed, with the last label and state seen), `reopened`, `object` (`s/<id>.json`) and `stamp` (a hash of that object's bytes: a page keeps a loaded conversation while its stamp is the same).
+
+The files are written before the page's stamp (the last file a build writes), so a page woken by a new stamp finds them; a conversation's object is written only when its stamp changed, and a restarted worker does not write them again; an object no listed conversation has is removed. Like everything in `out/`, they are the owner's alone (0700 and 0600). They are served to the lite page only, to its own token-bearing fetches: `live/index.json` and `live/s/<id>.json` and nothing else under `live/`.
+
+### The glance feed: `out/glance.json`
+
+One small file (about 1 KB for each conversation: 29 KB for the owner's 31) that a native client reads as a file, as Conn reads `stars.json` and `pane-labels.json`: no HTTP, no token. It is replaced whole through a rename, so a read never sees half of it, and it is written **only when its content changes**, so its modification time says "something changed" and an unchanged build leaves it alone.
+
+```json
+{
+  "as_of": 1793862812.17,
+  "version": 1,
+  "conversations": [
+    {
+      "id": "0f1e2d3c-...",
+      "ids": ["0a1b2c3d-...", "0f1e2d3c-..."],
+      "home": "main",
+      "where": "",
+      "last": 1793860599.0,
+      "turns": 401,
+      "message": { "at": 1793860589.0, "text": "Go ahead with the three small ones." },
+      "reply": { "at": 1793860599.0, "text": "Refunds A and B are queued. Should I approve the 3 refunds over the cap? ...", "words": 153 },
+      "open_asks": 1,
+      "ask": { "at": 1793860599.0, "lines": ["Should I approve the 3 refunds over the cap?"] },
+      "pane": { "label": "billing", "herdr": "work", "status": "idle", "live": true }
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `as_of` | The build time (seconds since the epoch) of the build that last changed the file. |
+| `version` | The format's version: 1. A reader that does not know it should ignore the file. |
+| `conversations` | One record for each conversation on the reading list, newest activity first. |
+| `id` | The conversation's id: the newest session of a pane's sessions across `/clear`. The lite page's `#s=` takes it or its first 8 characters. |
+| `ids` | Every session id of the conversation, oldest first (Herdr's `agent_session` may name any of them). |
+| `home` | The home the conversation runs under: `main`, a second mate's id, or `workspace` (your own sessions). |
+| `where` | `""` for the home's own folder, `worker copy` for a worker's isolated copy, else the folder inside the home. |
+| `last` | When the newest turn (your message or its reply) happened. |
+| `turns` | How many turns the conversation has. |
+| `message` | Your last message: `at` and `text`, its first words as one line (markup that only shapes it dropped), at most 200 characters, cut with `…`. `null` when you have written none. |
+| `reply` | The last reply, the same way: `at`, `text` (at most 280 characters), `words` (the reply's whole length). `null` when there is none yet. |
+| `open_asks` | How many replies ask you something with nothing from you after them: the count the page's header and the sidebar call "need you". |
+| `ask` | The newest open ask: `at` and `lines`, up to 3 of the reply's asking lines, each at most 200 characters. `null` when no ask is open. |
+| `pane` | The Herdr pane as of the build: `label` (the name Herdr shows), `herdr` (its session), `status` (`idle`, `working`, `blocked`, `done` or `unknown`), `live`. `null` when no pane was ever seen for it. |
+
+Two things to know when drawing it. `pane.status` is **as of the build**, which a log write or Sync starts and which is not every Herdr change: a client that has Herdr's own live state (as Conn does) should use that for the state and use this for the rest; `live: false` means the pane has closed and `label` and `status` are the last ones seen. And a conversation's gist, asks and counts are computed by the reader's rules (the page's "Needs you" chips and ask boxes come from the same turns), so a tile and the page agree.
+
 ## The hosted copy
 
 The way towards reading the transcripts from a phone while the laptop is off (the hosted reader plan, ships 1 and 2).
@@ -354,7 +435,7 @@ To review it locally, start the reader's server and open the sealed copy beside 
 - Writes `out/` (photos you attach to a message are saved in `out/uploads/`, owner-only, and never served; and, when a rebuild is asked for by the server, runs one `reader.py worker` that stays running while pages are open), the passcode hash (`out/passcode.json`, only on `serve.sh passcode`), the pins file (`~/.config/pmos-transcript-reader/pins.json`, only on a pin or an unpin; it holds which messages are pinned, not their text) and the stars file (`~/.config/pmos-transcript-reader/stars.json`, only on a star or an unstar; it holds which conversations are starred). `out/` is gitignored: the pages embed private transcripts. Like Claude's own logs, `out/` and everything in it is the owner's alone (folders 0700, files 0600), and each rebuild narrows any file an earlier version left readable by others. That includes `out/parsed/`, each log's turns as last parsed: a rebuild parses again only the logs that changed since (or all of them once the parser changes), and removes a parsed log no build has used for a week. A rebuild started by hand while the server runs its own waits for it to finish.
 - Sends a prompt to one Herdr pane, only on a Send click (or, for the hosted copy's Send, when `drain.js` carries out a queued request), and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt. It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session. Undo only renames or empties files in a copy's `q/` folder (the `unqueue` route); it sends nothing to a pane.
 
-The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` and `out/bucket/` too) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
+The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` and `out/bucket/` too, and the lite page and its objects in `out/live/`) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
 The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
 The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it.
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
@@ -378,7 +459,7 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 ## Tests
 
 ```bash
-python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_claude_homes.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py
+python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_claude_homes.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py setup/transcript-reader/test_live.py
 node --test setup/transcript-reader/*.test.js
 ```
 

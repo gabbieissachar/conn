@@ -12,6 +12,8 @@ const vm = require('vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'prototype', 'hosted.js'), 'utf8');
 const TOKEN = 'a'.repeat(64);
+// Values made inside the sandbox have its own Array and Object, which deepStrictEqual tells apart from ours.
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 // A sandboxed hosted.js. objects: path -> JSON value (or a status number); token: the page's meta tag.
 function load({ objects = {}, token = TOKEN, hidden = false, posted = { status: 200, body: { status: 'ok' } } } = {}) {
@@ -178,6 +180,70 @@ test('an image document loads its bytes on demand as its text, and one the copy 
   assert.equal(data.documents.i1.mime, 'image/png');
   assert.deepEqual(calls.map((c) => c.url), ['d/i1.json']);
   assert.equal(data.documents.i2.left_out, 'over the 2 MB the copy carries for one image');
+});
+
+// The lite page (out/live/, build_prototype.write_live) uses the same loader: its index names no documents, and each conversation's object lists
+// the files it names, without their text.
+const LITE_INDEX = {
+  as_of: 2000, since: 1500, homes: ['main'], template: 'lite', summaries: [], stars: [], documents: {}, weeks: {}, fleet_timeline: false,
+  closed: [{ id: 'z', label: 'old pane', at: 1200 }],
+  conversations: [
+    { id: 'a', ids: ['a'], home: 'main', object: 's/a.json', stamp: 's1', last: 1900, needs: 1, pane: { label: 'alpha', live: true, status: 'idle' } },
+    { id: 'b', ids: ['b'], home: 'main', object: 's/b.json', stamp: 's2', last: 1800, needs: 0 },
+  ],
+};
+const LITE_DOCS = { md1: { id: 'md1', name: 'notes.md', path: '/x/notes.md', dir: '~/x', mention: 'notes.md', mtime: 5, lazy: true }, im1: { id: 'im1', name: 'shot.png', path: '/x/shot.png', dir: '~/x', mention: 'shot.png', mtime: 6, kind: 'image', size: 9 } };
+const LITE_OBJECTS = {
+  'index.json': LITE_INDEX,
+  's/a.json': { id: 'a', exchanges: [{ at: 1900, input: 'hi', documents: ['md1', 'im1'] }], documents: LITE_DOCS },
+  's/b.json': { id: 'b', exchanges: [], documents: {} },
+};
+
+test('the lite page: a conversation brings the files it names, which join the page\'s documents as records without text', async () => {
+  const { hosted, calls } = load({ objects: LITE_OBJECTS });
+  const data = hosted.data(await hosted.index(), null);
+  assert.deepEqual(Object.keys(data.documents), [], 'the index names none');
+  assert.equal(data.fleet_timeline, false);
+  assert.deepEqual(plain(data.closed), LITE_INDEX.closed, 'the panes closed in the last two weeks, to offer under Closed panes');
+  await hosted.conversation(data.sessions[0]);
+  assert.deepEqual(Object.keys(data.documents).sort(), ['im1', 'md1']);
+  assert.equal(data.documents.md1.lazy, true);
+  assert.equal(data.documents.md1.object, undefined, 'no object to load: the page reads a markdown file through the server, as on the local page');
+  assert.equal('text' in data.documents.md1, false);
+  assert.equal(data.documents.im1.kind, 'image');
+  assert.deepEqual(calls.map((c) => c.url), ['index.json', 's/a.json']);
+});
+
+test('the lite page: a newer index keeps a loaded conversation\'s files while its stamp is the same, and takes the new ones when it changed', async () => {
+  const objects = { ...LITE_OBJECTS };
+  const { hosted, calls } = load({ objects });
+  const first = hosted.data(await hosted.index(), null);
+  await hosted.conversation(first.sessions[0]);
+  const same = hosted.data({ ...LITE_INDEX, as_of: 2060 }, first);
+  assert.deepEqual(same.sessions[0].exchanges, first.sessions[0].exchanges, 'kept: its stamp is the same');
+  assert.deepEqual(Object.keys(same.documents).sort(), ['im1', 'md1'], 'and its files with it');
+  assert.equal(same.documents.md1 === first.documents.md1, false, 'copied, so one page\'s change to a record is not the next one\'s');
+  calls.length = 0;
+  const changed = hosted.data({ ...LITE_INDEX, as_of: 2120, conversations: [{ ...LITE_INDEX.conversations[0], stamp: 's1b' }, LITE_INDEX.conversations[1]] }, same);
+  assert.equal(changed.sessions[0].exchanges, null);
+  assert.deepEqual(Object.keys(changed.documents), [], 'until it loads again');
+  objects['s/a.json'] = { id: 'a', exchanges: [], documents: { md2: { id: 'md2', name: 'more.md', lazy: true } } };
+  await hosted.conversation(changed.sessions[0]);
+  assert.deepEqual(Object.keys(changed.documents), ['md2']);
+  assert.deepEqual(calls.map((c) => c.url), ['s/a.json']);
+});
+
+test('the lite page: the files of a conversation loaded after the index was read join the data the page holds now', async () => {
+  const { hosted } = load({ objects: LITE_OBJECTS });
+  const held = hosted.data(await hosted.index(), null);
+  const refreshed = hosted.data({ ...LITE_INDEX, as_of: 2060 }, held);  // what a refresh makes, before it loads the conversation read
+  await hosted.conversation(refreshed.sessions[0]);
+  assert.deepEqual(Object.keys(refreshed.documents).sort(), ['im1', 'md1']);
+});
+
+test('an index that names no panes closed has none to offer, as the hosted copy always has', () => {
+  const { hosted } = load();
+  assert.deepEqual(plain(hosted.data(INDEX, null).closed), []);
 });
 
 test('an object that is not built says so, and is tried again next time', async () => {
