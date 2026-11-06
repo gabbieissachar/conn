@@ -40,6 +40,10 @@ enum SelfTest {
             let probe: String = await withCheckedContinuation { c in box.probe { c.resume(returning: $0) } }
             print("web \(box.kind.rawValue): phase=\(box.phase) loadSeconds=\(box.loadSeconds.map { String(format: "%.2f", $0) } ?? "n/a") pid=\(box.pid ?? -1) probe=\(probe)")
         }
+        for (i, box) in model.watch.boxes.values.enumerated() {
+            print("web watch column \(i): phase=\(box.phase) loadSeconds=\(box.loadSeconds.map { String(format: "%.2f", $0) } ?? "n/a") pid=\(box.pid ?? -1) footprintMB=\(box.pid.flatMap { ProcessUsage.read($0) }.map { String(format: "%.0f", Double($0.footprint) / ProcessUsage.mebibyte) } ?? "n/a")")
+        }
+        print("watch: on=\(model.watchOn) columns=\(model.watch.layout.openCount)/\(model.watch.count) readerBox=\(model.web.readerBox == nil ? "unloaded" : "loaded")")
         model.updateStats()
         print("stats: \(model.statsLine)")
         model.shutdown()
@@ -436,6 +440,8 @@ enum UICheck {
         await StarredBarCheck.run(model: model, report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await ReaderPinCheck.run(model: model, report: report, wait: wait)
+        model.webTab = .reader; model.pinReader(); await wait(0.5)
+        await WatchCheck.run(model: model, report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
 
         model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)

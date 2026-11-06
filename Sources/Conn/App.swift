@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if cfg.dark { model.appearance = .dark }
         if let t = cfg.webTab { model.webTab = t }
+        if let n = cfg.watch { model.setWatchCount(n); model.watchOn = true }
         model.privacy = cfg.privacy
         // The first view was set when the model was made (`LaunchPlan`). A person's own launch on the Herdr client view
         // attaches the client here, so the view is ready without a click; a scripted launch never does.
@@ -171,6 +172,11 @@ struct ConnCommands: Commands {
                 Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent)
                 Divider()
             }
+            Button(app.watchOn ? "Leave Watch" : "Watch Several Sessions") { app.watchOn.toggle() }.keyboardShortcut("w", modifiers: [.command, .shift])
+            Picker("Watch Columns", selection: Binding(get: { app.watch.count }, set: { app.setWatchCount($0) })) {
+                ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0) columns").tag($0) }
+            }
+            Divider()
             Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])
             Toggle("Privacy Mode", isOn: $app.privacy).keyboardShortcut("b", modifiers: [.command, .shift])

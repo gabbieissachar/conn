@@ -38,6 +38,8 @@ struct AppConfig {
     var compare = false
     var uiTour = false
     var webTab: WebKind?
+    /// `--watch [2|3|4]`: open on the Watch view with that many columns (3 without a number), for screenshots and measurements.
+    var watch: Int?
     /// Force the text path (`pane.read` polling) instead of the stream: for testing it against real Herdr, or if a stream misbehaves.
     var textPanes = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
@@ -84,6 +86,9 @@ struct AppConfig {
             case "--probe-draw": c.probeDraw = true
             case "--compare": c.compare = true
             case "--ui-check": c.uiTour = true
+            case "--watch":
+                // The number is optional: a following option is not swallowed.
+                if i + 1 < a.count, let n = Int(a[i + 1]) { c.watch = WatchLayout.clamped(n); i += 1 } else { c.watch = WatchLayout.defaultCount }
             case "--web-tab": c.webTab = (next() ?? "") == "organizer" ? .organizer : .reader
             case "--text-panes": c.textPanes = true
             case "--editor-test": c.editorTest = next()
@@ -117,7 +122,7 @@ struct AppConfig {
     /// opted back into `--foreground`), the fixture, or an option that only makes sense on the Agent view (`--select`,
     /// `--compare`, `--history`). It never attaches the Herdr client by itself.
     var isScriptedLaunch: Bool {
-        background || ProcessInfo.processInfo.environment["CONN_BACKGROUND"] == "1" || hasScriptedHook || fixture || select != nil || compare || openHistory
+        background || ProcessInfo.processInfo.environment["CONN_BACKGROUND"] == "1" || hasScriptedHook || fixture || select != nil || compare || openHistory || watch != nil
     }
 
     /// Whether the Agent view exists in this launch (see `ViewPolicy`). Off by default. A test launch reads the preference from its

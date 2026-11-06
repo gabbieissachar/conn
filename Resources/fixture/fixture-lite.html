@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reader lite page (fixture)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#fbf8ef; --card:#ffffff; --ink:#26241f; --muted:#7a7566; --line:#e6dfcb; --accent:#e0a82e; --blue:#2d68ad; --btn:#f1ebd9; --user:#efe9d6; --codebg:#f4efe1; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#17181c; --card:#202228; --ink:#e6e7ea; --muted:#9a9ca5; --line:#2e3038; --accent:#d9a73a; --blue:#7aa8f0; --btn:#2a2c34; --user:#2a2c34; --codebg:#262830; } }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:2; padding:8px 12px 6px; border-bottom:1px solid var(--line); background:var(--bg); }
+  .bar { display:flex; align-items:center; gap:6px; }
+  .title { font-weight:600; font-size:13px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .btn { font:inherit; font-size:12px; border:1px solid var(--line); background:var(--btn); color:var(--ink); border-radius:8px; padding:3px 8px; cursor:default; }
+  .live { color:var(--muted); font-size:11px; }
+  .live::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:#3c9a50; margin-right:5px; }
+  .synced { color:var(--muted); font-size:11px; margin:3px 2px 0; }
+  main { padding:12px 14px 6px; }
+  .user { background:var(--user); border-radius:14px 14px 4px 14px; padding:8px 12px; margin:0 0 10px 28px; }
+  .reply { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:12px; padding:9px 12px; margin:0 0 12px; }
+  .reply p { margin:0 0 6px; } .reply p:last-child { margin:0; }
+  .reply h4 { margin:2px 0 6px; font-size:13px; }
+  .reply ol { margin:4px 0 6px; padding-left:20px; }
+  .tools { color:var(--blue); font-size:12px; text-decoration:underline; text-decoration-style:dotted; }
+  .wait { border-left-color:#e0613a; } .wait h4 { color:#c4412e; }
+  /* The reply an address (#s=...&m=...) went to: outlined for a moment, as the real page does. */
+  .is-linked { animation: linked 2.8s ease-out; }
+  @keyframes linked { 0%, 60% { box-shadow: 0 0 0 3px var(--blue); } 100% { box-shadow: 0 0 0 3px transparent; } }
+  .compose { position:sticky; bottom:0; border-top:1px solid var(--line); padding:8px 12px 10px; background:var(--bg); }
+  .to { color:var(--muted); font-size:11px; margin:0 2px 5px; }
+  .row { display:flex; gap:6px; }
+  .row input { flex:1; min-width:0; font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:9px; padding:7px 10px; }
+  .send { background:#7fa6e6; color:#fff; border-color:#7fa6e6; font-weight:600; }
+  .fixture { color:var(--muted); font-size:10.5px; text-align:center; padding:3px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar"><span class="title" id="title"></span><span class="live">live</span><span class="btn">Documents</span></div>
+  <div class="synced">Synced 09:41:07 · fixture data</div>
+</header>
+<main id="convo"></main>
+<div class="compose">
+  <div class="to" id="to"></div>
+  <div class="row"><input placeholder="Message" disabled><span class="btn send">Send</span></div>
+  <div class="fixture">Invented page for the Conn prototype. No real conversation.</div>
+</div>
+<script>
+// A stand-in for the reader's lite page: one whole conversation, drawn from the address `#s=<session>` or `#s=<session>&m=<turn id>`.
+// A turn id scrolls to that turn's reply and outlines it, in place when the page is open, as the real page does (README of the reader,
+// "The lite page"). Turn ids here are `t-<session number>-<nn>`; the last turn is nn = 12.
+const S = [
+ ["checkout-flow-fix","working","The checkout page shows a stale total after a promo code is removed.","I'm tracing where the total is recalculated.","The total is cached against the item list only. I key it on the items and the applied codes now, and added a remove-then-add test."],
+ ["cart-empty-state","idle","The empty cart screen looks unfinished.","I compared it with the other empty states.","Done. The empty cart now shows an illustration, one line of copy and a single button back to the store list."],
+ ["promo-banner-copy","done","Draft three banner options under 40 characters.","Here are three options.","I would pick option 2: it names the deadline and the benefit."],
+ ["ledger-reconcile","blocked","Reconcile September against the bank export.","I'll run the script in dry-run mode first.","I need your OK to run the reconcile script once. It writes nothing."],
+ ["refund-webhook-retry","idle","Why do refund webhooks retry twice?","I read the retry policy and the last 40 deliveries.","The second retry comes from a timeout set below the endpoint's p99. Raising it to 8s stops the duplicate."],
+ ["changelog-draft","done","Draft this week's changelog.","I grouped the merged pull requests.","The draft has 11 entries in Added, Changed and Fixed. Two need a product owner's wording."],
+ ["search-index-audit","idle","Audit the search index for stale entries.","I sampled 500 entries.","3% of entries point to removed pages. A nightly cleanup job would remove them."],
+ ["onboarding-copy-review","working","Review the onboarding copy for length.","I measured every string at the default width.","Seven of nine strings fit in two lines. I'm drafting shorter versions of the other two."],
+ ["push-opt-in-test","idle","Write the test for the push opt-in sheet.","I added three cases.","The tests cover accept, decline and later. All pass."],
+ ["staging-cert-rotation","blocked","Check when the staging certificate expires.","I'll read the validity dates.","I need your OK to print the certificate dates."],
+ ["cost-report","idle","Summarise last month's cloud cost.","I read the billing export.","Compute is up 6%, storage is flat. One idle cluster explains most of the rise."],
+ ["pricing-survey-notes","idle","Turn the survey notes into themes.","I clustered 120 comments.","Four themes: clarity, trust, timing and reward size."],
+ ["competitor-teardown","working","Compare three competitor product pages.","I'm reading the saved notes.","App A shows the rate as a badge, B hides it behind a tap, C repeats it twice."],
+ ["icon-set-cleanup","idle","Remove duplicate icons from the set.","I hashed every file.","Nine duplicates removed. The manifest is updated."]
+];
+const convo = document.getElementById('convo'), title = document.getElementById('title'), to = document.getElementById('to');
+const parse = h => { const m = /^#s=([0-9a-f-]+)(?:&m=([0-9A-Za-z_-]{6,64}))?$/.exec(h || ''); return m ? { session: m[1], message: m[2] || null } : null; };
+const indexOf = id => { const n = parseInt(id.split('-').pop(), 10); return isNaN(n) ? -1 : (((n - 1) % S.length) + S.length) % S.length; };
+let shown = -1, shownId = '';
+const pad = n => String(n).padStart(4, '0');
+let sessionNumber = 1;
+function draw(i) {
+  const s = S[i], num = pad(sessionNumber), wait = s[1] === 'blocked';
+  title.textContent = s[0];
+  to.textContent = `To ${s[0]} · ${wait ? 'waiting for you' : s[1]}`;
+  let html = '';
+  for (let k = 1; k <= 12; k++) {
+    const uid = `t-${num}-${String(k).padStart(2, '0')}`;
+    if (k < 12) {
+      html += `<div class="user" data-msg="${uid}-in">Turn ${k}: ${k === 1 ? 'Summarise what changed since yesterday.' : 'Carry on with the next step.'}</div>` +
+              `<div class="reply" data-msg="${uid}"><p>Turn ${k} reply. ${k === 1 ? 'Two commits landed on the working branch: one tightens input validation, one renames a helper.' : 'Step ' + k + ' is done and the checks pass. Nothing needs you here.'}</p></div>`;
+    } else {
+      html += `<div class="user" data-msg="${uid}-in">${s[2]}</div>` +
+              `<div class="reply" data-msg="${uid}x"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>` +
+              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
+    }
+  }
+  convo.innerHTML = html;
+  shown = i;
+}
+function land(uid) {
+  const node = convo.querySelector(`[data-msg="${uid}"]`);
+  if (!node) return false;
+  window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.querySelector('header').offsetHeight - 8);
+  document.querySelectorAll('.is-linked').forEach(el => el.classList.remove('is-linked'));
+  void node.offsetWidth; node.classList.add('is-linked');
+  return true;
+}
+function follow() {
+  const a = parse(location.hash);
+  if (!a) return;
+  const i = indexOf(a.session);
+  if (i < 0) return;
+  const n = parseInt(a.session.split('-').pop(), 10);
+  const fresh = n !== sessionNumber || shown < 0;
+  if (fresh) { sessionNumber = n; draw(i); }
+  if (a.message) { land(a.message); history.replaceState(null, '', '#s=' + a.session); }
+  else if (fresh) window.scrollTo(0, document.body.scrollHeight);
+}
+addEventListener('hashchange', follow);
+follow();
+</script>
+</body>
+</html>

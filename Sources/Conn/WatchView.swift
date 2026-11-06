@@ -1,0 +1,159 @@
+// The Watch view: 2 to 4 conversations side by side, each its own web view on the reader's lite page. It replaces the centre pane
+// and the reader column while it is on (the full reader is unloaded for the time). Each column has a small header (the agent's
+// name and Herdr's state for it) and a close button; its own scroll, and its own composer with the server's own checks, are the
+// lite page's.
+import SwiftUI
+import ConnCore
+
+private struct WatchSlot: Identifiable {
+    let index: Int
+    let column: WatchColumn?
+    /// A column keeps its identity (and so its web view) when it moves or another session replaces its own.
+    var id: Int { column?.id ?? -(index + 1) }
+}
+
+struct WatchArea: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var watch: WatchModel
+    /// Narrower than this and the columns scroll sideways instead of squeezing the page.
+    static let minColumnWidth: CGFloat = 300
+
+    var body: some View {
+        VStack(spacing: 0) {
+            WatchBar(watch: watch)
+            Divider()
+            GeometryReader { g in
+                let n = watch.count
+                let w = max(WatchArea.minColumnWidth, (g.size.width - CGFloat(n - 1)) / CGFloat(n))
+                let slots = watch.layout.slots.enumerated().map { WatchSlot(index: $0.offset, column: $0.element) }
+                let row = HStack(spacing: 0) {
+                    ForEach(slots) { slot in
+                        WatchColumnView(watch: watch, slot: slot).frame(width: w)
+                        if slot.index < n - 1 { Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1) }
+                    }
+                }
+                if w * CGFloat(n) + CGFloat(n - 1) > g.size.width + 0.5 {
+                    ScrollView(.horizontal) { row.frame(height: g.size.height) }
+                } else {
+                    row
+                }
+            }
+        }
+        .accessibilityIdentifier("watch-area")
+    }
+}
+
+private struct WatchBar: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var watch: WatchModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.split.3x1").foregroundStyle(.secondary)
+            Text("Watch").font(.system(size: 12, weight: .semibold))
+            Text("\(watch.layout.openCount) of \(watch.count) columns").font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text("Click an agent to show it here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+            Picker("Columns", selection: Binding(get: { watch.count }, set: { app.setWatchCount($0) })) {
+                ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0)").tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 96)
+            .help("How many columns (remembered)")
+            .accessibilityIdentifier("watch-count")
+        }
+        .padding(.horizontal, 12).frame(height: 32)
+        .accessibilityIdentifier("watch-bar")
+    }
+}
+
+private struct WatchColumnView: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var watch: WatchModel
+    let slot: WatchSlot
+    @State private var flash = 0.0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let column = slot.column {
+                header(column)
+                Divider()
+                if let box = watch.box(for: column) { WatchWebPane(box: box) } else { Spacer() }
+            } else {
+                emptyColumn
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor, lineWidth: 3).opacity(flash).allowsHitTesting(false))
+        .onChange(of: slot.column.flatMap { watch.flashes[$0.id] }) { _, now in
+            guard now != nil else { return }
+            flash = 1
+            withAnimation(.easeOut(duration: 1.4)) { flash = 0 }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("watch-column")
+    }
+
+    /// The agent running this session now, for its name and Herdr's state.
+    private func agent(_ column: WatchColumn) -> Agent? {
+        app.snapshot.agents.first { a in a.sessionID.map { WatchLayout.same($0, column.session) } ?? false }
+    }
+
+    private func header(_ column: WatchColumn) -> some View {
+        let a = agent(column)
+        let name = a?.name ?? app.stars.label(for: column.session, agentNames: app.agentNamesBySession)
+        return HStack(spacing: 6) {
+            if let a = a {
+                StateGlyph(state: a.state, size: 12)
+            } else {
+                Image(systemName: "questionmark.circle").foregroundStyle(.tertiary).frame(width: 16)
+            }
+            Text(name).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                .redacted(reason: app.privacy ? .placeholder : [])
+                .help(app.privacy ? "Agent name" : name)
+            if let a = a {
+                Text(a.state.label).font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary).lineLimit(1)
+            } else {
+                Text("no agent").font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { watch.close(column: slot.index) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless).help("Close this column")
+                .accessibilityIdentifier("watch-close")
+        }
+        .padding(.horizontal, 10).frame(height: 30)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+
+    private var emptyColumn: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "rectangle.dashed").font(.system(size: 22)).foregroundStyle(.tertiary)
+            Text("Free column").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            Text("Click an agent in the sidebar to show its conversation here.").font(.system(size: 11)).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+        }
+        .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("watch-free-column")
+    }
+}
+
+/// One column's page, with the same load and failure states as the Reader pane.
+private struct WatchWebPane: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var box: WebBox
+
+    var body: some View {
+        ZStack {
+            WebPaneRep(box: box)
+            if app.privacy { Rectangle().fill(Color(nsColor: .windowBackgroundColor)); Label("Privacy mode", systemImage: "eye.slash").foregroundStyle(.secondary) }
+            if box.phase == .loading { ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(8) }
+            if case .failed(let msg) = box.phase, !app.privacy {
+                VStack(spacing: 6) {
+                    Image(systemName: "network.slash").font(.system(size: 22))
+                    Text("Reader not reachable").font(.system(size: 13, weight: .semibold))
+                    Text(msg).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Retry") { box.reload() }
+                }
+                .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+}

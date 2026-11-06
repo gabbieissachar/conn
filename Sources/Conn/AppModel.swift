@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
     let primary: PaneSession
     let secondary: PaneSession
     let web: WebHub
+    /// The Watch view's columns (see `watchOn`).
+    let watch: WatchModel
     /// The Reader pane's starred sessions (read from the reader's own star list; only their order is Conn's).
     let stars: StarredSessions
     let editor: EditorModel
@@ -51,12 +53,13 @@ final class AppModel: ObservableObject {
     @Published var comparePaneID: String?
     @Published var selectedWorkspaceID: String?
     /// The launch sets the first view (`LaunchPlan`): the Herdr client for a person's own launch, the Agent view for a scripted one.
+    /// Choosing another view leaves Watch, which stands in for the centre pane and the reader column while it is on.
     /// Every way of setting the view lands here, so with the Agent view off (`ViewPolicy`) nothing can reach it.
     @Published var mode: CenterMode = .herdr {
         didSet {
             let resolved = viewPolicy.resolve(mode)
             if resolved != mode { mode = resolved }
-            if mode != oldValue { syncSessions() }
+            if mode != oldValue { if watchOn { watchOn = false }; syncSessions() }
         }
     }
     /// The Agent-view flag (README "The Agent view flag"). Read once at launch; a check turns it on and off in process.
@@ -71,6 +74,10 @@ final class AppModel: ObservableObject {
         }
     }
     var viewPolicy: ViewPolicy { ViewPolicy(agentViewEnabled: agentViewEnabled) }
+    /// Watch: 2 to 4 conversations side by side, each on the reader's lite page, instead of the centre pane and the reader column.
+    /// While it is on the full reader is unloaded (its page holds every conversation and document); turning it off loads the
+    /// reader again, pinned to the selected agent. Every way of choosing an agent follows the column rule (`WatchLayout`).
+    @Published var watchOn = false { didSet { if watchOn != oldValue { watchChanged() } } }
     @Published var showWeb = true {
         didSet { if showWeb && !oldValue && webTab == .organizer { web.box(.organizer).showContextView() } }
     }
@@ -162,6 +169,7 @@ final class AppModel: ObservableObject {
         secondary = PaneSession(engine: engine(), source: ObserveProcessSource(endpoint: endpoint))
         let res = Bundle.main.resourceURL
         web = WebHub(fixture: config.fixture, resourceDir: res?.appendingPathComponent("fixture"))
+        watch = WatchModel(hub: web, defaults: AppModel.defaults)
         let env = ProcessInfo.processInfo.environment
         let fixtureDir = res?.appendingPathComponent("fixture")
         // A fixture launch reads invented stars (never the owner's file) and keeps its order apart from the real one.
@@ -301,6 +309,10 @@ final class AppModel: ObservableObject {
             if let f = s.agent(s.focusedPaneID) ?? s.prioritized.first { highlight(f.id) }
         }
         if let c = comparePaneID, s.agent(c) == nil { comparePaneID = nil }
+        if watchOn && watchSeedPending {
+            let c = watchCandidates()
+            if !c.isEmpty { watchSeedPending = false; watch.fill(with: c) }
+        }
         syncSessions()
         followHerdrClientFocus()
         let n = waiting.count
@@ -310,7 +322,7 @@ final class AppModel: ObservableObject {
     /// Streams run only for panes that are on screen: the window is visible and the Agent view is showing.
     /// The size is the pane's own (an observer cannot resize it), so the app asks Herdr for exactly that.
     private func syncSessions() {
-        let active = windowVisible && attentive && mode == .agent
+        let active = windowVisible && attentive && mode == .agent && !watchOn
         primary.configure(pane: active ? selectedPaneID : nil, size: snapshot.paneSizes[selectedPaneID ?? ""])
         secondary.configure(pane: active ? comparePaneID : nil, size: snapshot.paneSizes[comparePaneID ?? ""])
         // A history belongs to the pane it was opened for: another agent in the column shows live again.
@@ -338,6 +350,12 @@ final class AppModel: ObservableObject {
     /// A jump never attaches the client.
     func select(_ paneID: String, via jump: ViewPolicy.Jump = .other, pin: Bool = true) {
         guard let a = snapshot.agent(paneID) else { return }
+        if watchOn {
+            // Watch is on: the agent goes to a column by the column rule, and the view stays Watch.
+            highlight(paneID, pin: false)
+            watchOpen(a)
+            return
+        }
         switch viewPolicy.action(for: jump, clientRunning: fallback.running) {
         case .showInAgentView:
             highlight(paneID, pin: pin)
@@ -358,6 +376,7 @@ final class AppModel: ObservableObject {
 
     func selectWorkspace(_ id: String) {
         selectedWorkspaceID = id
+        if watchOn { return }     // a space is not a conversation: Watch keeps its columns
         if let a = snapshot.agents(in: id).first(where: { $0.id == selectedPaneID }) ?? snapshot.agents(in: id).first { select(a.id) }
     }
 
@@ -381,7 +400,7 @@ final class AppModel: ObservableObject {
         syncSessions()
     }
 
-    var readerVisible: Bool { showWeb && webTab == .reader }
+    var readerVisible: Bool { showWeb && webTab == .reader && !watchOn }
 
     /// "Open the reader pinned to the selected pane": debounced, because every pin is a page load.
     func pinReader() {
@@ -395,6 +414,7 @@ final class AppModel: ObservableObject {
     /// The Reader pane's row of starred sessions: open this conversation in the reader (the pin path an agent selection uses,
     /// so the reader loads it with its `#s=` address). The one on screen is left alone: opening it again would reload the page.
     func openStarred(_ conv: String) {
+        if watchOn { watch.open(session: conv); return }
         guard !StarSelection.matches(conv: conv, shown: web.box(.reader).shownSession) else { return }
         if webTab != .reader { webTab = .reader }
         web.box(.reader).pin(sessionID: conv)
@@ -405,7 +425,46 @@ final class AppModel: ObservableObject {
         Dictionary(snapshot.agents.compactMap { a in a.sessionID.map { ($0, a.name) } }, uniquingKeysWith: { first, _ in first })
     }
 
-    func reloadWeb() { web.allBoxes.forEach { $0.reload() } }
+    func reloadWeb() { web.allBoxes.forEach { $0.reload() }; watch.reloadAll() }
+
+    // MARK: Watch
+
+    /// Watch was turned on (a `--watch` launch) before Herdr's first snapshot arrived: the columns are filled when it does.
+    private var watchSeedPending = false
+
+    private func watchChanged() {
+        watch.active = watchOn
+        if watchOn {
+            pinWork?.cancel()
+            web.evictReader()
+            watchSeedPending = watchCandidates().isEmpty
+            watch.fill(with: watchCandidates())
+        } else {
+            watchSeedPending = false
+            watch.unload()
+        }
+        syncSessions()
+        if !watchOn { pinReader() }
+        objectWillChange.send()
+    }
+
+    /// The sessions Watch opens on, best first: the selected agent (else Herdr's focused one), then the agents in the sidebar's order (needs you first).
+    private func watchCandidates() -> [String] {
+        ((selectedAgent ?? snapshot.agent(snapshot.focusedPaneID))?.sessionID.map { [$0] } ?? []) + snapshot.prioritized.compactMap(\.sessionID)
+    }
+
+    /// An agent chosen while Watch is on. An agent with no conversation in the reader (Herdr named no session for it) has nothing
+    /// to show in a column.
+    private func watchOpen(_ a: Agent) {
+        guard let sid = a.sessionID else { toast("\(privacy ? "That agent" : a.name) has no conversation in the reader"); return }
+        if watch.open(session: sid) == nil { toast("That conversation cannot be opened in a column") }
+    }
+
+    /// Choose how many columns Watch has (2 to 4, remembered). More columns are filled from the sidebar's order.
+    func setWatchCount(_ n: Int) {
+        let grew = watch.setCount(n)
+        if grew && watchOn { watch.fill(with: watchCandidates()) }
+    }
 
     // MARK: history view (the toggle that stands in for scrollback)
 
@@ -557,7 +616,7 @@ final class AppModel: ObservableObject {
         var pids: [(String, pid_t)] = [("app", getpid())]
         if let p = primary.processID { pids.append(("pane", p)) }
         if let p = secondary.processID { pids.append(("pane", p)) }
-        for b in web.allBoxes { if let p = b.pid { pids.append(("web", p)) } }
+        for b in web.allBoxes + Array(watch.boxes.values) { if let p = b.pid { pids.append(("web", p)) } }
         var parts: [String: UInt64] = [:]
         for (label, pid) in pids { if let u = ProcessUsage.read(pid) { parts[label, default: 0] += u.footprint } }
         let c = cpu.sample(pids: pids.map { $0.1 }, minWindow: 2)
@@ -591,7 +650,7 @@ final class AppModel: ObservableObject {
 
     /// True while the Herdr client view is showing and its client is running: the sidebar then moves that client instead of
     /// switching to the Agent view.
-    var herdrClientDriving: Bool { mode == .herdr && fallback.running }
+    var herdrClientDriving: Bool { mode == .herdr && fallback.running && !watchOn }
 
     /// A click on a space in the sidebar.
     func sidebarOpenWorkspace(_ id: String) {

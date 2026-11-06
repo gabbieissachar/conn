@@ -30,6 +30,16 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     private var loadStart: Date?
     private var pinCounter = 0
     private var pendingHash: String?
+    /// A Watch column: the reader's lite page, one conversation per page (see `WatchModel`). It shows its own address, never the
+    /// reader's, and tells the model when the person uses it.
+    let lite: Bool
+    /// What a lite box opens on, as the address fragment (`s=<session>` or `s=<session>&m=<turn id>`), until it has loaded once.
+    private(set) var startFragment: String?
+    /// The person clicked, scrolled, typed or focused inside the page (lite boxes only).
+    var onUse: (() -> Void)?
+    private var useProxy: UseMessageProxy?
+    /// Set by `release()`: a released box never loads or shows anything again.
+    private(set) var released = false
     /// The addresses of Conn's panes by name, so a link between them can be told from one that leaves Conn.
     var paneAddresses: () -> [String: URL] = { [:] }
     /// A link that points at another Conn pane: switch to it and show that address.
@@ -37,14 +47,23 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// A link that leaves Conn. A test replaces it with a recorder so a check never opens a browser.
     var openInBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
-    init(kind: WebKind, baseURL: URL, fixtureDir: URL?) {
+    init(kind: WebKind, baseURL: URL, fixtureDir: URL?, lite: Bool = false, startFragment: String? = nil) {
         self.kind = kind
         self.baseURL = baseURL
         self.fixtureDir = fixtureDir
+        self.lite = lite
+        self.startFragment = startFragment
         let cfg = WKWebViewConfiguration()
         if kind == .reader { cfg.userContentController.addUserScript(WKUserScript(source: WebBox.listenerWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true)) }
+        let proxy = lite ? UseMessageProxy() : nil
+        if let proxy = proxy {
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.useWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            cfg.userContentController.add(proxy, name: WebBox.useMessage)
+        }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
+        proxy?.box = self
+        useProxy = proxy
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
@@ -56,7 +75,10 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     var pid: Int32? { (webView.value(forKey: "_webProcessIdentifier") as? Int).map { Int32($0) } }
 
-    func loadIfNeeded() { if phase == .idle { load(baseURL) } }
+    func loadIfNeeded() {
+        guard phase == .idle, !released else { return }
+        if let f = startFragment { loadFragment(f) } else { load(baseURL) }
+    }
 
     func load(_ url: URL) {
         phase = .loading
@@ -64,7 +86,62 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         if let dir = fixtureDir, url.isFileURL { webView.loadFileURL(url, allowingReadAccessTo: dir) } else { webView.load(URLRequest(url: url)) }
     }
 
-    func reload() { phase = .loading; loadStart = Date(); if webView.url == nil { load(baseURL) } else { webView.reload() } }
+    func reload() {
+        phase = .loading; loadStart = Date()
+        if webView.url == nil { if let f = startFragment { loadFragment(f) } else { load(baseURL) } } else { webView.reload() }
+    }
+
+    // MARK: a Watch column
+
+    static let useMessage = "connUse"
+    /// Tells Conn that the person used the page: a click, a wheel or trackpad scroll, a key, or focus moving into it. Events the
+    /// page makes itself (a scroll to a reply) are none of these. At most one message every 200 ms.
+    static let useWatch = """
+    (function () {
+      if (window.__connUse) return;
+      window.__connUse = true;
+      var last = 0;
+      function used() {
+        var now = Date.now();
+        if (now - last < 200) return;
+        last = now;
+        try { window.webkit.messageHandlers.\(useMessage).postMessage(1); } catch (e) {}
+      }
+      ['pointerdown', 'wheel', 'keydown', 'focusin'].forEach(function (t) { window.addEventListener(t, used, { capture: true, passive: true }); });
+    })();
+    """
+
+    /// Show a conversation in this column: at its newest turn, or at one turn (the lite page scrolls to that reply and outlines it).
+    /// With `reload` false and the page already showing, only the address changes (the page follows it in place, so the column keeps
+    /// its scroll in everything else). With `reload` true, or when the page is not ready or does not follow an address change, the
+    /// page loads again: a column that moves to another session must not keep the old conversation in memory.
+    func showConversation(_ sid: String, message: String?, reload: Bool) {
+        guard let frag = WatchAddress.fragment(session: sid, message: message) else { return }
+        if phase == .idle { startFragment = frag; return }
+        guard !reload, phase == .ready, WebLinkPolicy.isPage(baseURL, webView.url) else { loadFragment(frag); return }
+        webView.evaluateJavaScript("window.\(WebBox.listenerFlag) === true") { [weak self] follows, _ in
+            guard let self = self else { return }
+            guard (follows as? Bool) == true, self.phase == .ready, WebLinkPolicy.isPage(self.baseURL, self.webView.url) else { self.loadFragment(frag); return }
+            self.webView.evaluateJavaScript("location.hash='\(frag)'") { [weak self] _, error in
+                guard let self = self else { return }
+                if error != nil { self.loadFragment(frag) } else { self.pinsInPlace += 1 }
+            }
+        }
+    }
+
+    /// Let go of the page: stop loading, drop the delegates and take the web view out of its window, so the web content process
+    /// can end. The box is not used again.
+    func release() {
+        released = true
+        urlObservation?.invalidate(); urlObservation = nil
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.removeFromSuperview()
+        if lite { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.useMessage) }
+        useProxy = nil
+        onUse = nil
+    }
 
     /// Written into the reader page before its own scripts run: it records that the page listens for an address change
     /// (`hashchange`), which is how Conn tells a reader that follows `#s=` while open from an older one that reads it only
@@ -103,13 +180,15 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     /// The pin as a page load. A live page gets a `?conn=<n>` query so WKWebView treats it as a new document and not as a
     /// fragment jump; a fixture file takes the hash once it has loaded.
-    private func loadPinned(_ sid: String) {
+    private func loadPinned(_ sid: String) { loadFragment("s=\(sid)") }
+
+    private func loadFragment(_ fragment: String) {
         pinsLoaded += 1
-        if fixtureDir != nil { pendingHash = "s=\(sid)"; load(baseURL); return }
+        if fixtureDir != nil { pendingHash = fragment; load(baseURL); return }
         pinCounter += 1
         var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "conn", value: "\(pinCounter)")]
-        comps.fragment = "s=\(sid)"
+        comps.fragment = fragment
         if let url = comps.url { load(url) }
     }
 
@@ -181,8 +260,15 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         return nil
     }
 
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { phase = .failed(error.localizedDescription) }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { phase = .failed(error.localizedDescription) }
+    /// A load that another load replaced (a pin right after the page opened, a column moving to another session) reports "cancelled".
+    /// That is not a failure: the page that replaced it is on its way, and showing "not reachable" in between would be wrong (ROADMAP N2).
+    private func failed(_ error: Error) {
+        let e = error as NSError
+        if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
+        phase = .failed(error.localizedDescription)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
 
     /// A link to the other Conn pane switches to it (exact address, hash kept); any other link that leaves the page opens in
     /// the default browser instead of replacing the pane. Links inside the page, and everything that is not a click, load as usual.
@@ -199,6 +285,14 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         webView.evaluateJavaScript("JSON.stringify({ready:document.readyState,nodes:document.getElementsByTagName('*').length})") { r, e in
             done((r as? String) ?? "error: \(e?.localizedDescription ?? "nil")")
         }
+    }
+}
+
+/// Receives the page's "used" message without keeping the box alive (the user content controller holds its handlers strongly).
+private final class UseMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var box: WebBox?
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        DispatchQueue.main.async { [weak self] in self?.box?.onUse?() }
     }
 }
 
@@ -244,6 +338,27 @@ final class WebHub {
     }
 
     var allBoxes: [WebBox] { [readerBox, organizerBox].compactMap { $0 } }
+
+    /// The reader's lite page, which a Watch column shows one conversation on (reader README, "The lite page"). `CONN_LITE_URL` names
+    /// another address; a fixture launch loads an invented page instead.
+    var liteBaseURL: URL {
+        if fixture, let dir = resourceDir { return dir.appendingPathComponent("fixture-lite.html") }
+        let env = ProcessInfo.processInfo.environment
+        return URL(string: env["CONN_LITE_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/live/index.html")!
+    }
+
+    /// A web view for one Watch column. It is not one of the two panes: a link that leaves the page goes to the browser (a column
+    /// has no pane to switch to), and the box is dropped when Watch ends.
+    func makeLiteBox(startFragment: String?) -> WebBox {
+        WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment)
+    }
+
+    /// Watch unloads the full reader: its page holds every conversation and document (255 to 430 MB or more), which three or four
+    /// columns of the lite page replace. The box is made again, and the page loaded again, the next time the Reader pane shows.
+    func evictReader() {
+        readerBox?.release()
+        readerBox = nil
+    }
 }
 
 /// SwiftUI owns this container; the long-lived WKWebView is moved into whichever container is on screen,

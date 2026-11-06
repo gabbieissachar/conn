@@ -224,7 +224,8 @@ struct WebTabsColumn: View {
             .pickerStyle(.segmented).labelsHidden()
             .padding(.horizontal, 10).frame(height: 36)
             Divider()
-            WebColumn(box: app.web.box(app.webTab))
+            // While Watch is on this column is on its way out; it must not make the unloaded reader's web view again.
+            if !app.watchOn { WebColumn(box: app.web.box(app.webTab)) }
         }
     }
 }
@@ -441,10 +442,15 @@ struct MainView: View {
                 }
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        centre.frame(minWidth: 420, maxWidth: .infinity)
-                        if app.showWeb {
-                            ColumnHandle(width: $app.webWidth)
-                            WebTabsColumn().frame(width: app.webWidth)
+                        if app.watchOn {
+                            // Watch stands in for the centre pane and the reader column (the full reader is unloaded meanwhile).
+                            WatchArea(watch: app.watch).frame(minWidth: 420, maxWidth: .infinity)
+                        } else {
+                            centre.frame(minWidth: 420, maxWidth: .infinity)
+                            if app.showWeb {
+                                ColumnHandle(width: $app.webWidth)
+                                WebTabsColumn().frame(width: app.webWidth)
+                            }
                         }
                     }
                     Divider()
@@ -464,6 +470,7 @@ struct MainView: View {
                     .pickerStyle(.segmented).labelsHidden().frame(width: app.viewPolicy.modes.count == 3 ? 330 : 230)
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Toggle(isOn: $app.watchOn) { Image(systemName: "rectangle.split.3x1") }.help("Watch several sessions side by side (⇧⌘W)")
                     Toggle(isOn: $app.showWeb) { Image(systemName: "sidebar.right") }.help("Show the reader and organizer (⌥⌘R)")
                     Toggle(isOn: $app.readerFollows) { Image(systemName: "pin") }.help("Reader follows the selected agent (⌥⌘F)")
                     Toggle(isOn: $app.privacy) { Image(systemName: "eye.slash") }.help("Privacy mode for screen sharing: hides content (⇧⌘B)")
