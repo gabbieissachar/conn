@@ -51,8 +51,8 @@ extension SwiftTermMainActorTests {
     /// attach, so a check or a capture never reaches a real session this way.
     @Test func aLaunchWithTheDefaultViewAttachesToTheLabSessionAndStopEndsIt() async throws {
         let lab = try #require(HerdrLab.session, "CONN_HERDR_LAB_SESSION must name a session called fm-lab-...")
-        #expect(LaunchPlan.make(requested: nil, scripted: false, opensFiles: false) == LaunchPlan(mode: .herdr, attachesClient: true))
-        #expect(LaunchPlan.make(requested: nil, scripted: true, opensFiles: false).attachesClient == false)
+        #expect(LaunchPlan.make(requested: nil, scripted: false, opensFiles: false, agentViewEnabled: false) == LaunchPlan(mode: .herdr, attachesClient: true))
+        #expect(LaunchPlan.make(requested: nil, scripted: true, opensFiles: false, agentViewEnabled: false).attachesClient == false)
 
         let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-lab-default-\(UUID().uuidString)")
         let home = scratch.appendingPathComponent("home").path, temp = scratch.appendingPathComponent("tmp").path

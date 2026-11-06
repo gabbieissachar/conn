@@ -14,6 +14,8 @@ struct AppConfig {
     /// Decision B2: SwiftTerm. The captain looked at it on a real screen and it draws; `--renderer grid` selects the cell-grid view.
     var renderer = RendererKind.swiftTerm
     var mode: CenterMode?
+    /// `--agent-view` / `--no-agent-view`: the Agent-view flag for this launch (nil: CONN_AGENT_VIEW, then the saved preference).
+    var agentViewRequested: Bool?
     var select: Int?
     var showWeb: Bool?
     var dark = false
@@ -63,6 +65,8 @@ struct AppConfig {
             case "--fixture": c.fixture = true
             case "--renderer": if let v = next(), let r = RendererKind(rawValue: v) { c.renderer = r }
             case "--mode": if let v = next(), let m = CenterMode.parse(v) { c.mode = m }
+            case "--agent-view": c.agentViewRequested = true
+            case "--no-agent-view": c.agentViewRequested = false
             case "--select": c.select = next().flatMap(Int.init)
             case "--web": c.showWeb = (next() ?? "on") != "off"
             case "--dark": c.dark = true
@@ -116,7 +120,14 @@ struct AppConfig {
         background || ProcessInfo.processInfo.environment["CONN_BACKGROUND"] == "1" || hasScriptedHook || fixture || select != nil || compare || openHistory
     }
 
-    var launchPlan: LaunchPlan { LaunchPlan.make(requested: mode, scripted: isScriptedLaunch, opensFiles: !openFiles.isEmpty) }
+    /// Whether the Agent view exists in this launch (see `ViewPolicy`). Off by default. A test launch reads the preference from its
+    /// own test domain, so a person's saved setting never changes what a check sees.
+    var agentViewEnabled: Bool {
+        let saved = (runsInBackground ? UserDefaults(suiteName: "dev.local.conn.test") ?? .standard : .standard).object(forKey: ViewPolicy.defaultsKey) as? Bool
+        return ViewPolicy.agentViewFlag(launch: agentViewRequested, environment: ProcessInfo.processInfo.environment["CONN_AGENT_VIEW"], saved: saved)
+    }
+
+    var launchPlan: LaunchPlan { LaunchPlan.make(requested: mode, scripted: isScriptedLaunch, opensFiles: !openFiles.isEmpty, agentViewEnabled: agentViewEnabled) }
 
     var endpoint: HerdrEndpoint {
         HerdrEndpoint(session: session, socketDirectory: socketDir, binaryPath: herdrBin)

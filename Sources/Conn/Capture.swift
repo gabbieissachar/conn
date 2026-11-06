@@ -75,6 +75,7 @@ enum Tour {
             FileHandle.standardError.write("tour step \(name)\n".data(using: .utf8)!)
             await Capture.window(to: dir.appendingPathComponent(name + ".png"))
         }
+        model.agentViewEnabled = true      // the tour shows the Agent view, which is off unless asked for
         model.appearance = .light
         await wait(4); await shot("01-agent")
         model.toggleCompare()

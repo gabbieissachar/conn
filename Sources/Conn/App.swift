@@ -145,24 +145,32 @@ struct ConnCommands: Commands {
             Button("Next Agent") { app.cycle(1) }.keyboardShortcut("]")
             Button("Previous Agent") { app.cycle(-1) }.keyboardShortcut("[")
             Button("Next Agent Waiting on You") { app.jumpToWaiting() }.keyboardShortcut("j")
-            Button(app.primaryHistory == nil ? "Scroll Back (Show History)" : "Back to Live Pane") { app.toggleHistory(.primary) }
-                .keyboardShortcut("y")
+            if app.agentViewEnabled {
+                Button(app.primaryHistory == nil ? "Scroll Back (Show History)" : "Back to Live Pane") { app.toggleHistory(.primary) }
+                    .keyboardShortcut("y")
+            }
             Divider()
             ForEach(0..<9, id: \.self) { i in
                 Button("Agent \(i + 1)") { app.selectNth(i) }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
             }
-            Divider()
-            Button(app.comparePaneID == nil ? "Compare with Previous Agent" : "Close Comparison") { app.toggleCompare() }.keyboardShortcut("\\")
+            if app.agentViewEnabled {
+                Divider()
+                Button(app.comparePaneID == nil ? "Compare with Previous Agent" : "Close Comparison") { app.toggleCompare() }.keyboardShortcut("\\")
+            }
         }
         CommandMenu("Layout") {
-            ForEach(Array(CenterMode.allCases.enumerated()), id: \.element.id) { i, m in
-                Button(m.rawValue) { app.mode = m }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: [.command, .option])
+            // A view keeps its own number (Editor stays Opt+Cmd+3) when the Agent view is off.
+            ForEach(app.viewPolicy.modes) { m in
+                Button(m.rawValue) { app.mode = m }
+                    .keyboardShortcut(KeyEquivalent(Character("\((CenterMode.allCases.firstIndex(of: m) ?? 0) + 1)")), modifiers: [.command, .option])
             }
             Divider()
-            Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
-            Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
-            Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent)
-            Divider()
+            if app.agentViewEnabled {
+                Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
+                Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
+                Button("Pane Text Fits the Pane") { app.resetPaneZoom() }.keyboardShortcut("0").disabled(app.mode != .agent)
+                Divider()
+            }
             Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])
             Toggle("Privacy Mode", isOn: $app.privacy).keyboardShortcut("b", modifiers: [.command, .shift])

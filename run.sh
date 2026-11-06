@@ -9,7 +9,9 @@
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode herdr|agent|editor   --web on|off   --select N   --dark   --privacy   --open FILE
 #                                 A plain launch opens on the Herdr client view and attaches its client; a scripted launch
-#                                 keeps the Agent view and never attaches (see README "Herdr client mode").
+#                                 opens on it too and never attaches (see README "Herdr client mode").
+#   ./run.sh --agent-view         turn the Agent view on (off by default; --no-agent-view forces it off; also CONN_AGENT_VIEW=1 or
+#                                 `defaults write dev.local.conn conn.agentView -bool YES`; see README "The Agent view flag")
 #   ./run.sh --client-config FILE  the Herdr client view starts its client with this config (default: a generated copy of your
 #                                 Herdr config with Herdr's sidebar hidden; FILE must be in Conn's folder or a temp folder)
 #   ./run.sh --selftest 10 | --shot FILE | --tour DIR | --quit-after N

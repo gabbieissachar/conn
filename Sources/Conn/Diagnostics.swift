@@ -129,6 +129,12 @@ enum UICheck {
     static func run(model: AppModel) async {
         func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
         func report(_ name: String, _ ok: Bool, _ detail: String = "") { print("ui-check: \(ok ? "PASS" : "FAIL") \(name) \(detail)") }
+        // SwiftUI builds the menus once, from the flag the launch had; flipping the flag in this process does not rebuild them. A check
+        // that needs the Agent view's menu items runs only when the launch had it on (`--agent-view`), and says so when it does not.
+        let menusHaveAgentView = model.agentViewEnabled
+        func menuReport(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if menusHaveAgentView { report(name, ok, detail) } else { print("ui-check: SKIP \(name) (the menus of this launch were built with the Agent view off; run with --agent-view)") }
+        }
         await wait(4)
         if Runtime.config.runsInBackground {
             let wins = NSApp.windows.filter { $0.isVisible }
@@ -138,15 +144,22 @@ enum UICheck {
         }
         // A person's own launch opens on the Herdr client view and attaches its client; this scripted launch must do neither,
         // so the checks below run on the Agent view and never put a second client on the session.
-        report("a scripted launch stays on the Agent view and does not attach the Herdr client",
-               Runtime.config.isScriptedLaunch && !Runtime.config.launchPlan.attachesClient && model.mode == .agent && !model.fallback.running,
-               "scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
+        // With the Agent view off (the default) a scripted launch opens on the Herdr client view instead, still without attaching.
+        let launchedWithAgentView = model.agentViewEnabled
+        let expectedMode: CenterMode = launchedWithAgentView ? .agent : .herdr
+        report("a scripted launch opens on the \(expectedMode.rawValue) view (the Agent view only when its flag is on) and does not attach the Herdr client",
+               Runtime.config.isScriptedLaunch && !Runtime.config.launchPlan.attachesClient && model.mode == expectedMode && !model.fallback.running,
+               "agentViewFlag=\(launchedWithAgentView) scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
+        // The Agent view off: nothing reaches it. Then the flag is switched on in this process, for every check below that needs the Agent view.
+        await AgentViewCheck.runOff(model: model, menusMatchFlag: !launchedWithAgentView, report: report, wait: wait)
+        model.agentViewEnabled = true; model.mode = .agent; await wait(1)
+        print("ui-check: info the Agent view flag is switched on in this process for the checks below (launched \(launchedWithAgentView ? "on" : "off"))")
         let waitingNow = model.waiting.count
         report("Dock badge counts the agents waiting on you", NSApp.dockTile.badgeLabel == (waitingNow > 0 ? "\(waitingNow)" : ""), "badge=\(NSApp.dockTile.badgeLabel ?? "nil") waiting=\(waitingNow)")
         model.select(list[list.count / 2].id); await wait(1.5)
-        report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state)")
+        report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state) mode=\(model.mode.rawValue) pane=\(model.primary.paneID ?? "nil") selected=\(model.selectedPaneID ?? "nil") attentive=\(model.attentive) windowVisible=\(model.windowVisible)")
 
         // Text size: the largest at which Herdr's grid fits the room, following the window, with zoom on top.
         if let e = model.primary.engine as? SwiftTermEngine, let host = e.view.superview, let win = Capture.mainWindow() {
@@ -200,17 +213,17 @@ enum UICheck {
             let originalZoom = model.paneZoom
             model.setPaneZoom(1); await wait(0.3)
             let up = press("=", 24, [.command]); await wait(0.3)
-            report("Cmd+= makes the pane text bigger", up && model.paneZoom == 1.1, "zoom=\(model.paneZoom)")
+            menuReport("Cmd+= makes the pane text bigger", up && model.paneZoom == 1.1, "zoom=\(model.paneZoom)")
             let d1 = press("-", 27, [.command]); await wait(0.3); let z1 = model.paneZoom
             let d2 = press("-", 27, [.command]); await wait(0.3)
-            report("Cmd+- makes it smaller", d1 && z1 == 1.0 && d2 && model.paneZoom == 0.9, "zoom \(z1) then \(model.paneZoom)")
+            menuReport("Cmd+- makes it smaller", d1 && z1 == 1.0 && d2 && model.paneZoom == 0.9, "zoom \(z1) then \(model.paneZoom)")
             let reset = press("0", 29, [.command]); await wait(0.3)
-            report("Cmd+0 returns to the fit", reset && model.paneZoom == 1.0, "zoom=\(model.paneZoom)")
+            menuReport("Cmd+0 returns to the fit", reset && model.paneZoom == 1.0, "zoom=\(model.paneZoom)")
             model.closeHistory(); await wait(0.2)
             // The menu runs its action on a later turn of the run loop, so each press is followed by a short wait.
             let handled1 = press("y", 16, [.command]); await wait(0.3); let opened = model.primaryHistory != nil
             let handled2 = press("y", 16, [.command]); await wait(0.3); let closed = model.primaryHistory == nil
-            report("Cmd+Y swaps in the history and Cmd+Y swaps it out", handled1 && opened && handled2 && closed, "handled=\(handled1)/\(handled2) opened=\(opened) closed=\(closed) mode=\(model.mode.rawValue) privacy=\(model.privacy) agent=\(model.selectedAgent?.name ?? "nil")")
+            menuReport("Cmd+Y swaps in the history and Cmd+Y swaps it out", handled1 && opened && handled2 && closed, "handled=\(handled1)/\(handled2) opened=\(opened) closed=\(closed) mode=\(model.mode.rawValue) privacy=\(model.privacy) agent=\(model.selectedAgent?.name ?? "nil")")
             // Ownership rule: no menu shortcut claims a Ctrl or Alt chord without Command, so those keys stay the pane's.
             func stateKey() -> String {
                 "\(model.paneZoom)|\(model.primaryHistory != nil)|\(model.selectedPaneID ?? "-")|\(model.mode.rawValue)|\(model.privacy)|\(model.showSwitcher)|\(model.showWeb)|\(model.sidebarVisible)|\(model.comparePaneID ?? "-")"
@@ -251,11 +264,11 @@ enum UICheck {
         let chordMask: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
         if let layout = NSApp.mainMenu?.items.first(where: { $0.title == "Layout" })?.submenu {
             let first = Array(layout.items.prefix(3))
-            report("the Layout menu lists the views in that order with Opt+Cmd+1/2/3",
+            menuReport("the Layout menu lists the views in that order with Opt+Cmd+1/2/3",
                    first.map(\.title) == order && first.map(\.keyEquivalent) == ["1", "2", "3"] && first.allSatisfy { $0.keyEquivalentModifierMask.intersection(chordMask) == [.command, .option] },
                    "items=\(first.map { "\($0.title) [\($0.keyEquivalent)]" })")
         } else {
-            report("the Layout menu lists the views in that order with Opt+Cmd+1/2/3", false, "no Layout menu")
+            menuReport("the Layout menu lists the views in that order with Opt+Cmd+1/2/3", false, "no Layout menu")
         }
         if let win = Capture.mainWindow() {
             func optCmd(_ digit: String, _ code: UInt16) async -> Bool {
@@ -268,11 +281,14 @@ enum UICheck {
             let h1 = await optCmd("1", 18); let m1 = model.mode, running1 = model.fallback.running
             let h2 = await optCmd("2", 19); let m2 = model.mode
             let h3 = await optCmd("3", 20); let m3 = model.mode
-            report("Opt+Cmd+1 is the Herdr client, Opt+Cmd+2 the Agent view and Opt+Cmd+3 the Editor; the shortcut does not attach the client",
+            menuReport("Opt+Cmd+1 is the Herdr client, Opt+Cmd+2 the Agent view and Opt+Cmd+3 the Editor; the shortcut does not attach the client",
                    h1 && m1 == .herdr && !running1 && h2 && m2 == .agent && h3 && m3 == .editor, "handled=\(h1)/\(h2)/\(h3) modes=\(m1.rawValue)/\(m2.rawValue)/\(m3.rawValue) clientRunning=\(running1)")
             _ = await optCmd("2", 19); await wait(2)
-            report("Opt+Cmd+2 brings the Agent view and its stream back", model.mode == .agent && model.primary.state == .live, "mode=\(model.mode.rawValue) state=\(model.primary.state)")
+            menuReport("Opt+Cmd+2 brings the Agent view and its stream back", model.mode == .agent && model.primary.state == .live, "mode=\(model.mode.rawValue) state=\(model.primary.state)")
         }
+        if !menusHaveAgentView { model.mode = .agent; await wait(2) }     // the Opt+Cmd+2 steps above were skipped: go back to the Agent view by hand
+        await AgentViewCheck.runOn(model: model, report: report, wait: wait)
+        await wait(2)
 
         model.toggleCompare(); await wait(2)
         report("compare opens a second live stream", model.comparePaneID != nil && model.secondary.state == .live, "state=\(model.secondary.state)")

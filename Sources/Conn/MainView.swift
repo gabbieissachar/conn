@@ -342,7 +342,7 @@ struct QuickSwitcher: View {
     private func open() {
         let m = matches
         guard index < m.count else { return }
-        app.select(m[index].id)
+        app.select(m[index].id, via: .quickSwitcher)
         app.showSwitcher = false
         app.switcherQuery = ""
     }
@@ -459,9 +459,9 @@ struct MainView: View {
                 }
                 ToolbarItem(placement: .principal) {
                     Picker("View", selection: $app.mode) {
-                        ForEach(CenterMode.allCases) { m in Label(m.rawValue, systemImage: m.symbol).tag(m) }
+                        ForEach(app.viewPolicy.modes) { m in Label(m.rawValue, systemImage: m.symbol).tag(m) }
                     }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 330)
+                    .pickerStyle(.segmented).labelsHidden().frame(width: app.viewPolicy.modes.count == 3 ? 330 : 230)
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     Toggle(isOn: $app.showWeb) { Image(systemName: "sidebar.right") }.help("Show the reader and organizer (⌥⌘R)")

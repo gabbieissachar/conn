@@ -20,7 +20,7 @@ FAILED=0
 fail() { echo "FAIL: $*"; FAILED=1; }
 # launch STATE_DIR EXTRA_ARGS...  -> prints the app's pid. Agents 0 and 1 (blocked, done) are static panes: no output after
 # the first frame, so their observer never sees EPIPE and really is orphaned by a kill -9.
-launch() { local state="$1"; shift; CONN_STATE_DIR="$state" CONN_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --web off --background $*" build/Conn.app/Contents/MacOS/Conn >/dev/null 2>&1 & echo $!; }
+launch() { local state="$1"; shift; CONN_STATE_DIR="$state" CONN_ARGS="--session fake --socket-dir $D/s --herdr-bin $D/herdr --fixture --agent-view --web off --background $*" build/Conn.app/Contents/MacOS/Conn >/dev/null 2>&1 & echo $!; }
 child_of() { ps -axo pid=,ppid=,command= | awk -v p="$1" '$2==p && /terminal session observe/ {print $1}'; }
 ppid_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
 alive() { [ -n "$(ps -o pid= -p "$1" 2>/dev/null | tr -d ' ')" ]; }

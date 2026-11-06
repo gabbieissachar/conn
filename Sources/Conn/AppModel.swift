@@ -51,7 +51,26 @@ final class AppModel: ObservableObject {
     @Published var comparePaneID: String?
     @Published var selectedWorkspaceID: String?
     /// The launch sets the first view (`LaunchPlan`): the Herdr client for a person's own launch, the Agent view for a scripted one.
-    @Published var mode: CenterMode = .herdr { didSet { if mode != oldValue { syncSessions() } } }
+    /// Every way of setting the view lands here, so with the Agent view off (`ViewPolicy`) nothing can reach it.
+    @Published var mode: CenterMode = .herdr {
+        didSet {
+            let resolved = viewPolicy.resolve(mode)
+            if resolved != mode { mode = resolved }
+            if mode != oldValue { syncSessions() }
+        }
+    }
+    /// The Agent-view flag (README "The Agent view flag"). Read once at launch; a check turns it on and off in process.
+    @Published var agentViewEnabled: Bool {
+        didSet {
+            guard agentViewEnabled != oldValue else { return }
+            if !agentViewEnabled {
+                if mode == .agent { mode = .herdr }
+                comparePaneID = nil; primaryHistory = nil; secondaryHistory = nil
+            }
+            syncSessions()
+        }
+    }
+    var viewPolicy: ViewPolicy { ViewPolicy(agentViewEnabled: agentViewEnabled) }
     @Published var showWeb = true {
         didSet { if showWeb && !oldValue && webTab == .organizer { web.box(.organizer).showContextView() } }
     }
@@ -131,6 +150,7 @@ final class AppModel: ObservableObject {
         // never its target (their owner is alive).
         DispatchQueue.global(qos: .utility).async { ObserverRegistry.shared.reapOrphans() }
         self.config = config
+        agentViewEnabled = config.agentViewEnabled
         let endpoint = config.endpoint
         self.endpoint = endpoint
         holdSeconds = config.holdSeconds
@@ -277,7 +297,8 @@ final class AppModel: ObservableObject {
     private func snapshotChanged() {
         let s = snapshot
         if selectedPaneID == nil || s.agent(selectedPaneID) == nil {
-            if let f = s.agent(s.focusedPaneID) ?? s.prioritized.first { select(f.id) }
+            // The first pick is only a highlight: it must not change the view the launch opened on.
+            if let f = s.agent(s.focusedPaneID) ?? s.prioritized.first { highlight(f.id) }
         }
         if let c = comparePaneID, s.agent(c) == nil { comparePaneID = nil }
         syncSessions()
@@ -297,15 +318,40 @@ final class AppModel: ObservableObject {
         if let h = secondaryHistory, h.paneID != comparePaneID { secondaryHistory = nil }
     }
 
-    func select(_ paneID: String, pin: Bool = true) {
+    /// Make this the selected agent (sidebar highlight, recents, reader pin) without choosing a view.
+    func highlight(_ paneID: String, pin: Bool = true) {
         guard let a = snapshot.agent(paneID) else { return }
-        if paneID == comparePaneID { comparePaneID = selectedPaneID }
-        if let cur = selectedPaneID, cur != paneID { recents.removeAll { $0 == cur }; recents.insert(cur, at: 0) }
+        recordVisit(paneID)
         selectedPaneID = paneID
         selectedWorkspaceID = a.workspaceID
-        if mode != .agent { mode = .agent }
         syncSessions()
         if pin { pinReader() }
+    }
+
+    private func recordVisit(_ paneID: String) {
+        if paneID == comparePaneID { comparePaneID = selectedPaneID }
+        if let cur = selectedPaneID, cur != paneID { recents.removeAll { $0 == cur }; recents.insert(cur, at: 0) }
+    }
+
+    /// Open a session: Cmd+K, Cmd+1..9, Cmd+J, Cmd+[ and Cmd+], a sidebar click with no client attached, the menu-bar list. Where it
+    /// lands is `ViewPolicy.action`: Cmd+K always shows it in the Herdr client view, and the rest do too unless the Agent view is on.
+    /// A jump never attaches the client.
+    func select(_ paneID: String, via jump: ViewPolicy.Jump = .other, pin: Bool = true) {
+        guard let a = snapshot.agent(paneID) else { return }
+        switch viewPolicy.action(for: jump, clientRunning: fallback.running) {
+        case .showInAgentView:
+            highlight(paneID, pin: pin)
+            mode = .agent
+        case .showHerdrClientView:
+            mode = .herdr
+            highlight(paneID, pin: pin)
+        case .moveHerdrClient:
+            mode = .herdr
+            recordVisit(paneID)
+            moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
+            syncSessions()
+            if pin { pinReader() }
+        }
     }
 
     func selectTab(_ tab: HerdrTab) { if let a = snapshot.agent(inTab: tab.id) { select(a.id) } }
@@ -327,6 +373,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleCompare() {
+        guard agentViewEnabled else { return }
         if comparePaneID != nil { comparePaneID = nil; syncSessions(); return }
         let other = recents.first { snapshot.agent($0) != nil && $0 != selectedPaneID }
             ?? snapshot.prioritized.first { $0.id != selectedPaneID }?.id
