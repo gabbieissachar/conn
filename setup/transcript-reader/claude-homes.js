@@ -30,4 +30,26 @@ function otherClaudeHomes({ homeDir = os.homedir(), env = process.env } = {}) {
   return found;
 }
 
-module.exports = { otherClaudeHomes };
+// A Claude session id as Claude Code writes it.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// pid -> session id of every running Claude Code process, from the record each keeps in <its config folder>/sessions/<pid>.json
+// (it follows /clear and --resume). `dirs` are the sessions/ folders to read; a record whose process has ended is skipped.
+function runningClaudeSessions(dirs) {
+  const found = new Map();
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir).filter((name) => name.endsWith('.json')); } catch { continue; }
+    for (const name of names) {
+      let record = null;
+      try { record = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); } catch { continue; }  // a record ends with its process
+      record = record || {};
+      if (!Number.isInteger(record.pid) || typeof record.sessionId !== 'string' || !SESSION_ID_RE.test(record.sessionId)) continue;
+      try { process.kill(record.pid, 0); } catch { continue; }
+      found.set(record.pid, record.sessionId);
+    }
+  }
+  return found;
+}
+
+module.exports = { otherClaudeHomes, runningClaudeSessions };

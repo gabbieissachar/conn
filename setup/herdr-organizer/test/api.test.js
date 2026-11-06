@@ -853,6 +853,72 @@ test('context-gauge: a config folder set up while the server runs is found by th
   } finally { await server.close(); tree.cleanup(); }
 });
 
+test('context-gauge: a Claude pane Herdr names no session for (its config folder has no Herdr hook) takes the session of its foreground Claude process, found in any config folder', async () => {
+  const { tree, write, pane } = twoConfigFolders();
+  const personal = '12121212-aaaa-4bbb-8ccc-000000000001';
+  const work = '34343434-aaaa-4bbb-8ccc-000000000002';
+  const gone = '56565656-aaaa-4bbb-8ccc-000000000003';
+  write('.claude-personal', personal, 410000);
+  write('.claude-work', work, 90000);
+  write('.claude-personal', gone, 800000);
+  // each running Claude process keeps <pid>.json in the sessions/ folder of the config folder it runs under
+  const record = (folder, pid, id) => tree.write(`${folder}/sessions/${pid}.json`, JSON.stringify({ pid, sessionId: id, cwd: '/fixture/homes/x' }));
+  const pids = { personal: process.pid, work: process.ppid, gone: 2147483646, shell: 1 };
+  record('.claude-personal', pids.personal, personal);
+  record('.claude-work', pids.work, work);
+  record('.claude-personal', pids.gone, gone);
+  const bare = (paneId, label, agent = 'claude') => ({ pane_id: paneId, agent, agent_status: 'idle', label, cwd: `/fixture/homes/${label}`, foreground_cwd: `/fixture/homes/${label}`, tab_id: 'w1:t1', workspace_id: 'w1' });
+  const foreground = { 'w1:p1': pids.personal, 'w1:p2': pids.work, 'w1:p3': pids.gone, 'w1:p4': pids.shell };
+  const panes = [bare('w1:p1', 'personal-pane'), bare('w1:p2', 'work-pane'), bare('w1:p3', 'ended-pane'), bare('w1:p4', 'shell-pane'), bare('w1:p5', 'codex-pane', 'codex'),
+    pane('78787878-aaaa-4bbb-8ccc-000000000004', 'w1:p6', 'hooked-pane')];
+  const asked = [];
+  const fake = fakeRunner({
+    panes,
+    handle: (file, args) => {
+      if (file === 'bash') return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false };
+      if (args.includes('process-info')) {
+        const paneId = args[args.indexOf('--pane') + 1];
+        asked.push(paneId);
+        return { code: 0, stdout: JSON.stringify({ result: { process_info: { foreground_processes: [{ pid: foreground[paneId], argv0: 'claude' }] } } }), stderr: '', timedOut: false, truncated: false };
+      }
+      return undefined;
+    },
+  });
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.map, row]));
+    assert.equal(rows['personal-pane'].percent, 41, 'the session of the process, found in ~/.claude-personal, is read from that folder\'s log');
+    assert.equal(rows['personal-pane'].pane_id, 'w1:p1');
+    assert.equal(rows['personal-pane'].id, personal.slice(0, 8));
+    assert.equal(rows['work-pane'].percent, 9, 'any other config folder\'s process records count');
+    assert.equal(rows['ended-pane'], undefined, 'a record whose process has ended names no session');
+    assert.equal(rows['shell-pane'], undefined, 'a pane whose foreground holds no Claude process stays without a session');
+    assert.equal(rows['codex-pane'], undefined);
+    assert.deepEqual([...new Set(asked)].sort(), ['w1:p1', 'w1:p2', 'w1:p3', 'w1:p4'], 'only Claude panes with no session are looked at, nothing is written to a pane');
+    assert.equal(fake.calls.some((call) => call.args.some((arg) => ['send-text', 'send-keys', 'run', 'close'].includes(arg))), false);
+    assert.equal(response.raw.includes(tree.root), false, 'no folder leaves the server');
+    assert.equal(response.raw.includes(personal), false, 'no full session id leaves the server');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('context-gauge: no running Claude process record anywhere means no pane is looked at and nothing is invented', async () => {
+  const { tree, pane } = twoConfigFolders();
+  const bare = { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle', label: 'lonely', cwd: '/fixture/homes/lonely', foreground_cwd: '/fixture/homes/lonely', tab_id: 'w1:t1', workspace_id: 'w1' };
+  const fake = fakeRunner({ panes: [bare], handle: (file) => (file === 'bash' ? { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json.data.rows, []);
+    assert.equal(fake.calls.some((call) => call.args.includes('process-info')), false, 'with no process record there is nothing to match, so Herdr is not asked');
+    assert.ok(pane);
+  } finally { await server.close(); tree.cleanup(); }
+});
+
 test('archive-context: reads an archived session\'s context from another config folder too', async () => {
   const { tree, write } = twoConfigFolders();
   write('.claude', 'aaaaaaaa-1111-4bbb-8ccc-000000000001', 100000);

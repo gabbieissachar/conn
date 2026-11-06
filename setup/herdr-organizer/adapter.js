@@ -15,7 +15,7 @@ const path = require('path');
 const parse = require('./parse');
 const { readClearMarks } = require('./handoff-runs');
 const { scrub, findLeaks } = require('./text');
-const { otherClaudeHomes } = require('../transcript-reader/claude-homes');
+const { otherClaudeHomes, runningClaudeSessions } = require('../transcript-reader/claude-homes');
 
 class AdapterError extends Error {
   constructor(message, status = 400, code = 'error') {
@@ -938,6 +938,26 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     return newest ? newest.file : null;
   }
 
+  // The session of each Claude pane Herdr names none for: the Claude process in the pane's foreground (`herdr pane process-info`,
+  // read-only) keeps a record at <its config folder>/sessions/<pid>.json in whichever config folder it runs under, the same rule the
+  // transcript reader uses. A pane whose foreground holds no such process stays without a session and is not shown.
+  const MAX_SESSIONLESS_PANES = 24;
+  async function sessionByProcess(session, panes) {
+    if (!panes.length) return [];
+    const running = runningClaudeSessions(claudeRoots().map((root) => path.join(root, 'sessions')));
+    if (!running.size) return [];
+    const resolved = await Promise.all(panes.slice(0, MAX_SESSIONLESS_PANES).map(async (pane) => {
+      let pids = [];
+      try {
+        const result = await herdrCall(session, ['pane', 'process-info', '--pane', pane.pane_id], { timeoutMs: 5000 });
+        pids = result.code === 0 ? parse.foregroundPids(result.stdout) : [];
+      } catch { /* a pane Herdr cannot describe has no session */ }
+      const id = pids.map((pid) => running.get(pid)).find(Boolean);
+      return id ? { ...pane, agent_session_id: id } : null;
+    }));
+    return resolved.filter(Boolean);
+  }
+
   // Input-side tokens of the newest main-thread usage line, read from the end of the file in growing steps. A
   // compaction after that line makes the count unknown, as in the gauge.
   async function transcriptUsage(file) {
@@ -1041,16 +1061,21 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
       const where = new Map();
       for (const session of sessions.filter((item) => item.running && !item.isDefault && SESSION_NAME_RE.test(item.name))) {
         let panes = null;
+        let sessionless = [];
         let tabLabels = new Map();
         try {
           const result = await herdrCall(session.name, ['pane', 'list'], { timeoutMs: 20000 });
           panes = result.code === 0 ? parse.parseAgentPanes(result.stdout) : null;
+          sessionless = result.code === 0 ? parse.parseSessionlessClaudePanes(result.stdout) || [] : [];
         } catch { /* a session that cannot be read just has no pane column */ }
         try {
           const result = await herdrCall(session.name, ['tab', 'list'], { timeoutMs: 20000 });
           tabLabels = (result.code === 0 && parse.parseTabLabels(result.stdout)) || tabLabels;
         } catch { /* without tab labels a row keeps the gauge's own name */ }
-        for (const pane of panes || []) where.set(pane.agent_session_id, { ...pane, tab_label: tabLabels.get(pane.tab_id) || null, herdr_session: session.name });
+        // A Claude pane Herdr names no session for (run under a config folder whose settings have no Herdr hook) is given the session of
+        // the Claude process in its foreground, so the rest of the gauge treats it like any other live pane.
+        const named = [...(panes || []), ...(await sessionByProcess(session.name, sessionless))];
+        for (const pane of named) if (!where.has(pane.agent_session_id)) where.set(pane.agent_session_id, { ...pane, tab_label: tabLabels.get(pane.tab_id) || null, herdr_session: session.name });
       }
       const rows = [];
       const homes = new Map();

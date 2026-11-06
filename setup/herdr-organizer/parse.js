@@ -67,6 +67,36 @@ function parseAgentPanes(jsonText) {
     }));
 }
 
+// Live Claude panes for which Herdr names no session. Its Claude hook is set up in ~/.claude/settings.json only, so a pane run under
+// another config folder (~/.claude-personal) reports `agent: claude` and no `agent_session`. The caller finds such a pane's session
+// from the process it runs (see `foregroundPids`) and gives it the id parseAgentPanes would have.
+function parseSessionlessClaudePanes(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return null; }
+  const list = data && Array.isArray(data.panes) ? data.panes : null;
+  if (!list) return null;
+  return list
+    .filter((item) => item && typeof item.pane_id === 'string' && item.agent === 'claude' && !(item.agent_session && typeof item.agent_session.value === 'string' && item.agent_session.value))
+    .map((item) => ({
+      pane_id: item.pane_id,
+      tab_id: typeof item.tab_id === 'string' ? item.tab_id : '',
+      agent: 'claude',
+      agent_status: typeof item.agent_status === 'string' ? item.agent_status : '',
+      label: typeof item.label === 'string' ? item.label.slice(0, 80) : '',
+      cwds: [item.cwd, item.foreground_cwd].filter((value) => typeof value === 'string' && value),
+      title: typeof item.terminal_title_stripped === 'string' ? item.terminal_title_stripped.slice(0, 120) : '',
+    }));
+}
+
+// The process ids in the foreground of a pane, from `herdr pane process-info`. Empty when the output cannot be read.
+function foregroundPids(jsonText) {
+  let data;
+  try { data = unwrapResult(JSON.parse(jsonText)); } catch { return []; }
+  const info = data && data.process_info;
+  const processes = info && Array.isArray(info.foreground_processes) ? info.foreground_processes : [];
+  return processes.map((item) => item && item.pid).filter((pid) => Number.isInteger(pid));
+}
+
 // Herdr tab id -> the tab's label, from `herdr tab list`. Null when the output cannot be read.
 function parseTabLabels(jsonText) {
   let data;
@@ -337,6 +367,8 @@ module.exports = {
   parseSessions,
   parsePanes,
   parseAgentPanes,
+  parseSessionlessClaudePanes,
+  foregroundPids,
   parseTabLabels,
   parseLabelledPanes,
   parseWorkspaceLabels,

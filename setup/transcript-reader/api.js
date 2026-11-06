@@ -172,7 +172,7 @@ const deltaStore = require('./delta');
 const pinstore = require('./pinstore');
 const workerLib = require('./worker');
 const copySyncLib = require('./copysync');
-const { otherClaudeHomes } = require('./claude-homes');
+const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
@@ -648,20 +648,7 @@ function create({
   // pid -> session id of every running Claude Code process, from the record each keeps in
   // <its config folder>/sessions (it follows /clear and --resume): ~/.claude's and every other config folder's.
   function runningClaude() {
-    const found = new Map();
-    for (const dir of claudeSessionDirs()) {
-      let names = [];
-      try { names = fs.readdirSync(dir).filter((name) => name.endsWith('.json')); } catch { continue; }
-      for (const name of names) {
-        let text = '';
-        try { text = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }  // a record ends with its process
-        const record = parseJson(text) || {};
-        if (!Number.isInteger(record.pid) || typeof record.sessionId !== 'string' || !SESSION_ID_RE.test(record.sessionId)) continue;
-        try { process.kill(record.pid, 0); } catch { continue; }
-        found.set(record.pid, record.sessionId);
-      }
-    }
-    return found;
+    return runningClaudeSessions(claudeSessionDirs());
   }
 
   // The Copilot process in the pane's foreground, or null.
