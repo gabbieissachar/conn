@@ -43,12 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
-            // The Herdr-screen pane is an interactive second client: this test hook may only run when both the socket
+            // The Herdr client pane is an interactive second client: this test hook may only run when both the socket
             // directory and the herdr executable are a stand-in's, never attach to a real session without a click.
             if !model.endpoint.isStandIn {
                 FileHandle.standardError.write("conn: --start-fallback refused: it would attach a second client to a real Herdr session\n".data(using: .utf8)!)
             } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.fallback.start(endpoint: model.endpoint, theme: model.terminalTheme) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { model.mode = .herdr; model.attachHerdrClient() }
             }
         }
         if let text = cfg.sendTest {

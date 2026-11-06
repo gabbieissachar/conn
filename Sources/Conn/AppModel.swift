@@ -68,6 +68,14 @@ final class AppModel: ObservableObject {
     /// Preferences live in the standard domain, except in test mode: a check that zooms must not overwrite the zoom a person saved.
     static var defaults: UserDefaults { Runtime.config.runsInBackground ? (UserDefaults(suiteName: "dev.local.conn.test") ?? .standard) : .standard }
     private static func savedZoom() -> Double { PaneFit.clampedZoom(defaults.object(forKey: zoomKey) as? Double ?? 1) }
+    /// The Herdr client pane starts Herdr's client with Herdr's own sidebar hidden (Conn draws the sidebar); remembered across
+    /// launches, and read when the client attaches, not while it runs.
+    @Published var hideHerdrSidebar: Bool = AppModel.defaults.object(forKey: AppModel.hideHerdrSidebarKey) as? Bool ?? true {
+        didSet { Self.defaults.set(hideHerdrSidebar, forKey: Self.hideHerdrSidebarKey) }
+    }
+    private static let hideHerdrSidebarKey = "conn.herdrClient.hideSidebar"
+    /// Why the Herdr client did not attach (its config failed the check), shown in the pane; nil otherwise.
+    @Published private(set) var herdrClientError: String?
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
@@ -497,6 +505,18 @@ final class AppModel: ObservableObject {
         if let w = parts["web"] { line += " · web content \(mb(w))" }
         line += String(format: " · CPU %.1f%%", lastCPUPercent)
         statsLine = line
+    }
+
+    /// Start the Herdr client pane. Its config is checked first (`HerdrClientConfig.resolve`); a config that fails the check
+    /// stops the attach and says why, rather than starting a client that would read some other file.
+    func attachHerdrClient() {
+        do {
+            let clientConfig = try HerdrClientConfig.resolve(hideSidebar: hideHerdrSidebar, custom: config.clientConfigPath)
+            herdrClientError = nil
+            fallback.start(endpoint: endpoint, theme: terminalTheme, clientConfig: clientConfig)
+        } catch {
+            herdrClientError = "\(error)"
+        }
     }
 
     func shutdown() {

@@ -309,8 +309,10 @@ struct PanesArea: View {
     }
 }
 
-// MARK: - Herdr's own screen
+// MARK: - Herdr client
 
+/// Herdr's own client in a pty, beside Conn's native sidebar. It keeps Herdr's tab row and panes and, by default, starts
+/// without Herdr's sidebar. Keys and mouse typed here steer only this client; Herdr's socket-API focus is shared.
 struct FallbackPane: View {
     @EnvironmentObject var app: AppModel
     @State private var tick = 0
@@ -320,7 +322,12 @@ struct FallbackPane: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "rectangle.inset.filled.and.person.filled").foregroundStyle(.secondary)
-                Text("Herdr's own screen").font(.system(size: 13, weight: .semibold))
+                Text("Herdr client").font(.system(size: 13, weight: .semibold))
+                if running {
+                    Text(app.fallback.clientConfig == nil ? "Herdr's own sidebar and settings"
+                         : (app.config.clientConfigPath == nil ? "Herdr's sidebar hidden (Ctrl+B, then b, shows it)" : "custom client config"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 Spacer()
                 if running { Button("Stop") { app.fallback.stop() }.controlSize(.small) }
             }
@@ -331,14 +338,23 @@ struct FallbackPane: View {
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "terminal").font(.system(size: 26)).foregroundStyle(.tertiary)
-                    Text("Herdr's screen, as Herdr draws it").font(.system(size: 14, weight: .medium))
-                    Text("This starts a Herdr client attached to session \(app.endpoint.session). It is interactive: keys you type go to Herdr, and as one more attached client it takes part in Herdr's own pane sizing. Use it when the native panes are unavailable, for example after a Herdr update.")
+                    Text("Herdr's client, as Herdr draws it").font(.system(size: 14, weight: .medium))
+                    Text("This starts a Herdr client attached to session \(app.endpoint.session). It is interactive: keys and mouse you use here go to Herdr and steer only this client, and as one more attached client it takes part in Herdr's own pane sizing. Conn's sidebar stays on the left. Herdr's own focus commands (from a script or another tool) move every attached client, this one too.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 460)
+                    if app.config.clientConfigPath == nil {
+                        Toggle("Hide Herdr's own sidebar", isOn: $app.hideHerdrSidebar).toggleStyle(.checkbox).font(.system(size: 12))
+                            .help("Starts this client with its own config file in Conn's folder. Your Herdr config is not changed, and the setting applies the next time you attach.")
+                    } else {
+                        Text("Using the client config from --client-config.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                     if let code = app.fallback.exitCode { Text("Last run ended with exit code \(code).").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    if let error = app.herdrClientError {
+                        Text(error).font(.system(size: 12)).foregroundStyle(.red).multilineTextAlignment(.center).frame(maxWidth: 460)
+                    }
                     if FallbackTerminalController.command(for: app.endpoint) == nil {
                         Text("The herdr command was not found.").font(.system(size: 12)).foregroundStyle(.red)
                     } else {
-                        Button("Attach to \(app.endpoint.session)") { app.fallback.start(endpoint: app.endpoint, theme: app.terminalTheme) }
+                        Button("Attach to \(app.endpoint.session)") { app.attachHerdrClient() }
                             .buttonStyle(.borderedProminent)
                     }
                 }

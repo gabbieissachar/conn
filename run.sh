@@ -8,6 +8,8 @@
 #   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode agent|editor|herdr   --web on|off   --select N   --dark   --privacy   --open FILE
+#   ./run.sh --client-config FILE  the Herdr client view starts its client with this config (default: a generated copy of your
+#                                 Herdr config with Herdr's sidebar hidden; FILE must be in Conn's folder or a temp folder)
 #   ./run.sh --selftest 10 | --shot FILE | --tour DIR | --quit-after N
 #   ./run.sh --background ...     test mode: no focus, no Dock icon or menu-bar item, invisible click-through windows.
 #                                 Every scripted launch (--ui-check, --shot, --tour, --selftest, --quit-after, ...) implies it;

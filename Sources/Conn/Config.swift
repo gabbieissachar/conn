@@ -5,7 +5,7 @@ import ConnCore
 
 enum RendererKind: String { case swiftTerm = "swiftterm", grid = "grid" }
 enum CenterMode: String, CaseIterable, Identifiable {
-    case agent = "Agent", editor = "Editor", herdr = "Herdr screen"
+    case agent = "Agent", editor = "Editor", herdr = "Herdr client"
     var id: String { rawValue }
     var symbol: String { self == .agent ? "terminal" : (self == .editor ? "doc.text" : "rectangle.inset.filled.and.person.filled") }
     static func parse(_ s: String) -> CenterMode? {
@@ -34,8 +34,11 @@ struct AppConfig {
     var tour: String?
     var holdSeconds = 3
     var sendTest: String?
-    /// Test hook: attach the Herdr-screen pane at launch (it never starts by itself otherwise).
+    /// Test hook: attach the Herdr client pane at launch (it never starts by itself otherwise).
     var startFallback = false
+    /// A Herdr client config file for the Herdr client pane (`--client-config PATH` or CONN_HERDR_CLIENT_CONFIG). Checked by
+    /// `HerdrClientConfig.validate` before every attach; without it the pane writes its own hidden-sidebar config.
+    var clientConfig: String?
     var probeDraw = false
     var compare = false
     var uiTour = false
@@ -80,6 +83,7 @@ struct AppConfig {
             case "--hold": c.holdSeconds = next().flatMap(Int.init) ?? 3
             case "--send-test": c.sendTest = next()
             case "--start-fallback": c.startFallback = true
+            case "--client-config": c.clientConfig = next()
             case "--probe-draw": c.probeDraw = true
             case "--compare": c.compare = true
             case "--ui-check": c.uiTour = true
@@ -110,6 +114,10 @@ struct AppConfig {
 
     var endpoint: HerdrEndpoint {
         HerdrEndpoint(session: session, socketDirectory: socketDir, binaryPath: herdrBin)
+    }
+
+    var clientConfigPath: String? {
+        clientConfig ?? ProcessInfo.processInfo.environment["CONN_HERDR_CLIENT_CONFIG"].flatMap { $0.isEmpty ? nil : $0 }
     }
 
     var writePolicy: WritePolicy { .parse(writeSessions ?? ProcessInfo.processInfo.environment["CONN_WRITE_SESSIONS"]) }
