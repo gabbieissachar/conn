@@ -13,7 +13,9 @@
 //     conversation's older session (a /clear chain), inside a folded run of wake-ups, or in a long reply that is clipped;
 //   - an unknown message id opens the conversation and says so; #s= and &d= still open as they always did;
 //   - an address change while the page is open switches in place (a marker on window survives, so the page did not load again), the
-//     page's own address writes cause no second change, and the same link works a second time.
+//     page's own address writes cause no second change, and the same link works a second time;
+//   - the same landing on the lite page (out/live/index.html, which Conn's columns and asks open): from a fresh load and in place, the reply
+//     is scrolled to just under the header and outlined once (the outline is an animation that ends: it does not stay lit).
 
 const fs = require('fs');
 const net = require('net');
@@ -173,7 +175,40 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     s = await until(`const el = document.querySelector('.is-linked'); return { ok: Boolean(el) && /(44444444|gamma)/.test(document.title), linked: el && el.dataset.msg, marker: window.__marker || null, note: (document.getElementById('follow-note') || {}).textContent || '' };`, 'the closed-pane message in place', 20000);
     check(s.marker === 'kept' && s.linked === `${lab.closed_reply}:reply`, 'in place: a closed pane\'s conversation is listed again, opened and its message outlined, without a load', `${s.linked} ${s.note}`);
 
-    // ---- 12. a phone-width screen
+    // ---- 12. the lite page: what a column or a list of asks opens, #s=<conversation>&m=<turn>
+    const lite = `http://localhost:${port}/setup/transcript-reader/out/live/index.html`;
+    const freshLite = async (hash) => { axi('open', 'about:blank'); axi('open', lite + hash); await until(`return { ok: / · (Reader|Documents)$/.test(document.title) && document.getElementById('main').children.length > 0 };`, 'the lite page'); await sleep(700); };
+    ev(`localStorage.setItem('tr-live-follow', '0'); return true;`);
+    await freshLite(`#s=${NEW}&m=${m(lab.ask)}`);
+    s = await until(LINKED, 'the message on a fresh load of the lite page');
+    check(s.linked === `${lab.ask}:reply` && /22222222/.test(s.title), 'lite page, fresh load: the conversation opens on the message and outlines it', `${s.linked} ${s.title}`);
+    check(s.top >= s.barBottom - 2 && s.top < s.barBottom + 40 && s.scrollY > 0, 'lite page, fresh load: the reply sits just under the header', `top ${s.top}, header ends ${s.barBottom}, scrolled ${s.scrollY}`);
+    check(s.hash === `#s=${NEW}` && !s.clipped, 'lite page, fresh load: the address goes back to #s=, and the clipped reply is shown in full', s.hash);
+    const flashing = ev(`const el = document.querySelector('.is-linked'); return { running: el ? el.getAnimations().length : -1 };`);
+    check(flashing.running === 1, 'lite page, fresh load: the reply is flashing (the outline animation is running)', JSON.stringify(flashing));
+    // The outline is an animation of 2.8 s that ends (the class stays for a redraw to continue it): "flash once" means no outline left lit after it.
+    await sleep(3200);
+    const lit = ev(`const el = document.querySelector('.is-linked'); return { running: el ? el.getAnimations().length : -1, shadow: el ? getComputedStyle(el).boxShadow : '' };`);
+    check(lit.running === 0 && (lit.shadow === 'none' || /rgba\(0, 0, 0, 0\)/.test(lit.shadow)), 'lite page: the outline has faded out once (nothing is left lit and nothing animates)', JSON.stringify(lit));
+    axi('screenshot', path.join(shots, '05-lite-fresh-clipped-reply.png'));
+    await freshLite(`#s=${NEW}&m=${m(lab.folded)}`);
+    s = await until(LINKED, 'a reply in a folded run on the lite page');
+    check(s.linked === `${lab.folded}:reply` && s.height > 0 && s.top >= s.barBottom - 2 && s.top < s.barBottom + 40, 'lite page, fresh load: a reply inside a folded run is revealed, outlined and just under the header', `${s.linked} top ${s.top}`);
+    await freshLite(`#s=${NEW}&m=ffffffffffff`);
+    s = ev(STATE);
+    check(/was not found in this conversation/.test(s.note) && s.linked === 0, 'lite page, fresh load: an unknown message opens the conversation and says plainly it was not found', s.note);
+    await freshLite(`#s=${OTHER}`);
+    ev(`window.__marker = 'kept'; window.__changes = 0; window.addEventListener('hashchange', () => { window.__changes++; }); return true;`);
+    ev(`location.hash = '#s=${NEW}&m=${m(lab.ask)}'; return true;`);
+    s = await until(LINKED, 'the message in place on the lite page');
+    check(s.marker === 'kept' && s.linked === `${lab.ask}:reply` && /22222222/.test(s.title) && !s.clipped, 'lite page, in place: another conversation loads, opens on the message and outlines it, without a page load', `${s.linked} ${s.title}`);
+    check(s.top >= s.barBottom - 2 && s.top < s.barBottom + 40 && s.hash === `#s=${NEW}`, 'lite page, in place: the reply sits just under the header, and the address went back to #s=', `top ${s.top} ${s.hash}`);
+    ev(`window.scrollTo(0, 0); return true;`);
+    ev(`location.hash = '#s=${NEW}&m=${m(lab.ask)}'; return true;`);
+    s = await until(`const el = document.querySelector('.is-linked'); return { ok: Boolean(el) && scrollY > 100, scrollY: Math.round(scrollY), linked: el && el.dataset.msg, n: document.querySelectorAll('.is-linked').length };`, 'the same link a second time on the lite page');
+    check(s.linked === `${lab.ask}:reply` && s.n === 1, 'lite page, in place: the same link a second time scrolls to the reply again, and only one reply is outlined', JSON.stringify(s));
+
+    // ---- 13. a phone-width screen
     axi('emulate', '--viewport', '390x844x3,mobile,touch');
     await fresh(`#s=${NEW}&m=${m(lab.ask)}`);
     s = ev(LINKED);

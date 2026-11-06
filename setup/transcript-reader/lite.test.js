@@ -365,6 +365,51 @@ test('follow: a conversation not loaded yet is loaded before it is drawn and scr
   return Promise.resolve().then(() => assert.deepEqual(order, ['load', 'render', 'latest']));
 });
 
+// --------------------------------------------------------------------------------------------------- landing on a message (#s=<id>&m=<turn>)
+
+// What a list of open asks opens (Conn's rows, its columns): the conversation scrolled to the asking reply, which flashes once. The page's
+// own rules, run on stand-ins. The browser's side (the scroll, the outline that fades) is e2e/message-link-check.js, which opens the lite page.
+const ADDRESS = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'prototype', 'address.js'), 'utf8') + '\naddress', { String, Array });
+function landing({ hash, exchanges }) {
+  const calls = [];
+  const world = {
+    address: ADDRESS, location: { hash }, link: { message: null, listing: null }, state: { session: 0 }, renderLive: () => calls.push('notice'),
+    data: { sessions: [{ id: 'aaaaaaaa-1111', ids: ['aaaaaaaa-1111'], exchanges }] }, messageGone: (id) => ({ text: `gone ${id}` }),
+    landOnMessage: (si, index) => calls.push(['land', si, index]),
+  };
+  // chooseOpening's one line for it: the message is taken from the address when the conversation it names is the one that opened.
+  const asked = ADDRESS.parse(hash) || {};
+  world.link.message = asked.message ? asked.message : null;
+  vm.runInNewContext(`${fnSource('followOpeningMessage')}\nfollowOpeningMessage();`, world);
+  return { world, calls };
+}
+const TURNS = [{ uid: 't0000000001aaaa' }, { uid: 't0000000002bbbb' }, { uid: 't0000000003cccc' }];
+
+test('landing: the page opened on #s=<id>&m=<turn> lands on that turn once its conversation is on screen, by the whole id or its first characters', () => {
+  assert.deepEqual(landing({ hash: '#s=aaaaaaaa&m=t0000000002bbbb', exchanges: TURNS }).calls, [['land', 0, 1]]);
+  assert.deepEqual(landing({ hash: '#s=aaaaaaaa&m=t0000000003', exchanges: TURNS }).calls, [['land', 0, 2]], 'a cut-short id names the turn it starts');
+  const { world, calls } = landing({ hash: '#s=aaaaaaaa', exchanges: TURNS });
+  assert.deepEqual(calls, [], 'no message in the address: the conversation opens at its newest turn, as before');
+  assert.equal(world.link.listing, null);
+});
+
+test('landing: a message the conversation does not hold is said so, and nothing is scrolled', () => {
+  const { world, calls } = landing({ hash: '#s=aaaaaaaa&m=tffffffffffff', exchanges: TURNS });
+  assert.deepEqual(calls, ['notice']);
+  assert.match(world.link.listing.text, /gone tffffffffffff/);
+});
+
+test('landing: the lite page and the full page share it: both open a conversation through openReading, which follows the address\'s message, and a lazy page does it once the conversation has loaded', () => {
+  const lite = filled('live');
+  assert.ok(lite.includes('followOpeningMessage();'), 'the call is in the page every mode is made from');
+  assert.ok(fnSource('openReading').includes('followOpeningMessage();'), 'openReading ends on it');
+  assert.match(lite, /whenReady\(\(\) => \{\s*openReading\(saved\);/, 'a lazy page (the lite page) opens after the conversation is loaded, so the turn is there to find');
+  assert.ok(PAGE_SOURCE.includes('link.message = asked.message && (fromHash >= 0 || link.opening) ? asked.message : null;'), 'the address names a conversation that is on the page');
+  assert.ok(fnSource('landOnMessage').includes('classList.add("is-linked")'), 'the reply is outlined');
+  assert.match(PAGE_SOURCE, /\.is-linked \{ animation: linked 2\.8s ease-out;/, 'by an animation that ends: it flashes once and does not stay lit');
+  assert.ok(lite.includes('async function followAddress()'), 'and an address that arrives while the page is open is followed in place');
+});
+
 // --------------------------------------------------------------------------------------------------- the answer sheet in the lite page
 
 // The title bar's "Answer sheet" link goes to the sheet of the conversation on screen, and only where it has one.

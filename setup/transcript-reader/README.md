@@ -333,7 +333,7 @@ The glance feed says which conversations ask you something, for a native client'
       "where": "",
       "last": 1793860599.0,
       "open_asks": 1,
-      "ask": { "at": 1793860599.0, "uid": "t12ad57c7c69734480c8aaddb", "lines": ["Should I approve the 3 refunds over the cap?"] },
+      "ask": { "at": 1793860599.0, "uid": "t12ad57c7c69734480c8aaddb", "lines": ["Should I approve the 3 refunds over the cap?"], "tags": ["+1 earlier"] },
       "pane": { "label": "billing", "herdr": "work", "live": true }
     }
   ]
@@ -351,10 +351,49 @@ The glance feed says which conversations ask you something, for a native client'
 | `where` | `""` for the home's own folder, `worker copy` for a worker's isolated copy, else the folder inside the home. |
 | `last` | When the newest turn (your message or its reply) happened. |
 | `open_asks` | How many replies ask you something with nothing from you after them: the count the page's header and the sidebar call "need you". |
-| `ask` | The newest open ask: `at` (when its reply was written), `uid` (the turn's id, which the page's `#s=<id>&m=<uid>` address opens the conversation on; `null` for a turn with none) and `lines`, up to 3, each at most 200 characters: the questions of the reply's answer sheet when it opens one, else the lines of the reply that ask. `null` when no ask is open. |
+| `ask` | The newest open ask: `at` (when its reply was written), `uid` (the turn's id, which the page's `#s=<id>&m=<uid>` address opens the conversation on; `null` for a turn with none) and `lines`, up to 3, each at most 200 characters: the questions of the reply's answer sheet when it opens one, else the lines of the reply that ask, and `tags`, what a list shows beside the lines, in the page's own words: `Answer sheet · N questions` when the reply opens a sheet, and `+N earlier` when N other asks are still open before this one (an empty list when neither). `null` when no ask is open. |
 | `pane` | Which Herdr pane runs it: `label` (the name Herdr shows), `herdr` (its session), `live` (`false` means the pane has closed and `label` is the last one seen). `null` when no pane was ever seen for it. |
 
 An ask is opened in a column or a window at `out/live/index.html#s=<id>&m=<uid>` (a document: `&d=<document id>`), and its answer sheet, when it has one, at `out/live/sheet.html#s=<id>`; all three are served at `http://localhost:8768/setup/transcript-reader/` as above. A pane's state (idle, working, blocked) is not in the feed: a client that shows it uses Herdr's own live state, which the feed would only repeat late. An ask's lines, its count and the conversation's last turn are computed by the reader's rules (the page's "Needs you" chips and ask boxes come from the same turns), so a list and the page agree.
+
+### The open-asks route: `GET /api/transcript-reader/open-asks`
+
+The glance feed as a route, for a client that lists the asks against its own rows (Conn's agents) and already knows which pane each row is. It answers one entry for each **live Herdr pane whose conversation has an open ask**, newest ask first. Nothing is worked out in the route: the feed (above) says which conversations ask and what, by the page's own rules, from the same turns and answer sheets; Herdr, read as the `state` route reads it, says which pane runs each one. A conversation counts only while a Herdr pane runs one of its sessions (a pane that has closed has no row), and a pane has one entry, its newest ask. The feed is parsed again only when its file changed.
+
+```json
+{
+  "status": "ok",
+  "generated_at": "2026-11-06T16:40:12.000Z",
+  "as_of": "2026-11-06T16:40:10.412Z",
+  "asks": [
+    {
+      "pane_id": "w1:p3",
+      "herdr": "esim",
+      "session": "0f1e2d3c-...",
+      "message": "t12ad57c7c69734480c8aaddb",
+      "lines": ["Should I approve the 3 refunds over the cap?"],
+      "at": "2026-11-06T16:31:39.000Z",
+      "tags": ["Answer sheet · 3 questions", "+1 earlier"],
+      "older": false
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `generated_at`, `as_of` | When the answer was made, and when the build that wrote the feed ran. |
+| `pane_id`, `herdr` | Herdr's pane id, and the name of the Herdr session it is in. Pane ids repeat across Herdr sessions, so a client with several matches on both. |
+| `session` | The conversation's id, as the page's `#s=` takes it (or its first 8 characters). |
+| `message` | The asking reply's turn id, as `&m=` takes it; `null` for a turn with none, and the client then opens `#s=<session>` alone. |
+| `lines` | Up to 3 plain-text lines of what is asked (each at most 200 characters): the questions of the reply's answer sheet when it opens one, else the lines of the reply that ask. |
+| `at` | When the asking reply was written (ISO time). |
+| `tags` | Short labels for the row, in the page's words: `Answer sheet · N questions`, `+N earlier`. May be empty. |
+| `older` | `true` when the ask is more than 24 hours old at the time of the call (the feed cannot say it: it changes only when an ask does). |
+
+The route is behind the same guard as every `/api/transcript-reader/` route (loopback Host and Origin, Fetch-Metadata, the per-start token in `x-transcript-reader-token`) and sends no CORS header; nothing is relaxed for it. It answers 404 `not_built` before the first build has written the feed or when the feed is in a format this server does not know. A client that polls it counts as an open page: the logs are watched while it polls, so an ask that is answered goes from the answer within about two seconds, and nothing is rebuilt when nobody asks. Herdr not answering gives an empty `asks` (no pane can be named). Only conversations on the reading list have an ask here: a live pane the list lacks is listed by **Sync** or by following it, as for the page.
+
+An ask is opened in the lite page at `out/live/index.html#s=<session>&m=<message>`. The reply is scrolled to just under the header and outlined once (the 2.8-second outline fades; nothing stays lit), from a fresh load and in place, on the lite page as on the full one (`e2e/message-link-check.js` checks both, `lite.test.js` the page's rules, `api.test.js` the route).
 
 ## The hosted copy
 
@@ -472,7 +511,7 @@ python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcri
 node --test setup/transcript-reader/*.test.js
 ```
 
-The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change:
+The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change, then the same landing on the lite page (`out/live/index.html`: a reply scrolled to just under the header and outlined once, from a fresh load and in place):
 
 ```bash
 node setup/transcript-reader/e2e/message-link-check.js <scratch folder> [screenshots folder]

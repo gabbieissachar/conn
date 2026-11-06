@@ -3116,17 +3116,23 @@ def conversation_summary(session: dict) -> tuple[dict, dict]:
         needs=len(open_asks),
     )
     asking = open_asks[-1] if open_asks else None
-    ask_lines = []
+    ask_lines, ask_tags = [], []
     if asking:
         # A reply that opens an answer sheet asks its cards' questions; any other asks in the lines the reply asks them in.
         lines = asking["reply"].splitlines()
-        ask_lines = [gist(card["q"], ASK_LINE) for card in asking.get("sheet_cards") or []] or [gist(lines[n], ASK_LINE) for n in asking.get("ask_lines") or [] if n < len(lines)]
+        cards = asking.get("sheet_cards") or []
+        ask_lines = [gist(card["q"], ASK_LINE) for card in cards] or [gist(lines[n], ASK_LINE) for n in asking.get("ask_lines") or [] if n < len(lines)]
         ask_lines = [line for line in ask_lines if line][:ASK_LINES]
+        # What a list says beside the lines, in the words the page's own chips use: an answer sheet's size and the asks left unanswered before this one.
+        if cards:
+            ask_tags.append(f"Answer sheet · {len(cards)} question{'' if len(cards) == 1 else 's'}")
+        if len(open_asks) > 1:
+            ask_tags.append(f"+{len(open_asks) - 1} earlier")
     glance = {
         "id": session["id"], "ids": session["ids"], "home": session["home"], "where": session["where"],
         "last": entry["last"],
         "open_asks": entry["needs"],
-        "ask": {"at": asking["reply_at"] or asking["at"], "uid": asking.get("uid") if isinstance(asking.get("uid"), str) else None, "lines": ask_lines} if asking else None,
+        "ask": {"at": asking["reply_at"] or asking["at"], "uid": asking.get("uid") if isinstance(asking.get("uid"), str) else None, "lines": ask_lines, "tags": ask_tags} if asking else None,
     }
     return entry, glance
 

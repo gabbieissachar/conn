@@ -271,6 +271,19 @@ class Live(Case):
         self.assertEqual(alpha["ask"]["uid"], turn["uid"])
         self.assertRegex(alpha["ask"]["uid"], r"^[0-9A-Za-z_-]{6,64}$", "the form the page's #s=<id>&m=<turn> address takes")
 
+    def test_the_ask_carries_the_tags_a_list_shows_beside_it_the_sheets_size_and_the_asks_before_it(self):
+        self.write(derived=[A, W, M])
+        feed = {c["id"]: c for c in self.glance()["conversations"]}
+        self.assertEqual(feed[A]["ask"]["tags"], ["+1 earlier"], "two asks are open: the newest one's tag counts the other")
+        self.assertEqual(feed[M]["ask"]["tags"], ["Answer sheet · 2 questions"], "a reply that opens a sheet says how many questions it asks, and nothing is before it")
+        self.assertEqual(feed[W]["ask"], None)
+        reply = "Which colour do you want for the notes?"
+        append_log(self.lab.logs[M], [user("Details?", LAB_T0 + 800, str(self.lab.mate)), say(reply, LAB_T0 + 810, str(self.lab.mate))])
+        self.newer(self.lab.logs[M])
+        self.write(derived=[M])
+        mate = next(c for c in self.glance()["conversations"] if c["id"] == M)
+        self.assertEqual(mate["ask"]["tags"], [], "your message after the sheet's reply closed it, so the new ask is alone and says no more than its lines")
+
     def test_an_ask_of_several_lines_gives_at_most_three_and_each_is_clipped(self):
         self.write(derived=[A, W, M])
         long_line = "Should I use the first or the second layout for the settings page, " + "and why " * 40 + "?"

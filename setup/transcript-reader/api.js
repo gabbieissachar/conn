@@ -32,6 +32,8 @@
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
 //   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes
+//   GET  /api/transcript-reader/open-asks           the conversations that ask you something, one for each live Herdr pane, newest ask
+//                                                   first (README, "The open-asks route"); read from the glance feed and Herdr, parses nothing
 //   GET  /api/transcript-reader/events?reader=<stamp>&sheet=<stamp>&wait=<ms>
 //                                                   answers with the build stamps as soon as a page build is newer than the
 //                                                   stamp(s) given, or after the wait (at most 30 s) with the same stamps: how an
@@ -139,7 +141,7 @@
 // server itself watches the folders of the listed logs and starts the rebuild when one changes, rather than at the page's
 // next poll; with no page open it watches nothing and rebuilds nothing. The rebuilds run in one reader.py that stays running
 // (worker.js), which falls back to a fresh reader.py for a request it cannot take. Each rebuild also leaves the lite page's files in out/live/
-// and the glance feed in out/glance.json (build_prototype.write_live); this module serves the first and never reads the second. reopen and close
+// and the glance feed in out/glance.json (build_prototype.write_live); this module serves the first and reads the second only for open-asks. reopen and close
 // change the reading list only on a click in the page, and so does sync, which also lists
 // every live Claude pane's session not yet listed, except one a person closed or removed. The one other change to the list that is not a click is a pane that a listed conversation ran in moving on to a new session (a /clear): the new session is listed (adopt) once it has a log. The pins, stars and sheet-flags files are the only things written outside out/, and only on a pin, an unpin, a star, an unstar, a mark or a cleared mark.
 // A prompt reaches a pane only through send, which the page calls on a click, or through
@@ -1085,7 +1087,9 @@ function create({
     if (dropped().some((id) => live.has(id))) build.paneClosed = true;
   }
 
-  async function state(follow) {
+  // What every call that a page or a client polls does first: it is there (the logs are watched while it is), Herdr is read (at most once
+  // in SCAN_TTL_MS), pane changes and focus are noted, and a rebuild is started when a listed log or pane says one is due.
+  async function tend(follow) {
     seen();
     const ids = listed();
     const sessions = await scan();
@@ -1096,6 +1100,11 @@ function create({
     const built = stamp('prototype.stamp');
     if (build.failedAt && built !== null && built * 1000 > build.failedAt) { build.error = null; build.failedAt = 0; }
     maybeRebuild(ids, focused, follow);
+    return { ids, sessions, focused };
+  }
+
+  async function state(follow) {
+    const { ids, sessions, focused } = await tend(follow);
     const panes = {};
     for (const session of sessions) {
       for (const pane of session.panes) {
@@ -1112,6 +1121,62 @@ function create({
       panes,
       build: buildInfo(),
     };
+  }
+
+  // ------------------------------------------------------------------- open asks
+
+  // The conversations that ask you something, for a native client's rows (Conn's agents): one entry for each live Herdr pane whose
+  // conversation has an open ask, the newest ask of each. Nothing is worked out here. The glance feed (out/glance.json, written by the
+  // page build from the same turns, rules and answer sheets the page's "Needs you" chips use: build_prototype.conversation_summary) says
+  // which conversations ask and what; Herdr, as the state route reads it, says which pane runs each. The feed is parsed again only when
+  // its file changed. `older` is the one thing that depends on the time of the call, so it is not in the feed.
+  const OLDER_THAN_MS = 24 * 60 * 60 * 1000;
+  const MAX_ASK_LINES = 3;
+  let glanceRead = { key: null, feed: null };
+
+  function readGlance() {
+    const file = path.join(outDir, 'glance.json');
+    let stat;
+    try { stat = fs.statSync(file); } catch { return null; }
+    const key = stat.mtimeMs + ':' + stat.size + ':' + stat.ino;
+    if (glanceRead.key !== key) {
+      let feed = null;
+      try { feed = parseJson(fs.readFileSync(file, 'utf8')); } catch { feed = null; }
+      if (!(feed && feed.version === 1 && Array.isArray(feed.conversations))) return null;  // a format this module does not know is ignored
+      glanceRead = { key, feed };
+    }
+    return glanceRead.feed;
+  }
+
+  const strings = (value, limit) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item).slice(0, limit) : []);
+
+  async function openAsks() {
+    const { sessions } = await tend(false);
+    const feed = readGlance();
+    if (!feed) throw new RequestError('Not built yet.', 404, 'not_built');
+    // The pane running each session, as Herdr says now: a pane that has closed is no longer a row to put an ask on.
+    const running = new Map();
+    for (const herdrSession of sessions) {
+      for (const pane of herdrSession.panes) if (pane.session_id && !running.has(pane.session_id)) running.set(pane.session_id, { pane_id: pane.pane_id, herdr: herdrSession.name });
+    }
+    const at = now();
+    const asks = [];
+    for (const conversation of feed.conversations) {
+      const ask = conversation && conversation.ask;
+      if (!(ask && Number.isFinite(ask.at) && conversation.open_asks > 0 && typeof conversation.id === 'string')) continue;
+      // Herdr names the session its pane runs now, which may be any of the conversation's sessions (a /clear starts a new one).
+      const pane = [conversation.id, ...[...(Array.isArray(conversation.ids) ? conversation.ids : [])].reverse()].map((id) => running.get(id)).find(Boolean);
+      if (!pane) continue;
+      asks.push({
+        pane_id: pane.pane_id, herdr: pane.herdr, session: conversation.id, message: typeof ask.uid === 'string' && ask.uid ? ask.uid : null,
+        lines: strings(ask.lines, MAX_ASK_LINES), at: new Date(ask.at * 1000).toISOString(), tags: strings(ask.tags, 8), older: at - ask.at * 1000 > OLDER_THAN_MS,
+      });
+    }
+    // Newest first, and one for each pane: a pane that two listed conversations claim (a /clear whose old conversation is still listed) keeps its newest.
+    asks.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    const taken = new Set();
+    const one = asks.filter((ask) => { const key = ask.herdr + '|' + ask.pane_id; if (taken.has(key)) return false; taken.add(key); return true; });
+    return { generated_at: new Date(at).toISOString(), as_of: Number.isFinite(feed.as_of) ? new Date(feed.as_of * 1000).toISOString() : null, asks: one };
   }
 
   // ------------------------------------------------------------------- sync
@@ -1614,6 +1679,11 @@ function create({
     }
     if (pathname === API + 'state' && req.method === 'GET') {
       send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1')) });
+      return;
+    }
+    // The open asks of the live panes, for a client that lists them: { generated_at, as_of, asks: [{ pane_id, herdr, session, message, lines, at, tags, older }] }.
+    if (pathname === API + 'open-asks' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...(await openAsks()) });
       return;
     }
     if (pathname === API + 'sync' && req.method === 'POST') {

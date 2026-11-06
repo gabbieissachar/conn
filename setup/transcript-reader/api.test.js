@@ -664,6 +664,121 @@ test('state: names the focused pane and the live panes of listed sessions only; 
   } finally { await t.close(); }
 });
 
+// The glance feed as a page build leaves it (build_prototype.write_live): one record for each listed conversation.
+const CHAIN = 'eeeeeeee-5555-4555-8555-555555555555';  // the newest session of a chain whose older session is A
+const glanceOf = (conversations, asOf = Date.now() / 1000) => ({ as_of: asOf, version: 1, conversations });
+const record = (id, { ids = [id], asks = 1, ask = undefined, pane = { label: 'x', herdr: 'work', live: true } } = {}) => ({
+  id, ids, home: 'main', where: '', last: Date.now() / 1000, open_asks: asks, ask: asks ? { at: Date.now() / 1000 - 600, uid: 't' + id.slice(0, 12), lines: ['Which one?'], tags: [], ...ask } : null, pane,
+});
+const writeGlance = (t, conversations, asOf) => fs.writeFileSync(path.join(t.tree.outDir, 'glance.json'), JSON.stringify(glanceOf(conversations, asOf)));
+
+test('open-asks: behind the same guard as every route, with no CORS header, and not built is said so', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.request({ path: '/api/transcript-reader/open-asks' })).status, 403, 'no token');
+    assert.equal((await t.request({ path: '/api/transcript-reader/open-asks', headers: { [TOKEN_HEADER]: 'wrong' } })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/open-asks', headers: { [TOKEN_HEADER]: t.token, Host: 'evil.example:80' } })).status, 403);
+    assert.equal((await t.request({ path: '/api/transcript-reader/open-asks', headers: { [TOKEN_HEADER]: t.token, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/open-asks', headers: { [TOKEN_HEADER]: t.token, Origin: t.origin, 'Content-Type': 'application/json' }, body: {} })).status, 404, 'read only');
+    const none = await t.get('open-asks');
+    assert.equal(none.status, 404, 'no glance feed yet');
+    assert.equal(none.json.code, 'not_built');
+    writeGlance(t, [record(A)]);
+    const ok = await t.get('open-asks');
+    assert.equal(ok.status, 200);
+    assert.equal(Object.keys(ok.headers).some((name) => name.startsWith('access-control-')), false);
+  } finally { await t.close(); }
+});
+
+test('open-asks: an open ask is one entry for the live pane that runs its conversation; an answered one and a conversation with no live pane are none', async () => {
+  const t = await start();
+  try {
+    const at = Date.now() / 1000 - 3600;
+    writeGlance(t, [
+      record(A, { ask: { at, uid: 't0123456789ab', lines: ['Should I approve the 3 refunds?', 'And the fourth?'], tags: ['Answer sheet · 2 questions'] } }),
+      record(B, { asks: 0 }),
+      record(CHAIN, { ids: [CHAIN], pane: { label: 'gone', herdr: 'work', live: false } }),  // asks, but no Herdr pane runs it
+    ]);
+    const { status, json } = await t.get('open-asks');
+    assert.equal(status, 200);
+    assert.equal(json.status, 'ok');
+    assert.deepEqual(Object.keys(json).sort(), ['as_of', 'asks', 'generated_at', 'status']);
+    assert.equal(json.asks.length, 1, 'B has no open ask and CHAIN has no live pane');
+    assert.deepEqual(json.asks[0], {
+      pane_id: 'w1:p1', herdr: 'work', session: A, message: 't0123456789ab', lines: ['Should I approve the 3 refunds?', 'And the fourth?'],
+      at: new Date(at * 1000).toISOString(), tags: ['Answer sheet · 2 questions'], older: false,
+    });
+    assert.equal(Number.isNaN(Date.parse(json.generated_at)), false);
+    assert.equal(Number.isNaN(Date.parse(json.as_of)), false);
+    assert.equal(t.herdr.agentCalls().length, 0, 'Herdr is only read');
+    assert.equal(t.herdr.readerRuns().length, 0, 'nothing was rebuilt');
+  } finally { await t.close(); }
+});
+
+test('open-asks: a pane that cleared into a newer session is found by any session of its conversation, and a pane has one entry, its newest ask', async () => {
+  const t = await start();
+  try {
+    // Herdr's pane p1 runs A; the conversation the feed lists under CHAIN (the newest session of a chain) names A among its sessions.
+    writeGlance(t, [
+      record(CHAIN, { ids: [A, CHAIN], asks: 2, ask: { at: Date.now() / 1000 - 60, uid: 'tnewest000001', lines: ['The newest one?'], tags: ['+1 earlier'] } }),
+      record(A, { ask: { at: Date.now() / 1000 - 7200, uid: 'toldest000001', lines: ['An older conversation of the same pane?'] } }),
+      record(B, { ask: { at: Date.now() / 1000 - 1800, uid: 'tother0000001', lines: ['Another pane?'] } }),
+    ]);
+    const { json } = await t.get('open-asks');
+    assert.deepEqual(json.asks.map((ask) => [ask.pane_id, ask.session, ask.message]), [['w1:p1', CHAIN, 'tnewest000001'], ['w1:p2', B, 'tother0000001']], 'newest first; pane p1 once, with its newest ask');
+    assert.deepEqual(json.asks[0].tags, ['+1 earlier']);
+  } finally { await t.close(); }
+});
+
+test('open-asks: an ask is older when it is over 24 hours old at the time of the call, and the feed does not have to change for that', async () => {
+  const t = await start();
+  try {
+    const now = Date.now() / 1000;
+    writeGlance(t, [record(A, { ask: { at: now - 23.5 * 3600 } }), record(B, { ask: { at: now - 25 * 3600 } })]);
+    const first = (await t.get('open-asks')).json.asks;
+    assert.deepEqual(first.map((ask) => [ask.session, ask.older]), [[A, false], [B, true]]);
+    t.tick(2 * 3600 * 1000);  // two hours pass and nobody writes anything
+    const later = (await t.get('open-asks')).json.asks;
+    assert.deepEqual(later.map((ask) => [ask.session, ask.older]), [[A, true], [B, true]]);
+  } finally { await t.close(); }
+});
+
+test('open-asks: a rebuilt feed is read again, an unchanged one is not parsed again, and one this module does not know is ignored', async () => {
+  const t = await start();
+  try {
+    writeGlance(t, [record(A)]);
+    assert.deepEqual((await t.get('open-asks')).json.asks.map((ask) => ask.session), [A]);
+    const same = fs.readFileSync(path.join(t.tree.outDir, 'glance.json'), 'utf8');
+    assert.deepEqual((await t.get('open-asks')).json.asks.map((ask) => ask.session), [A], 'asked again');
+    // The ask is answered, and another conversation asks: the build writes a new feed.
+    writeGlance(t, [record(A, { asks: 0 }), record(B)], Date.now() / 1000 + 5);
+    assert.notEqual(fs.readFileSync(path.join(t.tree.outDir, 'glance.json'), 'utf8'), same);
+    assert.deepEqual((await t.get('open-asks')).json.asks.map((ask) => ask.session), [B]);
+    fs.writeFileSync(path.join(t.tree.outDir, 'glance.json'), JSON.stringify({ ...glanceOf([record(A)]), version: 2 }));
+    assert.equal((await t.get('open-asks')).status, 404, 'a format it does not know says nothing');
+    fs.writeFileSync(path.join(t.tree.outDir, 'glance.json'), '{"as_of":');
+    assert.equal((await t.get('open-asks')).status, 404, 'half a file says nothing either');
+  } finally { await t.close(); }
+});
+
+test('open-asks: a client that polls is a page that is open: a listed log newer than the page starts one rebuild, so an answered ask goes; Herdr not answering gives no asks', async () => {
+  const t = await start();
+  try {
+    writeGlance(t, [record(A)]);
+    fs.writeFileSync(path.join(t.tree.outDir, 'prototype.stamp'), String(Date.now() / 1000 - 600));
+    fs.utimesSync(t.tree.logOf(A), new Date(), new Date());  // the session wrote a new turn
+    t.tick(5000);
+    await t.get('open-asks');
+    await t.settle();
+    assert.deepEqual(t.herdr.readerRuns(), [['rebuild']]);
+    t.herdr.down = true;
+    t.tick(5000);
+    const { status, json } = await t.get('open-asks');
+    assert.equal(status, 200);
+    assert.deepEqual(json.asks, [], 'no pane can be named while Herdr is not answering');
+  } finally { await t.close(); }
+});
+
 test('state: a Claude pane whose session id no running Claude holds takes its foreground Claude\'s session', async () => {
   const t = await start();
   try {
