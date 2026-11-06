@@ -1,5 +1,6 @@
 // The plain editor's document model: open a text or markdown file, edit it, save it without losing a newer version.
-// UTF-8 only. A file with NUL bytes is not text, and one over the size cap is refused rather than loaded into a view.
+// UTF-8 only. A file with NUL bytes is not text. One over the size cap opens read-only, first megabyte only (`open`); the strict
+// initializer still refuses it.
 import Foundation
 import Combine
 
@@ -8,6 +9,7 @@ public enum TextFileError: Error, Equatable, CustomStringConvertible {
     case tooLarge(bytes: Int, limit: Int)
     case changedOnDisk
     case noPath
+    case readOnly
     case io(String)
 
     public var description: String {
@@ -16,6 +18,7 @@ public enum TextFileError: Error, Equatable, CustomStringConvertible {
         case .tooLarge(let b, let l): return "File is \(b / 1024) KB; the editor opens files up to \(l / 1024) KB"
         case .changedOnDisk: return "The file changed on disk after it was opened"
         case .noPath: return "This document has no file yet"
+        case .readOnly: return "This file is shown read-only"
         case .io(let s): return s
         }
     }
@@ -34,8 +37,20 @@ public struct DiskStamp: Equatable, Sendable {
 
 public final class TextFile: ObservableObject {
     public static let sizeLimit = 5 << 20
+    /// How much of a file over the size limit is shown.
+    public static let headLimit = 1 << 20
 
-    @Published public var text: String { didSet { if text != oldValue { revision += 1 } } }
+    @Published public var text: String {
+        didSet { if text != oldValue { revision += 1; if isPreview && isDirty { isPreview = false } } }
+    }
+    /// `text` for an editable document; `large` is the first megabyte of a file over the limit, read-only; `binary` has no text at all.
+    @Published public private(set) var kind: FileKind = .text
+    /// The size of the file on disk when it was opened (for `large` and `binary`, which show a note, not the file).
+    public private(set) var totalBytes = 0
+    /// A preview tab: replaced by the next file opened as a preview, and pinned by the first edit (the editor pins it by a double click too).
+    @Published public var isPreview = false
+    /// The file was deleted or moved by another program after it was opened. The text stays; saving writes it back.
+    @Published public private(set) var deletedOnDisk = false
     @Published public private(set) var url: URL?
     @Published public private(set) var savedText: String
     @Published public private(set) var lastError: String?
@@ -47,7 +62,8 @@ public final class TextFile: ObservableObject {
     private var hasBOM = false
     private static let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
 
-    public var isDirty: Bool { text != savedText }
+    public var isReadOnly: Bool { kind != .text }
+    public var isDirty: Bool { kind == .text && text != savedText }
     public var title: String { url?.lastPathComponent ?? "Untitled" }
     public var isMarkdown: Bool { ["md", "markdown", "mdown"].contains(url?.pathExtension.lowercased() ?? "") }
 
@@ -59,6 +75,55 @@ public final class TextFile: ObservableObject {
     public convenience init(opening url: URL) throws {
         self.init()
         try load(url)
+    }
+
+    /// Opens any file the way the Explorer does: text for editing; a text file over the limit as its first megabyte, read-only;
+    /// a file that is not text as a placeholder with no text. Only a file that cannot be read at all throws.
+    public static func open(_ url: URL) throws -> TextFile {
+        let (kind, size) = FileKind.classify(url)
+        let doc = TextFile()
+        switch kind {
+        case .text:
+            do { try doc.load(url) } catch TextFileError.notText { doc.makePlaceholder(url, size: size) }
+            catch TextFileError.tooLarge { try doc.loadHead(url, size: size) }
+        case .large:
+            try doc.loadHead(url, size: size)
+        case .binary:
+            doc.makePlaceholder(url, size: size)
+        }
+        return doc
+    }
+
+    private func makePlaceholder(_ url: URL, size: Int) {
+        self.url = url; ioURL = url.resolvingSymlinksInPath()
+        kind = .binary; totalBytes = size
+        text = ""; savedText = ""
+    }
+
+    private func loadHead(_ url: URL, size: Int) throws {
+        let real = url.resolvingSymlinksInPath()
+        let data: Data
+        do {
+            let h = try FileHandle(forReadingFrom: real)
+            defer { try? h.close() }
+            data = try h.read(upToCount: Self.headLimit) ?? Data()
+        } catch { throw TextFileError.io("Could not read \(url.lastPathComponent): \(error.localizedDescription)") }
+        guard let s = Self.utf8Prefix(data) else { makePlaceholder(url, size: size); return }
+        self.url = url; ioURL = real
+        kind = .large; totalBytes = size
+        savedText = s; text = s
+    }
+
+    /// `data` as text, dropping a byte order mark and a character cut in half at the end. nil when it is not UTF-8 text.
+    static func utf8Prefix(_ data: Data) -> String? {
+        var d = data.starts(with: bom) ? data.dropFirst(3) : data[...]
+        guard !d.contains(0) else { return nil }
+        for _ in 0..<4 {
+            if let s = String(data: d, encoding: .utf8) { return s }
+            guard !d.isEmpty else { break }
+            d = d.dropLast()
+        }
+        return nil
     }
 
     public func load(_ url: URL) throws {
@@ -73,16 +138,19 @@ public final class TextFile: ObservableObject {
         self.url = url
         self.ioURL = real
         self.hasBOM = bom
-        self.text = s
+        self.kind = .text
         self.savedText = s
+        self.text = s
         self.stamp = DiskStamp.read(real)
         self.changedOnDisk = false
+        self.deletedOnDisk = false
         self.lastError = nil
     }
 
     /// Writes the text. Refuses when the file changed on disk since it was read, unless `overwrite` is set.
     public func save(overwrite: Bool = false) throws {
         guard let url = url else { throw TextFileError.noPath }
+        guard kind == .text else { throw TextFileError.readOnly }
         let target = ioURL ?? url
         if !overwrite, let known = stamp, let now = DiskStamp.read(target), now != known {
             changedOnDisk = true
@@ -97,19 +165,23 @@ public final class TextFile: ObservableObject {
         savedText = text
         stamp = DiskStamp.read(target)
         changedOnDisk = false
+        deletedOnDisk = false
         lastError = nil
     }
 
     public func saveAs(_ newURL: URL) throws {
+        guard kind == .text else { throw TextFileError.readOnly }
         url = newURL
         ioURL = newURL.resolvingSymlinksInPath()
         stamp = nil
         try save(overwrite: true)
     }
 
-    /// Cheap poll for the "changed on disk" banner.
+    /// Cheap poll for the "changed on disk" and "deleted" banners.
     public func checkDisk() {
-        guard let url = ioURL ?? url, let known = stamp, let now = DiskStamp.read(url) else { return }
+        guard kind == .text, let url = ioURL ?? url, let known = stamp else { return }
+        guard let now = DiskStamp.read(url) else { if !deletedOnDisk { deletedOnDisk = true }; return }
+        if deletedOnDisk { deletedOnDisk = false }
         let changed = now != known
         if changed != changedOnDisk { changedOnDisk = changed }
     }

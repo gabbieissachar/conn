@@ -68,6 +68,10 @@ struct SidebarView: View {
                                 if i < 9 { Text("⌘\(i + 1)").font(.system(size: 10.5, design: .rounded)).foregroundStyle(.tertiary) }
                             }
                         }
+                        .contextMenu {
+                            Button("Open Working Folder in Editor") { app.openWorkingFolder(of: a) }
+                                .disabled(a.cwd.isEmpty || !FileManager.default.fileExists(atPath: a.cwd))
+                        }
                     }
                 }
                 .padding(.horizontal, 6).padding(.bottom, 6)
@@ -399,6 +403,8 @@ struct ColumnHandle: View {
     @Binding var width: CGFloat
     var min: CGFloat = 300
     var max: CGFloat = 900
+    /// True for a column on the leading side of the handle (the Explorer): dragging right makes it wider.
+    var growsWithDragRight = false
     @State private var start: CGFloat?
 
     var body: some View {
@@ -408,7 +414,8 @@ struct ColumnHandle: View {
                 .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { v in
                         if start == nil { start = width }
-                        width = Swift.min(max, Swift.max(min, (start ?? width) - v.translation.width))
+                        let delta = growsWithDragRight ? v.translation.width : -v.translation.width
+                        width = Swift.min(max, Swift.max(min, (start ?? width) + delta))
                     }
                     .onEnded { _ in start = nil }))
     }
@@ -447,7 +454,7 @@ struct MainView: View {
                             WatchArea(watch: app.watch).frame(minWidth: 420, maxWidth: .infinity)
                         } else {
                             centre.frame(minWidth: 420, maxWidth: .infinity)
-                            if app.showWeb {
+                            if app.readerShown {
                                 ColumnHandle(width: $app.webWidth)
                                 WebTabsColumn().frame(width: app.webWidth)
                             }
@@ -463,6 +470,11 @@ struct MainView: View {
                 ToolbarItem(placement: .navigation) {
                     Button { app.sidebarVisible.toggle() } label: { Image(systemName: "sidebar.left") }.help("Show or hide the sidebar (⌃⌘S)")
                 }
+                ToolbarItem(placement: .navigation) {
+                    if app.mode == .editor {
+                        Toggle(isOn: $app.explorerVisible) { Image(systemName: "folder") }.help("Show or hide the Explorer (⌘B)")
+                    }
+                }
                 ToolbarItem(placement: .principal) {
                     Picker("View", selection: $app.mode) {
                         ForEach(app.viewPolicy.modes) { m in Label(m.rawValue, systemImage: m.symbol).tag(m) }
@@ -471,35 +483,56 @@ struct MainView: View {
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     Toggle(isOn: $app.watchOn) { Image(systemName: "rectangle.split.3x1") }.help("Watch several sessions side by side (⇧⌘W)")
-                    Toggle(isOn: $app.showWeb) { Image(systemName: "sidebar.right") }.help("Show the reader and organizer (⌥⌘R)")
+                    Toggle(isOn: $app.readerToggle) { Image(systemName: "sidebar.right") }.help("Show the reader and organizer (⌥⌘R)")
                     Toggle(isOn: $app.readerFollows) { Image(systemName: "pin") }.help("Reader follows the selected agent (⌥⌘F)")
                     Toggle(isOn: $app.privacy) { Image(systemName: "eye.slash") }.help("Privacy mode for screen sharing: hides content (⇧⌘B)")
                     Button { app.showSwitcher = true } label: { Image(systemName: "magnifyingglass") }.help("Quick switcher (⌘K)")
                 }
             }
             if app.showSwitcher { QuickSwitcher().transition(.opacity) }
+            if app.mode == .editor, let q = app.editor.quickOpen { QuickOpenView(model: q, editor: app.editor).transition(.opacity) }
             if let t = app.toastText {
-                Text(t).font(.system(size: 12, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule()).shadow(radius: 8)
-                    .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 44)
+                VStack(spacing: 2) {
+                    Text(t).font(.system(size: 12, weight: .medium))
+                    if let d = app.toastDetail {
+                        Text(d).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(3).truncationMode(.middle).multilineTextAlignment(.center)
+                    }
+                }
+                .frame(maxWidth: 640)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: app.toastDetail == nil ? 17 : 14, style: .continuous)).shadow(radius: 8)
+                .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 44)
             }
         }
         .background(OcclusionWatcher { app.setWindowVisible($0) })
+        // Whether the Reader column has room beside the Explorer follows the window's width and everything that takes room from it.
+        .background(GeometryReader { g in
+            Color.clear.onChange(of: g.size.width, initial: true) { _, w in app.updateReaderLayout(windowWidth: w) }
+        })
+        .onChange(of: app.mode) { _, _ in app.updateReaderLayout() }
+        .onChange(of: app.explorerVisible) { _, _ in app.updateReaderLayout() }
+        .onChange(of: app.explorerWidth) { _, _ in app.updateReaderLayout() }
+        .onChange(of: app.sidebarVisible) { _, _ in app.updateReaderLayout() }
+        .onChange(of: app.webWidth) { _, _ in app.updateReaderLayout() }
+        .onChange(of: app.watchOn) { _, _ in app.updateReaderLayout() }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            // Files dropped on the window open in the editor. Only regular files; folders and apps are ignored.
-            var opened = false
+            // Files and folders dropped on the window open in the editor: the first folder in the Explorer, files as tabs.
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var urls: [URL] = []
+            var any = false
             for p in providers where p.hasItemConformingToTypeIdentifier("public.file-url") {
+                any = true
+                group.enter()
                 _ = p.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url = url else { return }
-                    var isDir: ObjCBool = false
-                    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return }
-                    DispatchQueue.main.async { app.editor.open(url); app.mode = .editor }
+                    if let url = url { lock.lock(); urls.append(url); lock.unlock() }
+                    group.leave()
                 }
-                opened = true
             }
-            return opened
+            group.notify(queue: .main) { if !urls.isEmpty { app.openFromOutside(urls) } }
+            return any
         }
-        .onChange(of: app.showWeb) { _, _ in app.pinReader() }
+        .onChange(of: app.showWeb) { _, _ in app.pinReader(); app.updateReaderLayout() }
     }
 
     private var subtitle: String {

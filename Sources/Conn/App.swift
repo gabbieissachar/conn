@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if cfg.launchPlan.attachesClient { model.attachHerdrClient() }
         if let size = cfg.windowSize { DispatchQueue.main.async { Capture.mainWindow()?.setContentSize(size) } }
         model.editor.restoreSession()
-        for f in cfg.openFiles { model.editor.open(URL(fileURLWithPath: f)) }
+        for f in cfg.openFiles { model.editor.openFromOutside([URL(fileURLWithPath: f)]) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             let list = model.snapshot.prioritized
             if let i = cfg.select, i < list.count { model.select(list[i].id) }
@@ -63,9 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor func application(_ application: NSApplication, open urls: [URL]) {
-        let m = Runtime.model
-        urls.forEach { m.editor.open($0) }
-        m.mode = .editor
+        // Finder's Open With, a drop on the Dock icon, and the `conn` command (through `open -a`): folders and files.
+        Runtime.model.openFromOutside(urls)
     }
 
     @MainActor func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -122,14 +121,24 @@ struct ConnCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Document") { app.mode = .editor; app.editor.newDocument() }.keyboardShortcut("n")
             Button("Open…") { app.mode = .editor; app.editor.showOpenPanel(startingIn: app.selectedAgent?.cwd) }.keyboardShortcut("o")
+            Button("Open Folder…") { app.mode = .editor; app.editor.showOpenFolderPanel(startingIn: app.selectedAgent?.cwd) }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
             Menu("Open Recent") {
+                let folders = RecentFolders.existing(app.editor.recentFolders)
                 let recents = NSDocumentController.shared.recentDocumentURLs
-                ForEach(recents, id: \.self) { url in
-                    Button(url.lastPathComponent) { app.mode = .editor; app.editor.open(url) }.help(url.path)
+                ForEach(folders, id: \.self) { path in
+                    Button((path as NSString).lastPathComponent) { app.openFromOutside([URL(fileURLWithPath: path)]) }.help(path)
                 }
-                if recents.isEmpty { Text("No recent files") }
+                if !folders.isEmpty && !recents.isEmpty { Divider() }
+                ForEach(recents, id: \.self) { url in
+                    Button(url.lastPathComponent) { app.openFromOutside([url]) }.help(url.path)
+                }
+                if folders.isEmpty && recents.isEmpty { Text("No recent items") }
             }
+            Button("Close Folder") { app.editor.closeFolder() }.disabled(app.editor.folder == nil)
         }
+        // Conn has nothing to print, and Cmd+P is Go to File in the Editor view.
+        CommandGroup(replacing: .printItem) {}
         // The editor's text view has a find bar, but the Edit menu SwiftUI builds has no Find items to trigger it.
         CommandGroup(after: .textEditing) {
             Button("Find…") { TextFinderCommand.send(.showFindInterface) }.keyboardShortcut("f")
@@ -140,6 +149,13 @@ struct ConnCommands: Commands {
             Button("Save") { if let d = app.editor.current { app.editor.save(d) } }.keyboardShortcut("s").disabled(app.editor.current == nil)
             Button("Save As…") { if let d = app.editor.current { app.editor.saveAs(d) } }.keyboardShortcut("s", modifiers: [.command, .shift]).disabled(app.editor.current == nil)
             Button("Close Document") { if let d = app.editor.current { app.editor.close(d) } }.keyboardShortcut("w").disabled(app.editor.current == nil || app.mode != .editor)
+            Divider()
+            // With the Explorer focused these copy its selected row; otherwise the open file.
+            Button("Copy Path") { app.editor.copyPath(relative: false) }.keyboardShortcut("c", modifiers: [.command, .option])
+            Button("Copy Relative Path") { app.editor.copyPath(relative: true) }.keyboardShortcut("c", modifiers: [.command, .option, .shift])
+            Divider()
+            Button(app.connCommandInstallTitle) { app.showConnCommandAlert(app.installConnCommand()) }
+            Button("Uninstall 'conn' Command") { app.showConnCommandAlert(app.uninstallConnCommand()) }.disabled(!app.connCommandRemovable)
         }
         CommandMenu("Agents") {
             Button("Quick Switcher…") { app.showSwitcher = true }.keyboardShortcut("k")
@@ -166,6 +182,15 @@ struct ConnCommands: Commands {
                     .keyboardShortcut(KeyEquivalent(Character("\((CenterMode.allCases.firstIndex(of: m) ?? 0) + 1)")), modifiers: [.command, .option])
             }
             Divider()
+            // From another view these show the Editor first (as Open... does), then act.
+            Toggle("Explorer", isOn: Binding(get: { app.explorerVisible }, set: { on in
+                if app.mode != .editor { app.mode = .editor; app.explorerVisible = true } else { app.explorerVisible = on }
+            })).keyboardShortcut("b")
+            Button("Focus Explorer") { app.mode = .editor; app.editor.toggleExplorerFocus() }.keyboardShortcut("e", modifiers: [.command, .shift])
+            Button("Go to File…") { app.mode = .editor; app.editor.showQuickOpen() }.keyboardShortcut("p")
+            Button("Next Editor Tab") { app.mode = .editor; app.editor.cycleTab(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
+            Button("Previous Editor Tab") { app.mode = .editor; app.editor.cycleTab(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
+            Divider()
             if app.agentViewEnabled {
                 Button("Make Pane Text Bigger") { app.zoomPane(1) }.keyboardShortcut("=").disabled(app.mode != .agent)
                 Button("Make Pane Text Smaller") { app.zoomPane(-1) }.keyboardShortcut("-").disabled(app.mode != .agent)
@@ -177,7 +202,7 @@ struct ConnCommands: Commands {
                 ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0) columns").tag($0) }
             }
             Divider()
-            Toggle("Reader and Organizer", isOn: $app.showWeb).keyboardShortcut("r", modifiers: [.command, .option])
+            Toggle("Reader and Organizer", isOn: $app.readerToggle).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])
             Toggle("Privacy Mode", isOn: $app.privacy).keyboardShortcut("b", modifiers: [.command, .shift])
             Toggle("Sidebar", isOn: $app.sidebarVisible).keyboardShortcut("s", modifiers: [.command, .control])

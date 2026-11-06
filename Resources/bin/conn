@@ -1,0 +1,76 @@
+#!/bin/sh
+# conn: open folders and files in Conn's Editor view, as `code .` does for VS Code.
+#
+#   conn              open the current folder
+#   conn .            the same
+#   conn DIR FILE...  the first folder opens in the Explorer, each file in a tab (later folders are ignored)
+#
+# Every path is made absolute and the list goes to Launch Services (`open -a <this Conn.app>`), which starts Conn if it is not
+# running, or hands the paths to the running one and brings it forward. The command does not wait for anything to close.
+# This script sits inside Conn.app (Contents/Resources/bin/conn); File > Install 'conn' Command in PATH links it from ~/.local/bin.
+# CONN_APP names the app bundle to use instead of the one this script is in. CONN_OPEN_FLAGS adds flags to open(1)
+# (tests use "-g -j" so a scripted launch never takes focus).
+set -u
+
+usage() {
+  cat <<'USAGE'
+usage: conn [path ...]
+  Opens folders and files in Conn's Editor view. With no path, opens the current folder.
+  The first folder becomes the Explorer's folder; each file opens in a tab.
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+app=${CONN_APP:-}
+if [ -z "$app" ]; then
+  real=$(readlink -f "$0" 2>/dev/null) || real=
+  case $real in
+    */Contents/Resources/bin/conn) app=${real%/Contents/Resources/bin/conn} ;;
+  esac
+fi
+if [ -z "$app" ] || [ ! -d "$app/Contents/MacOS" ]; then
+  echo "conn: cannot find Conn.app: this command is a link to the script inside it, and the app has moved or been deleted." >&2
+  echo "      Open Conn and choose File > Install 'conn' Command in PATH." >&2
+  exit 1
+fi
+
+# One absolute, physical path for a folder or a file ('.', '..', a relative name and a symlinked folder all become one real path).
+absolute() {
+  if [ -d "$1" ]; then
+    ( cd -P -- "$1" 2>/dev/null && pwd -P )
+  else
+    d=$(dirname -- "$1"); b=$(basename -- "$1")
+    dir=$( cd -P -- "$d" 2>/dev/null && pwd -P ) || return 1
+    if [ "$dir" = / ]; then printf '/%s\n' "$b"; else printf '%s/%s\n' "$dir" "$b"; fi
+  fi
+}
+
+[ $# -eq 0 ] && set -- .
+n=$#
+options=1
+bad=0
+while [ "$n" -gt 0 ]; do
+  arg=$1; shift; n=$((n - 1))
+  if [ "$options" = 1 ]; then
+    case $arg in
+      --) options=0; continue ;;
+      -?*) echo "conn: unknown option: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+  fi
+  if [ ! -e "$arg" ] && [ ! -L "$arg" ]; then
+    echo "conn: no such file or directory: $arg" >&2; bad=1; set -- "$@" "$arg"; continue
+  fi
+  if resolved=$(absolute "$arg") && [ -n "$resolved" ]; then
+    set -- "$@" "$resolved"
+  else
+    echo "conn: cannot read: $arg" >&2; bad=1; set -- "$@" "$arg"
+  fi
+done
+# Nothing is launched unless every path was good.
+[ "$bad" = 0 ] || exit 1
+
+# shellcheck disable=SC2086  # CONN_OPEN_FLAGS is a list of flags on purpose
+exec open ${CONN_OPEN_FLAGS:-} -a "$app" "$@"

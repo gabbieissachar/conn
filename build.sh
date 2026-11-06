@@ -14,6 +14,10 @@ cp ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn"
 cp ".build/$CONFIG/FakeHerdr" build/FakeHerdr
 cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-lite.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json "$APP/Contents/Resources/fixture/"
 cp Resources/Conn.icns "$APP/Contents/Resources/Conn.icns"
+# The `conn` shell command (README "Opening a folder from the terminal"): File > Install 'conn' Command in PATH links it from ~/.local/bin.
+mkdir -p "$APP/Contents/Resources/bin"
+cp Resources/bin/conn "$APP/Contents/Resources/bin/conn"
+chmod +x "$APP/Contents/Resources/bin/conn"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -31,6 +35,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleTypeName</key><string>Text</string>
     <key>CFBundleTypeRole</key><string>Editor</string>
     <key>LSItemContentTypes</key><array><string>public.plain-text</string><string>net.daringfireball.markdown</string></array>
+  </dict><dict>
+    <key>CFBundleTypeName</key><string>Folder</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>None</string>
+    <key>LSItemContentTypes</key><array><string>public.folder</string></array>
   </dict></array>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

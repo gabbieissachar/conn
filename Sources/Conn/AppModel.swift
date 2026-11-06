@@ -83,6 +83,36 @@ final class AppModel: ObservableObject {
     }
     @Published var sidebarVisible = true
     @Published var webWidth: CGFloat = 480
+    /// The Editor view's Explorer: shown or hidden (Cmd+B), and its width. Remembered across launches.
+    @Published var explorerVisible: Bool = AppModel.defaults.object(forKey: AppModel.explorerVisibleKey) as? Bool ?? true {
+        didSet {
+            Self.defaults.set(explorerVisible, forKey: Self.explorerVisibleKey)
+            // Hiding the Explorer while it has the keyboard gives the keyboard to the editor, not to nobody.
+            if !explorerVisible && editor.explorerFocused { editor.focusEditor() }
+        }
+    }
+    @Published var explorerWidth: Double = ExplorerLayout.clamped(AppModel.defaults.object(forKey: AppModel.explorerWidthKey) as? Double ?? ExplorerLayout.defaultWidth) {
+        didSet { Self.defaults.set(explorerWidth, forKey: Self.explorerWidthKey) }
+    }
+    private static let explorerVisibleKey = "conn.explorer.visible"
+    private static let explorerWidthKey = "conn.explorer.width"
+    /// The Reader column steps aside while the Editor view would otherwise leave the editor under 520 pt (`ExplorerLayout`); the
+    /// window reports its width here. Showing the Reader by hand in that state keeps it (`readerForced`) until the room is back.
+    /// The `conn` shell command's link in ~/.local/bin (File menu).
+    @Published var connCommand: CommandInstall.State = ConnCommandLink.currentState()
+    @Published private(set) var readerSteppedAside = false
+    @Published private(set) var readerForced = false
+    /// Whether the Reader column is on screen: switched on and not stepped aside.
+    var readerShown: Bool { showWeb && !readerSteppedAside }
+    /// The Reader toggle (toolbar, menu, Opt+Cmd+R): what is on screen. Turning it on while it is stepped aside shows it anyway.
+    var readerToggle: Bool {
+        get { readerShown }
+        set {
+            if newValue, showWeb, readerSteppedAside { readerForced = true; readerSteppedAside = false }
+            else { showWeb = newValue; if !newValue { readerForced = false; readerSteppedAside = false } }
+        }
+    }
+    private(set) var windowWidth: CGFloat = 1500
     /// The Organizer pane opens on its Context view every time it is switched to (and when its page loads: see WebBox).
     @Published var webTab: WebKind = .reader {
         didSet { if webTab == .organizer && oldValue != .organizer { web.box(.organizer).showContextView() } }
@@ -131,6 +161,8 @@ final class AppModel: ObservableObject {
     }
     @Published var statsLine = ""
     @Published var toastText: String?
+    /// A second, smaller line under the toast (the text a copy put on the clipboard).
+    @Published var toastDetail: String?
     @Published private(set) var streamVerdict: StreamVerdict = .ok
     @Published private(set) var windowVisible = true
     /// False once the app has been in the background for `inactivePauseSeconds`: streams stop, the sidebar keeps running.
@@ -178,7 +210,7 @@ final class AppModel: ObservableObject {
         stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile,
                                 store: StarOrderStore(defaults: AppModel.defaults, key: config.fixture ? "conn.readerStarOrder.fixture" : "conn.readerStarOrder"))
         stars.start()
-        editor = EditorModel()
+        editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
         web.onShowPane = { [weak self] kind, url in
@@ -199,6 +231,10 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async { self?.snapshotChanged() }
         }.store(in: &cancellables)
         store.$link.removeDuplicates().sink { [weak self] link in DispatchQueue.main.async { self?.linkChanged(link) } }.store(in: &cancellables)
+        // The Editor's own changes (open files, the folder, the selected tab) reach views that read them through the app model.
+        editor.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
+        editor.toast = { [weak self] title, detail in self?.toast(title, detail: detail) }
+        editor.showExplorer = { [weak self] in if self?.explorerVisible == false { self?.explorerVisible = true } }
         store.start()
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
         probeCompatibility()
@@ -605,9 +641,38 @@ final class AppModel: ObservableObject {
         toast(z == 1 ? "Text fits the pane" : "Text \(Int((z * 100).rounded()))% of the fit")
     }
 
-    func toast(_ s: String) {
+    func toast(_ s: String, detail: String? = nil) {
         toastText = s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in if self?.toastText == s { self?.toastText = nil } }
+        toastDetail = detail
+        DispatchQueue.main.asyncAfter(deadline: .now() + (detail == nil ? 2.2 : 3.0)) { [weak self] in
+            if self?.toastText == s { self?.toastText = nil; self?.toastDetail = nil }
+        }
+    }
+
+    // MARK: Editor: folders and files from outside
+
+    /// Paths from the `conn` command, Finder (Open With, a drop on the Dock icon), a drop on the window or a menu: the Editor view
+    /// shows them (README "Opening a folder from the terminal").
+    func openFromOutside(_ urls: [URL]) {
+        mode = .editor
+        editor.openFromOutside(urls)
+    }
+
+    /// Right-click an agent: its working folder in the Explorer.
+    func openWorkingFolder(of agent: Agent) {
+        guard !agent.cwd.isEmpty else { return }
+        openFromOutside([URL(fileURLWithPath: agent.cwd)])
+    }
+
+    /// The window's width changed, or something that decides whether the Reader has room (the view, the Explorer, the sidebar).
+    func updateReaderLayout(windowWidth w: CGFloat? = nil) {
+        if let w = w { windowWidth = w }
+        let needsRoom = mode == .editor && !watchOn && showWeb
+            && ExplorerLayout.readerStepsAside(windowWidth: Double(windowWidth), sidebarVisible: sidebarVisible, explorerVisible: explorerVisible,
+                                               explorerWidth: explorerWidth, readerWidth: Double(webWidth))
+        let aside = needsRoom && !readerForced
+        if aside != readerSteppedAside { readerSteppedAside = aside }
+        if !needsRoom && readerForced { readerForced = false }
     }
 
     // MARK: footprint line shown in the status bar

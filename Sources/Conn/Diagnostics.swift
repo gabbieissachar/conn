@@ -457,6 +457,7 @@ enum UICheck {
         report("background pause stops the stream", !model.attentive && model.primary.paneID == nil, "attentive=\(model.attentive)")
         model.appBecameActive(); await wait(2)
         report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
+        await ExplorerCheck.run(model: model, report: report, wait: wait)
         // The menus SwiftUI built from the commands, with their shortcuts.
         var chords = 0
         var offenders: [String] = []
