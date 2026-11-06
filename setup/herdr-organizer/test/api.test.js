@@ -750,6 +750,126 @@ test('context-gauge: a live Claude pane the gauge has no usable row for is read 
   }
 });
 
+// A home folder of a person who runs Claude under more than one config folder: ~/.claude and a second account's
+// ~/.claude-personal, each with its own projects/<folder>/<session id>.jsonl, the same project folder name in both.
+function twoConfigFolders() {
+  const { tempTree } = require('./helpers');
+  const tree = tempTree('organizer-config-folders-');
+  const usage = (tokens, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: new Date(Date.now() - 60000).toISOString(), message: { model: 'claude-x', usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: tokens - 1010 } }, ...extra });
+  const write = (folder, id, tokens, project = '-proj') => tree.write(`${folder}/projects/${project}/${id}.jsonl`, [usage(tokens / 2), usage(tokens)].join('\n') + '\n');
+  const pane = (id, paneId, label) => ({ pane_id: paneId, agent: 'claude', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', value: id }, label, cwd: `/fixture/homes/${label}`, foreground_cwd: `/fixture/homes/${label}`, tab_id: 'w1:t1', workspace_id: 'w1' });
+  const gaugeOf = (ids) => ids.map((id) => JSON.stringify({ session_id: id, map: `gauge-${id.slice(0, 8)}`, kind: 'session', current: true, source: 'statusline', percent: null, input_tokens: null, busy: 'idle claude-hook', age_s: 5 })).join('\n') + '\n';
+  return { tree, write, pane, gaugeOf };
+}
+
+test('context-gauge: a live Claude pane that runs under another config folder (~/.claude-personal) is read from that folder\'s transcript', async () => {
+  const { tree, write, pane, gaugeOf } = twoConfigFolders();
+  const primary = '77777777-aaaa-4bbb-8ccc-000000000001';
+  const personal = '88888888-aaaa-4bbb-8ccc-000000000002';
+  const org2 = '99999999-aaaa-4bbb-8ccc-000000000003';
+  write('.claude', primary, 200000);
+  write('.claude-personal', personal, 410000);
+  write('.claude-org2', org2, 650000, '-other-proj');
+  // a tool's own ~/.claude-mem folder and a file with a log's name are not Claude config folders: nothing in them is read
+  tree.write('.claude-mem/stray/aaaaaaaa-aaaa-4bbb-8ccc-000000000009.jsonl', 'not a log\n');
+  const panes = [pane(primary, 'w1:p1', 'primary-pane'), pane(personal, 'w1:p2', 'personal-pane'), pane(org2, 'w1:p3', 'org2-pane'), pane('aaaaaaaa-aaaa-4bbb-8ccc-000000000009', 'w1:p4', 'mem-pane')];
+  const fake = fakeRunner({ panes, handle: (file) => (file === 'bash' ? { code: 0, stdout: gaugeOf([primary, personal, org2]), stderr: '', timedOut: false, truncated: false } : undefined) });
+  // the organizer itself runs under no CLAUDE_CONFIG_DIR: the folder of each pane is found, not told
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    assert.equal(response.status, 200);
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.map, row]));
+    assert.equal(rows['primary-pane'].percent, 20, 'a session under ~/.claude is still read');
+    assert.equal(rows['personal-pane'].percent, 41, 'a session under ~/.claude-personal is read against the assumed 1M window');
+    assert.equal(rows['personal-pane'].tokens, 410000);
+    assert.equal(rows['personal-pane'].estimated, true);
+    assert.equal(rows['personal-pane'].pane_id, 'w1:p2');
+    assert.equal(rows['org2-pane'].percent, 65, 'any other ~/.claude* folder with projects/ counts, whatever its name');
+    assert.equal(rows['mem-pane'], undefined, 'a folder that is not a Claude config folder is not read');
+    assert.equal(response.raw.includes(tree.root), false, 'no folder leaves the server');
+    assert.equal(response.raw.includes(personal), false, 'no full session id leaves the server');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('context-gauge: CLAUDE_CONFIG_DIR still names a folder outside the home folder, and the same project in two folders never mixes sessions', async () => {
+  const { tree, write, pane, gaugeOf } = twoConfigFolders();
+  const a = 'bbbbbbbb-aaaa-4bbb-8ccc-000000000001';
+  const b = 'cccccccc-aaaa-4bbb-8ccc-000000000002';
+  // the same project folder name in both config folders, a different session in each
+  write('.claude', a, 300000);
+  write('.claude-personal', b, 700000);
+  const outside = require('./helpers').tempTree('organizer-outside-config-');
+  const c = 'dddddddd-aaaa-4bbb-8ccc-000000000003';
+  outside.write(`projects/-proj/${c}.jsonl`, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { model: 'claude-x', usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 99000 } } }) + '\n');
+  const panes = [pane(a, 'w1:p1', 'pane-a'), pane(b, 'w1:p2', 'pane-b'), pane(c, 'w1:p3', 'pane-c')];
+  const fake = fakeRunner({ panes, handle: (file) => (file === 'bash' ? { code: 0, stdout: gaugeOf([a, b, c]), stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: { CLAUDE_CONFIG_DIR: outside.root } });
+  try {
+    const { post } = await client(server);
+    const response = await post('context-gauge');
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.map, row]));
+    assert.equal(rows['pane-a'].percent, 30, 'the session id picks the log, not the project folder');
+    assert.equal(rows['pane-b'].percent, 70);
+    assert.equal(rows['pane-c'].percent, 10, 'the organizer\'s own CLAUDE_CONFIG_DIR is read, as before');
+  } finally { await server.close(); tree.cleanup(); outside.cleanup(); }
+});
+
+test('context-gauge: a session whose log exists in two config folders is read from the newer copy, the one a running session writes', async () => {
+  const { tree, write, pane, gaugeOf } = twoConfigFolders();
+  const id = 'eeeeeeee-aaaa-4bbb-8ccc-000000000001';
+  write('.claude', id, 250000);
+  write('.claude-personal', id, 820000);
+  const old = new Date(Date.now() - 6 * 3600 * 1000);
+  fs.utimesSync(path.join(tree.root, '.claude/projects/-proj', `${id}.jsonl`), old, old);
+  const fake = fakeRunner({ panes: [pane(id, 'w1:p1', 'shared-id')], handle: (file) => (file === 'bash' ? { code: 0, stdout: gaugeOf([id]), stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    let response = await post('context-gauge');
+    assert.equal(response.json.data.rows.find((row) => row.map === 'shared-id').percent, 82, 'the older copy in ~/.claude does not shadow the live one');
+    // the other way round: the primary copy is the one written last
+    const now = new Date();
+    fs.utimesSync(path.join(tree.root, '.claude/projects/-proj', `${id}.jsonl`), now, now);
+    fs.utimesSync(path.join(tree.root, '.claude-personal/projects/-proj', `${id}.jsonl`), old, old);
+    response = await post('context-gauge');
+    assert.equal(response.json.data.rows.find((row) => row.map === 'shared-id').percent, 25);
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('context-gauge: a config folder set up while the server runs is found by the next look, and a pane in none of them keeps the gauge row', async () => {
+  const { tree, write, pane, gaugeOf } = twoConfigFolders();
+  const id = 'ffffffff-aaaa-4bbb-8ccc-000000000001';
+  const fake = fakeRunner({ panes: [pane(id, 'w1:p1', 'late-account')], handle: (file) => (file === 'bash' ? { code: 0, stdout: gaugeOf([id]), stderr: '', timedOut: false, truncated: false } : undefined) });
+  const server = await startServer({ runner: fake.runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    let row = (await post('context-gauge')).json.data.rows.find((item) => item.map === 'late-account' || item.map === `gauge-${id.slice(0, 8)}`);
+    assert.equal(row.percent, null, 'no config folder has the log yet: the gauge row stays with no percent');
+    write('.claude-work', id, 500000);
+    row = (await post('context-gauge')).json.data.rows.find((item) => item.map === 'late-account');
+    assert.equal(row.percent, 50);
+  } finally { await server.close(); tree.cleanup(); }
+});
+
+test('archive-context: reads an archived session\'s context from another config folder too', async () => {
+  const { tree, write } = twoConfigFolders();
+  write('.claude', 'aaaaaaaa-1111-4bbb-8ccc-000000000001', 100000);
+  write('.claude-personal', 'bbbbbbbb-1111-4bbb-8ccc-000000000002', 600000);
+  write('.claude-personal', 'cccccccc-1111-4bbb-8ccc-000000000003', 300000, '-other-proj');
+  const server = await startServer({ runner: fakeRunner({}).runner, homeDir: tree.root, env: {} });
+  try {
+    const { post } = await client(server);
+    const response = await post('archive-context', { prefixes: ['aaaaaaaa', 'bbbbbbbb', 'cccccccc', 'dddddddd'] });
+    const rows = Object.fromEntries(response.json.data.rows.map((row) => [row.id, row]));
+    assert.deepEqual(Object.keys(rows).sort(), ['aaaaaaaa', 'bbbbbbbb', 'cccccccc']);
+    assert.equal(rows.bbbbbbbb.percent, 60);
+    assert.equal(rows.cccccccc.percent, 30);
+    assert.equal(response.raw.includes(tree.root), false, 'no path leaves the server');
+  } finally { await server.close(); tree.cleanup(); }
+});
+
 test('context-gauge: a failing or unconfigured gauge is an error, not an empty list', async () => {
   const failing = fakeRunner({ handle: (file) => (file === 'bash' ? { code: 1, stdout: '', stderr: '/secret/path boom', timedOut: false, truncated: false } : undefined) });
   const server = await startServer({ runner: failing.runner });

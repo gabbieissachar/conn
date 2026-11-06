@@ -15,6 +15,7 @@ const path = require('path');
 const parse = require('./parse');
 const { readClearMarks } = require('./handoff-runs');
 const { scrub, findLeaks } = require('./text');
+const { otherClaudeHomes } = require('../transcript-reader/claude-homes');
 
 class AdapterError extends Error {
   constructor(message, status = 400, code = 'error') {
@@ -108,7 +109,7 @@ function defaultRunner(file, args, { env, timeoutMs = 60000, maxBytes = 2 * 1024
   });
 }
 
-function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr', fmHome, gaugeScript, now = () => new Date() } = {}) {
+function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, pythonBin = 'python3', herdrBin = 'herdr', fmHome, gaugeScript, now = () => new Date(), homeDir = os.homedir() } = {}) {
   if (!toolRoot) throw new Error('adapter needs the Herdr tool root');
   const registryScript = path.join(toolRoot, 'agent-session-registry.py');
   const storeCheckScript = path.join(__dirname, 'store_check.py');
@@ -909,18 +910,32 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   // session has the 1M window, so a count with no statusline percent is read against it and marked estimated.
   const assumedPercent = (tokens) => Math.round((tokens * 1000) / LARGE_WINDOW) / 10;
 
+  // The Claude config folders a pane may run under: the organizer's own CLAUDE_CONFIG_DIR, ~/.claude, and every other one on
+  // this machine (a second account such as ~/.claude-personal: the transcript reader's otherClaudeHomes, so both look in the same
+  // places). Herdr names a pane's session id but not the folder its log is in, and the next look finds an account set up later.
+  function claudeRoots() {
+    return [...new Set([env.CLAUDE_CONFIG_DIR, path.join(homeDir, '.claude'), ...otherClaudeHomes({ homeDir, env })].filter(Boolean).map((root) => path.resolve(root)))];
+  }
+
+  // The newest of several logs with the same name, the one a running session keeps writing; the first folder wins a tie.
+  const newestLog = (found) => found.reduce((best, item) => (!best || item.mtimeMs > best.mtimeMs ? item : best), null);
+
   async function claudeTranscript(sessionId) {
     if (!SESSION_ID_RE.test(sessionId)) return null;
-    const roots = [...new Set([env.CLAUDE_CONFIG_DIR, path.join(os.homedir(), '.claude')].filter(Boolean))];
-    for (const root of roots) {
+    const found = [];
+    for (const root of claudeRoots()) {
       let dirs;
       try { dirs = await fsp.readdir(path.join(root, 'projects')); } catch { continue; }
       for (const dir of dirs) {
         const file = path.join(root, 'projects', dir, `${sessionId}.jsonl`);
-        try { if ((await fsp.stat(file)).isFile()) return file; } catch { /* not in this project folder */ }
+        try {
+          const info = await fsp.stat(file);
+          if (info.isFile()) found.push({ file, mtimeMs: info.mtimeMs });
+        } catch { /* not in this project folder */ }
       }
     }
-    return null;
+    const newest = newestLog(found);
+    return newest ? newest.file : null;
   }
 
   // Input-side tokens of the newest main-thread usage line, read from the end of the file in growing steps. A
@@ -986,9 +1001,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
   async function archiveContext(prefixes = []) {
     const wanted = [...new Set((Array.isArray(prefixes) ? prefixes : []).filter((item) => typeof item === 'string' && ARCHIVE_PREFIX_RE.test(item)))].slice(0, 64);
     if (!wanted.length) return { rows: [] };
-    const files = new Map();
-    const roots = [...new Set([env.CLAUDE_CONFIG_DIR, path.join(os.homedir(), '.claude')].filter(Boolean))];
-    for (const root of roots) {
+    const found = new Map();
+    for (const root of claudeRoots()) {
       let dirs;
       try { dirs = await fsp.readdir(path.join(root, 'projects')); } catch { continue; }
       for (const dir of dirs) {
@@ -997,12 +1011,18 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         for (const name of names) {
           if (!name.endsWith('.jsonl')) continue;
           const prefix = name.slice(0, 8);
-          if (wanted.includes(prefix) && !files.has(prefix)) files.set(prefix, path.join(root, 'projects', dir, name));
+          if (!wanted.includes(prefix)) continue;
+          const file = path.join(root, 'projects', dir, name);
+          let info;
+          try { info = await fsp.stat(file); } catch { continue; }
+          if (!found.has(prefix)) found.set(prefix, []);
+          found.get(prefix).push({ file, mtimeMs: info.mtimeMs });
         }
       }
     }
     const rows = [];
-    for (const [id, file] of files) {
+    for (const [id, candidates] of found) {
+      const file = newestLog(candidates).file;
       const { tokens, at } = await transcriptUsage(file);
       if (tokens === null) continue;
       rows.push({ id, percent: assumedPercent(tokens), tokens, estimated: true, age_s: at === null ? null : Math.max(0, Math.round((Date.now() - at) / 1000)) });

@@ -104,7 +104,7 @@ function fakeRunner(overrides = {}) {
 
 // Starts a real HTTP server on an ephemeral loopback port wired to the API
 // module, the way serve.sh wires it.
-async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHome = '/fixture/fm-home', gaugeScript = '/fixture/bin/fm-ctx-gauge.sh', now, rollover, switches, preview } = {}) {
+async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHome = '/fixture/fm-home', gaugeScript = '/fixture/bin/fm-ctx-gauge.sh', now, rollover, switches, preview, homeDir } = {}) {
   const fake = runner ? { runner, calls: [] } : fakeRunner();
   const active = runner || fake.runner;
   let api;
@@ -115,7 +115,6 @@ async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHo
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  const adapter = createAdapter({ toolRoot, runner: active, env, fmHome, gaugeScript, ...(now ? { now } : {}) });
   // No test server may register the real ~/fm-homes/pmos or write to the real tool state: the rollover side gets a fixture home,
   // a scratch HOME and a scratch tool root of its own unless the test brings its own.
   const scratch = tempTree('herdr-organizer-api-');
@@ -123,6 +122,8 @@ async function startServer({ runner, toolRoot = '/fixture/tools', env = {}, fmHo
   for (const name of ['state', 'data', 'config']) scratch.mkdir(`fixture-home/${name}`);
   scratch.write('fixture-home/state/.lock-session', 'fixture\n');
   const scratchTools = scratch.abs('tools');
+  // The adapter looks for Claude logs under this home folder (~/.claude and the other ~/.claude* config folders), never the real one.
+  const adapter = createAdapter({ toolRoot, runner: active, env, fmHome, gaugeScript, homeDir: homeDir || scratch.abs('nohome'), ...(now ? { now } : {}) });
   const { createRollover } = require('../rollover');
   const { createSwitches } = require('../rollover-switches');
   const rolloverView = rollover || createRollover({ env: { HERDR_ORGANIZER_ROLLOVER_HOMES: `fixture=${path.join(scratch.real, 'fixture-home')}` }, homedir: scratch.abs('nohome'), ledgerPath: path.join(scratchTools, 'state', 'workspace-organizer', 'rollover-switches', 'ledger.json') });

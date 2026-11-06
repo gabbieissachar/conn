@@ -137,7 +137,7 @@ The record was in `~/.claude-personal/sessions/<pid>.json` (`pid`, `sessionId`, 
 
 **The change.** Every place that read one Claude folder reads the folders of all config folders, `~/.claude`'s first:
 
-- **Which folders.** `otherClaudeHomes` (`api.js`) and `other_claude_homes` (`build_prototype.py`) answer the same: each `~/.claude*` folder that holds a `projects/` or `sessions/` folder, the folder `CLAUDE_CONFIG_DIR` names for the reader's own process, and each folder of `PMOS_READER_CLAUDE_HOMES` (absolute paths, separated like `PATH`).
+- **Which folders.** `otherClaudeHomes` (`claude-homes.js`, re-exported by `api.js`; the Herdr organizer's adapter uses it too) and `other_claude_homes` (`build_prototype.py`) answer the same: each `~/.claude*` folder that holds a `projects/` or `sessions/` folder, the folder `CLAUDE_CONFIG_DIR` names for the reader's own process, and each folder of `PMOS_READER_CLAUDE_HOMES` (absolute paths, separated like `PATH`).
   No account name is hard-coded.
   A plain file (`~/.claude.json`), another tool's folder with neither child (`~/.claude-mem`) and a folder of another name that nothing names are left out.
   Why this rule and not "the folder of the running process's environment": it also finds the logs of sessions whose process has ended, which a reading list keeps, and it needs no `ps eww` of other processes; the environment of a live process (`ps eww -p <pid>` does show `CLAUDE_CONFIG_DIR` on macOS) is the better proof of which folder a pane uses, and stays available as a fallback if an account ever lives outside both `~/.claude*` and `PMOS_READER_CLAUDE_HOMES`.
