@@ -1,0 +1,8 @@
+#!/bin/bash
+# Stand-in for osascript: records the quit request. The ps stand-in decides whether Conn then exits.
+. "$(dirname "$0")/_common.sh"
+if [ "$SC" = running-no-actions ]; then echo "osascript was called" > "$STATE/FORBIDDEN"; echo "stub osascript: not allowed in this scenario" >&2; exit 99; fi
+printf '%s\n' "$@" > "$STATE/osascript.args"
+touch "$STATE/quit-requested"
+[ "$SC" = quit-stuck ] || touch "$STATE/quit"
+exit 0

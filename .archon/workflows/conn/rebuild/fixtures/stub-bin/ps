@@ -1,0 +1,32 @@
+#!/bin/bash
+# Stand-in for ps. Answers only the three questions conn-rebuild.sh asks.
+. "$(dirname "$0")/_common.sh"
+old_alive=0
+case "$SC" in
+  not-running) ;;
+  quit-stuck|two-running) old_alive=1 ;;
+  *) [ -e "$STATE/quit" ] || old_alive=1 ;;
+esac
+case "$*" in
+  "-axww -o pid=,command=")
+    [ "$old_alive" = 1 ] && echo " $OLD_PID $EXE"
+    [ "$SC" = two-running ] && echo " 4244 $EXE"
+    [ -e "$STATE/opened" ] && echo " $NEW_PID $EXE"
+    exit 0 ;;
+  "-ww -p $OLD_PID -o command=")
+    [ "$SC" = running-argv ] && echo "$EXE --dark" || echo "$EXE"
+    exit 0 ;;
+  "eww -p $OLD_PID")
+    echo "  PID   TT  STAT      TIME COMMAND"
+    line="$OLD_PID   ??  S      0:01.00 $EXE"
+    [ "$SC" = running-argv ] && line="$line --dark"
+    case "$SC" in
+      env-hidden) ;;
+      running-args) line="$line SECRET_STUB_TOKEN=do-not-keep HOME=/Users/stub CONN_ARGS=--session fake --write fake PATH=/usr/bin:/bin" ;;
+      *) line="$line SECRET_STUB_TOKEN=do-not-keep HOME=/Users/stub PATH=/usr/bin:/bin USER=stub" ;;
+    esac
+    echo "$line"
+    exit 0 ;;
+esac
+echo "stub ps: unexpected arguments: $*" >&2
+exit 99

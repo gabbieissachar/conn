@@ -1,0 +1,9 @@
+# RED by design: main moves while the build runs, so the built commit is not the one that was checked; the run stops before the gate.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: failed
+  fail-node: build
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "head-moves"

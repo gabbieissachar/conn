@@ -1,0 +1,9 @@
+# RED by design: tracked files have uncommitted changes, so the run stops at the preflight before any build.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: failed
+  fail-node: preflight
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "dirty"

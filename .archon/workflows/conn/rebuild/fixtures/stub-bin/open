@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stand-in for open: records the launch. The ps stand-in then shows the new process.
+. "$(dirname "$0")/_common.sh"
+if [ "$SC" = running-no-actions ]; then echo "open was called" > "$STATE/FORBIDDEN"; echo "stub open: not allowed in this scenario" >&2; exit 99; fi
+printf '%s\n' "$@" > "$STATE/open.args"
+touch "$STATE/opened"
+exit 0

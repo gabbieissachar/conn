@@ -1,0 +1,3 @@
+#!/bin/bash
+# Stand-in for sleep: waits a twentieth of a second, so waits in the scenarios finish quickly.
+exec /bin/sleep 0.05

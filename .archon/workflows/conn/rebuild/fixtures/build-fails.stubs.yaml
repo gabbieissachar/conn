@@ -1,0 +1,9 @@
+# RED by design: the build fails; the node fails with the last lines of the log and the gate is never offered.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: failed
+  fail-node: build
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "build-fails"

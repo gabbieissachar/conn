@@ -1,0 +1,9 @@
+# RED by design: two Conn processes run from this build, so the run stops before the build rather than guessing which to restart.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: failed
+  fail-node: find-running
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "two-running"

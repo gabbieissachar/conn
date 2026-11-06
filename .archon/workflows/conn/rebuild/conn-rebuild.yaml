@@ -1,0 +1,110 @@
+name: conn-rebuild
+description: |
+  Rebuild Conn from local main, ask whether to quit and restart the running app, and on a yes
+  quit it gracefully and relaunch it the same way on the new build.
+
+  Use when: changes to Conn have landed on main in the helm checkout and the running Conn should
+  pick them up. Phrases like "rebuild Conn", "restart Conn on the new build".
+
+  NOT for: building a branch or a worktree copy (it only builds the helm checkout it runs in, on
+  main); force-quitting a Conn that will not exit (it stops and says so); anything outside the
+  helm repository.
+
+  Every node is a bash step. No AI node, so no provider is needed. The restart happens only after
+  a person answers the confirm-restart gate with approve.
+
+  Run in place from the helm checkout: archon workflow run conn-rebuild --folder
+  Design, the gate commands and what each node does: README.md ("Rebuild and restart Conn with
+  Archon").
+
+inputs:
+  quit_timeout_seconds:
+    default: "30"
+    description: >-
+      Seconds to wait for Conn to exit after the quit request before the run stops without
+      force-killing it. Whole number from 1 to 600.
+  stubs_dir:
+    default: ""
+    description: >-
+      Test seam, leave empty. A directory inside this workflow's fixtures/ holding stand-ins for
+      ps, git, osascript, open, sleep and build.sh. Anything outside fixtures/ is refused.
+  stub_scenario:
+    default: ""
+    description: >-
+      Test seam, leave empty. Names the scenario the stand-ins act out (see
+      fixtures/stub-bin/_common.sh).
+
+nodes:
+  # 1. Is this checkout ready to build: on main, no uncommitted changes to tracked files.
+  #    Output: the head commit (short hash and subject).
+  - id: preflight
+    bash: |
+      set -euo pipefail
+      bash .archon/workflows/conn/rebuild/lib/conn-rebuild.sh preflight
+    timeout: 60000
+
+  # 2. Find the running Conn (this checkout's build/Conn.app) and record how it was started:
+  #    its CONN_ARGS and its arguments. Runs before the build on purpose: the build overwrites the
+  #    executable of a running app, so the record is taken first. Output: "not running" or
+  #    "running (pid N), started with ...".
+  - id: find-running
+    depends_on: [preflight]
+    bash: |
+      set -euo pipefail
+      bash .archon/workflows/conn/rebuild/lib/conn-rebuild.sh find-running
+    timeout: 60000
+
+  # 3. Build the app the way the running copy is built: ./build.sh (release, build/Conn.app).
+  #    On failure the last lines of the build log are printed and the run stops.
+  #    Output: the commit that was built.
+  - id: build
+    depends_on: [find-running]
+    bash: |
+      set -euo pipefail
+      bash .archon/workflows/conn/rebuild/lib/conn-rebuild.sh build
+    timeout: 1800000
+
+  # 4. The human gate. Reject ends the run with the new build left in place and Conn untouched.
+  - id: confirm-restart
+    depends_on: [build]
+    wait:
+      attention: |
+        Conn built at $build.output. Quit and restart Conn now?
+
+        Running now: $find-running.output
+        Reject leaves the new build in place and does not touch the running Conn.
+      form: approval
+
+  # The answer as one token (approve or reject), so later nodes compare it as a whole.
+  - id: decision
+    depends_on: [confirm-restart]
+    bash: |
+      set -euo pipefail
+      decision=$confirm-restart.output.decision
+      case "$decision" in
+        approve) echo approve ;;
+        reject)
+          echo "conn-rebuild: rejected. The new build is in place; Conn was not touched." >&2
+          echo reject ;;
+        *) echo "conn-rebuild: unexpected answer to the gate: '$decision'" >&2; exit 1 ;;
+      esac
+    timeout: 60000
+
+  # 5a. Quit Conn gracefully (AppleScript quit), then wait for it to exit. If it is still running
+  #     after the timeout the node fails and nothing is killed. Output: quit or not-running.
+  - id: quit
+    depends_on: [decision]
+    when: "$decision.output == 'approve'"
+    bash: |
+      set -euo pipefail
+      bash .archon/workflows/conn/rebuild/lib/conn-rebuild.sh quit
+    timeout: 720000
+
+  # 5b. Relaunch Conn the way it was started and confirm the new process runs from build/Conn.app.
+  - id: relaunch
+    depends_on: [quit]
+    when: "$quit.output == 'quit' || $quit.output == 'not-running'"
+    bash: |
+      set -euo pipefail
+      bash .archon/workflows/conn/rebuild/lib/conn-rebuild.sh relaunch
+    timeout: 120000

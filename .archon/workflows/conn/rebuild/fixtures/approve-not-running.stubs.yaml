@@ -1,0 +1,9 @@
+# GREEN: Conn is not running; approve skips the quit and just launches it.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: completed
+  reached: [preflight, find-running, build, confirm-restart, decision, quit, relaunch]
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "not-running"

@@ -1,0 +1,9 @@
+# GREEN: Conn runs with CONN_ARGS set; approve quits and relaunches it (the unit tests check the launch carries the same CONN_ARGS).
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: completed
+  reached: [preflight, find-running, build, confirm-restart, decision, quit, relaunch]
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "running-args"

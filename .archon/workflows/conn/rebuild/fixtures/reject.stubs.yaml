@@ -1,0 +1,9 @@
+# GREEN: the answer is reject. The new build stays in place; the stand-in osascript and open fail the run if either is called, so quit and relaunch must stay skipped.
+confirm-restart: '{"decision":"reject","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: completed
+  reached: [preflight, find-running, build, confirm-restart, decision]
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "running-no-actions"

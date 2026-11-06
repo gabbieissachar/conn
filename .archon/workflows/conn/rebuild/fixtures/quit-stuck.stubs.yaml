@@ -1,0 +1,10 @@
+# RED by design: the quit request is accepted but Conn does not exit within the timeout. The node fails and nothing is force-killed; relaunch never runs.
+confirm-restart: '{"decision":"approve","text":"fixture answer"}'
+exec-code: true
+fixture:
+  expect: failed
+  fail-node: quit
+  inputs:
+    stubs_dir: ".archon/workflows/conn/rebuild/fixtures/stub-bin"
+    stub_scenario: "quit-stuck"
+    quit_timeout_seconds: "2"

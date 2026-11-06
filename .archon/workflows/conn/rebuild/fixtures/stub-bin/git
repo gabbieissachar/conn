@@ -1,0 +1,13 @@
+#!/bin/bash
+# Stand-in for git: the preflight and build questions are answered from the scenario, anything else goes to real git.
+. "$(dirname "$0")/_common.sh"
+case "$*" in
+  "rev-parse --abbrev-ref HEAD") [ "$SC" = wrong-branch ] && echo "feature/x" || echo "main" ;;
+  "status --porcelain --untracked-files=no") [ "$SC" = dirty ] && echo " M README.md" || true ;;
+  "rev-parse --short HEAD")
+    n=0; [ -f "$STATE/head-calls" ] && n="$(cat "$STATE/head-calls")"
+    echo $((n + 1)) > "$STATE/head-calls"
+    if [ "$SC" = head-moves ] && [ "$n" -ge 2 ]; then echo "def5678"; else echo "abc1234"; fi ;;
+  "log -1 --format=%s") echo "Stub commit subject" ;;
+  *) exec /usr/bin/git "$@" ;;
+esac

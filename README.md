@@ -60,6 +60,53 @@ More options are listed at the top of `run.sh`. Keys: Cmd+K quick switcher, Cmd+
 - *Not part of this slice.* Control mode, native live scrollback, Herdr's bottom tab row and the `mobile_width_threshold` setting. In the lab Herdr switched to its mobile layout below 64 columns whatever that threshold was, so a narrow client pane draws Herdr's phone layout.
 - *How it is checked.* Unit tests cover the config path rules, the merge into your config and the launch environment (`Tests/ConnCoreTests/HerdrClientConfigTests.swift`, `Tests/ConnTerminalTests/HerdrClientModeTests.swift`), and the sidebar control: reading the key map from a config, the plan from a sidebar item to key bytes (1 to 9, past 9, tabs, another prefix, order by number, unknown targets) the runner that types a plan and checks the focus pointer, and when the sidebar follows the client (`Tests/ConnCoreTests/HerdrClientNavigationTests.swift`). The pty tests run the real controller against a stub `herdr` script: the client starts with the generated config, typed keys reach it, the keys the sidebar types reach it byte for byte without counting as the person's own typing, it exits, Stop ends it. `HerdrClientLabTests` is the end-to-end check against a real Herdr session: it attaches one client with the sidebar hidden and one with it showing, switches workspace by keys typed into the first client, and checks the second did not move, then stops them. It never runs unless `CONN_HERDR_LAB_SESSION=fm-lab-...` names a throwaway session holding two workspaces, "Lab Alpha" and "Lab Beta", with a pane each that prints `ALPHA tick N` / `BETA tick N`, and it refuses any other name: `CONN_HERDR_LAB_SESSION=fm-lab-NAME ./test.sh --filter HerdrClientLabTests`. `HerdrClientSidebarLabTests` is the end-to-end check of the sidebar control: two attached clients (one hidden-sidebar client with a non-default prefix, one normal), then a sidebar-driven switch of workspace (2, the last, 1) and of tab (2, the last, 1 of the busiest workspace) must move the first client and leave the second where it was, and a key map with the wrong prefix must be reported as not landed. It never runs unless `CONN_HERDR_LAB_NAV_SESSION=fm-lab-...` names a throwaway session holding at least 11 workspaces labelled `NAV01`, `NAV02`, ..., one of them with at least 11 tabs, every pane printing `<label>-T<tab number> tick N`: `CONN_HERDR_LAB_NAV_SESSION=fm-lab-NAME ./test.sh --filter HerdrClientSidebarLabTests`. Both lab checks run headless; no window is opened. Still for a person at a real display: a click on a space and on an agent in the sidebar moves the client in the window and the highlight follows (the app itself was not launched), a switch made inside the client moves the highlight, the notice after a failed switch, and the hidden-sidebar client's look in the window (tab row, borders, colours), mouse and trackpad in the pane, and the Attach, Stop and checkbox controls.
 
+## Rebuild and restart Conn with Archon
+
+The Archon workflow `conn-rebuild` (`.archon/workflows/conn/rebuild/`) rebuilds Conn from `main`, asks whether to quit and restart the running app, and on a yes quits it and relaunches it the same way on the new build. Every node is a bash step, so it needs no AI provider. Run it after Conn changes land on `main`:
+
+```
+archon workflow run conn-rebuild --folder    # from the checkout that holds build/Conn.app
+```
+
+`--folder` is the route for this checkout: it has no git remote and is not a registered Archon repository, so `--folder` registers the directory as a folder project and runs in place (`--no-worktree` is meant for a registered repository and was not tried). The run builds, then pauses at the gate and prints the run id.
+
+**Answering the gate.** The question reads "Conn built at COMMIT. Quit and restart Conn now?" with a line saying how Conn is running now.
+
+```
+archon workflow status                         # the paused run and its id
+archon workflow respond <run-id> approve       # quit Conn and relaunch it on the new build
+archon workflow respond <run-id> reject        # leave the new build in place, touch nothing
+archon workflow wake                           # only if the run stays paused after an answer (the Adjoe workflow on this install needed it; not yet seen for this one)
+archon workflow resume <run-id>                # after a failed run: continues from the failed node
+```
+
+| Node | What it does |
+|---|---|
+| `preflight` | Stops unless the checkout is on `main` with no uncommitted change to a tracked file (untracked and ignored files such as `build/` do not count). Prints the head commit. |
+| `find-running` | Finds the Conn running from this checkout's `build/Conn.app/Contents/MacOS/Conn` and records how it was started: its `CONN_ARGS` and its arguments. Says "not running" if it is not. It runs before the build because the build overwrites the executable of a running app. It stops if more than one Conn runs from this build. |
+| `build` | Runs `./build.sh` (release), the way the running copy is built. On failure it prints the last 40 lines of the build log and stops. It also stops if `main` moved during the build, so the commit in the question is the commit that was built. |
+| `confirm-restart` | The gate: approve or reject. |
+| `decision` | Turns the answer into one word for the nodes after it. |
+| `quit` (approve only) | Asks Conn to quit with AppleScript (`tell application "<path>/build/Conn.app" to quit`), then waits up to `quit_timeout_seconds` (default 30) for the process to exit. If Conn is still running it stops and says so. It never sends a signal or force-kills. If Conn is not running it does nothing. |
+| `relaunch` (after `quit`) | Starts Conn with `open -n build/Conn.app`, with the same `CONN_ARGS` (`--env`) and arguments (`--args`) that `find-running` recorded, then waits for exactly one Conn process at that path, checks it is still alive two seconds later, and prints its pid. The build finished before the launch and the process runs from that path, so it is the new build. `open` makes the new Conn a child of the system, not of the workflow, so it outlives the run. |
+
+Things to know:
+
+- **Only `CONN_ARGS` is read** from the running Conn's environment (`ps eww`), never any other variable. Its value ends where the next `NAME=value` starts, so a bare `word=value` inside `CONN_ARGS` would cut it short (`--option=value` is fine). If the environment cannot be read, the gate says so and Conn is relaunched with no arguments. A Conn started with no `CONN_ARGS` is relaunched with none.
+- **The first quit can raise a macOS prompt** asking whether the program running Archon may control Conn (Automation). Allow it once. The AppleScript only asks the app to quit; it is not synthesised input (see the test notes below), and it runs only after a person approves the gate.
+- **A quit that Conn does not finish** (an editor sheet asking about unsaved changes, for example) makes the `quit` node fail after the timeout. Answer the dialog or quit Conn by hand, then run `archon workflow resume <run-id>`: the `quit` step finds Conn gone and the relaunch goes on.
+- **A rejected run is complete.** The new build stays in `build/`; the next launch of Conn, by hand or by another run, uses it.
+
+Tests (no app is started, quit or opened; every external command is a stand-in):
+
+```
+archon validate workflows conn-rebuild
+archon workflow test conn-rebuild                                  # 10 fixtures, run from a scratch copy of the committed HEAD
+bash .archon/workflows/conn/rebuild/tests/test-conn-rebuild.sh     # the step script against the stand-ins, plus static checks on the workflow
+```
+
+The stand-ins (`ps`, `git`, `osascript`, `open`, `sleep`, `build.sh`) sit in `fixtures/stub-bin/` and are used only when the `stubs_dir` input names that folder; the step script refuses any other folder.
+
 ## Test notes (read before launching the app from a script or an agent session)
 
 A test launch must never take the keyboard or the pointer from the person at the computer. The rules:
