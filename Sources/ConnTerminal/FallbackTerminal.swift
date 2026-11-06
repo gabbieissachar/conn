@@ -37,12 +37,17 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
 
     /// The environment the client runs in: the app's own, with the terminal type set, the session selector removed (the
     /// explicit argument is the only one) and, when `clientConfig` is a checked path, Herdr pointed at that config file.
+    static let paneContextKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH"]
+
     public static func environment(base: [String: String], endpoint: HerdrEndpoint, clientConfig: URL?) -> [String: String] {
         var env = base
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["CONN_HERDR_SOCKET_DIR"] = endpoint.socketDirectory
         env.removeValue(forKey: "HERDR_SESSION")   // the explicit session argument is the only selector
+        // An app started from inside a Herdr pane inherits that pane's markers, and Herdr then refuses to run ("nested herdr is
+        // disabled by default") and would aim at that pane's socket. The client is a top-level client of the named session.
+        for key in paneContextKeys { env.removeValue(forKey: key) }
         if let clientConfig = clientConfig { env["HERDR_CONFIG_PATH"] = clientConfig.path }
         return env
     }

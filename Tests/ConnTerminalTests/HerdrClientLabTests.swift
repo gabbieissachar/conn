@@ -48,9 +48,9 @@ extension SwiftTermMainActorTests {
         try fm.createDirectory(atPath: temp, withIntermediateDirectories: true)
 
         // A stand-in for the person's own Herdr config, so the check does not depend on this machine's: it has a prefix key
-        // other than Herdr's default, and the sidebar showing.
+        // other than Herdr's default, a workspace picker key, the first-run onboarding already done and the sidebar showing.
         let source = URL(fileURLWithPath: temp).appendingPathComponent("source.toml")
-        try "[keys]\nprefix = \"ctrl+a\"\n\n[ui]\nsidebar_start_collapsed = false\n".write(to: source, atomically: true, encoding: .utf8)
+        try "onboarding = false\n\n[keys]\nprefix = \"ctrl+a\"\nworkspace_picker = \"prefix+w\"\n\n[ui]\nsidebar_start_collapsed = false\n".write(to: source, atomically: true, encoding: .utf8)
         let hiddenConfig = try #require(try HerdrClientConfig.resolve(hideSidebar: true, custom: nil, home: home, temporaryDirectory: temp, sourceConfig: source))
         let shownConfig = try HerdrClientConfig.validate(source.path, home: home, temporaryDirectory: temp)
 

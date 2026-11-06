@@ -31,6 +31,14 @@ import ConnCore
         #expect(base["HERDR_CONFIG_PATH"] == nil)
     }
 
+    @Test func anAppStartedInsideAHerdrPaneStillRunsATopLevelClient() {
+        let inPane = base.merging(["HERDR_ENV": "1", "HERDR_PANE_ID": "w1:p1", "HERDR_TAB_ID": "w1:t1", "HERDR_WORKSPACE_ID": "w1",
+                                   "HERDR_SOCKET_PATH": "/tmp/other/herdr.sock", "HERDR_BIN_PATH": "/bin/echo"]) { $1 }
+        let env = FallbackTerminalController.environment(base: inPane, endpoint: endpoint, clientConfig: nil)
+        for key in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH"] { #expect(env[key] == nil, "\(key)") }
+        #expect(env["HERDR_BIN_PATH"] == "/bin/echo")
+    }
+
     @Test func withoutAClientConfigTheClientKeepsWhateverConfigPathTheAppWasStartedWith() {
         let plain = FallbackTerminalController.environment(base: base, endpoint: endpoint, clientConfig: nil)
         #expect(plain["HERDR_CONFIG_PATH"] == nil)
