@@ -68,8 +68,13 @@ enum WatchCheck {
         report("the columns are readable widths side by side", widths.count == boxes.count && widths.allSatisfy { $0 >= WatchArea.minColumnWidth - 1 },
                "widths=\(widths.map { Int($0) }) window=\(Int(win.contentView?.frame.width ?? 0))")
         let titles = await withTaskGroupTitles(boxes, fixture: fixture)
-        report("each column shows its own conversation (not blank, not the same twice)", titles.allSatisfy { !$0.isEmpty } && (!fixture || Set(titles).count == titles.count), "titles=\(titles)")
+        // The fixture page names a conversation by its session number modulo its 14 invented titles, so two sessions can share a title:
+        // "not the same twice" is judged on the address each column was opened on, which the title only mirrors. With the real reader a
+        // column whose session is not on the reader's list shows the reader's fallback conversation, so only fixtures judge it.
+        let addresses = boxes.compactMap { $0?.webView.url?.fragment }
+        report("each column shows its own conversation (not blank, not the same twice)", titles.allSatisfy { !$0.isEmpty } && addresses.count == boxes.count && (!fixture || Set(addresses).count == addresses.count), "titles=\(titles) addresses=\(addresses.map { String($0.suffix(12)) })")
         await shot("watch-\(model.watch.count)-columns.png")
+        print("ui-check: info Watch columns: sessions=\(model.watch.layout.sessions) selected=\(model.selectedAgent?.sessionID ?? "-") candidates=\(model.agentOrder.prefix(8).map { "\($0.id)=\($0.sessionID ?? "-")" })")
         print("ui-check: info Watch memory, \(model.watch.count) columns: web content \(boxes.compactMap { $0?.pid }.compactMap { ProcessUsage.read($0)?.footprint }.map(mb)), app \(mb(ProcessUsage.read(getpid())?.footprint ?? 0))")
 
         // 2. The number of columns: 2, 4, 3; remembered; more columns fill from the sidebar's order.
@@ -103,7 +108,7 @@ enum WatchCheck {
         await wait(0.8)
         model.setWatchCount(savedCount)
         model.mode = savedMode; model.showWeb = savedWeb; model.webTab = savedTab
-        model.watch.openAskTurnID = { _ in nil }
+        model.wireWatchAsks()      // back to the app's own switch (the agent rows' open asks)
     }
 
     /// The titles the lite page shows. The fixture page has an element `#title`; the real page's title is read from the document.
@@ -211,12 +216,60 @@ enum WatchCheck {
 
     // MARK: the real reader's lite page, read only
 
+    /// The agent rows' open asks while Watch is on (real reader): the full Reader page is unloaded, so the asks must come through a
+    /// column's lite page, and a click on the top ask row must put that conversation in a column on the asking reply.
+    static func liveAsks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
+        let store = model.openAsks
+        model.wireWatchAsks()      // the checks above ran with no ask turn (every column at its newest turn); this one runs on the app's own switch
+        let unloaded = model.web.readerBox == nil
+        let feed = await model.web.fetchOpenAsks()
+        let pages = model.web.extraReaderPages()?.count ?? -1
+        report("Watch on, full Reader page unloaded: the open asks are still answered, through a column's lite page", unloaded && model.web.readerBox == nil && feed != nil && pages > 0,
+               "readerBox=\(model.web.readerBox == nil ? "unloaded" : "loaded") liteViews=\(pages) feedAsks=\(feed?.asks.count ?? -1)")
+        let before = store.polls
+        store.refresh()
+        var n = 0
+        while store.polls == before && n < 20 { await wait(0.25); n += 1 }
+        await wait(2)
+        let visible = store.visible()
+        print("ui-check: info Watch asks from the lite pages: polls=\(store.polls) answered=\(store.lastAnswerGood.map(String.init) ?? "none") storeAsks=\(store.asks.byPane.count) visibleUnder24h=\(visible.count) readerBox=\(model.web.readerBox == nil ? "unloaded" : "loaded")")
+        report("the store is answered while Watch is on, and the full Reader page stays unloaded", store.lastAnswerGood == true && model.web.readerBox == nil, "polls=\(store.polls)")
+        let order = model.agentOrder.map(\.id)
+        guard let top = order.compactMap({ id in visible[id].flatMap { a in model.snapshot.agent(id).map { ($0, a) } } }).first else { print("ui-check: info no live agent has an open ask under 24 hours; the Watch click was not tried"); return }
+        let (agent, ask) = top
+        let openBefore = model.watch.layout.slots.compactMap { $0 }.first { $0.session == ask.session }.flatMap { model.watch.boxes[$0.id] }
+        let inPlaceBefore = openBefore?.pinsInPlace ?? 0, loadsBefore = openBefore?.pinsLoaded ?? 0
+        model.sidebarOpenAgent(agent)
+        let column = model.watch.layout.slots.compactMap { $0 }.first { $0.session == ask.session }
+        let box = column.flatMap { model.watch.boxes[$0.id] }
+        // The outline fades after about 3 seconds: look for it often, and keep the first sighting.
+        var msg = ""
+        var looks = 0
+        var timeline: [String] = []
+        while msg.isEmpty && looks < 24, let b = box {
+            await wait(0.25); looks += 1
+            msg = await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''")
+            timeline.append(await js(b, "location.hash.slice(0,24) + '/' + Math.round(scrollY) + '/' + document.readyState"))
+        }
+        print("ui-check: info Watch click timeline: \(timeline.enumerated().filter { $0.offset % 3 == 0 }.map(\.element))")
+        let want = ask.message ?? ""
+        var probe = "-"
+        if let b = box, !want.isEmpty { probe = await js(b, "(() => { const els = [...document.querySelectorAll('[data-msg]')]; return 'turns=' + els.length + ' hasAsk=' + els.some(e => (e.dataset.msg || '').startsWith('\(want.prefix(12))')) + ' linked=' + document.querySelectorAll('.is-linked').length + ' notFound=' + document.body.innerText.includes('was not found in this conversation') + ' hash=' + location.hash.slice(0, 40) + ' askNodes=' + els.filter(e => (e.dataset.msg || '').startsWith('\(want.prefix(12))')).map(e => e.dataset.msg.slice(-8) + ':' + e.className + ':' + Math.round(e.getBoundingClientRect().top)).join('|') + ' scrollY=' + Math.round(scrollY) })()") }
+        var follows = "-"
+        if let b = box { follows = await js(b, "String(window.__connFollowsAddress)") }
+        print("ui-check: info Watch click path: alreadyOpen=\(openBefore != nil) inPlace \(inPlaceBefore)->\(box?.pinsInPlace ?? -1) loads \(loadsBefore)->\(box?.pinsLoaded ?? -1) follows=\(follows)")
+        print("ui-check: info Watch click probe: \(probe) phase=\(box.map { String(describing: $0.phase) } ?? "-")")
+        print("ui-check: info Watch click: askAge=\(ask.at.map { Int(store.now.timeIntervalSince($0)) } ?? -1)s pane=\(agent.id) column=\(column.map { String($0.session.prefix(8)) } ?? "none") outlined=\(msg.prefix(12)) wanted=\(want.prefix(12)) reader=\(model.web.readerBox == nil ? "unloaded" : "loaded")")
+        report("a click on the top ask row in Watch puts that conversation in a column on the asking reply", column != nil && !msg.isEmpty && (want.isEmpty || msg.hasPrefix(want)) && model.web.readerBox == nil, "outlined=\(msg.prefix(12)) wanted=\(want.prefix(12))")
+    }
+
     static func liveChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
         let boxes = model.watch.layout.slots.compactMap { $0.flatMap { model.watch.boxes[$0.id] } }
         // The lite page is a normal reader page: it draws a conversation, or says why it cannot.
         var states: [String] = []
         for b in boxes { states.append(await js(b, "(document.getElementById('main')||document.body).children.length > 0 ? 'drawn' : 'empty'")) }
         report("each column's lite page drew something", states.allSatisfy { $0 == "drawn" }, "states=\(states)")
+        await liveAsks(model: model, report: report, wait: wait, settle: settle, js: js)
         // The address with a turn id: when the reader's feed names an open ask, a column opened on it scrolls to and outlines that reply.
         let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/pmos/setup/transcript-reader/out/glance.json")
         guard let data = try? Data(contentsOf: glance), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -231,6 +284,6 @@ enum WatchCheck {
         await wait(2)
         let msg = await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''")
         report("the lite page, opened with &m=<turn id> from the reader's feed, scrolls to and outlines that reply", !msg.isEmpty, "outlined turn=\(msg.prefix(12)) wanted=\(uid.prefix(12)) placement=\(String(describing: placement))")
-        model.watch.openAskTurnID = { _ in nil }
+        model.wireWatchAsks()
     }
 }

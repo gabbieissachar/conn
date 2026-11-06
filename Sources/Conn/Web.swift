@@ -378,6 +378,26 @@ final class WebHub {
 
     var allBoxes: [WebBox] { [readerBox, organizerBox].compactMap { $0 } }
 
+    /// The web views of the lite pages (a Watch view's columns) that show pages of the reader's server while the full Reader page is
+    /// unloaded. nil: Watch is off, so Conn may load the full Reader page itself to ask. A list, even an empty one: Watch is on, and
+    /// Conn asks these views and never loads the full page just to ask.
+    var extraReaderPages: () -> [WKWebView]? = { nil }
+
+    /// The reader's open asks, asked from whichever web view of the reader's server is loaded: the full Reader page first, then
+    /// `extraReaderPages`. The first good answer wins. With none loaded and Watch off, the full page is loaded in the background
+    /// (asked again on the next beat): a live Conn has to hold a reader page to hold its token. nil: no asks.
+    @MainActor
+    func fetchOpenAsks() async -> OpenAsksFeed? {
+        let base = baseURL(.reader)
+        let extra = extraReaderPages()
+        var views: [WKWebView] = []
+        if let box = readerBox, box.phase == .ready { views.append(box.webView) }
+        views += extra ?? []
+        for v in views { if let feed = await WebBox.readOpenAsks(from: v, readerBase: base) { return feed } }
+        if extra == nil { box(.reader).loadIfNeeded() }
+        return nil
+    }
+
     /// The reader's lite page, which a Watch column shows one conversation on (reader README, "The lite page"). `CONN_LITE_URL` names
     /// another address; a fixture launch loads an invented page instead.
     var liteBaseURL: URL {

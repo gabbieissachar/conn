@@ -204,6 +204,8 @@ final class AppModel: ObservableObject {
         let res = Bundle.main.resourceURL
         web = WebHub(fixture: config.fixture, resourceDir: res?.appendingPathComponent("fixture"))
         watch = WatchModel(hub: web, defaults: AppModel.defaults)
+        // While Watch is on the full Reader page is unloaded: the asks are read from a column's lite page instead (nil: Watch is off).
+        web.extraReaderPages = { [weak watch = watch] in guard let w = watch, w.active else { return nil }; return w.boxes.values.map(\.webView) }
         let env = ProcessInfo.processInfo.environment
         let fixtureDir = res?.appendingPathComponent("fixture")
         // A fixture launch reads invented stars (never the owner's file) and keeps its order apart from the real one.
@@ -240,6 +242,7 @@ final class AppModel: ObservableObject {
         editor.showExplorer = { [weak self] in if self?.explorerVisible == false { self?.explorerVisible = true } }
         store.start()
         openAsks.start { [weak self] in self.map { $0.windowVisible && $0.attentive } ?? false }
+        wireWatchAsks()
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
         probeCompatibility()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateStats() } }
@@ -466,10 +469,18 @@ final class AppModel: ObservableObject {
     /// scrolls to the reply and flashes it once). The column is shown if it was hidden, and the Reader tab comes to the front.
     func openAsk(_ ask: OpenAsk) {
         pinWork?.cancel()
+        // Watch has no Reader column: choosing the agent already put its conversation in a column, on the asking reply (`watch.openAskTurnID`).
+        if watchOn { return }
         askPane = ask.paneID
         if !showWeb { showWeb = true }
         if webTab != .reader { webTab = .reader }
         web.box(.reader).pin(sessionID: ask.session, message: ask.message)
+    }
+
+    /// A Watch column that opens a conversation with an open ask (a click on its row, or any way of choosing the agent) opens on the
+    /// asking reply: the lite page scrolls to it and outlines it. Folded (older) asks count as none, as on the rows.
+    func wireWatchAsks() {
+        watch.openAskTurnID = { [weak self] session in self?.openAsks.visible().values.first { $0.session == session }?.message }
     }
 
     /// The ask an agent's row shows now (nil: no ask, or an older one still folded away).
@@ -526,13 +537,18 @@ final class AppModel: ObservableObject {
 
     /// The sessions Watch opens on, best first: the selected agent (else Herdr's focused one), then the agents in the sidebar's order (needs you first).
     private func watchCandidates() -> [String] {
-        ((selectedAgent ?? snapshot.agent(snapshot.focusedPaneID))?.sessionID.map { [$0] } ?? []) + snapshot.prioritized.compactMap(\.sessionID)
+        ((selectedAgent ?? snapshot.agent(snapshot.focusedPaneID)).flatMap(watchConversation).map { [$0] } ?? []) + agentOrder.compactMap(watchConversation)
     }
 
-    /// An agent chosen while Watch is on. An agent with no conversation in the reader (Herdr named no session for it) has nothing
-    /// to show in a column.
+    /// The reader conversation an agent shows in a Watch column: the session its open ask names (the reader's own id for the pane's
+    /// conversation, which can be a later session of a /clear chain than the one Herdr names, and is the one the asking reply is in),
+    /// else the session Herdr names for it.
+    private func watchConversation(_ a: Agent) -> String? { ask(for: a)?.session ?? a.sessionID }
+
+    /// An agent chosen while Watch is on. An agent with no conversation in the reader (neither Herdr nor an open ask names a session
+    /// for it) has nothing to show in a column.
     private func watchOpen(_ a: Agent) {
-        guard let sid = a.sessionID else { toast("\(privacy ? "That agent" : a.name) has no conversation in the reader"); return }
+        guard let sid = watchConversation(a) else { toast("\(privacy ? "That agent" : a.name) has no conversation in the reader"); return }
         if watch.open(session: sid) == nil { toast("That conversation cannot be opened in a column") }
     }
 

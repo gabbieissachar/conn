@@ -156,6 +156,8 @@ enum AskRowsCheck {
         let base = model.snapshot.prioritized(asks: visible).map(\.id)
         let fresh = store.asks.byPane.filter { live.contains($0.key) && visible[$0.key] != nil }
         print("ui-check: info open asks from the real reader: answered=\(store.lastAnswerGood.map(String.init) ?? "none") polls=\(store.polls) feedAsks=\(store.asks.byPane.count) forLivePanes=\(store.asks.byPane.keys.filter { live.contains($0) }.count) visibleUnder24h=\(visible.count) agents=\(model.snapshot.agents.count) older=\(store.asks.olderCount(among: model.snapshot.agents, now: store.now))")
+        let sameSession = store.asks.byPane.values.filter { a in model.snapshot.agent(a.paneID)?.sessionID == a.session }.count
+        print("ui-check: info the ask's session is the agent's own session id for \(sameSession) of \(store.asks.byPane.count) asks")
         report("the real reader answers the open-asks route from inside the Reader page", answered, "polls=\(store.polls)")
         report("with the reader's asks the agent order is a permutation of the agents (nothing lost or doubled)", Set(order).count == order.count && Set(order) == live && order == base, "agents=\(order.count)")
         let needs = order.map { visible[$0] != nil || model.snapshot.agent($0)?.state == .blocked }
