@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.editor.restoreSession()
         for f in cfg.openFiles { model.editor.openFromOutside([URL(fileURLWithPath: f)]) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            let list = model.snapshot.prioritized
+            let list = model.agentOrder
             if let i = cfg.select, i < list.count { model.select(list[i].id) }
             if cfg.compare, model.comparePaneID == nil { model.toggleCompare() }
             if cfg.openHistory { DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { model.openHistory() } }

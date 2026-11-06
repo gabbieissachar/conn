@@ -44,6 +44,8 @@ final class AppModel: ObservableObject {
     let watch: WatchModel
     /// The Reader pane's starred sessions (read from the reader's own star list; only their order is Conn's).
     let stars: StarredSessions
+    /// The reader's open asks, shown on the agent rows (read from the reader's open-asks endpoint; see OpenAskStore).
+    let openAsks: OpenAskStore
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind
@@ -210,6 +212,7 @@ final class AppModel: ObservableObject {
         stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile,
                                 store: StarOrderStore(defaults: AppModel.defaults, key: config.fixture ? "conn.readerStarOrder.fixture" : "conn.readerStarOrder"))
         stars.start()
+        openAsks = AppModel.makeOpenAskStore(config: config, env: env, web: web, fixtureDir: fixtureDir, herdrSession: endpoint.session)
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
@@ -236,6 +239,7 @@ final class AppModel: ObservableObject {
         editor.toast = { [weak self] title, detail in self?.toast(title, detail: detail) }
         editor.showExplorer = { [weak self] in if self?.explorerVisible == false { self?.explorerVisible = true } }
         store.start()
+        openAsks.start { [weak self] in self.map { $0.windowVisible && $0.attentive } ?? false }
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
         probeCompatibility()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateStats() } }
@@ -328,6 +332,7 @@ final class AppModel: ObservableObject {
     func appBecameActive() {
         inactiveTimer?.invalidate()
         if !attentive { attentive = true; syncSessions() }
+        openAsks.refresh()
     }
 
     func setWindowVisible(_ v: Bool) {
@@ -373,7 +378,7 @@ final class AppModel: ObservableObject {
         selectedPaneID = paneID
         selectedWorkspaceID = a.workspaceID
         syncSessions()
-        if pin { pinReader() }
+        if pin { askPane = nil; pinReader() }
     }
 
     private func recordVisit(_ paneID: String) {
@@ -404,7 +409,7 @@ final class AppModel: ObservableObject {
             recordVisit(paneID)
             moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
             syncSessions()
-            if pin { pinReader() }
+            if pin { askPane = nil; pinReader() }
         }
     }
 
@@ -416,10 +421,14 @@ final class AppModel: ObservableObject {
         if let a = snapshot.agents(in: id).first(where: { $0.id == selectedPaneID }) ?? snapshot.agents(in: id).first { select(a.id) }
     }
 
-    func selectNth(_ i: Int) { let list = snapshot.prioritized; if i < list.count { select(list[i].id) } }
+    /// The agents in the order the sidebar shows them and Cmd+1...9 follows: those that need you first (prompt waiting, then the
+    /// newest ask), then the rest as `Snapshot.prioritized` orders them. Without asks (the reader is down) it is `prioritized`.
+    var agentOrder: [Agent] { snapshot.prioritized(asks: openAsks.visible()) }
+
+    func selectNth(_ i: Int) { let list = agentOrder; if i < list.count { select(list[i].id) } }
 
     func cycle(_ delta: Int) {
-        if let a = snapshot.agent(after: selectedPaneID, offset: delta) { select(a.id) }
+        if let a = snapshot.agent(after: selectedPaneID, offset: delta, asks: openAsks.visible()) { select(a.id) }
     }
 
     func jumpToWaiting() {
@@ -442,9 +451,40 @@ final class AppModel: ObservableObject {
     func pinReader() {
         pinWork?.cancel()
         guard readerFollows, readerVisible, let a = selectedAgent else { return }
+        // The reader was just opened on this agent's ask: a pin to its newest turn would take it away again.
+        if askPane == a.id { return }
         let w = DispatchWorkItem { [weak self] in self?.web.box(.reader).pin(sessionID: a.sessionID) }
         pinWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+    }
+
+    /// The pane whose open ask the reader was last opened on (a click on its row). While that agent stays selected, the pin that
+    /// follows an agent selection leaves the reader where it is; choosing an agent again (`select` with a pin) lets it follow.
+    private var askPane: String?
+
+    /// A click on an agent row that has an ask: open the reader column on the reply that asks (`#s=<session>&m=<message>`; the reader
+    /// scrolls to the reply and flashes it once). The column is shown if it was hidden, and the Reader tab comes to the front.
+    func openAsk(_ ask: OpenAsk) {
+        pinWork?.cancel()
+        askPane = ask.paneID
+        if !showWeb { showWeb = true }
+        if webTab != .reader { webTab = .reader }
+        web.box(.reader).pin(sessionID: ask.session, message: ask.message)
+    }
+
+    /// The ask an agent's row shows now (nil: no ask, or an older one still folded away).
+    func ask(for agent: Agent) -> OpenAsk? { openAsks.visible()[agent.id] }
+
+    /// Where the asks come from: `CONN_OPEN_ASKS_URL` (an address or a `file:` one), else the fixture's invented list, else the
+    /// reader's own endpoint, asked from inside the Reader web view because the route needs the token that only the reader page
+    /// holds (the page is loaded in the background if the Reader pane was never shown). `herdrSession` is the Herdr session Conn is
+    /// attached to: the reader names the session of each pane, and an ask for another one is not ours.
+    static func makeOpenAskStore(config: AppConfig, env: [String: String], web: WebHub, fixtureDir: URL?, herdrSession: String) -> OpenAskStore {
+        if let u = env["CONN_OPEN_ASKS_URL"], !u.isEmpty, let url = URL(string: u) {
+            return OpenAskStore(url: url, herdrSession: herdrSession, rebaseToNow: config.fixture)
+        }
+        if config.fixture { return OpenAskStore(url: fixtureDir?.appendingPathComponent("open-asks.json"), herdrSession: herdrSession, rebaseToNow: true) }
+        return OpenAskStore(source: { @MainActor [web] in await web.fetchOpenAsks() }, herdrSession: herdrSession)
     }
 
     /// The Reader pane's row of starred sessions: open this conversation in the reader (the pin path an agent selection uses,
@@ -724,9 +764,15 @@ final class AppModel: ObservableObject {
     }
 
     /// A click on an agent in the sidebar: its tab.
+    /// A row with an open ask also opens the reader column on the reply that asks; a row without one does what it always did.
     func sidebarOpenAgent(_ a: Agent) {
-        guard herdrClientDriving else { select(a.id); return }
-        moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
+        let asking = ask(for: a)
+        if herdrClientDriving {
+            moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
+        } else {
+            select(a.id, pin: asking == nil)
+        }
+        if let asking = asking { openAsk(asking) }
     }
 
     /// Type the keys that move the embedded client to `target` and confirm it got there. Only the embedded client moves: the

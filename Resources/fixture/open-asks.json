@@ -1,0 +1,129 @@
+{
+  "status": "ok",
+  "generated_at": "2026-11-06T09:00:00.000000+00:00",
+  "as_of": "2026-11-06T08:59:58.000000+00:00",
+  "asks": [
+    {
+      "pane_id": "w01:p4",
+      "herdr": "other-session",
+      "session": "00000000-0000-4000-8000-000000000099",
+      "message": "turn-9e0099-0099",
+      "lines": [
+        "An ask from another Herdr session that reuses the pane id w01:p4."
+      ],
+      "at": "2026-11-06T08:55:00.000000+00:00",
+      "tags": [],
+      "older": false
+    },
+    {
+      "pane_id": "w01:p2",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000001",
+      "message": "turn-b71d02-0001",
+      "lines": [
+        "- Say if you want the retry count raised from 3 to 5.",
+        "- Otherwise I will leave it as is."
+      ],
+      "at": "2026-11-06T08:48:00.000000+00:00",
+      "tags": [
+        "+2 earlier"
+      ],
+      "older": false
+    },
+    {
+      "pane_id": "w01:p4",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000003",
+      "message": "turn-a3f91c-0003",
+      "lines": [
+        "Which of the two refund rules should the retry job follow when the webhook answers 409?"
+      ],
+      "at": "2026-11-06T08:40:00.000000+00:00",
+      "tags": [
+        "Answer sheet · 4 questions"
+      ],
+      "older": false
+    },
+    {
+      "pane_id": "w99:p9",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000999",
+      "message": "turn-000000-0999",
+      "lines": [
+        "An ask for a pane that no longer exists."
+      ],
+      "at": "2026-11-06T08:00:00.000000+00:00",
+      "tags": [],
+      "older": false
+    },
+    {
+      "pane_id": "w02:p4",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000007",
+      "message": "turn-c04e77-0007",
+      "lines": [
+        "Do you want the icon set cleanup in this pull request or a separate one?",
+        "The duplicates are in two folders.",
+        "A separate one keeps the review small."
+      ],
+      "at": "2026-11-06T06:00:00.000000+00:00",
+      "tags": [],
+      "older": false
+    },
+    {
+      "pane_id": "w05:p3",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000018",
+      "message": null,
+      "lines": [
+        "Pick one: keep the manifest as a single file, or split it per space."
+      ],
+      "at": "2026-11-06T02:00:00.000000+00:00",
+      "tags": [
+        "Answer sheet · 2 questions",
+        "+1 earlier"
+      ],
+      "older": false
+    },
+    {
+      "pane_id": "w04:p2",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000013",
+      "message": "turn-e55b10-0013",
+      "lines": [
+        "Say the word and I will commit it with the rest."
+      ],
+      "at": "2026-11-05T03:00:00.000000+00:00",
+      "tags": [],
+      "older": true
+    },
+    {
+      "pane_id": "w02:p2",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000005",
+      "message": "turn-f60c21-0005",
+      "lines": [
+        "Should I delete the stale branch?"
+      ],
+      "at": "2026-11-01T09:00:00.000000+00:00",
+      "tags": [
+        "+3 earlier"
+      ],
+      "older": true
+    },
+    {
+      "pane_id": "w06:p3",
+      "herdr": "fake",
+      "session": "00000000-0000-4000-8000-000000000022",
+      "message": "turn-a7712d-0022",
+      "lines": [
+        "Confirm the rollout order: staging first, then the two small markets, then the rest."
+      ],
+      "at": "2026-10-28T09:00:00.000000+00:00",
+      "tags": [
+        "Answer sheet · 6 questions"
+      ],
+      "older": true
+    }
+  ]
+}

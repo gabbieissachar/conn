@@ -44,7 +44,7 @@ enum AgentViewCheck {
         model.mode = .herdr
         model.showSwitcher = false
         await wait(0.8)
-        let list = model.snapshot.prioritized
+        let list = model.agentOrder
         report("Agent view off: only the Herdr client and the Editor are views", model.viewPolicy.modes == [.herdr, .editor], "modes=\(model.viewPolicy.modes.map(\.rawValue))")
         model.mode = .agent; await wait(0.2)
         report("Agent view off: asking for the Agent view in code lands on the Herdr client", model.mode == .herdr && model.primary.paneID == nil, "mode=\(model.mode.rawValue)")
@@ -88,7 +88,7 @@ enum AgentViewCheck {
         let hj = await press("j", 38, [.command], wait: wait)
         report("Agent view off: Cmd+J shows the next agent waiting on you in the Herdr client view", hj && nextWaiting != nil && shown(model, nextWaiting), "handled=\(hj) mode=\(model.mode.rawValue) selected=\(model.selectedAgent?.name ?? "nil")")
         model.mode = .editor; await wait(0.2)
-        let nextID = model.snapshot.agent(after: model.selectedPaneID, offset: 1)?.id
+        let nextID = model.snapshot.agent(after: model.selectedPaneID, offset: 1, asks: model.openAsks.visible())?.id
         let hn = await press("]", 30, [.command], wait: wait)
         report("Agent view off: Cmd+] shows the next agent in the Herdr client view", hn && shown(model, nextID), "handled=\(hn) mode=\(model.mode.rawValue) selected=\(model.selectedAgent?.name ?? "nil")")
         model.mode = .editor; await wait(0.2)
@@ -115,7 +115,7 @@ enum AgentViewCheck {
     }
 
     static func runOn(model: AppModel, report: Report, wait: Wait) async {
-        let list = model.snapshot.prioritized
+        let list = model.agentOrder
         guard model.agentViewEnabled, list.count > 4 else { return }
         model.mode = .agent; await wait(0.3)
         model.select(list[1].id, via: .quickSwitcher); await wait(0.5)

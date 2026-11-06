@@ -160,28 +160,30 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     private(set) var pinsInPlace = 0
     private(set) var pinsLoaded = 0
 
-    /// Open the reader on one conversation. When the page on screen is the reader and it follows an address change while open
+    /// Open the reader on one conversation, or on one reply in it (`message`: the reader's address `#s=<session>&m=<reply>`, which
+    /// scrolls to that reply and flashes it once). When the page on screen is the reader and it follows an address change while open
     /// (it says so by listening for `hashchange`), only the address fragment changes and the reader switches in place: no page
     /// load, no 19 MB download, the scroll place of the others kept. Otherwise the page is loaded: the first load, another
     /// page or server, an older reader that reads `#s=` only at load, or an in-place change that fails.
-    func pin(sessionID: String?) {
+    func pin(sessionID: String?, message: String? = nil) {
         guard kind == .reader, let sid = sessionID, sid.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { return }
-        guard phase == .ready, WebLinkPolicy.isPage(baseURL, webView.url) else { loadPinned(sid); return }
+        // A reply id that is not one the reader would follow is left out: the session still opens, at its newest turn.
+        let reply = message.flatMap { OpenAsk.validMessage($0) ? $0 : nil }
+        let fragment = "s=\(sid)" + (reply.map { "&m=\($0)" } ?? "")
+        guard phase == .ready, WebLinkPolicy.isPage(baseURL, webView.url) else { loadFragment(fragment); return }
         webView.evaluateJavaScript("window.\(WebBox.listenerFlag) === true") { [weak self] follows, _ in
             guard let self = self else { return }
             // The page may have started another load while the question was in flight.
-            guard (follows as? Bool) == true, self.phase == .ready, WebLinkPolicy.isPage(self.baseURL, self.webView.url) else { self.loadPinned(sid); return }
-            self.webView.evaluateJavaScript("location.hash='s=\(sid)'") { [weak self] _, error in
+            guard (follows as? Bool) == true, self.phase == .ready, WebLinkPolicy.isPage(self.baseURL, self.webView.url) else { self.loadFragment(fragment); return }
+            self.webView.evaluateJavaScript("location.hash='\(fragment)'") { [weak self] _, error in
                 guard let self = self else { return }
-                if error != nil { self.loadPinned(sid) } else { self.pinsInPlace += 1 }
+                if error != nil { self.loadFragment(fragment) } else { self.pinsInPlace += 1 }
             }
         }
     }
 
     /// The pin as a page load. A live page gets a `?conn=<n>` query so WKWebView treats it as a new document and not as a
     /// fragment jump; a fixture file takes the hash once it has loaded.
-    private func loadPinned(_ sid: String) { loadFragment("s=\(sid)") }
-
     private func loadFragment(_ fragment: String) {
         pinsLoaded += 1
         if fixtureDir != nil { pendingHash = fragment; load(baseURL); return }
@@ -190,6 +192,39 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         comps.queryItems = [URLQueryItem(name: "conn", value: "\(pinCounter)")]
         comps.fragment = fragment
         if let url = comps.url { load(url) }
+    }
+
+    /// Ask the reader for its open asks from inside the page. The reader's routes need the per-start token, which the reader writes
+    /// into the page it serves to a browser tab (`<meta name="reader-token">`) and hands out nowhere else, so the question goes
+    /// out the way the page's own scripts send theirs: same origin, token header. nil when the reader page is not loaded (or is
+    /// not the reader's), carries no token, or answers anything but 200 (404 `not_built` before the first build, an older reader,
+    /// 403, 5xx), when the answer is not JSON, or after 3 seconds. Never throws.
+    static let openAsksScript = """
+    const meta = document.querySelector('meta[name="reader-token"]');
+    const token = meta && meta.content;
+    if (!token || token === '__READER_TOKEN__') return null;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3000);
+    try {
+      const r = await fetch(path, { headers: { 'x-transcript-reader-token': token, 'Accept': 'application/json' }, cache: 'no-store', credentials: 'omit', signal: ctl.signal });
+      return r.status === 200 ? await r.text() : null;
+    } catch (e) { return null; } finally { clearTimeout(timer); }
+    """
+
+    /// The question put to one web view that shows a page of the reader's server (the full page, or any page on that origin: the
+    /// reader's lite pages carry the same token meta). nil when the view is loading, shows nothing or another origin's page,
+    /// or the script finds no token or no good answer.
+    @MainActor
+    static func readOpenAsks(from web: WKWebView, readerBase: URL) async -> OpenAsksFeed? {
+        guard !web.isLoading, let shown = web.url, WebLinkPolicy.sameOrigin(readerBase, shown) else { return nil }
+        let result = try? await web.callAsyncJavaScript(WebBox.openAsksScript, arguments: ["path": OpenAsksSource.path], in: nil, contentWorld: .page)
+        return (result as? String).flatMap { $0.data(using: .utf8) }.flatMap(OpenAsksFeed.parse)
+    }
+
+    @MainActor
+    func fetchOpenAsks() async -> OpenAsksFeed? {
+        guard kind == .reader, fixtureDir == nil, phase == .ready else { return nil }
+        return await WebBox.readOpenAsks(from: webView, readerBase: baseURL)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -304,11 +339,15 @@ final class WebHub {
     /// A link in one pane points at the other: the app switches tabs and has the box show the address.
     var onShowPane: ((WebKind, URL) -> Void)?
 
-    init(fixture: Bool, resourceDir: URL?) { self.fixture = fixture; self.resourceDir = resourceDir }
+    /// A test's stand-in reader: the address the Reader pane (and the asks) use instead of `CONN_READER_URL`.
+    private let readerURL: URL?
+
+    init(fixture: Bool, resourceDir: URL?, readerURL: URL? = nil) { self.fixture = fixture; self.resourceDir = resourceDir; self.readerURL = readerURL }
 
     /// Where each pane's page lives (the same addresses `make` loads).
     func baseURL(_ kind: WebKind) -> URL {
         if fixture, let dir = resourceDir { return dir.appendingPathComponent(kind == .reader ? "fixture-reader.html" : "fixture-organizer.html") }
+        if kind == .reader, let u = readerURL { return u }
         let env = ProcessInfo.processInfo.environment
         let reader = env["CONN_READER_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/prototype.html"
         let organizer = env["CONN_ORGANIZER_URL"] ?? "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"

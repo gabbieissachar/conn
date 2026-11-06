@@ -23,7 +23,8 @@ cd "$(dirname "$0")"
 ARGS="$*"
 if [[ " $ARGS " == *" --fixture "* ]]; then
   # Short path: a Unix socket path is limited to 104 bytes.
-  DIR=/tmp/conn-fixture-$UID
+  # One folder per checkout, so two checkouts running --fixture at once do not share (and delete) each other's sockets.
+  DIR=/tmp/conn-fixture-$UID-$(printf %s "$PWD" | cksum | cut -d" " -f1)
   mkdir -p "$DIR"
   printf '#!/bin/sh\nexec "%s/build/FakeHerdr" cli "$@"\n' "$PWD" > "$DIR/herdr"
   chmod +x "$DIR/herdr"

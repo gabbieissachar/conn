@@ -47,10 +47,21 @@ struct SidebarView: View {
         }
     }
 
-    private var agents: some View {
-        let list = app.snapshot.prioritized
+    private var agents: some View { AgentsSection(asks: app.openAsks) }
+}
+
+/// The AGENTS list. It watches the open asks on its own, so a new answer from the reader redraws this list and not the whole window.
+struct AgentsSection: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var asks: OpenAskStore
+
+    var body: some View {
+        let visible = asks.visible()
+        let list = app.snapshot.prioritized(asks: visible)
+        let older = asks.asks.olderCount(among: app.snapshot.agents, now: asks.now)
+        let needYou = list.filter { $0.state == .blocked || visible[$0.id] != nil }.count
         return VStack(spacing: 0) {
-            header("AGENTS", trailing: "working first")
+            header(needYou: needYou, older: older)
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
@@ -63,6 +74,7 @@ struct SidebarView: View {
                                         .redacted(reason: app.privacy ? .placeholder : [])
                                     Text("\(a.harness) · \(a.state.label)").font(.system(size: 11))
                                         .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary)
+                                    if let ask = visible[a.id] { AskBlock(ask: ask, privacy: app.privacy) }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 if i < 9 { Text("⌘\(i + 1)").font(.system(size: 10.5, design: .rounded)).foregroundStyle(.tertiary) }
@@ -77,6 +89,30 @@ struct SidebarView: View {
                 .padding(.horizontal, 6).padding(.bottom, 6)
             }
         }
+    }
+
+    /// With no asks from the reader the header reads as it always has. With asks it counts the agents that need you (prompt
+    /// waiting and open asks) and, when some asks are over 24 hours old, offers to show or hide them.
+    private func header(needYou: Int, older: Int) -> some View {
+        HStack(spacing: 4) {
+            Text("AGENTS").font(.system(size: 11, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+            Spacer()
+            if asks.asks.isEmpty {
+                Text("working first").font(.system(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                Text("\(needYou) ask\(needYou == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.tertiary)
+                if older > 0 {
+                    Text("·").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Button { asks.showOlder.toggle() } label: {
+                        Text("\(asks.showOlder ? "hide" : "show") \(older) older").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                    .help("Open asks that are over 24 hours old")
+                    .accessibilityIdentifier("asks-fold")
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
     }
 }
 
@@ -282,7 +318,7 @@ struct QuickSwitcher: View {
 
     private var matches: [Agent] {
         let q = app.switcherQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        let all = app.snapshot.prioritized
+        let all = app.agentOrder
         guard !q.isEmpty else { return all }
         return all.filter { a in
             let space = app.snapshot.workspace(a.workspaceID)?.label.lowercased() ?? ""

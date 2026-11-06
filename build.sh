@@ -12,7 +12,7 @@ APP=build/Conn.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture"
 cp ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn"
 cp ".build/$CONFIG/FakeHerdr" build/FakeHerdr
-cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-lite.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json "$APP/Contents/Resources/fixture/"
+cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-lite.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json Resources/fixture/open-asks.json "$APP/Contents/Resources/fixture/"
 cp Resources/Conn.icns "$APP/Contents/Resources/Conn.icns"
 # The `conn` shell command (README "Opening a folder from the terminal"): File > Install 'conn' Command in PATH links it from ~/.local/bin.
 mkdir -p "$APP/Contents/Resources/bin"
