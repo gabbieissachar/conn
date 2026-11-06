@@ -455,7 +455,19 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         patcher = patch.object(ORGANIZER, "CLAUDE_PROJECTS_DIR", base / "claude" / "projects")
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A scratch home with no other Claude config folder, so no test reads the captain's real ~/.claude-* folders.
+        (base / "home").mkdir()
+        environment = patch.dict(os.environ, {"HOME": str(base / "home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
         return main, task, other, logs
+
+    def second_account(self, name=".claude-personal"):
+        """A second Claude config folder in the scratch home (a second account run under CLAUDE_CONFIG_DIR), laid out like ~/.claude."""
+        projects = Path(os.environ["HOME"]) / name / "projects" / "-encoded"
+        projects.mkdir(parents=True)
+        return projects
 
     def write_log(self, logs, session_id, paths=(), commands=(), edits=()):
         lines = []
@@ -614,6 +626,91 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.agent_world()
         for bad in ("../x", "a/b", "", "*", "short"):
             self.assertIsNone(ORGANIZER.claude_session_log(bad), bad)
+
+    def test_a_pane_run_under_another_claude_config_folder_is_inferred_from_that_folders_log(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(personal, sid, edits=[task / "a.txt"])
+        self.assertEqual(ORGANIZER.claude_session_log(sid), personal / f"{sid}.jsonl")
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(task))
+
+    def test_every_claude_config_folder_is_found_without_knowing_its_name(self):
+        main, task, other, logs = self.agent_world()
+        home = Path(os.environ["HOME"])
+        for name in (".claude-personal", ".claude-org2", ".claude-whatever"):
+            self.second_account(name)
+        (home / ".claude.json").write_text("{}")  # a file, not a config folder
+        (home / ".claude-mem").mkdir()  # another tool's folder: no projects/
+        (home / ".claudeish").mkdir()
+        (home / "elsewhere" / "projects").mkdir(parents=True)  # not named .claude*, and nothing names it
+        self.assertEqual(
+            [path.parent.name for path in ORGANIZER.claude_projects_dirs()],
+            ["claude", ".claude-org2", ".claude-personal", ".claude-whatever"],
+            "the process's own folder first, then the others by name",
+        )
+        outside = home.parent / "outside-config"
+        (outside / "projects").mkdir(parents=True)
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(outside)}):
+            self.assertEqual(ORGANIZER.claude_projects_dirs()[-1], outside / "projects", "the folder CLAUDE_CONFIG_DIR names counts too")
+        (home / ".claude-late").mkdir()
+        (home / ".claude-late" / "projects").mkdir()
+        self.assertIn(home / ".claude-late" / "projects", ORGANIZER.claude_projects_dirs(), "an account set up later is found by the next lookup")
+
+    def test_the_default_claude_folder_is_looked_in_when_the_process_runs_under_another_one(self):
+        main, task, other, logs = self.agent_world()
+        default = self.second_account(".claude")
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(default, sid, edits=[task / "a.txt"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(task))
+        self.assertEqual(ORGANIZER.handoff_find_transcript(sid), default / f"{sid}.jsonl")
+
+    def test_two_config_folders_with_the_same_project_keep_their_sessions_apart(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        second = main.parent.parent / "task" / "app2"
+        self.git(main, "worktree", "add", "-q", "-b", "task2", str(second))
+        mine, theirs = "11111111-aaaa-bbbb-cccc-222222222222", "33333333-aaaa-bbbb-cccc-444444444444"
+        self.write_log(logs, mine, edits=[task / "a.txt"])
+        self.write_log(personal, theirs, edits=[second / "a.txt"])
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, mine)), str(task))
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, theirs)), str(second))
+        self.assertEqual(ORGANIZER.handoff_find_transcript(mine), logs / f"{mine}.jsonl")
+        self.assertEqual(ORGANIZER.handoff_find_transcript(theirs), personal / f"{theirs}.jsonl")
+
+    def test_a_copy_of_a_log_in_a_second_folder_never_shadows_the_usual_one(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        second = main.parent.parent / "task" / "app2"
+        self.git(main, "worktree", "add", "-q", "-b", "task2", str(second))
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(logs, sid, edits=[task / "a.txt"])
+        self.write_log(personal, sid, edits=[second / "a.txt"])
+        self.assertEqual(ORGANIZER.claude_session_log(sid), logs / f"{sid}.jsonl")
+        self.assertEqual(ORGANIZER.inferred_agent_folder(self.agent_pane(main, sid)), str(task))
+
+    def test_handoff_restart_refuses_a_session_id_that_two_config_folders_both_hold(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(logs, sid)
+        self.assertEqual(ORGANIZER.handoff_find_transcript(sid), logs / f"{sid}.jsonl")
+        self.write_log(personal, sid)
+        self.assertIsNone(ORGANIZER.handoff_find_transcript(sid), "two transcripts name no single one")
+
+    def test_handoff_restart_reads_the_transcript_of_a_pane_under_another_config_folder_and_never_a_link(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        sid = "11111111-aaaa-bbbb-cccc-222222222222"
+        self.write_log(personal, sid)
+        self.assertEqual(ORGANIZER.handoff_find_transcript(sid), personal / f"{sid}.jsonl")
+        (Path(os.environ["HOME"]) / ".claude-alias").symlink_to(personal.parent.parent)
+        found = ORGANIZER.handoff_find_transcript(sid)
+        self.assertIsNotNone(found, "a link to the same folder is not a second copy")
+        self.assertTrue(found.samefile(personal / f"{sid}.jsonl"))
+        (personal / f"{sid}.jsonl").rename(personal / "real.jsonl")
+        (personal / f"{sid}.jsonl").symlink_to(personal / "real.jsonl")
+        self.assertIsNone(ORGANIZER.handoff_find_transcript(sid), "a symbolic link is not a transcript")
 
     def test_a_tab_without_a_reported_folder_has_an_empty_list(self):
         snapshot = {"tabs": [{"workspace_id": "w1", "tab_id": "w1:t1"}], "panes": [{"tab_id": "w1:t1", "pane_id": "w1:p1"}]}

@@ -344,6 +344,19 @@ for working_seen, delay in ((True, 0.5), (False, 0.0)):
 all_state_text = "".join(p.read_text() for p in (tool / "state").rglob("*.json"))
 sid_free(all_state_text, [sid_for(5001)]); ok("the full session id is in no file of the tool's state folder")
 
+# ---------------------------------------------------------------- a pane run under another CLAUDE_CONFIG_DIR (a second account)
+# The organizer runs under one config folder (here an empty ~/.claude); the pane's Claude keeps its transcript in
+# ~/.claude-personal/projects, as a second account does. The transcript must be found there, and nowhere else is written.
+personal = home / ".claude-personal"
+world(pane("w1:p1", 90, clear_delay=0.0))
+account_env = {"CLAUDE_CONFIG_DIR": str(home / ".claude"), "FAKE_CLAUDE_DIR": str(personal)}
+r, out = execute([ref("w1:p1", 90)], check=0, extra_env=account_env)
+rec = pane_record(out, "w1:p1")
+assert rec["state"] == "sent" and rec["clear_proof"] == "session_id_changed", rec
+assert (personal / "projects" / "proj-a" / (sid_for(90) + ".jsonl")).is_file() and not (claude / "projects" / "proj-a" / (sid_for(90) + ".jsonl")).exists()
+sid_free(Path(out["record"]).read_text() + r.stdout + r.stderr, [sid_for(5090)])
+ok("a pane whose transcript is under ~/.claude-personal: the handoff marker is read from it, /clear typed once, resume sent")
+
 # ---------------------------------------------------------------- /clear that never changes the id (case 3, 14, 17)
 world(pane("w1:p1", 1, clear_mode="never_proof"))
 r, out = execute([ref("w1:p1", 1)], check=0); rec = pane_record(out, "w1:p1")

@@ -1000,6 +1000,35 @@ def load_archives() -> list[dict[str, Any]]:
 
 
 CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser() / "projects"
+
+
+def claude_projects_dirs() -> list[Path]:
+    """Every folder of Claude session logs, in the order a lookup tries them: CLAUDE_PROJECTS_DIR (this process's own config
+    folder), then ~/.claude, then each other ~/.claude<anything> folder by name, then the folder CLAUDE_CONFIG_DIR names. A pane
+    run under another CLAUDE_CONFIG_DIR (a second account such as ~/.claude-personal) keeps its logs in that folder's projects/,
+    and Herdr does not say which folder a pane uses. Only a folder that holds a projects/ folder counts, so a plain file such as
+    ~/.claude.json and a tool's own ~/.claude-xyz folder are left out; no account name is known here, so a new account is found by
+    the next lookup. This is the transcript reader's rule (pmos setup/transcript-reader: otherClaudeHomes)."""
+    home = Path.home()
+    candidates = [CLAUDE_PROJECTS_DIR.parent, home / ".claude"]
+    try:
+        candidates += sorted((entry for entry in home.iterdir() if entry.name.startswith(".claude")), key=lambda entry: entry.name)
+    except OSError:
+        pass
+    named = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if named:
+        candidates.append(Path(named).expanduser())
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for folder in candidates:
+        projects = folder / "projects"
+        if not folder.is_absolute() or not projects.is_dir():
+            continue
+        real = Path(os.path.realpath(projects))
+        if real not in seen:
+            seen.add(real)
+            found.append(projects)
+    return found
 AGENT_LOG_TAIL_BYTES = 4_000_000
 AGENT_RECENT_PATHS = 400
 ABSOLUTE_PATH_IN_COMMAND = re.compile(r"(?<![\w.])/(?:Users|home|Volumes|opt|private)/[^\s'\"`;|&()<>\\]+")
@@ -1235,9 +1264,14 @@ def git_root_and_common_dir(path: str) -> tuple[str, str] | None:
 
 
 def claude_session_log(session_id: str) -> Path | None:
-    if not SAFE_SESSION_ID.match(session_id) or not CLAUDE_PROJECTS_DIR.is_dir():
+    """The session's log under the first Claude config folder that has one, so a copy in a later folder never shadows it."""
+    if not SAFE_SESSION_ID.match(session_id):
         return None
-    return next(iter(sorted(CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))), None)
+    for projects in claude_projects_dirs():
+        found = next(iter(sorted(projects.glob(f"*/{session_id}.jsonl"))), None)
+        if found is not None:
+            return found
+    return None
 
 
 def recent_claude_paths(log: Path) -> list[tuple[str, bool]]:
@@ -7000,16 +7034,16 @@ def handoff_is_tool_result(entry: dict[str, Any]) -> bool:
 
 
 def handoff_find_transcript(session_id: str) -> Path | None:
-    """Exactly one regular, non-link `<session id>.jsonl` under the Claude projects folder, or None."""
-    if not CLAUDE_PROJECTS_DIR.is_dir():
-        return None
+    """Exactly one regular, non-link `<session id>.jsonl` under the projects folders of every Claude config folder, or None.
+    A session id found in two config folders (or twice in one) names no single transcript, so it is refused, not guessed."""
     found: list[Path] = []
-    for candidate in CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"):
-        try:
-            if stat.S_ISREG(os.lstat(candidate).st_mode):
-                found.append(candidate)
-        except OSError:
-            continue
+    for projects in claude_projects_dirs():
+        for candidate in projects.glob(f"*/{session_id}.jsonl"):
+            try:
+                if stat.S_ISREG(os.lstat(candidate).st_mode):
+                    found.append(candidate)
+            except OSError:
+                continue
     return found[0] if len(found) == 1 else None
 
 
