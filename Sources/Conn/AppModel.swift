@@ -50,7 +50,8 @@ final class AppModel: ObservableObject {
     @Published var selectedPaneID: String?
     @Published var comparePaneID: String?
     @Published var selectedWorkspaceID: String?
-    @Published var mode: CenterMode = .agent { didSet { if mode != oldValue { syncSessions() } } }
+    /// The launch sets the first view (`LaunchPlan`): the Herdr client for a person's own launch, the Agent view for a scripted one.
+    @Published var mode: CenterMode = .herdr { didSet { if mode != oldValue { syncSessions() } } }
     @Published var showWeb = true {
         didSet { if showWeb && !oldValue && webTab == .organizer { web.box(.organizer).showContextView() } }
     }
@@ -88,6 +89,7 @@ final class AppModel: ObservableObject {
     private var herdrHighlightBeforeNav: (workspace: String?, pane: String?)?
     /// Decides when the sidebar follows Herdr's focus pointer while the client runs.
     private var clientFocus = HerdrClientFocusFollower()
+    private var herdrAdoptPending = false
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
@@ -158,6 +160,7 @@ final class AppModel: ObservableObject {
             self.web.box(kind).show(address: url)
         }
         showWeb = config.showWeb ?? true
+        mode = config.launchPlan.mode
         for p in [primary, secondary] {
             p.onProtocolMismatch = { [weak self] in self?.streamRefused() }
             p.onStreamFailedBeforeFrames = { [weak self] _ in self?.probeCompatibility() }
@@ -600,8 +603,12 @@ final class AppModel: ObservableObject {
     /// last selected by any attached client), not a position per client, so the sidebar follows a change only when the person
     /// just typed or clicked in the embedded client, or when the client has just attached. A change made on another screen
     /// while they are not using this client is left alone.
-    private func followHerdrClientFocus(adopt: Bool = false) {
+    private func followHerdrClientFocus(adopt requested: Bool = false) {
         guard herdrClientDriving else { return }
+        // A client attached at launch starts before the first snapshot has arrived: its opening position is adopted once there is one.
+        if requested { herdrAdoptPending = true }
+        let adopt = herdrAdoptPending
+        if adopt && snapshot.focusedWorkspaceID != nil && snapshot.focusedTabID != nil { herdrAdoptPending = false }
         let settled = !herdrNavigating && (herdrNavEndedAt.map { Date().timeIntervalSince($0) > 1.5 } ?? true)
         guard let at = clientFocus.observe(workspace: snapshot.focusedWorkspaceID, tab: snapshot.focusedTabID, adopt: adopt,
                                            settled: settled, userActive: fallback.hadUserInput(within: 2)) else { return }

@@ -2,7 +2,8 @@
 //
 // This runs a real Herdr client (`herdr session attach <session>`) in a pty, so it works whatever the stream protocol
 // is, and it is interactive: keys typed here go to Herdr, and as a second attached client it takes part in Herdr's
-// own sizing. For both reasons it never starts by itself. The app shows what it will do and the user starts it.
+// own sizing. For both reasons only a person's own launch starts it (`LaunchPlan`: the default view attaches it, once, and a
+// failed start is shown with its reason, never retried); a scripted launch or a switch to the view never does.
 //
 // Keys and mouse events typed into this pty steer only this client (its own workspace and tab), but Herdr's socket API
 // focus commands (`workspace focus`, `tab focus`, `pane focus`) move every attached client. Nothing here calls them.
@@ -27,6 +28,14 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
     public private(set) var exitCode: Int32?
     /// The client config the running (or last) client was started with; nil when it read Herdr's own config.
     public private(set) var clientConfig: URL?
+    /// What the client printed when it failed to start (no running session, nested Herdr, a config Herdr rejects); nil when the
+    /// last run was stopped from here, ran for a while, or ended cleanly. It is Herdr's own error text from the first seconds, never
+    /// the screen of a client that was in use.
+    public private(set) var failureText: String?
+    private var startedAt: Date?
+    private var stopRequested = false
+    /// A client that ends this soon after starting did not get going.
+    public static let quickExitSeconds: TimeInterval = 8
     public var onStateChange: (() -> Void)?
 
     public override init() {
@@ -73,6 +82,9 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
         view.nativeForegroundColor = theme.fg
         let env = Self.environment(base: ProcessInfo.processInfo.environment, endpoint: endpoint, clientConfig: clientConfig)
         exitCode = nil
+        failureText = nil
+        stopRequested = false
+        startedAt = Date()
         self.clientConfig = clientConfig
         running = true
         view.startProcess(executable: cmd.executable, args: cmd.args, environment: env.map { "\($0.key)=\($0.value)" })
@@ -80,7 +92,15 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
     }
 
     public func stop() {
-        if running { view.terminate() }
+        if running { stopRequested = true; view.terminate() }
+    }
+
+    /// The reason to show for a client that failed to start: the last few non-empty lines it drew, trimmed, or nil when it drew none.
+    public static func failureReason(fromRows rows: [String]) -> String? {
+        let lines = rows.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.suffix(6)
+        guard !lines.isEmpty else { return nil }
+        let text = lines.joined(separator: "\n")
+        return text.count > 400 ? String(text.prefix(400)) + "…" : text
     }
 
     /// Type bytes into the running client, as if the person had typed them. Returns false (typing nothing) when it is not running.
@@ -116,6 +136,12 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
             guard let self = self else { return }
             self.running = false
             self.exitCode = exitCode
+            let quick = self.startedAt.map { Date().timeIntervalSince($0) < Self.quickExitSeconds } ?? false
+            if !self.stopRequested && quick && exitCode != 0 {
+                self.failureText = Self.failureReason(fromRows: self.view.visibleRowsText(0..<self.view.terminalDimensions.rows))
+            } else {
+                self.failureText = nil
+            }
             self.onStateChange?()
         }
     }

@@ -26,7 +26,7 @@ enum HerdrLab {
 }
 
 extension SwiftTermMainActorTests {
-@Suite("Herdr client mode, lab end to end", .enabled(if: HerdrLab.requested)) @MainActor struct HerdrClientLabTests {
+@Suite("Herdr client mode, lab end to end", .enabled(if: HerdrLab.requested), .serialized) @MainActor struct HerdrClientLabTests {
     func screen(_ c: FallbackTerminalController) -> String {
         c.view.visibleRowsText(0..<c.view.terminalDimensions.rows).joined(separator: "\n")
     }
@@ -42,6 +42,52 @@ extension SwiftTermMainActorTests {
 
     func type(_ c: FallbackTerminalController, _ keys: [UInt8]...) async {
         for k in keys { c.view.send(k); try? await Task.sleep(nanoseconds: 250_000_000) }
+    }
+
+    /// A launch with the default view: what a person's own launch decides (`LaunchPlan`) and does at launch (`AppModel.attachHerdrClient`:
+    /// resolve the client config, then start the client), against the lab session and with nothing in a window. The client
+    /// draws the session's own panes with its sidebar hidden, a second reader of the session still sees the session running
+    /// while it is attached, and Stop ends the client and leaves the session alone. A launch that is scripted decides not to
+    /// attach, so a check or a capture never reaches a real session this way.
+    @Test func aLaunchWithTheDefaultViewAttachesToTheLabSessionAndStopEndsIt() async throws {
+        let lab = try #require(HerdrLab.session, "CONN_HERDR_LAB_SESSION must name a session called fm-lab-...")
+        #expect(LaunchPlan.make(requested: nil, scripted: false, opensFiles: false) == LaunchPlan(mode: .herdr, attachesClient: true))
+        #expect(LaunchPlan.make(requested: nil, scripted: true, opensFiles: false).attachesClient == false)
+
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-lab-default-\(UUID().uuidString)")
+        let home = scratch.appendingPathComponent("home").path, temp = scratch.appendingPathComponent("tmp").path
+        try FileManager.default.createDirectory(atPath: temp, withIntermediateDirectories: true)
+        let source = URL(fileURLWithPath: temp).appendingPathComponent("source.toml")
+        try "onboarding = false\n\n[keys]\nprefix = \"ctrl+a\"\n\n[ui]\nsidebar_start_collapsed = false\n".write(to: source, atomically: true, encoding: .utf8)
+        let endpoint = HerdrEndpoint(session: lab)
+        try #require(endpoint.binaryPath != nil, "no herdr executable found")
+        let reader = HerdrClient(endpoint: endpoint)
+        #expect(try reader.snapshot().workspaces.count >= 2, "the lab session is not the expected one")
+
+        // The attach itself, as the app does it at launch.
+        let config = try #require(try HerdrClientConfig.resolve(hideSidebar: true, custom: nil, home: home, temporaryDirectory: temp, sourceConfig: source))
+        let c = FallbackTerminalController()
+        c.view.frame = NSRect(x: 0, y: 0, width: 1100, height: 640)
+        c.start(endpoint: endpoint, theme: .dark, clientConfig: config)
+        defer { c.stop() }
+        #expect(c.running)
+        let drew = await wait(15) { screen(c).contains("ALPHA tick") || screen(c).contains("BETA tick") }
+        #expect(drew, "the client did not draw the lab session:\n\(screen(c))")
+        #expect(["Lab Alpha", "Lab Beta"].allSatisfy { !screen(c).contains($0) }, "Herdr's own sidebar is showing:\n\(screen(c))")
+        #expect(c.running && c.failureText == nil)
+        #expect(try reader.snapshot().workspaces.count >= 2, "the session stopped answering while the client was attached")
+
+        // Stop ends the client, shows no failure, and the session keeps running.
+        c.stop()
+        #expect(await wait(8) { !c.running }, "Stop did not end the client")
+        #expect(c.failureText == nil)
+        #expect(try reader.snapshot().workspaces.count >= 2, "the session did not survive the client's Stop")
+
+        // Attach starts it again.
+        c.start(endpoint: endpoint, theme: .dark, clientConfig: config)
+        #expect(await wait(15) { screen(c).contains("ALPHA tick") || screen(c).contains("BETA tick") }, "a second Attach did not draw:\n\(screen(c))")
+        c.stop()
+        #expect(await wait(8) { !c.running })
     }
 
     @Test func attachHidesTheSidebarKeysStayInTheClientAndStopEndsOnlyThatClient() async throws {

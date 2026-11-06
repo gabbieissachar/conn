@@ -136,6 +136,11 @@ enum UICheck {
                    NSApp.activationPolicy() == .accessory && !NSApp.isActive && !wins.contains { $0.isKeyWindow } && wins.allSatisfy { $0.alphaValue == 0 && $0.ignoresMouseEvents },
                    "policy=\(NSApp.activationPolicy().rawValue) active=\(NSApp.isActive) windows=\(wins.count) keyWindows=\(wins.filter { $0.isKeyWindow }.count) alpha=\(wins.map { $0.alphaValue })")
         }
+        // A person's own launch opens on the Herdr client view and attaches its client; this scripted launch must do neither,
+        // so the checks below run on the Agent view and never put a second client on the session.
+        report("a scripted launch stays on the Agent view and does not attach the Herdr client",
+               Runtime.config.isScriptedLaunch && !Runtime.config.launchPlan.attachesClient && model.mode == .agent && !model.fallback.running,
+               "scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
         let waitingNow = model.waiting.count
@@ -239,6 +244,35 @@ enum UICheck {
         report("herdr screen mode keeps streams stopped", model.primary.paneID == nil)
         model.mode = .agent; await wait(2)
         report("back in agent mode the stream restarts", model.primary.state == .live && model.primary.paneID == model.selectedPaneID, "state=\(model.primary.state)")
+
+        // View order: Herdr client first, then Agent, then Editor, in the switcher, the Layout menu and Opt+Cmd+1/2/3.
+        let order = CenterMode.allCases.map(\.rawValue)
+        report("the views are Herdr client, Agent, Editor, in that order", order == ["Herdr client", "Agent", "Editor"], "order=\(order)")
+        let chordMask: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        if let layout = NSApp.mainMenu?.items.first(where: { $0.title == "Layout" })?.submenu {
+            let first = Array(layout.items.prefix(3))
+            report("the Layout menu lists the views in that order with Opt+Cmd+1/2/3",
+                   first.map(\.title) == order && first.map(\.keyEquivalent) == ["1", "2", "3"] && first.allSatisfy { $0.keyEquivalentModifierMask.intersection(chordMask) == [.command, .option] },
+                   "items=\(first.map { "\($0.title) [\($0.keyEquivalent)]" })")
+        } else {
+            report("the Layout menu lists the views in that order with Opt+Cmd+1/2/3", false, "no Layout menu")
+        }
+        if let win = Capture.mainWindow() {
+            func optCmd(_ digit: String, _ code: UInt16) async -> Bool {
+                guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: win.windowNumber, context: nil, characters: digit, charactersIgnoringModifiers: digit, isARepeat: false, keyCode: code) else { return false }
+                let handled = NSApp.mainMenu?.performKeyEquivalent(with: e) ?? false
+                await wait(0.4)     // the menu runs its action on a later turn of the run loop
+                return handled
+            }
+            let h1 = await optCmd("1", 18); let m1 = model.mode, running1 = model.fallback.running
+            let h2 = await optCmd("2", 19); let m2 = model.mode
+            let h3 = await optCmd("3", 20); let m3 = model.mode
+            report("Opt+Cmd+1 is the Herdr client, Opt+Cmd+2 the Agent view and Opt+Cmd+3 the Editor; the shortcut does not attach the client",
+                   h1 && m1 == .herdr && !running1 && h2 && m2 == .agent && h3 && m3 == .editor, "handled=\(h1)/\(h2)/\(h3) modes=\(m1.rawValue)/\(m2.rawValue)/\(m3.rawValue) clientRunning=\(running1)")
+            _ = await optCmd("2", 19); await wait(2)
+            report("Opt+Cmd+2 brings the Agent view and its stream back", model.mode == .agent && model.primary.state == .live, "mode=\(model.mode.rawValue) state=\(model.primary.state)")
+        }
 
         model.toggleCompare(); await wait(2)
         report("compare opens a second live stream", model.comparePaneID != nil && model.secondary.state == .live, "state=\(model.secondary.state)")

@@ -18,11 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if cfg.dark { model.appearance = .dark }
         if let t = cfg.webTab { model.webTab = t }
         model.privacy = cfg.privacy
-        if let m = cfg.mode { model.mode = m }
+        // The first view was set when the model was made (`LaunchPlan`). A person's own launch on the Herdr client view
+        // attaches the client here, so the view is ready without a click; a scripted launch never does.
+        if cfg.launchPlan.attachesClient { model.attachHerdrClient() }
         if let size = cfg.windowSize { DispatchQueue.main.async { Capture.mainWindow()?.setContentSize(size) } }
         model.editor.restoreSession()
         for f in cfg.openFiles { model.editor.open(URL(fileURLWithPath: f)) }
-        if !cfg.openFiles.isEmpty && cfg.mode == nil { model.mode = .editor }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             let list = model.snapshot.prioritized
             if let i = cfg.select, i < list.count { model.select(list[i].id) }

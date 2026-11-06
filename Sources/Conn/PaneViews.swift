@@ -349,6 +349,15 @@ struct FallbackPane: View {
                         Text("Using the client config from --client-config.").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     if let code = app.fallback.exitCode { Text("Last run ended with exit code \(code).").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    if let why = app.fallback.failureText, !app.privacy {
+                        // The client did not get going (no running session, nested Herdr, a config Herdr rejects). Conn does not retry.
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("The client did not start. Herdr said:").font(.system(size: 11, weight: .medium)).foregroundStyle(.red)
+                            Text(why).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        .padding(10).frame(maxWidth: 460, alignment: .leading)
+                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                    }
                     if let error = app.herdrClientError {
                         Text(error).font(.system(size: 12)).foregroundStyle(.red).multilineTextAlignment(.center).frame(maxWidth: 460)
                     }

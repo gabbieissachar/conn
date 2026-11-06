@@ -4,14 +4,6 @@ import Foundation
 import ConnCore
 
 enum RendererKind: String { case swiftTerm = "swiftterm", grid = "grid" }
-enum CenterMode: String, CaseIterable, Identifiable {
-    case agent = "Agent", editor = "Editor", herdr = "Herdr client"
-    var id: String { rawValue }
-    var symbol: String { self == .agent ? "terminal" : (self == .editor ? "doc.text" : "rectangle.inset.filled.and.person.filled") }
-    static func parse(_ s: String) -> CenterMode? {
-        switch s { case "agent": return .agent; case "editor": return .editor; case "herdr": return .herdr; default: return nil }
-    }
-}
 
 struct AppConfig {
     var session = "esim"
@@ -34,7 +26,8 @@ struct AppConfig {
     var tour: String?
     var holdSeconds = 3
     var sendTest: String?
-    /// Test hook: attach the Herdr client pane at launch (it never starts by itself otherwise).
+    /// Test hook: attach the Herdr client pane at launch against a stand-in Herdr. A person's own launch attaches by itself
+    /// (see `LaunchPlan`); a scripted launch never does.
     var startFallback = false
     /// A Herdr client config file for the Herdr client pane (`--client-config PATH` or CONN_HERDR_CLIENT_CONFIG). Checked by
     /// `HerdrClientConfig.validate` before every attach; without it the pane writes its own hidden-sidebar config.
@@ -109,8 +102,21 @@ struct AppConfig {
         let env = ProcessInfo.processInfo.environment
         if foreground || env["CONN_FOREGROUND"] == "1" { return false }
         if background || env["CONN_BACKGROUND"] == "1" { return true }
-        return uiTour || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
+        return hasScriptedHook
     }
+
+    private var hasScriptedHook: Bool {
+        uiTour || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
+    }
+
+    /// A launch driven by a script or a test rather than a person: any scripted hook, a background launch (whether or not it
+    /// opted back into `--foreground`), the fixture, or an option that only makes sense on the Agent view (`--select`,
+    /// `--compare`, `--history`). It never attaches the Herdr client by itself.
+    var isScriptedLaunch: Bool {
+        background || ProcessInfo.processInfo.environment["CONN_BACKGROUND"] == "1" || hasScriptedHook || fixture || select != nil || compare || openHistory
+    }
+
+    var launchPlan: LaunchPlan { LaunchPlan.make(requested: mode, scripted: isScriptedLaunch, opensFiles: !openFiles.isEmpty) }
 
     var endpoint: HerdrEndpoint {
         HerdrEndpoint(session: session, socketDirectory: socketDir, binaryPath: herdrBin)

@@ -148,6 +148,67 @@ extension SwiftTermMainActorTests {
         FallbackTerminalController().stop()
     }
 
+    /// A stand-in `herdr` that runs `body` as its script.
+    func stub(_ body: String) throws -> String {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-stub-run-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("herdr").path
+        try "#!/bin/sh\n\(body)\n".write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+
+    @Test func aClientThatFailsToStartLeavesItsReasonAndIsNotStartedAgain() async throws {
+        // What `herdr session attach` does with no running session, or when started inside a Herdr pane, or with a bad config:
+        // print an error and exit 1 at once. The app attaches once; the pane shows this text and the Attach button.
+        let counter = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-starts-\(UUID().uuidString)").path
+        let bin = try stub("echo started >> '\(counter)'\necho 'error: no running herdr session named demo'\necho 'start it with: herdr server'\nexit 1")
+        let endpoint = HerdrEndpoint(session: "demo", socketDirectory: "/tmp/conn-no-sockets", binaryPath: bin)
+        let c = FallbackTerminalController()
+        c.view.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        c.start(endpoint: endpoint, theme: .dark)
+        #expect(await wait(5) { !c.running })
+        #expect(c.exitCode == 1)
+        let why = try #require(c.failureText, "no reason was kept")
+        #expect(why.contains("no running herdr session named demo") && why.contains("start it with: herdr server"), "\(why)")
+        // Nothing starts it again by itself.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        #expect(!c.running)
+        #expect(try String(contentsOfFile: counter, encoding: .utf8) == "started\n")
+        // The next Attach clears the old reason.
+        c.start(endpoint: endpoint, theme: .dark)
+        #expect(c.failureText == nil)
+        #expect(await wait(5) { !c.running })
+        #expect(c.failureText != nil)
+    }
+
+    @Test func stopAndACleanEndKeepNoFailureText() async throws {
+        let c = FallbackTerminalController()
+        c.view.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        // Stop on a client that is running and quiet.
+        var endpoint = HerdrEndpoint(session: "demo", socketDirectory: "/tmp/conn-no-sockets", binaryPath: try stub("echo ready\nsleep 30"))
+        c.start(endpoint: endpoint, theme: .dark)
+        #expect(await wait(5) { screen(c).contains("ready") })
+        c.stop()
+        #expect(await wait(5) { !c.running })
+        #expect(c.failureText == nil, "a Stop is not a failure: \(c.failureText ?? "")")
+        // A client that ends with exit code 0 at once (the person detached) is not a failure either.
+        endpoint = HerdrEndpoint(session: "demo", socketDirectory: "/tmp/conn-no-sockets", binaryPath: try stub("echo bye\nexit 0"))
+        c.start(endpoint: endpoint, theme: .dark)
+        #expect(await wait(5) { !c.running })
+        #expect(c.exitCode == 0 && c.failureText == nil)
+    }
+
+    @Test func theFailureReasonIsTheLastFewLinesTrimmedAndCapped() {
+        #expect(FallbackTerminalController.failureReason(fromRows: []) == nil)
+        #expect(FallbackTerminalController.failureReason(fromRows: ["  ", ""]) == nil)
+        #expect(FallbackTerminalController.failureReason(fromRows: ["  a  ", "", "b"]) == "a\nb")
+        let many = (1...10).map { "line \($0)" }
+        #expect(FallbackTerminalController.failureReason(fromRows: many) == (5...10).map { "line \($0)" }.joined(separator: "\n"))
+        let long = FallbackTerminalController.failureReason(fromRows: [String(repeating: "x", count: 900)])
+        #expect(long?.count == 401 && long?.hasSuffix("…") == true)
+    }
+
     /// A stand-in client that puts its pty in raw mode and reports each byte it receives as hex.
     func byteReportingHerdr() throws -> String {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-stub-bytes-\(UUID().uuidString)")
