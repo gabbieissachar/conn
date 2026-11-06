@@ -96,6 +96,10 @@ public struct Snapshot: Equatable, Sendable {
     public var agents: [Agent] = []
     public var paneIDs: [String] = []
     public var focusedPaneID: String?
+    /// The workspace and tab Herdr last focused. Herdr keeps one such pointer for the session: it moves whenever any attached
+    /// client selects a workspace or tab, so it is the position of the most recent selection, not of one particular client.
+    public var focusedWorkspaceID: String?
+    public var focusedTabID: String?
     public var protocolVersion: Int?
     public var herdrVersion: String?
 
@@ -117,6 +121,8 @@ public struct Snapshot: Equatable, Sendable {
         for p in panes { if let id = p["pane_id"] as? String { paneByID[id] = p } }
         paneIDs = panes.compactMap { $0["pane_id"] as? String }
         focusedPaneID = snap["focused_pane_id"] as? String
+        focusedWorkspaceID = snap["focused_workspace_id"] as? String
+        focusedTabID = snap["focused_tab_id"] as? String
         // The size Herdr's own client gave each pane. An observer cannot reflow it, so Conn asks for exactly this.
         for l in (snap["layouts"] as? [[String: Any]]) ?? [] {
             for lp in (l["panes"] as? [[String: Any]]) ?? [] {

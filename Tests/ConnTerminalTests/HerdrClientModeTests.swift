@@ -147,5 +147,42 @@ extension SwiftTermMainActorTests {
         c.stop()
         FallbackTerminalController().stop()
     }
+
+    /// A stand-in client that puts its pty in raw mode and reports each byte it receives as hex.
+    func byteReportingHerdr() throws -> String {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-stub-bytes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("herdr").path
+        let script = """
+        #!/bin/sh
+        stty raw -echo
+        echo "ready"
+        while :; do
+          b=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' ')
+          [ -n "$b" ] && echo "byte:$b"
+        done
+        """
+        try script.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+
+    @Test func theSidebarsKeysReachTheClientsPtyByteForByteWithoutCountingAsTheUsersOwn() async throws {
+        let bin = try byteReportingHerdr()
+        let endpoint = HerdrEndpoint(session: "demo", socketDirectory: "/tmp/conn-no-sockets", binaryPath: bin)
+        let c = FallbackTerminalController()
+        c.view.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        // A client that is not running takes no keys.
+        #expect(c.sendNavigation([0x02]) == false)
+        c.start(endpoint: endpoint, theme: .dark)
+        defer { c.stop() }
+        #expect(await wait(5) { screen(c).contains("ready") }, "\(screen(c))")
+        #expect(c.sendNavigation([0x02, 0x77, 0x35]))
+        #expect(c.sendNavigation([0x1b, 0x5b, 0x42, 0x0d]))
+        let expected = ["byte:02", "byte:77", "byte:35", "byte:1b", "byte:5b", "byte:42", "byte:0d"]
+        #expect(await wait(5) { expected.allSatisfy { screen(c).contains($0) } }, "\(screen(c))")
+        // The person's own typing is told apart from these keys: nothing here counts as the person using the client.
+        #expect(c.lastUserInput == nil && !c.hadUserInput(within: 60))
+    }
 }
 }

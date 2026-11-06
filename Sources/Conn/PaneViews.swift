@@ -312,7 +312,8 @@ struct PanesArea: View {
 // MARK: - Herdr client
 
 /// Herdr's own client in a pty, beside Conn's native sidebar. It keeps Herdr's tab row and panes and, by default, starts
-/// without Herdr's sidebar. Keys and mouse typed here steer only this client; Herdr's socket-API focus is shared.
+/// without Herdr's sidebar. Keys and mouse typed here steer only this client; Herdr's socket-API focus is shared. A click on a
+/// space or an agent in Conn's sidebar moves this client by typing Herdr's own keys into it (AppModel.sidebarOpenWorkspace).
 struct FallbackPane: View {
     @EnvironmentObject var app: AppModel
     @State private var tick = 0
@@ -339,7 +340,7 @@ struct FallbackPane: View {
                 VStack(spacing: 10) {
                     Image(systemName: "terminal").font(.system(size: 26)).foregroundStyle(.tertiary)
                     Text("Herdr's client, as Herdr draws it").font(.system(size: 14, weight: .medium))
-                    Text("This starts a Herdr client attached to session \(app.endpoint.session). It is interactive: keys and mouse you use here go to Herdr and steer only this client, and as one more attached client it takes part in Herdr's own pane sizing. Conn's sidebar stays on the left. Herdr's own focus commands (from a script or another tool) move every attached client, this one too.")
+                    Text("This starts a Herdr client attached to session \(app.endpoint.session). It is interactive: keys and mouse you use here go to Herdr and steer only this client, and as one more attached client it takes part in Herdr's own pane sizing. Conn's sidebar stays on the left: a click on a space or an agent there moves this client to it and no other. Herdr's own focus commands (from a script or another tool) move every attached client, this one too.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 460)
                     if app.config.clientConfigPath == nil {
                         Toggle("Hide Herdr's own sidebar", isOn: $app.hideHerdrSidebar).toggleStyle(.checkbox).font(.system(size: 12))

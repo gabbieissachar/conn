@@ -14,8 +14,12 @@ import ConnCore
 /// put in a window, and it attaches only to the named session.
 enum HerdrLab {
     static var requested: Bool { ProcessInfo.processInfo.environment["CONN_HERDR_LAB_SESSION"] != nil }
-    static var session: String? {
-        guard let s = ProcessInfo.processInfo.environment["CONN_HERDR_LAB_SESSION"],
+    static var session: String? { name(in: "CONN_HERDR_LAB_SESSION") }
+    /// The sidebar navigation check has its own lab session (see HerdrClientSidebarLabTests for what it must hold).
+    static var navRequested: Bool { ProcessInfo.processInfo.environment["CONN_HERDR_LAB_NAV_SESSION"] != nil }
+    static var navSession: String? { name(in: "CONN_HERDR_LAB_NAV_SESSION") }
+    private static func name(in variable: String) -> String? {
+        guard let s = ProcessInfo.processInfo.environment[variable],
               s.range(of: "^fm-lab-[A-Za-z0-9][A-Za-z0-9_-]*$", options: .regularExpression) != nil else { return nil }
         return s
     }
@@ -103,6 +107,110 @@ extension SwiftTermMainActorTests {
         #expect(b.running && screen(b).contains(here), "B was affected by stopping A:\n\(screen(b))")
         b.stop()
         #expect(await wait(8) { !b.running })
+    }
+}
+}
+
+/// The lab-only end-to-end check of sidebar navigation: two attached clients, and a sidebar-driven switch of workspace and of
+/// tab that must move only the embedded one.
+///
+/// Skipped unless `CONN_HERDR_LAB_NAV_SESSION` names a throwaway session (`fm-lab-...`; any other name is refused). The session
+/// must already hold at least 11 workspaces, and a workspace with at least 11 tabs, so the keys past 9 are exercised. Every
+/// pane runs a loop that prints `<workspace label>-T<tab number> tick N`: workspaces labelled `NAV01`, `NAV02`, ... and tabs
+/// numbered from 1 (`NAV03-T7 tick 12`). Run it with
+/// `CONN_HERDR_LAB_NAV_SESSION=fm-lab-... ./test.sh --filter HerdrClientSidebarLabTests`. Headless: the terminal views are
+/// never in a window, and it attaches only to the named session.
+extension SwiftTermMainActorTests {
+@Suite("Herdr client sidebar navigation, lab end to end", .enabled(if: HerdrLab.navRequested)) @MainActor struct HerdrClientSidebarLabTests {
+    func screen(_ c: FallbackTerminalController) -> String {
+        c.view.visibleRowsText(0..<c.view.terminalDimensions.rows).joined(separator: "\n")
+    }
+
+    func wait(_ seconds: Double, until condition: () -> Bool) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return condition()
+    }
+
+    /// The `<label>-T<n>` a pane's loop is printing on this client's screen, or nil.
+    func shown(_ c: FallbackTerminalController) -> String? {
+        let text = screen(c)
+        guard let r = text.range(of: "NAV[0-9]+-T[0-9]+ tick", options: [.regularExpression, .backwards]) else { return nil }
+        return String(text[r]).replacingOccurrences(of: " tick", with: "")
+    }
+
+    @Test func sidebarSwitchesMoveOnlyTheEmbeddedClient() async throws {
+        let lab = try #require(HerdrLab.navSession, "CONN_HERDR_LAB_NAV_SESSION must name a session called fm-lab-...")
+        let fm = FileManager.default
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("conn-lab-nav-\(UUID().uuidString)")
+        let home = scratch.appendingPathComponent("home").path, temp = scratch.appendingPathComponent("tmp").path
+        try fm.createDirectory(atPath: temp, withIntermediateDirectories: true)
+        // A stand-in for the person's config with a prefix other than Herdr's default, so the key map must come from the file.
+        let source = URL(fileURLWithPath: temp).appendingPathComponent("source.toml")
+        try "onboarding = false\n\n[keys]\nprefix = \"ctrl+a\"\n\n[ui]\nsidebar_start_collapsed = false\n".write(to: source, atomically: true, encoding: .utf8)
+        let hiddenConfig = try #require(try HerdrClientConfig.resolve(hideSidebar: true, custom: nil, home: home, temporaryDirectory: temp, sourceConfig: source))
+        let shownConfig = try HerdrClientConfig.validate(source.path, home: home, temporaryDirectory: temp)
+        let keymap = try HerdrClientKeymap.load(configPath: hiddenConfig)
+        #expect(keymap.prefix == [0x01])
+
+        let endpoint = HerdrEndpoint(session: lab)
+        try #require(endpoint.binaryPath != nil, "no herdr executable found")
+        let reader = HerdrClient(endpoint: endpoint)
+        let before = try reader.snapshot()
+        #expect(before.workspaces.count >= 11, "the lab needs 11 or more workspaces, to reach the keys past 9")
+        let busiest = try #require(before.workspaces.max { before.tabs(in: $0.id).count < before.tabs(in: $1.id).count })
+        #expect(before.tabs(in: busiest.id).count >= 11, "the lab needs a workspace with 11 or more tabs")
+
+        // Client A is Conn's embedded client (sidebar hidden); client B is another screen on the same session.
+        let a = FallbackTerminalController(), b = FallbackTerminalController()
+        for c in [a, b] { c.view.frame = NSRect(x: 0, y: 0, width: 1100, height: 640) }
+        a.start(endpoint: endpoint, theme: .dark, clientConfig: hiddenConfig)
+        b.start(endpoint: endpoint, theme: .dark, clientConfig: shownConfig)
+        defer { a.stop(); b.stop() }
+        #expect(await wait(15) { shown(a) != nil && shown(b) != nil }, "clients did not draw.\nA:\n\(screen(a))\nB:\n\(screen(b))")
+        let bStart = try #require(shown(b))
+        #expect(shown(a) == bStart, "A and B did not start on the same tab")
+
+        // The same wiring the app uses: keys into A's pty, and a fresh read of Herdr's focus pointer.
+        let navigator = HerdrClientNavigator(
+            send: { bytes in await MainActor.run { _ = a.sendNavigation(bytes) } },
+            readFocus: { await Task.detached { (try? reader.snapshot()).map { HerdrClientNavigator.Focus(workspaceID: $0.focusedWorkspaceID, tabID: $0.focusedTabID) } }.value })
+        func go(_ target: HerdrClientNavigation.Target, expecting prefix: String, _ what: String) async throws {
+            let snap = try reader.snapshot()
+            let stages = try HerdrClientNavigation.plan(to: target, in: snap, keymap: keymap)
+            let outcome = await navigator.run(stages)
+            #expect(outcome == .landed, "\(what): \(outcome)")
+            #expect(await wait(8) { shown(a)?.hasPrefix(prefix) == true }, "\(what): A shows \(shown(a) ?? "nothing"), wanted \(prefix)*.\n\(screen(a))")
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            #expect(shown(b) == bStart, "\(what): B moved to \(shown(b) ?? "nothing")")
+        }
+
+        let workspaces = before.workspaces
+        let second = workspaces[1], last = workspaces[workspaces.count - 1]
+        try await go(.workspace(second.id), expecting: "\(second.label)-T", "workspace 2")
+        try await go(.workspace(last.id), expecting: "\(last.label)-T", "last workspace (position \(workspaces.count), past 9)")
+        try await go(.workspace(workspaces[0].id), expecting: "\(workspaces[0].label)-T", "workspace 1")
+
+        let tabs = before.tabs(in: busiest.id).sorted { $0.number < $1.number }
+        for t in [tabs[1], tabs[tabs.count - 1], tabs[0]] {
+            try await go(.tab(t.id), expecting: "\(busiest.label)-T\(t.number)", "tab \(t.number) of \(busiest.label)")
+        }
+        #expect(shown(b) == bStart)
+
+        // A key map that does not match the client's config does not move it, and the check says so instead of reporting a landing.
+        let wrong = HerdrClientKeymap(prefix: [0x07], workspacePicker: keymap.workspacePicker, navigateDown: keymap.navigateDown, nextTab: keymap.nextTab)
+        let aBefore = shown(a)
+        let stages = try HerdrClientNavigation.plan(to: .workspace(second.id), in: try reader.snapshot(), keymap: wrong)
+        let slow = HerdrClientNavigator(send: { bytes in await MainActor.run { _ = a.sendNavigation(bytes) } },
+                                        readFocus: { await Task.detached { (try? reader.snapshot()).map { HerdrClientNavigator.Focus(workspaceID: $0.focusedWorkspaceID, tabID: $0.focusedTabID) } }.value })
+        slow.confirmTimeout = 1.5
+        let miss = await slow.run(stages)
+        guard case .failed = miss else { Issue.record("a wrong prefix was reported as landed: \(miss)"); return }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        #expect(shown(a) == aBefore && shown(b) == bStart)
     }
 }
 }

@@ -76,6 +76,18 @@ final class AppModel: ObservableObject {
     private static let hideHerdrSidebarKey = "conn.herdrClient.hideSidebar"
     /// Why the Herdr client did not attach (its config failed the check), shown in the pane; nil otherwise.
     @Published private(set) var herdrClientError: String?
+    /// The keys the sidebar types into the running Herdr client, read from the config it started with; nil with a reason in
+    /// `herdrKeymapProblem` when that config binds a key Conn cannot type.
+    private var herdrKeymap: HerdrClientKeymap?
+    private var herdrKeymapProblem: String?
+    /// True while a sidebar click is moving the Herdr client.
+    @Published private(set) var herdrNavigating = false
+    private var herdrNavTask: Task<Void, Never>?
+    private var herdrNavEndedAt: Date?
+    /// The highlight before the first click of a run of clicks, which a failed move goes back to.
+    private var herdrHighlightBeforeNav: (workspace: String?, pane: String?)?
+    /// Decides when the sidebar follows Herdr's focus pointer while the client runs.
+    private var clientFocus = HerdrClientFocusFollower()
     @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
@@ -266,6 +278,7 @@ final class AppModel: ObservableObject {
         }
         if let c = comparePaneID, s.agent(c) == nil { comparePaneID = nil }
         syncSessions()
+        followHerdrClientFocus()
         let n = waiting.count
         NSApplication.shared.dockTile.badgeLabel = n > 0 ? "\(n)" : ""
     }
@@ -513,10 +526,87 @@ final class AppModel: ObservableObject {
         do {
             let clientConfig = try HerdrClientConfig.resolve(hideSidebar: hideHerdrSidebar, custom: config.clientConfigPath)
             herdrClientError = nil
+            do { herdrKeymap = try HerdrClientKeymap.load(configPath: clientConfig); herdrKeymapProblem = nil }
+            catch { herdrKeymap = nil; herdrKeymapProblem = "\(error)" }
             fallback.start(endpoint: endpoint, theme: terminalTheme, clientConfig: clientConfig)
+            // A new client opens on the workspace and tab Herdr last focused: show that in the sidebar.
+            clientFocus.reset()
+            followHerdrClientFocus(adopt: true)
         } catch {
             herdrClientError = "\(error)"
         }
+    }
+
+    // MARK: Herdr client navigation
+
+    /// True while the Herdr client view is showing and its client is running: the sidebar then moves that client instead of
+    /// switching to the Agent view.
+    var herdrClientDriving: Bool { mode == .herdr && fallback.running }
+
+    /// A click on a space in the sidebar.
+    func sidebarOpenWorkspace(_ id: String) {
+        guard herdrClientDriving else { selectWorkspace(id); return }
+        moveHerdrClient(to: .workspace(id), label: snapshot.workspace(id)?.label ?? id, workspace: id, pane: nil)
+    }
+
+    /// A click on an agent in the sidebar: its tab.
+    func sidebarOpenAgent(_ a: Agent) {
+        guard herdrClientDriving else { select(a.id); return }
+        moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
+    }
+
+    /// Type the keys that move the embedded client to `target` and confirm it got there. Only the embedded client moves: the
+    /// keys go to its pty, and Herdr's session-wide focus commands are never called. The highlight moves at once and goes back
+    /// if the client did not confirm.
+    private func moveHerdrClient(to target: HerdrClientNavigation.Target, label: String, workspace: String, pane: String?) {
+        guard let keymap = herdrKeymap else { toast(herdrKeymapProblem ?? "The Herdr client has not started."); return }
+        let stages: [HerdrClientNavigation.Stage]
+        do { stages = try HerdrClientNavigation.plan(to: target, in: snapshot, keymap: keymap) } catch { toast("\(error)"); return }
+        if !herdrNavigating { herdrHighlightBeforeNav = (selectedWorkspaceID, selectedPaneID) }
+        let shownLabel = privacy ? "that item" : label
+        selectedWorkspaceID = workspace
+        if let p = pane { selectedPaneID = p }
+        let fb = fallback
+        let reader = HerdrClient(endpoint: endpoint)
+        let readFocus: @Sendable () async -> HerdrClientNavigator.Focus? = {
+            await Task.detached { (try? reader.snapshot()).map { HerdrClientNavigator.Focus(workspaceID: $0.focusedWorkspaceID, tabID: $0.focusedTabID) } }.value
+        }
+        let navigator = HerdrClientNavigator(send: { bytes in await MainActor.run { _ = fb.sendNavigation(bytes) } }, readFocus: readFocus)
+        // The latest click wins, but a stage already typed finishes first, so two sequences never interleave in the pty.
+        let previous = herdrNavTask
+        previous?.cancel()
+        herdrNavigating = true
+        let task = Task { [weak self] in
+            await previous?.value
+            let outcome = await navigator.run(stages)
+            guard let self = self, !Task.isCancelled else { return }
+            self.herdrNavigating = false
+            self.herdrNavEndedAt = Date()
+            if outcome == .landed, pane == nil, let tab = await readFocus()?.tabID, let a = self.snapshot.agent(inTab: tab), a.workspaceID == workspace {
+                self.selectedPaneID = a.id    // a space opens on its own current tab: highlight that tab's agent
+            }
+            if case .failed(_, _, let reason) = outcome {
+                if let before = self.herdrHighlightBeforeNav {
+                    if self.selectedWorkspaceID == workspace { self.selectedWorkspaceID = before.workspace }
+                    if let p = pane, self.selectedPaneID == p { self.selectedPaneID = before.pane }
+                }
+                self.toast("The Herdr client did not switch to \(shownLabel). \(reason).")
+            }
+        }
+        herdrNavTask = task
+    }
+
+    /// Keep the sidebar in step with the client. Herdr reports one focus pointer for the whole session (the workspace and tab
+    /// last selected by any attached client), not a position per client, so the sidebar follows a change only when the person
+    /// just typed or clicked in the embedded client, or when the client has just attached. A change made on another screen
+    /// while they are not using this client is left alone.
+    private func followHerdrClientFocus(adopt: Bool = false) {
+        guard herdrClientDriving else { return }
+        let settled = !herdrNavigating && (herdrNavEndedAt.map { Date().timeIntervalSince($0) > 1.5 } ?? true)
+        guard let at = clientFocus.observe(workspace: snapshot.focusedWorkspaceID, tab: snapshot.focusedTabID, adopt: adopt,
+                                           settled: settled, userActive: fallback.hadUserInput(within: 2)) else { return }
+        selectedWorkspaceID = at.workspace
+        if let a = snapshot.agent(inTab: at.tab) { selectedPaneID = a.id }
     }
 
     func shutdown() {

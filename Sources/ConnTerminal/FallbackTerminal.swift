@@ -7,6 +7,10 @@
 // Keys and mouse events typed into this pty steer only this client (its own workspace and tab), but Herdr's socket API
 // focus commands (`workspace focus`, `tab focus`, `pane focus`) move every attached client. Nothing here calls them.
 //
+// Conn's sidebar moves this client the same way: by typing Herdr's own keys into this pty (see HerdrClientNavigation), which
+// moves only this client. `lastUserInput` records when the person last typed or clicked in the client (not the keys Conn
+// types for them), so the app can tell a switch they made inside the client from one made on another screen.
+//
 // The client may start with its own config file (`HERDR_CONFIG_PATH`, see HerdrClientConfig) so it can draw without
 // Herdr's sidebar. Herdr reads that file only when the client starts; this code never asks a running server to reload.
 import AppKit
@@ -17,6 +21,9 @@ import ConnCore
 public final class FallbackTerminalController: NSObject, LocalProcessTerminalViewDelegate {
     public let view: LocalProcessTerminalView
     public private(set) var running = false
+    /// When the person last typed or clicked in the client.
+    public private(set) var lastUserInput: Date?
+    private var inputMonitor: Any?
     public private(set) var exitCode: Int32?
     /// The client config the running (or last) client was started with; nil when it read Herdr's own config.
     public private(set) var clientConfig: URL?
@@ -25,6 +32,12 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
     public override init() {
         view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         super.init()
+        // A key typed while the client's view has the keyboard, or a click on it, is the person using the client. Keys that
+        // `sendNavigation` types go straight to the pty and never pass here.
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .leftMouseUp]) { [weak self] event in
+            MainActor.assumeIsolated { self?.noteUserEvent(event) }
+            return event
+        }
         view.processDelegate = self
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     }
@@ -68,6 +81,31 @@ public final class FallbackTerminalController: NSObject, LocalProcessTerminalVie
 
     public func stop() {
         if running { view.terminate() }
+    }
+
+    /// Type bytes into the running client, as if the person had typed them. Returns false (typing nothing) when it is not running.
+    @discardableResult
+    public func sendNavigation(_ bytes: [UInt8]) -> Bool {
+        guard running else { return false }
+        view.send(bytes)
+        return true
+    }
+
+    private func noteUserEvent(_ event: NSEvent) {
+        guard let window = view.window, event.window === window else { return }
+        if event.type == .keyDown {
+            guard window.firstResponder === view else { return }
+        } else {
+            guard let hit = window.contentView?.hitTest(event.locationInWindow), hit === view || hit.isDescendant(of: view) else { return }
+        }
+        lastUserInput = Date()
+    }
+
+    deinit { if let m = inputMonitor { NSEvent.removeMonitor(m) } }
+
+    /// True when the person typed or clicked in the client within the last `seconds`.
+    public func hadUserInput(within seconds: TimeInterval) -> Bool {
+        lastUserInput.map { Date().timeIntervalSince($0) <= seconds } ?? false
     }
 
     nonisolated public func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}

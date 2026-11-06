@@ -31,7 +31,7 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(app.snapshot.workspaces) { w in
-                        SidebarRow(selected: w.id == app.selectedWorkspaceID, action: { app.selectWorkspace(w.id) }) {
+                        SidebarRow(selected: w.id == app.selectedWorkspaceID, action: { app.sidebarOpenWorkspace(w.id) }) {
                             StateGlyph(state: w.state, size: 11)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(w.label).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
@@ -54,7 +54,7 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
-                        SidebarRow(selected: a.id == app.selectedPaneID, action: { app.select(a.id) }) {
+                        SidebarRow(selected: a.id == app.selectedPaneID, action: { app.sidebarOpenAgent(a) }) {
                             HStack(alignment: .top, spacing: 8) {
                                 StateGlyph(state: a.state)
                                 VStack(alignment: .leading, spacing: 1) {
