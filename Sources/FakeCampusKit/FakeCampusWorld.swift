@@ -40,6 +40,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var session = 0
     private var loggedIn = true
     private var starting = false
+    private var failWrites = false
     private var subscribers: [Int: AsyncStream<String>.Continuation] = [:]
     private var nextSub = 0
     public private(set) var log: [String] = []
@@ -227,6 +228,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
         guard parts.count >= 6, parts[4] == "conversations", let c = conv(parts[5]), c.kind == kind, c.folder == folder else { return err(404, "not_found") }
         let id = c.id
         let tail = Array(parts.dropFirst(6))
+        lock.lock(); let failing = failWrites; lock.unlock()
+        if method == "POST", failing { return err(500, "forced_failure") }
         switch (method, tail) {
         case ("GET", []): return ok(["data": ["id": id, "agent": c.agent, "model": ["id": c.model, "providerID": "campus"], "title": c.title, "time": ["updated": Int(c.updatedAt.timeIntervalSince1970 * 1000)]]])
         case ("GET", ["message"]):
@@ -268,6 +271,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
         switch path {
         case "/__fake/expire": expireLogin(); return ok(["ok": true])
         case "/__fake/starting": setStarting(q["on"] != "0"); return ok(["ok": true])
+        case "/__fake/fail-writes": lock.lock(); failWrites = q["on"] != "0"; lock.unlock(); return ok(["ok": true])
         case "/__fake/log": return ok(["writes": writes()])
         case "/__fake/reset": reset(); return ok(["ok": true])
         case "/__fake/drop-streams": dropStreams(); return ok(["ok": true])

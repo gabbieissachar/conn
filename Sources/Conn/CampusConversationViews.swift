@@ -73,11 +73,11 @@ private struct FormCard: View {
                 ForEach(Array(form.questions.enumerated()), id: \.offset) { _, q in Text(q.text).font(.system(size: 13, weight: .semibold)) }
                 Text("Answered: \(t)").font(.system(size: 12)).foregroundStyle(AgentState.done.color)
             } else {
-                ForEach(Array(form.questions.enumerated()), id: \.offset) { _, q in
+                ForEach(Array(form.questions.enumerated()), id: \.offset) { qi, q in
                     Text(q.text).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                    FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { OptionChip(label: $0, on: q.pick == $0) } }
+                    FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { CampusOptionButton(campus: app.campus, form: form, c: c, question: qi, option: $0) } }
                 }
-                CampusAnswerControls(form: form, c: c)
+                CampusAnswerControls(campus: app.campus, form: form, c: c)
             }
         }
         .redacted(reason: app.privacy ? .placeholder : [])
@@ -89,17 +89,42 @@ private struct FormCard: View {
     }
 }
 
-/// Slice 1 reads only: the card points at Campus's own page. (Slice 2 puts the answer buttons here.)
+/// The answer buttons of an open question (slice 2): picking an option on a single question sends it (through the write gate); several questions pick first and then
+/// "Send answers". "Answer in web" is Campus's own page, as before.
 struct CampusAnswerControls: View {
     @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
     let form: CampusForm
     let c: CampusConversation
 
     var body: some View {
+        let ready = campus.pickedAnswers(form) != nil
         HStack(spacing: 8) {
-            Button("Answer in web") { if let u = app.campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
-            Text("Reading only: answer in Campus.").font(.system(size: 11)).foregroundStyle(.secondary)
+            if form.questions.count > 1 {
+                Button("Send answers") { app.campusAnswer(form, in: c) }.controlSize(.small).disabled(!ready).accessibilityIdentifier("campus-send-answers")
+                Text(ready ? "Ready." : "Pick one for each question.").font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Text(campus.writesEnabled ? "Click an answer to send it." : "Campus writes are off: turn them on to answer here.").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button("Answer in web") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
         }
+    }
+}
+
+/// One option of an open question: a button that picks it (and, for a single question, sends it).
+struct CampusOptionButton: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
+    let form: CampusForm
+    let c: CampusConversation
+    let question: Int
+    let option: String
+
+    var body: some View {
+        let on = campus.picks[form.id]?[question] == option
+        Button { app.campusPick(form, in: c, question: question, option: option) } label: { OptionChip(label: option, on: on) }
+            .buttonStyle(.plain).accessibilityIdentifier("campus-option")
     }
 }
 
@@ -366,11 +391,11 @@ struct CampusTranscriptView: View {
     private func waiting(_ f: CampusForm, _ c: CampusConversation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Waiting on you").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)
-            ForEach(Array(f.questions.enumerated()), id: \.offset) { _, q in
+            ForEach(Array(f.questions.enumerated()), id: \.offset) { qi, q in
                 Text(q.text).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { OptionChip(label: $0, on: q.pick == $0) } }
+                FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { CampusOptionButton(campus: campus, form: f, c: c, question: qi, option: $0) } }
             }
-            CampusAnswerControls(form: f, c: c)
+            CampusAnswerControls(campus: campus, form: f, c: c)
         }
         .redacted(reason: app.privacy ? .placeholder : [])
         .padding(.leading, 10).padding(.vertical, 4)
@@ -388,29 +413,124 @@ struct CampusTranscriptView: View {
     }
 }
 
-// MARK: - the parts slice 2 fills
 
-/// The composer. Slice 1 reads only, so this is a note and a way into Campus's own page.
+// MARK: - the composer, the Stop button and the undo banner (slice 2)
+
+/// The write waiting out its undo window, sending, or just done: the way Conn's Herdr compose box shows it.
+struct CampusHeldBanner: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
+
+    var body: some View {
+        if let h = campus.held {
+            HStack(spacing: 8) {
+                switch h.phase {
+                case .held: Image(systemName: "hourglass"); Text("Sending in \(h.secondsLeft) s: \(app.privacy ? "message" : h.label)").lineLimit(1)
+                case .sending: ProgressView().controlSize(.small); Text("Sending…")
+                case .sent: Image(systemName: "checkmark.circle.fill").foregroundStyle(AgentState.done.color); Text("Sent to Campus.")
+                case .undone: Image(systemName: "arrow.uturn.backward"); Text(h.restores ? "Taken back into the box." : "Not sent.")
+                case .failed(let why): Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text("Not sent: \(why).\(h.restores ? " Your text is back in the box." : "")").lineLimit(2)
+                }
+                Spacer()
+                if h.phase == .held { Button("Undo") { campus.undo() }.buttonStyle(.borderless).keyboardShortcut("z", modifiers: .command).accessibilityIdentifier("campus-undo") }
+            }
+            .font(.system(size: 12)).padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 12).padding(.top, 8)
+            .accessibilityIdentifier("campus-held")
+        }
+    }
+}
+
+struct CampusStopButton: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
+    let c: CampusConversation
+
+    var body: some View {
+        if c.working && campus.link == .live {
+            Button { app.campusStop(c) } label: { Label("Stop", systemImage: "stop.fill").font(.system(size: 11, weight: .medium)) }
+                .controlSize(.small).tint(AgentState.blocked.color).help(campus.writesEnabled ? "Stop this run (interrupt)" : "Campus writes are off")
+                .accessibilityIdentifier("campus-stop")
+        }
+    }
+}
+
+/// The composer: a message box, Send (Steer or Queue while a run is working), and the model and agent pickers. All of it is behind the "Campus writes" switch.
 struct CampusComposer: View {
     @EnvironmentObject var app: AppModel
     @ObservedObject var campus: CampusStore
     let c: CampusConversation
     let compact: Bool
+    @State private var text = ""
+    @State private var confirm = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.tertiary)
-            Text("Reading only. Reply in Campus.").font(.system(size: 11)).foregroundStyle(.secondary)
-            Spacer()
-            Button("Open in web") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
+        let on = campus.writesEnabled && campus.link == .live
+        VStack(spacing: 6) {
+            CampusHeldBanner(campus: campus)
+            VStack(alignment: .leading, spacing: 5) {
+                if !campus.writesEnabled {
+                    HStack(spacing: 8) {
+                        Label("Campus writes are off", systemImage: "lock.fill").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.orange)
+                        Button("Turn on…") { app.requestCampusWrites() }.buttonStyle(.link).font(.system(size: 11)).accessibilityIdentifier("campus-turn-on")
+                        Spacer()
+                        Button("Open in web") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
+                    }
+                } else if campus.link != .live {
+                    Label(campus.link == .expired ? "Signed out of Campus: sign in to send" : "Campus is not reachable", systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Color.orange)
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField(placeholder, text: $text, axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(1...(compact ? 3 : 6)).font(.system(size: 13))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.primary.opacity(0.10)))
+                        .disabled(!on).opacity(on ? 1 : 0.55)
+                        .accessibilityIdentifier("campus-input")
+                    if c.working {
+                        Button("Queue") { submit("queue") }.fixedSize().disabled(!on || trimmed.isEmpty).help("Send after the run ends")
+                        Button("Steer") { submit("steer") }.fixedSize().keyboardShortcut(.return, modifiers: .command).disabled(!on || trimmed.isEmpty).help("Send now, into the run (⌘↩)")
+                            .accessibilityIdentifier("campus-send")
+                    } else {
+                        Button("Send") { submit(nil) }.fixedSize().keyboardShortcut(.return, modifiers: .command).disabled(!on || trimmed.isEmpty).help("⌘↩ sends after a short undo window")
+                            .accessibilityIdentifier("campus-send")
+                    }
+                }
+                if !compact { pickers(on: on) }
+            }
+            .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 2)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
+        .background(.bar)
+        .onReceive(app.campusDraftRestore.filter { $0.0 == c.id }) { _, t in text = text.isEmpty ? t : t + "\n" + text }
         .accessibilityIdentifier("campus-composer")
     }
-}
 
-struct CampusStopButton: View {
-    @ObservedObject var campus: CampusStore
-    let c: CampusConversation
-    var body: some View { EmptyView() }
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var placeholder: String {
+        if !campus.writesEnabled { return "Campus writes are off" }
+        return c.working ? "Campus is working: Steer sends now, Queue sends after" : (c.needsYou ? "Answer the question above, or type another answer" : "Message Campus…")
+    }
+
+    private func submit(_ delivery: String?) {
+        let t = trimmed
+        guard !t.isEmpty else { return }
+        if app.campusSend(t, to: c, delivery: delivery) { text = "" }
+    }
+
+    private func pickers(on: Bool) -> some View {
+        HStack(spacing: 10) {
+            let space = c.spaceID
+            Text("Model").font(.system(size: 11)).foregroundStyle(.secondary)
+            Menu(c.model ?? "default") {
+                ForEach(campus.models[space] ?? []) { m in Button(m.label) { app.campusSetModel(m, for: c) } }
+            }.menuStyle(.borderlessButton).fixedSize().disabled(!on || (campus.models[space] ?? []).isEmpty).accessibilityIdentifier("campus-model")
+            Text("Agent").font(.system(size: 11)).foregroundStyle(.secondary)
+            Menu(c.agent ?? "default") {
+                ForEach(campus.agents[space] ?? []) { a in Button(a.label) { app.campusSetAgent(a, for: c) } }
+            }.menuStyle(.borderlessButton).fixedSize().disabled(!on || (campus.agents[space] ?? []).isEmpty).accessibilityIdentifier("campus-agent")
+            Spacer()
+        }
+    }
 }

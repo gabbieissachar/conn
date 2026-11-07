@@ -181,6 +181,8 @@ struct ConnCommands: Commands {
                 Button("Sign in to Campus…") { app.signInToCampus() }
                 Button("Open Campus in the Browser") { NSWorkspace.shared.open(app.campus.baseURL) }
                 Button("Check Campus Now") { app.campus.kick() }
+                Divider()
+                Toggle("Campus Writes", isOn: Binding(get: { app.campus.writesEnabled }, set: { on in if on { app.requestCampusWrites() } else { app.disableCampusWrites() } }))
             }
         }
         CommandMenu("Layout") {
@@ -241,5 +243,7 @@ struct ConnApp: App {
             MenuBarLabel(app: app)
         }
         .menuBarExtraStyle(.window)
+
+        Settings { CampusSettingsView(campus: app.campus).environmentObject(app) }
     }
 }

@@ -13,7 +13,7 @@ struct SidebarView: View {
             Divider()
             agents.frame(maxHeight: .infinity)
             // Campus conversations (C1): their own section, only when Campus is part of this launch.
-            if app.campus.link != .disabled { Divider(); CampusSection(campus: app.campus).frame(maxHeight: 300) }
+            if app.campus.link != .disabled { Divider(); CampusSection(campus: app.campus) }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
@@ -643,6 +643,12 @@ struct MainView: View {
             return any
         }
         .onChange(of: app.showWeb) { _, _ in app.pinReader(); app.updateReaderLayout() }
+        .confirmationDialog("Let Conn write to Campus?", isPresented: $app.campusConfirmWrites, titleVisibility: .visible) {
+            Button("Turn on Campus writes", role: .destructive) { app.enableCampusWrites() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Conn will be able to send a message, answer a question, stop a run and change the model or agent in your Campus conversations, as you. Campus acts on what it receives. Every write waits 3 seconds with an Undo. The switch is off again at the next launch.")
+        }
         .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
     }
 

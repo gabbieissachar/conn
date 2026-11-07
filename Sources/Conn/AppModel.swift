@@ -55,6 +55,10 @@ final class AppModel: ObservableObject {
     /// The Campus conversation shown in the centre (and in the Reader column), or nil: a Herdr agent or a view is shown instead.
     @Published var campusSelectedID: String?
     @Published var campusSignInShown = false
+    /// Asking before the "Campus writes" switch goes on.
+    @Published var campusConfirmWrites = false
+    /// Text that goes back into a conversation's box (an Undo, or a send that failed): (conversation id, text).
+    let campusDraftRestore = PassthroughSubject<(String, String), Never>()
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind

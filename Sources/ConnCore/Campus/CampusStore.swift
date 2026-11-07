@@ -16,16 +16,32 @@ import Combine
 public final class CampusStore: ObservableObject {
     @Published public private(set) var link: CampusLink
     @Published public private(set) var spaces: [CampusSpace] = []
-    @Published public private(set) var conversations: [String: CampusConversation] = [:]
+    @Published public internal(set) var conversations: [String: CampusConversation] = [:]
     /// The timelines of the conversations being shown. Not published as one: a text delta must redraw one conversation, not the window.
     /// A view that shows one listens to `timelineChanged` (the conversation id).
-    public private(set) var timelines: [String: CampusTimeline] = [:]
+    public internal(set) var timelines: [String: CampusTimeline] = [:]
     public let timelineChanged = PassthroughSubject<String, Never>()
     /// The question a conversation waits on (from `GET .../form` or `form.created`).
-    @Published public private(set) var openForms: [String: CampusForm] = [:]
+    @Published public internal(set) var openForms: [String: CampusForm] = [:]
     /// When the rows were last known to be true: the last good answer or frame.
     @Published public private(set) var asOf: Date?
     @Published public private(set) var streamLive = false
+
+    // Slice 2: writes (CampusWrites.swift). Off at every launch: nothing is sent to Campus until the person turns this on.
+    /// The "Campus writes" switch (C7). Turning it off while a write waits in its undo window takes that write back.
+    @Published public var writesEnabled = false { didSet { if !writesEnabled, oldValue { cancelHeld(reason: "Campus writes were turned off") } } }
+    /// The one write waiting out its undo window, being sent, or just done.
+    @Published public internal(set) var held: CampusHeld?
+    /// Answers picked on open questions, by form id then question index. Memory only.
+    @Published public internal(set) var picks: [String: [Int: String]] = [:]
+    /// The agents and models the composer offers, by space (`composer/agents`, `composer/models`).
+    @Published public internal(set) var agents: [String: [CampusChoice]] = [:]
+    @Published public internal(set) var models: [String: [CampusChoice]] = [:]
+    /// Seconds a write waits before it is sent, with an Undo (the way Conn's Herdr compose box does).
+    public var holdSeconds: TimeInterval = 3
+    var heldTask: Task<Void, Never>?
+    var heldRestore: (() -> Void)?
+    var choicesLoading: Set<String> = []
 
     public let auth: CampusAuth?
     public let baseURL: URL
@@ -177,6 +193,9 @@ public final class CampusStore: ObservableObject {
         return c
     }
 
+    func markExpired() { setExpired() }
+    func requestStatus(_ id: String) { scheduleStatus(id) }
+
     private func setExpired() {
         guard link != .expired else { return }
         link = .expired
@@ -274,6 +293,7 @@ public final class CampusStore: ObservableObject {
         case .starting: link = .starting
         case .failed: break
         }
+        await loadChoices(for: c)
     }
 
     // MARK: frames

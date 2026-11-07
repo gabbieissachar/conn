@@ -24,24 +24,30 @@ struct CampusSection: View {
     @EnvironmentObject var app: AppModel
     @ObservedObject var campus: CampusStore
     @State private var teamsOpen = false
+    /// The rows' own height: the section is as tall as its rows (up to its cap), not as tall as the room it is offered, so Herdr's agents keep the room.
+    @State private var contentHeight: CGFloat = 40
+    static let maxHeight: CGFloat = 230
 
     var body: some View {
         let expired = campus.link == .expired
         return VStack(spacing: 0) {
             header
             ScrollView {
-                LazyVStack(spacing: 1) {
+                VStack(spacing: 1) {
                     switch campus.link {
                     case .starting where campus.conversations.isEmpty: starting
                     default:
                         if expired { expiredNote }
                         if case .unreachable(let why) = campus.link { note(title: "Campus is not reachable", text: why, error: true) }
-                        content(dim: expired)
+                        if !(expired && campus.conversations.isEmpty) { content(dim: expired) }
                     }
                 }
                 .padding(.horizontal, 6).padding(.bottom, 6)
+                .background(GeometryReader { g in Color.clear.preference(key: CampusContentHeight.self, value: g.size.height) })
             }
+            .onPreferenceChange(CampusContentHeight.self) { contentHeight = $0 }
         }
+        .frame(height: min(Self.maxHeight, contentHeight + 36))
         .accessibilityIdentifier("campus-section")
     }
 
@@ -119,7 +125,23 @@ struct CampusSection: View {
         .accessibilityIdentifier("campus-starting")
     }
 
-    private var expiredNote: some View {
+    /// Never signed in: one line and a button, so the section takes little room until there is something to list.
+    private var signInLine: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.tertiary)
+            Text("Not signed in to Campus").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 4)
+            Button("Sign in") { app.signInToCampus() }.controlSize(.small).accessibilityIdentifier("campus-signin")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .accessibilityIdentifier("campus-signin-line")
+    }
+
+    @ViewBuilder private var expiredNote: some View {
+        if campus.asOf == nil { signInLine } else { expiredCard }
+    }
+
+    private var expiredCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(campus.asOf == nil ? "Sign in to Campus" : "Campus sign-in expired").font(.system(size: 12, weight: .semibold))
             Text(campus.asOf == nil
@@ -147,6 +169,11 @@ struct CampusSection: View {
         .background((error ? AgentState.blocked.color : Color.primary).opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .padding(.horizontal, 4)
     }
+}
+
+private struct CampusContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 struct CampusRow: View {
@@ -207,6 +234,14 @@ private struct CampusStatusInner: View {
             }
             .buttonStyle(.plain).help(campus.link == .expired ? "Sign in to Campus" : "Campus link")
             .accessibilityIdentifier("campus-status")
+            if campus.link == .live {
+                Button { if campus.writesEnabled { app.disableCampusWrites() } else { app.requestCampusWrites() } } label: {
+                    Text(campus.writesEnabled ? "Campus: sending on" : "Campus: observe only")
+                        .foregroundStyle(campus.writesEnabled ? Color.orange : Color.secondary)
+                }
+                .buttonStyle(.plain).help("Campus writes: sending, steering, answers, Stop and the model and agent pickers need this on")
+                .accessibilityIdentifier("campus-writes-switch")
+            }
         }
     }
 
@@ -264,5 +299,24 @@ struct CampusSignInSheet: View {
                 if campus.link == .live { try? await Task.sleep(nanoseconds: 800_000_000); app.closeCampusSignIn(); return }
             }
         }
+    }
+}
+
+/// Settings (Conn > Settings, Cmd+,): the "Campus writes" switch, the second place it lives beside the status bar.
+struct CampusSettingsView: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
+
+    var body: some View {
+        Form {
+            Section("Campus") {
+                Toggle("Campus writes", isOn: Binding(get: { campus.writesEnabled }, set: { on in if on { app.requestCampusWrites() } else { app.disableCampusWrites() } }))
+                    .disabled(campus.link == .disabled)
+                Text("Off by default and off again at every launch. On, Conn can send a message, answer a question, stop a run and change the model or agent in a Campus conversation. Every write waits 3 seconds with an Undo. Conn reads Campus either way.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if campus.link == .disabled { Text("Campus is not part of this launch.").font(.system(size: 11)).foregroundStyle(.secondary) }
+            }
+        }
+        .formStyle(.grouped).frame(width: 460, height: 230)
     }
 }

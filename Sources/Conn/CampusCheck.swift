@@ -235,8 +235,127 @@ enum CampusCheck {
         await wait(0.5)
     }
 
-    // MARK: slice 2 (the write gate): filled in with the writes
+    // MARK: slice 2: the write gate
 
     static func writeChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
-                            control: (String) async -> Void, shot: (String) async -> Void) async {}
+                            control: (String) async -> Void, shot: (String) async -> Void) async {
+        let campus = model.campus
+        let base = campus.baseURL
+        func log() async -> [String] {
+            guard let u = URL(string: "/__fake/log", relativeTo: base), let (d, _) = try? await URLSession.shared.data(from: u) else { return [] }
+            return CampusJSON.parse(d)?["writes"].array.compactMap(\.string) ?? []
+        }
+        var restored: [(String, String)] = []
+        let sub = model.campusDraftRestore.sink { restored.append($0) }
+        defer { sub.cancel() }
+        model.watchOn = false
+        let offsite = campus.conversation("ses_fakeOffsite04")!
+        model.openCampus("ses_fakeOffsite04")
+
+        // 1. Off by default: every write is refused before anything is sent.
+        let launchedOff = !campus.writesEnabled
+        let digest = campus.conversation("ses_fakeDigest02")!
+        let form = campus.openForms["ses_fakeDigest02"]
+        if let f = form { campus.pick(f, question: 0, option: "Last full week"); campus.pick(f, question: 1, option: "Short bullets") }
+        let sent = model.campusSend("Should not go", to: offsite, delivery: nil)
+        model.campusStop(campus.conversation("ses_fakeKpi06")!)
+        if let f = form { model.campusAnswer(f, in: digest) }
+        model.campusSetModel(CampusChoice(id: "coding-pro", label: "coding-pro"), for: offsite)
+        await wait(4)
+        var logNow = await log()
+        report("Campus writes: the switch is off at launch, and with it off send, Stop, answer and the pickers are refused and nothing reaches Campus",
+               launchedOff && !sent && campus.held == nil && restored.isEmpty && logNow.isEmpty, "off=\(launchedOff) held=\(String(describing: campus.held)) log=\(logNow.count)")
+        model.requestCampusWrites()
+        report("Campus writes: turning the switch on asks first and does not turn it on by itself", model.campusConfirmWrites && !campus.writesEnabled, "confirm=\(model.campusConfirmWrites)")
+        model.campusConfirmWrites = false
+        if let f = form { campus.clearPicks(f) }
+        model.enableCampusWrites()
+        await shot("campus-11-writes-on.png")
+
+        // 2. A send waits 3 seconds with an Undo; Undo cancels it and the text comes back.
+        let t0 = Date()
+        let taken = model.campusSend("Add a closing dinner", to: offsite, delivery: nil)
+        await wait(1.0)
+        let secondsShown = campus.held?.secondsLeft
+        await shot("campus-12-undo-window.png")
+        campus.undo()
+        let phaseAfterUndo = campus.held?.phase
+        await wait(4)
+        logNow = await log()
+        report("Campus writes: a send waits in a 3-second window with an Undo; Undo sends nothing and returns the text to the box",
+               taken && secondsShown != nil && secondsShown! <= 3 && secondsShown! >= 1 && phaseAfterUndo == .undone && restored.last?.1 == "Add a closing dinner" && logNow.isEmpty,
+               "taken=\(taken) secondsLeft=\(secondsShown.map(String.init) ?? "-") restored=\(restored.map { $0.1 }) after=\(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+
+        // 3. A failure returns the draft and says why.
+        await control("/__fake/fail-writes?on=1")
+        _ = model.campusSend("Keep this text", to: offsite, delivery: nil)
+        let failed = await until(10) { if case .failed? = campus.held?.phase { return true }; return false }
+        await control("/__fake/fail-writes?on=0")
+        logNow = await log()
+        report("Campus writes: when a send fails the text comes back and the reason is shown", failed && restored.last?.1 == "Keep this text" && logNow.isEmpty, "phase=\(String(describing: campus.held?.phase)) restored=\(restored.last?.1 ?? "nil")")
+        await wait(0.3)
+
+        // 4. The send that goes through: delivered after the window, echoed in the transcript, the run starts.
+        _ = await until(10) { campus.held == nil }
+        _ = model.campusSend("Add a closing dinner", to: offsite, delivery: nil)
+        let delivered = await until(8) { campus.held?.phase == .sent }
+        let w1 = await log()
+        let echoed = await until(8) { campus.timeline("ses_fakeOffsite04")?.items.contains { $0.kind == .user && $0.text == "Add a closing dinner" } == true }
+        let started = await until(10) { campus.conversation("ses_fakeOffsite04")?.working == true }
+        report("Campus writes: after the window the send is delivered once (as a plain prompt), shown in the transcript, and the run starts",
+               delivered && w1.count == 1 && w1[0].contains("/ses_fakeOffsite04/prompt") && w1[0].contains("Add a closing dinner") && !w1[0].contains("delivery") && echoed && started, "log=\(w1) echoed=\(echoed) working=\(started)")
+
+        // 5. While the run works: Steer and Queue say how they are sent; Stop interrupts.
+        _ = await until(10) { campus.held == nil }
+        _ = model.campusSend("Make it vegetarian", to: campus.conversation("ses_fakeOffsite04")!, delivery: "steer")
+        _ = await until(8) { campus.held?.phase == .sent }
+        _ = await until(10) { campus.held == nil }
+        _ = model.campusSend("And add a lunch", to: campus.conversation("ses_fakeOffsite04")!, delivery: "queue")
+        _ = await until(8) { campus.held?.phase == .sent }
+        let w2 = await log()
+        report("Campus writes: while a run works, Steer and Queue are sent with their own delivery", w2.count == 3 && w2[1].contains("\"delivery\":\"steer\"") && w2[2].contains("\"delivery\":\"queue\""), "log=\(w2.suffix(2))")
+        _ = await until(25) { campus.conversation("ses_fakeOffsite04")?.working == false }
+        // A second run to stop.
+        await control("/__fake/run?c=ses_fakeOffsite04&text=Another%20pass&ask=0")
+        _ = await until(10) { campus.conversation("ses_fakeOffsite04")?.working == true }
+        _ = await until(10) { campus.held == nil }
+        model.campusStop(campus.conversation("ses_fakeOffsite04")!)
+        _ = await until(8) { campus.held?.phase == .sent }
+        let stopped = await until(10) { campus.conversation("ses_fakeOffsite04")?.working == false && campus.timeline("ses_fakeOffsite04")?.items.contains { $0.kind == .stopped } == true }
+        let w3 = await log()
+        report("Campus writes: Stop sends the interrupt after the window and the run shows as stopped", stopped && w3.last?.contains("/ses_fakeOffsite04/interrupt") == true, "last=\(w3.last ?? "nil")")
+        await shot("campus-13-stopped.png")
+
+        // 6. Answering a question with several parts: pick each, then send; the row stops asking.
+        _ = await until(10) { campus.held == nil }
+        let f = campus.openForms["ses_fakeDigest02"]!
+        model.campusPick(f, in: digest, question: 0, option: "Last full week")
+        let partial = campus.pickedAnswers(f) == nil
+        model.campusPick(f, in: digest, question: 1, option: "Short bullets")
+        model.campusAnswer(f, in: digest)
+        _ = await until(8) { campus.held?.phase == .sent }
+        let answered = await until(15) { campus.conversation("ses_fakeDigest02")?.needsYou == false }
+        let w4 = await log()
+        report("Campus writes: an answer to a question with two parts needs both picks, goes through the same window, and the row stops asking",
+               partial && answered && w4.last?.contains("/ses_fakeDigest02/form/frm_demo_digest/reply") == true && w4.last?.contains("\"answer\":[\"Last full week\",\"Short bullets\"]") == true && campus.openForms["ses_fakeDigest02"] == nil,
+               "partial=\(partial) last=\(w4.last ?? "nil")")
+
+        // 7. Model and agent pickers.
+        _ = await until(10) { campus.held == nil }
+        model.openCampus("ses_fakeSprint03")
+        _ = await until(10) { campus.models["private/default"] != nil }
+        let sprint = campus.conversation("ses_fakeSprint03")!
+        model.campusSetModel(campus.models["private/default"]!.first { $0.id == "coding-pro" }!, for: sprint)
+        _ = await until(8) { campus.held?.phase == .sent }
+        _ = await until(10) { campus.held == nil }
+        model.campusSetAgent(campus.agents["private/default"]!.first { $0.id == "plan" }!, for: campus.conversation("ses_fakeSprint03")!)
+        _ = await until(8) { campus.held?.phase == .sent }
+        let w5 = await log()
+        report("Campus writes: the model and agent pickers send their change after the window and show it", w5.suffix(2).first?.contains("\"id\":\"coding-pro\"") == true && w5.last?.contains("\"agent\":\"plan\"") == true && campus.conversation("ses_fakeSprint03")?.model == "coding-pro" && campus.conversation("ses_fakeSprint03")?.agent == "plan",
+               "model=\(campus.conversation("ses_fakeSprint03")?.model ?? "-") agent=\(campus.conversation("ses_fakeSprint03")?.agent ?? "-")")
+        await shot("campus-14-composer.png")
+        _ = await until(10) { campus.held == nil }
+        model.disableCampusWrites()
+        report("Campus writes: the switch can be turned off again at once", !campus.writesEnabled, "")
+    }
 }

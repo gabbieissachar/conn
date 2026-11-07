@@ -11,6 +11,8 @@ enum WaitingTarget: Equatable {
 
 extension AppModel {
     func wireCampus() {
+        // A person's own launch always starts with writes off; only a scripted check may start them on.
+        if config.campusWritesAtLaunch && config.isScriptedLaunch { campus.writesEnabled = true }
         campusAuth?.onSignIn = { [weak self] in self?.campusSignInShown = true }
         watch.onOpenCampusLink = { [weak self] kind, folder, id, command, column in self?.openCampusLink(kind: kind, folder: folder, id: id, command: command, fromColumn: column) }
         campus.start()
@@ -83,4 +85,33 @@ enum CampusTime {
     static func clock(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; return f.string(from: d)
     }
+}
+
+// MARK: - writes (slice 2): every one goes through CampusStore's gate; a refusal is said in a toast
+
+extension AppModel {
+    /// Turning the switch on asks first (as Herdr's compose box does); turning it off is immediate.
+    func requestCampusWrites() { campusConfirmWrites = true }
+    func enableCampusWrites() { campus.writesEnabled = true; toast("Campus writes are on") }
+    func disableCampusWrites() { campus.writesEnabled = false }
+
+    /// Send the text. True when it was taken (the box is emptied; Undo or a failure brings it back through `campusDraftRestore`).
+    @discardableResult
+    func campusSend(_ text: String, to c: CampusConversation, delivery: String?) -> Bool {
+        let id = c.id
+        if let why = campus.send(text, to: c, delivery: delivery, restore: { [weak self] t in self?.campusDraftRestore.send((id, t)) }) { toast(why.message); return false }
+        return true
+    }
+
+    func campusStop(_ c: CampusConversation) { if let why = campus.stop(c) { toast(why.message) } }
+
+    func campusPick(_ form: CampusForm, in c: CampusConversation, question: Int, option: String) {
+        guard campus.writesEnabled else { toast(CampusWriteRefusal.off.message); return }
+        campus.pick(form, question: question, option: option)
+        if form.questions.count == 1, let why = campus.answer(form, in: c) { toast(why.message) }
+    }
+
+    func campusAnswer(_ form: CampusForm, in c: CampusConversation) { if let why = campus.answer(form, in: c) { toast(why.message) } }
+    func campusSetModel(_ m: CampusChoice, for c: CampusConversation) { if let why = campus.setModel(m, for: c) { toast(why.message) } }
+    func campusSetAgent(_ a: CampusChoice, for c: CampusConversation) { if let why = campus.setAgent(a, for: c) { toast(why.message) } }
 }
