@@ -1428,6 +1428,17 @@ function create({
   // The text that goes to the pane: what was typed, then one line for each photo naming its file, as Claude Code is pointed at a picture.
   const withPhotos = (typed, files) => [typed, files.map((file) => 'Attached image: ' + file).join('\n')].filter(Boolean).join('\n\n');
 
+  // The shadow store (S1) records its own live binding for the pane beside this check's result, once per Send, to prove the store against the
+  // foreground process. Off unless PMOS_READER_STORE_RECORDER names store/reader_store.py. Fire and forget: it never delays, changes or refuses a send.
+  function recordSendCheck(pane, sessionId, result) {
+    const recorder = env.PMOS_READER_STORE_RECORDER;
+    if (!recorder) return;
+    try {
+      Promise.resolve(runner(pythonBin, ['-I', recorder, 'record-send', '--herdr-session', pane.herdr, '--pane', pane.pane_id, '--session', sessionId, '--result', result],
+        { env: runEnv(), timeoutMs: 5000 })).catch(() => {});
+    } catch { /* a recorder that cannot start is not a reason to refuse a send */ }
+  }
+
   async function sendPrompt(body) {
     for (const key of Object.keys(body)) if (key !== 'session_id' && key !== 'text' && key !== 'images') throw new RequestError('Unknown field.');
     const sessionId = body.session_id;
@@ -1449,7 +1460,13 @@ function create({
     // Herdr's own guide: `unknown` (or any other state) does not show the agent is in the
     // foreground, so the text could land in a shell. A working agent queues the message.
     if (!SENDABLE.has(pane.status)) throw new RequestError('Herdr cannot tell what the agent is doing (it may be suspended to a shell), so nothing was sent. Check the pane first.', 409, 'agent_unknown');
-    await checkForeground(pane, sessionId);
+    try {
+      await checkForeground(pane, sessionId);
+      recordSendCheck(pane, sessionId, 'ok');
+    } catch (error) {
+      if (error && (error.code === 'other_session' || error.code === 'agent_not_foreground')) recordSendCheck(pane, sessionId, error.code);
+      throw error;
+    }
     if (sending) throw new RequestError('Another message is still being sent.', 409, 'busy');
     sending = true;
     try {

@@ -46,7 +46,7 @@ def check2(conn, now: float) -> tuple[str, str]:
     if bad:
         return "FAIL", "; ".join(parts)
     if not sends:
-        return "OPEN", "; ".join(parts) + ". No Send row until the Send hook is applied (README, \"The Send hook\"); audit rows are the same comparison without a Send."
+        return "OPEN", "; ".join(parts) + ". No Send row until the live reader runs with the Send hook on (README, \"The Send hook\"); audit rows are the same comparison without a Send."
     return "PASS", "; ".join(parts)
 
 

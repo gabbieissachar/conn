@@ -169,7 +169,7 @@ bootout` both labels and move the plists aside (the printed undo), then keep the
 | # | Check | Tool |
 | --- | --- | --- |
 | 1 | Turn parity | `parity` (unit-tested on fixtures; the daemon runs it on changed sessions, the nightly job on all) |
-| 2 | Identity at the moment it matters | `sendrec.record` / `record-send`; `audit` for the same comparison with no Send. **The Send hook is shipped, not applied** (below) |
+| 2 | Identity at the moment it matters | `sendrec.record` / `record-send`; `audit` for the same comparison with no Send. **The Send hook is applied in `api.js` and off until the recorder is named** (below) |
 | 3 | Disagreement adjudication | `disagree sample`, `disagree list`, `disagree adjudicate <row> store-right\|builder-right\|both-wrong` (the `disagreements` view) |
 | 4 | Event coverage checklist | `coverage show --write` (auto-detected from identity events), `coverage mark` for lab-staged or waived rows |
 | 5 | Crash and file-change tests, in the lab | `tests/test_crash.py`, `tests/test_ingest.py` (`FileChanges`, `Forget`); `lab-run` |
@@ -180,13 +180,14 @@ bootout` both labels and move the plists aside (the printed undo), then keep the
 Nothing is PASS by default: a check that has not run reads OPEN. The soak runs after landing for at least seven days and ends when the
 checklist is complete.
 
-### The Send hook (not applied: api.js is S2's)
+### The Send hook (applied, off by default)
 
-Check 2 needs the guarded Send path to call `record-send` after its foreground check. S1 may not change an API, so the hook is shipped as
-`store/send-hook.patch` (`git apply` it; it also adds two tests to `api.test.js`, which pass against the fake Herdr). It is off unless
-`PMOS_READER_STORE_RECORDER` names `reader_store.py`, fire-and-forget (a failed recorder never delays, changes or refuses a send), and it
-records `ok`, `other_session` or `agent_not_foreground`. **Applying it is a decision for the owner or firstmate**; until it is, the
-scorecard's check 2 reads OPEN with "no Send row", and `audit` rows give the same comparison continuously.
+Check 2 needs the guarded Send path to call `record-send` after its foreground check. The hook is in `api.js` (`recordSendCheck`, with two tests
+in `api.test.js` against the fake Herdr); `store/send-hook.patch` is kept as the record of exactly what was applied. It is off unless
+`PMOS_READER_STORE_RECORDER` names `reader_store.py` in the reader's environment, fire-and-forget (a failed recorder never delays, changes or
+refuses a send), and it records `ok`, `other_session` or `agent_not_foreground`. The live reader on port 8768 runs its served copy, so the hook
+does nothing there until that copy is updated and the variable is set (S2's rollout, not S1). Until then the scorecard's check 2 reads OPEN with
+"no Send row", and `audit` rows give the same comparison continuously.
 
 ## Measured (this machine, 2026-11-07: 5.7 GB of raw logs, 2,249 sessions, two Herdr sessions with 51 panes)
 
@@ -230,7 +231,7 @@ still present. None is done: the store is an archive first.
 ## Not done, and why
 
 - The LaunchAgent, the keychain key and the Drive upload (outside git, live writes: the printed commands wait for `go` / the Drive sign-in).
-- The Send hook (an api.js change, S2).
+- Turning the Send hook on in the live reader (it needs the served copy updated and `PMOS_READER_STORE_RECORDER` set; S2's rollout).
 - Resume / compact / fork links (need a `SessionStart` hook or a Herdr field; a decision for the owner).
 - Neighbour-dependent turn flags and the page's reading of any of this: S2.
 - A parser for Pi in the builder (the store has its own adapter; parity cannot cover Pi until the builder does).

@@ -1342,6 +1342,31 @@ test('send: the pane\'s input box is emptied, a few keys at a time, before the m
   } finally { await t.close(); }
 });
 
+test('send: with the store recorder named, each Send leaves its foreground-check result for the shadow store, and a refusal leaves its code', async () => {
+  const t = await start({ env: { PMOS_READER_STORE_RECORDER: '/lab/store/reader_store.py' } });
+  try {
+    fs.mkdirSync(t.tree.claudeSessionsDir);
+    fs.writeFileSync(path.join(t.tree.claudeSessionsDir, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: B }));
+    const records = () => t.herdr.calls.filter((call) => call.file === 'python3' && call.args.includes('record-send')).map((call) => call.args.slice(call.args.indexOf('record-send') + 1));
+    t.herdr.processInfo['w1:p2'] = [{ pid: process.pid, argv0: '2.1.309' }];
+    assert.equal((await t.send({ session_id: B, text: 'hi' })).status, 200);
+    assert.deepEqual(records(), [['--herdr-session', 'work', '--pane', 'w1:p2', '--session', B, '--result', 'ok']]);
+    t.herdr.processInfo['w1:p2'] = [{ pid: 4242, argv0: 'zsh' }];
+    assert.equal((await t.send({ session_id: B, text: 'hi' })).json.code, 'agent_not_foreground');
+    assert.equal(records().length, 2);
+    assert.deepEqual(records()[1].slice(-2), ['--result', 'agent_not_foreground']);
+  } finally { await t.close(); }
+});
+
+test('send: with no store recorder named, nothing is recorded and a send is as it was', async () => {
+  const t = await start();
+  try {
+    const sent = await t.send({ session_id: B, text: 'hi' });
+    assert.equal(sent.status, 200, sent.raw);
+    assert.equal(t.herdr.calls.filter((call) => call.args.includes('record-send')).length, 0);
+  } finally { await t.close(); }
+});
+
 test('send: when Herdr cannot empty the input box, the message is not sent', async () => {
   const t = await start();
   try {

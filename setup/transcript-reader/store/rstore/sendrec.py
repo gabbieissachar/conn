@@ -8,9 +8,9 @@ Agreement (the `send_agreement` view): an `ok` check names the store's session; 
 leaves the store without that session for the pane. A check that says nothing about identity (`no_pane`, `herdr_failed`) is not scored.
 
 How rows get in:
-  * trigger `send`: `record` is what the guarded Send path calls with its own check result. S1 may not change api.js (a route/API
-    change is S2), so the hook is shipped as a documented patch, not applied (store/README.md, "The Send hook"). Until it is
-    applied, no `send` rows exist, and the scorecard says so.
+  * trigger `send`: `record` is what the guarded Send path calls with its own check result. The hook is in api.js (`recordSendCheck`; store/README.md,
+    "The Send hook") and is off until PMOS_READER_STORE_RECORDER names this tool in the reader's environment. Until the live reader
+    runs with it, no `send` rows exist, and the scorecard says so.
   * trigger `audit`: `audit` re-derives the send check in Python (`ground_truth`, a port of checkForeground's decisions) for every
     pane the store has a live binding for, and records it. It runs every few minutes in the daemon, so the store is compared with
     the foreground process all through the soak, Send or no Send. An audit row is evidence, not a Send: the pass criterion counts
