@@ -1,6 +1,7 @@
 // Campus conversations drawn by the pmos reader's own page (ROADMAP E9=a). The Reader column and the Watch columns load the reader's embed page in a web view and
 // feed it the conversation as JSON (`CampusEmbed.json`), so markdown, tables, code boxes and the "N steps" rows look exactly like a Claude or Codex session.
-// The page asks nothing of the reader's server and keeps nothing; Campus data reaches it only through `window.readerEmbed.set`. Where the page cannot be had (the
+// The page asks nothing of the reader's server and keeps nothing; Campus data reaches it only through `window.readerEmbed.set`. Conn reads the page itself and
+// loads it as text on an opaque origin with all network loads blocked, so script in a rendered reply could not reach the reader's server or its token even if the page's own policy failed. Where the page cannot be had (the
 // reader is not running, an older reader without the page, a page that does not answer) the native transcript stays, so a column is never empty.
 import SwiftUI
 import WebKit
@@ -33,6 +34,7 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     private var sent: String?
     private var handlerAdded = false
     private var timeout: Task<Void, Never>?
+    private var loading: Task<Void, Never>?
     private var proxy: MessageProxy?
 
     override init() {
@@ -58,7 +60,22 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
             handlerAdded = true
         }
         phase = .loading
-        if url.isFileURL { webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent()) } else { webView.load(URLRequest(url: url)) }
+        // The page is read by Conn and handed to the web view as text with no base address, so it runs on an opaque origin of its own: never the reader's (script in a
+        // rendered reply could otherwise reach the reader's server and its routes) and with no file access. It must carry its own strict content policy, and no network
+        // load of any kind is allowed in the view (a content rule list), whatever the page says.
+        loading = Task { [weak self] in
+            do {
+                let html = try await Self.fetchPage(url)
+                let rules = try await Self.noNetworkRules()
+                guard let self = self, !Task.isCancelled, self.phase == .loading else { return }
+                self.webView.configuration.userContentController.removeAllContentRuleLists()
+                self.webView.configuration.userContentController.add(rules)
+                self.webView.loadHTMLString(html, baseURL: nil)
+            } catch {
+                guard let self = self, !Task.isCancelled, self.phase == .loading else { return }
+                self.unavailable((error as? PageError)?.reason ?? error.localizedDescription)
+            }
+        }
         timeout?.cancel()
         timeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.loadTimeout * 1_000_000_000))
@@ -78,6 +95,7 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     /// Let go of the page: stop loading and drop the handler (the user content controller holds it strongly).
     func release() {
         timeout?.cancel(); timeout = nil
+        loading?.cancel(); loading = nil
         webView.stopLoading()
         if handlerAdded { webView.configuration.userContentController.removeScriptMessageHandler(forName: CampusEmbed.handlerName); handlerAdded = false }
         proxy = nil
@@ -94,8 +112,52 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     private func unavailable(_ why: String) {
         timeout?.cancel(); timeout = nil
+        loading?.cancel(); loading = nil
         webView.stopLoading()
         phase = .unavailable(why)
+    }
+
+
+    // MARK: reading the page
+
+    struct PageError: Error { let reason: String }
+
+    /// The page as text, from a file or from the reader's server (200 only, 8 MB at most). It is refused unless it has the content policy the reader gives it
+    /// (`default-src 'none'` and `connect-src 'none'`, as a `<meta>` tag, so it still holds when Conn hands the text over) and the entry point.
+    static func fetchPage(_ url: URL) async throws -> String {
+        let data: Data
+        if url.isFileURL {
+            guard let d = try? Data(contentsOf: url) else { throw PageError(reason: "the page file cannot be read") }
+            data = d
+        } else {
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 6
+            cfg.httpCookieStorage = nil
+            cfg.urlCredentialStorage = nil
+            let (d, response) = try await URLSession(configuration: cfg).data(from: url)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 { throw PageError(reason: "the reader answered \(http.statusCode)") }
+            data = d
+        }
+        guard data.count <= 8_000_000, let html = String(data: data, encoding: .utf8) else { throw PageError(reason: "the page is not text or is too big") }
+        guard html.contains("window.readerEmbed") || html.contains("readerEmbed") else { throw PageError(reason: "the page has no readerEmbed entry point (an older reader)") }
+        guard policyOK(html) else { throw PageError(reason: "the page does not carry the strict content policy") }
+        return html
+    }
+
+    /// Whether the page declares a content policy that shuts the network and everything else (`default-src 'none'`, `connect-src 'none'`) in a meta tag.
+    static func policyOK(_ html: String) -> Bool {
+        guard let r = html.range(of: "<meta http-equiv=\"Content-Security-Policy\"") else { return false }
+        let tag = html[r.lowerBound...].prefix(while: { $0 != ">" })
+        return tag.contains("default-src 'none'") && tag.contains("connect-src 'none'")
+    }
+
+    /// Blocks every load but the document itself: no image, style sheet, script file, font, fetch, socket, media or pop-up, from anywhere.
+    static func noNetworkRules() async throws -> WKContentRuleList {
+        let json = #"[{"trigger":{"url-filter":".*","resource-type":["image","style-sheet","script","font","raw","svg-document","media","popup","ping","fetch","websocket"]},"action":{"type":"block"}}]"#
+        guard let list = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "conn.embed.no-network", encodedContentRuleList: json) else {
+            throw PageError(reason: "the no-network rules did not compile")
+        }
+        return list
     }
 
     // MARK: feeding the page
@@ -148,9 +210,8 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     // MARK: navigation
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // The page itself loads; anything else the page tries (a link it did not hand to Conn, a new window) never replaces it.
-        if action.targetFrame?.isMainFrame != false, action.navigationType == .other || action.navigationType == .reload, let u = action.request.url, let mine = url,
-           WebLinkPolicy.samePageIgnoringFragment(u, mine) { decisionHandler(.allow); return }
+        // The page itself loads (handed over as text, so its address is about:blank); anything else the page tries (a link it did not hand to Conn, a new window) never replaces it.
+        if action.targetFrame?.isMainFrame != false, action.navigationType == .other, action.request.url?.absoluteString == "about:blank" { decisionHandler(.allow); return }
         if action.navigationType == .linkActivated, let u = action.request.url, u.scheme == "https" || u.scheme == "http" { message(["type": "link", "url": u.absoluteString]) }
         decisionHandler(.cancel)
     }

@@ -209,6 +209,11 @@ enum CampusCheck {
                shown && page.lastAnswer["ok"] as? Bool == true && (page.lastAnswer["blocks"] as? Int) == 2 && (page.lastAnswer["skipped"] as? Int) == 0,
                "answer=\(page.lastAnswer)")
 
+        // 1b. The page is walled in: an opaque origin of its own (not the reader's, not a file's) and no network load of any kind, even a fetch the page's own policy would allow.
+        let origin = await dom(page, "return location.origin;")
+        let reached = (try? await page.webView.callAsyncJavaScript("try { await fetch(u, { mode: 'no-cors' }); return 'reached'; } catch (e) { return 'blocked'; }", arguments: ["u": campus.baseURL.absoluteString], in: nil, contentWorld: .page)) as? String ?? "?"
+        report("Campus embed: the page runs on an opaque origin of its own and cannot reach any server (not Campus's stand-in, not the reader's)", origin == "\"null\"" && reached == "blocked", "origin=\(origin) fetch=\(reached)")
+
         // 2. It looks like a Claude or Codex session: the markdown is drawn, not shown raw.
         let inputs = await count(page, "#main .input"), replies = await count(page, "#main .reply"), tables = await count(page, ".reply .md table"), heads = Int(await dom(page, "return [].filter.call(document.querySelectorAll('.reply .md *'), function(n){ return n.children.length === 0 && n.textContent.trim() === 'Sprint 42'; }).length;")) ?? -1
         let bold = await count(page, ".reply .md strong"), boxes = await count(page, ".reply .codebox"), steps = await dom(page, "var r = document.querySelector('.steps-row'); return r ? r.textContent.trim().replace(/\\s+/g, ' ') : '';")
@@ -291,6 +296,11 @@ enum CampusCheck {
         CampusEmbedBox.loadTimeout = saved
         report("Campus embed: with no page (missing file, a page without the entry point, a 404) the box gives up with a reason and the native transcript stays",
                missing.hasPrefix("unavailable") && noEntry.hasPrefix("unavailable") && notFound.contains("404"), "missing=\(missing.prefix(60)) noEntry=\(noEntry.prefix(60)) 404=\(notFound.prefix(60))")
+        // A page that does not carry the strict content policy is refused, even if it has the entry point.
+        let loose = FileManager.default.temporaryDirectory.appendingPathComponent("conn-embed-loose-\(getpid()).html")
+        try? "<!doctype html><title>loose</title><script>window.readerEmbed = { version: 1, set: function () { return { ok: true }; } };</script>".write(to: loose, atomically: true, encoding: .utf8)
+        let looseResult = await phase(loose)
+        report("Campus embed: a page without the strict content policy is refused, whatever else it has", looseResult.contains("content policy"), "loose=\(looseResult.prefix(90))")
         model.openCampus("ses_fakeOffsite04")
     }
 
