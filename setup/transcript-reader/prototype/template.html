@@ -174,6 +174,11 @@ __HEAD_HOSTED__
   .md code, .empty code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
   .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+  /* A reply's mention of another session (a tab label, a role, an id), linked when the reader lists that session. */
+  .md a.session-ref { color: var(--mate); text-decoration: underline dotted currentColor; text-underline-offset: 3px; text-decoration-thickness: 1px; cursor: pointer; border-radius: 3px; }
+  .md a.session-ref:hover { text-decoration-style: solid; background: var(--mate-wash); }
+  .md a.session-ref:focus-visible { outline: 2px solid var(--mate); outline-offset: 2px; }
+  .md a.session-ref code { color: inherit; }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
   .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
   .md blockquote > :last-child { margin-bottom: 0; }
@@ -753,6 +758,7 @@ __HEAD_HOSTED__
 /*__FIND__*/
 /*__DOCFILES__*/
 /*__ADDRESS__*/
+/*__SESSIONREFS__*/
 /*__SELECTCOPY__*/
   const selectCopy = readerSelectCopy;
   // A lazy page starts empty until its index.json arrives.
@@ -804,6 +810,58 @@ __HEAD_HOSTED__
     box.innerHTML = drawn.html;
     box.querySelectorAll(".table-wrap").forEach(tableCue);
     box.headings = drawn.headings.map(h => ({ level: h.level, text: h.text, el: box.querySelector("#" + h.id) }));
+    return box;
+  }
+  // ---------------------------------------------------------------- a reply's mentions of other sessions, as links (sessionrefs.js, DESIGN.md 2026-11-07)
+  // A tab label, a role name or a session id in a reply that the reader lists is a link: data-session names the conversation (Conn's Watch view
+  // catches a click on a[data-session] and opens it in another column), and the href is this page's own #s=<id>, which followAddress follows in
+  // place, so on this page the click opens the conversation in the normal reading view and Back returns to the one left (and where it was
+  // scrolled to). What the reader does not list stays text. A reply naming its own conversation, a path, a file name and a command's words are left alone.
+  const refsMemo = new Map();  // the conversation a reply is drawn in -> its index, for the one synchronous drawing pass
+  function refIndex(sid) {
+    const key = sid || "";
+    let index = refsMemo.get(key);
+    if (!index) {
+      if (!refsMemo.size) queueMicrotask(() => refsMemo.clear());
+      index = sessionRefs.index(data.sessions, { skip: sid ? [sid] : [], rank: s => [paneLive(s) ? 1 : 0, lastTurnAt(s)] });
+      refsMemo.set(key, index);
+    }
+    return index;
+  }
+  // The links of the page's index as text, to compare: a turn drawn before a tab was named has to be drawn again to link it.
+  const refsSignature = sid => sessionRefs.signature(refIndex(sid));
+  function refLink(session, content, sid) {
+    const a = $("a", "session-ref");
+    a.dataset.session = session.id; a.href = "#s=" + session.id;
+    a.title = "Open " + (session.pane ? session.pane.label : session.id.slice(0, 8)) + " in the reader";
+    if (typeof content === "string") a.textContent = content; else a.append(content);
+    a.addEventListener("click", () => {
+      // Keep where this conversation was scrolled to in the history entry being left, for followAddress to put back when Back returns to it.
+      try { history.replaceState({ ...(history.state || {}), refBack: { session: sid || "", y: Math.round(window.scrollY) } }, "", location.href); } catch (e) { /* the address bar keeps the conversation anyway */ }
+    });
+    return a;
+  }
+  function linkSessionRefs(box, sid) {
+    const index = refIndex(sid);
+    if (!index.any) return box;
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT), nodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+    for (const node of nodes) {
+      const host = node.parentElement, text = node.nodeValue;
+      if (!host || host.closest("a, pre, button")) continue;
+      if (host.tagName === "CODE") {  // a code span links only when all of it is the reference: a command that holds one stays a command
+        const session = host.childNodes.length === 1 ? sessionRefs.whole(text, index) : null;
+        if (session) { const a = refLink(session, "", sid); host.replaceWith(a); a.append(host); }
+        continue;
+      }
+      const found = sessionRefs.scan(text, index);
+      if (!found.length) continue;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const f of found) { frag.append(text.slice(at, f.start), refLink(f.session, text.slice(f.start, f.end), sid)); at = f.end; }
+      frag.append(text.slice(at));
+      node.replaceWith(frag);
+    }
     return box;
   }
   // A table wider than its box scrolls sideways inside it; a shadow on the edge that has more behind it (and an arrow) says so, and goes
@@ -975,6 +1033,7 @@ __HEAD_HOSTED__
     const boxed = Boolean(box) && ex.reply_words > 90 && !state.open.has(replyKey);
     if (ex.reply) {
       const md = renderMarkdown(ex.reply, open ? ex.ask_lines : [], ex.reminder_lines);
+      linkSessionRefs(md, sid);
       if (sid && ex.uid) md.dataset.find = `${ex.uid}:reply`;
       body = clipped(md, ex.reply_words, 90, "Show full reply", replyKey, box ? place : null);
       card.append(body);
@@ -1693,7 +1752,7 @@ __HEAD_HOSTED__
     });
     if (run) collapseRun(run);
     main.append(...pendingNodes(session));
-    turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from) };
+    turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, sid) };
     paintPins();
   }
   // ---------------------------------------------------------------- drawing the turns again only when they changed (DESIGN.md, 2026-11-05)
@@ -1704,12 +1763,13 @@ __HEAD_HOSTED__
   let turnsDrawn = null;
   const turnSigs = new WeakMap();  // a turn -> its content as text, made once: a turn that is the same object as before needs no comparing
   const turnSig = ex => { let sig = turnSigs.get(ex); if (sig === undefined) { sig = JSON.stringify(ex); turnSigs.set(ex, sig); } return sig; };
-  // What drawing the turns reads besides the turns themselves: the documents their chips name, and where kept tool output starts.
-  function turnsContext(exs, documents, stepsFrom) {
+  // What drawing the turns reads besides the turns themselves: the documents their chips name, where kept tool output starts, and which
+  // tab labels and ids a reply may link to (sessionrefs.js).
+  function turnsContext(exs, documents, stepsFrom, sid) {
     const ids = new Set();
     for (const ex of exs) { for (const id of ex.documents || []) ids.add(id); for (const id of ex.input_documents || []) ids.add(id); }
     const held = id => { const d = documents && documents[id]; return d ? [id, d.dir, d.name, d.kind] : [id]; };
-    return JSON.stringify([stepsFrom || 0, [...ids].map(held)]);
+    return JSON.stringify([stepsFrom || 0, [...ids].map(held), refsSignature(sid)]);
   }
   // Whether the turns of the session now on screen are the ones #main was drawn from: the same count and, turn by turn, the same object
   // or the same content (a full page read gives new objects with the same content), and the same context. The answer is the turns' own
@@ -1720,7 +1780,7 @@ __HEAD_HOSTED__
       const was = turnsDrawn.exchanges[i], now = session.exchanges[i];
       if (was !== now && turnSig(was) !== turnSig(now)) return false;
     }
-    return turnsDrawn.context === turnsContext(session.exchanges, data.documents, data.steps_from);
+    return turnsDrawn.context === turnsContext(session.exchanges, data.documents, data.steps_from, session.id);
   }
   // Opening a conversation starts at its latest turn, placed under the bar so it reads from its first line.
   // Wake-ups folded after it stay as the one-line rows below.
@@ -2114,6 +2174,9 @@ __HEAD_HOSTED__
   async function followAddress() {
     const asked = address.parse(location.hash);
     if (!addressLive || !asked) return;
+    // Back to a conversation left through a link in a reply (linkSessionRefs): the place it was scrolled to is in that history entry.
+    const back = history.state && history.state.refBack;
+    const place = back && typeof back.y === "number" && back.session && back.session.startsWith(asked.session) ? back.y : null;
     let si = sessionAt(asked.session);
     if (si < 0) {
       // A conversation whose pane closed is listed again, as a fresh load lists it, unless it was closed by hand in this tab.
@@ -2145,7 +2208,7 @@ __HEAD_HOSTED__
     if (si === state.session && state.view === "reader") { setAddress(); return; }
     state.session = si; state.view = "reader";
     setAddress();
-    whenReady(() => { render(); showLatest(); });
+    whenReady(() => { render(); showLatest(); if (place !== null) window.scrollTo(0, place); });
   }
   window.addEventListener("hashchange", followAddress);
 

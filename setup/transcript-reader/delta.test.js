@@ -227,7 +227,8 @@ const keepFrom = source.indexOf('let turnsDrawn = null;');
 const keepSource = source.slice(keepFrom, source.indexOf('\n  }\n', source.indexOf('function turnsUnchanged(')) + 5);
 // The page's own lines, on a page whose `data` is the build under test. `draw` stands for renderReader leaving what it drew behind.
 function keeper(data) {
-  const context = { data, JSON, Array, Set, WeakMap, Boolean };
+  // refs stands for refsSignature(): the tab labels and ids a reply may link to (sessionrefs.js), as text.
+  const context = { data, JSON, Array, Set, WeakMap, Boolean, refs: 'a', refsSignature: () => context.refs };
   vm.createContext(context);
   vm.runInContext(keepSource + `
     this.draw = (session) => { turnsDrawn = { sid: session.id, exchanges: session.exchanges, context: turnsContext(session.exchanges, data.documents, data.steps_from) }; };
@@ -268,6 +269,9 @@ test('the turns are drawn again when one of them, their number, the documents th
   assert.strictEqual(next((x) => { x.documents.d9 = doc('d9'); }), true, 'a document no turn names does not matter');
   assert.strictEqual(next((x) => { x.steps_from = 7; }), false, 'where kept tool output starts');
   assert.strictEqual(next((x) => { x.sessions[0].id = 'a2'; }), false, 'a /clear gave the conversation a new session');
+  page.refs = 'b';
+  assert.strictEqual(next(() => {}), false, 'a tab got a name a reply may now link to');
+  page.refs = 'a';
   page.forget();
   assert.strictEqual(page.unchanged(a.sessions[0]), false, 'what was on screen is gone (another view, a notice)');
 });

@@ -24,6 +24,8 @@ Replies are timed so the four panes above sit in the middle of the picker, and c
 LAB_FILLERS=<n> adds n more listed conversations without a pane, and LAB_BIG_EXCHANGES=<n> makes each crew conversation n exchanges long, so a
 check can run at the size of the owner's reading list (about 90 conversations, the biggest about 900 exchanges).
 
+LAB_REFS=1 makes crew-1's latest reply name other sessions (its tab labels, a role, an id), for the session-reference links.
+
 LAB_DOCS=<n> writes n markdown files (a few headings each, long enough to scroll) and one HTML page into <home>/lab-docs/ and makes crew-1's latest reply
 name them, so its Documents view lists them.
 
@@ -51,6 +53,15 @@ CODEX = "c0de0000-0004-4000-8000-000000000004"
 CREW = [f"c4e70000-{n:04d}-4000-8000-{n:012d}" for n in range(1, 9)]
 
 KEYED_REPLY = READER / "answer-sheet-fixtures" / "key-call-recommended-table.md"
+# LAB_REFS=1: crew-1's latest reply names other sessions the way a leader's replies do (invented text), for the session-reference links
+# (session-ref-check.js). One reference of each kind that links, and each kind that must stay text.
+REFS_REPLY = """Restore check: this is the time-limited item. The worker is waiting in its tab, cp-ontology-search.
+
+- Ask `fm-adjoe-wrong-trip-split-fix` or crew-3 about it; the log is {crew}.
+- `herdr pane list cp-whatapps-tool` is a command, so it stays a command.
+- The tab fm-no-such-tab-anywhere is not on the reader, and crew-1 is this very conversation.
+- Notes are in /lab/crew-3/notes.md and crew-3.md, and a longer name, cp-ontology-search-two, is another thing.
+"""
 WORK = "/lab/personal-work"
 SPLIT = "/lab/split-fix"
 
@@ -167,6 +178,8 @@ def main(folder: Path) -> None:
     for n, sid in enumerate(CREW):
         cwd = f"/lab/crew-{n + 1}"
         named = ("The notes are written:\n\n" + "\n".join(f"- `{d}`" for d in docs)) if docs and n == 0 else None
+        if os.environ.get("LAB_REFS") and n == 0:
+            named = REFS_REPLY.format(crew=CREW[2])
         claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named)
         pids[f"crew-{n + 1}"] = sleeper(); record(primary, pids[f"crew-{n + 1}"], sid)
 
