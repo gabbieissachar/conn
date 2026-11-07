@@ -45,6 +45,9 @@
 //                                                   answers with the build stamps as soon as a page build is newer than the
 //                                                   stamp(s) given, or after the wait (at most 30 s) with the same stamps: how an
 //                                                   open page learns of a new build at once instead of at its next poll
+//   GET  /api/transcript-reader/board?session=<id>  the Tasks board of one session (board.js; board/README.md), as JSON; 404 unless the reader is
+//                                                   started with PMOS_READER_BOARD=1, and never served on the tailnet listener
+//   GET  /api/transcript-reader/board-sessions      the sessions that have a board (same flag, same limits)
 //   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once, lists every live
 //                                                   Claude pane's session that is not listed (unless a person closed
 //                                                   or removed it) and rebuilds the pages from the session logs and
@@ -188,6 +191,7 @@ const deltaStore = require('./delta');
 const pinstore = require('./pinstore');
 const workerLib = require('./worker');
 const copySyncLib = require('./copysync');
+const boardLib = require('./board');
 const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
@@ -463,6 +467,8 @@ function create({
   sipsBin = '/usr/bin/sips',
   // The least time between the starts of two rebuilds that changed logs started (REBUILD_EVERY_MS); a test of something else asks for none.
   rebuildEveryMs = REBUILD_EVERY_MS,
+  // The Tasks board's data routes (board.js): true or an options object turns them on (the default follows PMOS_READER_BOARD=1).
+  board: boardOption,
 } = {}) {
   const projectsDir = projectsOption || path.join(os.homedir(), '.claude', 'projects');
   const claudeSessionsDir = claudeSessionsOption || path.join(os.homedir(), '.claude', 'sessions');
@@ -508,6 +514,7 @@ function create({
   const hidden = pinstore.createHidden({ file: hiddenFile, now });
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
+  const board = boardLib.create({ root, env, now, pythonBin, ...(boardOption && typeof boardOption === 'object' ? boardOption : {}), ...(boardOption ? { enabled: true } : {}) });
 
   // ------------------------------------------------------------- local records
 
@@ -1796,6 +1803,18 @@ function create({
       let kept = {};
       try { kept = JSON.parse(fs.readFileSync(path.join(outDir, 'steps', conv + '.json'), 'utf8')).outputs || {}; } catch { kept = {}; }
       send(res, 200, { status: 'ok', outputs: kept });
+      return;
+    }
+    // The Tasks board (a flag, off by default; loopback only: the phone's copy is a separate decision, with its own sealing).
+    if ((pathname === API + 'board' || pathname === API + 'board-sessions') && req.method === 'GET' && board.enabled && !guards.has(req)) {
+      if (pathname === API + 'board-sessions') { send(res, 200, { status: 'ok', ...(await board.sessions()) }); return; }
+      try {
+        const answer = await board.board(query.get('session'), { fresh: query.get('fresh') === '1' });
+        send(res, 200, { status: 'ok', ...answer });
+      } catch (error) {
+        if (error && error.status) { fail(res, error.status, error.code, error.message); return; }
+        throw error;
+      }
       return;
     }
     if (pathname === API + 'pins' && req.method === 'GET') {

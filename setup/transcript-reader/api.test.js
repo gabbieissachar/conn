@@ -2877,3 +2877,59 @@ test('clear: a session the owner took off the list is not brought back by its pa
     assert.deepEqual(adoptions(t), []);
   } finally { await t.close(); }
 });
+
+// ---- the Tasks board's data routes (board.js; board_cli.py is faked here, board/tests covers the real one)
+
+const fakeBoardRun = (calls) => async (file, args) => {
+  calls.push(args.slice(2));
+  if (args[2] === 'sessions') return JSON.stringify({ sessions: [{ id: 'leader-esim', label: 'eSIM', lifecycle: 'pm', kind: 'leader', parent: null, task: null }], source: 'defaults', error: null });
+  if (args[4] === 'missing') { const error = new Error('exit 2'); error.code = 2; throw error; }
+  return JSON.stringify({ schema: 'task-board.v1', session: { id: args[4] }, items: [], columns: [] });
+};
+
+test('board: the routes do not exist unless the flag is on', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.get('board?session=leader-esim')).status, 404);
+    assert.equal((await t.get('board-sessions')).status, 404);
+  } finally { await t.close(); }
+});
+
+test('board: behind the same guard as every route, read only, no CORS, and plain errors', async () => {
+  const calls = [];
+  const t = await start({ options: { board: { run: fakeBoardRun(calls) } } });
+  try {
+    const route = '/api/transcript-reader/board?session=leader-esim';
+    assert.equal((await t.request({ path: route })).status, 403, 'no token');
+    assert.equal((await t.request({ path: route, headers: { [TOKEN_HEADER]: 'wrong' } })).status, 403);
+    assert.equal((await t.request({ path: route, headers: { [TOKEN_HEADER]: t.token, Host: 'evil.example:80' } })).status, 403);
+    assert.equal((await t.request({ path: route, headers: { [TOKEN_HEADER]: t.token, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await t.request({ method: 'POST', path: route, headers: { [TOKEN_HEADER]: t.token, Origin: t.origin, 'Content-Type': 'application/json' }, body: {} })).status, 404, 'read only');
+    assert.equal(calls.length, 0, 'nothing ran for a refused request');
+    const ok = await t.get('board?session=leader-esim');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.status, 'ok');
+    assert.equal(ok.json.board.session.id, 'leader-esim');
+    assert.equal(ok.json.stale, false);
+    assert.equal(Object.keys(ok.headers).some((name) => name.startsWith('access-control-')), false);
+    assert.equal((await t.get('board?session=..%2Fx')).status, 400);
+    assert.equal((await t.get('board')).status, 400);
+    const missing = await t.get('board?session=missing');
+    assert.equal(missing.status, 404);
+    assert.equal(missing.json.code, 'not_found');
+    const list = await t.get('board-sessions');
+    assert.equal(list.status, 200);
+    assert.equal(list.json.sessions[0].id, 'leader-esim');
+    assert.equal(JSON.stringify(list.json).includes('/Users/'), false, 'no home path leaves the server');
+  } finally { await t.close(); }
+});
+
+test('board: a build that fails is a plain 502', async () => {
+  const t = await start({ options: { board: { run: async () => { throw new Error('boom'); } } } });
+  try {
+    const failed = await t.get('board?session=leader-esim');
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'board_failed');
+    assert.equal(failed.raw.includes('boom'), false);
+  } finally { await t.close(); }
+});

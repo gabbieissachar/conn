@@ -634,6 +634,10 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 
 `store/` holds a second, parallel system that nothing reads yet: one SQLite file every harness's session log is ingested into, with the live identity of each Herdr pane, and the checks that prove it against this reader (turn parity with `parsed/`, the store's pane binding against the send check, a builder-versus-store disagreement list). It never touches `out/`, port 8768 or a pane. See `store/README.md`; its tests run with `python3 -m unittest discover -s setup/transcript-reader/store/tests`.
 
+## The Tasks board
+
+`board/` builds one board of open items and captain calls for each Firstmate session (big-boss and every leader) from Firstmate's own records, and `board.js` serves it as `GET /api/transcript-reader/board?session=<id>`. It is off unless the reader runs with `PMOS_READER_BOARD=1`, read only, and never on the tailnet listener. The data layer and lifecycle config are in; the page is not yet. See `board/README.md`; its tests run with `python3 -I -m unittest discover -s setup/transcript-reader/board/tests` and `node --test setup/transcript-reader/board.test.js`.
+
 ## Tests
 
 ```bash
