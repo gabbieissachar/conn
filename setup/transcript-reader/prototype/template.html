@@ -828,8 +828,8 @@ __HEAD_HOSTED__
     }
     return index;
   }
-  // The links of the page's index as text, to compare: a turn drawn before a tab was named has to be drawn again to link it.
-  const refsSignature = sid => sessionRefs.signature(refIndex(sid));
+  // The links the replies make, as text, to compare: a reply drawn before the tab it names was named has to be drawn again to link it; a tab no reply names does not.
+  const refsSignature = (sid, exs) => sessionRefs.used((exs || []).map(e => e.reply), refIndex(sid));
   function refLink(session, content, sid) {
     const a = $("a", "session-ref");
     a.dataset.session = session.id; a.href = "#s=" + session.id;
@@ -1732,7 +1732,7 @@ __HEAD_HOSTED__
     }
     renderLive();
     // The controls above are drawn for every build; the turns below only when they changed (turnsUnchanged, in applyPayload).
-    if (keepTurns && held && held.sid === session.id) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from) }; paintPins(); return; }
+    if (keepTurns && held && held.sid === session.id) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id) }; paintPins(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", "No turns in this session."), ...pendingNodes(session)); return; }
@@ -1769,7 +1769,7 @@ __HEAD_HOSTED__
     const ids = new Set();
     for (const ex of exs) { for (const id of ex.documents || []) ids.add(id); for (const id of ex.input_documents || []) ids.add(id); }
     const held = id => { const d = documents && documents[id]; return d ? [id, d.dir, d.name, d.kind] : [id]; };
-    return JSON.stringify([stepsFrom || 0, [...ids].map(held), refsSignature(sid)]);
+    return JSON.stringify([stepsFrom || 0, [...ids].map(held), refsSignature(sid, exs)]);
   }
   // Whether the turns of the session now on screen are the ones #main was drawn from: the same count and, turn by turn, the same object
   // or the same content (a full page read gives new objects with the same content), and the same context. The answer is the turns' own

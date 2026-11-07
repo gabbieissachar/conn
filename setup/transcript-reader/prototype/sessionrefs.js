@@ -7,6 +7,7 @@
   //   scan(text, index)                 the references in prose: [{ start, end, session }]
   //   whole(text, index)                the conversation a whole inline-code span names (also by the first 8+ characters of an id), or null
   //   signature(index)                  the label and id pairs that decide the links, so a redrawn page can tell they changed
+//   used(texts, index)                the references these replies make, as text: what a drawing of them reads of the index
   const sessionRefs = (() => {
     // A label that can be told from prose: letters, digits, "_" and "-", at least 6 characters, with a "-" or "_" in it. "1", "personal" and
     // "Claude Code" are labels too (a pane with no name of its own), and would match ordinary words.
@@ -67,5 +68,22 @@
       return index && index.any && token ? resolve(token, index, true) : null;
     };
     const signature = index => JSON.stringify([[...index.labels].map(([label, s]) => [label, s.id]).sort(), index.ids.size, [...index.skip].sort()]);
-    return { eligible, index, scan, whole, signature };
+    // What a drawing of these replies reads of the index: the references the replies make (a token, and the conversation it opens), as text. A
+    // tab renamed or added that no reply names changes nothing here, so a build that only did that does not draw the conversation again;
+    // one a reply names does (it is a link now, or goes elsewhere). Prose is scanned and a whole code span is looked up, as the page links them;
+    // a token in a code block or a path is read too, which can only draw the conversation once more than needed.
+    function used(texts, index) {
+      if (!index || !index.any) return "[]";
+      const pairs = new Set();
+      for (const text of texts || []) {
+        if (typeof text !== "string" || !text) continue;
+        for (const hit of scan(text, index)) pairs.add(`${text.slice(hit.start, hit.end)}>${hit.session.id}`);
+        for (const span of text.match(/`[^`\n]+`/g) || []) {
+          const token = span.slice(1, -1).trim(), found = whole(token, index);
+          if (found) pairs.add(`${token}>${found.id}`);
+        }
+      }
+      return JSON.stringify([...pairs].sort());
+    }
+    return { eligible, index, scan, whole, signature, used };
   })();

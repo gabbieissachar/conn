@@ -113,3 +113,27 @@ test('the signature changes when a label, an id or the conversation on screen ch
   assert.notEqual(a, refs.signature(refs.index([...SESSIONS, session(9, 'fm-brand-new-tab')], { skip: [id(2)] })));
   assert.notEqual(a, refs.signature(refs.index(SESSIONS.map((s) => (s.id === id(2) ? { ...s, pane: { label: 'leader-nip' } } : s)), { skip: [id(2)] })));
 });
+
+test('what a drawing reads is the references the replies make: a tab nobody names can be renamed or added without drawing anything again', () => {
+  const replies = ['The worker waits in fm-2026-11-06-esim-listing-output-sync-run.', 'Nothing to link here.', 'Ask `big-boss`, or see session ' + id(8).slice(0, 8) + '.'];
+  const read = (sessions) => refs.used(replies, refs.index(sessions, { skip: [id(2)] }));
+  const a = read(SESSIONS);
+  assert.deepEqual(JSON.parse(a).map((pair) => pair.split('>')[0]).sort(), [id(8).slice(0, 8), 'big-boss', 'fm-2026-11-06-esim-listing-output-sync-run']);
+  assert.equal(a, read(SESSIONS.slice()), 'the same list reads the same');
+  assert.equal(a, read(SESSIONS.map((s) => (s.id === id(6) ? { ...s, pane: { label: 'a-tab-named-later' } } : s))), 'a tab nobody names, renamed');
+  assert.equal(a, read([...SESSIONS, session(9, 'fm-brand-new-tab')]), 'or added');
+  assert.notEqual(a, read(SESSIONS.map((s) => (s.id === id(3) ? { ...s, pane: { label: 'leader-nip' } } : s))), 'the tab a reply names, renamed: the link is gone');
+  assert.notEqual(a, read(SESSIONS.filter((s) => s.id !== id(1))), 'or closed');
+  assert.equal(a, read([...SESSIONS, session(9, 'fm-2026-11-06-esim-listing-output-sync-run')]), 'a second tab with a name a reply uses, ranked no better, takes no link');
+  assert.equal(refs.used(replies, refs.index([], {})), '[]', 'no list, no references');
+  assert.equal(refs.used(undefined, refs.index(SESSIONS)), '[]');
+});
+
+test('the page reads the same context when it keeps the turns as when it draws them: both name the conversation, so its own name is never a link to itself', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const calls = page.match(/turnsContext\([^)]*\)/g).filter((call) => !call.startsWith('turnsContext(exs, documents'));
+  assert.ok(calls.length >= 3, 'the kept-turns branch of renderReader, the drawing and turnsUnchanged');
+  for (const call of calls) assert.ok(/, (?:session\.id|sid)\)$/.test(call), `${call} names the conversation (a context made without it differs from the one made with it, and the next build draws the conversation again)`);
+  assert.ok(page.includes('const refsSignature = (sid, exs) => sessionRefs.used((exs || []).map(e => e.reply), refIndex(sid));'));
+  assert.ok(page.includes('refsSignature(sid, exs)]);'), 'the context holds the references the replies make');
+});
