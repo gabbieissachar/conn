@@ -22,6 +22,7 @@ KNOWN_SCHEMA = 1
 TRIGGER_CHARS = 6000  # a wake-up's own text names the worker or task that woke the supervisor; only wake-ups are kept, never your messages
 WAKE_INPUTS = ("FIRSTMATE SUPERVISION WAKE", "FIRSTMATE WAKE", "<task-notification", ": Firstmate")
 STORE_FILE = "reader-store.sqlite"
+PROPOSED_VIEW = Path(__file__).resolve().parents[1] / "store" / "PROPOSED-v1-turn-tools.sql"
 DEFAULT_DAYS = 30
 SKIP_FIRST = ("MAIN DIALOG MIRROR", "FIRSTMATE_OP", "\u2063FIRSTMATE_OP", "You previously flagged", "Review this change", "Reply with exactly")
 NOT_HUMAN = ("<task-notification", "<system-reminder", "Base directory for this skill", "Stop hook feedback", "<command-name", "<local-command",
@@ -174,19 +175,38 @@ def load(conn: sqlite3.Connection, cwds: list[str], days: int = DEFAULT_DAYS, no
 
 
 def _turn_tools(conn: sqlite3.Connection, sessions: set, cut: float) -> dict:
-    """{(session, turn index): the text of that turn's tool calls} when the store offers the optional view `v1_turn_tools` (session_id, idx, text); else {}.
+    """{(session, turn index): the text of that turn's tool calls}, or {} when it cannot be had.
 
-    The store's version 1 views carry no tool text, so today this is empty and the tagger has no `command` signal (the largest of the prototype's:
-    127 of about 220 exact links in one home). The view is an additive store change proposed in store/PROPOSED-v1-turn-tools.sql; when it exists the
-    board uses it with no other change. A store without it is not an error."""
+    The store's version 1 views carry no tool text, and the strongest rule for linking a reply to a task is a task id in the turn's own tool calls
+    (`fm-send.sh <id>`: 127 of about 220 exact links in the prototype's home). Two ways to it, in order, both read only:
+      1. the store's own `v1_turn_tools` view (session_id, idx, text), when a store version offers it;
+      2. else the same view as a per-connection TEMP view, made from `store/PROPOSED-v1-turn-tools.sql` over the schema-1 tables. A temp view lives
+         in this connection only: nothing is written to the store file, and a store whose tables differ makes it fail, which is caught and leaves
+         the board without that signal. This is the one place the board reads a table rather than a view; PMOS_READER_BOARD_TOOL_TEXT=0 turns it off.
+    """
+    def has_view() -> bool:
+        try:
+            conn.execute("SELECT session_id, idx, text FROM v1_turn_tools LIMIT 0")
+            return True
+        except sqlite3.Error:
+            return False
+    if not has_view():
+        if os.environ.get("PMOS_READER_BOARD_TOOL_TEXT") == "0":
+            return {}
+        try:
+            sql = "\n".join(line for line in PROPOSED_VIEW.read_text(encoding="utf-8").splitlines() if not line.startswith("--"))
+            conn.execute(sql.replace("CREATE VIEW IF NOT EXISTS", "CREATE TEMP VIEW IF NOT EXISTS", 1))
+        except (OSError, sqlite3.Error):
+            return {}
+        if not has_view():
+            return {}
+    out = {}
     try:
-        conn.execute("SELECT session_id, idx, text FROM v1_turn_tools LIMIT 0")
+        for sid in sessions:
+            for row in conn.execute("SELECT idx, text FROM v1_turn_tools WHERE session_id = ?", (sid,)):
+                out[(sid, row["idx"])] = row["text"] or ""
     except sqlite3.Error:
         return {}
-    out = {}
-    for sid in sessions:
-        for row in conn.execute("SELECT idx, text FROM v1_turn_tools WHERE session_id = ?", (sid,)):
-            out[(sid, row["idx"])] = row["text"] or ""
     return out
 
 

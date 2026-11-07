@@ -388,16 +388,39 @@ class StoreBacked(HomeCase):
         self.assertFalse(any("watcher wake" in t for t in texts))
         self.assertTrue(all(h["key"].endswith(":in") for h in tr.humans))
 
-    def test_the_tool_text_view_is_optional_and_the_proposed_one_works_on_the_real_schema(self):
+    def test_tool_text_comes_from_a_temp_view_that_writes_nothing_to_the_store(self):
         self.supervisor()
         self.lab.ingest()
-        self.assertEqual({r["tools"] for r in self.read().replies}, {""}, "no view, no tool text, and no error")
-        self.lab.conn.executescript(PROPOSED_VIEW.read_text())
+        self.lab.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = self.lab.db_path.read_bytes()
         tr = self.read()
         first = next(r for r in tr.replies if "alpha-report" in r["text"])
         self.assertIn("fm-send.sh alpha-report", first["tools"])
         found = tagger.match_replies([first], [{"id": "alpha-report", "title": "x"}])[0]
         self.assertIn("command", found["alpha-report"]["why"])
+        self.lab.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.assertEqual(self.lab.db_path.read_bytes(), before, "the store file is byte for byte as it was")
+        fresh = sqlite3.connect(self.lab.db_path)
+        self.addCleanup(fresh.close)
+        self.assertIsNone(fresh.execute("SELECT name FROM sqlite_master WHERE name = 'v1_turn_tools'").fetchone(), "the view was never made in the store")
+
+    def test_tool_text_can_be_turned_off_and_a_store_view_wins_when_it_has_one(self):
+        self.supervisor()
+        self.lab.ingest()
+        import os
+        os.environ["PMOS_READER_BOARD_TOOL_TEXT"] = "0"
+        self.addCleanup(os.environ.pop, "PMOS_READER_BOARD_TOOL_TEXT", None)
+        self.assertEqual({r["tools"] for r in self.read().replies}, {""}, "off: no tool text, and no error")
+        self.lab.conn.executescript("CREATE VIEW v1_turn_tools AS SELECT session_id, idx, 'from the store: alpha-report' AS text FROM turns;")
+        self.assertEqual({r["tools"] for r in self.read().replies}, {"from the store: alpha-report"}, "a view the store offers is used as it is, even with the temp one off")
+
+    def test_a_store_whose_tables_differ_loses_the_signal_and_nothing_else(self):
+        self.supervisor()
+        self.lab.ingest()
+        self.lab.conn.execute("ALTER TABLE tool_calls RENAME TO tool_calls_v2")
+        tr = self.read()
+        self.assertEqual({r["tools"] for r in tr.replies}, {""})
+        self.assertEqual(len(tr.replies), 3)
 
     def test_a_board_built_on_the_store_has_threads_and_a_missing_store_leaves_the_cards(self):
         self.supervisor()
@@ -416,7 +439,7 @@ class StoreBacked(HomeCase):
         self.assertEqual(board["threads"]["status"], "ok")
         alpha = next(i for i in board["items"] if i["ref"] == "alpha-report")
         self.assertEqual(alpha["thread_n"], 1)
-        self.assertEqual(alpha["thread"][0]["why"], ["mention"])
+        self.assertIn("mention", alpha["thread"][0]["why"])
         beta = next(i for i in board["items"] if i["ref"] == "beta-build")
         self.assertEqual(beta["thread_n"], 1)
 

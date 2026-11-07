@@ -36,7 +36,8 @@ class Lab:
             text, reply = turn[0], turn[1]
             command = turn[2] if len(turn) > 2 else None
             at = base + i * 600
-            records.append(synth.c_user(text, at, uuid=synth.uid(f"u{self.n}", i), cwd=cwd))
+            # a real uuid's first eight characters differ from turn to turn (the board's turn ids are those prefixes)
+            records.append(synth.c_user(text, at, uuid=f"{self.n:02x}{i:06x}-0000-4000-8000-{self.n:04d}{i:08d}", cwd=cwd))
             if command:
                 records.append(synth.c_tool("Bash", {"command": command}, at + 10, f"call{self.n}-{i}", cwd=cwd))
                 records.append(synth.c_result(f"call{self.n}-{i}", "ok", at + 20, cwd=cwd))

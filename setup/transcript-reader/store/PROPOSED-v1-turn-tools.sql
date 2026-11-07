@@ -1,8 +1,9 @@
--- PROPOSED, not applied: an additive version 1 view the Tasks board reads when it exists (board/transcripts.py `_turn_tools`).
+-- PROPOSED, not applied to any store: an additive version 1 view. The Tasks board (board/transcripts.py `_turn_tools`) uses a store's own `v1_turn_tools`
+-- when it exists and otherwise runs this definition as a per-connection TEMP view, so the store file is never written. Becoming a real view is an S2 migration.
 --
 -- Why: the board links a supervisor reply to the task it is about. The strongest rule in the prototype was "the turn's own tool calls named the
 -- task" (`fm-send.sh <task-id> ...`, `fm-captain-hold.sh hold <task-id> ...`): 127 of about 220 exact links in one home. `v1_turns` carries only
--- a count of tools, and tables are not the contract, so a board built on the views alone links about a third as many replies.
+-- a count of tools, and tables are not the contract, so a board built on the views alone links about a third as many replies (31 against 91 in one home).
 --
 -- What: one row per turn with the bounded text of that turn's tool-call inputs (the same `step` text the reader's own page shows, which already
 -- drops anything that touched a dotfile or a credential path). It is a new view beside v1_*, so no existing view changes and `user_version`

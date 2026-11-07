@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+'use strict';
+
+// The Tasks page in a real browser (chrome-devtools-axi), against a lab: a scratch Firstmate home, a lab store of synthetic supervisor replies and the
+// reader's own api.js on a free port with a Herdr that is never there (never the live reader, never a real home or pane). By hand, not part of
+// `node --test` (it needs chrome-devtools-axi, Chrome and a Firstmate checkout with typed asks):
+//
+//   node setup/transcript-reader/e2e/board-check.js [scratch folder]
+//
+// Round 1, both writes off: the board draws its columns and cards from the home's records; a go-only hold waits in Queued with its label; a card opens
+// its sheet with the calls, the reply that asked each, and the thread with why each reply is there; answering is off and says so; the page is read only;
+// nothing scrolls sideways at a desktop or a phone width, and the phone gets a bottom sheet. Round 2, both writes on: a typed card answered on the card
+// closes its task in the scratch home; a reply marked "Not this task" is one line in the task's own reply-marks.jsonl and can be put back; a hold of
+// several prose calls offers no Record button.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn, execFileSync } = require('child_process');
+const { make, freePort, sleep } = require('./axi');
+
+const folder = fs.mkdtempSync(path.join(process.argv[2] ? path.resolve(process.argv[2]) : os.tmpdir(), 'reader-board-lab-'));
+const repo = path.resolve(__dirname, '..', '..', '..');
+const t = make('reader-board-check');
+const { check, ev, until, axi } = t;
+
+function startServer(lab, port, flags) {
+  const out = fs.openSync(path.join(folder, `server-${port}.log`), 'a');
+  const env = { ...process.env, PMOS_READER_BOARD_CONFIG: lab.config, PMOS_READER_BOARD_CACHE: lab.cache, PMOS_READER_BOARD_WORKERS: path.join(lab.conf, 'board-workers.json') };
+  return spawn('node', [path.join(__dirname, 'board-lab-server.js'), repo, String(port), ...flags], { stdio: ['ignore', out, out], env });
+}
+async function waitUp(port) {
+  let last = '';
+  for (let i = 0; i < 50; i++) { try { const r = await fetch(`http://127.0.0.1:${port}/setup/transcript-reader/board/`); if (r.ok || r.status === 403) return;  /* 403: the page refuses a script's fetch, which is the server answering */ last = 'HTTP ' + r.status; } catch (e) { last = e.message; } await sleep(200); }
+  throw new Error('the lab server did not answer on ' + port + ': ' + last);
+}
+const cards = () => ev(`const m = {}; document.querySelectorAll('.card').forEach(c => { m[c.dataset.ref] = c.closest('.col').dataset.col; }); return m;`);
+async function openBoard(port, hash = '', viewport = '1100x900x1') {
+  axi('open', 'about:blank'); axi('emulate', '--viewport', viewport);
+  axi('open', `http://127.0.0.1:${port}/setup/transcript-reader/board/?run=${Date.now()}#s=leader-lab${hash}`);
+  await until(`return { ok: document.querySelectorAll('.card').length > 0 };`, 'the cards', 60000);
+}
+const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s ? s.innerText : '';`);
+
+(async () => {
+  let lab;
+  try { lab = JSON.parse(execFileSync('python3', ['-I', path.join(__dirname, 'board_lab.py'), folder], { encoding: 'utf8', timeout: 240000 }).trim().split('\n').pop()); }
+  catch (error) { process.stdout.write('SKIP  no lab (needs a Firstmate checkout with typed asks)\n'); process.exit(0); }
+  const servers = [];
+  const stop = () => { servers.forEach((s) => s.kill()); try { axi('stop'); } catch (e) { /* not running */ } };
+  try {
+    // ---- round 1: both writes off
+    let port = await freePort();
+    servers.push(startServer(lab, port, [])); await waitUp(port);
+    await openBoard(port);
+    const placed = cards();
+    check(placed['alpha-route'] === 'needs' && placed['delta-two-calls'] === 'needs' && placed['epsilon-figma'] === 'needs', 'the open calls are in Needs you', JSON.stringify(placed));
+    check(placed['gamma-later'] === 'queued', 'a hold that only waits for your go is in Queued', placed['gamma-later']);
+    check(ev(`return [...document.querySelectorAll('.card[data-ref="gamma-later"] .chip')].some(c => c.textContent === 'waits for your go');`), 'and carries its label');
+    check(/read only/.test(ev(`return document.getElementById('asof').textContent;`)), 'the page says it is read only');
+    check(ev(`return document.querySelector('.card[data-ref="alpha-route"] .c-calls .lab').textContent;`) === 'Z1', 'a typed card shows its key on the card face');
+    ev(`location.hash = '#s=leader-lab&t=alpha-route/Z1'; return true;`);
+    await until(`return { ok: !!document.querySelector('.sheet .callbox') };`, 'the sheet');
+    const sheet = sheetText();
+    check(/Which route should alpha take\?/.test(sheet) && /the shared plugin/.test(sheet) && /recommended/.test(sheet), 'the sheet shows the call, its options and the recommended one');
+    check(/Asked in the reply of/.test(sheet), 'and the reply that asked it');
+    check(/Answering on the card is off/.test(sheet) && !/Record this answer/.test(sheet), 'answering is off and says so');
+    check(ev(`return [...document.querySelectorAll('.th-item.reply .why')].some(w => w.textContent === 'mention');`), 'the thread says why a reply is there');
+    check(!ev(`return !!document.querySelector('.th-item .mk');`), 'marking is off: no mark buttons');
+    check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at desktop width');
+    for (const dark of ['light', 'dark']) { axi('emulate', '--color-scheme', dark); await sleep(300); check(ev(`return getComputedStyle(document.body).backgroundColor !== 'rgba(0, 0, 0, 0)';`), `the page has its own background in ${dark}`); }
+    axi('emulate', '--color-scheme', 'light');
+    await openBoard(port, '&t=delta-two-calls', '390x844x2,mobile,touch');
+    await until(`return { ok: !!document.querySelector('.sheet') };`, 'the phone sheet');
+    check(ev(`const r = document.querySelector('.sheet').getBoundingClientRect(); return r.width === innerWidth && r.bottom === innerHeight && r.top > 0;`), 'on a phone the card is a bottom sheet');
+    check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at 390 px');
+    check(ev(`return getComputedStyle(document.getElementById('colbar')).display !== 'none';`), 'the phone has the column tabs');
+    servers.pop().kill();
+
+    // ---- round 2: both writes on
+    port = await freePort();
+    servers.push(startServer(lab, port, ['--marks', '--answer'])); await waitUp(port);
+    await openBoard(port);
+    check(/writes on: answers and marks/.test(ev(`return document.getElementById('asof').textContent;`)), 'the page says which writes are on');
+    ev(`location.hash = '#s=leader-lab&t=delta-two-calls'; return true;`);
+    await until(`return { ok: !!document.querySelector('.sheet .callbox') };`, 'the multi-call sheet');
+    check(/only whole/.test(sheetText()) && !/Record this answer/.test(sheetText()), 'a hold of several prose calls offers no Record button');
+    ev(`const b = [...document.querySelectorAll('.th-item.reply .mk')].find(x => x.textContent === 'Not this task'); window.__turn = b.closest('.th-item').dataset.key; b.click(); return window.__turn;`);
+    const marks = path.join(lab.home, 'data', 'delta-two-calls', 'reply-marks.jsonl');
+    await until(`return { ok: !!document.querySelector('.th-item.reply.out') };`, 'the struck-through reply', 60000);
+    const line = JSON.parse(fs.readFileSync(marks, 'utf8').trim().split('\n').pop());
+    check(line.mark === 'out' && line.by === 'card' && /^[0-9a-f]{8}:[0-9a-f]{8}:reply$/.test(line.turn) && !('text' in line), 'a mark is one line on the task\'s own record, with no reply text', JSON.stringify(line));
+    ev(`document.querySelector('.th-item.reply.out .mk').click(); return true;`);
+    await until(`return { ok: !document.querySelector('.th-item.reply.out') };`, 'the reply put back', 60000);
+    check(JSON.parse(fs.readFileSync(marks, 'utf8').trim().split('\n').pop()).mark === 'clear', 'put it back withdraws the mark');
+    ev(`location.hash = '#s=leader-lab&t=alpha-route/Z1'; return true;`);
+    await until(`return { ok: !!document.querySelector('.sheet .callbox .opt') };`, 'the typed card');
+    check(ev(`const b = document.querySelector('.callbox .recbtn'); return !!b && b.disabled;`), 'Record is off until an answer is picked');
+    ev(`document.querySelector('.callbox .opt').click(); document.querySelector('.callbox .recbtn').click(); return true;`);
+    check(/fm-captain-ask\.sh answered/.test(ev(`return document.querySelector('.callbox .confirm').textContent;`)), 'Record asks again and shows the exact command first');
+    ev(`document.querySelector('.callbox .confirm .primary').click(); return true;`);
+    await until(`return { ok: document.querySelector('.card[data-ref="alpha-route"]') && document.querySelector('.card[data-ref="alpha-route"]').closest('.col').dataset.col === 'done' };`, 'the card in Done', 90000);
+    check(/\[x\] alpha-route/.test(fs.readFileSync(path.join(lab.home, 'data', 'backlog.md'), 'utf8')), 'the scratch home\'s own task is closed by Firstmate\'s command');
+    check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'still no sideways scroll');
+  } catch (error) {
+    check(false, 'the run', String(error.message || error).slice(0, 300));
+  }
+  t.finish(stop);
+})();
