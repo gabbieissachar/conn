@@ -165,6 +165,7 @@ enum UICheck {
         if !only.isEmpty {
             model.agentViewEnabled = true; model.mode = .agent; await wait(1)
             if only.contains("reader-follow") { await ReaderFollowCheck.run(model: model, report: report, wait: wait) }
+            if only.contains("asks") { await AskRowsCheck.run(model: model, report: report, wait: wait) }
             print("ui-check: done (only \(only.sorted().joined(separator: ", ")))")
             model.shutdown(); NSApplication.shared.terminate(nil)
             return

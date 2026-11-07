@@ -6,6 +6,8 @@ import ConnCore
 struct AskBlock: View {
     let ask: OpenAsk
     let privacy: Bool
+    /// Already opened: shown only while "show read" is on, muted, with a grey bar.
+    var read = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -25,10 +27,11 @@ struct AskBlock: View {
         }
         .redacted(reason: privacy ? .placeholder : [])
         .padding(.leading, 7).padding(.top, 1).padding(.bottom, 2)
-        .overlay(alignment: .leading) { Rectangle().fill(AgentState.blocked.color).frame(width: 2) }
+        .overlay(alignment: .leading) { Rectangle().fill(read ? Color.secondary.opacity(0.5) : AgentState.blocked.color).frame(width: 2) }
+        .opacity(read ? 0.55 : 1)
         .padding(.top, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("agent-ask")
+        .accessibilityIdentifier(read ? "agent-ask-read" : "agent-ask")
     }
 }
 

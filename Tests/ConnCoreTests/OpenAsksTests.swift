@@ -382,3 +382,59 @@ private final class AnswerServer {
         #expect(await OpenAsksSource.fetch(URL(fileURLWithPath: "/nonexistent/open-asks.json")) == nil)
     }
 }
+
+@Suite("Open asks: read state") struct AskReadStateTests {
+    @Test func aReadAskStaysReadAndANewAskOnTheSamePaneIsUnread() {
+        var state = AskReadState()
+        let first = ask("w1:p1", message: "turn-aaaa01")
+        #expect(!state.isRead(first))
+        state.markRead(first, at: t0)
+        #expect(state.isRead(first))
+        // The same pane asks again: another asking turn, another ask.
+        #expect(!state.isRead(ask("w1:p1", message: "turn-bbbb02")))
+        // The same turn id on another pane, or in another Herdr session, is another ask too.
+        #expect(!state.isRead(ask("w1:p2", message: "turn-aaaa01")))
+        #expect(!state.isRead(ask("w1:p1", herdr: "other", message: "turn-aaaa01")))
+    }
+
+    @Test func markingUnreadBringsItBack() {
+        var state = AskReadState()
+        let a = ask("w1:p1")
+        state.markRead(a, at: t0)
+        state.markUnread(a)
+        #expect(!state.isRead(a) && state.isEmpty)
+    }
+
+    @Test func withNoTurnIdTheReadersTimeSeparatesTwoAsks() {
+        var state = AskReadState()
+        let early = ask("w1:p1", hoursAgo: 5, message: nil), late = ask("w1:p1", hoursAgo: 1, message: nil)
+        state.markRead(early, at: t0)
+        #expect(state.isRead(early) && !state.isRead(late))
+        // With neither a turn nor a time the session is all there is to go on.
+        #expect(ask("w1:p1", hoursAgo: nil, message: nil).readKey == ask("w1:p1", hoursAgo: nil, message: nil).readKey)
+    }
+
+    @Test func oldMarksAndTooManyMarksAreForgotten() {
+        var state = AskReadState()
+        state.markRead(ask("w1:p1", message: "turn-old001"), at: t0.addingTimeInterval(-AskReadState.maxAge - 60))
+        state.markRead(ask("w1:p2", message: "turn-new001"), at: t0)
+        #expect(!state.isRead(ask("w1:p1", message: "turn-old001")) && state.isRead(ask("w1:p2", message: "turn-new001")))
+        var many = AskReadState()
+        for i in 0..<(AskReadState.maxEntries + 25) { many.markRead(ask("w1:p1", message: String(format: "turn-%06d", i)), at: t0.addingTimeInterval(Double(i))) }
+        #expect(many.marked.count == AskReadState.maxEntries)
+        #expect(many.isRead(ask("w1:p1", message: String(format: "turn-%06d", AskReadState.maxEntries + 24))))   // the newest stay
+        #expect(!many.isRead(ask("w1:p1", message: "turn-000000")))
+    }
+
+    @Test func countsLeaveReadAsksOutOfTheOlderOfferAndCountThemApart() {
+        let agents = (1...4).map { Agent(id: "w1:p\($0)", name: "a\($0)", harness: "claude", state: .idle, workspaceID: "w1", tabID: "w1:t\($0)", sessionID: nil, cwd: "") }
+        let asks = OpenAsks(byPane: ["w1:p1": ask("w1:p1", hoursAgo: 30), "w1:p2": ask("w1:p2", hoursAgo: 40), "w1:p3": ask("w1:p3", hoursAgo: 1), "w1:p4": ask("w1:p4", hoursAgo: 2)])
+        var read = AskReadState()
+        #expect(asks.olderCount(among: agents, now: t0, read: read) == 2 && asks.readCount(among: agents, showOlder: false, now: t0, read: read) == 0)
+        read.markRead(ask("w1:p2", hoursAgo: 40), at: t0)       // an older ask, read: not offered any more
+        read.markRead(ask("w1:p3", hoursAgo: 1), at: t0)        // a fresh ask, read
+        #expect(asks.olderCount(among: agents, now: t0, read: read) == 1)
+        #expect(asks.readCount(among: agents, showOlder: false, now: t0, read: read) == 1)    // the read older ask is folded, so only p3 counts
+        #expect(asks.readCount(among: agents, showOlder: true, now: t0, read: read) == 2)
+    }
+}

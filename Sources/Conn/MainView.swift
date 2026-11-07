@@ -56,12 +56,14 @@ struct AgentsSection: View {
     @ObservedObject var asks: OpenAskStore
 
     var body: some View {
-        let visible = asks.visible()
+        let visible = asks.visible()            // unread: orders the list and is counted
+        let shown = asks.shown()                // what the rows display (read ones too while "show read" is on)
         let list = app.snapshot.prioritized(asks: visible)
-        let older = asks.asks.olderCount(among: app.snapshot.agents, now: asks.now)
-        let needYou = list.filter { $0.state == .blocked || visible[$0.id] != nil }.count
+        let older = asks.olderCount(among: app.snapshot.agents)
+        let readCount = asks.readCount(among: app.snapshot.agents)
+        let needYou = app.needYouCount
         return VStack(spacing: 0) {
-            header(needYou: needYou, older: older)
+            header(needYou: needYou, older: older, readCount: readCount)
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
@@ -74,13 +76,18 @@ struct AgentsSection: View {
                                         .redacted(reason: app.privacy ? .placeholder : [])
                                     Text("\(a.harness) · \(a.state.label)").font(.system(size: 11))
                                         .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary)
-                                    if let ask = visible[a.id] { AskBlock(ask: ask, privacy: app.privacy) }
+                                    if let ask = shown[a.id] { AskBlock(ask: ask, privacy: app.privacy, read: asks.isRead(ask)) }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 if i < 9 { Text("⌘\(i + 1)").font(.system(size: 10.5, design: .rounded)).foregroundStyle(.tertiary) }
                             }
                         }
                         .contextMenu {
+                            if let ask = shown[a.id] {
+                                if asks.isRead(ask) { Button("Mark Ask as Unread") { asks.markUnread(ask) } }
+                                else { Button("Mark Ask as Read") { asks.markRead(ask) } }
+                                Divider()
+                            }
                             Button("Open Working Folder in Editor") { app.openWorkingFolder(of: a) }
                                 .disabled(a.cwd.isEmpty || !FileManager.default.fileExists(atPath: a.cwd))
                         }
@@ -93,22 +100,39 @@ struct AgentsSection: View {
 
     /// With no asks from the reader the header reads as it always has. With asks it counts the agents that need you (prompt
     /// waiting and open asks) and, when some asks are over 24 hours old, offers to show or hide them.
-    private func header(needYou: Int, older: Int) -> some View {
-        HStack(spacing: 4) {
-            Text("AGENTS").font(.system(size: 11, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
-            Spacer()
-            if asks.asks.isEmpty {
-                Text("working first").font(.system(size: 11)).foregroundStyle(.tertiary)
-            } else {
-                Text("\(needYou) ask\(needYou == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.tertiary)
-                if older > 0 {
-                    Text("·").font(.system(size: 11)).foregroundStyle(.tertiary)
-                    Button { asks.showOlder.toggle() } label: {
-                        Text("\(asks.showOlder ? "hide" : "show") \(older) older").font(.system(size: 11))
+    private func header(needYou: Int, older: Int, readCount: Int) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 4) {
+                Text("AGENTS").font(.system(size: 11, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+                Spacer()
+                if asks.asks.isEmpty {
+                    Text("working first").font(.system(size: 11)).foregroundStyle(.tertiary)
+                } else {
+                    // Unread asks only: a read ask is not counted, whether it is listed or not.
+                    Text("\(needYou) ask\(needYou == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+            }
+            // The two folds sit on their own line so neither wraps the title row: asks over 24 hours old, and asks already read.
+            if !asks.asks.isEmpty, older > 0 || readCount > 0 || asks.showRead {
+                HStack(spacing: 4) {
+                    Spacer()
+                    if older > 0 {
+                        Button { asks.showOlder.toggle() } label: {
+                            Text("\(asks.showOlder ? "hide" : "show") \(older) older").font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                        .help("Open asks that are over 24 hours old")
+                        .accessibilityIdentifier("asks-fold")
                     }
-                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                    .help("Open asks that are over 24 hours old")
-                    .accessibilityIdentifier("asks-fold")
+                    if older > 0 && (readCount > 0 || asks.showRead) { Text("·").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                    if readCount > 0 || asks.showRead {
+                        Button { asks.showRead.toggle() } label: {
+                            Text("\(asks.showRead ? "hide" : "show") \(readCount) read").font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                        .help("Asks you have already opened. Right-click one to mark it unread.")
+                        .accessibilityIdentifier("asks-read-toggle")
+                    }
                 }
             }
         }

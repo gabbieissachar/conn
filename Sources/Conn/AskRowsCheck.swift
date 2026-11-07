@@ -16,6 +16,7 @@ enum AskRowsCheck {
         let savedOlder = store.showOlder
         defer { store.showOlder = savedOlder }
         store.showOlder = false
+        store.clearRead(); store.showRead = false       // earlier runs and clicks leave read marks in the test preferences
         model.showWeb = true; model.webTab = .reader; model.readerFollows = true
         if let w = Capture.mainWindow() { w.setContentSize(NSSize(width: 1500, height: 900)) }
         await wait(2)
@@ -91,6 +92,7 @@ enum AskRowsCheck {
             return reader.webView.url?.fragment ?? ""
         }
         guard let asking = model.snapshot.agent("w01:p2"), let ask = store.visible()["w01:p2"] else { report("the fixture agent with an ask exists", false, ""); return }
+        store.clearRead()        // opening an ask reads it: every click below starts from an unread one
         model.sidebarOpenAgent(asking)
         let f1 = await fragment()
         report("a click on a row with an ask opens the reader at the session and the asking reply", f1 == ask.readerFragment && model.selectedPaneID == asking.id && model.webTab == .reader,
@@ -100,6 +102,7 @@ enum AskRowsCheck {
         report("the reader stays on the ask (the pin that follows a selection does not override it)", f1b == f1, "fragment=\(f1b)")
         // An ask the reader could not name a reply for (`message` null): the row still opens the conversation, at its newest turn.
         if let unnamed = model.snapshot.agent("w05:p3"), let ask5 = store.visible()["w05:p3"] {
+            store.clearRead()
             model.sidebarOpenAgent(unnamed)
             let f1c = await fragment()
             report("a click on an ask with no reply id opens the session alone", ask5.message == nil && f1c == "s=\(ask5.session)" && model.selectedPaneID == unnamed.id, "fragment=\(f1c)")
@@ -112,15 +115,18 @@ enum AskRowsCheck {
         model.sidebarOpenAgent(folded)
         let f3 = await fragment()
         report("a click on a row whose older ask is folded away behaves as a row without an ask", f3 == "s=\(foldedSession)", "fragment=\(f3)")
+        store.clearRead()        // the clicks above read two asks; the order below is the unread one
         store.showOlder = true; await wait(0.5)
         let shownOrder = model.agentOrder.map(\.id)
         report("show older lists the three older asks too, after the fresh ones and in newest-first order", Array(shownOrder.prefix(9)) == freshOrder + ["w04:p2", "w02:p2", "w06:p3"] && store.visible().count == 8, "first nine=\(shownOrder.prefix(9))")
+        store.clearRead()
+        let olderAsk = store.visible()["w04:p2"]      // read before the click: the click reads it
         model.sidebarOpenAgent(folded)
         let f4 = await fragment()
-        let olderAsk = store.visible()["w04:p2"]
         report("with older asks shown, a click on one opens the reader at its reply", olderAsk != nil && f4 == olderAsk!.readerFragment, "fragment=\(f4)")
         // The reader hidden: a click on an ask shows the column again.
         model.showWeb = false; await wait(0.5)
+        store.clearRead()
         model.sidebarOpenAgent(asking)
         let f5 = await fragment()
         report("a click on an ask shows the reader column when it was hidden", model.showWeb && model.webTab == .reader && f5 == ask.readerFragment, "showWeb=\(model.showWeb) fragment=\(f5)")
@@ -138,6 +144,37 @@ enum AskRowsCheck {
         report("with no asks a click is today's behaviour", f6 == "s=\(asking.sessionID ?? "-")", "fragment=\(f6)")
         store.apply(OpenAsksFeed(generatedAt: nil, asks: feed.sorted { $0.paneID < $1.paneID }), at: Date()); await wait(0.5)
         report("the asks come back when the reader does", store.asks.byPane.count == 8, "asks=\(store.asks.byPane.count)")
+
+        // 6. Read state: a click reads the ask (gone from the list and the count), "show read" brings it back muted, a new ask is unread.
+        store.clearRead(); store.showRead = false; store.showOlder = false
+        model.showWeb = true; model.webTab = .reader
+        let unreadBefore = model.needYouCount, orderBefore = model.agentOrder.map(\.id)
+        guard let reading = model.snapshot.agent("w01:p2"), let readAsk = store.visible()["w01:p2"] else { report("a fixture agent with a fresh ask to read exists", false, ""); return }
+        report("every fresh ask starts unread and counts toward 'needs you'", store.visible().count == 5 && unreadBefore == 6 && orderBefore.contains("w01:p2"), "visible=\(store.visible().count) needYou=\(unreadBefore)")
+        model.sidebarOpenAgent(reading)
+        let fRead = await fragment()
+        report("a click on a row with an ask opens it and marks it read: its block is gone and the count drops by one",
+               fRead == readAsk.readerFragment && store.isRead(readAsk) && store.shown()["w01:p2"] == nil && store.visible().count == 4 && model.needYouCount == unreadBefore - 1,
+               "fragment=\(fRead) read=\(store.isRead(readAsk)) visible=\(store.visible().count) needYou=\(model.needYouCount)")
+        report("a read ask no longer puts its agent first in the list", !model.agentOrder.prefix(5).map(\.id).contains("w01:p2") && model.agentOrder.count == orderBefore.count, "first five=\(model.agentOrder.prefix(5).map(\.id))")
+        let persisted = (AppModel.defaults.dictionary(forKey: "conn.asks.read.fixture") as? [String: Double]) ?? [:]
+        report("the read mark is kept in the app's preferences (so it survives a relaunch)", persisted[readAsk.readKey] != nil, "keys=\(persisted.count)")
+        let relaunched = OpenAskStore(source: nil, herdrSession: "fake", rebaseToNow: true, defaults: AppModel.defaults, readKey: "conn.asks.read.fixture")
+        report("a second store started from those preferences reads it as read", relaunched.isRead(readAsk), "")
+        store.showRead = true; await wait(0.4)
+        report("'show read' lists it again (muted), counts it apart and leaves the unread count alone", store.shown()["w01:p2"] != nil && store.readCount(among: model.snapshot.agents) == 1 && model.needYouCount == unreadBefore - 1,
+               "shown=\(store.shown().count) readCount=\(store.readCount(among: model.snapshot.agents)) needYou=\(model.needYouCount)")
+        if let dir = ProcessInfo.processInfo.environment["CONN_UI_CHECK_SHOT_DIR"] { await Capture.window(to: URL(fileURLWithPath: dir).appendingPathComponent("asks-read.png"), webSnapshots: false) }
+        store.markUnread(readAsk)
+        report("marking it unread brings it back to the unread list and the count", !store.isRead(readAsk) && store.visible()["w01:p2"] != nil && model.needYouCount == unreadBefore, "needYou=\(model.needYouCount)")
+        store.markRead(readAsk)
+        // The same pane asks again: another asking turn, so it is unread whatever was read before.
+        var again = readAsk; again.message = "turn-newer01"; again.at = Date()
+        var feedAgain = feed.filter { $0.paneID != "w01:p2" }; feedAgain.append(again)
+        store.apply(OpenAsksFeed(generatedAt: nil, asks: feedAgain.sorted { $0.paneID < $1.paneID }), at: Date()); await wait(0.4)
+        report("a new ask on the same pane shows as unread", store.visible()["w01:p2"]?.message == "turn-newer01" && !store.isRead(again), "ask=\(store.visible()["w01:p2"]?.message ?? "-")")
+        store.apply(OpenAsksFeed(generatedAt: nil, asks: feed.sorted { $0.paneID < $1.paneID }), at: Date())
+        store.clearRead(); store.showRead = false; await wait(0.3)
         _ = now
     }
 

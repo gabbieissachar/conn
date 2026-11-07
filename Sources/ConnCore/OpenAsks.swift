@@ -58,11 +58,51 @@ public struct OpenAsk: Equatable, Sendable {
     /// reader named no reply).
     public var readerFragment: String { "s=\(session)" + (message.map { "&m=\($0)" } ?? "") }
 
+    /// What makes this ask this ask, for the read mark: the pane (and its Herdr session) plus the asking turn, so a new ask on the same pane
+    /// is a different ask and shows as unread. With no turn id the reader's time stands in (a later ask has a later time), else the session.
+    public var readKey: String {
+        let turn = message ?? at.map { "t\(Int($0.timeIntervalSince1970))" } ?? "s\(session)"
+        return [herdr ?? "", paneID, turn].joined(separator: "\u{1F}")
+    }
+
     // The shapes the reader accepts (`address.js`): a hexadecimal session id with dashes, and a turn id of 6 to 64 characters.
     // Conn is stricter about the session than it needs to be for nothing else (an id that fails here is one the reader would not
     // follow either), and it puts both into a script, so only these characters ever get there.
     public static func validSession(_ s: String) -> Bool { s.range(of: "^[0-9A-Za-z-]{1,64}$", options: .regularExpression) != nil }
     public static func validMessage(_ s: String) -> Bool { s.range(of: "^[0-9A-Za-z_-]{6,64}$", options: .regularExpression) != nil }
+}
+
+/// Which asks the captain has read (clicked, or marked), kept by `OpenAsk.readKey`. A read ask is hidden from the sidebar and not
+/// counted; a new ask on the same pane has another key and shows again. Conn's own record, not the reader's (ROADMAP: it may move to the
+/// reader's planned store so the phone and the reader agree).
+public struct AskReadState: Equatable, Sendable {
+    /// Key -> when it was marked read (seconds since 1970).
+    public private(set) var marked: [String: Double]
+    /// At most this many marks are kept (the oldest go first), and none older than `maxAge`: asks come and go and the list must not grow for ever.
+    public static let maxEntries = 400
+    public static let maxAge: TimeInterval = 30 * 24 * 3600
+
+    public init(marked: [String: Double] = [:]) { self.marked = marked }
+
+    public func isRead(_ ask: OpenAsk) -> Bool { marked[ask.readKey] != nil }
+    public var isEmpty: Bool { marked.isEmpty }
+
+    public mutating func markRead(_ ask: OpenAsk, at date: Date = Date()) {
+        marked[ask.readKey] = date.timeIntervalSince1970
+        prune(now: date)
+    }
+
+    public mutating func markUnread(_ ask: OpenAsk) { marked[ask.readKey] = nil }
+    public mutating func clear() { marked = [:] }
+
+    public mutating func prune(now: Date) {
+        let floor = now.timeIntervalSince1970 - Self.maxAge
+        marked = marked.filter { $0.value >= floor }
+        if marked.count > Self.maxEntries {
+            let keep = marked.sorted { $0.value > $1.value }.prefix(Self.maxEntries)
+            marked = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+    }
 }
 
 /// What the reader answered.
@@ -148,8 +188,20 @@ public struct OpenAsks: Equatable, Sendable {
     }
 
     /// How many asks sit behind "show N older", counting only panes that are live (an ask for a pane that is gone is not shown at all).
-    public func olderCount(among agents: [Agent], now: Date) -> Int {
-        agents.reduce(0) { n, a in n + (byPane[a.id]?.isOlder(now: now) == true ? 1 : 0) }
+    /// Asks already read are not offered: `read` leaves them out.
+    public func olderCount(among agents: [Agent], now: Date, read: AskReadState = AskReadState()) -> Int {
+        agents.reduce(0) { n, a in
+            guard let ask = byPane[a.id], ask.isOlder(now: now), !read.isRead(ask) else { return n }
+            return n + 1
+        }
+    }
+
+    /// How many asks sit behind "show N read": read ones for live panes that the age fold would list.
+    public func readCount(among agents: [Agent], showOlder: Bool, now: Date, read: AskReadState) -> Int {
+        agents.reduce(0) { n, a in
+            guard let ask = byPane[a.id], read.isRead(ask), showOlder || !ask.isOlder(now: now) else { return n }
+            return n + 1
+        }
     }
 }
 

@@ -432,6 +432,12 @@ final class AppModel: ObservableObject {
     /// newest ask), then the rest as `Snapshot.prioritized` orders them. Without asks (the reader is down) it is `prioritized`.
     var agentOrder: [Agent] { snapshot.prioritized(asks: openAsks.visible()) }
 
+    /// The agents that need the captain, as the AGENTS header counts them: prompt waiting, or an unread open ask (a read ask is not counted).
+    var needYouCount: Int {
+        let unread = openAsks.visible()
+        return snapshot.agents.filter { $0.state == .blocked || unread[$0.id] != nil }.count
+    }
+
     func selectNth(_ i: Int) { let list = agentOrder; if i < list.count { select(list[i].id) } }
 
     func cycle(_ delta: Int) {
@@ -456,7 +462,7 @@ final class AppModel: ObservableObject {
 
     /// The reader conversation an agent stands for: the session Herdr names, else the one its open ask names. nil: the agent has no
     /// transcript yet (Herdr reports a session only once an integration has, so a pane started a moment ago has none).
-    func readerSession(for agent: Agent) -> String? { ReaderTarget.session(herdr: agent.sessionID, ask: ask(for: agent)?.session) }
+    func readerSession(for agent: Agent) -> String? { ReaderTarget.session(herdr: agent.sessionID, ask: openAsks.listed()[agent.id]?.session) }
 
     /// The Reader column has nothing for the selected agent: it says so instead of staying on the conversation of the agent chosen
     /// before, which would read as this agent's transcript.
@@ -522,22 +528,24 @@ final class AppModel: ObservableObject {
     /// A Watch column that opens a conversation with an open ask (a click on its row, or any way of choosing the agent) opens on the
     /// asking reply: the lite page scrolls to it and outlines it. Folded (older) asks count as none, as on the rows.
     func wireWatchAsks() {
-        watch.openAskTurnID = { [weak self] session in self?.openAsks.visible().values.first { $0.session == session }?.message }
+        watch.openAskTurnID = { [weak self] session in self?.openAsks.shown().values.first { $0.session == session }?.message }
     }
 
-    /// The ask an agent's row shows now (nil: no ask, or an older one still folded away).
-    func ask(for agent: Agent) -> OpenAsk? { openAsks.visible()[agent.id] }
+    /// The ask an agent's row shows now (nil: no ask, an older one still folded away, or one already read and not listed).
+    func ask(for agent: Agent) -> OpenAsk? { openAsks.shown()[agent.id] }
 
     /// Where the asks come from: `CONN_OPEN_ASKS_URL` (an address or a `file:` one), else the fixture's invented list, else the
     /// reader's own endpoint, asked from inside the Reader web view because the route needs the token that only the reader page
     /// holds (the page is loaded in the background if the Reader pane was never shown). `herdrSession` is the Herdr session Conn is
     /// attached to: the reader names the session of each pane, and an ask for another one is not ours.
     static func makeOpenAskStore(config: AppConfig, env: [String: String], web: WebHub, fixtureDir: URL?, herdrSession: String) -> OpenAskStore {
+        // A fixture launch keeps its read marks apart from the real ones (as it does the starred order).
+        let readKey = config.fixture ? "conn.asks.read.fixture" : "conn.asks.read"
         if let u = env["CONN_OPEN_ASKS_URL"], !u.isEmpty, let url = URL(string: u) {
-            return OpenAskStore(url: url, herdrSession: herdrSession, rebaseToNow: config.fixture)
+            return OpenAskStore(url: url, herdrSession: herdrSession, rebaseToNow: config.fixture, defaults: AppModel.defaults, readKey: readKey)
         }
-        if config.fixture { return OpenAskStore(url: fixtureDir?.appendingPathComponent("open-asks.json"), herdrSession: herdrSession, rebaseToNow: true) }
-        return OpenAskStore(source: { @MainActor [web] in await web.fetchOpenAsks() }, herdrSession: herdrSession)
+        if config.fixture { return OpenAskStore(url: fixtureDir?.appendingPathComponent("open-asks.json"), herdrSession: herdrSession, rebaseToNow: true, defaults: AppModel.defaults, readKey: readKey) }
+        return OpenAskStore(source: { @MainActor [web] in await web.fetchOpenAsks() }, herdrSession: herdrSession, defaults: AppModel.defaults, readKey: readKey)
     }
 
     /// The Reader pane's row of starred sessions: open this conversation in the reader (the pin path an agent selection uses,
@@ -585,7 +593,7 @@ final class AppModel: ObservableObject {
     /// The reader conversation an agent shows in a Watch column: the session its open ask names (the reader's own id for the pane's
     /// conversation, which can be a later session of a /clear chain than the one Herdr names, and is the one the asking reply is in),
     /// else the session Herdr names for it.
-    private func watchConversation(_ a: Agent) -> String? { ask(for: a)?.session ?? a.sessionID }
+    private func watchConversation(_ a: Agent) -> String? { openAsks.listed()[a.id]?.session ?? a.sessionID }
 
     /// An agent chosen while Watch is on. An agent with no conversation in the reader (neither Herdr nor an open ask names a session
     /// for it) has nothing to show in a column.
@@ -832,7 +840,7 @@ final class AppModel: ObservableObject {
         } else {
             select(a.id, pin: asking == nil)
         }
-        if let asking = asking { openAsk(asking) }
+        if let asking = asking { openAsk(asking); openAsks.markRead(asking) }     // opening the ask is reading it
     }
 
     /// Type the keys that move the embedded client to `target` and confirm it got there. Only the embedded client moves: the
