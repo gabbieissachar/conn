@@ -21,7 +21,7 @@
   const S = {
     sessions: [], session: null, board: null, write: { marks: false, answer: false }, loadedAt: 0, error: null, loading: false,
     project: "all", q: "", col: "needs", open: null, grouped: true, shut: {}, barOpen: false, workersOpen: false,
-    drafts: {}, confirm: null, busy: null, notice: {}, picker: null,
+    drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {},
   };
   const items = () => (S.board ? S.board.items : []);
   const byRef = () => Object.fromEntries(items().map((t) => [t.ref, t]));
@@ -82,8 +82,8 @@
     const shown = S.sessions.filter((s) => s.enabled !== false);
     shown.forEach((s) => {
       const b = el("button", "sess" + (s.kind === "worker" ? " worker" : "")); b.type = "button"; b.setAttribute("aria-pressed", String(S.session === s.id));
-      b.append(s.label || s.id); if (S.board && S.board.session.id === s.id) b.append(el("span", "n", String(S.board.items.filter((t) => t.col !== "done").length)));
-      b.title = s.id + (s.kind === "worker" ? " (a worker you drive)" : ""); b.onclick = () => chooseSession(s.id); sl.append(b);
+      b.append(el("span", "sl", s.label || s.id)); if (S.board && S.board.session.id === s.id) b.append(el("span", "n", String(S.board.items.filter((t) => t.col !== "done").length)));
+      b.title = (s.label && s.label !== s.id ? s.label + " · " : "") + s.id + (s.kind === "worker" ? " (a worker you drive)" : ""); b.onclick = () => chooseSession(s.id); sl.append(b);
     });
     const workers = S.sessions.filter((s) => s.kind === "worker");
     if (workers.length) { const m = el("button", "more", (S.workersOpen ? "Hide workers" : "Workers you drive") + " (" + workers.filter((w) => w.enabled !== false).length + "/" + workers.length + ")"); m.type = "button"; m.onclick = () => { S.workersOpen = !S.workersOpen; renderWorkers(); renderBar(); }; sl.append(m); }
@@ -186,9 +186,11 @@
     const newestFirst = (a, b) => (age(a) ?? 99) - (age(b) ?? 99);
     if (!S.grouped) { list.sort(newestFirst).forEach((t) => body.append(card(t))); return; }
     const old = list.filter((t) => (age(t) ?? 0) > 14), fresh = list.filter((t) => !((age(t) ?? 0) > 14));
-    [["Open questions", fresh.filter((t) => !goOnly(t)), true], ["Waiting for your go", fresh.filter(goOnly), false], ["Older than 14 days", old, false]].forEach(([name, group, open]) => {
-      if (!group.length) return;
-      const d = el("details", "grp"); d.open = open; const s = el("summary"); s.append(name, el("span", "n", String(group.length))); d.append(s);
+    const groups = [["Open questions", fresh.filter((t) => !goOnly(t)), true], ["Waiting for your go", fresh.filter(goOnly), false], ["Older than 14 days", old, false]].filter((g) => g[1].length);
+    groups.forEach(([name, group, open]) => {
+      const d = el("details", "grp"); d.open = name in S.grp ? S.grp[name] : (open || groups.length === 1);
+      d.addEventListener("toggle", () => { S.grp[name] = d.open; act.textContent = d.open ? "fold" : "show"; });
+      const s = el("summary"); const act = el("span", "act", d.open ? "fold" : "show"); s.append(name, el("span", "n", String(group.length)), act); d.append(s);
       const gb = el("div", "grp-body"); group.sort(newestFirst).forEach((t) => gb.append(card(t))); d.append(gb); body.append(d);
     });
   }
@@ -198,15 +200,21 @@
     const keep = {}; document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b) keep[c.dataset.col] = b.scrollTop; });
     colsEl.textContent = ""; colbar.textContent = "";
     if (!S.board) { colsEl.append(el("div", "loading", S.error ? "Nothing to show yet." : "Reading the fleet... the first read of a session takes about fifteen seconds.")); $("upkeep").hidden = true; return; }
-    const cols = S.board.columns;
+    const cols = S.board.columns, ph = phone();
     if (!cols.some((c) => c.id === S.col)) S.col = "needs";
+    const lists = Object.fromEntries(cols.map((col) => [col.id, items().filter((t) => t.col === col.id && visible(t))]));
+    const anyCards = cols.some((col) => lists[col.id].length);
+    colbar.append(el("span", "lbl", "More columns than fit: jump to"));
     cols.forEach((col) => {
-      const list = items().filter((t) => t.col === col.id && visible(t));
-      const tab = el("button", "ctab " + col.id); tab.type = "button"; tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", String(S.col === col.id));
-      tab.append(col.name, el("span", "n", String(list.length))); tab.onclick = () => { S.col = col.id; render(); }; colbar.append(tab);
-      const c = el("section", "col " + col.id + (S.col === col.id ? " on" : "")); c.dataset.col = col.id;
+      const list = lists[col.id], empty = !list.length, rail = !ph && anyCards && empty && !S.unfold[col.id];
+      const tab = el("button", "ctab " + col.id); tab.type = "button"; tab.setAttribute("role", ph ? "tab" : "button"); if (ph) tab.setAttribute("aria-selected", String(S.col === col.id));
+      tab.append(col.name, el("span", "n", String(list.length)));
+      tab.onclick = () => { if (phone()) { S.col = col.id; render(); } else { if (empty && !S.unfold[col.id]) { S.unfold[col.id] = true; render(); } const n = document.querySelector('.col[data-col="' + col.id + '"]'); if (n) n.scrollIntoView({ inline: "start", block: "nearest", behavior: "smooth" }); } };
+      colbar.append(tab);
+      const c = el("section", "col " + col.id + (S.col === col.id ? " on" : "") + (rail ? " rail" : "") + (empty && anyCards && !ph ? " fold" : "")); c.dataset.col = col.id;
       const h = el("div", "col-h"); const ct = el("div", "col-t"); ct.append(col.name, el("span", "n", String(list.length)));
-      h.append(ct, el("div", "col-s", col.sub)); c.append(h);
+      if (empty && anyCards && !ph) { h.onclick = () => { S.unfold[col.id] = !S.unfold[col.id]; render(); }; h.title = rail ? "Nothing here: click to open the column" : "Click to fold this empty column"; ct.append(el("span", "fold-hint", "fold")); }
+      h.append(ct, el("div", "col-s", col.id === "needs" && S.grouped && list.length && list.every((t) => (ageDays(newest(t)) ?? 0) > 14) ? list.length + " open, all older than 14 days" : col.sub)); c.append(h);
       const body = el("div", "col-b");
       if (!list.length) body.append(el("div", "empty", "Nothing here with these filters."));
       else if (col.id === "needs") needsBody(body, list);
@@ -216,8 +224,21 @@
       c.append(body); colsEl.append(c);
     });
     document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b && keep[c.dataset.col]) b.scrollTop = keep[c.dataset.col]; });
-    renderUpkeep();
+    renderUpkeep(); requestAnimationFrame(updateOverflow);
     if (S.open) { const sb = document.querySelector(".sh-body"); if (sb) S.open.keepScroll = sb.scrollTop; renderSheet(); }
+  }
+
+  /* ---- more columns than the window: say so, and say which are out of sight ---- */
+  function updateOverflow() {
+    const c = $("cols"), cb = $("colbar");
+    const ovf = !phone() && !!S.board && c.scrollWidth > c.clientWidth + 2;
+    document.body.classList.toggle("ovf", ovf);
+    if (!ovf) return;
+    const box = c.getBoundingClientRect(), tabs = [...cb.querySelectorAll(".ctab")];
+    [...c.querySelectorAll(".col")].forEach((col, i) => {
+      const r = col.getBoundingClientRect(), full = r.left >= box.left - 1 && r.right <= box.right + 1;
+      if (tabs[i]) { tabs[i].classList.toggle("off", !full); tabs[i].dataset.dir = r.left < box.left - 1 ? "\u2190" : "\u2192"; }
+    });
   }
 
   /* ---- Fleet upkeep and No task found: replies that reach no card ---- */
@@ -467,7 +488,9 @@
   $("find").addEventListener("keydown", (e) => { if (e.key === "Enter") { const r = parseRef($("find").value); if (r) { S.q = ""; jumpTo(r.ref, r.call); } } });
   $("bar-toggle").onclick = () => { S.barOpen = $("bar").classList.contains("collapsed"); renderBar(); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.open) closeSheet(); });
-  window.addEventListener("resize", () => renderBar());
+  let wasPhone = phone();
+  $("cols").addEventListener("scroll", updateOverflow, { passive: true });
+  window.addEventListener("resize", () => { renderBar(); if (wasPhone !== phone()) { wasPhone = phone(); render(); } else updateOverflow(); });
   function fromHash() {
     const p = new URLSearchParams(location.hash.slice(1)); const s = p.get("s"), t = p.get("t");
     if (s && s !== S.session && S.sessions.some((x) => x.id === s)) { chooseSession(s); }

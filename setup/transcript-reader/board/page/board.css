@@ -54,7 +54,7 @@ code, .mono { font: 12.5px var(--mono); }
 .asof { font-size: 12px; color: var(--muted); padding: 2px 12px 6px; background: var(--paper); border-bottom: 1px solid var(--line); flex: none; }
 .asof b { color: var(--ink); font-weight: 600; }
 
-/* column switcher (phone and narrow windows) */
+/* column switcher: the phone's tabs, and on a wider screen the jump bar that shows when the columns do not all fit */
 .colbar { display: none; flex: none; gap: 4px; overflow-x: auto; padding: 6px 12px; background: var(--paper); border-bottom: 1px solid var(--line); scrollbar-width: none; }
 .colbar::-webkit-scrollbar { display: none; }
 .ctab { flex: none; border: 1px solid var(--line); background: var(--wash); border-radius: 99px; padding: 3px 11px; font-size: 14px; white-space: nowrap; }
@@ -63,11 +63,35 @@ code, .mono { font: 12.5px var(--mono); }
 .ctab[aria-selected="true"] .n { color: inherit; }
 .ctab.needs:not([aria-selected="true"]) { background: var(--ask-wash); border-color: var(--ask-line); color: var(--ask); }
 .ctab.needs:not([aria-selected="true"]) .n { color: inherit; }
+.colbar .lbl { flex: none; align-self: center; font-size: 12.5px; color: var(--muted); margin: 0 4px 0 0; display: none; }
+@media (min-width: 721px) {
+  body.ovf .colbar { display: flex; padding: 4px 12px; }
+  body.ovf .colbar .lbl { display: inline; }
+  body.ovf .ctab { padding: 1px 10px; font-size: 13px; }
+}
+.ctab.off { border-style: dashed; }
+.ctab.off::after { content: attr(data-dir); margin-left: 5px; color: var(--muted); }
 
 /* the board */
-.cols { flex: 1 1 auto; min-height: 0; display: flex; gap: 10px; padding: 10px 12px; overflow-x: auto; overflow-y: hidden; align-items: stretch; }
-.col { flex: 0 0 18.5rem; min-width: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--paper) 55%, var(--wash)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.cols { flex: 1 1 auto; min-height: 0; display: flex; gap: 10px; padding: 10px 12px 6px; overflow-x: auto; overflow-y: hidden; align-items: stretch; }
+/* a scrollbar that stays on screen (the overlay kind hides itself, and a board wider than the window then looks clipped) */
+.cols::-webkit-scrollbar { height: 12px; }
+.cols::-webkit-scrollbar-track { background: var(--line); border-radius: 6px; margin: 0 12px; }
+.cols::-webkit-scrollbar-thumb { background: var(--faint); border-radius: 6px; border: 2px solid var(--line); }
+.col { flex: 1 1 17rem; min-width: 16rem; max-width: 26rem; display: flex; flex-direction: column; background: color-mix(in srgb, var(--paper) 55%, var(--wash)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .col-h { flex: none; padding: 8px 10px 6px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.col.fold .col-h { cursor: pointer; }
+.col.fold .col-h:hover { background: var(--wash); }
+.col .col-t .fold-hint { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--muted); display: none; }
+.col.fold .col-t .fold-hint { display: inline; }
+/* a column with nothing in it folds to a slim rail, so the columns that have cards get the room; click it to open it */
+@media (min-width: 721px) {
+  .col.rail { flex: 0 0 2.6rem; min-width: 0; max-width: none; }
+  .col.rail .col-h { height: 100%; border-bottom: 0; padding: 10px 0; display: flex; justify-content: center; }
+  .col.rail .col-s, .col.rail .col-b { display: none; }
+  .col.rail .col-t { writing-mode: vertical-rl; white-space: nowrap; gap: 8px; align-items: center; }
+  .col.rail .col-t .fold-hint { display: none; }
+}
 .col-t { display: flex; align-items: baseline; gap: 6px; font-weight: 700; font-size: 14px; }
 .col-t .n { font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .col-s { font-size: 12px; color: var(--muted); margin-top: 1px; }
@@ -77,7 +101,10 @@ code, .mono { font: 12.5px var(--mono); }
 .col-b { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .empty { font-size: 13px; color: var(--muted); padding: 10px 4px; text-align: center; }
 .grp { margin: 2px 0 0; }
-.grp > summary { list-style: none; cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); padding: 6px 2px 4px; display: flex; gap: 6px; align-items: center; }
+.grp > summary { list-style: none; cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); padding: 6px 8px; display: flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.grp > summary:hover { border-color: color-mix(in srgb, var(--you) 45%, var(--line)); }
+.grp > summary .act { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
+.grp[open] > summary { margin-bottom: 4px; }
 .grp > summary::-webkit-details-marker { display: none; }
 .grp > summary::before { content: ""; width: 6px; height: 6px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(-45deg); transition: transform .12s; flex: none; }
 .grp[open] > summary::before { transform: rotate(45deg); }
@@ -188,7 +215,7 @@ code, .mono { font: 12.5px var(--mono); }
 @media (max-width: 720px) {
   .colbar { display: flex; }
   .cols { padding: 8px 12px; overflow-x: hidden; }
-  .col { flex: 1 1 100%; display: none; }
+  .col { flex: 1 1 100%; display: none; min-width: 0; max-width: none; }
   .col.on { display: flex; }
   .col-h { display: none; }
   .tabs { margin-left: 6px; }
@@ -354,4 +381,7 @@ a.open-link { color: var(--you); text-decoration: underline; }
 @media (max-width: 720px) {
   .up > summary .sub { flex-basis: 100%; }
 }
-.sessline .sess { max-width: 17rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessline .sess { max-width: 17rem; min-width: 0; white-space: nowrap; }
+.sessline .sess .sl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sessline .sess .n { flex: none; }
+.sessline .sess::before { flex: none; }

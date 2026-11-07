@@ -40,6 +40,18 @@ async function openBoard(port, hash = '', viewport = '1100x900x1') {
   axi('open', `http://127.0.0.1:${port}/setup/transcript-reader/board/?run=${Date.now()}#s=leader-lab${hash}`);
   await until(`return { ok: document.querySelectorAll('.card').length > 0 };`, 'the cards', 60000);
 }
+// Every column reachable at this width: either they all fit, or the board says so (jump bar with one tab per column) and the last tab brings the last column fully into view.
+const reach = () => ev(`const c = document.getElementById('cols'), cols = [...c.querySelectorAll('.col')], b = c.getBoundingClientRect(); const out = (x) => { const r = x.getBoundingClientRect(); return r.right > b.right + 1 || r.left < b.left - 1; }; return { fits: c.scrollWidth <= c.clientWidth + 2, n: cols.length, tabs: document.querySelectorAll('.ctab').length, bar: getComputedStyle(document.getElementById('colbar')).display, doc: document.documentElement.scrollWidth <= innerWidth, clip: cols.filter(out).length };`);
+async function checkWidth(width, label) {
+  const r = reach();
+  check(r.doc, `${label}: nothing scrolls sideways on the page`, JSON.stringify(r));
+  if (width <= 720) { check(r.bar !== 'none' && r.tabs === r.n, `${label}: the phone has one tab per column`, JSON.stringify(r)); return; }
+  if (r.fits) { check(r.clip === 0, `${label}: every column fits in the window`, JSON.stringify(r)); return; }
+  check(r.bar !== 'none' && r.tabs === r.n, `${label}: the columns do not all fit, so the jump bar shows one tab per column`, JSON.stringify(r));
+  ev(`const t = [...document.querySelectorAll('.ctab')].pop(); t.click(); return true;`);
+  await until(`const c = document.getElementById('cols'), l = [...c.querySelectorAll('.col')].pop(), b = c.getBoundingClientRect(), r = l.getBoundingClientRect(); return { ok: r.right <= b.right + 1 && r.left >= b.left - 1 };`, `${label}: the last column in view`, 8000);
+  check(true, `${label}: the last tab brings the last column fully into view`);
+}
 const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s ? s.innerText : '';`);
 
 (async () => {
@@ -68,6 +80,22 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(ev(`return [...document.querySelectorAll('.th-item.reply .why')].some(w => w.textContent === 'mention');`), 'the thread says why a reply is there');
     check(!ev(`return !!document.querySelector('.th-item .mk');`), 'marking is off: no mark buttons');
     check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at desktop width');
+    // a long worker name: cut with an ellipsis inside its chip, the same padding as the others, the whole name in the tooltip
+    const chip = ev(`const sl = document.getElementById('sessline'), b = document.createElement('button'), s = document.createElement('span'); b.className = 'sess worker'; s.className = 'sl'; s.textContent = '2026-11-06-esim-listing-output-sync-run-with-a-very-long-tail'; b.title = s.textContent; b.append(s); sl.append(b); const r = b.getBoundingClientRect(), pad = getComputedStyle(b).paddingLeft; const o = sl.querySelector('.sess:not(.worker)'); return { cut: s.scrollWidth > s.clientWidth, ell: getComputedStyle(s).textOverflow, w: Math.round(r.width), pad, pad0: o ? getComputedStyle(o).paddingLeft : pad, tip: b.title.length > 40 };`);
+    check(chip.cut && chip.ell === 'ellipsis' && chip.w <= 17 * 16 + 2 && chip.pad === chip.pad0 && chip.tip, 'a long worker chip is cut with an ellipsis, pads like the others and keeps its name in the tooltip', JSON.stringify(chip));
+    ev(`document.querySelector('.sess.worker:last-child') && document.querySelector('.sess.worker:last-child').remove(); return true;`);
+    // the Needs you column: a folded group says what it is, and a lone group opens by itself
+    const grp = ev(`const col = document.querySelector('.col.needs'), g = [...col.querySelectorAll('details.grp')]; return { n: g.length, open: g.map(x => x.open), act: g.map(x => x.querySelector('.act') && x.querySelector('.act').textContent), sub: col.querySelector('.col-s').textContent };`);
+    check(grp.n !== 1 || grp.open[0] === true, 'a Needs you column with one group shows it open', JSON.stringify(grp));
+    check(grp.act.every((a, i) => a === (grp.open[i] ? 'fold' : 'show')), 'each group says whether it folds or shows', JSON.stringify(grp));
+    if (grp.n) {
+      ev(`document.querySelector('.col.needs details.grp > summary').click(); return true;`); await sleep(300);
+      ev(`window.__board.render(); return true;`);
+      check(ev(`return document.querySelector('.col.needs details.grp').open;`) === !grp.open[0], 'a group keeps the fold you chose across a redraw');
+      ev(`document.querySelector('.col.needs details.grp > summary').click(); return true;`); await sleep(300);
+    }
+    for (const [w, label] of [[1200, '1200 px'], [1440, '1440 px'], [900, '900 px']]) { await openBoard(port, '', `${w}x900x1`); await checkWidth(w, label); }
+    await openBoard(port, '', '1100x900x1');
     for (const dark of ['light', 'dark']) { axi('emulate', '--color-scheme', dark); await sleep(300); check(ev(`return getComputedStyle(document.body).backgroundColor !== 'rgba(0, 0, 0, 0)';`), `the page has its own background in ${dark}`); }
     axi('emulate', '--color-scheme', 'light');
     await openBoard(port, '&t=delta-two-calls', '390x844x2,mobile,touch');
@@ -75,6 +103,7 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(ev(`const r = document.querySelector('.sheet').getBoundingClientRect(); return r.width === innerWidth && r.bottom === innerHeight && r.top > 0;`), 'on a phone the card is a bottom sheet');
     check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at 390 px');
     check(ev(`return getComputedStyle(document.getElementById('colbar')).display !== 'none';`), 'the phone has the column tabs');
+    await checkWidth(390, '390 px');
     servers.pop().kill();
 
     // ---- round 2: both writes on
