@@ -49,11 +49,15 @@ private struct WatchBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // The columns take the room the sidebar gives up: hide it here as well as from the toolbar and Ctrl+Cmd+S.
+            Button { app.sidebarVisible.toggle() } label: { Image(systemName: "sidebar.left") }
+                .buttonStyle(.borderless).help(app.sidebarVisible ? "Hide the sidebar for wider columns (⌃⌘S)" : "Show the sidebar (⌃⌘S)")
+                .accessibilityIdentifier("watch-sidebar-toggle")
             Image(systemName: "rectangle.split.3x1").foregroundStyle(.secondary)
             Text("Watch").font(.system(size: 12, weight: .semibold))
             Text("\(watch.layout.openCount) of \(watch.count) columns").font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            Text("Click an agent to show it here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+            Text(app.sidebarVisible ? "Click an agent to show it here" : "⌘K picks an agent to show here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
             Picker("Columns", selection: Binding(get: { watch.count }, set: { app.setWatchCount($0) })) {
                 ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0)").tag($0) }
             }

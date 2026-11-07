@@ -165,6 +165,7 @@ enum UICheck {
         if !only.isEmpty {
             model.agentViewEnabled = true; model.mode = .agent; await wait(1)
             if only.contains("reader-follow") { await ReaderFollowCheck.run(model: model, report: report, wait: wait) }
+            if only.contains("sidebar") { await SidebarCheck.run(model: model, report: report, wait: wait) }
             if only.contains("asks") { await AskRowsCheck.run(model: model, report: report, wait: wait) }
             print("ui-check: done (only \(only.sorted().joined(separator: ", ")))")
             model.shutdown(); NSApplication.shared.terminate(nil)
@@ -482,6 +483,7 @@ enum UICheck {
         await until { model.attentive && model.primary.state == .live }
         report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
         await ExplorerCheck.run(model: model, report: report, wait: wait)
+        await SidebarCheck.run(model: model, report: report, wait: wait)
         // The menus SwiftUI built from the commands, with their shortcuts.
         var chords = 0
         var offenders: [String] = []

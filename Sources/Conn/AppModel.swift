@@ -83,7 +83,12 @@ final class AppModel: ObservableObject {
     @Published var showWeb = true {
         didSet { if showWeb && !oldValue && webTab == .organizer { web.box(.organizer).showContextView() } }
     }
-    @Published var sidebarVisible = true
+    /// The left panel (spaces and agents): shown or hidden with the toolbar button, Layout > Hide Sidebar or Ctrl+Cmd+S, and remembered
+    /// across launches. Hidden, it gives its 251 pt to the centre pane or to the Watch columns.
+    @Published var sidebarVisible: Bool = AppModel.defaults.object(forKey: AppModel.sidebarVisibleKey) as? Bool ?? true {
+        didSet { if sidebarVisible != oldValue { Self.defaults.set(sidebarVisible, forKey: Self.sidebarVisibleKey) } }
+    }
+    private static let sidebarVisibleKey = "conn.sidebar.visible"
     @Published var webWidth: CGFloat = 480
     /// The Editor view's Explorer: shown or hidden (Cmd+B), and its width. Remembered across launches.
     @Published var explorerVisible: Bool = AppModel.defaults.object(forKey: AppModel.explorerVisibleKey) as? Bool ?? true {

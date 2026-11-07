@@ -205,7 +205,8 @@ struct ConnCommands: Commands {
             Toggle("Reader and Organizer", isOn: $app.readerToggle).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])
             Toggle("Privacy Mode", isOn: $app.privacy).keyboardShortcut("b", modifiers: [.command, .shift])
-            Toggle("Sidebar", isOn: $app.sidebarVisible).keyboardShortcut("s", modifiers: [.command, .control])
+            // Ctrl+Cmd+S is the system's own key for a sidebar (Finder, Mail); Cmd+B is the Editor's Explorer.
+            Button(app.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { app.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
             Divider()
             Button("Reload Web Panes") { app.reloadWeb() }.keyboardShortcut("r")
         }
