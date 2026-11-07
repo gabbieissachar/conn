@@ -160,6 +160,77 @@ import ConnCore
         #expect(w.fill(with: [d]).isEmpty)
     }
 
+    // MARK: a session link clicked inside a column
+
+    @Test func aLinkToASessionThatIsOpenKeepsItsColumnAndNothingElseMoves() {
+        var w = WatchLayout(count: 3)
+        w.open(a); w.open(b); w.open(c)
+        let before = w.slots.map { $0?.session }
+        #expect(w.open(c, from: 0) == .alreadyOpen(column: 2))
+        #expect(w.slots.map { $0?.session } == before)
+    }
+
+    @Test func aLinkToTheSessionOfItsOwnColumnChangesNothing() {
+        var w = WatchLayout(count: 2)
+        w.open(a); w.open(b)
+        #expect(w.open(a, from: 0) == .alreadyOpen(column: 0))
+        #expect(w.sessions == [a, b])
+    }
+
+    @Test func aLinkUsesAFreeColumnBeforeReplacingAny() {
+        var w = WatchLayout(count: 4)
+        w.open(a); w.open(b); w.open(c)
+        #expect(w.open(d, from: 0) == .freeSlot(column: 3))
+        #expect(w.sessions == [a, b, c, d])
+    }
+
+    @Test func aLinkReplacesTheLeastRecentlyUsedColumnOtherThanTheOneClicked() {
+        var w = WatchLayout(count: 3)
+        w.open(a); w.open(b); w.open(c)        // a is the least recently used
+        #expect(w.leastRecentlyUsed == 0)
+        #expect(w.open(d, from: 0) == .replaced(column: 1, previous: b))   // the clicked column is spared, b is next oldest
+        #expect(w.slots.map { $0?.session } == [a, d, c])
+    }
+
+    @Test func theClickedColumnCountsAsUsedEvenWhenTheLinkChangesNothingElse() {
+        var w = WatchLayout(count: 3)
+        w.open(a); w.open(b); w.open(c)
+        #expect(w.open(d, from: 0) == .replaced(column: 1, previous: b))
+        // The click made column 0 the most recent use before d took column 1, so c is now the oldest.
+        #expect(w.leastRecentlyUsed == 2)
+    }
+
+    @Test func aLinkInAnyColumnNeverRemovesItsOwnPage() {
+        for clicked in 0..<2 {
+            var w = WatchLayout(count: 2)
+            w.open(a); w.open(b)
+            let own = w.slots[clicked]!.session
+            let p = w.open(c, from: clicked)
+            #expect(p.column == 1 - clicked)
+            #expect(w.slots[clicked]!.session == own)
+        }
+    }
+
+    @Test func aClickInAColumnThatDoesNotExistFallsBackToTheOrdinaryRule() {
+        var w = WatchLayout(count: 3)
+        w.open(a); w.open(b); w.open(c)
+        #expect(w.open(d, from: 7) == .replaced(column: 0, previous: a))
+        var x = WatchLayout(count: 3)
+        x.open(a); x.open(b)
+        #expect(x.open(c, from: 2) == .freeSlot(column: 2))     // an empty column was not clicked
+    }
+
+    @Test func leastRecentlyUsedCanLeaveOneColumnOut() {
+        var w = WatchLayout(count: 3)
+        w.open(a); w.open(b); w.open(c)
+        #expect(w.leastRecentlyUsed(excluding: nil) == 0)
+        #expect(w.leastRecentlyUsed(excluding: 0) == 1)
+        #expect(w.leastRecentlyUsed(excluding: 1) == 0)
+        var one = WatchLayout(count: 2)
+        one.open(a)
+        #expect(one.leastRecentlyUsed(excluding: 0) == nil)
+    }
+
     // MARK: addresses on the lite page
 
     @Test func theAddressNamesTheSessionAndOptionallyTheAskingTurn() {

@@ -22,6 +22,9 @@
   .reply p { margin:0 0 6px; } .reply p:last-child { margin:0; }
   .reply h4 { margin:2px 0 6px; font-size:13px; }
   .reply ol { margin:4px 0 6px; padding-left:20px; }
+  /* A reply that names another session: the reader draws it as a link with data-session. Its href is the lite page's own address. */
+  .session-ref { color:var(--blue); font-weight:600; text-decoration:underline; text-underline-offset:2px; }
+  .refs { color:var(--muted); font-size:12px; }
   .tools { color:var(--blue); font-size:12px; text-decoration:underline; text-decoration-style:dotted; }
   .wait { border-left-color:#e0613a; } .wait h4 { color:#c4412e; }
   /* The reply an address (#s=...&m=...) went to: outlined for a moment, as the real page does. */
@@ -69,7 +72,9 @@ const S = [
 const convo = document.getElementById('convo'), title = document.getElementById('title'), to = document.getElementById('to');
 const parse = h => { const m = /^#s=([0-9a-f-]+)(?:&m=([0-9A-Za-z_-]{6,64}))?$/.exec(h || ''); return m ? { session: m[1], message: m[2] || null } : null; };
 const indexOf = id => { const n = parseInt(id.split('-').pop(), 10); return isNaN(n) ? -1 : (((n - 1) % S.length) + S.length) % S.length; };
-let shown = -1, shownId = '';
+let shown = -1, shownId = '', currentId = '';
+// The id of a session near this one (the last group of digits plus one or two, same width): what the invented links name.
+const neighbour = (id, by) => id.replace(/\d+$/, m => String(Math.max(0, parseInt(m, 10) + by)).padStart(m.length, '0'));
 const pad = n => String(n).padStart(4, '0');
 let sessionNumber = 1;
 function draw(i) {
@@ -85,7 +90,7 @@ function draw(i) {
     } else {
       html += `<div class="user" data-msg="${uid}-in">${s[2]}</div>` +
               `<div class="reply" data-msg="${uid}x"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>` +
-              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
+              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}<p class="refs">See also <a class="session-ref" data-ref="next" data-session="${neighbour(currentId, 1)}" href="#s=${neighbour(currentId, 1)}">the next session</a> and <a class="session-ref" data-ref="later" data-session="${neighbour(currentId, 2)}" href="#s=${neighbour(currentId, 2)}">the one after that</a>.</p>${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
     }
   }
   convo.innerHTML = html;
@@ -106,6 +111,7 @@ function follow() {
   if (i < 0) return;
   const n = parseInt(a.session.split('-').pop(), 10);
   const fresh = n !== sessionNumber || shown < 0;
+  currentId = a.session;
   if (fresh) { sessionNumber = n; draw(i); }
   if (a.message) { land(a.message); history.replaceState(null, '', '#s=' + a.session); }
   else if (fresh) window.scrollTo(0, document.body.scrollHeight);

@@ -5,6 +5,8 @@
 //   - a session that already has a column keeps it: nothing else moves;
 //   - otherwise it goes into a free column, if there is one;
 //   - otherwise it replaces the least recently used column, in that column's own place, and the other columns are untouched.
+// A session link clicked inside a column (`open(_:from:)`) follows the same rule, with one difference: the column that was clicked
+// counts as used by that click, and is never the one replaced (the link must not remove the page it sits in).
 // "Used" is a click, a scroll, a keystroke or focus inside the column, and opening a session in it. The clock is a counter, not
 // a date, so the order is exact and a test does not depend on time.
 import Foundation
@@ -59,10 +61,13 @@ public struct WatchLayout: Equatable, Sendable {
     public func index(of session: String) -> Int? { slots.firstIndex { $0.map { WatchLayout.same($0.session, session) } ?? false } }
 
     /// The occupied column used longest ago (the leftmost one on a tie, which cannot happen with the counter clock).
-    public var leastRecentlyUsed: Int? {
+    public var leastRecentlyUsed: Int? { leastRecentlyUsed(excluding: nil) }
+
+    /// The same, leaving one column out of the choice.
+    public func leastRecentlyUsed(excluding skipped: Int?) -> Int? {
         var best: Int?
         for (i, s) in slots.enumerated() {
-            guard let s = s else { continue }
+            guard let s = s, i != skipped else { continue }
             if best == nil || s.lastUsed < slots[best!]!.lastUsed { best = i }
         }
         return best
@@ -71,8 +76,12 @@ public struct WatchLayout: Equatable, Sendable {
     private mutating func tick() -> UInt64 { clock += 1; return clock }
 
     /// Show `session`: the rule in the file header. The result says which column it is in and how it got there.
+    /// `clicked` is the column a link was clicked in, when the session is opened from a link: that column counts as used and is
+    /// never the one replaced. Without it (a sidebar row, a key) every column may be replaced.
     @discardableResult
-    public mutating func open(_ session: String) -> WatchPlacement {
+    public mutating func open(_ session: String, from clicked: Int? = nil) -> WatchPlacement {
+        let clicked = clicked.flatMap { slots.indices.contains($0) && slots[$0] != nil ? $0 : nil }
+        if let c = clicked { touch(c) }
         if let i = index(of: session) {
             slots[i]!.lastUsed = tick()
             return .alreadyOpen(column: i)
@@ -82,7 +91,7 @@ public struct WatchLayout: Equatable, Sendable {
             nextID += 1
             return .freeSlot(column: free)
         }
-        let i = leastRecentlyUsed!
+        let i = leastRecentlyUsed(excluding: clicked) ?? leastRecentlyUsed!
         let previous = slots[i]!.session
         slots[i]!.session = session
         slots[i]!.lastUsed = tick()

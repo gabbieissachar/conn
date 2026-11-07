@@ -23,6 +23,10 @@ final class WatchModel: ObservableObject {
     /// every session opens at its newest turn. Assign this to change that; nothing else needs to know.
     var openAskTurnID: (String) -> String? = { _ in nil }
 
+    /// A Cmd-click on a session link in a column: leave Watch and show the normal reader on that session. The app sets it (it owns the
+    /// view); until it does a Cmd-click opens the session in a column like a plain click.
+    var onOpenInReader: ((String) -> Void)?
+
     /// True while Watch is on. Columns only have web views then: the views of a Watch that just ended may draw once more and must
     /// not make them again.
     var active = false
@@ -54,6 +58,7 @@ final class WatchModel: ObservableObject {
         let b = hub.makeLiteBox(startFragment: WatchAddress.fragment(session: column.session, message: message))
         let id = column.id
         b.onUse = { [weak self] in self?.used(columnID: id) }
+        b.onSessionLink = { [weak self] session, inReader in self?.sessionLinkClicked(columnID: id, session: session, inReader: inReader) }
         boxes[column.id] = b
         return b
     }
@@ -65,11 +70,14 @@ final class WatchModel: ObservableObject {
     /// Show a session: the column rule. A session already shown keeps its column (and, with an open ask, scrolls to the asking reply
     /// there); otherwise it takes a free column, otherwise the least recently used one, in place. Other columns are not touched.
     /// Every outcome flashes the column once, so the person sees where it went. Nil when the id is not one the page could open.
+    ///
+    /// `from` is the index of the column a session link was clicked in (see `sessionLinkClicked`): that column counts as used and is
+    /// never the one replaced.
     @discardableResult
-    func open(session: String) -> WatchPlacement? {
+    func open(session: String, from clicked: Int? = nil) -> WatchPlacement? {
         guard WatchAddress.validSession(session) else { return nil }
         let ask = openAskTurnID(session)
-        let placement = layout.open(session)
+        let placement = layout.open(session, from: clicked)
         let column = layout.slots[placement.column]!
         switch placement {
         case .alreadyOpen:
@@ -84,6 +92,17 @@ final class WatchModel: ObservableObject {
         flashes[column.id, default: 0] += 1
         objectWillChange.send()
         return placement
+    }
+
+    /// A session link in a column was clicked (the column's page did not navigate; see `WebBox.sessionLinkWatch`). A plain click opens
+    /// the session by the column rule, as every other way of choosing one does, except that the clicked column is never the one
+    /// replaced. A Cmd-click leaves Watch for the normal reader on that session (`onOpenInReader`). Returns where the session went, or
+    /// nil for a Cmd-click, a column that is gone, or a session the page could not open.
+    @discardableResult
+    func sessionLinkClicked(columnID: Int, session: String, inReader: Bool) -> WatchPlacement? {
+        guard active, let index = columnIndex(id: columnID) else { return nil }
+        if inReader, let toReader = onOpenInReader { used(columnID: columnID); toReader(session); return nil }
+        return open(session: session, from: index)
     }
 
     /// The person used the column (the page reported a click, scroll, key or focus).

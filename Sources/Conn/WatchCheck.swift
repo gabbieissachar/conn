@@ -212,6 +212,121 @@ enum WatchCheck {
         report("choosing another view (Editor) ends Watch and brings the reader back", !model.watchOn && model.web.readerBox != nil && model.watch.boxes.isEmpty, "on=\(model.watchOn) readerBox=\(model.web.readerBox == nil ? "nil" : "present")")
         model.mode = .agent; await wait(0.3)
         model.watchOn = true; await settle(15)
+
+        await linkChecks(model: model, report: report, wait: wait, settle: settle, columnBoxes: columnBoxes, js: js, withSession: withSession, shot: shot)
+    }
+
+    // MARK: a session link clicked inside a column
+
+    /// The fixture's lite page draws two session links in its last reply (`a.session-ref[data-session]`, data-ref `next` and `later`: the
+    /// sessions one and two after its own), the way the reader draws a reply that names another session. A click is dispatched in the page like a
+    /// real one (the page's capture handler cannot tell it apart), so the whole route runs: the injected script, the message handler, the
+    /// column rule and the view. Checked: the clicked column never navigates; an open session keeps its column; a free column is used
+    /// first; otherwise the least recently used column other than the clicked one is replaced; a Cmd-click opens the normal reader on
+    /// the session; and in the full reader the same link is the page's own (Conn does not take it).
+    static func linkChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void,
+                           columnBoxes: () -> [WebBox?], js: (WebBox, String) async -> String, withSession: [Agent], shot: (String) async -> Void) async {
+        func opened() -> [String] { model.watch.layout.slots.map { $0?.session ?? "-" } }
+        func tails(_ l: [String]) -> [String] { l.map { String($0.suffix(3)) } }
+        func ref(_ b: WebBox?, _ which: String) async -> String {
+            guard let b = b else { return "" }
+            return await js(b, "(document.querySelector('a[data-ref=\"\(which)\"]')||{dataset:{}}).dataset.session||''")
+        }
+        func click(_ b: WebBox?, _ which: String, meta: Bool = false) async -> String {
+            guard let b = b else { return "no web view" }
+            return await js(b, "(() => { const a = document.querySelector('a[data-ref=\"\(which)\"]'); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, metaKey: \(meta) })) ? 'not prevented' : 'prevented'; })()")
+        }
+        /// What a column's page is on: its address (with the load counter's query), how it was moved, its own hash and scroll.
+        func state(_ b: WebBox?) async -> String {
+            guard let b = b else { return "-" }
+            let page = await js(b, "location.hash + '|' + Math.round(scrollY)")
+            return "\(b.webView.url?.absoluteString ?? "-")|loads=\(b.pinsLoaded)|inPlace=\(b.pinsInPlace)|\(page)"
+        }
+        func states(_ bs: [WebBox?]) async -> [String] { var out: [String] = []; for b in bs { out.append(await state(b)) }; return out }
+        func flash(_ i: Int) -> Int { model.watch.layout.slots[i].flatMap { model.watch.flashes[$0.id] } ?? 0 }
+        func sameViews(_ a: [WebBox?], _ b: [WebBox?], _ idx: [Int]) -> Bool { idx.allSatisfy { a[$0] != nil && a[$0] === b[$0] } }
+
+        let boxes0 = columnBoxes()
+        guard boxes0.count == 3, boxes0.allSatisfy({ $0 != nil }), let id0 = model.watch.layout.slots[0]?.id else { report("a session link can be checked (three columns are showing)", false, "columns=\(tails(opened()))"); return }
+        let n0 = await ref(boxes0[0], "next"), l0 = await ref(boxes0[0], "later")
+        report("the lite page draws session links (a[data-session]) that name other sessions", !n0.isEmpty && !l0.isEmpty && n0 != l0 && n0 != model.watch.layout.slots[0]!.session && l0 != model.watch.layout.slots[0]!.session,
+               "next=\(n0.suffix(3)) later=\(l0.suffix(3)) own=\(model.watch.layout.slots[0]!.session.suffix(3))")
+        await shot("watch-session-link.png")
+
+        // A. The linked session is already open in another column: that column keeps it, flashes once, nothing else moves, and the clicked
+        // column does not navigate. (The clicked column is made the most recently used first, so opening the target elsewhere cannot replace it.)
+        model.watch.used(columnID: id0)
+        model.watch.open(session: n0); await settle(15)
+        let boxesA = columnBoxes(), sessA = opened()
+        guard let j = model.watch.layout.index(of: n0), j != 0 else { report("the linked session is open in another column (setup)", false, "columns=\(tails(sessA))"); return }
+        let statesA = await states(boxesA), flashJ = flash(j), flash0 = flash(0)
+        let resultA = await click(boxesA[0], "next"); await wait(1.0)
+        let boxesA2 = columnBoxes(), statesA2 = await states(boxesA2)
+        report("a click on a session link in a column does not navigate that column", resultA == "prevented" && statesA2[0] == statesA[0] && boxesA2[0] === boxesA[0] && boxesA2[0]?.phase == .ready,
+               "click=\(resultA) before=\(statesA[0].suffix(40)) after=\(statesA2[0].suffix(40))")
+        report("... a session that is already open keeps its column: no column is added or replaced", opened() == sessA && sameViews(boxesA, boxesA2, [0, 1, 2]), "columns=\(tails(opened())) want=\(tails(sessA))")
+        report("... the column that has it is highlighted once, the clicked column is not, and no page moved", flash(j) == flashJ + 1 && flash(0) == flash0 && statesA2 == statesA, "flash \(flashJ) -> \(flash(j)) clicked \(flash0) -> \(flash(0)) same states=\(statesA2 == statesA)")
+
+        // B. Not open, and a column is free: the free column is used first.
+        if let q = model.watch.layout.index(of: l0) { model.watch.close(column: q) }
+        if model.watch.layout.openCount == model.watch.count { model.watch.close(column: 2) }
+        await wait(0.4)
+        guard let free = model.watch.layout.slots.firstIndex(where: { $0 == nil }) else { report("a free column (setup)", false, "columns=\(tails(opened()))"); return }
+        let boxesB = columnBoxes(), statesB = await states(boxesB), sessB = opened()
+        let resultB = await click(boxesB[0], "later"); await settle(15)
+        let boxesB2 = columnBoxes(), statesB2 = await states(boxesB2)
+        var wantB = sessB; wantB[free] = l0
+        let keep = [0, 1, 2].filter { boxesB[$0] != nil }
+        report("a link to a session that is not shown goes into the free column", resultB == "prevented" && opened() == wantB && boxesB2[free] != nil, "free=\(free) columns=\(tails(opened())) want=\(tails(wantB))")
+        report("... the clicked column did not navigate and the other columns keep their web views and pages", statesB2[0] == statesB[0] && sameViews(boxesB, boxesB2, keep) && keep.allSatisfy { statesB2[$0] == statesB[$0] },
+               "kept=\(keep) same states=\(keep.map { statesB2[$0] == statesB[$0] })")
+
+        // C. Every column taken, and the clicked column is the least recently used: the clicked one is spared, and the next oldest is replaced.
+        if let q = model.watch.layout.index(of: l0) { model.watch.close(column: q) }
+        for s in withSession.compactMap(\.sessionID) where model.watch.layout.openCount < model.watch.count && model.watch.layout.index(of: s) == nil && s != l0 && s != n0 { model.watch.open(session: s) }
+        await settle(15)
+        guard model.watch.layout.openCount == model.watch.count, model.watch.layout.index(of: l0) == nil, let id1 = model.watch.layout.slots[1]?.id, let id2 = model.watch.layout.slots[2]?.id else { report("every column taken and the linked session not shown (setup)", false, "columns=\(tails(opened()))"); return }
+        model.watch.used(columnID: id1); model.watch.used(columnID: id2)      // the first column is now the least recently used, then the second
+        let lruBefore = model.watch.layout.leastRecentlyUsed
+        let boxesC = columnBoxes(), statesC = await states(boxesC), sessC = opened()
+        let loadsC1 = boxesC[1]?.pinsLoaded ?? -9      // a number, not the box: the box is the same one afterwards
+        let resultC = await click(boxesC[0], "later"); await settle(15)
+        let boxesC2 = columnBoxes(), statesC2 = await states(boxesC2)
+        var wantC = sessC; wantC[1] = l0
+        report("with every column taken a link replaces the least recently used column other than the one clicked, even when the clicked one is the oldest",
+               lruBefore == 0 && resultC == "prevented" && opened() == wantC, "lruBefore=\(lruBefore.map(String.init) ?? "-") columns=\(tails(opened())) want=\(tails(wantC))")
+        report("... the clicked column did not navigate; the replaced column kept its web view and loaded the new session; the third is untouched",
+               statesC2[0] == statesC[0] && sameViews(boxesC, boxesC2, [0, 1, 2]) && boxesC2[1]?.pinsLoaded == loadsC1 + 1 && statesC2[2] == statesC[2],
+               "clicked same=\(statesC2[0] == statesC[0]) views=\(sameViews(boxesC, boxesC2, [0, 1, 2])) loads \(loadsC1) -> \(boxesC2[1]?.pinsLoaded ?? -1) third same=\(statesC2[2] == statesC[2])")
+        await shot("watch-session-link-replaced.png")
+
+        // D. Cmd-click: leave Watch and show the normal reader on that session.
+        let boxesD = columnBoxes(), sessD = opened()
+        let target = await ref(boxesD[0], "next")
+        let resultD = await click(boxesD[0], "next", meta: true); await wait(1.2)
+        report("a Cmd-click on a session link leaves Watch: the columns are let go and the normal reader is loaded", resultD == "prevented" && !model.watchOn && model.watch.boxes.isEmpty && model.web.readerBox != nil,
+               "click=\(resultD) watchOn=\(model.watchOn) columnViews=\(model.watch.boxes.count) readerBox=\(model.web.readerBox == nil ? "nil" : "present")")
+        if let r = model.web.readerBox { await ReaderPinCheck.settled(r, wait: wait) }
+        let landed = await ReaderPinCheck.until("#s=\(target)", wait: wait) { model.web.readerBox == nil ? "-" : await js(model.web.readerBox!, "location.hash") }
+        report("... and the reader is pinned to the session the link names (not to the selected agent), on the Reader pane", landed.value == "#s=\(target)" && model.webTab == .reader && model.showWeb,
+               "hash=\(landed.value.suffix(16)) want=\(target.suffix(16)) tab=\(model.webTab.rawValue) after \(landed.ms) ms")
+        await wait(1.0)      // the selected agent's own pin (debounced) must not take the reader away again
+        let stays = model.web.readerBox == nil ? "-" : await js(model.web.readerBox!, "location.hash")
+        report("... and stays there: the selected agent's own pin does not take it back", stays == "#s=\(target)", "hash=\(stays.suffix(16))")
+        report("... the columns' sessions are kept for the next Watch", model.watch.layout.sessions == sessD, "columns=\(tails(model.watch.layout.sessions)) want=\(tails(sessD))")
+
+        // E. In the full reader the same link is the page's own: Conn neither injects its handler nor takes the click.
+        if let rb = model.web.readerBox {
+            let injected = await js(rb, "String(window.__connSessionLinks)")
+            let next = await ref(rb, "next")
+            let resultE = await click(rb, "next")
+            let navigated = await ReaderPinCheck.until("#s=\(next)", wait: wait) { await js(rb, "location.hash") }
+            report("in the full reader a session link is left to the page: Conn's handler is not there, the click is not taken, the page follows its own link and Watch stays off",
+                   injected == "undefined" && !next.isEmpty && resultE == "not prevented" && navigated.value == "#s=\(next)" && !model.watchOn,
+                   "handler=\(injected) click=\(resultE) hash=\(navigated.value.suffix(16)) want=\(next.suffix(16)) watchOn=\(model.watchOn)")
+        } else { report("the full reader is there to check its session link", false, "readerBox=nil") }
+
+        model.watchOn = true; await settle(15)
     }
 
     // MARK: the real reader's lite page, read only

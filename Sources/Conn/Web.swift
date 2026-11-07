@@ -37,7 +37,12 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     private(set) var startFragment: String?
     /// The person clicked, scrolled, typed or focused inside the page (lite boxes only).
     var onUse: (() -> Void)?
+    /// The person clicked a session link in the page (`a[data-session]`, which the reader draws where a reply names another session):
+    /// the session it names, and whether the click was a Cmd-click (open it in the normal reader instead of another column).
+    /// Lite boxes only; the full reader page keeps its own behaviour for the same link.
+    var onSessionLink: ((String, Bool) -> Void)?
     private var useProxy: UseMessageProxy?
+    private var linkProxy: SessionLinkProxy?
     /// Set by `release()`: a released box never loads or shows anything again.
     private(set) var released = false
     /// The addresses of Conn's panes by name, so a link between them can be told from one that leaves Conn.
@@ -60,10 +65,17 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             cfg.userContentController.addUserScript(WKUserScript(source: WebBox.useWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             cfg.userContentController.add(proxy, name: WebBox.useMessage)
         }
+        let links = lite ? SessionLinkProxy() : nil
+        if let links = links {
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.sessionLinkWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            cfg.userContentController.add(links, name: WebBox.sessionLinkMessage)
+        }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
         proxy?.box = self
         useProxy = proxy
+        links?.box = self
+        linkProxy = links
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
@@ -111,6 +123,29 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     })();
     """
 
+    static let sessionLinkMessage = "connSession"
+    /// A click on a session link (`a[data-session="<reader session id>"]`) is taken before the page sees it: the page does not
+    /// navigate, and Conn is told which session the link names and whether Cmd was held. Capture phase on the window, so no handler of
+    /// the page runs for that click and the page itself is not edited. The keyboard (Enter on a focused link) and a middle click arrive
+    /// the same way. Only the Watch columns get this script; the full reader page is left alone.
+    static let sessionLinkWatch = """
+    (function () {
+      if (window.__connSessionLinks) return;
+      window.__connSessionLinks = true;
+      function taken(e) {
+        var t = e.target;
+        var a = t && t.closest ? t.closest('a[data-session]') : null;
+        var s = a && a.getAttribute('data-session');
+        if (!s) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ session: s, reader: !!e.metaKey }); } catch (x) {}
+      }
+      window.addEventListener('click', function (e) { if (e.button === 0) taken(e); }, true);
+      window.addEventListener('auxclick', function (e) { if (e.button === 1) taken(e); }, true);
+    })();
+    """
+
     /// Show a conversation in this column: at its newest turn, or at one turn (the lite page scrolls to that reply and outlines it).
     /// With `reload` false and the page already showing, only the address changes (the page follows it in place, so the column keeps
     /// its scroll in everything else). With `reload` true, or when the page is not ready or does not follow an address change, the
@@ -138,9 +173,14 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.removeFromSuperview()
-        if lite { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.useMessage) }
+        if lite {
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.useMessage)
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.sessionLinkMessage)
+        }
         useProxy = nil
+        linkProxy = nil
         onUse = nil
+        onSessionLink = nil
     }
 
     /// Written into the reader page before its own scripts run: it records that the page listens for an address change
@@ -328,6 +368,16 @@ private final class UseMessageProxy: NSObject, WKScriptMessageHandler {
     weak var box: WebBox?
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         DispatchQueue.main.async { [weak self] in self?.box?.onUse?() }
+    }
+}
+
+/// Receives a session link click from a Watch column without keeping the box alive. A session id the lite page would not open is dropped.
+private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
+    weak var box: WebBox?
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let session = body["session"] as? String, WatchAddress.validSession(session) else { return }
+        let reader = body["reader"] as? Bool ?? false
+        DispatchQueue.main.async { [weak self] in self?.box?.onSessionLink?(session, reader) }
     }
 }
 

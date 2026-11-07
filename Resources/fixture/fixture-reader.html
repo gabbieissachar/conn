@@ -25,6 +25,8 @@
   .reply h4 { margin:2px 0 6px; font-size:14px; }
   .reply ol, .reply ul { margin:4px 0 8px; padding-left:22px; }
   code { font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--codebg); border-radius:5px; padding:1px 5px; }
+  .session-ref { color:var(--blue); font-weight:600; text-decoration:underline; text-underline-offset:2px; }
+  .refs { color:var(--muted); font-size:12.5px; }
   .tools { color:var(--blue); font-size:12.5px; text-decoration:underline; text-decoration-style:dotted; }
   .wait { border-left-color:#e0613a; } .wait h4 { color:#c4412e; }
   .compose { border-top:1px solid var(--line); padding:8px 14px 12px; background:var(--bg); }
@@ -74,8 +76,12 @@ const S = [
 ];
 const picker = document.getElementById('picker'), convo = document.getElementById('convo'), to = document.getElementById('to');
 S.forEach((s,i)=>{ const o=document.createElement('option'); o.value=String(i+1).padStart(12,'0'); o.textContent=`${s[1]==='blocked'?'Waiting for you':s[1][0].toUpperCase()+s[1].slice(1)} · ${s[0]}`; picker.appendChild(o); });
+let current = '';
+// The session next to the one on screen (last group of digits, same width): what the invented session link names.
+const nb = by => current.replace(/\d+$/, m => String(Math.max(0, parseInt(m, 10) + by)).padStart(m.length, '0'));
 function render() {
   const m = location.hash.match(/s=([0-9a-f-]+)/);
+  current = m ? m[1] : '00000000-0000-4000-8000-000000000001';
   let i = 0;
   if (m) { const tail = m[1].split('-').pop(); const n = parseInt(tail, 10); if (n >= 1 && n <= S.length) i = n - 1; }
   const s = S[i]; picker.selectedIndex = i;
@@ -86,7 +92,7 @@ function render() {
     <div class="reply"><p>Two commits landed on the working branch: one tightens input validation, one renames a helper. Tests pass on both.</p></div>
     <div class="user">${s[2]}</div>
     <div class="reply"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>
-    <div class="reply ${wait?'wait':''}">${wait?'<h4>Waiting on you</h4>':''}<p>${s[4]}</p>${s[1]==='working'?'<p style="color:var(--muted)">Still working…</p>':''}${wait?'<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>':''}</div>`;
+    <div class="reply ${wait?'wait':''}">${wait?'<h4>Waiting on you</h4>':''}<p>${s[4]}</p><p class="refs">See also <a class="session-ref" data-ref="next" data-session="${nb(1)}" href="#s=${nb(1)}">the next session</a>.</p>${s[1]==='working'?'<p style="color:var(--muted)">Still working…</p>':''}${wait?'<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>':''}</div>`;
   convo.scrollTop = convo.scrollHeight;
 }
 addEventListener('hashchange', render); render();
