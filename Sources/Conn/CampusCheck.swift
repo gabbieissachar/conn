@@ -54,10 +54,11 @@ enum CampusCheck {
         let closed = await until(10) { !model.campusSignInShown }
         if !closed { model.closeCampusSignIn() }
         report("Campus: the sign-in sheet closes by itself once Campus answers", closed, "closedByItself=\(closed)")
+        // Only the stand-in's cookie counts: this process shares its cookie file with the person's own Conn (same bundle id), which holds the real Campus sign-in once they have signed in.
         let documentCookie = await js(auth.apiView, "document.cookie")
         let described = String(describing: campus.conversations) + String(describing: campus.openForms) + String(describing: campus.timelines)
         report("Campus: the cookie never reaches Conn: it is HttpOnly (the page cannot read it) and no Conn-side data holds it",
-               documentCookie.isEmpty && !described.contains("fake-session-not-a-secret") && !(HTTPCookieStorage.shared.cookies ?? []).contains { $0.name == "campus_session" },
+               documentCookie.isEmpty && !described.contains("fake-session-not-a-secret") && !(HTTPCookieStorage.shared.cookies ?? []).contains { $0.name == "campus_session" && $0.domain.contains("127.0.0.1") },
                "document.cookie='\(documentCookie)'")
 
         // 3. Rows, marks, order, counts.
@@ -327,6 +328,14 @@ enum CampusCheck {
         var logNow = await log()
         report("Campus writes: the switch is off at launch, and with it off send, Stop, answer and the pickers are refused and nothing reaches Campus",
                launchedOff && !sent && campus.held == nil && restored.isEmpty && logNow.isEmpty, "off=\(launchedOff) held=\(String(describing: campus.held)) log=\(logNow.count)")
+        let mineSpace = campus.spaces.first { !$0.isTeam }!
+        let growthSpace = campus.spaces.first { $0.folder == "growth-ops" }!
+        model.newCampusConversation(in: mineSpace)
+        let startedOff = model.startCampusConversation("Should not start", in: mineSpace)
+        await wait(3.5)
+        report("Campus writes: with the switch off 'New conversation' opens no sheet and a start is refused before anything is sent",
+               model.campusNewIn == nil && !startedOff && campus.held == nil, "sheet=\(model.campusNewIn?.id ?? "nil") held=\(String(describing: campus.held))")
+        logNow = await log()
         model.requestCampusWrites()
         report("Campus writes: turning the switch on asks first and does not turn it on by itself", model.campusConfirmWrites && !campus.writesEnabled, "confirm=\(model.campusConfirmWrites)")
         model.campusConfirmWrites = false
@@ -416,6 +425,50 @@ enum CampusCheck {
         report("Campus writes: the model and agent pickers send their change after the window and show it", w5.suffix(2).first?.contains("\"id\":\"coding-pro\"") == true && w5.last?.contains("\"agent\":\"plan\"") == true && campus.conversation("ses_fakeSprint03")?.model == "coding-pro" && campus.conversation("ses_fakeSprint03")?.agent == "plan",
                "model=\(campus.conversation("ses_fakeSprint03")?.model ?? "-") agent=\(campus.conversation("ses_fakeSprint03")?.agent ?? "-")")
         await shot("campus-14-composer.png")
+
+        // 8. Start a conversation: the sheet, the same window, the new conversation opens; a team space starts in its own path; closing the sheet takes a waiting start back.
+        _ = await until(10) { campus.held == nil }
+        let logBefore = await log().count
+        model.newCampusConversation(in: mineSpace)
+        let sheetOpen = model.campusNewIn?.id == "private/default"
+        await shot("campus-15-new-conversation.png")
+        let startTaken = model.startCampusConversation("Plan the Q2 offsite agenda", in: mineSpace)
+        await wait(1.0)
+        let waiting = campus.held?.phase == .held && campus.held?.conversationID == CampusStore.startKey(mineSpace) && model.campusNewIn != nil
+        await shot("campus-16-new-conversation-undo.png")
+        let sentNew = await until(10) { campus.held?.phase == .sent }
+        let opened = await until(10) { model.campusNewIn == nil && model.campusSelectedID?.hasPrefix("ses_fakeNew") == true }
+        let w6 = await log()
+        let newID = model.campusSelectedID ?? ""
+        let rowThere = campus.conversation(newID)?.title == "Plan the Q2 offsite agenda"
+        report("Campus writes: 'New conversation' starts after the window with one POST to the space's conversations path, closes the sheet and opens the new conversation in the centre",
+               sheetOpen && startTaken && waiting && sentNew && opened && rowThere && w6.count == logBefore + 1 && w6.last?.hasPrefix("POST /api/spaces/private/default/conversations {") == true && w6.last?.contains("Idempotency-Key: ") == true,
+               "sheet=\(sheetOpen) waiting=\(waiting) sent=\(sentNew) opened=\(opened) selected=\(newID) log=\(w6.last ?? "nil")")
+        let working = await until(10) { campus.conversation(newID)?.working == true }
+        let echoedNew = await until(8) { campus.timeline(newID)?.items.contains { $0.kind == .user && $0.text == "Plan the Q2 offsite agenda" } == true }
+        report("Campus writes: the conversation that was started shows its first message and its run", working && echoedNew, "working=\(working) echoed=\(echoedNew)")
+        await shot("campus-17-new-conversation-opened.png")
+        _ = await until(25) { campus.conversation(newID)?.working == false }
+        _ = await until(10) { campus.held == nil }
+        model.newCampusConversation(in: growthSpace)
+        _ = model.startCampusConversation("Pull the Q2 partner list", in: growthSpace)
+        let sentTeam = await until(10) { campus.held?.phase == .sent }
+        _ = await until(10) { model.campusNewIn == nil }
+        let w7 = await log()
+        report("Campus writes: a team space starts in its own path and the conversation lands in that space",
+               sentTeam && w7.last?.hasPrefix("POST /api/spaces/team/growth-ops/conversations {") == true && campus.conversation(model.campusSelectedID ?? "")?.spaceID == "team/growth-ops", "log=\(w7.last ?? "nil") selected=\(model.campusSelectedID ?? "nil")")
+        _ = await until(25) { campus.conversation(model.campusSelectedID ?? "")?.working == false }
+        _ = await until(10) { campus.held == nil }
+        let logBeforeCancel = await log().count
+        model.newCampusConversation(in: mineSpace)
+        _ = model.startCampusConversation("Changed my mind", in: mineSpace)
+        await wait(0.5)
+        model.closeCampusNew()
+        let phaseAfterClose = campus.held?.phase
+        await wait(4)
+        let w8 = await log()
+        report("Campus writes: closing the 'New conversation' sheet inside the window takes the start back and nothing is sent",
+               phaseAfterClose == .undone && model.campusNewIn == nil && w8.count == logBeforeCancel, "phase=\(String(describing: phaseAfterClose)) log=\(w8.count)/\(logBeforeCancel)")
         _ = await until(10) { campus.held == nil }
         model.disableCampusWrites()
         report("Campus writes: the switch can be turned off again at once", !campus.writesEnabled, "")

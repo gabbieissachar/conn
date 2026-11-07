@@ -43,6 +43,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var failWrites = false
     private var signedOutCode = 401
     private var moduleRequired = false
+    private var createdKeys: [String: String] = [:]     // Idempotency-Key -> the conversation it made
+    private var createdCount = 0
     private var subscribers: [Int: AsyncStream<String>.Continuation] = [:]
     private var nextSub = 0
     public private(set) var log: [String] = []
@@ -84,6 +86,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
         let renewal = conv("ses_fakeRenewal08", "Draft the renewal checklist", "team", "merchant-success", "Merchant Success", ago: 18000, state: "idle", unread: false, msgs: [user("Draft a checklist for merchant renewals."), asst([text("Eight steps in three groups: prepare, meet and close.")], 1500, 260)])
         convs = [digest, rates, sprint, offsite, email, kpi, outreach, renewal]
         log = []
+        createdKeys = [:]; createdCount = 0
         session += 1
         starting = false
     }
@@ -196,7 +199,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private func err(_ code: Int, _ msg: String) -> FakeCampusResponse { var r = FakeCampusResponse(); r.status = code; r.body = Self.data(["error": msg]); return r }
 
     /// `cookie` is the request's Cookie header (the HTTP stand-in passes it; the in-process one passes nil and the mode is `.none`).
-    public func route(method: String, path rawPath: String, cookie: String?, body: Data?) -> FakeCampusResponse {
+    public func route(method: String, path rawPath: String, cookie: String?, body: Data?, headers: [String: String] = [:]) -> FakeCampusResponse {
         let comps = URLComponents(string: "http://x" + rawPath)
         let path = comps?.path ?? rawPath
         let query = Dictionary((comps?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -223,6 +226,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
         let parts = path.split(separator: "/").map(String.init)
         guard parts.count >= 4, parts[0] == "api", parts[1] == "spaces" else { return err(404, "not_found") }
         let kind = parts[2], folder = parts[3]
+        if parts.count == 5 && parts[4] == "conversations" && method == "POST" { return create(kind: kind, folder: folder, path: path, body: body, key: headers.first { $0.key.lowercased() == "idempotency-key" }?.value) }
         if parts.count == 5 && parts[4] == "conversations" {
             let list = lockedConvs().filter { $0.kind == kind && $0.folder == folder }
             return ok(["conversations": list.map { c in ["id": c.id, "title": c.title, "spaceKind": c.kind, "folder": c.folder, "spaceName": c.spaceName, "spaceColour": "blue", "updatedAt": Int(c.updatedAt.timeIntervalSince1970 * 1000), "working": c.state == "busy", "needsYou": c.state == "needs_you", "unread": c.unread, "routineRun": false] as [String: Any] }, "hasMore": false, "partial": false])
@@ -270,6 +274,31 @@ public final class FakeCampusWorld: @unchecked Sendable {
             }
             return err(404, "not_found")
         }
+    }
+
+    /// `POST /api/spaces/<kind>/<folder>/conversations {"text"}` with an Idempotency-Key: a new conversation that starts a run on the text. The same key answers with the
+    /// conversation it already made. The answer's shape (`{"data": {id, title, ...}}`) is a guess: nobody has seen the real one (ROADMAP).
+    private func create(kind: String, folder: String, path: String, body: Data?, key: String?) -> FakeCampusResponse {
+        guard let space = Self.spaces.first(where: { $0.kind == kind && $0.folder == folder }) else { return err(404, "not_found") }
+        lock.lock(); let failing = failWrites; lock.unlock()
+        if failing { return err(500, "forced_failure") }
+        guard let text = CampusJSON.parse(body ?? Data())?["text"].string, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return err(400, "text_required") }
+        record("POST \(path) \(String(data: body ?? Data(), encoding: .utf8) ?? "") [Idempotency-Key: \(key ?? "none")]")
+        lock.lock()
+        if let k = key, let id = createdKeys[k], let c = convs.first(where: { $0.id == id }) { lock.unlock(); return created(c) }
+        createdCount += 1
+        let id = "ses_fakeNew\(String(format: "%02d", createdCount))"
+        let c = Conv(id: id, title: String(text.prefix(40)), kind: kind, folder: folder, spaceName: space.name, updatedAt: Date(), state: "idle", unread: false)
+        convs.append(c)
+        if let k = key { createdKeys[k] = id }
+        lock.unlock()
+        emit("session.created", id, ["version": 1, "projectID": "prj_fake", "slug": "fake-new"])
+        startRun(id, userText: text, ask: false)
+        return created(conv(id) ?? c)
+    }
+
+    private func created(_ c: Conv) -> FakeCampusResponse {
+        ok(["data": ["id": c.id, "title": c.title, "agent": c.agent, "model": ["id": c.model, "providerID": "campus"], "time": ["created": Int(c.updatedAt.timeIntervalSince1970 * 1000), "updated": Int(c.updatedAt.timeIntervalSince1970 * 1000)]]])
     }
 
     private func lockedConvs() -> [Conv] { lock.lock(); defer { lock.unlock() }; return convs }

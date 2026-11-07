@@ -115,3 +115,38 @@ extension AppModel {
     func campusSetModel(_ m: CampusChoice, for c: CampusConversation) { if let why = campus.setModel(m, for: c) { toast(why.message) } }
     func campusSetAgent(_ a: CampusChoice, for c: CampusConversation) { if let why = campus.setAgent(a, for: c) { toast(why.message) } }
 }
+
+// MARK: - starting a conversation
+
+extension AppModel {
+    /// The spaces a person can start a conversation in: My space first, then the team spaces that are not read-only.
+    var campusStartSpaces: [CampusSpace] { campus.spaces.filter { !$0.readOnly }.sorted { !$0.isTeam && $1.isTeam } }
+
+    /// "New conversation" (the sidebar's plus, the Campus menu): opens the sheet for the first message. Behind the same gate as every write, so with the switch
+    /// off or Campus not live it says why and opens nothing.
+    func newCampusConversation(in space: CampusSpace) {
+        if !campus.writesEnabled { toast(CampusWriteRefusal.off.message); return }
+        if campus.link != .live { toast(CampusWriteRefusal.notLive.message); return }
+        campusNewIn = space
+    }
+
+    /// Start it with the first message. True when the write was taken (the sheet shows the Undo window and closes itself when Campus answers).
+    @discardableResult
+    func startCampusConversation(_ text: String, in space: CampusSpace) -> Bool {
+        if let why = campus.startConversation(in: space, text: text, onCreated: { [weak self] c in self?.campusConversationStarted(c, in: space) }) { toast(why.message); return false }
+        return true
+    }
+
+    private func campusConversationStarted(_ c: CampusConversation?, in space: CampusSpace) {
+        campusNewIn = nil
+        guard let c = c else { toast("Campus started the conversation. It will show in the list in a moment."); return }
+        if watchOn { watchOn = false }
+        openCampus(c.id)
+    }
+
+    /// Cancel the sheet. A start still inside its Undo window is taken back first, so closing the sheet never leaves a conversation to appear on its own.
+    func closeCampusNew() {
+        if let space = campusNewIn, campus.held?.conversationID == CampusStore.startKey(space), campus.held?.phase == .held { campus.undo() }
+        campusNewIn = nil
+    }
+}

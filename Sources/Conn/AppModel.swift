@@ -59,6 +59,8 @@ final class AppModel: ObservableObject {
     @Published var campusConfirmWrites = false
     /// Text that goes back into a conversation's box (an Undo, or a send that failed): (conversation id, text).
     let campusDraftRestore = PassthroughSubject<(String, String), Never>()
+    /// The space a "New conversation" sheet is open for (nil: no sheet).
+    @Published var campusNewIn: CampusSpace?
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind

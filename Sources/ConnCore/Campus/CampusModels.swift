@@ -78,6 +78,21 @@ public struct CampusConversation: Equatable, Sendable, Identifiable {
     }
 }
 
+extension CampusConversation {
+    /// The answer to a start (`POST .../conversations`). Its shape is the one thing about that call nobody has seen, so the new conversation is looked for where Campus's
+    /// other answers keep one: the object itself, or under `data`, `conversation` or `session`. nil when none of them carries a valid id.
+    public static func parseCreated(_ data: Data, space: CampusSpace, now: Date = Date()) -> CampusConversation? {
+        guard let root = CampusJSON.parse(data), root.object != nil else { return nil }
+        for j in [root, root["data"], root["conversation"], root["session"]] where j.object != nil {
+            guard let id = j["id"].string, CampusSpace.validConversationID(id) else { continue }
+            let title = j["title"].string.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled conversation"
+            return CampusConversation(id: id, title: title, spaceKind: space.kind, folder: space.folder, spaceName: space.displayName, updatedAt: j["time"]["updated"].date ?? now,
+                                      working: true, agent: j["agent"].string, model: j["model"]["id"].string)
+        }
+        return nil
+    }
+}
+
 public struct CampusAsk: Equatable, Sendable {
     public var text: String
     public var tag: String

@@ -182,6 +182,8 @@ struct ConnCommands: Commands {
                 Button("Open Campus in the Browser") { NSWorkspace.shared.open(app.campus.baseURL) }
                 Button("Check Campus Now") { app.campus.kick() }
                 Divider()
+                CampusNewMenuItems(campus: app.campus).environmentObject(app)
+                Divider()
                 Toggle("Campus Writes", isOn: Binding(get: { app.campus.writesEnabled }, set: { on in if on { app.requestCampusWrites() } else { app.disableCampusWrites() } }))
             }
         }

@@ -74,7 +74,7 @@ struct CampusSection: View {
 
     @ViewBuilder private func content(dim: Bool) -> some View {
         let mine = campus.privateRows
-        subHeader("My space", trailing: "\(mine.count)")
+        subHeader("My space", trailing: "\(mine.count)", newIn: campus.spaces.first { !$0.isTeam })
         ForEach(mine) { c in CampusRow(campus: campus, c: c, dim: dim) }
         if mine.isEmpty && campus.link == .live { Text("No conversations yet").font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 10).padding(.vertical, 4) }
         let teams = campus.teamSpaces
@@ -99,19 +99,26 @@ struct CampusSection: View {
             if teamsOpen {
                 ForEach(teams) { s in
                     let rows = campus.rows(inSpace: s.id)
-                    subHeader(s.displayName, trailing: "\(rows.count)", indent: true)
+                    subHeader(s.displayName, trailing: "\(rows.count)", indent: true, newIn: s)
                     ForEach(rows) { c in CampusRow(campus: campus, c: c, dim: dim, indent: true) }
                 }
             }
         }
     }
 
-    private func subHeader(_ title: String, trailing: String, indent: Bool = false) -> some View {
+    /// `newIn`: the space this line starts a conversation in (a plus on the line); nil, read-only, or Campus not live: no plus.
+    private func subHeader(_ title: String, trailing: String, indent: Bool = false, newIn space: CampusSpace? = nil) -> some View {
         HStack {
             Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 .redacted(reason: app.privacy && indent ? .placeholder : [])
             Spacer()
             Text(trailing).font(.system(size: 11)).foregroundStyle(.tertiary)
+            if let space = space, !space.readOnly, campus.link == .live {
+                Button { app.newCampusConversation(in: space) } label: { Image(systemName: "plus").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 16).contentShape(Rectangle()) }
+                    .buttonStyle(.plain).foregroundStyle(campus.writesEnabled ? Color.secondary : Color.secondary.opacity(0.4))
+                    .help(campus.writesEnabled ? "New conversation in \(space.displayName)" : "New conversation: Campus writes are off")
+                    .accessibilityLabel("New conversation in \(space.displayName)").accessibilityIdentifier("campus-new-\(space.id)")
+            }
         }
         .padding(.horizontal, 10).padding(.leading, indent ? 8 : 0).padding(.top, 6).padding(.bottom, 2)
     }

@@ -650,6 +650,7 @@ struct MainView: View {
             Text("Conn will be able to send a message, answer a question, stop a run and change the model or agent in your Campus conversations, as you. Campus acts on what it receives. Every write waits 3 seconds with an Undo. The switch is off again at the next launch.")
         }
         .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
+        .sheet(item: $app.campusNewIn) { space in CampusNewConversationSheet(campus: app.campus, space: space).environmentObject(app) }
     }
 
     private var subtitle: String {

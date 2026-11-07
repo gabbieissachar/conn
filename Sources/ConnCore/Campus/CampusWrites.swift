@@ -3,7 +3,7 @@
 //   - a write waits 3 seconds with an Undo, the way Conn's Herdr compose box does; Undo (or turning the switch off) takes it back;
 //   - one write at a time;
 //   - when a send fails the text goes back to the box (the caller's `restore`).
-// Writes: send (steer or queue), answer a question, Stop, change the model, change the agent. They go through `CampusAuth` like every read, so the cookie
+// Writes: start a conversation, send (steer or queue), answer a question, Stop, change the model, change the agent. They go through `CampusAuth` like every read, so the cookie
 // never leaves the web view. The request bodies follow the scout report's section 3.4 (from the shipped front end, not yet fired by anyone): the first
 // live write is the person's own (ROADMAP).
 import Foundation
@@ -43,6 +43,13 @@ extension CampusClient {
         if let d = delivery, ["steer", "queue"].contains(d) { body["delivery"] = d }
         return json("POST", conversationPath(c) + "/prompt", body)
     }
+    /// `POST /api/spaces/<kind>/<folder>/conversations` with an `Idempotency-Key` header and `{"text"}` (the first message): the call Campus's own front end makes
+    /// to start a conversation (scout report 3.3, from the shipped bundle; nobody has fired it yet). The key is the client's, so a retry of the same start is the same start.
+    public static func createRequest(in space: CampusSpace, text: String, key: String) -> CampusRequest {
+        var r = json("POST", "/api/spaces/\(space.kind)/\(space.folder)/conversations", ["text": text])
+        r.headers["Idempotency-Key"] = key
+        return r
+    }
     public static func interruptRequest(_ c: CampusConversation) -> CampusRequest { json("POST", conversationPath(c) + "/interrupt", [:]) }
     public static func answerRequest(_ c: CampusConversation, form: CampusForm, answers: [String]) -> CampusRequest {
         // One question: its answer as text; several: the answers in order.
@@ -75,7 +82,8 @@ extension CampusStore {
     // MARK: the gate
 
     /// Hold a write for its undo window, then send it. Refused (nothing is built into a request that is sent) when the switch is off, Campus is not live, or another write is pending.
-    private func hold(_ id: String, label: String, request: CampusRequest, restore: (() -> Void)?, onSuccess: @escaping () -> Void) -> CampusWriteRefusal? {
+    /// `onReply` gets the answer of a write that went through (a start reads the new conversation's id from it), before `onSuccess`.
+    private func hold(_ id: String, label: String, request: CampusRequest, restore: (() -> Void)?, onReply: ((CampusReply) -> Void)? = nil, onSuccess: @escaping () -> Void) -> CampusWriteRefusal? {
         guard writesEnabled else { return .off }
         guard link == .live, let auth = auth else { return .notLive }
         if let h = held, h.phase == .held || h.phase == .sending { return .busy }
@@ -100,6 +108,7 @@ extension CampusStore {
             if let r = reply, (200..<300).contains(r.status), !r.loginRedirect {
                 self.held?.phase = .sent
                 self.heldRestore = nil
+                onReply?(r)
                 onSuccess()
                 self.clearHeld(after: 2.5)
             } else {
@@ -136,6 +145,29 @@ extension CampusStore {
     }
 
     // MARK: the writes
+
+    /// The id the banner and the held record use for a start in `space` (there is no conversation yet).
+    public static func startKey(_ space: CampusSpace) -> String { "new:" + space.id }
+
+    /// Start a conversation in a space with its first message. Same gate as every write: switch on, Campus live, 3 seconds with an Undo, one at a time.
+    /// `onCreated` runs once Campus answered: the new conversation (already in the rows), or nil when Campus took the start but Conn could not read the new id from the
+    /// answer (the list finds it on its next read). Retrying the same text in the same space after a failure sends the same Idempotency-Key, so one failed attempt that
+    /// did reach Campus cannot make two conversations.
+    @discardableResult
+    public func startConversation(in space: CampusSpace, text: String, restore: (() -> Void)? = nil, onCreated: @escaping (CampusConversation?) -> Void) -> CampusWriteRefusal? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !space.readOnly else { return .invalid }
+        let draft = space.id + "\u{0}" + t
+        let key = createKeys[draft] ?? UUID().uuidString
+        let short = t.count > 50 ? String(t.prefix(50)) + "…" : t
+        let refusal = hold(Self.startKey(space), label: "Start a conversation in \(space.displayName): \(short)", request: CampusClient.createRequest(in: space, text: t, key: key), restore: restore ?? {}, onReply: { [weak self] reply in
+            guard let self = self else { return }
+            self.createKeys[draft] = nil
+            if let c = CampusConversation.parseCreated(reply.body, space: space) { onCreated(self.adopt(c)) } else { self.kick(); onCreated(nil) }
+        }, onSuccess: {})
+        if refusal == nil { createKeys[draft] = key }
+        return refusal
+    }
 
     /// Send a message. While a run is working the person picks `steer` (now) or `queue` (after the run); an idle conversation takes neither.
     @discardableResult

@@ -42,6 +42,8 @@ public final class CampusStore: ObservableObject {
     var heldTask: Task<Void, Never>?
     var heldRestore: (() -> Void)?
     var choicesLoading: Set<String> = []
+    /// The Idempotency-Key of a start that has not gone through yet, by space and text (CampusWrites.swift).
+    var createKeys: [String: String] = [:]
 
     public let auth: CampusAuth?
     public let baseURL: URL
@@ -227,6 +229,13 @@ public final class CampusStore: ObservableObject {
             return conversations[id]
         }
         return nil
+    }
+
+    /// A conversation this app just started: added to the rows (kept until Campus lists it too), its state read once. A row the list or a frame already made wins.
+    func adopt(_ c: CampusConversation) -> CampusConversation {
+        if conversations[c.id] == nil { linked.insert(c.id); conversations[c.id] = c }
+        requestStatus(c.id)
+        return conversations[c.id] ?? c
     }
 
     // MARK: what the views read

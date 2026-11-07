@@ -55,7 +55,7 @@ public final class FakeCampusServer: @unchecked Sendable {
     private func respond(_ c: NWConnection, _ requestLine: String, _ headers: [String: String], _ body: Data) {
         let p = requestLine.split(separator: " ").map(String.init)
         guard p.count >= 2 else { c.cancel(); return }
-        let r = world.route(method: p[0], path: p[1], cookie: headers["cookie"], body: body)
+        let r = world.route(method: p[0], path: p[1], cookie: headers["cookie"], body: body, headers: headers)
         var head = "HTTP/1.1 \(r.status) \(r.status == 200 ? "OK" : "Status")\r\nContent-Type: \(r.contentType)\r\nCache-Control: no-cache, no-transform\r\nConnection: close\r\n"
         for (k, v) in r.headers { head += "\(k): \(v)\r\n" }
         if r.isStream {

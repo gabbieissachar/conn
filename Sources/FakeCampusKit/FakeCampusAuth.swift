@@ -22,7 +22,7 @@ public final class FakeCampusAuth: CampusAuth, @unchecked Sendable {
     public func perform(_ r: CampusRequest) async -> CampusReply? {
         if offline { return nil }
         if let o = override, let r2 = o(r) { return r2 }
-        let resp = world.route(method: r.method, path: r.path, cookie: nil, body: r.body)
+        let resp = world.route(method: r.method, path: r.path, cookie: nil, body: r.body, headers: r.headers)
         return CampusReply(status: resp.status, body: resp.body)
     }
 
