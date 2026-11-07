@@ -76,7 +76,8 @@ function fixtureTree({ outParts = ['setup', 'transcript-reader', 'out'] } = {}) 
   const pinsFile = path.join(base, 'config', 'pmos-transcript-reader', 'pins.json');
   const starsFile = path.join(base, 'config', 'pmos-transcript-reader', 'stars.json');
   const sheetFlagsFile = path.join(base, 'config', 'pmos-transcript-reader', 'sheet-flags.json');
-  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, copilotHomeDir, pinsFile, starsFile, sheetFlagsFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  const hiddenFile = path.join(base, 'config', 'pmos-transcript-reader', 'hidden.json');
+  return { root, outDir, projectsDir, claudeSessionsDir, codexSessionsDir, copilotHomeDir, pinsFile, starsFile, sheetFlagsFile, hiddenFile, logOf: (id) => path.join(projectsDir, '-Users-someone-home', id + '.jsonl'), cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // A fake Herdr: one running named session "work" plus sessions that must never be read.
@@ -146,7 +147,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, sheetFlagsFile: tree.sheetFlagsFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, sheetFlagsFile: tree.sheetFlagsFile, hiddenFile: tree.hiddenFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -2654,6 +2655,37 @@ test('sheet marks: a reply marked "missing" or "wrong" is kept by turn id in its
     assert.equal((await t.post('sheet-flags', { op: 'unflag', key: TURN })).json.rev, 2);
     assert.deepEqual((await t.get('sheet-flags')).json.flags, []);
     assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/sheet-flags', headers: { 'Content-Type': 'application/json' }, body: { op: 'unflag', key: TURN } })).status, 403, 'the same guard as every route');
+  } finally { await t.close(); }
+});
+
+test('hidden messages: a message or reply hidden from the view is kept by turn id in its own owner-only file, never with its text, and the state carries the revision', async () => {
+  const t = await start();
+  try {
+    const IN = 't52c0a60fd3697281cd4ebd17:in', REPLY = 't52c0a60fd3697281cd4ebd17:reply';
+    assert.deepEqual((await t.get('hidden')).json, { status: 'ok', rev: 0, hidden: [] });
+    assert.equal((await t.state()).json.stamps.hidden, 0);
+    const first = await t.post('hidden', { op: 'hide', key: REPLY, conv: A, at: 1793865300 });
+    assert.equal(first.status, 200, first.raw);
+    assert.equal(first.json.rev, 1);
+    assert.deepEqual(first.json.hidden.map(({ key, conv }) => [key, conv]), [[REPLY, A]]);
+    assert.equal((await t.post('hidden', { op: 'hide', key: REPLY, conv: A, at: 1793865300 })).json.rev, 1, 'hiding again changes nothing');
+    assert.equal((await t.post('hidden', { op: 'hide', key: IN, conv: A, at: 1793865200 })).json.rev, 2, 'the message and its reply are hidden one by one');
+    assert.equal((await t.state()).json.stamps.hidden, 2);
+    assert.equal((await t.state()).json.stamps.pins, 0, 'a hide is not a pin');
+    const mode = (file) => fs.statSync(file).mode & 0o777;
+    assert.equal(mode(t.tree.hiddenFile), 0o600);
+    assert.equal(mode(path.dirname(t.tree.hiddenFile)), 0o700);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(t.tree.hiddenFile, 'utf8')).hidden[0]), ['key', 'conv', 'at', 'hidden'], 'ids and times only: no text of a message');
+    for (const body of [{ op: 'hide', key: 'bad', conv: A, at: 1 }, { op: 'hide', key: REPLY, conv: '../x', at: 1 }, { op: 'hide', key: REPLY, conv: A }, { op: 'hide', key: REPLY, conv: A, at: 1, text: 'a reply' }, { op: 'pin', key: REPLY, conv: A, at: 1 }]) {
+      assert.equal((await t.post('hidden', body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await t.get('hidden')).json.rev, 2);
+    assert.equal((await t.post('hidden', { op: 'unhide', key: REPLY })).json.rev, 3, 'show again');
+    assert.deepEqual((await t.get('hidden')).json.hidden.map((h) => h.key), [IN]);
+    assert.equal((await t.post('hidden', { op: 'unhide', key: REPLY })).json.rev, 3, 'showing what is not hidden changes nothing');
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/hidden', headers: { 'Content-Type': 'application/json' }, body: { op: 'unhide', key: IN } })).status, 403, 'the same guard as every route');
+    // The agent's own log is not part of this: no file of any session changed.
+    assert.equal(fs.readFileSync(t.tree.logOf(A), 'utf8'), '{}\n');
   } finally { await t.close(); }
 });
 

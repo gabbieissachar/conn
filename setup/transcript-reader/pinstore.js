@@ -24,6 +24,14 @@
 //   { "version": 1, "rev": 2, "flags": [{ "key": "<turn id>:reply", "conv": "<conversation id>", "at": <reply time>, "kind": "missing|wrong", "flagged": <epoch> }] }
 //
 // PMOS_READER_SHEET_FLAGS names another file; the default is ~/.config/pmos-transcript-reader/sheet-flags.json.
+//
+// The messages and replies the owner hid from the reader's view (a fourth file, same code, same shape of key as a pin: "<turn id>:in" is the
+// message, "<turn id>:reply" its reply). A hide only changes what the reader draws: the agent's session log is never touched, and no text of a
+// message is kept here. Kept on the server so the laptop and the phone agree:
+//
+//   { "version": 1, "rev": 4, "hidden": [{ "key": "<turn id>:in|reply", "conv": "<conversation id>", "at": <message time>, "hidden": <epoch> }] }
+//
+// PMOS_READER_HIDDEN names another file; the default is ~/.config/pmos-transcript-reader/hidden.json.
 
 const fs = require('fs');
 const os = require('os');
@@ -37,6 +45,7 @@ const CONV_RE = /^[0-9A-Za-z_-]{1,64}$/;
 const MAX_PINS = 1000;
 const MAX_STARS = 200;
 const MAX_FLAGS = 500;
+const MAX_HIDDEN = 5000;
 const MAX_DESCRIPTION = 80;
 
 class PinError extends Error {
@@ -57,6 +66,10 @@ function defaultStarsFile(env = process.env) {
 
 function defaultSheetFlagsFile(env = process.env) {
   return env.PMOS_READER_SHEET_FLAGS || path.join(os.homedir(), '.config', FOLDER, 'sheet-flags.json');
+}
+
+function defaultHiddenFile(env = process.env) {
+  return env.PMOS_READER_HIDDEN || path.join(os.homedir(), '.config', FOLDER, 'hidden.json');
 }
 
 // What a list of kept things is: the file's list name, its add and remove operations, the field that names an
@@ -121,6 +134,20 @@ const SHEET_FLAGS = {
   make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, kind: body.kind, flagged: epoch }),
   valid: (flag) => Boolean(flag) && typeof flag === 'object' && KEY_RE.test(flag.key) && CONV_RE.test(flag.conv)
     && Number.isFinite(flag.at) && (flag.kind === 'missing' || flag.kind === 'wrong') && Number.isFinite(flag.flagged),
+};
+
+// A message or reply hidden from the reader's view: its turn id and part (the pin's key), the conversation and when the message was written.
+const HIDDEN = {
+  list: 'hidden', add: 'hide', remove: 'unhide', id: 'key', addFields: ['key', 'conv', 'at'], max: MAX_HIDDEN,
+  tooMany: 'Too many hidden messages: show some again first.',
+  checkId: (body) => { if (typeof body.key !== 'string' || !KEY_RE.test(body.key)) throw new PinError('Invalid message id.'); },
+  checkAdd: (body) => {
+    if (typeof body.conv !== 'string' || !CONV_RE.test(body.conv)) throw new PinError('Invalid conversation id.');
+    if (!Number.isFinite(body.at)) throw new PinError('Invalid time.');
+  },
+  make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, hidden: epoch }),
+  valid: (item) => Boolean(item) && typeof item === 'object' && KEY_RE.test(item.key) && CONV_RE.test(item.conv)
+    && Number.isFinite(item.at) && Number.isFinite(item.hidden),
 };
 
 function createList(kind, { file, now = () => Date.now() }) {
@@ -208,5 +235,6 @@ function createList(kind, { file, now = () => Date.now() }) {
 const create = (options = {}) => createList(PINS, { file: defaultFile(), ...options });
 const createStars = (options = {}) => createList(STARS, { file: defaultStarsFile(), ...options });
 const createSheetFlags = (options = {}) => createList(SHEET_FLAGS, { file: defaultSheetFlagsFile(), ...options });
+const createHidden = (options = {}) => createList(HIDDEN, { file: defaultHiddenFile(), ...options });
 
-module.exports = { create, createStars, createSheetFlags, defaultFile, defaultStarsFile, defaultSheetFlagsFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_DESCRIPTION };
+module.exports = { create, createStars, createSheetFlags, createHidden, defaultFile, defaultStarsFile, defaultSheetFlagsFile, defaultHiddenFile, PinError, KEY_RE, CONV_RE, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_HIDDEN, MAX_DESCRIPTION };

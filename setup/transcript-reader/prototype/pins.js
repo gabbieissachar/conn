@@ -60,7 +60,7 @@
       }
     }
     // What an add sends: the item without the time the server stamps.
-    const fields = p => { const { pinned, starred, flagged, ...rest } = p; return rest; };
+    const fields = p => { const { pinned, starred, flagged, hidden, ...rest } = p; return rest; };
     // Another tab or page changed the file (the poll reads its revision) or this browser's store: take the new list.
     async function refresh(stamp) {
       if (where !== "file" || stamp == null || stamp === rev) return;
@@ -131,4 +131,12 @@
     id: "key", add: "flag", remove: "unflag", noun: "flags", undo: "clear", max: 500,
     make: (key, more) => ({ key, ...more, flagged: Date.now() / 1000 }),
     sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && (p.kind === "missing" || p.kind === "wrong") && Number.isFinite(p.flagged),
+  });
+  // The messages and replies hidden from this view: the same key as a pin (the turn's id and the part), the conversation and the message's time.
+  // Only what the page draws changes; the agent's session log is never touched. The server keeps them so the laptop and the phone agree.
+  const hiddenStore = kept({
+    storage: "hidden", ask: { list: () => live.hiddenList(), change: c => live.hiddenChange(c) },
+    id: "key", add: "hide", remove: "unhide", noun: "hidden", undo: "show", max: 5000,
+    make: (key, more) => ({ key, ...more, hidden: Date.now() / 1000 }),
+    sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && Number.isFinite(p.hidden),
   });

@@ -101,7 +101,7 @@ __HEAD_HOSTED__
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   /* One pressed style for every toggle, in the "you" blue: yellow belongs to "Needs you" alone, so a switched-on Follow Herdr or Pin never reads as an ask. */
-  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .sheet-flag[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
+  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .hide-msg[aria-pressed="true"], .sheet-flag[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy says when the laptop built it, and says so louder once that is old. */
@@ -430,6 +430,16 @@ __HEAD_HOSTED__
   /* Pin: on a message and on a reply, then the list of pins in the header. */
   .pin { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .reply-to { margin-left: 0; }
+  /* Hide: removes a message or reply from this view only (never from the session log); the pill sits beside Pin and shows it again while hidden ones are on show. */
+  .hide-msg { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+  .pin + .hide-msg { margin-left: 0; }
+  .hide-msg + .reply-to { margin-left: 0; }
+  .hide-msg:focus-visible, .undo-toast button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .gone { opacity: .6; border-style: dashed; }
+  .gone > .who::after { content: "hidden"; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 99px; padding: 0 7px; order: 9; }
+  .undo-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--dock-h, 0px) + 14px); z-index: 30; display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px); padding: 8px 8px 8px 14px; border-radius: 99px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .undo-toast[hidden] { display: none; }
+  .undo-toast button { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 99px; padding: 3px 12px; font-weight: 600; }
   /* Marking a reply's answer sheet wrong or missing: a small button after Reply, and the panel it opens under the reply's header line. */
   .sheet-flag { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .sheet-flag:focus-visible, .sheetfix button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
@@ -518,6 +528,8 @@ __HEAD_HOSTED__
     .dock textarea { min-height: 44px; }
     .dock-acts button, .dock-head button, .dock-batch li button { padding: 8px 6px; }
     .pin, .reply-to { padding-top: 7px; padding-bottom: 7px; }
+    .hide-msg { padding-top: 7px; padding-bottom: 7px; }
+    .undo-toast button { min-height: 44px; }
   }
   .dock button:disabled { opacity: .45; cursor: default; }
   .input.pending { opacity: .6; border-style: dashed; }
@@ -630,7 +642,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -737,7 +749,7 @@ __HEAD_HOSTED__
   // { open(), close(), shown() }
   const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, docPage: "list" };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, showHidden: false, docPage: "list" };
   // The lite page is opened on one conversation (a column that is pinned to it) and stays there until Follow is turned on for it, in its own
   // setting; the local page follows unless it was turned off.
   const FOLLOW_KEY = MODE === "live" ? "tr-live-follow" : "tr-follow";
@@ -886,8 +898,10 @@ __HEAD_HOSTED__
   sheetFlags.onChange(paintSheetFixes);
   // key names the turn for state.open; sid, when given, makes the reply answerable from here.
   function replyCard(ex, key, sid) {
+    // A reply hidden from this view is not drawn (the session log keeps it), unless the hidden ones are on show.
+    if (sid && ex.reply && partGone(ex, "reply")) return document.createDocumentFragment();
     const open = isOpen(ex);
-    const card = $("div", "reply" + (open ? " needs" : ""));
+    const card = $("div", "reply" + (open ? " needs" : "") + (sid && ex.reply && hiddenNow(ex, "reply") ? " gone" : ""));
     const who = $("div", "who");
     const verdict = verdictChip(ex);
     if (verdict) who.append(verdict);
@@ -896,6 +910,8 @@ __HEAD_HOSTED__
     if (sid && ex.reply) {
       const pin = pinButton(ex, "reply", sid);
       if (pin) { who.append(pin); card.dataset.msg = pinKey(ex, "reply"); }
+      const hide = hideButton(ex, "reply", sid);
+      if (hide) who.append(hide);
       const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
       const to = $("button", "reply-to", "Reply"); to.type = "button";
@@ -1255,7 +1271,10 @@ __HEAD_HOSTED__
       line.id = `ex-${index}`; line.title = `${fmtWhen(ex.at)}: the doorbell for the Firstmate instruction above, again`;
       return line;
     }
-    const block = $("div", `input ${ex.source}`);
+    if (sid && ex.uid && partGone(ex, "in")) {  // hidden from this view: nothing to see, but the turn keeps its place for the links to it
+      const gone = $("div"); gone.id = `ex-${index}`; gone.hidden = true; return gone;
+    }
+    const block = $("div", `input ${ex.source}${sid && ex.uid && hiddenNow(ex, "in") ? " gone" : ""}`);
     block.id = `ex-${index}`;
     const who = $("div", "who");
     who.append($("b", null, ex.source === "captain" ? (ex.kind === "command" ? `You ran ${ex.label.split(" ")[0]}` : "You") : ex.label));
@@ -1263,6 +1282,8 @@ __HEAD_HOSTED__
     if (ex.absorbed) who.append($("span", null, "· sent while it was busy"));
     const pin = sid ? pinButton(ex, "in", sid) : null;
     if (pin) { who.append(pin); block.dataset.msg = pinKey(ex, "in"); }
+    const hide = sid ? hideButton(ex, "in", sid) : null;
+    if (hide) who.append(hide);
     block.append(who);
     let text = ex.input;
     if (ex.source === "firstmate" && ex.delivered && ex.delivered.length) text = ex.delivered.join("\n\n- - -\n\n");
@@ -1571,13 +1592,18 @@ __HEAD_HOSTED__
     pinned.setAttribute("aria-pressed", String(state.pinsOpen)); pinned.setAttribute("aria-controls", "pins-panel");
     pinned.title = "Pinned messages: this conversation's, or every conversation's";
     pinned.addEventListener("click", togglePins);
+    const hiddenToggle = $("button", "btn", hiddenLabel()); hiddenToggle.id = "hidden-toggle"; hiddenToggle.type = "button";
+    hiddenToggle.setAttribute("aria-pressed", String(state.showHidden));
+    hiddenToggle.title = state.showHidden ? "Hide the hidden messages again" : "Show the messages and replies hidden from this conversation, each with Show again";
+    hiddenToggle.hidden = !hiddenHere() && !state.showHidden;
+    hiddenToggle.addEventListener("click", toggleShowHidden);
     const copyToggle = copySelectionToggle();
     prev.addEventListener("click", () => jump("captain", -1));
     next.addEventListener("click", () => jump("captain", 1));
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
     if (pickRow.parentNode !== row) row.append(pickRow);
-    row.append(prev, next, needs, wakes, pinned, copyToggle, shut, follow);
+    row.append(prev, next, needs, wakes, pinned, hiddenToggle, copyToggle, shut, follow);
     paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", summaryLine(exs.length, [
@@ -1680,7 +1706,7 @@ __HEAD_HOSTED__
   }
   function jump(kind, dir) {
     const session = data.sessions[state.session]; if (!session) return;
-    const nodes = session.exchanges.map((e, i) => ({ e, i })).filter(({ e }) => kind === "captain" ? e.source === "captain" : isOpen(e) && !e.folded);
+    const nodes = session.exchanges.map((e, i) => ({ e, i })).filter(({ e }) => kind === "captain" ? e.source === "captain" && !partGone(e, "in") : isOpen(e) && !e.folded && !partGone(e, "reply"));
     const barH = document.getElementById("bar").offsetHeight;
     const positions = nodes.map(({ i }) => { const el = document.getElementById(`ex-${i}`); return el ? { el, top: el.getBoundingClientRect().top - barH - 8 } : null; }).filter(Boolean);
     const target = dir > 0 ? positions.find(p => p.top > 4) : [...positions].reverse().find(p => p.top < -4);
@@ -1781,6 +1807,43 @@ __HEAD_HOSTED__
     btn.addEventListener("click", () => togglePin(key, sid, part === "in" ? ex.at : (ex.reply_at || ex.at), !pins.has(key)));
     return btn;
   }
+  // ---------------------------------------------------------------- hide: take a message or reply out of this view (never out of the session log)
+  // The same key as a pin. The server keeps the hidden set (pinstore.js, hidden.json) so the laptop and the phone agree; the page asks it on
+  // load and follows its revision in the poll. A hide is undone from the toast right after it, or from "Hidden · n" in the controls, which
+  // shows the hidden ones in place (dimmed, each with Show again) until it is pressed again.
+  const hiddenNow = (ex, part) => { const key = pinKey(ex, part); return Boolean(key) && hiddenStore.has(key); };
+  const partGone = (ex, part) => hiddenNow(ex, part) && !state.showHidden;
+  const hiddenHere = () => { const s = data.sessions[state.session]; return s ? hiddenStore.all().filter(h => (s.ids || [s.id]).includes(h.conv)).length : 0; };
+  const hiddenLabel = () => hiddenHere() ? `Hidden · ${hiddenHere()}` : "Hidden";
+  function hideButton(ex, part, sid) {
+    const key = pinKey(ex, part);
+    if (!key) return null;
+    const on = hiddenStore.has(key);
+    const btn = $("button", "hide-msg", on ? "Show again" : "Hide"); btn.type = "button"; btn.dataset.hide = key;
+    btn.setAttribute("aria-pressed", String(on));
+    btn.title = on ? "Show this message in the conversation again" : "Hide this message here. The session log is not changed; Hidden in the controls shows it again.";
+    btn.addEventListener("click", () => setHidden(key, sid, part === "in" ? ex.at : (ex.reply_at || ex.at), !on, part === "in" ? "message" : "reply"));
+    return btn;
+  }
+  let toastTimer = null;
+  function toast(text, undo) {
+    let node = document.getElementById("undo-toast");
+    if (!node) { node = $("div", "undo-toast"); node.id = "undo-toast"; node.setAttribute("role", "status"); document.body.append(node); }
+    clearTimeout(toastTimer);
+    node.replaceChildren($("span", null, text));
+    if (undo) { const b = $("button", null, "Undo"); b.type = "button"; b.addEventListener("click", () => { node.hidden = true; clearTimeout(toastTimer); undo(); }); node.append(b); }
+    node.hidden = false;
+    toastTimer = setTimeout(() => { node.hidden = true; }, 8000);
+  }
+  async function setHidden(key, conv, at, hide, noun) {
+    const top = document.scrollingElement.scrollTop;
+    try {
+      if (hiddenStore.has(key) !== hide) await hiddenStore.toggle(key, { conv, at });
+    } catch (e) { link.listing = { text: `Could not ${hide ? "hide" : "show"} the ${noun}: ${e.message}` }; renderLive(); return; }
+    document.scrollingElement.scrollTop = top;  // the store's change already drew the conversation again (hiddenStore.onChange)
+    if (hide) toast(`Hid the ${noun}.`, () => setHidden(key, conv, at, false, noun));
+  }
+  function toggleShowHidden() { state.showHidden = !state.showHidden; render(); }
   function restorePinListScroll(top) {
     if (top == null) return;
     const list = document.querySelector(".pins-list");
@@ -4079,6 +4142,7 @@ __HEAD_HOSTED__
     pins.refresh(s.stamps && s.stamps.pins);
     stars.refresh(s.stamps && s.stamps.stars);
     sheetFlags.refresh(s.stamps && s.stamps.flags);
+    hiddenStore.refresh(s.stamps && s.stamps.hidden);
   }
   // The server (or the hosted copy's folder) stopped answering: after a few seconds the page says so, with since when.
   const syncFailing = () => Boolean(link.syncFail) && Date.now() - link.syncFail.since > 8000;
@@ -4389,6 +4453,7 @@ __HEAD_HOSTED__
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
     paintViewIcons(session);
     paintPinsIcon(session);
+    paintHiddenIcon(session);
     for (const id of ["jump-prev", "jump-next", "jump-ask"]) document.getElementById(id).hidden = state.view !== "reader" || !session || !session.exchanges.length;
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
   }
@@ -4414,6 +4479,15 @@ __HEAD_HOSTED__
     icon.setAttribute("aria-label", label);
     icon.title = state.pinsOpen ? `${label} (open)` : label;
     document.getElementById("pins-panel").hidden = !state.pinsOpen || state.view !== "reader" || look.open;
+  }
+  // The eye icon of the folded header: the Hidden control's own switch, shown only while this conversation has hidden messages (or they are on
+  // show), so the folded header stays as it was otherwise.
+  function paintHiddenIcon(session) {
+    const eye = document.getElementById("hidden-quick"), hiddenName = hiddenLabel();
+    eye.hidden = state.view !== "reader" || !session || (!hiddenHere() && !state.showHidden);
+    eye.setAttribute("aria-pressed", String(state.showHidden));
+    eye.setAttribute("aria-label", hiddenName);
+    eye.title = state.showHidden ? `${hiddenName} (shown)` : hiddenName;
   }
   // The search row and its list change the header's height without a call to paintBar.
   if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty("--bar-h", document.getElementById("bar").offsetHeight + "px")).observe(document.getElementById("bar"));
@@ -4450,6 +4524,7 @@ __HEAD_HOSTED__
   document.getElementById("view-doc").addEventListener("click", () => { if (state.view !== "doc") showDocView(); });
   document.getElementById("files-quick").addEventListener("click", showDocList);
   document.getElementById("pins-quick").addEventListener("click", togglePins);
+  document.getElementById("hidden-quick").addEventListener("click", toggleShowHidden);
   document.addEventListener("keydown", e => {
     if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);
@@ -4518,6 +4593,9 @@ __HEAD_HOSTED__
   pins.load().then(paintPins);
   stars.load().then(paintStars);
   if (canLive) sheetFlags.load().then(paintSheetFixes);
+  // The hidden set arrives after the first drawing: draw again at once when this conversation has hidden messages.
+  hiddenStore.load().then(() => { if (hiddenStore.count()) render(); });
+  hiddenStore.onChange(() => { if (state.view === "reader") render(); });
   if (!LAZY) openReading(chooseOpening());
   else {
     // A lazy page holds no transcript: a sealed copy is opened first (the hosted copy), then the list comes from index.json, then the

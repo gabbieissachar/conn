@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { create, createStars, createSheetFlags, defaultFile, defaultStarsFile, defaultSheetFlagsFile, PinError, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_DESCRIPTION } = require('./pinstore');
+const { create, createStars, createSheetFlags, createHidden, defaultFile, defaultStarsFile, defaultSheetFlagsFile, defaultHiddenFile, PinError, MAX_PINS, MAX_STARS, MAX_FLAGS, MAX_HIDDEN, MAX_DESCRIPTION } = require('./pinstore');
 
 const K1 = 'abcdef12-3456-4789-8abc-def012345678:in';
 const K2 = 'abcdef12-3456-4789-8abc-def012345678:reply';
@@ -189,4 +189,28 @@ test('sheet marks: only a reply can be marked, with a known kind; bad input writ
   assert.equal(fs.existsSync(file), false);
   for (let i = 0; i < MAX_FLAGS; i += 1) store.change({ ...good, key: `abcdef12-3456-4789-8abc-${String(i).padStart(12, '0')}:reply` });
   assert.throws(() => store.change({ ...good, key: 'abcdef12-3456-4789-8abc-ffffffffffff:reply' }), (e) => e instanceof PinError && e.status === 409 && e.code === 'too_many');
+});
+
+test('hidden messages: a fourth file beside the pins, holding a turn id and part, its conversation and the message time, never any text', () => {
+  assert.equal(defaultHiddenFile({}), path.join(os.homedir(), '.config', 'pmos-transcript-reader', 'hidden.json'));
+  assert.equal(defaultHiddenFile({ PMOS_READER_HIDDEN: '/somewhere/else.json' }), '/somewhere/else.json');
+  const folder = fresh();
+  const file = path.join(folder, 'pmos-transcript-reader', 'hidden.json');
+  const store = createHidden({ file, now: () => 6_000_000 });
+  assert.deepEqual(store.read(), { rev: 0, hidden: [] });
+  const hide = { op: 'hide', key: K2, conv: CONV, at: 1700000000 };
+  assert.deepEqual(store.change(hide), { rev: 1, hidden: [{ key: K2, conv: CONV, at: 1700000000, hidden: 6000 }] });
+  assert.equal(store.change(hide).rev, 1, 'hiding what is hidden changes nothing');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+  for (const bad of [{ ...hide, key: 'x' }, { ...hide, conv: '../etc' }, { op: 'hide', key: K2, conv: CONV }, { ...hide, text: 'words' }, { op: 'pin', key: K2, conv: CONV, at: 1 }]) assert.throws(() => store.change(bad), PinError, JSON.stringify(bad));
+  assert.deepEqual(store.change({ op: 'unhide', key: K2 }), { rev: 2, hidden: [] });
+  assert.equal(MAX_HIDDEN, 5000);
+  // A file that is not a hidden list is moved aside, never overwritten.
+  const other = path.join(fresh(), 'hidden.json');
+  fs.writeFileSync(other, '{"not":"mine"}');
+  const mixed = createHidden({ file: other });
+  assert.deepEqual(mixed.read(), { rev: 0, hidden: [] });
+  mixed.change(hide);
+  assert.equal(fs.readFileSync(other + '.unreadable', 'utf8'), '{"not":"mine"}');
 });

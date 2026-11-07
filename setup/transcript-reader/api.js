@@ -60,6 +60,10 @@
 //   GET  /api/transcript-reader/sheet-flags         the replies marked "should be an answer sheet" or "this sheet is wrong" (a third
 //                                                   file beside the pins; turn ids only, never a reply's text) and their revision
 //   POST /api/transcript-reader/sheet-flags         { op: "flag", key, conv, at, kind: "missing"|"wrong" } or { op: "unflag", key }
+//   GET  /api/transcript-reader/hidden              the messages and replies hidden from the reader's view (a fourth file beside the
+//                                                   pins; turn ids only, never a message's text; the agent's session log is never touched)
+//                                                   and their revision
+//   POST /api/transcript-reader/hidden              { op: "hide", key, conv, at } or { op: "unhide", key }
 //   POST /api/transcript-reader/rerender            {}: builds the pages again now (the worker starts from the code on disk), answers when built
 //   POST /api/transcript-reader/send                { session_id, text[, images] }: empties the input box
 //                                                   of the one live Herdr pane running that
@@ -425,6 +429,7 @@ function create({
   pinsFile = pinstore.defaultFile(env),
   starsFile = pinstore.defaultStarsFile(env),
   sheetFlagsFile = pinstore.defaultSheetFlagsFile(env),
+  hiddenFile = pinstore.defaultHiddenFile(env),
   // Where an HTML file may be shown from, as in build_prototype.resolve_mention: the home folder and the temp folders.
   homeDir = os.homedir(), tempRoots = ['/tmp', os.tmpdir()],
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
@@ -485,6 +490,7 @@ function create({
   const pins = pinstore.create({ file: pinsFile, now });
   const stars = pinstore.createStars({ file: starsFile, now });
   const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });
+  const hidden = pinstore.createHidden({ file: hiddenFile, now });
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
 
@@ -1112,7 +1118,7 @@ function create({
       }
     }
     return {
-      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev, stars: stars.read().rev, flags: sheetFlags.read().rev },
+      stamps: { reader: stamp('prototype.stamp'), sheet: stamp('questionnaire.stamp'), pins: pins.read().rev, stars: stars.read().rev, flags: sheetFlags.read().rev, hidden: hidden.read().rev },
       focus: focused && {
         ...focused,
         listed: focused.session_id ? ids.includes(focused.session_id) : false,
@@ -1731,6 +1737,15 @@ function create({
     }
     if (pathname === API + 'sheet-flags' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...sheetFlags.change(await readJsonBody(req)) });
+      return;
+    }
+    // The messages and replies hidden from the reader's view, and one change to them (a view setting only: nothing of a session log changes).
+    if (pathname === API + 'hidden' && req.method === 'GET') {
+      send(res, 200, { status: 'ok', ...hidden.read() });
+      return;
+    }
+    if (pathname === API + 'hidden' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...hidden.change(await readJsonBody(req)) });
       return;
     }
     // Build the pages again now, with the sheet finder as it is on disk (the worker starts again from changed code), so a reply marked
