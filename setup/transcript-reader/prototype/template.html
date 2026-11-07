@@ -431,6 +431,7 @@ __HEAD_HOSTED__
   .pin { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .reply-to { margin-left: 0; }
   /* Hide: removes a message or reply from this view only (never from the session log); the pill sits beside Pin and shows it again while hidden ones are on show. */
+  #search [data-scope][aria-disabled="true"] { opacity: .45; }
   .hide-msg { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .hide-msg { margin-left: 0; }
   .hide-msg + .reply-to { margin-left: 0; }
@@ -2117,21 +2118,55 @@ __HEAD_HOSTED__
   const MAX_RANGES = 3000;
   // scope is "here" or "all"; who one of finder.filters; current the match being read, by its key; opened what this search
   // opened ({ conv, uid, kind }, in order); ranges the highlight ranges of the current match.
-  const look = { open: false, q: "", scope: "here", who: "any", list: false, current: null, hits: [], terms: [], opened: [], ranges: [], timer: 0 };
+  // A search of "here" belongs to one conversation (conv, the id it had when the search was opened): another conversation on screen does not show it, and
+  // it comes back when its own conversation is shown again (own: the ones not on screen, by conversation id, each { q, who, list, current, opened }).
+  // The search of "all" is the only one that crosses conversations, and cannot be on while the conversation on screen has one of its own (say: the
+  // line the search row shows for the chip that was refused).
+  const look = { open: false, q: "", scope: "here", conv: null, own: new Map(), say: "", who: "any", list: false, current: null, hits: [], terms: [], opened: [], ranges: [], timer: 0 };
+  const owns = (conv, session) => Boolean(conv && session && (session.ids || [session.id]).includes(conv));
   const sq = id => document.getElementById("search-" + id);
   const convIndex = conv => data.sessions.findIndex(s => (s.ids || [s.id]).includes(conv));
   function saveSearch() {
-    keep(SEARCH_KEY, look.open ? { open: true, q: look.q, scope: look.scope, who: look.who, list: look.list, current: look.current, opened: look.opened } : null);
+    const parked = [...look.own].map(([conv, r]) => ({ conv, q: r.q, who: r.who, list: r.list, current: r.current, opened: r.opened }));
+    keep(SEARCH_KEY, look.open || parked.length ? { open: look.open, q: look.q, scope: look.scope, conv: look.conv, who: look.who, list: look.list, current: look.current, opened: look.opened, parked } : null);
   }
   // A tab that reloads (new page code) takes its search back; the turns it opened are open already (state.open is kept too).
   function restoreSearch() {
     let saved = null;
     try { saved = JSON.parse(sessionStorage.getItem(SEARCH_KEY) || "null"); } catch (e) { saved = null; }
-    if (!saved || !saved.open || !data.sessions[state.session]) return;
+    if (!saved || !data.sessions[state.session]) return;
+    const filter = who => finder.filters.includes(who) ? who : "any";
+    const current = value => typeof value === "string" && /^[\w-]+:(?:in|reply|notes|steps)$/.test(value) ? value : null;
+    const opened = list => (Array.isArray(list) ? list : []).filter(d => d && typeof d.conv === "string" && typeof d.uid === "string" && typeof d.kind === "string");
+    for (const r of Array.isArray(saved.parked) ? saved.parked : []) {
+      if (r && typeof r.conv === "string") look.own.set(r.conv, { q: String(r.q || ""), who: filter(r.who), list: Boolean(r.list), current: current(r.current), opened: opened(r.opened) });
+    }
+    if (!saved.open) return;
     look.open = true; look.q = String(saved.q || ""); look.scope = saved.scope === "all" ? "all" : "here";
-    look.who = finder.filters.includes(saved.who) ? saved.who : "any";
-    look.list = Boolean(saved.list); look.current = typeof saved.current === "string" && /^[\w-]+:(?:in|reply|notes|steps)$/.test(saved.current) ? saved.current : null;
-    look.opened = (Array.isArray(saved.opened) ? saved.opened : []).filter(d => d && typeof d.conv === "string" && typeof d.uid === "string" && typeof d.kind === "string");
+    look.conv = look.scope === "here" ? (typeof saved.conv === "string" ? saved.conv : data.sessions[state.session].id) : null;
+    look.who = filter(saved.who);
+    look.list = Boolean(saved.list); look.current = current(saved.current);
+    look.opened = opened(saved.opened);
+  }
+  // The conversation on screen decides which search shows (render calls this). A search of this conversation that was left behind for another
+  // conversation goes to wait there, with its marks; the conversation now on screen shows its own search if it has one, which takes the screen
+  // from a search of all conversations. A search of all conversations stays on for a conversation without one of its own.
+  function followSearchSession() {
+    const session = data.sessions[state.session];
+    if (!session || state.view !== "reader") return;
+    if (look.open && look.scope === "here" && !owns(look.conv, session)) {
+      if (look.conv) look.own.set(look.conv, { q: look.q, who: look.who, list: look.list, current: look.current, opened: look.opened.slice() });
+      clearTimeout(look.timer); look.timer = 0;
+      Object.assign(look, { open: false, list: false, hits: [], terms: [], current: null, opened: [], conv: null, say: "" });
+      clearHighlights();
+    }
+    const parked = [...look.own.keys()].find(conv => owns(conv, session));
+    if (parked && !(look.open && look.scope === "here")) {
+      const r = look.own.get(parked);
+      look.own.delete(parked);
+      Object.assign(look, { open: true, scope: "here", conv: parked, q: r.q, who: r.who, list: r.list, current: r.current, opened: r.opened, hits: [], terms: [], say: "" });
+    }
+    saveSearch();
   }
   function searchHits() {
     const parsed = finder.parse(look.q);
@@ -2184,11 +2219,15 @@ __HEAD_HOSTED__
     sq("prev").disabled = sq("next").disabled = sq("list").disabled = !n;
     sq("list").setAttribute("aria-pressed", String(look.list && n > 0));
     document.querySelectorAll("#search [data-scope]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.scope === look.scope)));
+    // All conversations cannot be on while this conversation has a search of its own (the chip stays pressable, to say why).
+    const allChip = document.querySelector("#search [data-scope=all]");
+    allChip.setAttribute("aria-disabled", String(look.scope === "here"));
+    allChip.title = look.scope === "here" ? "Off while this conversation has its own search. Close that search first." : "Every conversation on this page";
     document.querySelectorAll("#search [data-who]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.who === look.who)));
     // What "All conversations" reaches: the reading list on the local page; on a lazy page only what it has loaded.
     const loaded = data.sessions.filter(s => s.exchanges).length, listed = data.sessions.length;
     const note = sq("note");
-    note.textContent = look.q.trim() && !parsed.ok ? "Type at least two characters." : look.scope !== "all" ? ""
+    note.textContent = look.say ? look.say : look.q.trim() && !parsed.ok ? "Type at least two characters." : look.scope !== "all" ? ""
       : LAZY && loaded < listed ? `Looks in the conversations this ${HOSTED ? "device" : "page"} has loaded (${loaded} of ${listed}). Open a conversation to load it.` : `Looks in ${plural(loaded, "conversation")} on the reader.`;
     note.hidden = !note.textContent;
     paintHitList();
@@ -2347,15 +2386,29 @@ __HEAD_HOSTED__
       const r = reveals.get(key);
       if (r && r.shown()) r.close(); else state.open.delete(key);
     }
-    Object.assign(look, { open: false, list: false, hits: [], terms: [], current: null });
+    Object.assign(look, { open: false, list: false, hits: [], terms: [], current: null, conv: null, say: "" });
     clearHighlights();
     saveSearch();
   }
+  // The refusal of "all conversations" while this conversation has a search of its own: said in the search row, for a few seconds.
+  let sayTimer = 0;
+  function sayAllOff() {
+    look.say = "This conversation has its own search on. Close it first to search all conversations.";
+    clearTimeout(sayTimer);
+    sayTimer = setTimeout(() => { look.say = ""; if (look.open) paintSearch(); }, 7000);
+    paintSearch();
+    sq("input").focus();
+  }
+  // The search of this conversation, starting on the conversation on screen (kept apart from every other conversation's), or the one of all of them.
+  const startHere = () => { look.scope = "here"; look.conv = data.sessions[state.session].id; look.current = null; look.list = false; look.say = ""; };
   function openSearch(scope) {
     if (state.view !== "reader" || !data.sessions[state.session]) return;
+    if (scope === "all" && look.open && look.scope === "here") { sayAllOff(); return; }
     const anchor = mainAnchor();
+    const wanted = scope || look.scope;
+    if (wanted === "here" && !(look.open && look.scope === "here")) startHere();
+    else if (wanted === "all" && !(look.open && look.scope === "all")) { look.scope = "all"; look.conv = null; look.current = null; look.list = true; look.say = ""; }
     look.open = true;
-    if (scope && scope !== look.scope) { look.scope = scope; look.current = null; look.list = scope === "all"; }
     paintBar(); restoreMainAnchor(anchor);
     sq("input").focus(); sq("input").select();
     refreshSearch({ pick: true });
@@ -2370,7 +2423,7 @@ __HEAD_HOSTED__
   }
   // Typing runs the query a moment after the last key; Enter does not wait for it.
   function typed() {
-    clearTimeout(look.timer); look.timer = 0;
+    clearTimeout(look.timer); look.timer = 0; look.say = "";
     if (look.scope === "all") { look.current = null; look.list = true; }
     refreshSearch({ pick: true, reveal: true });
     saveSearch();
@@ -2389,7 +2442,8 @@ __HEAD_HOSTED__
   document.getElementById("search-toggle").addEventListener("click", () => { if (look.open) closeSearch(); else openSearch(); });
   document.querySelectorAll("#search [data-scope]").forEach(b => b.addEventListener("click", () => {
     if (b.dataset.scope === look.scope) return;
-    look.scope = b.dataset.scope; look.current = null; look.list = look.scope === "all";
+    if (b.dataset.scope === "all") { sayAllOff(); return; }  // this conversation's own search is on
+    startHere();  // from all conversations to the one on screen
     refreshSearch({ pick: true, reveal: true }); saveSearch();
   }));
   document.querySelectorAll("#search [data-who]").forEach(b => b.addEventListener("click", () => {
@@ -4382,6 +4436,7 @@ __HEAD_HOSTED__
     document.getElementById("tab-fleet").hidden = !fleetOn();
     if (!fleetOn() && state.view === "fleet") state.view = "reader";
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
+    followSearchSession();  // and a search of one conversation stays with that conversation
     // The turns stay only on the reader view with no search open (a search marks the turns, and runs again over the new data).
     keepTurns = keepTurns && state.view === "reader" && !look.open && !link.opening;
     if (!keepTurns) reveals.clear();  // the openers of the turns drawn now: kept turns keep theirs
