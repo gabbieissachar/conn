@@ -15,7 +15,7 @@ SwiftTerm normally draws from a display-link tick that follows its own dirty mar
 Command Line Tools and SwiftPM only. No Xcode.
 
 ```
-./build.sh                 # build/Conn.app (release), about 5 minutes the first time (SwiftTerm dominates)
+./build.sh                 # build/Conn.app (release), about 5 minutes the first time (SwiftTerm dominates); signed ad hoc, see below
 ./run.sh                   # live: observe-only client of Herdr session "esim"
 ./run.sh --fixture         # stand-in Herdr with invented agents and pages: safe to screen-share, compose box enabled
 ./run.sh --fixture --renderer grid   # the same with the cell-grid pane view
@@ -29,6 +29,8 @@ Command Line Tools and SwiftPM only. No Xcode.
 ./run.sh --fixture --campus-signed-out-403 --campus-check   # the same, with the stand-in answering 403 (what the real Campus answers) to a signed-out person from the first request
 ./run.sh --fixture --campus-check            # only the Campus steps of --ui-check, against the stand-in Campus (see "Campus in Conn")
 ```
+
+**The build installs by rename and signs the bundle.** `build.sh` puts every file into `build/Conn.app` (and `build/FakeHerdr`, `build/FakeCampus`) as a new file plus a rename, never by writing over the old one: macOS caches a code signature per inode, so overwriting a built executable in place makes the next launch die at dyld with "Code Signature Invalid". The last step signs the whole bundle ad hoc (`codesign --force --sign -`) and runs `codesign --verify --verbose=2 build/Conn.app`; the build fails if that does not pass. Check it yourself with `codesign --verify --verbose=2 build/Conn.app`.
 
 Conn's first launch migrates app-owned data from Helm when the new locations are absent. It moves `~/Library/Application Support/Helm` to `~/Library/Application Support/Conn` and copies the old `dev.local.helm` UserDefaults domain to `dev.local.conn`, renaming Conn-owned `helm.*` keys to `conn.*`. Existing Conn locations are never overwritten. The migration is covered by unit tests.
 
@@ -137,7 +139,7 @@ archon workflow resume <run-id>                # after a failed run: continues f
 | Node | What it does |
 |---|---|
 | `preflight` | Stops unless the checkout is on `main` with no uncommitted change to a tracked file (untracked and ignored files such as `build/` do not count). Prints the head commit. |
-| `find-running` | Finds the Conn running from this checkout's `build/Conn.app/Contents/MacOS/Conn` and records how it was started: its `CONN_ARGS` and its arguments. Says "not running" if it is not. It runs before the build because the build overwrites the executable of a running app. It stops if more than one Conn runs from this build. |
+| `find-running` | Finds the Conn running from this checkout's `build/Conn.app/Contents/MacOS/Conn` and records how it was started: its `CONN_ARGS` and its arguments. Says "not running" if it is not. It runs before the build so the restart reuses the arguments of the running app (the build replaces the executable by rename, so the running app is not touched until it quits). It stops if more than one Conn runs from this build. |
 | `build` | Runs `./build.sh` (release), the way the running copy is built. On failure it prints the last 40 lines of the build log and stops. It also stops if `main` moved during the build, so the commit in the question is the commit that was built. |
 | `confirm-restart` | The gate: approve or reject. |
 | `decision` | Turns the answer into one word for the nodes after it. |

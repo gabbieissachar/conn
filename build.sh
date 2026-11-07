@@ -10,17 +10,30 @@ swift build -c "$CONFIG" --product Conn
 swift build -c "$CONFIG" --product FakeHerdr
 swift build -c "$CONFIG" --product FakeCampus
 APP=build/Conn.app
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture"
-cp ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn"
-cp ".build/$CONFIG/FakeHerdr" build/FakeHerdr
-cp ".build/$CONFIG/FakeCampus" build/FakeCampus
-cp Resources/fixture/fixture-reader.html Resources/fixture/fixture-lite.html Resources/fixture/fixture-organizer.html Resources/fixture/fixture-stars.json Resources/fixture/fixture-pane-labels.json Resources/fixture/open-asks.json "$APP/Contents/Resources/fixture/"
-cp Resources/Conn.icns "$APP/Contents/Resources/Conn.icns"
+# Every file in the bundle is installed as a new file plus a rename, never written over in place.
+# macOS caches a code signature per inode, so overwriting the executable of a bundle that was
+# built (and signed) before leaves the old signature on the new bytes: the next launch is killed
+# at dyld with "Code Signature Invalid" and `codesign --verify` fails. A rename gives the path a
+# fresh inode, and a running Conn keeps its old inode until it quits.
+# usage: install_file SOURCE DEST MODE
+install_file() {
+  local src=$1 dest=$2 mode=$3 tmp
+  tmp="$dest.new.$$"
+  cp "$src" "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture" "$APP/Contents/Resources/bin"
+install_file ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn" 755
+install_file ".build/$CONFIG/FakeHerdr" build/FakeHerdr 755
+install_file ".build/$CONFIG/FakeCampus" build/FakeCampus 755
+for f in fixture-reader.html fixture-lite.html fixture-organizer.html fixture-stars.json fixture-pane-labels.json open-asks.json; do
+  install_file "Resources/fixture/$f" "$APP/Contents/Resources/fixture/$f" 644
+done
+install_file Resources/Conn.icns "$APP/Contents/Resources/Conn.icns" 644
 # The `conn` shell command (README "Opening a folder from the terminal"): File > Install 'conn' Command in PATH links it from ~/.local/bin.
-mkdir -p "$APP/Contents/Resources/bin"
-cp Resources/bin/conn "$APP/Contents/Resources/bin/conn"
-chmod +x "$APP/Contents/Resources/bin/conn"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+install_file Resources/bin/conn "$APP/Contents/Resources/bin/conn" 755
+cat > "$APP/Contents/Info.plist.new.$$" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -46,4 +59,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
 PLIST
+mv -f "$APP/Contents/Info.plist.new.$$" "$APP/Contents/Info.plist"
+# Sign the whole bundle ad hoc, last, so the signature seals Info.plist and every resource above.
+codesign --force --sign - "$APP"
+codesign --verify --verbose=2 "$APP"
 echo "built $APP"
