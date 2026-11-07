@@ -103,10 +103,10 @@ extension CampusStore {
                 onSuccess()
                 self.clearHeld(after: 2.5)
             } else {
-                if reply?.status == 401 || reply?.loginRedirect == true { self.markExpired() }
+                if reply?.signedOut == true { self.markExpired() }
                 // Nothing is lost: the text goes back into the box.
                 self.heldRestore?(); self.heldRestore = nil
-                self.held?.phase = .failed(reply.map { "Campus answered \($0.status)" } ?? "Campus did not answer")
+                self.held?.phase = .failed(reply?.failureText ?? "Campus did not answer")
                 self.clearHeld(after: 8)
             }
         }

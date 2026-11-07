@@ -122,6 +122,8 @@ public final class CampusStore: ObservableObject {
                     if self.now().timeIntervalSince(self.lastBytes) > self.streamIdleLimit { auth.closeEventStream(); return }
                 }
             }
+            // A 403 on the stream is a sign-out too, unless its body names a module refusal; the body arrives with the close, so the 403 waits for it.
+            var refused403 = false
             for await ev in auth.openEventStream() {
                 if Task.isCancelled { break }
                 switch ev {
@@ -130,12 +132,14 @@ public final class CampusStore: ObservableObject {
                         streamLive = true; backoff = 0.5; lastBytes = now()
                         if gap { gap = false; reconnects += 1; await closeGap() }
                     } else if status == 401 { setExpired() }
+                    else if status == 403 { refused403 = true }
                     else if status == 503 { link = .starting }
                 case .text(let t):
                     lastBytes = now()
                     for f in reader.feed(t) { handle(f) }
-                case .closed:
-                    break
+                case .closed(let why):
+                    if refused403, why?.contains("module_required") != true { setExpired() }
+                    refused403 = false
                 }
             }
             watchdog.cancel()

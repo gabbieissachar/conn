@@ -21,6 +21,20 @@ public struct CampusReply: Equatable, Sendable {
     /// The answer was Campus's sign-in page instead of the API (a redirect to the login): the person is signed out.
     public var loginRedirect: Bool
     public init(status: Int, body: Data = Data(), loginRedirect: Bool = false) { self.status = status; self.body = body; self.loginRedirect = loginRedirect }
+
+    /// `403 {"error":"module_required","module":"ide"}`: the person is signed in, but the account lacks a module this call needs. A named refusal, not a sign-out.
+    public var moduleRequired: Bool { status == 403 && CampusJSON.parse(body)?["error"].string == "module_required" }
+
+    /// The sign-in is gone: a redirect to the login page, 401, or 403. Campus answers 403 (not 401) to a person who is not signed in,
+    /// and its own keep-alive stops on either, so Conn reads them the same way. Only a module refusal is a 403 that is not a sign-out.
+    public var signedOut: Bool { loginRedirect || status == 401 || (status == 403 && !moduleRequired) }
+
+    /// What a refused or failed answer says to the person.
+    public var failureText: String {
+        guard moduleRequired else { return "Campus answered \(status)" }
+        let name = CampusJSON.parse(body)?["module"].string.flatMap { $0.isEmpty ? nil : $0 }
+        return "Signed in, but this Campus account does not have \(name.map { "the \($0) module" } ?? "a module") this needs (403 module_required)"
+    }
 }
 
 public enum CampusStreamEvent: Equatable, Sendable {
@@ -49,7 +63,7 @@ public protocol CampusAuth: AnyObject {
 /// What a read of Campus came to.
 public enum CampusFetch<T> {
     case ok(T)
-    /// 401 or a redirect to the login: the sign-in is gone.
+    /// 401, 403 (not a module refusal) or a redirect to the login: the sign-in is gone.
     case unauthorized
     /// `503 {"error":"opencode_starting"}`: the person's Instance is booting.
     case starting
@@ -82,9 +96,9 @@ public struct CampusClient {
 
     func fetch<T>(_ r: CampusRequest, _ read: (Data) -> T?) async -> CampusFetch<T> {
         guard let reply = await auth.perform(r) else { return .failed("Campus did not answer") }
-        if reply.status == 401 || reply.loginRedirect { return .unauthorized }
+        if reply.signedOut { return .unauthorized }
         if reply.status == 503, CampusJSON.parse(reply.body)?["error"].string == "opencode_starting" { return .starting }
-        guard (200..<300).contains(reply.status) else { return .failed("Campus answered \(reply.status)") }
+        guard (200..<300).contains(reply.status) else { return .failed(reply.failureText) }
         guard let v = read(reply.body) else { return .failed("Campus answered something Conn does not know") }
         return .ok(v)
     }

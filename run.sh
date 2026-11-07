@@ -10,6 +10,7 @@
 #   ./run.sh --campus-url ADDRESS use another Campus (default https://campus.shopback.com); --no-campus leaves the section out; a scripted launch
 #                                 (--ui-check and the like) never reaches the real Campus unless --campus is given
 #   ./run.sh --campus-writes      start with the "Campus writes" switch on (a person's own launch starts with it off)
+#   ./run.sh --fixture --campus-signed-out-403   the stand-in Campus answers 403 (what the real one answers) instead of 401 to a person who is not signed in
 #   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode herdr|agent|editor   --web on|off   --select N   --dark   --privacy   --open FILE
@@ -39,7 +40,9 @@ if [[ " $ARGS " == *" --fixture "* ]]; then
   sleep 0.8
   ARGS="--session fake --socket-dir $DIR/s --herdr-bin $DIR/herdr --write fake $ARGS"
   if [[ " $ARGS " != *" --no-campus "* && " $ARGS " != *" --campus-url "* && -x build/FakeCampus ]]; then
-    build/FakeCampus serve --autorun >"$DIR/campus.log" 2>&1 &
+    FAKEC_ARGS=(--autorun)
+    [[ " $ARGS " == *" --campus-signed-out-403 "* ]] && FAKEC_ARGS+=(--signed-out-403)
+    build/FakeCampus serve "${FAKEC_ARGS[@]}" >"$DIR/campus.log" 2>&1 &
     FAKEC=$!
     trap 'kill $FAKE $FAKEC 2>/dev/null' EXIT
     for _ in $(seq 1 50); do grep -q "listening" "$DIR/campus.log" 2>/dev/null && break; sleep 0.1; done

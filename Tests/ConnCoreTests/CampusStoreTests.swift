@@ -45,7 +45,9 @@ import FakeCampusKit
         #expect(await until { s.timeline("ses_fakeRates01")?.loaded == true })
         #expect(await until { world.subscriberCount == 1 })
         world.startRun("ses_fakeRates01", userText: nil, ask: true)
-        #expect(await until(8) { s.conversation("ses_fakeRates01")?.state == .blocked })
+        // The list can show the row as needing you a moment before the question's own frame arrives, so wait for the question, its form and the reply.
+        #expect(await until(8) { s.conversation("ses_fakeRates01")?.state == .blocked && s.conversation("ses_fakeRates01")?.ask != nil && s.openForms["ses_fakeRates01"] != nil
+            && s.timeline("ses_fakeRates01")?.items.contains { $0.kind == .text && $0.text.contains("14 of the 20") } == true })
         let c = try #require(s.conversation("ses_fakeRates01"))
         #expect(c.ask?.text == "Which merchants should the summary lead with?" && s.asks.first?.id == "ses_fakeRates01")
         let tl = try #require(s.timeline("ses_fakeRates01"))

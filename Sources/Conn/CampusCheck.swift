@@ -152,6 +152,8 @@ enum CampusCheck {
         model.closeCampusSignIn()
         report("Campus: signing in again brings the list back live", again, "link=\(campus.link)")
 
+        await signedOutChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
+
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
         model.campusSelectedID = nil
@@ -170,6 +172,63 @@ enum CampusCheck {
         print("ui-check: done")
         model.shutdown()
         NSApplication.shared.terminate(nil)
+    }
+
+    // MARK: 403 when signed out
+
+    /// Real Campus answers 403 (not 401) to a person who is not signed in. The stand-in answers either; this flips it to 403 and back to what the launch had
+    /// (`--campus-signed-out-403` starts it on 403, which makes the very first step above the "never signed in with a 403" case).
+    static func signedOutChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                                control: (String) async -> Void, js: (WKWebView, String) async -> String, shot: (String) async -> Void) async {
+        let campus = model.campus
+        guard let auth = model.campusAuth else { return }
+        func current() async -> Int {
+            guard let u = URL(string: "/__fake/signed-out-status", relativeTo: campus.baseURL), let (d, _) = try? await URLSession.shared.data(from: u) else { return 401 }
+            return CampusJSON.parse(d)?["code"].int ?? 401
+        }
+        func signIn() async {
+            model.signInToCampus()
+            _ = await until(10) { auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading }
+            _ = await js(auth.signInView, "document.getElementById('go').click(); 'ok'")
+            _ = await until(10) { auth.signInView.url?.path == "/campus/login/ok" && !auth.signInView.isLoading }
+            campus.kick()
+            _ = await until(15) { campus.link == .live }
+            model.closeCampusSignIn()
+        }
+        let launchCode = await current()
+        let rowsBefore = campus.conversations.count
+        let asOfBefore = campus.asOf
+
+        // A 403 to a signed-out person is the signed-out state: the rows stay, nothing is called "not reachable", and the sidebar offers Sign in.
+        await control("/__fake/signed-out-status?code=403")
+        await control("/__fake/expire")
+        campus.kick()
+        let signedOut = await until(12) { campus.link == .expired }
+        var unreachable = false
+        if case .unreachable = campus.link { unreachable = true }
+        report("Campus: a 403 answer to a signed-out person is the signed-out state (rows kept, 'as of' kept, no asks counted), not 'not reachable'",
+               signedOut && !unreachable && campus.conversations.count == rowsBefore && campus.asOf != nil && campus.asOf! >= asOfBefore! && campus.asks.isEmpty,
+               "link=\(campus.link) rows=\(campus.conversations.count) asOf=\(campus.asOf != nil ? "kept" : "gone")")
+        await wait(0.5)
+        await shot("campus-9b-expired-403.png")
+        await signIn()
+        report("Campus: signing in after a 403 brings the list back live", campus.link == .live && campus.conversations.count == rowsBefore, "link=\(campus.link)")
+
+        // A 403 that names a missing module is a named error, not a sign-out; the not-reachable note it lands in offers Sign in too.
+        await control("/__fake/module-required?on=1")
+        campus.kick()
+        let named = await until(12) { if case .unreachable = campus.link { return true }; return false }
+        var why = ""
+        if case .unreachable(let w) = campus.link { why = w }
+        report("Campus: a 403 module_required is a named error (not a sign-out): the note says which module is missing", named && campus.link != .expired && why.contains("workspace module") && why.contains("module_required"), "link=\(campus.link)")
+        await wait(0.5)
+        await shot("campus-9c-module-required.png")
+        await control("/__fake/module-required?on=0")
+        campus.kick()
+        let healed = await until(15) { campus.link == .live }
+        report("Campus: once the module is back the list is live again", healed, "link=\(campus.link)")
+        await control("/__fake/signed-out-status?code=\(launchCode)")
+        report("Campus: the stand-in is left answering what the launch had when signed out", await current() == launchCode, "code=\(launchCode)")
     }
 
     // MARK: Watch

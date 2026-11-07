@@ -103,7 +103,12 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
       try {
         const r = await fetch(path, { headers: { 'Accept': 'text/event-stream' }, credentials: 'same-origin', cache: 'no-store', signal: ctl.signal });
         post({ kind: 'opened', status: r.status });
-        if (!r.ok || !r.body) { post({ kind: 'closed', why: 'status ' + r.status }); return; }
+        if (!r.ok || !r.body) {
+          // A 403 that names a module is a refusal, not a sign-out: the close says so (Campus's JSON error body, read as text).
+          let why = 'status ' + r.status;
+          if (r.status === 403) { try { if ((await r.text()).indexOf('module_required') >= 0) why += ' module_required'; } catch (e) {} }
+          post({ kind: 'closed', why: why }); return;
+        }
         const reader = r.body.getReader();
         const dec = new TextDecoder();
         while (true) {

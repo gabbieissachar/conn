@@ -14,6 +14,8 @@ public final class FakeCampusAuth: CampusAuth, @unchecked Sendable {
     public var offline = false
     /// A test's own answer to every request (a 401 for an expired sign-in, a 503 for a Campus that is starting); nil returns the world's.
     public var override: ((CampusRequest) -> CampusReply?)?
+    /// A test's own answer to opening the event stream: its status, then the reason it closes with (nil: the world's stream).
+    public var streamAnswer: (status: Int, why: String?)?
 
     public init(world: FakeCampusWorld = FakeCampusWorld()) { self.world = world }
 
@@ -26,6 +28,7 @@ public final class FakeCampusAuth: CampusAuth, @unchecked Sendable {
 
     public func openEventStream() -> AsyncStream<CampusStreamEvent> {
         streamsOpened += 1
+        if let a = streamAnswer { return AsyncStream { cont in cont.yield(.opened(a.status)); cont.yield(.closed(a.why)); cont.finish() } }
         return AsyncStream { cont in
             let world = self.world
             let task = Task {

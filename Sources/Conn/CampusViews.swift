@@ -38,7 +38,7 @@ struct CampusSection: View {
                     case .starting where campus.conversations.isEmpty: starting
                     default:
                         if expired { expiredNote }
-                        if case .unreachable(let why) = campus.link { note(title: "Campus is not reachable", text: why, error: true) }
+                        if case .unreachable(let why) = campus.link { note(title: "Campus is not reachable", text: why, error: true, signIn: true) }
                         if !(expired && campus.conversations.isEmpty) { content(dim: expired) }
                     }
                 }
@@ -160,10 +160,12 @@ struct CampusSection: View {
         .accessibilityIdentifier("campus-expired-note")
     }
 
-    private func note(title: String, text: String, error: Bool) -> some View {
+    /// `signIn`: the note also offers the sign-in, because a Campus that cannot be read may only need one (and the person has no other button here).
+    private func note(title: String, text: String, error: Bool, signIn: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.system(size: 12, weight: .semibold))
             Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if signIn { Button("Sign in to Campus") { app.signInToCampus() }.controlSize(.small).padding(.top, 2).accessibilityIdentifier("campus-signin-unreachable") }
         }
         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
         .background((error ? AgentState.blocked.color : Color.primary).opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

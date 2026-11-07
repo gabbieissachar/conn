@@ -41,6 +41,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var loggedIn = true
     private var starting = false
     private var failWrites = false
+    private var signedOutCode = 401
+    private var moduleRequired = false
     private var subscribers: [Int: AsyncStream<String>.Continuation] = [:]
     private var nextSub = 0
     public private(set) var log: [String] = []
@@ -185,6 +187,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
 
     public func expireLogin() { lock.lock(); loggedIn = false; lock.unlock(); dropStreams() }
     public func setStarting(_ on: Bool) { lock.lock(); starting = on; lock.unlock() }
+    /// What a request without a valid sign-in is answered with: 401 (the default) or 403, which is what the real Campus answers to a person who is not signed in.
+    public func setSignedOutStatus(_ code: Int) { lock.lock(); signedOutCode = code; lock.unlock() }
+    /// While on, every signed-in API call is refused with `403 {"error":"module_required",...}`: signed in, but the account lacks the module.
+    public func setModuleRequired(_ on: Bool) { lock.lock(); moduleRequired = on; lock.unlock() }
 
     private func ok(_ o: Any) -> FakeCampusResponse { var r = FakeCampusResponse(); r.body = Self.data(o); return r }
     private func err(_ code: Int, _ msg: String) -> FakeCampusResponse { var r = FakeCampusResponse(); r.status = code; r.body = Self.data(["error": msg]); return r }
@@ -201,11 +207,12 @@ public final class FakeCampusWorld: @unchecked Sendable {
             r.body = Data("<!doctype html><html><head><title>Stand-in Campus sign-in</title></head><body style=\"font:15px -apple-system;margin:40px\"><h2>Stand-in Campus</h2><p>Invented sign-in page for Conn's own checks.</p><p><a id=\"go\" href=\"/campus/login/ok\">Sign in with ShopBack</a></p><p id=\"state\">\(path.hasSuffix("/ok") ? "signed in" : "signed out")</p></body></html>".utf8)
             return r
         }
-        lock.lock(); let isIn = loggedIn; let isStarting = starting; lock.unlock()
+        lock.lock(); let isIn = loggedIn; let isStarting = starting; let outCode = signedOutCode; let needsModule = moduleRequired; lock.unlock()
         if authMode == .cookie {
             let has = (cookie ?? "").contains("campus_session=\(Self.cookieValue)")
-            if !(has && isIn) { return err(401, "no valid campus_session cookie") }
+            if !(has && isIn) { return err(outCode, "no valid campus_session cookie") }
         }
+        if needsModule && path.hasPrefix("/api/") { var r = FakeCampusResponse(); r.status = 403; r.body = Self.data(["error": "module_required", "module": "workspace"]); return r }
         if path == "/campus/api/me" { return ok(["id": "usr_fake", "email": "person@example.test", "displayName": "Test Person", "modules": ["workspace"]]) }
         if isStarting && path.hasPrefix("/api/") { return err(503, "opencode_starting") }
         if path == "/api/spaces" {
@@ -271,6 +278,11 @@ public final class FakeCampusWorld: @unchecked Sendable {
         switch path {
         case "/__fake/expire": expireLogin(); return ok(["ok": true])
         case "/__fake/starting": setStarting(q["on"] != "0"); return ok(["ok": true])
+        case "/__fake/signed-out-status":
+            if let c = q["code"].flatMap(Int.init) { setSignedOutStatus(c) }          // without `code`, only reads
+            lock.lock(); let code = signedOutCode; lock.unlock()
+            return ok(["code": code])
+        case "/__fake/module-required": setModuleRequired(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/fail-writes": lock.lock(); failWrites = q["on"] != "0"; lock.unlock(); return ok(["ok": true])
         case "/__fake/log": return ok(["writes": writes()])
         case "/__fake/reset": reset(); return ok(["ok": true])
