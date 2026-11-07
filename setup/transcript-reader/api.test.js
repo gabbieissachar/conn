@@ -2933,3 +2933,54 @@ test('board: a build that fails is a plain 502', async () => {
     assert.equal(failed.raw.includes('boom'), false);
   } finally { await t.close(); }
 });
+
+// ---- the Tasks board's page, and its writes (flagged; board_cli.py is faked)
+
+const REAL_ROOT = path.resolve(__dirname, '..', '..');
+const BOARD_PAGE = '/setup/transcript-reader/board/';
+
+test('board page: not served unless the flag is on', async () => {
+  const t = await start();
+  try { assert.notEqual((await t.open(BOARD_PAGE)).status, 200); } finally { await t.close(); }
+});
+
+test('board page: opened in a tab it carries the token once; a script\'s fetch of it is refused; it cannot be framed', async () => {
+  const t = await start({ options: { board: { root: REAL_ROOT, run: fakeBoardRun([]) } } });
+  try {
+    const page = await t.open(BOARD_PAGE);
+    assert.equal(page.status, 200);
+    assert.ok(page.raw.includes('content="' + t.token + '"'), 'the page holds the same token as the reader page');
+    assert.equal(page.raw.split(t.token).length, 2);
+    assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+    assert.equal(page.headers['x-frame-options'], 'DENY');
+    assert.equal(page.headers['cache-control'], 'no-store');
+    assert.equal((await t.request({ path: BOARD_PAGE, headers: { 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } })).status, 403);
+    assert.equal((await t.request({ path: BOARD_PAGE, headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' } })).status, 403);
+    assert.equal((await t.request({ path: BOARD_PAGE, headers: { Host: 'evil.example:80', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' } })).status, 403);
+  } finally { await t.close(); }
+});
+
+test('board writes: no flag, no route; with the flag a mark and an answer reach board_cli.py on stdin behind the token and the origin', async () => {
+  const inputs = [];
+  const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(2), input }); return JSON.stringify({ ok: true, echoed: JSON.parse(input).task }); };
+  let t = await start({ options: { board: { run: fakeBoardRun([]), runInput } } });
+  try {
+    assert.equal((await t.post('board-mark', { session: 'leader-esim', task: 'a', turn: 'x:y:reply', mark: 'in' })).status, 404, 'marks flag off');
+    assert.equal((await t.post('board-answer', { session: 'leader-esim', task: 'a', call: 'Z1', src: 'ask' })).status, 404, 'answer flag off');
+  } finally { await t.close(); }
+  t = await start({ options: { board: { run: fakeBoardRun([]), runInput, marks: true, answer: true } } });
+  try {
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/board-mark', headers: { 'Content-Type': 'application/json', Origin: t.origin }, body: {} })).status, 403, 'no token');
+    assert.equal((await t.post('board-mark', {}, { Origin: 'http://evil.example' })).status, 403, 'foreign origin');
+    assert.equal(inputs.length, 0);
+    const mark = await t.post('board-mark', { session: 'leader-esim', task: 'alpha', turn: 'abcd1234:ef567890:reply', mark: 'in', source: 'reader' });
+    assert.equal(mark.status, 200);
+    assert.equal(mark.json.echoed, 'alpha');
+    assert.deepEqual(inputs[0].args.slice(0, 3), ['mark', '--session', 'leader-esim']);
+    assert.equal(JSON.parse(inputs[0].input).source, 'card', 'the route fixes the source; the page cannot choose it');
+    const answer = await t.post('board-answer', { session: 'leader-esim', task: 'alpha', call: 'Z1', src: 'ask', option: 'a', extra: 'ignored' });
+    assert.equal(answer.status, 200);
+    assert.equal('extra' in JSON.parse(inputs[1].input), false, 'only the known fields are passed on');
+    assert.equal((await t.post('board-answer', { session: '../x', task: 'a', call: 'Z1', src: 'ask' })).status, 400);
+  } finally { await t.close(); }
+});

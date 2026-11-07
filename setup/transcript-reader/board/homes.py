@@ -42,6 +42,10 @@ class Session:
     kind: str = "leader"  # big-boss | leader | worker
     parent: str | None = None  # a worker's leader
     task: str | None = None  # a worker's task id
+    cwds: list = field(default_factory=list)  # the working folders whose sessions are this session's supervisor; empty = the home itself
+
+    def transcript_cwds(self) -> list[str]:
+        return [str(c) for c in (self.cwds or [self.home])]
 
     def public(self) -> dict:
         return {"id": self.id, "label": self.label, "lifecycle": self.lifecycle, "kind": self.kind, "parent": self.parent, "task": self.task}
@@ -51,6 +55,7 @@ class Session:
 class Registry:
     fm_root: Path | None
     sessions: list[Session] = field(default_factory=list)
+    store: Path | None = None  # the folder of reader-store.sqlite when the config names one (else PMOS_READER_STORE_DIR, else the default)
     source: str = "defaults"
     error: str | None = None
 
@@ -97,7 +102,7 @@ def registered_secondmates(home: Path) -> list[tuple[str, Path]]:
 
 def default_sessions() -> list[Session]:
     main = main_home()
-    sessions = [Session(BIG_BOSS[0], BIG_BOSS[1], main, BIG_BOSS[2], kind="big-boss")]
+    sessions = [Session(BIG_BOSS[0], BIG_BOSS[1], main, BIG_BOSS[2], kind="big-boss", cwds=[main, Path.home() / "workspace" / "pmos"])]
     for name, home in registered_secondmates(main):
         if name in KNOWN_LEADERS:
             sid, label, lifecycle = KNOWN_LEADERS[name]
@@ -124,6 +129,11 @@ def load(path: Path | None = None) -> Registry:
             if not isinstance(root, str) or not (Path(root).expanduser() / "bin" / "fm-fleet-snapshot.sh").is_file():
                 raise ValueError("fm_root has no bin/fm-fleet-snapshot.sh")
             registry.fm_root = Path(root).expanduser()
+        store = config.get("store")
+        if store is not None:
+            if not isinstance(store, str):
+                raise ValueError("store must be a folder path")
+            registry.store = Path(store).expanduser()
         listed = config.get("sessions")
         if listed is not None:
             if not isinstance(listed, list) or not listed:
@@ -135,8 +145,12 @@ def load(path: Path | None = None) -> Registry:
                     raise ValueError("each session needs a unique id and a home")
                 seen.add(sid)
                 own_root = entry.get("root")
+                cwds = entry.get("cwds")
+                if cwds is not None and (not isinstance(cwds, list) or not all(isinstance(c, str) for c in cwds)):
+                    raise ValueError("cwds must be a list of folder paths")
                 sessions.append(Session(sid, str(entry.get("label") or sid)[:60], Path(home).expanduser(), str(entry.get("lifecycle") or "software"),
-                                        Path(own_root).expanduser() if isinstance(own_root, str) else None, kind=str(entry.get("kind") or "leader")))
+                                        Path(own_root).expanduser() if isinstance(own_root, str) else None, kind=str(entry.get("kind") or "leader"),
+                                        cwds=[str(Path(c).expanduser()) for c in cwds or []]))
             registry.sessions = sessions
         registry.source = str(path)
     except (ValueError, AttributeError, TypeError) as error:

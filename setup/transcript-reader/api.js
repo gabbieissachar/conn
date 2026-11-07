@@ -48,6 +48,8 @@
 //   GET  /api/transcript-reader/board?session=<id>  the Tasks board of one session (board.js; board/README.md), as JSON; 404 unless the reader is
 //                                                   started with PMOS_READER_BOARD=1, and never served on the tailnet listener
 //   GET  /api/transcript-reader/board-sessions      the sessions that have a board (same flag, same limits)
+//   POST /api/transcript-reader/board-{mark,answer,worker}  the board's writes (board.js): a reply mark and an answer, each behind a flag of its own, and a worker's
+//                                                   on/off switch; GET /setup/transcript-reader/board/ is its page (loopback only)
 //   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once, lists every live
 //                                                   Claude pane's session that is not listed (unless a person closed
 //                                                   or removed it) and rebuilds the pages from the session logs and
@@ -214,6 +216,7 @@ const STATIC_TYPES = {
   'icon-180.png': 'image/png', 'icon-512.png': 'image/png',
 };
 const TOKEN_HEADER = 'x-transcript-reader-token';
+const BOARD_PAGE = '/setup/transcript-reader/board/';
 const HTML_ROUTE = API + 'html/';
 const HTML_FILES = 'html-files.json';  // beside the page: id -> path (build_prototype.write_page)
 const IMAGE_FILES = 'image-files.json';  // the same for the images the page offers
@@ -1719,6 +1722,24 @@ function create({
     });
   }
 
+  function serveBoardPage(req, res) {
+    const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
+    const verdict = guardFor(req).check(req, { requireToken: false });
+    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (req.method !== 'GET') { text(405, 'GET only'); return; }
+    // Only a browser tab opening the page gets the token, as for every page of the reader.
+    const mode = req.headers['sec-fetch-mode'];
+    const dest = req.headers['sec-fetch-dest'];
+    if ((mode !== undefined && mode !== 'navigate') || (dest !== undefined && dest !== 'document')) { text(403, 'Open this page in its own browser tab.'); return; }
+    let html;
+    try { html = board.page(); } catch { text(404, 'The Tasks page is not in this copy.'); return; }
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin', [COPY_HEADER]: copy,
+    });
+    res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
+  }
+
   // The service worker, manifest and icons beside a copy's shell pages: not secret, but behind the same Host, Origin and (on the tailnet) sign-in checks.
   function serveStatic(req, res, folder, name) {
     const verdict = guardFor(req).check(req, { requireToken: false });
@@ -1805,17 +1826,27 @@ function create({
       send(res, 200, { status: 'ok', outputs: kept });
       return;
     }
-    // The Tasks board (a flag, off by default; loopback only: the phone's copy is a separate decision, with its own sealing).
-    if ((pathname === API + 'board' || pathname === API + 'board-sessions') && req.method === 'GET' && board.enabled && !guards.has(req)) {
-      if (pathname === API + 'board-sessions') { send(res, 200, { status: 'ok', ...(await board.sessions()) }); return; }
-      try {
-        const answer = await board.board(query.get('session'), { fresh: query.get('fresh') === '1' });
-        send(res, 200, { status: 'ok', ...answer });
-      } catch (error) {
-        if (error && error.status) { fail(res, error.status, error.code, error.message); return; }
-        throw error;
+    // The Tasks board (a flag, off by default; loopback only: the phone's copy is a separate decision, with its own sealing). Its two writes have a flag
+    // each (board.js): a mark on a task's record, and an answer to a call.
+    if (pathname.startsWith(API + 'board') && board.enabled && !guards.has(req)) {
+      const boardFail = (error) => { if (error && error.status) { fail(res, error.status, error.code, error.message); return true; } return false; };
+      if (pathname === API + 'board-sessions' && req.method === 'GET') {
+        send(res, 200, { status: 'ok', ...(await board.sessions()), write: board.write });
+        return;
       }
-      return;
+      if (pathname === API + 'board' && req.method === 'GET') {
+        try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: board.write }); } catch (error) { if (!boardFail(error)) throw error; }
+        return;
+      }
+      if (req.method === 'POST' && (pathname === API + 'board-mark' || pathname === API + 'board-answer' || pathname === API + 'board-worker')) {
+        const body = await readJsonBody(req);
+        try {
+          if (pathname === API + 'board-worker') send(res, 200, { status: 'ok', ...(await board.workerSwitch(body)) });
+          else if (pathname === API + 'board-mark') send(res, 200, { status: 'ok', ...(await board.mark(body.session, { task: body.task, turn: body.turn, mark: body.mark, source: 'card' })) });
+          else send(res, 200, { status: 'ok', ...(await board.answer(body.session, { task: body.task, call: body.call, src: body.src, option: body.option, text: body.text, later: body.later, calls: body.calls, release: body.release })) });
+        } catch (error) { if (!boardFail(error)) throw error; }
+        return;
+      }
     }
     if (pathname === API + 'pins' && req.method === 'GET') {
       send(res, 200, { status: 'ok', ...pins.read() });
@@ -1911,6 +1942,8 @@ function create({
       res.end('Bad request');
       return true;
     }
+    // The Tasks page (board/page/): a built-in page of the reader's own, opened in a browser tab like the others; off with the board flag, never on the tailnet.
+    if (board.enabled && listener === 'loopback' && (url.pathname === BOARD_PAGE || url.pathname === BOARD_PAGE + 'index.html')) { serveBoardPage(req, res); return true; }
     const page = insideOut(req, url);
     const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
     if (listener === 'tailnet' || listener === 'tailnet-https') {

@@ -10,14 +10,17 @@ from __future__ import annotations
 import time
 from collections import Counter
 
-from . import lifecycles
+from . import lifecycles, workers
 from .collect import CollectError, Collector
 from .items import build_item, local_date
+from .transcripts import StoreUnavailable
 
 SCHEMA = "task-board.v1"
 
 
-def build_board(session, collector: Collector, now: float | None = None) -> dict:
+def build_board(session, collector: Collector, now: float | None = None, threads=None) -> dict:
+    """`threads(session, items, now)` (optional) returns the reply-thread data for the finished items (threads.build), or raises
+    `transcripts.StoreUnavailable`; the board keeps its cards either way and says in `threads.status` what happened."""
     now = collector.now() if now is None and hasattr(collector, "now") else (now or time.time())
     today = local_date(now)
     lifecycle, config = lifecycles.resolve_lifecycle(session.lifecycle, session.home)
@@ -56,7 +59,12 @@ def build_board(session, collector: Collector, now: float | None = None) -> dict
             continue
         if item:
             items.append(item)
+    if session.kind == "worker":
+        items = [i for i in items if workers.related(i, session.task)]
+    else:
+        workers.note_drivers(session.id, snapshot)
     items.sort(key=lambda i: (-(i["activity"] or 0), i["ref"]))
+    board["threads"] = _attach_threads(session, items, threads, now, errors)
     counts = Counter(i["col"] for i in items)
     board["items"], board["counts"] = items, dict(counts)
     board["columns"] = _columns(lifecycle, counts)
@@ -73,3 +81,28 @@ def _columns(lifecycle: dict, counts: Counter) -> list[dict]:
             continue
         out.append({**column, "count": counts.get(column["id"], 0)})
     return out
+
+
+EMPTY_THREAD = {"thread": [], "thread_n": 0, "thread_you": 0, "thread_cut": 0, "marks": {}}
+
+
+def _attach_threads(session, items: list[dict], threads, now: float, errors: list) -> dict:
+    """Put each card's reply thread, each call's asking reply and the two upkeep rows on the board; return the summary stored as board["threads"]."""
+    for item in items:
+        item.update(EMPTY_THREAD)
+        for call in item["calls"]:
+            call["asked"] = None
+    if threads is None:
+        return {"status": "off", "message": "reply threads are not built for this board"}
+    try:
+        data = threads(session, items, now)
+    except StoreUnavailable as error:
+        return {"status": "unavailable", "message": str(error)}
+    except Exception as error:  # a thread problem must not take the cards down
+        errors.append(f"reply threads could not be built ({error.__class__.__name__})")
+        return {"status": "error", "message": "reply threads could not be built"}
+    for item in items:
+        item.update(data["tasks"].get(item["ref"], {}))
+        for call in item["calls"]:
+            call["asked"] = (data["asked"].get(item["ref"]) or {}).get(call["id"])
+    return {key: data[key] for key in ("status", "asof", "sessions", "replies", "yours", "upkeep", "notask", "stats")}
