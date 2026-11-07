@@ -158,6 +158,7 @@ OPERATIONAL = re.compile(r"operational input waiting: read '(/[^']+?\.msg)'")
 OP_PREFIX = re.compile(r"^[\s\u2063]*FIRSTMATE_OP:\s*v\d+\s+[\w-]+:\s*")
 INBOX_NAME = re.compile(r"in your '((?:[^']|'\\'')+)' steering inbox")
 WAKE_LINE = re.compile(r"firstmate watcher wake[^\n]*\n\s*([a-z-]+)(?::\s*([^\n]*))?")
+HOOK_FEEDBACK = re.compile(r"Stop hook (?:feedback|blocking error)\b")
 BACKGROUND = re.compile(r'Background (?:command|shell command) "([^"]*)"\s*(completed|failed|was stopped)?')
 LOCAL_COMMAND = re.compile(r"<command-name>(/[\w:-]+)</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -228,6 +229,10 @@ def classify_input(text: str, origin_kind: str | None, is_meta: bool) -> tuple[s
     command = LOCAL_COMMAND.search(stripped)
     if command and origin_kind is None:
         return "session", "command", f"You ran {command.group(1)}"
+    if is_meta and HOOK_FEEDBACK.match(stripped):
+        # The turn-end guard refused to let the turn end and the agent goes on: a turn of its own,
+        # so the reply before it stays the answer to the message it answered, whatever follows.
+        return "wake", "hook", "Turn-end check"
     if stripped.startswith("<local-command-stdout>") or is_meta:
         return "session", "command-output", "Command output"
     if DOORBELL.search(stripped):
@@ -377,6 +382,9 @@ def turn_id(record: dict, text: str) -> str:
     return "t" + hashlib.sha1(f"{record.get('timestamp')}|{text[:200]}".encode("utf-8")).hexdigest()[:24]
 
 
+ANSWER_WORDS = 15  # a wake-up turn's reply this long, right after your own message, is an answer, not chatter
+
+
 def new_exchange(source, kind, label, text, timestamp, absorbed=False, uid=None):
     return {
         "source": source, "kind": kind, "label": label, "input": text,
@@ -460,7 +468,15 @@ def session_exchanges(records: list[dict]) -> list[dict]:
     # a wake-up's turn): both stay open so the reader shows what the session is doing now.
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
         exchanges[-1]["folded"] = False
-    latest = next((e for e in reversed(exchanges) if e["reply"]), None)
+    # A reply that follows your own message stays out of the wake-up folds, whatever wake-up turn
+    # carries it: you typed or ran something, the turn that answered it came as a wake-up.
+    for previous, exchange in zip(exchanges, exchanges[1:]):
+        if (exchange["folded"] and exchange["reply_words"] >= ANSWER_WORDS and not previous["reply"]
+                and (previous["source"] == "captain" or (previous["source"], previous["kind"]) == ("session", "command"))):
+            exchange["folded"] = False
+    # The turn-end guard's own reply is never where the session stands.
+    latest = next((e for e in reversed(exchanges) if e["reply"] and e["kind"] != "hook"), None) \
+        or next((e for e in reversed(exchanges) if e["reply"]), None)
     if latest:
         latest["folded"] = False
     return exchanges

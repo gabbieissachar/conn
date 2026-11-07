@@ -506,6 +506,89 @@ class ToolStepsTest(unittest.TestCase):
         self.assertEqual(builder.PARSE_RULES, __import__("hashlib").sha256(Path(builder.__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()).hexdigest()[:16])
 
 
+HOOK_TEXT = "Stop hook feedback:\n[exec ./guard.sh --claude]: TURN WOULD END BLIND - SUPERVISION IS OFF\n2 task(s) in flight, but no live watcher holds this home lock."
+REAL_REPLY = ("Nathan, the new build is running with the asks on the agent rows. The sign-in worked and the findings are in the report. "
+              "Two decisions need your call: keep the old filter, and pick the card order for the review page.")
+
+
+STATUS_REPORT = "The test run finished and every check passed. The build is on the branch, the logs are saved, and the next scheduled check is in an hour."
+
+
+def hook_feedback(second):
+    return user(HOOK_TEXT, second, isMeta=True)
+
+
+class RealReplyBeforeTurnEndGuardTest(unittest.TestCase):
+    """R9: a real reply to your message was shown as working notes because the turn-end guard sent the agent back for another step."""
+
+    def records(self):
+        # Shaped like session f0af55c5: a message sent mid-turn, a long reply, then the guard's feedback, one more tool call and a one-line sign-off.
+        return [user("Start the build", 0), tool(1),
+                queued("Make the asks readable", 2, origin={"kind": "human"}), tool(3), tool_result(4),
+                say(REAL_REPLY, 5), hook_feedback(6), tool(7), tool_result(8), say("Nathan, shipshape.", 9)]
+
+    def test_the_reply_before_the_guard_is_the_answer_to_the_message_it_answered(self):
+        exchanges = builder.session_exchanges(self.records())
+        message = exchanges[1]
+        self.assertEqual((message["source"], message["absorbed"]), ("captain", True))
+        self.assertEqual(message["reply"], REAL_REPLY)
+        self.assertEqual(message["narration"], [])
+        self.assertFalse(message["folded"])
+
+    def test_the_guard_turn_is_a_folded_turn_end_check_with_its_own_reply(self):
+        *_, check = builder.session_exchanges(self.records())
+        self.assertEqual((check["source"], check["kind"], check["label"]), ("wake", "hook", "Turn-end check"))
+        self.assertEqual(check["reply"], "Nathan, shipshape.")
+        self.assertEqual(check["verdict"], "no-action")
+
+    def test_the_sign_off_never_takes_the_place_of_where_the_session_stands(self):
+        message, check = builder.session_exchanges(self.records())[1:]
+        self.assertFalse(message["folded"])
+        self.assertTrue(check["folded"], "the guard turn's one-line sign-off stays folded even as the newest turn")
+
+    def test_a_guard_turn_that_asks_something_stays_open(self):
+        records = self.records()[:-1] + [say("Nathan, should I restart the watcher now?", 9)]
+        *_, check = builder.session_exchanges(records)
+        self.assertEqual(check["verdict"], "needs-you")
+        self.assertFalse(check["folded"])
+
+    def test_the_guard_inside_the_turn_of_a_plain_message_splits_the_same_way(self):
+        exchanges = builder.session_exchanges([user("Hello", 0), say(REAL_REPLY, 1), hook_feedback(2), say("Nathan, shipshape.", 3)])
+        self.assertEqual([e["source"] for e in exchanges], ["captain", "wake"])
+        self.assertEqual(exchanges[0]["reply"], REAL_REPLY)
+
+    def test_a_blocking_error_wrapped_as_a_task_notification_is_still_a_folded_check(self):
+        origin = {"kind": "task-notification", "producer": "session-task"}
+        records = [user("Hello", 0), say(REAL_REPLY, 1),
+                   user("<task-notification><summary>Stop hook feedback</summary></task-notification>", 2, origin=origin),
+                   say("Nathan, shipshape.", 3), user("Next", 4), say("Right.", 5)]
+        exchanges = builder.session_exchanges(records)
+        self.assertEqual((exchanges[1]["source"], exchanges[1]["folded"]), ("wake", True))
+        self.assertEqual(exchanges[0]["reply"], REAL_REPLY)
+
+    def test_a_wake_turn_reply_that_follows_your_own_message_is_not_folded(self):
+        origin = {"kind": "task-notification", "producer": "session-task"}
+        wake = user("<task-notification><summary>Stop hook feedback</summary></task-notification>", 3, origin=origin)
+        for earlier in (user("Did the sign-in work?", 0), user("<command-name>/mcp</command-name><command-args></command-args>", 0)):
+            with self.subTest(earlier=earlier["message"]["content"][:20]):
+                exchanges = builder.session_exchanges([earlier, wake, say(STATUS_REPORT, 4), user("Thanks, and the filter?", 5), say("Kept.", 6)])
+                reply_turn = exchanges[1]
+                self.assertEqual(reply_turn["source"], "wake")
+                self.assertFalse(reply_turn["folded"])
+
+    def test_a_short_wake_turn_reply_after_your_message_still_folds(self):
+        origin = {"kind": "task-notification", "producer": "session-task"}
+        wake = user("<task-notification><summary>Stop hook feedback</summary></task-notification>", 3, origin=origin)
+        exchanges = builder.session_exchanges([user("Hello", 0), wake, say("Nathan, shipshape.", 4), user("Next", 5), say("Right.", 6)])
+        self.assertTrue(exchanges[1]["folded"])
+
+    def test_a_wake_turn_after_a_reply_that_was_given_folds_as_before(self):
+        origin = {"kind": "task-notification", "producer": "session-task"}
+        wake = user("<task-notification><summary>Background command \"npm test\" completed</summary></task-notification>", 3, origin=origin)
+        exchanges = builder.session_exchanges([user("Run the tests", 0), say("Started.", 1), wake, say(STATUS_REPORT, 4), user("Next", 5), say("Right.", 6)])
+        self.assertTrue(exchanges[1]["folded"], "the message already has its answer, so the wake-up's report is the wake-up's own")
+
+
 class TurnIdTest(unittest.TestCase):
     """A pin names its message by the turn's id, so the id must be the log's own record id, and must not move when turns are added before it."""
 
