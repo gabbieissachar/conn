@@ -46,6 +46,8 @@ final class AppModel: ObservableObject {
     let stars: StarredSessions
     /// The reader's open asks, shown on the agent rows (read from the reader's open-asks endpoint; see OpenAskStore).
     let openAsks: OpenAskStore
+    /// Agents at a Claude permission prompt that Herdr did not call blocked (read from their screens; see PermissionPromptWatch).
+    let promptWatch: PermissionPromptWatch
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind
@@ -219,6 +221,7 @@ final class AppModel: ObservableObject {
         stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile,
                                 store: StarOrderStore(defaults: AppModel.defaults, key: config.fixture ? "conn.readerStarOrder.fixture" : "conn.readerStarOrder"))
         stars.start()
+        promptWatch = PermissionPromptWatch(client: HerdrClient(endpoint: endpoint))
         openAsks = AppModel.makeOpenAskStore(config: config, env: env, web: web, fixtureDir: fixtureDir, herdrSession: endpoint.session)
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
@@ -247,6 +250,14 @@ final class AppModel: ObservableObject {
         editor.showExplorer = { [weak self] in if self?.explorerVisible == false { self?.explorerVisible = true } }
         store.start()
         openAsks.start { [weak self] in self.map { $0.windowVisible && $0.attentive } ?? false }
+        // The screens of working and idle Claude agents are read for a permission prompt Herdr did not report (CONN_PROMPT_WATCH=off stops it).
+        if env["CONN_PROMPT_WATCH"] != "off" {
+            promptWatch.start(snapshot: { [weak self] in self?.store.snapshot ?? .empty }, active: { [weak self] in self.map { $0.windowVisible && $0.attentive } ?? false })
+        }
+        promptWatch.$panes.dropFirst().sink { [weak self] _ in
+            self?.objectWillChange.send()
+            DispatchQueue.main.async { self?.refreshDockBadge() }
+        }.store(in: &cancellables)
         wireWatchAsks()
         openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
@@ -266,7 +277,16 @@ final class AppModel: ObservableObject {
         DispatchQueue.main.async { self.snapshotChanged() }
     }
 
-    var snapshot: Snapshot { store.snapshot }
+    /// Herdr's snapshot, with the agents at a permission prompt that Herdr did not call blocked shown as needing you.
+    var snapshot: Snapshot {
+        let base = store.snapshot, panes = promptWatch.panes
+        if panes.isEmpty { return base }
+        if let c = promptOverlay, c.panes == panes, c.base == base { return c.shown }
+        let shown = base.showingPermissionPrompts(on: panes)
+        promptOverlay = (base, panes, shown)
+        return shown
+    }
+    private var promptOverlay: (base: Snapshot, panes: Set<String>, shown: Snapshot)?
     var selectedAgent: Agent? { snapshot.agent(selectedPaneID) }
     var compareAgent: Agent? { snapshot.agent(comparePaneID) }
     var waiting: [Agent] { snapshot.prioritized.filter { $0.state.waitsOnCaptain } }
@@ -368,6 +388,10 @@ final class AppModel: ObservableObject {
         syncSessions()
         followHerdrClientFocus()
         readerTargetMayHaveChanged()
+        refreshDockBadge()
+    }
+
+    private func refreshDockBadge() {
         let n = waiting.count
         NSApplication.shared.dockTile.badgeLabel = n > 0 ? "\(n)" : ""
     }
@@ -910,6 +934,6 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
-        store.stop(); primary.stop(); secondary.stop(); fallback.stop()
+        store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()
     }
 }

@@ -6,7 +6,7 @@
 //   JSON API on <dir>/<session>/herdr.sock: ping, session.snapshot, events.subscribe, pane.read, pane.send_input
 //   pane stream on <dir>/<session>/stream.sock, relayed by `FakeHerdr cli ... terminal session observe`
 //   `FakeHerdr cli --session S status --json`
-// Test-only control calls start with "fake.": set_state, add_pane, set_session, set_protocol, mark, dump, stall.
+// Test-only control calls start with "fake.": set_state, add_pane, set_session, set_screen, set_protocol, mark, dump, stall.
 import Foundation
 import ConnCore
 
@@ -39,6 +39,8 @@ public final class FakeHerdrServer: @unchecked Sendable {
         /// `.none` leaves the field out, as real Herdr does until an integration reports a session for the pane (`fake.add_pane`).
         enum Session { case numbered, none, value(String) }
         var session: Session = .numbered
+        /// A screen set by `fake.set_screen` stays as it is (a real agent at a prompt prints nothing); the working ticker skips it.
+        var frozen = false
         init(id: String, workspace: String, tab: String, label: String, state: AgentState, rows: Int) {
             self.id = id; self.workspace = workspace; self.tab = tab; self.label = label; self.state = state
             lines = Array(repeating: "", count: rows)
@@ -132,7 +134,7 @@ public final class FakeHerdrServer: @unchecked Sendable {
             Thread.sleep(forTimeInterval: dt)
             lock.lock()
             tickCount += 1
-            for p in panes where p.state == .working {
+            for p in panes where p.state == .working && !p.frozen {
                 carry[p.id, default: 0] += config.workingRate * dt
                 while carry[p.id, default: 0] >= 1 {
                     carry[p.id]! -= 1
@@ -275,6 +277,16 @@ public final class FakeHerdrServer: @unchecked Sendable {
                 Self.paint(p, cols: config.cols)
                 lock.lock(); panes.append(p); lock.unlock()
                 broadcastEvent("pane.created", ["pane_id": id])
+                reply(["result": ["type": "ok"]])
+            case "fake.set_screen":
+                // What the pane shows, from the top (the rest is blank): a test puts a permission prompt on a working pane. Herdr's own state is untouched.
+                guard let p = pane(params["pane_id"] as? String), let rows = params["lines"] as? [String] else { fail("bad_params", "pane_id, lines"); continue }
+                lock.lock()
+                p.lines = Array((rows + Array(repeating: "", count: config.rows)).prefix(config.rows))
+                p.revision += 1
+                p.frozen = (params["freeze"] as? Bool) ?? true
+                lock.unlock()
+                lock.broadcast()
                 reply(["result": ["type": "ok"]])
             case "fake.set_session":
                 guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }

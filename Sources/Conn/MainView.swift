@@ -74,7 +74,7 @@ struct AgentsSection: View {
                                     Text(a.name).font(.system(size: 13, weight: .medium)).lineLimit(2).truncationMode(.tail)
                                         .help(app.privacy ? "Agent name" : a.name)
                                         .redacted(reason: app.privacy ? .placeholder : [])
-                                    Text("\(a.harness) · \(a.state.label)").font(.system(size: 11))
+                                    Text("\(a.harness) · \(app.promptWatch.panes.contains(a.id) ? "permission prompt" : a.state.label)").font(.system(size: 11))
                                         .foregroundStyle(a.state.waitsOnCaptain ? a.state.color : Color.secondary)
                                     if let ask = shown[a.id] { AskBlock(ask: ask, privacy: app.privacy, read: asks.isRead(ask)) }
                                 }
