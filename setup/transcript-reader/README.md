@@ -315,6 +315,7 @@ The page needs a server started after this change (`serve.sh restart`: the route
 | `out/live/s/<id>.json` | One conversation, exactly its entry in the reader page's payload (the same bytes) less `pane` and `reopened`, plus `documents`: the files it lists, by id in id order, each as the page lists it without its `text` (`{ id, name, path, dir, mention, mtime, lazy: true }` for a markdown file, `{ ..., kind: "html" or "image", size }` for the others). The files are the ones its messages and replies name and, for a leader's conversation, every file of its home's task folders (a document whose folder is under `<home>/data/`, which is what the page's By task view lists). |
 | `out/live/md-files.json` | id to path of those markdown files, which `md-open` reads as they are on disk when one is opened (never served). |
 | `out/live/sheet.html` | The lite answer sheet: the sheet's page in mode `live`, no transcript in it. |
+| `out/live/embed.html` | The embed page (below): the reader page's code in mode `embed`, for a host web view that hands it one conversation. No transcript, no token. |
 | `out/live/a/<id>.json` | One conversation's answer sheet: `{ "questionnaires": [...] }`, exactly what the hosted copy's `a/<id>.json` holds (each questionnaire with its cards, the reply it came from, and the keyed answers you sent after it). Written only for a conversation whose reply asks for keyed answers, and only when its stamp changed. |
 | `out/glance.json` | The glance feed, below. |
 
@@ -399,6 +400,94 @@ The glance feed as a route, for a client that lists the asks against its own row
 The route is behind the same guard as every `/api/transcript-reader/` route (loopback Host and Origin, Fetch-Metadata, the per-start token in `x-transcript-reader-token`) and sends no CORS header; nothing is relaxed for it. It answers 404 `not_built` before the first build has written the feed or when the feed is in a format this server does not know. A client that polls it counts as an open page: the logs are watched while it polls, so an ask that is answered goes from the answer within about two seconds, and nothing is rebuilt when nobody asks. Herdr not answering gives an empty `asks` (no pane can be named). Only conversations on the reading list have an ask here: a live pane the list lacks is listed by **Sync** or by following it, as for the page.
 
 An ask is opened in the lite page at `out/live/index.html#s=<session>&m=<message>`. The reply is scrolled to just under the header and outlined once (the 2.8-second outline fades; nothing stays lit), from a fresh load and in place, on the lite page as on the full one (`e2e/message-link-check.js` checks both, `lite.test.js` the page's rules, `api.test.js` the route).
+
+## The embed page
+
+For drawing a conversation that is **not** one of the reader's (Conn draws ShopBack Campus conversations, a hosted opencode workspace, in its Reader and Watch columns), a host web view (Conn's `WKWebView`) can load the reader's own transcript page and hand it the conversation's turns as JSON. The turns are drawn by the code that draws a Claude or Codex conversation (`inputBlock` and `replyCard`, with the same markdown, tables, code boxes, "N steps" rows, step sheet and styles), so markdown shows as markdown, not as `##` and `**`, and a Campus conversation looks exactly like the others. The page asks nothing of Campus or of any server and keeps nothing: Campus data arrives only through the entry point below.
+
+```
+http://localhost:8768/setup/transcript-reader/out/live/embed.html      (served: opened by a navigation, never framed)
+file://<repo>/setup/transcript-reader/out/live/embed.html               (or loaded as a file; WKWebView needs read access to its folder)
+```
+
+It is the page's fourth mode (`embed`, after `local`, `hosted` and `live`; `prototype/template.html`). It holds no transcript and no token, so the file is the same bytes for the same code and a host may also copy it. A build writes it with the lite page's files (`reader.py rebuild`, or any build; `test_live.py` pins that), and the server serves it like the other pages (`api.js`, `PAGES`). It never calls the server back, whatever address it is opened from: its content policy is `default-src 'none'; connect-src 'none'; frame-src 'none'; img-src 'none'` with its own script allowed by hash, `live.js` treats the page as not served, and every read and write of `localStorage` and `sessionStorage` in it lands in memory. There is no header, message bar, search, pins, hiding, Reply or "Ask about this": the host has its own composer and header. The page follows the web view's light or dark appearance (`prefers-color-scheme`).
+
+### The entry point: `window.readerEmbed`
+
+Installed while the page loads, so it exists when the web view's `didFinish` fires. `set` and `upsert` take an object or its JSON text and return `{ "ok": true, "blocks": <count now held>, "skipped": <blocks it could not use> }`.
+
+| Call | Does |
+|---|---|
+| `readerEmbed.set(conversation)` | **Replace** the whole conversation: `{ "id"?, "live"?, "blocks": [...] }`. Idempotent and cheap to call on every change: the page keeps the nodes of every block whose content is unchanged, draws a changed block again where it stands, adds a new one and removes a gone one, so a streaming reply is one card that grows and nothing above it is touched or loses its selection. A `set` with a different `id` starts the page over; the same `id` (or none) goes on where it was. A `set` without `live` takes the working line away. |
+| `readerEmbed.upsert(blocks)` | **Update or append**: `{ "blocks": [...], "live"? }` or a bare array. A block with the `id` of a held block replaces it where it stands, any other goes on the end, in the order given. `live` changes the line only when it is part of the call. Use it for one frame of the stream: send only the block that changed. |
+| `readerEmbed.live(text)` | The **working strip** at the foot: "reading table-a.csv", "thinking", "writing". `""` takes it away. |
+| `readerEmbed.clear()` | Empty the conversation and the strip (the `id` stays). |
+| `readerEmbed.plainText()` | The conversation as plain text, in the words of `CampusTimeline.plainText()` (for the host's Copy). |
+| `readerEmbed.version` | `1`. |
+
+A call with text that is not JSON throws a `SyntaxError`, which `evaluateJavaScript`'s completion handler receives; nothing else a host sends can throw. A block of an unknown kind, an empty message and a reply with nothing in it are skipped and counted in `skipped`; a field of the wrong type is read as the empty one, as `CampusJSON` reads Campus's.
+
+### The JSON
+
+The shape is `CampusTimeline.blocks()` of `helm/Sources/ConnCore/Campus/CampusTimeline.swift`, field by field, so the host's side is a copy. A conversation is blocks in reading order:
+
+```json
+{
+  "id": "ses_01H8X",
+  "live": "reading redemptions-week-44.csv",
+  "blocks": [
+    { "kind": "user", "id": "msg_u1", "at": 1762500000, "text": "Can you summarise last week's voucher redemptions?" },
+    { "kind": "reply", "id": "msg_r1", "at": 1762500042,
+      "texts": ["## Summary\n\nSingapore grew **6%**.\n\n| Market | Change |\n|---|---|\n| SG | +6% |"],
+      "tools": [
+        { "tool": "read", "argument": "/workspace/redemptions-week-44.csv", "output": "market,redeemed\nSG,1204\n", "status": "ok", "detail": "12 ms" },
+        { "tool": "bash", "argument": "python3 summarise.py", "output": "ERROR: no such file\n", "status": "failed", "detail": "0.3s" }
+      ],
+      "form": { "id": "frm_1", "status": "open", "questions": [ { "text": "Split by state?", "options": ["Yes, by state", "No"] } ] },
+      "stopped": false, "streaming": false }
+  ]
+}
+```
+
+- **`id`** (conversation, optional): names the conversation; a `set` with another one opens it fresh, at its latest turn. Without one, every call is the same conversation.
+- **Block** `kind`: `"user"` (`CampusBlock.user`) or `"reply"` (`CampusBlock.reply`; `"assistant"` is read as `"reply"`).
+  - **`id`**: the item's `CampusItem.id` (a reply block's is `CampusBlock.id`, `r-<first item id>`). **Send it, and keep it stable**: it is how `upsert` finds the block and how a redraw keeps what you opened. A block without one gets one from its kind and place, which `upsert` cannot rely on.
+  - **`at`** (optional): seconds since the epoch (milliseconds are read as such). `CampusItem` has none; when absent the card shows no time.
+  - **user**: `text` (plain text, shown as typed, with "You" and the time).
+  - **reply**: `texts` (the assistant's text parts, **markdown**, joined with a blank line as the reply; a single `text` string is read too), `tools`, `form`, `stopped`, `streaming`. The reply card has the same behavior as a Claude reply's: a reply over 90 words is clipped behind "Show full reply (N words)", and the row "N steps · edited 2 files · 1 failed" opens the list of steps. `stopped: true` adds "Stopped before it finished."; `streaming` is carried and changes nothing on screen (the strip says what the agent is doing).
+- **Tool** (`CampusItem`'s tool fields): `tool` (the name; `read`, `write`, `edit`, `bash` or `shell`, `grep`, `glob`, `list`, `webfetch`, `websearch`, `task`, `skill`, `question` get their own step kind, any other is "Tool"), `argument` (the command, the file, the pattern), `output` (the text, which the step's sheet shows: a command's last 12 lines with "Show all N lines", a failed step's too), `status` (`ok`, `failed`, `running`, `aborted`: a failed step is red and counted, a running or stopped one says so in its line), `detail` (carried, not drawn). The page does not read `reasoning`, `step` or `idle` items: send what `blocks()` sends.
+- **Form** (`CampusForm`): `id`, `status` (`open`, `answered`, `cancelled`), `answer` (the picked text, once answered), `questions` (`text`, `options`, `pick`). An **open** form is a reply that needs you: the "Needs you" chip, the yellow edge, and the questions in the yellow box with their options as pills. An answered one is quiet, with "Answered: ..." and the pick filled; a cancelled one says so. The page does not answer a form: the host's native controls do, then send the block again with `status: "answered"`.
+- **Example:** `setup/transcript-reader/embed-fixtures/campus-conversation.json` is a whole invented conversation in this shape (two turns, tools including a failed one, a table, a code block, a long reply, an open question).
+
+A stream is `set` once with the backfill, then `upsert` of the block each frame changed (and `live(text)`, or `upsert({ "blocks": [...], "live": "writing" })`, for the strip), or, simpler, `set` of the whole timeline on every frame: the page's redraw is per block, so the cost is the changed block's.
+
+### What the page does with them
+
+- **Scrolling.** The first call, and a `set` with another `id`, opens at the latest turn, placed at the top as the reader does. Later updates follow the newest content while you are at the bottom; scrolled up, your place is kept and a **New reply ↓** button offers the way down (it goes when you reach the bottom).
+- **Redraw.** Only a block whose JSON changed is drawn again. What you opened (a clipped reply, the steps list, a step) stays open across updates, keyed by the block's `id`.
+- **Links.** A web address in a reply never takes the view away. If the host listens, it is told (below); otherwise a new window opens it. Only `http(s)` addresses are links (raw HTML in markdown is off and no image is fetched), as in the reader.
+- **Code boxes** keep their Copy button. Selecting text does **not** copy it (the reader's Copy on select is off here).
+
+### What the host hears
+
+If the web view has a script message handler named `readerEmbed` (`WKUserContentController.add(_:name:)`), the page posts to it (`window.webkit.messageHandlers.readerEmbed`):
+
+| Message | When |
+|---|---|
+| `{ "type": "ready", "version": 1 }` | once, when the entry point is installed |
+| `{ "type": "link", "url": "https://..." }` | an `http(s)` link was clicked; the page did not navigate, the host opens it |
+
+A host that does not listen needs nothing: the entry point is there when `didFinish` fires, and links open in a new window.
+
+```swift
+// the host's half, in outline
+webView.loadFileURL(embedURL, allowingReadAccessTo: embedURL.deletingLastPathComponent())   // or load the served address
+// after didFinish, for every change of the conversation:
+let json = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8)!
+webView.evaluateJavaScript("window.readerEmbed.set(\(json))")   // a JSON object literal is a JavaScript object
+```
+
+Checked in a real browser by `e2e/embed-check.js` (below); the page's rules are `embed.test.js`, the build's `test_live.py`, the route's `lite.test.js`.
 
 ## The hosted copy
 
@@ -518,6 +607,12 @@ The server compresses its text and JSON answers (`compress.js`: brotli or gzip, 
 ```bash
 python3 -m unittest setup/transcript-reader/test_questionnaire.py setup/transcript-reader/test_message_link.py setup/transcript-reader/test_reader.py setup/transcript-reader/test_parser.py setup/transcript-reader/test_copilot.py setup/transcript-reader/test_claude_homes.py setup/transcript-reader/test_sync.py setup/transcript-reader/test_resident.py setup/transcript-reader/test_cache.py setup/transcript-reader/test_inline_html.py setup/transcript-reader/test_redact.py setup/transcript-reader/test_live.py
 node --test setup/transcript-reader/*.test.js
+```
+
+The embed page, in a real browser (by hand: it needs chrome-devtools-axi and Chrome, headless). It builds the page into a scratch folder, opens it as a file and over a spare port of its own, and checks what the README says: the fixture drawn as the reader draws a conversation, no request made and nothing stored, `upsert` redrawing only the block that changed, the strip and "New reply", the step sheet with the output the host sent, a link handed to the host, and a second conversation replacing the first:
+
+```bash
+node setup/transcript-reader/e2e/embed-check.js <scratch folder> [screenshots folder]
 ```
 
 The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change, then the same landing on the lite page (`out/live/index.html`: a reply scrolled to just under the header and outlined once, from a fresh load and in place):

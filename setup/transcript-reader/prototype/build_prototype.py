@@ -67,6 +67,7 @@ STEPS_SCRIPT = HERE / "steps.js"
 DOCFILES_SCRIPT = HERE / "docfiles.js"
 ADDRESS_SCRIPT = HERE / "address.js"
 SESSIONREFS_SCRIPT = HERE / "sessionrefs.js"
+EMBED_SCRIPT = HERE / "embed.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
 SEAL_SCRIPT = HERE / "seal.js"
@@ -3070,7 +3071,9 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, attach.js, commentkey.js, the vendored markdown-it with markdown.js,
     steps.js, find.js, docfiles.js, address.js and sessionrefs.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__. Mode "live" (the lite page, out/live/index.html) pastes the same two: it loads one
-    conversation at a time like the hosted shell and is the served page in every other way (README, "The lite page").
+    conversation at a time like the hosted shell and is the served page in every other way (README, "The lite page"). Mode "embed" (the embed page,
+    out/live/embed.html) is the local page with an empty payload that reaches no server, keeps nothing and takes its turns from a host's JSON (README,
+    "The embed page"): its content policy allows no connection and no frame, and it carries no token.
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
@@ -3088,6 +3091,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ADDRESS__*/", ADDRESS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SESSIONREFS__*/", SESSIONREFS_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__EMBED__*/", EMBED_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode in ("hosted", "live") else "const hosted = null;")
     page = page.replace("__MODE__", mode)
@@ -3096,6 +3100,11 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     # bytes in the document (a data: address, which loads nothing and runs nothing); the answer sheet shows none.
     reader_page = template.name == TEMPLATE.name
     csp = "worker-src 'self'; manifest-src 'self'; img-src 'self'" + (" data:" if reader_page else "") + "; " if mode == "hosted" else "img-src 'self'; " if reader_page else ""
+    if mode == "embed":
+        # A host's web view hands this page its data and nothing else may come or go: no connection, no frame, no image, no token to find.
+        csp = "img-src 'none'; "
+        page = page.replace("connect-src 'self'", "connect-src 'none'").replace("frame-src 'self'", "frame-src 'none'")
+        page = page.replace('<meta name="reader-token" content="__READER_TOKEN__">\n', "")
     page = page.replace("__CSP_HOSTED__", csp)
     page = page.replace("__HEAD_HOSTED__", HOSTED_HEAD if mode == "hosted" else "")
     if page.count("__PAYLOAD__") != 1:
@@ -3141,6 +3150,9 @@ def write_step_outputs(sessions: list[dict], folder: Path) -> None:
 #   live/md-files.json  id -> path of those markdown files, which md-open (api.js) reads as they are on disk when one is opened
 #   live/sheet.html   the answer sheet of the lite page: questionnaire.html in mode "live" (one conversation's sheet at a time, sends straight
 #                     to the pane); the page's "Answer sheet" links open it in the same window, and it links back
+#   live/embed.html   the embed page: the reader page's own code in mode "embed", which a host's web view (Conn's, for a Campus conversation)
+#                     loads and feeds with one conversation's turns as JSON through window.readerEmbed (README, "The embed page"). It holds no
+#                     transcript and reaches no server, so it is the same bytes for the same code
 #   live/a/<id>.json  one conversation's answer sheet (its questionnaires, as the hosted copy's a/ object has them), written for the
 #                     conversations that have one; the index lists them under `sheets`
 #   glance.json       one small record for each listed conversation (id, pane, last turn, how many asks are open and the first lines of the
@@ -3317,6 +3329,19 @@ def live_sheet_shell() -> tuple[str, str]:
     return _SHEET_SHELL["page"], _SHEET_SHELL["hash"]
 
 
+_EMBED_SHELL: dict = {"versions": None, "page": "", "hash": ""}
+
+
+def embed_shell() -> tuple[str, str]:
+    """The embed page (the reader page in mode "embed": no transcript, no server, no storage) and its template hash, kept the same way.
+    It holds nothing private, so it is the same bytes on every machine for the same code."""
+    versions = tuple(file_version(path) for path in (TEMPLATE, MARKDOWN_IT_SCRIPT, *sorted(HERE.glob("*.js"))))
+    if _EMBED_SHELL["versions"] != versions:
+        page, digest = fill_template(TEMPLATE, '{"sessions":[],"documents":{},"fleet":[],"homes":[],"summaries":[],"closed":[],"generated":0,"since":0,"chosen":true,"fleet_timeline":false}', "embed")
+        _EMBED_SHELL.update(versions=versions, page=page, hash=digest)
+    return _EMBED_SHELL["page"], _EMBED_SHELL["hash"]
+
+
 # Per folder, what this process last wrote there: conversation id -> stamp, the glance (as written, but for its build time), and the shell's hash.
 _LIVE_WRITTEN: dict[Path, dict] = {}
 
@@ -3325,7 +3350,7 @@ def live_memory(folder: Path) -> dict:
     """What <folder> held when this process first looked, so a restarted worker does not write every conversation again: the stamps
     in its index for the objects that are there, and its glance."""
     if folder not in _LIVE_WRITTEN:
-        memory = {"stamps": {}, "sheets": {}, "glance": None, "shell": None, "sheet_shell": None}
+        memory = {"stamps": {}, "sheets": {}, "glance": None, "shell": None, "sheet_shell": None, "embed_shell": None}
         try:
             index = json.loads((folder / LIVE_DIR / "index.json").read_text(encoding="utf-8"))
             for entry in index.get("conversations") or []:
@@ -3336,7 +3361,7 @@ def live_memory(folder: Path) -> dict:
                     memory["sheets"][sid] = sheet.get("stamp")
         except (OSError, ValueError, AttributeError):
             memory["stamps"], memory["sheets"] = {}, {}
-        for name, page in (("shell", "index.html"), ("sheet_shell", "sheet.html")):
+        for name, page in (("shell", "index.html"), ("sheet_shell", "sheet.html"), ("embed_shell", "embed.html")):
             try:
                 memory[name] = hashlib.sha1((folder / LIVE_DIR / page).read_text(encoding="utf-8").encode("utf-8")).hexdigest()
             except OSError:
@@ -3368,6 +3393,11 @@ def write_live(folder: Path, build: LiveBuild) -> int:
     if memory["sheet_shell"] != sheet_hash or not (live / "sheet.html").is_file():
         write_pieces(live / "sheet.html", [sheet_page.encode("utf-8")])
         memory["sheet_shell"] = sheet_hash
+    embed_page, _ = embed_shell()
+    embed_hash = hashlib.sha1(embed_page.encode("utf-8")).hexdigest()
+    if memory["embed_shell"] != embed_hash or not (live / "embed.html").is_file():
+        write_pieces(live / "embed.html", [embed_page.encode("utf-8")])
+        memory["embed_shell"] = embed_hash
     wrote = 0
     entries = []
     sheets = {}

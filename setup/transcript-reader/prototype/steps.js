@@ -72,10 +72,11 @@
     //   show     the conversation's output object is loaded: read it
     //   fetch    ask for it now (the laptop's page always; the sealed copy for a step inside its window)
     //   offer    older than the window: the output stays at the laptop until "Download this conversation's outputs"
-    // ctx: { loaded: the output object is in hand, sealed: this is the sealed copy, from: the window's first second }.
+    // ctx: { loaded: the output object is in hand, sealed: this is the sealed copy, from: the window's first second, inline: the output came with the turn }.
     function outputPlan(step, ctx) {
       if (step.h) return { kind: "kept", note: "Not kept: this touched a dotfile or a credential path." };
-      if (step.k === "read") return { kind: "kept", note: step.l ? `${plural(step.l, "line")} read. The text of a file the agent read is never kept.` : "The text of a file the agent read is never kept." };
+      // ctx.inline: the output came with the turn (the embed page's host sends it), so a file's text is shown as it was given.
+      if (step.k === "read" && !ctx.inline) return { kind: "kept", note: step.l ? `${plural(step.l, "line")} read. The text of a file the agent read is never kept.` : "The text of a file the agent read is never kept." };
       if (!step.l) return { kind: "none" };
       if (ctx.loaded) return { kind: "show" };
       if (!ctx.sealed || !ctx.from || (step.at || 0) >= ctx.from) return { kind: "fetch" };

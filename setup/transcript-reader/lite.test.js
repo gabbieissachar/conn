@@ -42,6 +42,7 @@ async function start({ withPage = false, watch = false } = {}) {
   const live = path.join(outDir, 'live');
   fs.writeFileSync(path.join(live, 'index.html'), shell('lite page'));
   fs.writeFileSync(path.join(live, 'sheet.html'), shell('lite sheet'));
+  fs.writeFileSync(path.join(live, 'embed.html'), '<!doctype html><head><title>embed page</title></head><body>no token slot</body>');
   fs.writeFileSync(path.join(live, 'index.json'), JSON.stringify({ as_of: 5, conversations: [{ id: A, object: `s/${A}.json`, stamp: 'x' }], sheets: { [A]: { object: `a/${A}.json`, stamp: 'y', list: [{ at: 1, open: 2, title: 'Two choices' }] } } }));
   fs.writeFileSync(path.join(live, 's', `${A}.json`), JSON.stringify({ id: A, exchanges: [{ at: 1, input: 'hello' }], documents: {} }));
   fs.writeFileSync(path.join(live, 'a', `${A}.json`), JSON.stringify({ questionnaires: [{ session: A, at: 1, title: 'Two choices', cards: [{ key: 'A1', question: 'Keep the intro?' }] }] }));
@@ -101,6 +102,27 @@ test('lite: the page opens in a tab like any page, with the token in its tag, an
     assert.equal((await t.request({ path: PAGE, headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } })).status, 403, 'a script\'s fetch gets no page, so no token');
     assert.equal((await t.request({ path: PAGE, headers: { ...NAVIGATE, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
     assert.equal((await t.request({ path: PAGE, headers: { ...NAVIGATE, Host: 'evil.example:80' } })).status, 403);
+  } finally { await t.close(); }
+});
+
+test('lite: the embed page opens in a tab like any page (a host web view navigates to it), carries no token, and never comes in a frame or a script\'s fetch', async () => {
+  const t = await start();
+  try {
+    const embed = '/setup/transcript-reader/out/live/embed.html';
+    const page = await t.open(embed);
+    assert.equal(page.status, 200);
+    assert.match(page.raw, /embed page/);
+    assert.equal(tokenIn(page.raw), undefined, 'the page holds no token slot, so none is filled in');
+    assert.equal(page.headers['content-security-policy'], "frame-ancestors 'none'");
+    assert.equal(page.headers['x-frame-options'], 'DENY');
+    assert.equal(page.headers['cache-control'], 'no-store');
+    assert.equal((await t.request({ path: embed, headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' } })).status, 403, 'framed');
+    assert.equal((await t.request({ path: embed, headers: { ...FETCH } })).status, 403, 'a script\'s fetch');
+    assert.equal((await t.request({ path: embed, headers: { ...NAVIGATE, Host: 'evil.example:80' } })).status, 403);
+    // A navigation with no Fetch-Metadata at all (a WebKit view that does not send it) is let through, as for every page.
+    assert.equal((await t.request({ path: embed })).status, 200);
+    fs.unlinkSync(path.join(t.live, 'embed.html'));
+    assert.equal((await t.open(embed)).status, 404, 'not built yet');
   } finally { await t.close(); }
 });
 
@@ -231,14 +253,14 @@ const filled = (mode) => {
   return done.stdout;
 };
 
-test('flags: one page, three modes, and two questions: does it load one conversation at a time (LAZY), and is there a laptop to ask (HOSTED)', () => {
+test('flags: one page, four modes, and two questions: does it load one conversation at a time (LAZY), and is there a laptop to ask (HOSTED)', () => {
   assert.ok(PAGE_SOURCE.includes('const MODE = "__MODE__";'));
-  assert.ok(PAGE_SOURCE.includes('const LAZY = MODE !== "local";'));
+  assert.ok(PAGE_SOURCE.includes('const LAZY = MODE === "hosted" || MODE === "live";'), 'the embed page holds its payload like the local page: it asks nothing');
   assert.ok(PAGE_SOURCE.includes('const HOSTED = MODE === "hosted";'));
-  for (const [mode, lazy, hosted] of [['local', false, false], ['hosted', true, true], ['live', true, false]]) {
+  for (const [mode, lazy, hosted] of [['local', false, false], ['hosted', true, true], ['live', true, false], ['embed', false, false]]) {
     const page = filled(mode);
     assert.ok(page.includes(`const MODE = "${mode}";`), mode);
-    const flags = vm.runInNewContext(`const MODE = "${mode}"; const LAZY = MODE !== "local"; const HOSTED = MODE === "hosted"; [LAZY, HOSTED, LAZY && !HOSTED]`);
+    const flags = vm.runInNewContext(`const MODE = "${mode}"; const LAZY = MODE === "hosted" || MODE === "live"; const HOSTED = MODE === "hosted"; [LAZY, HOSTED, LAZY && !HOSTED]`);
     assert.deepEqual([flags[0], flags[1]], [lazy, hosted], mode);
     assert.equal(page.includes('const hosted = (() => {'), lazy, mode + ': the loader is in every lazy page');
     assert.equal(page.includes('const hosted = null;'), !lazy, mode);

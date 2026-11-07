@@ -24,6 +24,11 @@
 //                                                   the lite page's answer sheet: the sheet's page in mode "live", which shows the sheet of the
 //                                                   conversation it is opened on (#q=<session>:<time> or #s=<id>), sends straight to the pane
 //                                                   as the local sheet does, and links back to the conversation; served like any page
+//   GET  /setup/transcript-reader/out/live/embed.html
+//                                                   the embed page: the reader page's code in mode "embed", which a host's web view (Conn's, for
+//                                                   a ShopBack Campus conversation) loads and feeds with one conversation's turns as JSON through
+//                                                   window.readerEmbed. It holds no transcript, carries no token, allows no connection and keeps
+//                                                   nothing; served like any page, and never calls this server back
 //   GET  /setup/transcript-reader/out/live/{index.json,s/*,a/*}
 //                                                   the objects every build writes for them (build_prototype.write_live): the index of the
 //                                                   listed conversations, one conversation's entry (s/) and one conversation's answer sheet
@@ -185,7 +190,7 @@ const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
 const API = '/api/transcript-reader/';
-const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'live/sheet.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
+const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'live/sheet.html', 'live/embed.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
 // The hosted copy's objects by their path under out/hosted/ (sync.py names them), and the sealed
 // copy's under out/bucket/. The manifest, the pane cache and the upload records are never served.
 const OBJECTS = {

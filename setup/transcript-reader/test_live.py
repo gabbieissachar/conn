@@ -82,9 +82,40 @@ class Live(Case):
     def test_a_build_writes_the_lite_page_its_index_one_object_for_each_conversation_and_the_glance(self):
         self.write(derived=[A, W, M])
         names = sorted(str(path.relative_to(self.live)) for path in self.live.rglob("*") if path.is_file())
-        self.assertEqual(names, sorted(["index.html", "index.json", "md-files.json", "sheet.html", f"a/{M}.json", *(f"s/{sid}.json" for sid in (A, W, M))]),
+        self.assertEqual(names, sorted(["embed.html", "index.html", "index.json", "md-files.json", "sheet.html", f"a/{M}.json", *(f"s/{sid}.json" for sid in (A, W, M))]),
                          "the answer sheet has an object only for the conversation whose reply asks for keyed answers")
         self.assertTrue((self.out.parent / "glance.json").is_file())
+
+    def test_the_embed_page_is_the_reader_page_in_its_embed_mode_with_no_transcript_no_token_and_no_way_out(self):
+        """A host's web view (Conn's) loads out/live/embed.html and hands it a conversation of its own: the page holds none of the reader's
+        transcripts, carries no token, and its content policy allows no connection, frame or image (README, "The embed page")."""
+        self.write(derived=[A, W, M])
+        page = (self.live / "embed.html").read_text(encoding="utf-8")
+        self.assertIn('const MODE = "embed";', page)
+        self.assertIn("const hosted = null;", page, "it asks no laptop and loads no object")
+        self.assertIn("const embedModel = (() => {", page, "embed.js is in it")
+        self.assertNotIn("Plan the login fix", page, "no transcript in it")
+        self.assertNotIn('<meta name="reader-token"', page, "no token slot for the server to fill, whatever address the page is opened from")
+        policy = re.search(r'http-equiv="Content-Security-Policy" content="([^"]*)"', page).group(1)
+        for rule in ("default-src 'none'", "connect-src 'none'", "frame-src 'none'", "img-src 'none'", "form-action 'none'"):
+            self.assertIn(rule, policy)
+        self.assertNotIn("connect-src 'self'", policy)
+        self.assertEqual(page.count('<script id="payload"'), 1)
+        payload = re.search(r'<script id="payload" type="application/json">(.*?)</script>', page, re.S).group(1)
+        self.assertEqual(json.loads(payload)["sessions"], [], "the reading list is empty: the host's conversation comes through window.readerEmbed")
+        self.assertEqual(re.search(r'<meta name="template" content="([^"]*)">', page).group(1), builder.embed_shell()[1])
+
+    def test_the_embed_page_is_written_once_and_again_only_when_the_code_changes(self):
+        self.write(derived=[A, W, M])
+        target = self.live / "embed.html"
+        before = target.stat().st_mtime_ns
+        time.sleep(0.02)
+        self.write(derived=[])
+        self.assertEqual(target.stat().st_mtime_ns, before, "a rebuild leaves it alone")
+        self.restart()
+        time.sleep(0.02)
+        self.write(derived=[A, W, M])
+        self.assertEqual(target.stat().st_mtime_ns, before, "and so does a restarted worker, which finds the same bytes on disk")
 
     def test_the_lite_page_is_the_reader_page_in_its_live_mode_and_the_index_names_its_template(self):
         self.write(derived=[A, W, M])
@@ -452,6 +483,7 @@ class Live(Case):
         self.assertIn("live/index.html", names)
         self.assertIn("live/index.json", names)
         self.assertIn("live/sheet.html", names)
+        self.assertIn("live/embed.html", names)
         self.assertEqual(sum(name.startswith("live/s/") for name in names), 3)
         self.assertEqual([name for name in names if name.startswith("live/a/")], [f"live/a/{M}.json"])
 

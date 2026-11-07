@@ -658,6 +658,29 @@ __HEAD_HOSTED__
   ::highlight(find-hit) { background-color: #ffe066; color: #1d2433; }
   ::highlight(find-current) { background-color: #ff9632; color: #1d2433; }
   @media (prefers-color-scheme: dark) { ::highlight(find-hit) { background-color: #6b5a12; color: #ffffff; } ::highlight(find-current) { background-color: #c2641a; color: #ffffff; } }
+  /* A question a Campus agent waits on (the embed page): the yellow box a reply's asks have, each question with its choices as small pills;
+     answered or cancelled, the box goes quiet and the pick is filled. */
+  .cform .cardq + .cardq { margin-top: 8px; }
+  .copts { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 4px; }
+  .copt { border: 1px solid var(--ask-line); border-radius: 99px; padding: 0 9px; font-size: 13px; color: var(--ask); background: var(--paper); overflow-wrap: anywhere; }
+  .copt.picked { background: var(--ask-line); color: var(--paper); font-weight: 600; }
+  .cform.done { background: var(--code); }
+  .cform.done .copt { border-color: var(--line); color: var(--muted); }
+  .cform.done .copt.picked { background: var(--muted); border-color: var(--muted); color: var(--paper); }
+  /* The embed page (template mode "embed", README.md "The embed page"): a host's web view that draws one conversation, so the reader's header,
+     message bar, search and floating buttons are not there. A strip at the foot says what the agent is doing, and "New reply" offers the
+     newest turn when you have scrolled up; both sit over the column the way the message bar does on the reader. */
+  body.embed #bar, body.embed #dock, body.embed .float-comment, body.embed .copy-note, body.embed #new-reply { display: none !important; }
+  body.embed main { padding-top: 12px; }
+  body.embed.embed-working main { padding-bottom: 96px; }
+  .embed-live { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); }
+  .embed-live-in { max-width: var(--col); margin: 0 auto; padding: 0 12px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .embed-live .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: embed-pulse 1.4s ease-in-out infinite; }
+  .embed-live .txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @keyframes embed-pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .embed-live .dot { animation: none; } }
+  .embed-new { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .25); }
+  .embed-new:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -739,9 +762,20 @@ __HEAD_HOSTED__
   // the laptop answered. The lite page (out/live/index.html) is LAZY and not HOSTED: it is served by the reader's own server, so it sends
   // straight to the pane (every check the server makes), follows Herdr, polls the state every 2 seconds and waits on the server's events,
   // and only its conversations come one at a time, from the objects each build writes beside it.
-  const MODE = "__MODE__";  // "local", "hosted" or "live"
-  const LAZY = MODE !== "local";
+  // A fourth page is made from it too: the embed page (out/live/embed.html), a host's web view (Conn's) that draws one conversation of its own
+  // from JSON, with the reader's turns and styles and none of the reader (README.md, "The embed page"). It is the local page with nothing
+  // to ask and nothing kept: its payload is empty, its server is never reached (live.js), it stores nothing (memoryStorage below), its
+  // header, message bar and search are hidden, and its turns come from window.readerEmbed instead of the reading list.
+  const MODE = "__MODE__";  // "local", "hosted", "live" or "embed"
+  const LAZY = MODE === "hosted" || MODE === "live";
   const HOSTED = MODE === "hosted";
+  const EMBED = MODE === "embed";
+  // What the embed page keeps: nothing past the page itself. Every read and write of localStorage and sessionStorage in this script lands
+  // here, so the pins, the read marks, the drafts and the rest of what the reader keeps in a browser are never written, whatever code reaches them.
+  const memoryStorage = () => { const held = new Map(); return { getItem: k => held.has(k) ? held.get(k) : null, setItem: (k, v) => { held.set(k, String(v)); }, removeItem: k => { held.delete(k); }, clear: () => held.clear(), key: i => [...held.keys()][i] ?? null, get length() { return held.size; } }; };
+  const browserStorage = name => { try { return window[name]; } catch (e) { return null; } };
+  const localStorage = EMBED ? memoryStorage() : browserStorage("localStorage");
+  const sessionStorage = EMBED ? memoryStorage() : browserStorage("sessionStorage");
 /*__LIVE__*/
 /*__HOSTED__*/
   // What needs the local server: refreshing, following Herdr, sending, reopening and closing.
@@ -759,6 +793,7 @@ __HEAD_HOSTED__
 /*__DOCFILES__*/
 /*__ADDRESS__*/
 /*__SESSIONREFS__*/
+/*__EMBED__*/
 /*__SELECTCOPY__*/
   const selectCopy = readerSelectCopy;
   // A lazy page starts empty until its index.json arrives.
@@ -778,6 +813,7 @@ __HEAD_HOSTED__
   state.follow = MODE !== "live";
   try { state.follow = MODE === "live" ? localStorage.getItem(FOLLOW_KEY) === "1" : localStorage.getItem(FOLLOW_KEY) !== "0"; } catch (e) { /* the default */ }
   try { state.copySelection = localStorage.getItem("tr-copy-selection") !== "0"; } catch (e) { /* default: copy */ }
+  if (EMBED) state.copySelection = false;  // a host's web view never copies what is selected on its own
   // A phone's width. The header starts folded there, on every view (an HTML file gets the whole screen under one line of it), so the
   // conversation has the screen; the controls are one tap away. What the owner chose in this browser wins over that: open or folded
   // (barChoice), until the browser forgets it. With no choice, the header follows the width, a turned phone included.
@@ -970,6 +1006,26 @@ __HEAD_HOSTED__
     return { button, panel };
   }
   sheetFlags.onChange(paintSheetFixes);
+  // A question a Campus agent waits on (the embed page only: ex.form comes from embed.js), in the yellow box a reply's asks have: each
+  // question with its choices; once answered or cancelled the box is quiet and says so, with what was picked.
+  function formBlock(form) {
+    const done = form.status !== "open";
+    const box = $("div", "asks cform" + (done ? " done" : ""));
+    form.questions.forEach((q, i) => {
+      const row = $("div", "cardq");
+      if (form.questions.length > 1) row.append($("b", null, `Q${i + 1}`));
+      const said = $("span"); said.innerHTML = inline(q.text); row.append(said);
+      if (q.options.length) {
+        const choices = $("div", "copts");
+        q.options.forEach(o => choices.append($("span", "copt" + (q.pick === o ? " picked" : ""), o)));
+        row.append(choices);
+      }
+      box.append(row);
+    });
+    if (form.status === "answered") box.append($("div", "notes", form.answer ? `Answered: ${form.answer}` : "Answered"));
+    else if (form.status === "cancelled") box.append($("div", "notes", "Not answered: the question was cancelled."));
+    return box;
+  }
   // key names the turn for state.open; sid, when given, makes the reply answerable from here.
   function replyCard(ex, key, sid) {
     // A reply hidden from this view is not drawn (the session log keeps it), unless the hidden ones are on show.
@@ -981,7 +1037,7 @@ __HEAD_HOSTED__
     if (verdict) who.append(verdict);
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
-    if (sid && ex.reply) {
+    if (sid && ex.reply && !EMBED) {
       const pin = pinButton(ex, "reply", sid);
       if (pin) { who.append(pin); card.dataset.msg = pinKey(ex, "reply"); }
       const hide = hideButton(ex, "reply", sid);
@@ -1042,6 +1098,8 @@ __HEAD_HOSTED__
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);
     if (sheetLink && !boxed) card.append(sheetLink);
+    if (ex.form) card.append(formBlock(ex.form));
+    if (ex.stopped) card.append($("div", "notes", "Stopped before it finished."));
     if (stepsView.list(ex).length) card.append(notesNode = stepsBlock(ex, key, sid));
     else if (ex.narration && ex.narration.length || ex.tools) {
       // A turn from a copy built before steps were kept: the notes and a count of the steps.
@@ -1218,7 +1276,7 @@ __HEAD_HOSTED__
   }
   function stepContext(session) {
     const entry = session ? outputEntry(session.id) : null;
-    return { sealed: HOSTED, from: data.steps_from || 0, loaded: Boolean(entry && (entry.state === "ready" || entry.kept)) };
+    return { sealed: HOSTED, from: data.steps_from || 0, inline: EMBED, loaded: Boolean(entry && (entry.state === "ready" || entry.kept)) };
   }
   function section(title, ...nodes) {
     const sec = $("div", "step-sec"), lab = $("div", "lab");
@@ -1300,7 +1358,7 @@ __HEAD_HOSTED__
     }
     if (outBox.length) frag.append(section("Output", ...outBox).sec);
     body.replaceChildren(frag);
-    node.ask.hidden = !sid;
+    node.ask.hidden = !sid || EMBED;
   }
   const failureText = entry => HOSTED && entry.error && (entry.error.network || /not reachable/.test(entry.error.message || "")) ? "No output is stored on this device for this step, and the laptop is not reachable. Try again when it answers."
     : `Could not load the output: ${entry.error ? entry.error.message : "unknown error"}`;
@@ -1895,7 +1953,8 @@ __HEAD_HOSTED__
   // ---------------------------------------------------------------- pins: a button on each message and reply, and their list
   // A pin names a message by its turn's id (ex.uid, the session log's own record id) and its part, so it holds
   // however the page is rebuilt or the turns move (pins.js keeps their ids and the owner's description, never message text). The list says where each is.
-  const pinKey = (ex, part) => ex.uid ? `${ex.uid}:${part}` : "";
+  // The embed page has no pins and no hiding: a turn has no key there, so neither button is drawn.
+  const pinKey = (ex, part) => ex.uid && !EMBED ? `${ex.uid}:${part}` : "";
   function paintPinButton(btn) {
     const on = pins.has(btn.dataset.pin);
     btn.textContent = on ? "Pinned" : "Pin";
@@ -2210,7 +2269,7 @@ __HEAD_HOSTED__
     setAddress();
     whenReady(() => { render(); showLatest(); if (place !== null) window.scrollTo(0, place); });
   }
-  window.addEventListener("hashchange", followAddress);
+  if (!EMBED) window.addEventListener("hashchange", followAddress);
 
   // ---------------------------------------------------------------- search: find in this conversation or across the reading list
   // The matching is find.js (plain text over the turns this page already holds: no index, no server route, no model).
@@ -4796,20 +4855,129 @@ __HEAD_HOSTED__
     if (same && saved.anchor) restoreAnchor(saved.anchor); else if (state.view === "reader") showLatest();
     followOpeningMessage();
   }
+  // ---------------------------------------------------------------- the embed page: one conversation a host hands over (embed.js, README.md "The embed page")
+  // A host's web view (Conn's, for a ShopBack Campus conversation) loads this page and calls window.readerEmbed with the conversation's
+  // turns as JSON. The turns are drawn by inputBlock and replyCard, the code that draws a Claude or Codex conversation, so markdown, tables,
+  // code boxes, "N steps" rows and the step sheet look exactly as they do there. The page asks nothing of Campus or of any server (its content
+  // policy allows no connection) and keeps nothing (memoryStorage); Campus data arrives only through this entry point.
+  // A call redraws only the blocks whose content changed (a streaming reply is one card), keeps what the reader opened (a clipped reply, the steps
+  // list), follows the newest turn while you are at the bottom and otherwise offers "New reply ↓".
+  const embed = { conv: null, sid: "campus", blocks: [], live: "", held: new Map(), strip: null, pill: null, newer: false };
+  // What a host can hear: window.webkit.messageHandlers.readerEmbed (WKWebView) gets { type: "ready" | "link", ... }. True when someone listened.
+  function tell(message) {
+    try { const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.readerEmbed; if (handler) { handler.postMessage(message); return true; } } catch (e) { /* no host to tell */ }
+    return false;
+  }
+  function embedLive() {
+    const on = Boolean(embed.live);
+    embed.strip.hidden = !on;
+    embed.strip.querySelector(".txt").textContent = embed.live;
+    document.body.classList.toggle("embed-working", on);
+    embedPill();
+  }
+  function embedPill() {
+    embed.pill.hidden = !embed.newer;
+    embed.pill.style.bottom = (embed.strip.hidden ? 0 : embed.strip.offsetHeight) + 12 + "px";
+  }
+  const embedBottom = () => window.scrollTo(0, document.documentElement.scrollHeight);
+  // Draw embed.blocks into #main: a block whose content is the one already drawn keeps its nodes, a changed one is drawn again where it stands,
+  // a new one goes in, a gone one goes out. fresh: a conversation just opened, which starts at its latest turn as the reader does.
+  function embedPaint(fresh) {
+    const main = document.getElementById("main"), sid = embed.sid;
+    const rows = embedModel.view(embed.blocks);
+    const session = data.sessions[0];
+    session.exchanges = rows.map(r => r.turn);
+    stepOutputs.set(sid, { state: "ready", map: Object.assign({}, ...rows.map(r => r.outputs)), error: null, kept: undefined, gen: 0 });
+    const stick = fresh || atBottom();
+    const was = embed.held, now = new Map();
+    let changedEnd = false;
+    rows.forEach((row, i) => {
+      const old = was.get(row.id);
+      if (old && old.sig === row.sig) { now.set(row.id, old); return; }
+      const key = `${sid}:${row.id}`;
+      const node = row.kind === "user" ? inputBlock(row.turn, row.id, key, sid) : replyCard(row.turn, key, sid);
+      now.set(row.id, { sig: row.sig, nodes: node.nodeType === 11 ? [...node.childNodes] : [node] });
+      if (i === rows.length - 1) changedEnd = true;
+    });
+    // What is no longer wanted goes first, so the nodes that stay are never moved (a moved node loses its selection and its scroll).
+    for (const [id, old] of was) if (now.get(id) !== old) old.nodes.forEach(n => n.remove());
+    main.querySelectorAll(":scope > .empty").forEach(n => n.remove());
+    if (!rows.length) main.append($("div", "empty", "No messages yet."));
+    let cursor = main.firstChild;
+    for (const row of rows) for (const node of now.get(row.id).nodes) { if (node === cursor) cursor = cursor.nextSibling; else main.insertBefore(node, cursor); }
+    embed.held = now;
+    if (fresh) { embed.newer = false; if (rows.length) showLatest(); else window.scrollTo(0, 0); }
+    else if (stick) { embed.newer = false; embedBottom(); }
+    else if (changedEnd) embed.newer = true;
+    embedPill();
+  }
+  function startEmbed() {
+    document.body.classList.add("embed");
+    state.view = "embed";  // the reader's keys (j, k, n, w, /) and its redraws act on the reader view alone
+    data.sessions = [{ id: embed.sid, ids: [embed.sid], home: "workspace", where: "", agent: "campus", exchanges: [], pane: null, reopened: false }];
+    const strip = $("div", "embed-live"); strip.hidden = true; strip.setAttribute("role", "status");
+    const inner = $("div", "embed-live-in"); inner.append($("span", "dot"), $("span", "txt")); strip.append(inner);
+    const pill = $("button", "embed-new", "New reply ↓"); pill.type = "button"; pill.hidden = true;
+    pill.addEventListener("click", () => { embed.newer = false; embedBottom(); embedPill(); });
+    window.addEventListener("scroll", () => { if (embed.newer && atBottom()) { embed.newer = false; embedPill(); } }, { passive: true });
+    document.body.append(strip, pill);
+    Object.assign(embed, { strip, pill });
+    // A web address in a reply never takes the view away: the host is told and opens it (or, with no host to tell, a new window does).
+    document.addEventListener("click", e => {
+      const a = e.target.closest && e.target.closest("a[href]");
+      const url = a && a.getAttribute("href");
+      if (!url || !/^https?:\/\//i.test(url)) return;
+      e.preventDefault();
+      if (!tell({ type: "link", url })) window.open(url, "_blank", "noopener");
+    }, true);
+    // A set with another conversation id starts the page over (and, like any first call, opens at the latest turn); the same id goes on
+    // where it was, and so does every upsert.
+    const run = (input, replace) => {
+      const got = embedModel.parse(input);
+      const opening = embed.conv === null || (replace && got.id !== embed.conv);
+      if (opening) {
+        if (embed.conv !== null) { stepOutputs.delete(embed.sid); embed.held = new Map(); document.getElementById("main").replaceChildren(); state.open.clear(); }
+        embed.conv = got.id;
+        embed.sid = got.id ? `campus:${got.id}` : "campus";
+        data.sessions[0].id = embed.sid; data.sessions[0].ids = [embed.sid];
+      }
+      embed.blocks = replace ? got.blocks : embedModel.upsert(embed.blocks, got.blocks);
+      if (replace || got.hasLive) embed.live = got.live;
+      embedPaint(opening);
+      embedLive();
+      return { ok: true, blocks: embed.blocks.length, skipped: got.skipped };
+    };
+    window.readerEmbed = Object.freeze({
+      version: embedModel.VERSION,
+      // The whole conversation: { id?, live?, blocks }, or a JSON string of it. A different id opens another conversation.
+      set: input => run(input, true),
+      // Blocks to put in: each replaces the block with its id where it stands, any other goes on the end. { live? } when the line changes.
+      upsert: input => run(input, false),
+      // The working line at the foot ("reading table-a.csv"); "" takes it away.
+      live: text => { embed.live = typeof text === "string" ? text.trim() : ""; embedLive(); return { ok: true }; },
+      clear: () => run({ id: embed.conv || "", blocks: [], live: "" }, true),
+      // The conversation as plain text (CampusTimeline.plainText()'s words).
+      plainText: () => embedModel.plain(embed.blocks),
+    });
+    tell({ type: "ready", version: embedModel.VERSION });
+  }
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
-  window.addEventListener("pagehide", () => {
+  if (!EMBED) window.addEventListener("pagehide", () => {
     saveSendHandoff();
     saveSearch();
     const session = data.sessions[state.session];
     try { sessionStorage.setItem("tr-reading", JSON.stringify({ session: session && session.id, first: session && firstTurn(session), view: state.view, open: [...state.open], showWakes: state.showWakes, anchor: readingAnchor() })); } catch (e) { /* the reload starts fresh */ }
   });
-  pins.load().then(paintPins);
-  stars.load().then(paintStars);
-  if (canLive) sheetFlags.load().then(paintSheetFixes);
-  // The hidden set arrives after the first drawing: draw again at once when this conversation has hidden messages.
-  hiddenStore.load().then(() => { if (hiddenStore.count()) render(); });
+  if (!EMBED) {
+    pins.load().then(paintPins);
+    stars.load().then(paintStars);
+    if (canLive) sheetFlags.load().then(paintSheetFixes);
+    // The hidden set arrives after the first drawing: draw again at once when this conversation has hidden messages.
+    hiddenStore.load().then(() => { if (hiddenStore.count()) render(); });
+  }
   hiddenStore.onChange(() => { if (state.view === "reader") render(); });
-  if (!LAZY) openReading(chooseOpening());
+  if (EMBED) startEmbed();
+  else if (!LAZY) openReading(chooseOpening());
   else {
     // A lazy page holds no transcript: a sealed copy is opened first (the hosted copy), then the list comes from index.json, then the
     // conversation opened on. The lite page has nothing to open: its index and objects are served beside it like the page itself.

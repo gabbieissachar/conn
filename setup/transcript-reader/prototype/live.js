@@ -15,7 +15,9 @@
     const loopbackHost = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
     const tokened = /^[0-9a-f]{64}$/.test(token);
     // Each phone address has its own scheme: the Tailscale address is plain http, the machine's name is https.
-    const served = (location.protocol === "http:" || location.protocol === "https:") && (loopbackHost
+    // The embed page (a host's web view, template mode "embed") never reaches a server, whatever address it was opened from.
+    const embedded = typeof MODE === "string" && MODE === "embed";
+    const served = !embedded && (location.protocol === "http:" || location.protocol === "https:") && (loopbackHost
       || (location.protocol === "http:" && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(location.hostname) && tokened)
       || (location.protocol === "https:" && /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net$/i.test(location.hostname) && tokened));
     // A restarted server has a new token, which only a fresh load of the page brings:
