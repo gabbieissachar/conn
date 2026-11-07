@@ -54,6 +54,10 @@ enum SidebarCheck {
         model.watchOn = true
         model.setWatchCount(3)
         await wait(2.5)
+        // The columns' web views are made when their views first draw: wait for all three instead of trusting a fixed pause on a busy machine.
+        var waited = 0.0
+        while model.watch.boxes.count < 3 && waited < 15 { await wait(0.25); waited += 0.25 }
+        await wait(0.5)
         func columnWidths() -> [CGFloat] { model.watch.boxes.values.map { $0.webView.frame.width }.sorted() }
         let withSidebar = columnWidths()
         model.sidebarVisible = false
@@ -61,7 +65,7 @@ enum SidebarCheck {
         let without = columnWidths()
         let gained = zip(withSidebar, without).reduce(0) { $0 + ($1.1 - $1.0) }
         report("with the sidebar hidden the Watch columns use its width (about 251 pt more in total)", withSidebar.count == without.count && !withSidebar.isEmpty && gained > 230 && gained < 270,
-               "columns=\(withSidebar.count) before=\(withSidebar.map { Int($0) }) after=\(without.map { Int($0) }) gained=\(Int(gained))")
+               "slots=\(model.watch.layout.slots.map { $0?.session.suffix(6).description ?? "-" }) campus=\(model.campusSelectedID ?? "nil") phases=\(model.watch.boxes.values.map { "\($0.phase)" }) columns=\(withSidebar.count) before=\(withSidebar.map { Int($0) }) after=\(without.map { Int($0) }) gained=\(Int(gained))")
         if let dir = ProcessInfo.processInfo.environment["CONN_UI_CHECK_SHOT_DIR"] { await Capture.window(to: URL(fileURLWithPath: dir).appendingPathComponent("watch-sidebar-hidden.png")) }
         model.sidebarVisible = true
         await wait(1.0)

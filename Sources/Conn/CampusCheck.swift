@@ -155,6 +155,9 @@ enum CampusCheck {
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
         model.campusSelectedID = nil
+        // Leave Watch as it was found: the checks after this one open it again and must not meet a Campus column.
+        model.watchOn = false
+        for i in model.watch.layout.slots.indices where model.watch.layout.slots[i].map({ CampusColumn.isCampus($0.session) }) == true { model.watch.close(column: i) }
         model.watchOn = savedWatch; model.showWeb = savedWeb; model.mode = savedMode
     }
 
