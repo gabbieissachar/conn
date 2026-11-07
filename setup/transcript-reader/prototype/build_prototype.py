@@ -2877,30 +2877,38 @@ def cleared_from_log(path: Path, clear_time: float) -> Path | None:
     return linked or pane_cleared_from(path, clear_time) or nearest(logs_in(path.parent), 5)
 
 
+_LAST_CHAINS: dict[tuple[Path, int], list[Path]] = {}  # the chains the last whole rebuild in this process worked out, for a quick one
 _FROZEN: dict[tuple[Path, int], list[Path]] | None = None
 _FROZEN_PANES: list = []  # inside chains_frozen: what Herdr said the first time it was asked (see herdr_inventory)
 _FROZEN_CLEARED: dict[tuple[Path, float], Path | None] = {}  # inside chains_frozen: the log each clear left (see cleared_from)
 
 
 @contextlib.contextmanager
-def chains_frozen():
+def chains_frozen(quick: bool = False):
     """Within the block, each log's chain is worked out once, and Herdr is asked once. A rebuild asks for the same chains several
     times (which panes closed, which session is newest, the page, the answer sheet), each of which must see the same sessions, and
     each of which took about as long as the whole rest of the build; it asked Herdr the same three times (nine commands), and a pane
-    that changed between two of them made the page and the sheet disagree."""
-    global _FROZEN
+    that changed between two of them made the page and the sheet disagree.
+
+    A quick block starts from the chains the last whole one in this process worked out (a tab that has just opened changes none of
+    them) and works out only what it lacks; what it finds is not kept for the next, so the next whole rebuild walks every chain again."""
+    global _FROZEN, _LAST_CHAINS
     outer = _FROZEN
     _FROZEN = {} if outer is None else outer
     if outer is None:
         _FROZEN_PANES.clear()
         _FROZEN_CLEARED.clear()
+        if quick:
+            _FROZEN.update(_LAST_CHAINS)
     try:
         yield
     finally:
-        _FROZEN = outer
         if outer is None:
+            if not quick:
+                _LAST_CHAINS = dict(_FROZEN)
             _FROZEN_PANES.clear()
             _FROZEN_CLEARED.clear()
+        _FROZEN = outer
 
 
 def session_chain(path: Path, limit: int = 20) -> list[Path]:

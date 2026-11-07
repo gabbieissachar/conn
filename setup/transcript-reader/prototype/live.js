@@ -86,6 +86,8 @@
     // The messages and replies hidden from this view (turn ids only), kept the same way, and one change to them.
     const hiddenList = () => call("hidden");
     const hiddenChange = change => call("hidden", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    // List the session of a live Herdr tab the reader lacks and build the page with it now, answering once it is built.
+    const addTab = sessionId => call("add-tab", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
     // Build the pages again now (the sheet finder as it is on disk), answering once they are built.
     const rerender = () => call("rerender", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     // Reopen a session whose pane has closed, to read it again, or close one; both answer once the page is rebuilt.
@@ -162,5 +164,5 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, addTab, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

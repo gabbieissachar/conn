@@ -127,6 +127,20 @@ test('an idle worker is ended, and the next request starts another', async () =>
   } finally { worker.stop(); }
 });
 
+test('an idle worker is kept while a page is open (keepWarm), and ended once none is', async () => {
+  let page = true;
+  const worker = make({ idleMs: 40, keepWarm: () => page });
+  try {
+    const first = Number((await worker.run(['pid'])).stdout);
+    await new Promise((resolve) => setTimeout(resolve, 250));  // several idle periods
+    assert.equal(worker.running(), true, 'a page is open: the warm worker stays');
+    assert.equal(Number((await worker.run(['pid'])).stdout), first, 'and answers the next request itself');
+    page = false;
+    await until(() => !worker.running(), 'the worker is let go once no page is open');
+    await until(() => !alive(first), 'its process is gone');
+  } finally { worker.stop(); }
+});
+
 test('a worker that has served many requests is replaced, so what it holds in memory stays small', async () => {
   const worker = make({ maxRequests: 3 });
   try {

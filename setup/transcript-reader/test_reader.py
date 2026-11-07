@@ -298,6 +298,89 @@ class FollowTest(unittest.TestCase):
         self.assertEqual(self.rebuilds, [])
 
 
+class TabTest(unittest.TestCase):
+    """`tab` is what the page's picker runs for a live Herdr tab the reader lacks: list it and rebuild quickly, answering when the page is built."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        folder = root / "projects" / "-Users-someone-home"
+        folder.mkdir(parents=True)
+        for sid in (A, B):  # C has no log
+            (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.saved = (builder.PROJECTS, reader.OUT, reader.LIST, reader.rebuild)
+        builder.PROJECTS, reader.OUT = root / "projects", root / "out"
+        reader.LIST = reader.OUT / "sessions.txt"
+        reader.OUT.mkdir()
+        self.rebuilds = []
+        reader.rebuild = lambda ids, focus=None, serve_page=True, quick=False: self.rebuilds.append((list(ids), serve_page, quick)) or 0
+
+    def tearDown(self):
+        builder.PROJECTS, reader.OUT, reader.LIST, reader.rebuild = self.saved
+        self.tmp.cleanup()
+
+    def test_lists_the_one_session_and_asks_for_a_quick_rebuild_that_does_not_serve(self):
+        reader.write_list([A])
+        self.assertEqual(reader.main(["tab", B]), 0)
+        self.assertEqual(reader.read_list(), [A, B])
+        self.assertEqual(self.rebuilds, [([A, B], False, True)])
+        self.assertEqual(reader.main(["tab", B]), 0)
+        self.assertEqual(reader.read_list(), [A, B], "listed once")
+
+    def test_a_close_by_hand_does_not_hold_against_picking_the_tab(self):
+        reader.write_list([A])
+        reader.mark_closed({B})
+        self.assertEqual(builder.read_ids(reader.closed_file()), [B])
+        self.assertEqual(reader.main(["tab", B]), 0)
+        self.assertEqual(builder.read_ids(reader.closed_file()), [], "picking it is a new yes")
+        self.assertEqual(reader.read_list(), [A, B])
+
+    def test_refuses_anything_but_one_full_id_with_a_log(self):
+        for names in (["aaaaaaaa"], [C], ["leader-alpha"], [A, B], []):
+            self.assertEqual(reader.main(["tab", *names]), 2, names)
+        self.assertEqual(reader.read_list(), [])
+        self.assertEqual(self.rebuilds, [])
+
+    def test_the_worker_takes_it(self):
+        self.assertEqual(reader.worker_request('{"id": 4, "args": ["tab", "%s"]}' % B), (4, ["tab", B]))
+        for line in ('{"id": 4, "args": ["tab"]}', '{"id": 4, "args": ["tab", "a", "b"]}'):
+            with self.assertRaises(ValueError):
+                reader.worker_request(line)
+
+
+class QuickRebuildTest(unittest.TestCase):
+    """A quick rebuild leaves the sweep for closed panes to the next ordinary one, and an ordinary one still does it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        folder = root / "projects" / "-Users-someone-home"
+        folder.mkdir(parents=True)
+        for sid in (A, B):
+            (folder / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+        self.saved = (builder.PROJECTS, builder.session_chain, reader.OUT, reader.LIST, reader.PAGE, reader.BUILDERS, reader.drop_closed)
+        builder.PROJECTS, reader.OUT = root / "projects", root / "out"
+        reader.LIST, reader.PAGE = reader.OUT / "sessions.txt", reader.OUT / "prototype.html"
+        reader.OUT.mkdir()
+        builder.session_chain = lambda path: [path]
+        self.swept = []
+        self.built = []
+        reader.drop_closed = lambda ids: self.swept.append(list(ids)) or ids
+        reader.BUILDERS = lambda page, sheet: self.built.append(page) or 0
+
+    def tearDown(self):
+        (builder.PROJECTS, builder.session_chain, reader.OUT, reader.LIST, reader.PAGE, reader.BUILDERS, reader.drop_closed) = self.saved
+        self.tmp.cleanup()
+
+    def test_only_the_ordinary_rebuild_sweeps_for_closed_panes(self):
+        self.assertEqual(reader.rebuild([A, B], serve_page=False), 0)
+        self.assertEqual(self.swept, [[A, B]])
+        self.assertEqual(reader.rebuild([A, B], serve_page=False, quick=True), 0)
+        self.assertEqual(self.swept, [[A, B]], "the quick one did not")
+        self.assertEqual(len(self.built), 2, "but it built the page, with both sessions")
+        self.assertEqual(self.built[1].count("--session"), 2)
+
+
 class AdoptTest(unittest.TestCase):
     """`adopt` is what a Sync runs for the live Claude panes the list lacks; a session a person took off the list stays off."""
 

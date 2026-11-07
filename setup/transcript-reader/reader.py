@@ -317,18 +317,21 @@ def run_in_process(page: list[str], sheet: list[str]) -> int:
 BUILDERS = run_builders  # a worker sets run_in_process
 
 
-def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True) -> int:
-    with builder.chains_frozen():
-        return rebuild_frozen(ids, focus, serve_page)
+def rebuild(ids: list[str], focus: str | None = None, serve_page: bool = True, quick: bool = False) -> int:
+    with builder.chains_frozen(quick):
+        return rebuild_frozen(ids, focus, serve_page, quick)
 
 
-def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool) -> int:
+def rebuild_frozen(ids: list[str], focus: str | None, serve_page: bool, quick: bool = False) -> int:
     original = list(ids)
     ids = [sid for sid in (builder.canonical_session_id(value) for value in ids) if sid]
     ids = list(dict.fromkeys(ids))
     if ids != original:
         write_list(ids)
-    kept = drop_closed(ids)
+    # A quick build (a tab picked in the page: `tab`) leaves the sweep for closed panes to the next ordinary rebuild, and reads the chains the
+    # last whole rebuild worked out (builder.chains_frozen): of the 2.3 s a rebuild took on the owner's list, 1.9 went on walking the chain of each of
+    # its 103 sessions, which a tab that has just opened does not change.
+    kept = ids if quick else drop_closed(ids)
     if kept != ids:
         if ids and not kept:
             print("Every listed session's pane has closed")
@@ -433,6 +436,20 @@ def follow(ids: list[str], names: list[str]) -> int:
     return rebuild(ids, serve_page=False)
 
 
+def tab(ids: list[str], names: list[str]) -> int:
+    """List one full session id that has a log (a live Herdr tab a person picked on the page), then rebuild at once: a quick rebuild, which
+    skips the sweep for closed panes and takes the chains of the sessions already listed from the last whole rebuild. The id is listed as
+    `follow` lists it, and a person's earlier close of it no longer holds: picking it is a new yes."""
+    if len(names) != 1 or not UUID.match(names[0]) or not session_files(builder.PROJECTS, names[0]):
+        print("tab takes one full session id that has a session log")
+        return 2
+    forget_closed({names[0]})
+    if names[0] not in ids:
+        ids.append(names[0])
+        write_list(ids)
+    return rebuild(ids, serve_page=False, quick=True)
+
+
 def adopt(ids: list[str], names: list[str]) -> int:
     """List full session ids with a log (the live Claude panes a Sync found that are not listed), skipping any a
     person closed or removed, then rebuild without serving. The ids are listed as `follow` lists one."""
@@ -503,7 +520,7 @@ def show(ids: list[str]) -> None:
 
 
 # What the server may ask of a worker, with how many names each takes after it (None: one or more).
-WORKER_COMMANDS = {"rebuild": 0, "follow": 1, "adopt": None, "reopen": 1, "close": 1}
+WORKER_COMMANDS = {"rebuild": 0, "follow": 1, "adopt": None, "reopen": 1, "close": 1, "tab": 1}
 SOURCES = (HERE / "reader.py", HERE / "prototype" / "build_prototype.py", HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "build_cache.py")
 
 
@@ -577,6 +594,8 @@ def main(argv: list[str]) -> int:
         return reopen(ids, names)
     if command == "close":
         return close(ids, names)
+    if command == "tab":
+        return tab(ids, names)
     if command == "adopt":
         return adopt(ids, names)
     if command == "list":

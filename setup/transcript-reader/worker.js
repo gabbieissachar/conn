@@ -7,7 +7,9 @@
 // It never makes a rebuild fail that would not have failed alone: a worker that cannot start, dies, or answers with something
 // other than its reply is reported as `crashed`, and the caller runs reader.py once, the way it always did. A request that takes
 // longer than the caller allows ends the worker (timedOut, like the one-shot run), and the next request starts a new one. An
-// idle worker is ended, and a busy one is replaced after a number of requests, so what it holds in memory stays small.
+// idle worker is ended (unless keepWarm says a page is still open: a worker started cold takes 10 to 20 s for its first build on a reading
+// list of the owner's size, against 1 to 2.5 s for one that holds what the last build read), and a busy one is replaced after a number of
+// requests, so what it holds in memory stays small.
 
 const { spawn } = require('child_process');
 
@@ -15,7 +17,7 @@ const IDLE_MS = 10 * 60 * 1000;
 const MAX_REQUESTS = 500;
 const BROKEN_MS = 60 * 1000;
 
-function create({ command, args, cwd, env, timeoutMs = 60000, idleMs = IDLE_MS, maxRequests = MAX_REQUESTS, brokenMs = BROKEN_MS, spawnProcess = spawn, now = () => Date.now() }) {
+function create({ command, args, cwd, env, timeoutMs = 60000, idleMs = IDLE_MS, maxRequests = MAX_REQUESTS, brokenMs = BROKEN_MS, spawnProcess = spawn, now = () => Date.now(), keepWarm = () => false }) {
   let child = null;       // { proc, buffer, pending, served }
   let queue = Promise.resolve();
   let idleTimer = null;
@@ -72,7 +74,7 @@ function create({ command, args, cwd, env, timeoutMs = 60000, idleMs = IDLE_MS, 
 
   function armIdle() {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { if (child && !child.pending) retire(child); }, idleMs);
+    idleTimer = setTimeout(() => { if (child && !child.pending) { if (keepWarm()) armIdle(); else retire(child); } }, idleMs);
     if (idleTimer.unref) idleTimer.unref();
   }
 

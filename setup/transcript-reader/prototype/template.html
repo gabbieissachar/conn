@@ -1447,6 +1447,16 @@ __HEAD_HOSTED__
     const starredGroup = $("optgroup"); starredGroup.label = `Starred · ${top.length}`;
     starredGroup.append(...top.map(option));
     select.replaceChildren(...(top.length ? [starredGroup] : []), ...running.map(option));
+    // The live Herdr tabs the reader does not list yet (the server's `tabs`): a choice lists the tab's session and builds the page with it now.
+    const tabs = canLive ? (link.tabs || []).filter(t => !data.sessions.some(s => (s.ids || [s.id]).includes(t.session_id))) : [];
+    if (tabs.length) {
+      const live = $("optgroup"); live.label = `Herdr tabs not on the reader · ${tabs.length}`;
+      live.append(...tabs.map(t => {
+        const opt = $("option", null, [PANE_STATES[t.status], t.label, "build now"].filter(Boolean).join(" · "));
+        opt.value = "t:" + t.session_id; return opt;
+      }));
+      select.append(live);
+    }
     const offered = canLive ? (data.closed || []).filter(c => !data.sessions.some(s => (s.ids || [s.id]).includes(c.id))) : [];
     if (!idle.length && !offered.length) return;
     const group = $("optgroup"); group.label = "Closed panes";
@@ -1506,12 +1516,29 @@ __HEAD_HOSTED__
   function pickSession(value) {
     link.listing = null;  // a notice about the conversation before (see the load code) goes with it
     if (value.startsWith("c:")) { changeList("reopen", value.slice(2)); render(); return; }
+    if (value.startsWith("t:")) { addTab(value.slice(2)); return; }
     // The option holds the session's id (picker.indexOf): the list may have been put in a new order since it was drawn.
     const index = picker.indexOf(data.sessions, value);
     if (index < 0) { render(); return; }  // no longer on the page: the picker is drawn again without it
     state.session = index;
     setAddress();
     whenReady(() => { render(); showLatest(); });
+  }
+  // A live Herdr tab the reader does not list, picked in the session picker: the server lists it and builds the page at once (api.js addTab), and this
+  // shows it as soon as that build is in. The picker goes back to the conversation on screen meanwhile.
+  async function addTab(sid) {
+    const tab = (link.tabs || []).find(t => t.session_id === sid);
+    const name = tab ? tab.label : sid.slice(0, 8);
+    link.listing = { text: `Building ${name}…` }; renderLive(); labelSessions();
+    try {
+      await live.addTab(sid);
+      link.listing = null;
+      await refreshData(true);
+      const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
+      if (index >= 0) { state.session = index; state.view = "reader"; setAddress(); render(); showLatest(); }
+      else { link.listing = { text: `${name} is built, but is not on the page yet.` }; renderLive(); }
+    } catch (e) { link.listing = { text: `Could not build ${name}: ${e.message}` }; renderLive(); }
+    labelSessions();
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
   async function changeList(command, sid, stay = false) {
@@ -2581,7 +2608,7 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
-  const link = { held: null, panes: undefined, focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, clearing: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null };
+  const link = { held: null, panes: undefined, tabs: [], focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, clearing: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null };
   const dock = id => document.getElementById("dock-" + id);
   // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
   const photos = attach.makeStore();
@@ -4191,7 +4218,7 @@ __HEAD_HOSTED__
   const writing = () => document.activeElement === dock("text") && Boolean(dockTyped());
   // What the server answered about Herdr and the build, from the poll or from Sync.
   function takeState(s) {
-    link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build;
+    link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build; link.tabs = s.tabs || [];
     link.syncedAt = Date.now() / 1000; link.syncFail = null;
     pins.refresh(s.stamps && s.stamps.pins);
     stars.refresh(s.stamps && s.stamps.stars);

@@ -64,6 +64,9 @@
 //                                                   pins; turn ids only, never a message's text; the agent's session log is never touched)
 //                                                   and their revision
 //   POST /api/transcript-reader/hidden              { op: "hide", key, conv, at } or { op: "unhide", key }
+//   POST /api/transcript-reader/add-tab             { session_id }: lists the session of a live Herdr tab the reading list lacks (state's `tabs`) and
+//                                                   builds it at once, answering when the page is built (the closed-pane sweep and the chain
+//                                                   walk of every other session are left to the next ordinary rebuild)
 //   POST /api/transcript-reader/rerender            {}: builds the pages again now (the worker starts from the code on disk), answers when built
 //   POST /api/transcript-reader/send                { session_id, text[, images] }: empties the input box
 //                                                   of the one live Herdr pane running that
@@ -300,6 +303,7 @@ const REBUILD_EVERY_MS = 2000;
 const SWEEP_MS = 500;
 const PRESENCE_MS = 20000;
 const MAX_WAIT_MS = 30000;
+const WARM_MS = 60 * 60 * 1000;  // a page seen this recently keeps the rebuild worker running while it idles
 const RETRY_AFTER_FAILURE_MS = 30000;
 
 class RequestError extends Error {
@@ -515,7 +519,7 @@ function create({
   }
 
   // The session's log under <config folder>/projects/<folder>/<id>.jsonl (~/.claude's first, then each other Claude config folder's), or null.
-  function logPath(sessionId) {
+  function claudeLogPath(sessionId) {
     sessionId = canonicalSessionId(sessionId) || sessionId;
     const known = logPaths.get(sessionId);
     if (known && fs.existsSync(known)) return known;
@@ -528,6 +532,13 @@ function create({
         if (fs.existsSync(candidate)) { logPaths.set(sessionId, candidate); return candidate; }
       }
     }
+    return null;
+  }
+
+  function logPath(sessionId) {
+    sessionId = canonicalSessionId(sessionId) || sessionId;
+    const claude = claudeLogPath(sessionId);
+    if (claude) return claude;
     const codex = codexRollouts().find((entry) => entry.session === sessionId);
     if (codex) { logPaths.set(sessionId, codex.file); return codex.file; }
     const copilot = copilotLog(sessionId);
@@ -647,7 +658,7 @@ function create({
         const snapshot = (((result.code === 0 && parseJson(result.stdout)) || {}).result || {}).snapshot;
         if (snapshot) sessions.push(await checkSessions(readSnapshot(entry.name, snapshot), rollouts));
       }
-      scanned = { at: now(), sessions };
+      scanned = { at: now(), sessions, rollouts };  // the rollouts as listed for this scan, for what state() offers from the same Herdr reading
       return sessions;
     })().finally(() => { scanning = null; });
     return scanning;
@@ -861,7 +872,8 @@ function create({
   // ----------------------------------------------------------------- rebuilds
 
   // The reader.py that stays running, started on its first request; one that cannot take a request leaves it to a fresh reader.py.
-  const readerWorker = worker ? workerLib.create({ command: pythonBin, args: ['-I', readerScript, 'worker'], cwd: root, env: runEnv(), timeoutMs: 60000, now }) : null;
+  // It is kept (not ended after its idle ten minutes) while a page has been seen in the last WARM_MS, so a tab picked after a quiet spell does not start a cold one.
+  const readerWorker = worker ? workerLib.create({ command: pythonBin, args: ['-I', readerScript, 'worker'], cwd: root, env: runEnv(), timeoutMs: 60000, now, keepWarm: () => lastSeen > 0 && now() - lastSeen < WARM_MS }) : null;
 
   // The offline copy's builds, for its page's Sync: sync.py in a process of its own, as the LaunchAgent would run it. PMOS_READER_COPY_ARGS
   // gives the build the options a build run by hand would have (--panes open, --no-workspace).
@@ -1125,6 +1137,7 @@ function create({
         readable: focused.session_id ? Boolean(logPath(focused.session_id)) : false,
       },
       panes,
+      tabs: unlistedPanes(sessions, ids, (scanned && scanned.sessions === sessions && scanned.rollouts) || rolloutsOnce()),
       build: buildInfo(),
     };
   }
@@ -1187,6 +1200,28 @@ function create({
 
   // ------------------------------------------------------------------- sync
 
+  // The live Herdr tabs the reading list lacks, for the picker's "Herdr tabs" group: each pane running Claude, Codex or Copilot whose session has a
+  // log to read, in the order Herdr lists them. One a person took off the list is offered too: choosing it is a new yes. This runs on every state
+  // poll, so it asks of each pane only what its agent's log needs (a Claude log is a look in the project folders; a Codex rollout is in the list the
+  // scan already made; a Copilot log is a folder named for the session), and walks no sessions folder of its own.
+  function unlistedPanes(sessions, ids, rollouts) {
+    const have = new Set(ids);
+    const found = [];
+    for (const session of sessions) {
+      for (const pane of session.panes) {
+        const id = pane.session_id;
+        if (!id || have.has(id)) continue;
+        const readable = pane.agent === 'claude' ? Boolean(claudeLogPath(id))
+          : pane.agent === 'codex' || !pane.agent ? rollouts().some((entry) => entry.session === id)
+            : pane.agent === 'copilot' ? Boolean(copilotLog(id)) : false;
+        if (!readable) continue;
+        have.add(id);
+        found.push({ session_id: id, label: pane.label, status: pane.status, herdr: session.name, agent: pane.agent });
+      }
+    }
+    return found;
+  }
+
   // The sessions running in a Herdr pane with Claude, Codex or Copilot that the reading list lacks and has a log to read, and that no
   // person took off the list. Only listing them changes the list; the panes are not touched.
   function unlistedLive(sessions) {
@@ -1244,6 +1279,23 @@ function create({
     while (build.running) await build.running.done;
     const result = await runReader([command, sessionId]);
     if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
+    return { stamp: stamp('prototype.stamp') };
+  }
+
+  // The picker's "Herdr tabs": list one live tab's session and build the page with it now. It is a reopen for a pane that runs: the same wait
+  // for a running rebuild, then reader.py tab, which leaves the closed-pane sweep and the chain walk of every other listed session to the next
+  // ordinary rebuild (they are most of the time a rebuild takes, and a new tab changes neither). Answers when the page is built.
+  async function addTab(body) {
+    for (const key of Object.keys(body)) if (key !== 'session_id') throw new RequestError('Unknown field.');
+    const sessionId = body.session_id;
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) throw new RequestError('Invalid session id.');
+    if (!logPath(sessionId)) throw new RequestError('That session has no log to read.', 404, 'no_log');
+    if (!listed().includes(sessionId)) {
+      while (build.running) await build.running.done;
+      build.failedAdds.delete(sessionId);
+      const result = await runReader(['tab', sessionId], sessionId);
+      if (result.code !== 0) throw new RequestError(build.error || 'The rebuild failed.', 502, 'rebuild_failed');
+    }
     return { stamp: stamp('prototype.stamp') };
   }
 
@@ -1779,6 +1831,10 @@ function create({
     }
     if (pathname === API + 'unqueue' && req.method === 'POST') {
       send(res, 200, { status: 'ok', ...unqueue(await readJsonBody(req)) });
+      return;
+    }
+    if (pathname === API + 'add-tab' && req.method === 'POST') {
+      send(res, 200, { status: 'ok', ...(await addTab(await readJsonBody(req))) });
       return;
     }
     for (const command of ['reopen', 'close']) {

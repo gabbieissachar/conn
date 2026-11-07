@@ -156,6 +156,35 @@ class ChainSearchTest(unittest.TestCase):
                 self.assertEqual(len(builder.session_chain(folder / "second.jsonl")), 2, "a block inside one shares it")
         self.assertEqual([p.stem for p in builder.session_chain(folder / "second.jsonl")], ["first", "second", "third"])
 
+    def test_a_quick_block_starts_from_the_last_whole_ones_chains_and_keeps_nothing_of_its_own(self):
+        folder = Path(self.tmp.name) / "project"
+        folder.mkdir()
+        log(folder / "first.jsonl", [prompt("hello", iso(T0))], T0 + 100)
+        log(folder / "second.jsonl", [prompt(CLEAR, iso(T0 + 100.5)), prompt("next", iso(T0 + 200))], T0 + 500)
+        walked = []
+        real = builder.chain_of
+        def counting(path, limit):
+            walked.append(path.stem)
+            return real(path, limit)
+        stems = lambda name: [p.stem for p in builder.session_chain(folder / f"{name}.jsonl")]
+        with mock.patch.object(builder, "chain_of", counting):
+            with builder.chains_frozen():
+                self.assertEqual(stems("second"), ["first", "second"])
+            self.assertEqual(walked, ["second"])
+            # A new log appears; a quick block takes the known chain without walking it, and walks only the new one.
+            log(folder / "third.jsonl", [prompt(CLEAR, iso(T0 + 500.2)), prompt("go on", iso(T0 + 600))], T0 + 700)
+            log(folder / "other.jsonl", [prompt("a new task", iso(T0 + 900))], T0 + 950)
+            builder._LOG_INDEX.clear()
+            with builder.chains_frozen(quick=True):
+                self.assertEqual(stems("second"), ["first", "second"], "as the last whole rebuild saw it")
+                self.assertEqual(stems("other"), ["other"])
+            self.assertEqual(walked, ["second", "other"], "the known chain was not walked again")
+            # What the quick block found is not kept: the next whole one walks every chain and sees the join.
+            builder._LOG_INDEX.clear()
+            with builder.chains_frozen():
+                self.assertEqual(stems("second"), ["first", "second", "third"])
+            self.assertEqual(walked, ["second", "other", "second"])
+
 
 # --------------------------------------------------------- a build that reuses what an earlier one learned
 

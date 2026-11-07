@@ -1017,6 +1017,51 @@ test('sync: every live Claude pane whose session is not listed is listed by the 
   } finally { await t.close(); }
 });
 
+test('herdr tabs: the state names each live tab the reading list lacks, and add-tab lists one and builds it with the quick rebuild', async () => {
+  const t = await start();
+  try {
+    withUnlistedPanes(t);
+    fs.writeFileSync(path.join(t.tree.outDir, 'closed.txt'), `${G}\n`);
+    t.tick(1000);
+    const state = (await t.state()).json;
+    // C (the fixtures' unlisted pane), D (Claude) and G (taken off by hand, offered anyway); E's Codex pane runs no process the scan can name, F has no log,
+    // A and B are listed.
+    assert.deepEqual(state.tabs.map((tab) => tab.session_id), [C, D, G]);
+    assert.deepEqual(state.tabs.find((tab) => tab.session_id === D), { session_id: D, label: 'live-d', status: 'working', herdr: 'work', agent: 'claude' });
+    assert.equal(t.herdr.readerRuns().length, 0, 'asking for the state starts no rebuild');
+    const added = await t.post('add-tab', { session_id: D });
+    assert.equal(added.status, 200, added.raw);
+    assert.deepEqual(t.herdr.readerRuns(), [['tab', D]], 'one quick rebuild that lists that one session');
+    assert.equal(t.herdr.agentCalls().length, 0, 'no pane is touched');
+    // A tab taken off the list by hand can be picked again: it is a new yes.
+    assert.equal((await t.post('add-tab', { session_id: G })).status, 200);
+    assert.deepEqual(t.herdr.readerRuns().at(-1), ['tab', G]);
+    // Once listed, a tab is not offered, and asking again builds nothing.
+    fs.writeFileSync(path.join(t.tree.outDir, 'sessions.txt'), [A, B, D].join('\n') + '\n');
+    t.tick(5000);
+    assert.deepEqual((await t.state()).json.tabs.map((tab) => tab.session_id), [C, G]);
+    const runs = t.herdr.readerRuns().length;
+    assert.equal((await t.post('add-tab', { session_id: D })).status, 200);
+    assert.equal(t.herdr.readerRuns().length, runs, 'a session already on the list is not built again');
+  } finally { await t.close(); }
+});
+
+test('herdr tabs: add-tab refuses bad input, a session without a log and a foreign page, and says when the build fails', async () => {
+  const t = await start();
+  try {
+    withUnlistedPanes(t);
+    const refused = [[{ session_id: D, extra: 1 }, 400], [{ session_id: 'not-an-id' }, 400], [{}, 400], [{ session_id: F }, 404]];
+    for (const [body, status] of refused) assert.equal((await t.post('add-tab', body)).status, status, JSON.stringify(body));
+    assert.equal((await t.post('add-tab', { session_id: D }, { Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await t.post('add-tab', { session_id: D }, { [TOKEN_HEADER]: 'f'.repeat(64) })).status, 403);
+    assert.deepEqual(t.herdr.readerRuns(), []);
+    t.herdr.readerResult = { code: 1, stdout: '', stderr: 'tab takes one full session id that has a session log', timedOut: false, truncated: false };
+    const failed = await t.post('add-tab', { session_id: D });
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json.code, 'rebuild_failed');
+  } finally { await t.close(); }
+});
+
 test('sync: a session taken off the list by hand stays off, and listing it again by name puts it back in reach', async () => {
   const t = await start();
   try {
@@ -2271,6 +2316,13 @@ test('Codex: Sync adopts an unlisted live Codex pane, and a changed foreground s
     assert.equal(refused.status, 409);
     assert.equal(refused.json.code, 'other_session');
     assert.equal(t.herdr.prompts().length, 0);
+    // The picker's "Herdr tabs" offers the same pane before Sync lists it (the rollout is found in the scan's own list), and add-tab builds it.
+    fs.writeFileSync(path.join(t.tree.outDir, 'sessions.txt'), `${A}\n${B}\n`);
+    t.tick(5000);
+    const tabs = (await t.state()).json.tabs;
+    assert.deepEqual(tabs.map((tab) => [tab.session_id, tab.agent]), [[D, 'codex']]);
+    assert.equal((await t.post('add-tab', { session_id: D })).status, 200);
+    assert.deepEqual(t.herdr.readerRuns().at(-1), ['tab', D]);
   } finally { await t.close(); }
 });
 
