@@ -385,6 +385,12 @@ enum WatchCheck {
         for b in boxes { states.append(await js(b, "(document.getElementById('main')||document.body).children.length > 0 ? 'drawn' : 'empty'")) }
         report("each column's lite page drew something", states.allSatisfy { $0 == "drawn" }, "states=\(states)")
         await liveAsks(model: model, report: report, wait: wait, settle: settle, js: js)
+        await liveGlanceCheck(model: model, report: report, wait: wait, settle: settle, js: js)
+        await liveSessionLinks(model: model, report: report, wait: wait, settle: settle, js: js)
+    }
+
+    /// The lite page opened with `&m=<turn id>` from the reader's feed scrolls to and outlines that reply.
+    static func liveGlanceCheck(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
         // The address with a turn id: when the reader's feed names an open ask, a column opened on it scrolls to and outlines that reply.
         let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/pmos/setup/transcript-reader/out/glance.json")
         guard let data = try? Data(contentsOf: glance), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -400,5 +406,107 @@ enum WatchCheck {
         let msg = await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''")
         report("the lite page, opened with &m=<turn id> from the reader's feed, scrolls to and outlines that reply", !msg.isEmpty, "outlined turn=\(msg.prefix(12)) wanted=\(uid.prefix(12)) placement=\(String(describing: placement))")
         model.wireWatchAsks()
+    }
+    // MARK: a session link on the real reader's lite page, read only
+
+    /// The real reader draws `a.session-ref[data-session]` where a reply names a conversation it lists. Looks through the conversations in
+    /// the reader's feed (three columns at a time, newest first) for a column whose page has one, then clicks it the way the fixture check
+    /// does: the clicked column must not navigate, the named session must be in another column, a Cmd-click must leave Watch for the
+    /// normal reader pinned to it, and in that reader the same link must be the page's own. Read only: nothing is sent to a pane.
+    static func liveSessionLinks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
+        let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/pmos/setup/transcript-reader/out/glance.json")
+        guard let data = try? Data(contentsOf: glance), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let convs = root["conversations"] as? [[String: Any]] else { print("ui-check: SKIP session links on the real lite page (no glance feed)"); return }
+        let listed = convs.compactMap { $0["id"] as? String }
+        let count = model.watch.count
+        func opened() -> [String] { model.watch.layout.slots.map { $0?.session ?? "-" } }
+        func tails(_ l: [String]) -> [String] { l.map { String($0.suffix(6)) } }
+        func boxes() -> [WebBox?] { model.watch.layout.slots.map { c in c.flatMap { model.watch.boxes[$0.id] } } }
+        let linkQuery = "[...document.querySelectorAll('a.session-ref[data-session]')].map(a => a.getAttribute('data-session'))"
+        func refs(_ b: WebBox) async -> [String] {
+            let r = await js(b, "JSON.stringify(\(linkQuery))")
+            return (try? JSONSerialization.jsonObject(with: Data(r.utf8)) as? [String]) ?? []
+        }
+        func state(_ b: WebBox) async -> String { "\(b.webView.url?.absoluteString ?? "-")|loads=\(b.pinsLoaded)|inPlace=\(b.pinsInPlace)|" + (await js(b, "location.hash + '|' + Math.round(scrollY)")) }
+
+        // The reader writes a session into its address as the first eight characters (`#s=c6cd10ed`), whatever Conn or a link gave it.
+        func shortForm(_ id: String) -> String { String(id.prefix(8)) }
+        model.watch.openAskTurnID = { _ in nil }
+        // 1. Find a column on a conversation whose reply links another listed session.
+        var found: (column: Int, session: String, target: String, count: Int)?
+        var looked = 0
+        var start = 0
+        while found == nil && start < min(listed.count, 12) {
+            let batch = Array(listed[start..<min(start + count, listed.count)]); start += count
+            for sid in batch where model.watch.layout.index(of: sid) == nil { model.watch.open(session: sid) }
+            await settle(40)
+            for _ in 0..<30 where found == nil {      // the lite page draws a conversation after it is ready
+                for (i, b) in boxes().enumerated() {
+                    guard let b = b, let sid = model.watch.layout.slots[i]?.session, batch.contains(sid) else { continue }
+                    let r = await refs(b)
+                    if let t = r.first(where: { $0 != sid && listed.contains($0) }) { found = (i, sid, t, r.count); break }
+                }
+                if found == nil { await wait(0.5) }
+            }
+            looked += batch.count
+        }
+        guard let f = found, let box = boxes()[f.column] else {
+            print("ui-check: SKIP session links on the real lite page (no link on the \(looked) conversations looked at)")
+            return
+        }
+        report("the real lite page draws a session link (a.session-ref[data-session]) that names another listed session", true,
+               "column=\(f.column) session=\(f.session.suffix(6)) links=\(f.count) first=\(f.target.suffix(6)) looked=\(looked)")
+        let short = shortForm(f.target)
+        let href = await js(box, "(document.querySelector('a.session-ref[data-session=\"\(f.target)\"]')||{getAttribute:()=>''}).getAttribute('href')")
+        report("... and its address is the lite page's own #s=<session>", href == "#s=\(f.target)", "href=\(href.prefix(60))")
+
+        // 2. A click: the clicked column does not navigate and the named session is shown in another column.
+        let clickedID = model.watch.layout.slots[f.column]!.id
+        model.watch.used(columnID: clickedID)
+        let before = await state(box), sessBefore = opened(), alreadyOpen = model.watch.layout.index(of: f.target)
+        let pick = "document.querySelector('a.session-ref[data-session=\"\(f.target)\"]')"
+        let result = await js(box, "(() => { const a = \(pick); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) ? 'not prevented' : 'prevented'; })()")
+        await settle(40)
+        let after = await state(box)
+        let col = model.watch.layout.index(of: f.target)
+        report("a click on a real session link is taken (the page does not follow it) and the clicked column did not navigate", result == "prevented" && after == before && model.watch.boxes[clickedID] === box && opened()[f.column] == f.session,
+               "click=\(result) same state=\(after == before) before=\(before.suffix(40)) after=\(after.suffix(40))")
+        report("... the named session is in another column (kept where it was if already open, else a free or the least recently used column)", col != nil && col != f.column && (alreadyOpen == nil || col == alreadyOpen),
+               "column=\(col.map(String.init) ?? "-") alreadyOpen=\(alreadyOpen.map(String.init) ?? "-") columns=\(tails(opened())) was=\(tails(sessBefore))")
+        if let c = col, let tb = boxes()[c] {
+            var shown = "-"; var n = 0
+            while n < 40 { shown = await js(tb, "location.hash"); if shown.contains(short) { break }; await wait(0.25); n += 1 }
+            report("... and that column's page is on it", shown.contains(short), "hash=\(shown.suffix(20))")
+        }
+
+        // 3. A Cmd-click leaves Watch for the normal reader pinned to the session.
+        let sessD = opened()
+        let resultD = await js(box, "(() => { const a = \(pick); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, metaKey: true })) ? 'not prevented' : 'prevented'; })()")
+        var n = 0
+        while (model.watchOn || model.web.readerBox == nil) && n < 40 { await wait(0.25); n += 1 }
+        report("a Cmd-click on a real session link leaves Watch and loads the normal reader", resultD == "prevented" && !model.watchOn && model.web.readerBox != nil && model.webTab == .reader,
+               "click=\(resultD) watchOn=\(model.watchOn) readerBox=\(model.web.readerBox == nil ? "nil" : "present") tab=\(model.webTab.rawValue)")
+        guard let rb = model.web.readerBox else { return }
+        n = 0
+        var hash = ""
+        while n < 120 { hash = await js(rb, "location.hash"); if hash.contains(short) && rb.phase == .ready { break }; await wait(0.5); n += 1 }
+        report("... pinned to the session the link names", hash.contains(short), "hash=\(hash.suffix(24)) want=\(short) after \(n * 500) ms")
+        report("... the columns' sessions are kept for the next Watch", model.watch.layout.sessions == sessD, "columns=\(tails(model.watch.layout.sessions)) want=\(tails(sessD))")
+
+        // 4. In the full reader the same link is the page's own: no Conn script, the click is not taken, the reader follows it.
+        _ = await js(rb, "location.hash = '#s=\(f.session)'; 'ok'")
+        var present = false
+        n = 0
+        while n < 120 && !present { present = await js(rb, "String(\(linkQuery).includes('\(f.target)'))") == "true"; if !present { await wait(0.5) }; n += 1 }
+        let injected = await js(rb, "String(window.__connSessionLinks)")
+        let resultE = await js(rb, "(() => { const a = \(pick); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) ? 'not prevented' : 'prevented'; })()")
+        n = 0
+        var hashE = ""
+        while n < 40 { hashE = await js(rb, "location.hash"); if hashE.contains(short) { break }; await wait(0.25); n += 1 }
+        report("in the full reader a real session link is left to the page: no Conn handler, the click is not taken, the page follows it, and Watch stays off",
+               present && injected == "undefined" && resultE != "prevented" && hashE.contains(short) && !model.watchOn,
+               "link=\(present) handler=\(injected) click=\(resultE) hash=\(hashE.suffix(24)) watchOn=\(model.watchOn)")
+
+        model.watchOn = true; await settle(40)
     }
 }

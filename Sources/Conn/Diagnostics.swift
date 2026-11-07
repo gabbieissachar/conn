@@ -133,6 +133,9 @@ enum UICheck {
     static func run(model: AppModel) async {
         func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
         func report(_ name: String, _ ok: Bool, _ detail: String = "") { print("ui-check: \(ok ? "PASS" : "FAIL") \(name) \(detail)") }
+        /// Waits for a stream (a child process, a first frame) to reach a state, up to `timeout` seconds. A fixed pause is a guess about how
+        /// long the machine takes to start a process, and it was wrong whenever the machine was busy; a check that needs a live stream asks for it.
+        func until(_ timeout: Double = 12, _ done: () -> Bool) async { var t = 0.0; while !done() && t < timeout { await wait(0.1); t += 0.1 } }
         // SwiftUI builds the menus once, from the flag the launch had; flipping the flag in this process does not rebuild them. A check
         // that needs the Agent view's menu items runs only when the launch had it on (`--agent-view`), and says so when it does not.
         let menusHaveAgentView = model.agentViewEnabled
@@ -162,7 +165,8 @@ enum UICheck {
         print("ui-check: info the Agent view flag is switched on in this process for the checks below (launched \(launchedWithAgentView ? "on" : "off"))")
         let waitingNow = model.waiting.count
         report("Dock badge counts the agents waiting on you", NSApp.dockTile.badgeLabel == (waitingNow > 0 ? "\(waitingNow)" : ""), "badge=\(NSApp.dockTile.badgeLabel ?? "nil") waiting=\(waitingNow)")
-        model.select(list[list.count / 2].id); await wait(1.5)
+        model.select(list[list.count / 2].id); await wait(0.5)
+        await until { model.primary.state == .live && model.primary.stats.frames > 0 }
         report("agent mode streams the selected pane", model.primary.state == .live && model.primary.stats.frames > 0, "state=\(model.primary.state) mode=\(model.mode.rawValue) pane=\(model.primary.paneID ?? "nil") selected=\(model.selectedPaneID ?? "nil") attentive=\(model.attentive) windowVisible=\(model.windowVisible)")
 
         // Text size: the largest at which Herdr's grid fits the room, following the window, with zoom on top.
@@ -259,7 +263,8 @@ enum UICheck {
         report("editor mode stops the pane stream", model.primary.paneID == nil && model.primary.processID == nil, "pane=\(model.primary.paneID ?? "nil")")
         model.mode = .herdr; await wait(0.3)
         report("herdr screen mode keeps streams stopped", model.primary.paneID == nil)
-        model.mode = .agent; await wait(2)
+        model.mode = .agent; await wait(0.3)
+        await until { model.primary.state == .live && model.primary.paneID == model.selectedPaneID }
         report("back in agent mode the stream restarts", model.primary.state == .live && model.primary.paneID == model.selectedPaneID, "state=\(model.primary.state)")
 
         // View order: Herdr client first, then Agent, then Editor, in the switcher, the Layout menu and Opt+Cmd+1/2/3.
@@ -287,14 +292,16 @@ enum UICheck {
             let h3 = await optCmd("3", 20); let m3 = model.mode
             menuReport("Opt+Cmd+1 is the Herdr client, Opt+Cmd+2 the Agent view and Opt+Cmd+3 the Editor; the shortcut does not attach the client",
                    h1 && m1 == .herdr && !running1 && h2 && m2 == .agent && h3 && m3 == .editor, "handled=\(h1)/\(h2)/\(h3) modes=\(m1.rawValue)/\(m2.rawValue)/\(m3.rawValue) clientRunning=\(running1)")
-            _ = await optCmd("2", 19); await wait(2)
+            _ = await optCmd("2", 19)
+            await until { model.mode == .agent && model.primary.state == .live }
             menuReport("Opt+Cmd+2 brings the Agent view and its stream back", model.mode == .agent && model.primary.state == .live, "mode=\(model.mode.rawValue) state=\(model.primary.state)")
         }
         if !menusHaveAgentView { model.mode = .agent; await wait(2) }     // the Opt+Cmd+2 steps above were skipped: go back to the Agent view by hand
         await AgentViewCheck.runOn(model: model, report: report, wait: wait)
         await wait(2)
 
-        model.toggleCompare(); await wait(2)
+        model.toggleCompare(); await wait(0.3)
+        await until { model.comparePaneID != nil && model.secondary.state == .live }
         report("compare opens a second live stream", model.comparePaneID != nil && model.secondary.state == .live, "state=\(model.secondary.state)")
         model.toggleCompare(); await wait(0.5)
         report("closing compare stops the second stream", model.comparePaneID == nil && model.secondary.paneID == nil)
@@ -304,7 +311,7 @@ enum UICheck {
         model.privacy = false
         // A working agent, so "the stream keeps running" can be seen as frames still arriving under the history.
         let working = model.snapshot.agents.first { $0.state == .working }
-        if let w = working { model.select(w.id); await wait(1.5) }
+        if let w = working { model.select(w.id); await wait(0.5); await until { model.primary.state == .live && model.primary.stats.frames > 0 } }
         let framesBefore = model.primary.stats.frames
         model.openHistory(); await wait(0.1)
         report("history swaps in at once (loading)", model.primaryHistory != nil)
@@ -314,6 +321,7 @@ enum UICheck {
         if working != nil {
             // On the stand-in a working pane prints every 250 ms, so frames must arrive; a real agent can be quiet for two
             // seconds, so there the stream only has to be alive (its observer child running).
+            await until(8) { model.primary.state == .live && model.primary.processID != nil && model.primary.stats.frames > framesBefore }
             let alive = model.primary.state == .live && model.primary.processID != nil
             let arrived = model.primary.stats.frames > framesBefore
             report("the live stream keeps delivering frames under the history", model.config.fixture ? (alive && arrived) : (alive || arrived), "frames \(framesBefore) -> \(model.primary.stats.frames), stream alive=\(alive)")
@@ -457,7 +465,8 @@ enum UICheck {
         model.inactivePauseSeconds = 1
         model.appResigned(); await wait(2.2)
         report("background pause stops the stream", !model.attentive && model.primary.paneID == nil, "attentive=\(model.attentive)")
-        model.appBecameActive(); await wait(2)
+        model.appBecameActive(); await wait(0.3)
+        await until { model.attentive && model.primary.state == .live }
         report("returning to the app restarts the stream", model.attentive && model.primary.state == .live, "state=\(model.primary.state)")
         await ExplorerCheck.run(model: model, report: report, wait: wait)
         // The menus SwiftUI built from the commands, with their shortcuts.
