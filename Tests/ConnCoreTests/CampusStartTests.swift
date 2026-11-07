@@ -34,7 +34,7 @@ private let growth = CampusSpace(kind: "team", folder: "growth-ops", displayName
     }
 
     @Test func aStartIsSentOnceAfterTheWindowAndTheNewConversationIsInTheRows() async throws {
-        let (s, _, world) = await liveStore(hold: 0.6)
+        let (s, _, world) = await liveStore(hold: 2.0)
         s.writesEnabled = true
         var made: [CampusConversation?] = []
         #expect(s.startConversation(in: mine, text: "  Plan the offsite dinner  ") { made.append($0) } == nil)

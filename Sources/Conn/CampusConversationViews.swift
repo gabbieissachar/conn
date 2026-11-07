@@ -281,17 +281,27 @@ struct CampusTranscriptView: View {
     var column: Int?
     @State private var tick = 0
     @State private var openTools: Set<String> = []
+    /// The reader's embed page this conversation is drawn on, once it has loaded (E9=a); until then, or without it, the native `page` below.
+    @StateObject private var embed = CampusEmbedBox()
 
     var body: some View {
+        // The outer Group keeps its identity when the conversation changes (the page stays loaded and is handed the other conversation); the inner one does not.
+        Group { conversation }
+            .onAppear { embed.start(url: app.web.embedURL) }
+            .onDisappear { embed.release() }
+            .onChange(of: id) { _, _ in embed.retryIfUnavailable(url: app.web.embedURL) }
+    }
+
+    private var conversation: some View {
         let _ = tick
-        Group {
+        return Group {
             if let c = campus.conversation(id) {
                 let t = campus.timeline(id) ?? CampusTimeline()
                 VStack(spacing: 0) {
                     head(c, t)
                     Divider()
                     if campus.link == .expired { ExpiredBanner() }
-                    if campus.link == .starting && !t.loaded { StartingBox() } else { page(c, t) }
+                    if campus.link == .starting && !t.loaded { StartingBox() } else { transcript(c, t) }
                     CampusComposer(campus: campus, c: c, compact: true)
                 }
                 .accessibilityIdentifier("campus-transcript")
@@ -301,6 +311,35 @@ struct CampusTranscriptView: View {
         }
         .modifier(TimelineSubscription(campus: campus, id: id, tick: $tick))
         .id(id)
+    }
+
+    /// The transcript: the reader's own page when it is loaded (and the screen is not in privacy mode, which the native view redacts), else the native one.
+    /// An open question stays native either way: the page draws questions but cannot answer one, so the buttons sit under it.
+    private func transcript(_ c: CampusConversation, _ t: CampusTimeline) -> some View {
+        let ready = embed.phase == .ready && !app.privacy
+        var offered = true
+        if case .unavailable = embed.phase { offered = false }
+        let json = offered && !app.privacy ? CampusEmbed.json(id: id, timeline: t, working: c.working) : nil
+        let asking = t.openForm ?? (c.needsYou ? campus.openForms[id] : nil)
+        return VStack(spacing: 0) {
+            ZStack {
+                if !ready { page(c, t) }
+                CampusEmbedPane(box: embed, id: id, json: json, column: column, onLink: { url, command in openLink(url, command: command) })
+                    .opacity(ready ? 1 : 0).allowsHitTesting(ready)
+                    .opacity(campus.link == .expired ? 0.6 : 1)
+                    .accessibilityIdentifier("campus-embed")
+            }
+            if ready, let f = asking { waiting(f, c).padding(.horizontal, 12).padding(.vertical, 8) }
+        }
+    }
+
+    /// A link the page handed to Conn: a Campus conversation opens by the column rule, any other web address in the browser.
+    private func openLink(_ url: URL, command: Bool) {
+        if let host = app.campus.baseURL.host, let ref = CampusClient.conversationLink(url, campusHost: host) {
+            app.openCampusLink(kind: ref.kind, folder: ref.folder, id: ref.id, command: command, fromColumn: column)
+        } else {
+            CampusEmbedBox.openExternal(url)
+        }
     }
 
     private func badge(_ c: CampusConversation) -> (String, Color) {

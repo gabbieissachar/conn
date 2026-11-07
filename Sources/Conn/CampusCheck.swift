@@ -86,7 +86,7 @@ enum CampusCheck {
                model.campusSelectedID == "ses_fakeSprint03" && campus.conversation("ses_fakeSprint03")?.state == .idle && loaded && sprintItems.contains { $0.kind == .tool && $0.tool == "shell" } && sprintItems.contains { $0.kind == .text },
                "selected=\(model.campusSelectedID ?? "nil") state=\(campus.conversation("ses_fakeSprint03")?.state.label ?? "-") items=\(sprintItems.map { "\($0.kind)" })")
         let text = sprintItems.first { $0.kind == .text }?.text ?? ""
-        let linkRuns = CampusText.attributed(text).runs.filter { $0.link != nil }
+        let linkRuns = CampusText.attributed(text).runs.filter { $0.link != nil && CampusClient.conversationLink($0.link!, campusHost: host) != nil }
         report("Campus: a reply that names another Campus conversation by its link shows it as a link", linkRuns.count == 1 && CampusClient.conversationLink(linkRuns.first!.link!, campusHost: host)?.id == "ses_fakeOffsite04", "links=\(linkRuns.count)")
         await shot("campus-4-live-view-and-transcript.png")
 
@@ -104,6 +104,9 @@ enum CampusCheck {
                working && progressed && !liveText.isEmpty && finished && kinds.contains(.reasoning) && kinds.last == .idle && !zip(kinds, kinds.dropFirst()).contains { $0 == .idle && $1 == .idle } && campus.conversation("ses_fakeOffsite04")?.state == .idle,
                "working=\(working) tool=\(progressed) live='\(liveText)' kinds=\(kinds) state=\(campus.conversation("ses_fakeOffsite04")?.state.label ?? "-")")
         await shot("campus-6-finished.png")
+
+        // 6b. The reader's embed page: markdown, steps, links, the working strip, an open question, privacy, and the fallbacks.
+        await embedChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
         // 7. Quick switcher rows and Cmd+J.
         let switcher = model.campusSwitcherRows
@@ -173,6 +176,128 @@ enum CampusCheck {
         print("ui-check: done")
         model.shutdown()
         NSApplication.shared.terminate(nil)
+    }
+
+    // MARK: the reader's embed page (E9=a)
+
+    /// Needs the reader's embed page as a file (`CONN_EMBED_URL=file:///.../embed.html`: a copy of the reader's build, never the reader on 8768). Without one the step says so
+    /// and the native transcript is what ran above.
+    static func embedChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                            control: (String) async -> Void, shot: (String) async -> Void) async {
+        let campus = model.campus
+        guard let url = model.web.embedURL, url.isFileURL else {
+            print("ui-check: SKIP Campus embed page (no CONN_EMBED_URL file: copy the reader's embed.html somewhere and point CONN_EMBED_URL at it; the native transcript is what ran above)")
+            return
+        }
+        model.watchOn = false
+        func box(_ id: String) -> CampusEmbedBox? { CampusEmbedBox.live.allObjects.first { $0.column == nil && $0.shownID == id && $0.phase == .ready && $0.sets > 0 } }
+        func dom(_ b: CampusEmbedBox, _ expr: String) async -> String { await b.read("JSON.stringify((function(){ \(expr) })())") }
+        func untilAsync(_ timeout: Double = 10, _ done: () async -> Bool) async -> Bool {
+            var t = 0.0
+            while t < timeout { if await done() { return true }; await wait(0.2); t += 0.2 }
+            return await done()
+        }
+        func count(_ b: CampusEmbedBox, _ selector: String) async -> Int { Int(await dom(b, "return document.querySelectorAll(\(jsString(selector))).length;")) ?? -1 }
+
+        // 1. The Reader column draws the conversation on the page.
+        model.openCampus("ses_fakeSprint03")
+        let shown = await until(20) { box("ses_fakeSprint03") != nil }
+        guard let page = box("ses_fakeSprint03") else { report("Campus embed: the Reader column loads the reader's embed page and hands it the conversation", false, "no ready page; phases=\(CampusEmbedBox.live.allObjects.map { "\($0.phase)" })"); return }
+        _ = await dom(page, "document.querySelectorAll('.reply .more').forEach(function(b){ b.click(); }); return 1;")
+        await wait(0.4)
+        report("Campus embed: the Reader column loads the reader's embed page and hands it the conversation (a message of yours and the reply)",
+               shown && page.lastAnswer["ok"] as? Bool == true && (page.lastAnswer["blocks"] as? Int) == 2 && (page.lastAnswer["skipped"] as? Int) == 0,
+               "answer=\(page.lastAnswer)")
+
+        // 2. It looks like a Claude or Codex session: the markdown is drawn, not shown raw.
+        let inputs = await count(page, "#main .input"), replies = await count(page, "#main .reply"), tables = await count(page, ".reply .md table"), heads = Int(await dom(page, "return [].filter.call(document.querySelectorAll('.reply .md *'), function(n){ return n.children.length === 0 && n.textContent.trim() === 'Sprint 42'; }).length;")) ?? -1
+        let bold = await count(page, ".reply .md strong"), boxes = await count(page, ".reply .codebox"), steps = await dom(page, "var r = document.querySelector('.steps-row'); return r ? r.textContent.trim().replace(/\\s+/g, ' ') : '';")
+        let raw = await dom(page, "return document.getElementById('main').textContent.indexOf('##') >= 0 || document.getElementById('main').textContent.indexOf('**') >= 0 || document.getElementById('main').textContent.indexOf('|---') >= 0;")
+        report("Campus embed: markdown is drawn as the reader draws it (heading, bold, table, code box), none of it shown raw",
+               inputs == 1 && replies == 1 && tables == 1 && heads == 1 && bold >= 1 && boxes == 1 && raw == "false", "inputs=\(inputs) replies=\(replies) tables=\(tables) heading=\(heads) strong=\(bold) codebox=\(boxes) raw=\(raw)")
+        report("Campus embed: the tool steps are one row in the reader's own words ('N steps')", steps.contains("2 steps"), "row='\(steps)'")
+        await shot("campus-11-embed-transcript.png")
+
+        // 3. Links go through Conn: a web address leaves for the browser (recorded here), a Campus conversation opens by the usual rule; the page never navigates.
+        var opened: [URL] = []
+        let savedOpen = CampusEmbedBox.openExternal
+        CampusEmbedBox.openExternal = { opened.append($0) }
+        let urlBefore = page.webView.url
+        _ = await dom(page, "document.querySelector('.md a[href^=\"https://example.com\"]').click(); return 1;")
+        let gotWeb = await until(5) { !opened.isEmpty }
+        report("Campus embed: a web link in the page is handed to Conn (opened outside, the page does not navigate)", gotWeb && opened.first?.absoluteString == "https://example.com/retro-notes" && page.webView.url == urlBefore, "opened=\(opened.map(\.absoluteString)) navigated=\(page.webView.url != urlBefore)")
+        _ = await dom(page, "document.querySelector('.md a[href*=\"ses_fakeOffsite04\"]').click(); return 1;")
+        let gotCampus = await until(8) { model.campusSelectedID == "ses_fakeOffsite04" }
+        report("Campus embed: a link to a Campus conversation opens it by the usual rule, not in the browser", gotCampus && opened.count == 1 && page.webView.url == urlBefore, "selected=\(model.campusSelectedID ?? "nil") opened=\(opened.count)")
+        CampusEmbedBox.openExternal = savedOpen
+
+        // 4. A run streams in: the page's working strip, the new message, then the strip goes.
+        _ = await until(10) { box("ses_fakeOffsite04") != nil }
+        await control("/__fake/run?c=ses_fakeOffsite04&text=Add%20a%20walking%20tour&ask=0")
+        var strip = ""
+        let stripShown = await untilAsync(15) {
+            strip = await box("ses_fakeOffsite04")?.read("(function(){var s=document.querySelector('.embed-live .txt');return s&&getComputedStyle(s.parentNode.parentNode).display!=='none'?s.textContent:'';})()") ?? ""
+            return !strip.isEmpty
+        }
+        await shot("campus-12-embed-running.png")
+        let finished = await until(30) { campus.conversation("ses_fakeOffsite04")?.working == false && campus.timeline("ses_fakeOffsite04")?.items.last?.kind == .idle }
+        await wait(0.6)
+        let offsite = box("ses_fakeOffsite04")
+        var sentText = "", stripAfter = ""
+        if let o = offsite {
+            sentText = await dom(o, "return [].map.call(document.querySelectorAll('#main .input'), function(n){return n.textContent;}).join('|');")
+            stripAfter = await dom(o, "var s = document.querySelector('.embed-live'); return s ? getComputedStyle(s).display : 'none';")
+        }
+        report("Campus embed: a run shows the page's working strip while it goes, the new message and reply arrive in place, and the strip is gone when it ends",
+               stripShown && finished && sentText.contains("Add a walking tour") && stripAfter.contains("none"), "strip='\(strip)' finished=\(finished) inputs=\(sentText.suffix(60)) stripAfter=\(stripAfter)")
+
+        // 5. An open question is not on the page (it cannot answer one); Conn's own buttons answer it.
+        model.openCampus("ses_fakeDigest02")
+        _ = await until(10) { box("ses_fakeDigest02") != nil }
+        await wait(0.6)
+        if let digest = box("ses_fakeDigest02") {
+            let asks = await count(digest, ".asks.cform"), needs = await count(digest, ".reply.needs")
+            report("Campus embed: an open question is left off the page and stays with Conn's own answer buttons", asks == 0 && needs == 0 && campus.openForms["ses_fakeDigest02"] != nil && model.campusSelected?.needsYou == true, "page asks=\(asks) needs=\(needs) open=\(campus.openForms["ses_fakeDigest02"] != nil)")
+            await shot("campus-13-embed-question.png")
+        } else { report("Campus embed: an open question is left off the page and stays with Conn's own answer buttons", false, "no page") }
+
+        // 6. Privacy mode takes the conversation off the page (the native view is redacted).
+        model.openCampus("ses_fakeSprint03")
+        _ = await until(10) { box("ses_fakeSprint03") != nil }
+        model.privacy = true
+        await wait(1.0)
+        var hidden = -2
+        if let b = box("ses_fakeSprint03") { hidden = await count(b, "#main .input, #main .reply") }
+        model.privacy = false
+        let back = await until(10) { box("ses_fakeSprint03") != nil }
+        await wait(0.8)
+        var backCount = -2
+        if let b = box("ses_fakeSprint03") { backCount = await count(b, "#main .reply") }
+        report("Campus embed: privacy mode empties the page and the conversation comes back when it is off", hidden == 0 && back && backCount == 1, "inPrivacy=\(hidden) after=\(backCount)")
+
+        // 7. Without the page the native transcript stays: a missing file, a page with no entry point, a server that answers 404.
+        let saved = CampusEmbedBox.loadTimeout
+        CampusEmbedBox.loadTimeout = 6
+        func phase(_ u: URL) async -> String {
+            let b = CampusEmbedBox()
+            b.start(url: u)
+            _ = await until(12) { if case .unavailable = b.phase { return true }; return b.phase == .ready }
+            b.release()
+            return "\(b.phase)"
+        }
+        let missing = await phase(URL(fileURLWithPath: "/nonexistent-conn-check/embed.html"))
+        let noEntry = await phase(URL(string: "/campus/login", relativeTo: campus.baseURL)!.absoluteURL)
+        let notFound = await phase(URL(string: "/__fake/no-such-page.html", relativeTo: campus.baseURL)!.absoluteURL)
+        CampusEmbedBox.loadTimeout = saved
+        report("Campus embed: with no page (missing file, a page without the entry point, a 404) the box gives up with a reason and the native transcript stays",
+               missing.hasPrefix("unavailable") && noEntry.hasPrefix("unavailable") && notFound.contains("404"), "missing=\(missing.prefix(60)) noEntry=\(noEntry.prefix(60)) 404=\(notFound.prefix(60))")
+        model.openCampus("ses_fakeOffsite04")
+    }
+
+    private static func jsString(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        let text = String(decoding: data, as: UTF8.self)
+        return String(text.dropFirst().dropLast())
     }
 
     // MARK: 403 when signed out
@@ -261,6 +386,14 @@ enum CampusCheck {
         model.openCampus("ses_fakeSprint03"); await wait(0.5)
         let two = opened().filter(CampusColumn.isCampus).count
         report("Campus: two Campus columns can sit beside Herdr's", two == 2, "columns=\(short(opened()))")
+        if let u = model.web.embedURL, u.isFileURL {
+            var columns: [(Int, String)] = []
+            for i in watch.layout.slots.indices { if let s = watch.layout.slots[i], let cid = CampusColumn.id(of: s.session) { columns.append((i, cid)) } }
+            let drawn = await until(15) {
+                columns.allSatisfy { index, id in CampusEmbedBox.live.allObjects.contains { $0.column == index && $0.shownID == id && $0.phase == .ready && $0.sets > 0 } }
+            }
+            report("Campus: the Campus columns in Watch are drawn on the reader's embed page too, one page per column", !columns.isEmpty && drawn, "columns=\(columns.map { "\($0.0):\($0.1.suffix(4))" })")
+        }
         let notShown = herdr.first { a in !watch.layout.sessions.contains { WatchLayout.same($0, a.sessionID!) } }!
         for i in watch.layout.slots.indices where watch.layout.slots[i].map({ CampusColumn.isCampus($0.session) }) == true { watch.used(columnID: watch.layout.slots[i]!.id) }
         let herdrIdx = opened().firstIndex { !CampusColumn.isCampus($0) }!

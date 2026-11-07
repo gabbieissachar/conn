@@ -9,6 +9,8 @@
 #                                 CAMPUS section at it; add --no-campus to leave Campus out. A plain launch reads the real Campus (sign in inside Conn).
 #   ./run.sh --campus-url ADDRESS use another Campus (default https://campus.shopback.com); --no-campus leaves the section out; a scripted launch
 #                                 (--ui-check and the like) never reaches the real Campus unless --campus is given
+#   CONN_EMBED_URL=ADDRESS ./run.sh ...   the reader's embed page that draws Campus conversations (default: the live reader's; a --fixture launch has none, so it keeps the native transcript;
+#                                 a file copy of embed.html is what the --campus-check embed steps use)
 #   ./run.sh --campus-writes      start with the "Campus writes" switch on (a person's own launch starts with it off)
 #   ./run.sh --fixture --campus-signed-out-403   the stand-in Campus answers 403 (what the real one answers) instead of 401 to a person who is not signed in
 #   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)

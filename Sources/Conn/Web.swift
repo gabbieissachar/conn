@@ -498,6 +498,13 @@ final class WebHub {
         return URL(string: env["CONN_LITE_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/live/index.html")!
     }
 
+    /// The reader's embed page, which a Campus conversation in the Reader column or a Watch column is drawn on (`CampusEmbedBox`). `CONN_EMBED_URL` names another address
+    /// (a file for a check); an invented (`--fixture`) launch asks nothing of the real reader, so without it there is no page and the native transcript stays. nil: none.
+    var embedURL: URL? {
+        if let e = ProcessInfo.processInfo.environment["CONN_EMBED_URL"], !e.isEmpty { return URL(string: e) }
+        return fixture ? nil : URL(string: CampusEmbed.servedAddress)
+    }
+
     /// A web view for one Watch column. It is not one of the two panes: a link that leaves the page goes to the browser (a column
     /// has no pane to switch to), and the box is dropped when Watch ends.
     func makeLiteBox(startFragment: String?) -> WebBox {
