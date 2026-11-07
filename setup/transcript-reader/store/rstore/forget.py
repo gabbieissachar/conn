@@ -20,13 +20,14 @@ from . import db
 
 
 def family(conn: sqlite3.Connection, session_id: str) -> list[str]:
-    """The session and its sub-agents (any session whose parent is, or is under, it)."""
+    """The session and its sub-agents: any session whose parent column, source or sub-agent link points at it, however deep."""
     found = [session_id]
     frontier = [session_id]
     while frontier:
         marks = ",".join("?" * len(frontier))
         children = [r[0] for r in conn.execute(f"SELECT session_id FROM sessions WHERE parent_session_id IN ({marks})", frontier)]
         children += [r[0] for r in conn.execute(f"SELECT DISTINCT session_id FROM sources WHERE parent_session_id IN ({marks})", frontier)]
+        children += [r[0] for r in conn.execute(f"SELECT to_session FROM links WHERE kind = 'subagent' AND from_session IN ({marks})", frontier)]
         frontier = [c for c in dict.fromkeys(children) if c not in found]
         found += frontier
     return found

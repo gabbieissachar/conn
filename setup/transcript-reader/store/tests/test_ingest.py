@@ -145,6 +145,31 @@ class Records(StoreCase):
         self.assertFalse(result["text"])
         self.assertIn('"h":1', result["meta"])
 
+    def test_copilot_pi_and_codex_tool_results_follow_the_same_credential_rule(self):
+        sid = synth.sid(3)
+        copilot = [{"type": "session.start", "id": "e0", "timestamp": synth.iso(synth.T0), "data": {"sessionId": sid, "context": {"cwd": "/work/c"}}},
+                   {"type": "user.message", "id": "u0", "timestamp": synth.iso(synth.T0 + 1), "data": {"content": "show env", "messageId": "m0", "delivery": "idle"}},
+                   {"type": "assistant.message", "id": "a0", "timestamp": synth.iso(synth.T0 + 2), "data": {"content": "", "toolRequests": [
+                       {"toolCallId": "k1", "name": "bash", "arguments": {"command": "cat ~/.env"}}]}},
+                   {"type": "tool.execution_complete", "id": "x0", "timestamp": synth.iso(synth.T0 + 3), "data": {"toolCallId": "k1", "result": {"content": "COPILOT-SECRET-VALUE"}}},
+                   {"type": "tool.execution_complete", "id": "x1", "timestamp": synth.iso(synth.T0 + 4), "data": {"toolCallId": "never-seen", "result": {"content": "ORPHAN-OUTPUT"}}}]
+        synth.write_jsonl(synth.copilot_path(self.home, sid), copilot)
+        psid = synth.sid(4)
+        pi = synth.pi_conversation(psid, n=1)
+        pi[-2]["message"]["content"] = [{"type": "text", "text": "PI-TOOL-RESULT-SECRET"}]
+        synth.write_jsonl(synth.pi_path(self.home, psid), pi)
+        csid = synth.sid(2)
+        codex = synth.codex_conversation(csid, n=1)
+        codex.insert(2, {"type": "response_item", "timestamp": synth.iso(synth.T0 + 3), "payload": {"type": "function_call", "name": "exec", "call_id": "f1", "arguments": json.dumps({"command": "cat ~/.env"})}})
+        codex.insert(3, {"type": "response_item", "timestamp": synth.iso(synth.T0 + 4), "payload": {"type": "function_call_output", "call_id": "f1", "output": "CODEX-SECRET-VALUE"}})
+        synth.write_jsonl(synth.codex_path(self.home, csid), codex)
+        self.ing.scan()
+        blob = "".join((r["text"] or "") + r["meta"] for r in self.rows("SELECT text, meta FROM events"))
+        for secret in ("COPILOT-SECRET-VALUE", "ORPHAN-OUTPUT", "PI-TOOL-RESULT-SECRET", "CODEX-SECRET-VALUE"):
+            self.assertNotIn(secret, blob)
+        self.assertIn('"h":1', self.one("SELECT meta FROM events WHERE tool_use_id = 'k1' AND role = 'tool_result'"))
+        self.assertIn('"no_step":1', self.one("SELECT meta FROM events WHERE tool_use_id = 'never-seen'"))
+
     def test_a_tool_output_is_bounded_and_a_read_keeps_no_file_text(self):
         records = [synth.c_user("go", synth.T0), synth.c_tool("Bash", {"command": "yes"}, synth.T0 + 1, "c1"),
                    synth.c_result("c1", "x" * 20000, synth.T0 + 2), synth.c_tool("Read", {"file_path": "/work/alpha/a.txt"}, synth.T0 + 3, "c2"),
@@ -451,6 +476,30 @@ class Forget(StoreCase):
         self.ing.scan()
         self.assertEqual(self.one("SELECT COUNT(*) FROM sessions WHERE session_id IN (?, 'agent-zz')", parent), 0)
         self.assertEqual(self.one("SELECT count FROM counters WHERE name = 'skipped_source' AND key = 'claude:forgotten'"), 2)
+
+    def test_forget_follows_sub_agent_links_a_codex_child_included(self):
+        parent, child = synth.sid(2), synth.sid(7)
+        synth.write_jsonl(synth.codex_path(self.home, parent), synth.codex_conversation(parent, n=1))
+        records = synth.codex_conversation(child, n=1)
+        records[0]["payload"]["parent_thread_id"] = parent
+        synth.write_jsonl(synth.codex_path(self.home, child, day="2026/11/07"), records)
+        self.ing.scan()
+        self.assertEqual(self.one("SELECT COUNT(*) FROM links WHERE from_session = ?", parent), 1)
+        report = forget.forget(self.conn, parent)
+        self.assertEqual(sorted(report["forgotten"]), sorted([parent, child]))
+        self.assertEqual(self.one("SELECT COUNT(*) FROM sessions"), 0)
+        self.ing.scan()
+        self.assertEqual(self.one("SELECT COUNT(*) FROM sessions"), 0)
+
+    def test_a_codex_child_of_a_forgotten_parent_that_appears_later_is_not_taken(self):
+        parent, child = synth.sid(2), synth.sid(7)
+        forget.forget(self.conn, parent)
+        records = synth.codex_conversation(child, n=1)
+        records[0]["payload"]["parent_thread_id"] = parent
+        synth.write_jsonl(synth.codex_path(self.home, child), records)
+        self.ing.scan()
+        self.assertEqual(self.one("SELECT COUNT(*) FROM sessions"), 0)
+        self.assertEqual(self.one("SELECT count FROM counters WHERE name = 'skipped_source' AND key = 'codex:forgotten'"), 1)
 
     def test_forget_names_the_snapshots_that_still_hold_the_session(self):
         synth.write_jsonl(synth.claude_path(self.home, synth.sid(1)), synth.claude_conversation(n_turns=1))

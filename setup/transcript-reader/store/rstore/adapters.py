@@ -198,7 +198,13 @@ def _result_blocks(blocks, steps_by_id: dict) -> tuple[list[dict], str]:
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
         tool_use_id = block.get("tool_use_id")
-        step = dict(steps_by_id.get(tool_use_id) or {"k": "other", "n": "tool", "s": "tool"})
+        known = steps_by_id.get(tool_use_id)
+        if known is None:
+            # No step for this call (its record is not in the store): nothing of its output is kept, because the rule that hides a
+            # credential path's output lives in the step.
+            results.append({"id": tool_use_id, "no_step": 1})
+            continue
+        step = dict(known)
         step.pop("out", None)
         tool_steps.apply_result(step, block)
         out = step.pop("out", "") or ""
@@ -342,11 +348,16 @@ def codex_row(record: dict, offset: int, facts: Facts, steps_by_id: dict) -> dic
                        at=at, meta=meta_json({**meta, "payload": sub}))
     if sub in ("custom_tool_call_output", "function_call_output"):
         call_id = payload.get("call_id")
-        step = dict(steps_by_id.get(call_id) or {"k": "other", "n": "tool", "s": "tool"})
-        step.pop("out", None)
-        tool_steps.apply_result(step, {"content": bp.codex_output_text(payload.get("output")), "is_error": payload.get("status") == "failed"})
-        out = step.pop("out", "") or ""
-        item = {"id": call_id, **{k: step[k] for k in ("f", "t", "l", "z") if k in step}}
+        known = steps_by_id.get(call_id)
+        out, item = "", {"id": call_id, "no_step": 1}
+        if known is not None:
+            step = dict(known)
+            step.pop("out", None)
+            tool_steps.apply_result(step, {"content": bp.codex_output_text(payload.get("output")), "is_error": payload.get("status") == "failed"})
+            out = step.pop("out", "") or ""
+            item = {"id": call_id, **{k: step[k] for k in ("f", "t", "l", "z") if k in step}}
+            if step.get("h"):
+                item["h"] = 1
         return new_row("response_item", offset, role="tool_result", tool_use_id=call_id if isinstance(call_id, str) else None, at=at,
                        text=excerpt(out, tool_steps.OUTPUT_CHARS), text_len=len(out), meta=meta_json({**meta, "payload": sub, "results": [item]}))
     if sub in CODEX_RESPONSE_KEPT:
@@ -356,6 +367,16 @@ def codex_row(record: dict, offset: int, facts: Facts, steps_by_id: dict) -> dic
 
 
 # ------------------------------------------------------------------------------------------------------------------- Copilot
+
+def copilot_step(name, arguments, at, cwd: str) -> dict:
+    """One step for a Copilot tool call (a patch makes several blocks): the first block's step, hidden when any block's is."""
+    blocks = bp.copilot_tool_blocks(name, arguments, cwd)
+    steps = [tool_steps.make_step(block, at, 0) for block in blocks]
+    step = dict(steps[0])
+    if any(item.get("h") for item in steps):
+        step["h"] = 1
+    return step
+
 
 def copilot_row(record: dict, offset: int, facts: Facts, steps_by_id: dict) -> dict | None:
     kind = record.get("type")
@@ -388,20 +409,32 @@ def copilot_row(record: dict, offset: int, facts: Facts, steps_by_id: dict) -> d
         for request in data.get("toolRequests") or []:
             if isinstance(request, dict):
                 tools.append({"id": request.get("toolCallId"), "name": request.get("name")})
+                if isinstance(request.get("toolCallId"), str) and request["toolCallId"] not in steps_by_id:
+                    steps_by_id[request["toolCallId"]] = copilot_step(request.get("name"), request.get("arguments"), at, facts.cwd or "")
         if tools:
             meta["tools"] = tools
         first = tools[0] if tools else {}
         return new_row(kind, offset, role="assistant", tool_use_id=first.get("id"), tool_name=first.get("name"), text=excerpt(text),
                        text_len=len(text), meta=meta_json(meta), is_sidechain=int(is_helper), **common)
     if kind == "tool.execution_start":
+        if isinstance(data.get("toolCallId"), str) and data["toolCallId"] not in steps_by_id:
+            steps_by_id[data["toolCallId"]] = copilot_step(data.get("toolName"), data.get("arguments"), at, facts.cwd or "")
         return new_row(kind, offset, role="tool_call", tool_use_id=data.get("toolCallId"), tool_name=data.get("toolName"),
                        meta=meta_json(meta), is_sidechain=int(is_helper), **common)
     if kind == "tool.execution_complete":
         result = data.get("result") if isinstance(data.get("result"), dict) else {}
         output = result.get("content") if isinstance(result.get("content"), str) else ""
-        step = {"k": "other", "n": "tool", "s": "tool"}
-        tool_steps.apply_result(step, {"content": output, "is_error": data.get("success") is False})
-        out = step.pop("out", "") or ""
+        known = steps_by_id.get(data.get("toolCallId"))
+        out = ""
+        if known is None:
+            meta["no_step"] = 1  # no step for this call: nothing of its output is kept (the credential-path rule lives in the step)
+        else:
+            step = dict(known)
+            step.pop("out", None)
+            tool_steps.apply_result(step, {"content": output, "is_error": data.get("success") is False})
+            out = step.pop("out", "") or ""
+            if step.get("h"):
+                meta["h"] = 1
         return new_row(kind, offset, role="tool_result", tool_use_id=data.get("toolCallId"), text=excerpt(out, tool_steps.OUTPUT_CHARS),
                        text_len=len(out), meta=meta_json(meta), is_sidechain=int(is_helper), **common)
     return new_row(kind, offset, role="system", meta=meta_json(meta), is_sidechain=int(is_helper), **common)
@@ -422,7 +455,8 @@ def pi_row(record: dict, offset: int, facts: Facts, steps_by_id: dict) -> dict |
         message = record.get("message") if isinstance(record.get("message"), dict) else {}
         content = message.get("content")
         role = message.get("role")
-        text = bp.block_text(content)
+        # A tool result's text is never kept for Pi: the credential-path rule needs the call's step, and Pi's results do not name their call.
+        text = "" if role in ("toolResult", "tool_result", "tool") else bp.block_text(content)
         tools = []
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("type") in ("toolCall", "tool_use"):

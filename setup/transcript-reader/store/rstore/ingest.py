@@ -252,6 +252,13 @@ class Ingester:
                     else:
                         start_offset, start_idx, cursor = row["turn_start_offset"], row["turn_start_idx"], row["cursor_offset"]
                         carry = json.loads(row["carry"] or "{}")
+        # A Codex sub-thread names its parent only inside the log: a forgotten parent's child is never taken either.
+        if desc.harness == "codex" and (row is None or row["state"] == "skipped"):
+            parent = self.head_facts(desc).parent_thread
+            if parent and self.conn.execute("SELECT 1 FROM forgotten WHERE session_id = ?", (parent,)).fetchone():
+                with db.transaction(self.conn):
+                    self.note_skip(desc, stat, "forgotten", now, row if row is not None else None)
+                return "skipped"
         # Scope: only a stricter-than-everything policy needs the head read before a file is taken.
         facts_head = None
         if self.settings.scope_policy != "everything":
