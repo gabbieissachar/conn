@@ -243,6 +243,7 @@ final class AppModel: ObservableObject {
         store.start()
         openAsks.start { [weak self] in self.map { $0.windowVisible && $0.attentive } ?? false }
         wireWatchAsks()
+        openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
         watch.onOpenInReader = { [weak self] session in self?.openSessionInReader(session) }
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
@@ -361,6 +362,7 @@ final class AppModel: ObservableObject {
         }
         syncSessions()
         followHerdrClientFocus()
+        readerTargetMayHaveChanged()
         let n = waiting.count
         NSApplication.shared.dockTile.badgeLabel = n > 0 ? "\(n)" : ""
     }
@@ -452,13 +454,37 @@ final class AppModel: ObservableObject {
 
     var readerVisible: Bool { showWeb && webTab == .reader && !watchOn }
 
+    /// The reader conversation an agent stands for: the session Herdr names, else the one its open ask names. nil: the agent has no
+    /// transcript yet (Herdr reports a session only once an integration has, so a pane started a moment ago has none).
+    func readerSession(for agent: Agent) -> String? { ReaderTarget.session(herdr: agent.sessionID, ask: ask(for: agent)?.session) }
+
+    /// The Reader column has nothing for the selected agent: it says so instead of staying on the conversation of the agent chosen
+    /// before, which would read as this agent's transcript.
+    var readerHasNoTranscript: Bool {
+        guard readerFollows, !watchOn, let a = selectedAgent else { return false }
+        return readerSession(for: a) == nil
+    }
+
+    /// The conversation the selected agent stood for when last looked at, so a session that appears later (Herdr reports one once an
+    /// integration has, or an open ask names one) reaches the reader without another click.
+    private var readerTargetSeen: (pane: String, session: String?)?
+
+    private func readerTargetMayHaveChanged() {
+        guard let a = selectedAgent else { readerTargetSeen = nil; return }
+        let now = readerSession(for: a)
+        defer { readerTargetSeen = (a.id, now) }
+        if let seen = readerTargetSeen, seen.pane == a.id, seen.session != now { pinReader() }
+    }
+
     /// "Open the reader pinned to the selected pane": debounced, because every pin is a page load.
     func pinReader() {
         pinWork?.cancel()
         guard readerFollows, readerVisible, let a = selectedAgent else { return }
         // The reader was just opened on this agent's ask: a pin to its newest turn would take it away again.
         if askPane == a.id { return }
-        let w = DispatchWorkItem { [weak self] in self?.web.box(.reader).pin(sessionID: a.sessionID) }
+        // No conversation to show: the column's own notice covers the page (`readerHasNoTranscript`), and nothing is pinned.
+        guard let session = readerSession(for: a) else { return }
+        let w = DispatchWorkItem { [weak self] in self?.web.box(.reader).pin(sessionID: session) }
         pinWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
     }
@@ -801,6 +827,8 @@ final class AppModel: ObservableObject {
         let asking = ask(for: a)
         if herdrClientDriving {
             moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
+            // The reader follows the selection here too (a row with an ask opens it on the ask just below).
+            if asking == nil { askPane = nil; pinReader() }
         } else {
             select(a.id, pin: asking == nil)
         }
@@ -840,7 +868,7 @@ final class AppModel: ObservableObject {
             if case .failed(_, _, let reason) = outcome {
                 if let before = self.herdrHighlightBeforeNav {
                     if self.selectedWorkspaceID == workspace { self.selectedWorkspaceID = before.workspace }
-                    if let p = pane, self.selectedPaneID == p { self.selectedPaneID = before.pane }
+                    if let p = pane, self.selectedPaneID == p { self.selectedPaneID = before.pane; self.askPane = nil; self.pinReader() }
                 }
                 self.toast("The Herdr client did not switch to \(shownLabel). \(reason).")
             }
@@ -862,7 +890,10 @@ final class AppModel: ObservableObject {
         guard let at = clientFocus.observe(workspace: snapshot.focusedWorkspaceID, tab: snapshot.focusedTabID, adopt: adopt,
                                            settled: settled, userActive: fallback.hadUserInput(within: 2)) else { return }
         selectedWorkspaceID = at.workspace
-        if let a = snapshot.agent(inTab: at.tab) { selectedPaneID = a.id }
+        if let a = snapshot.agent(inTab: at.tab), a.id != selectedPaneID {
+            selectedPaneID = a.id
+            askPane = nil; pinReader()      // the reader follows the highlight, whoever moved it
+        }
     }
 
     func shutdown() {

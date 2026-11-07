@@ -6,7 +6,7 @@
 //   JSON API on <dir>/<session>/herdr.sock: ping, session.snapshot, events.subscribe, pane.read, pane.send_input
 //   pane stream on <dir>/<session>/stream.sock, relayed by `FakeHerdr cli ... terminal session observe`
 //   `FakeHerdr cli --session S status --json`
-// Test-only control calls start with "fake.": set_state, set_protocol, mark, dump, stall.
+// Test-only control calls start with "fake.": set_state, add_pane, set_session, set_protocol, mark, dump, stall.
 import Foundation
 import ConnCore
 
@@ -35,6 +35,10 @@ public final class FakeHerdrServer: @unchecked Sendable {
         var history: [String] = []
         var revision = 0
         var sent: [String] = []
+        /// What the pane's `agent_session` says. `.numbered` is the stand-in's usual invented id (from the pane's place in the list);
+        /// `.none` leaves the field out, as real Herdr does until an integration reports a session for the pane (`fake.add_pane`).
+        enum Session { case numbered, none, value(String) }
+        var session: Session = .numbered
         init(id: String, workspace: String, tab: String, label: String, state: AgentState, rows: Int) {
             self.id = id; self.workspace = workspace; self.tab = tab; self.label = label; self.state = state
             lines = Array(repeating: "", count: rows)
@@ -172,9 +176,15 @@ public final class FakeHerdrServer: @unchecked Sendable {
              "label": "", "agent": "claude", "agent_status": p.state.rawValue, "revision": p.revision]
         }
         let agents: [[String: Any]] = panes.map { p in
-            ["terminal_id": "term_\(p.id)", "agent": "claude", "terminal_title_stripped": p.label, "agent_status": p.state.rawValue,
-             "agent_session": ["source": "fake", "agent": "claude", "kind": "id", "value": "00000000-0000-4000-8000-\(String(format: "%012d", panes.firstIndex { $0 === p } ?? 0))"],
-             "workspace_id": p.workspace, "tab_id": p.tab, "pane_id": p.id, "focused": false, "cwd": "/tmp/fixture"]
+            var a: [String: Any] = ["terminal_id": "term_\(p.id)", "agent": "claude", "terminal_title_stripped": p.label, "agent_status": p.state.rawValue,
+                                    "workspace_id": p.workspace, "tab_id": p.tab, "pane_id": p.id, "focused": false, "cwd": "/tmp/fixture"]
+            func session(_ value: String) -> [String: Any] { ["source": "fake", "agent": "claude", "kind": "id", "value": value] }
+            switch p.session {
+            case .numbered: a["agent_session"] = session("00000000-0000-4000-8000-\(String(format: "%012d", panes.firstIndex { $0 === p } ?? 0))")
+            case .value(let v): a["agent_session"] = session(v)
+            case .none: break      // Herdr omits the field until an integration has reported a session
+            }
+            return a
         }
         let layouts: [[String: Any]] = panes.map { p in
             ["workspace_id": p.workspace, "tab_id": p.tab, "zoomed": false, "area": ["x": 0, "y": 0, "width": config.cols, "height": config.rows],
@@ -253,6 +263,23 @@ public final class FakeHerdrServer: @unchecked Sendable {
                 guard let p = pane(params["pane_id"] as? String), let s = params["state"] as? String else { fail("bad_params", "pane_id, state"); continue }
                 lock.lock(); p.state = AgentState(raw: s); lock.unlock()
                 broadcastEvent("pane.agent_status_changed", ["pane_id": p.id, "agent_status": s])
+                reply(["result": ["type": "ok"]])
+            case "fake.add_pane":
+                // A new agent in its own space, as a freshly started worker looks to Herdr: `session` absent leaves `agent_session` out
+                // (no integration has reported one yet); `fake.set_session` reports it later.
+                guard let id = params["pane_id"] as? String, HerdrEndpoint.validPaneID(id), pane(id) == nil else { fail("bad_params", "pane_id (new, valid)"); continue }
+                let ws = (params["workspace_id"] as? String) ?? id.split(separator: ":").first.map(String.init) ?? "wnew"
+                let label = (params["label"] as? String) ?? "new agent"
+                let p = Pane(id: id, workspace: ws, tab: "\(ws):t1", label: label, state: AgentState(raw: (params["state"] as? String) ?? "working"), rows: config.rows)
+                if let s = params["session"] as? String { p.session = .value(s) } else { p.session = .none }
+                Self.paint(p, cols: config.cols)
+                lock.lock(); panes.append(p); lock.unlock()
+                broadcastEvent("pane.created", ["pane_id": id])
+                reply(["result": ["type": "ok"]])
+            case "fake.set_session":
+                guard let p = pane(params["pane_id"] as? String) else { fail("pane_not_found", "no such pane"); continue }
+                lock.lock(); if let s = params["session"] as? String { p.session = .value(s) } else { p.session = .none }; lock.unlock()
+                broadcastEvent("pane.updated", ["pane_id": p.id])
                 reply(["result": ["type": "ok"]])
             case "fake.set_protocol":
                 lock.lock(); serverProtocol = (params["protocol"] as? Int) ?? 22; lock.unlock()

@@ -29,7 +29,9 @@ enum Capture {
     }
 
     /// Whole window, title bar included, at 2x.
-    static func window(to url: URL) async {
+    /// `webSnapshots: false` leaves out the web views' own pictures, which are laid over everything: a SwiftUI view drawn above a web
+    /// view (a notice, the privacy cover) shows only without them.
+    static func window(to url: URL, webSnapshots: Bool = true) async {
         guard let window = mainWindow(), let frameView = window.contentView?.superview ?? window.contentView else {
             let d = NSApp.windows.map { "\($0.className) title='\($0.title)' visible=\($0.isVisible) titled=\($0.styleMask.contains(.titled)) frame=\($0.frame)" }
             FileHandle.standardError.write("capture: no main window; windows=\(d)\n".data(using: .utf8)!)
@@ -39,7 +41,7 @@ enum Capture {
         guard let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return }
         frameView.cacheDisplay(in: frameView.bounds, to: rep)
         var overlays: [(NSImage, NSRect)] = []
-        for wv in webViews(in: frameView) where !wv.isHiddenOrHasHiddenAncestor && wv.window != nil {
+        for wv in webViews(in: frameView) where webSnapshots && !wv.isHiddenOrHasHiddenAncestor && wv.window != nil {
             if let img = await snapshot(of: wv) { overlays.append((img, wv.convert(wv.bounds, to: nil))) }
         }
         let scale: CGFloat = 2

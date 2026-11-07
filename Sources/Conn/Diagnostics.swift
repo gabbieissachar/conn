@@ -159,6 +159,16 @@ enum UICheck {
                "agentViewFlag=\(launchedWithAgentView) scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
+        // `CONN_UI_CHECK_ONLY=name,name` runs just those checks (reader-follow, asks-read, sidebar, blocked-prompt), with the Agent view on as
+        // the full suite has it by then, so one area can be run in half a minute instead of three.
+        let only = Set((ProcessInfo.processInfo.environment["CONN_UI_CHECK_ONLY"] ?? "").split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        if !only.isEmpty {
+            model.agentViewEnabled = true; model.mode = .agent; await wait(1)
+            if only.contains("reader-follow") { await ReaderFollowCheck.run(model: model, report: report, wait: wait) }
+            print("ui-check: done (only \(only.sorted().joined(separator: ", ")))")
+            model.shutdown(); NSApplication.shared.terminate(nil)
+            return
+        }
         // The Agent view off: nothing reaches it. Then the flag is switched on in this process, for every check below that needs the Agent view.
         await AgentViewCheck.runOff(model: model, menusMatchFlag: !launchedWithAgentView, report: report, wait: wait)
         model.agentViewEnabled = true; model.mode = .agent; await wait(1)
@@ -452,6 +462,8 @@ enum UICheck {
         await WatchCheck.run(model: model, report: report, wait: wait)
         await AskRowsCheck.run(model: model, report: report, wait: wait)
         await OpenAsksPageReadCheck.run(report: report, wait: wait)
+        model.webTab = .reader; model.pinReader(); await wait(0.5)
+        await ReaderFollowCheck.run(model: model, report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
 
         model.showSwitcher = true; model.switcherQuery = "agent"; await wait(0.3)

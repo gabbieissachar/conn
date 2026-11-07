@@ -161,6 +161,8 @@ struct WebColumn: View {
             Divider()
             ZStack {
                 WebPaneRep(box: box)
+                // The selected agent has no conversation yet: say so over the page, which still shows the agent chosen before.
+                if box.kind == .reader, app.readerHasNoTranscript { NoTranscriptNotice(agentName: app.selectedAgent?.name ?? "This agent") }
                 if app.privacy { Rectangle().fill(Color(nsColor: .windowBackgroundColor)); Label("Privacy mode", systemImage: "eye.slash").foregroundStyle(.secondary) }
                 if case .failed(let msg) = box.phase, !app.privacy {
                     VStack(spacing: 6) {
@@ -173,6 +175,27 @@ struct WebColumn: View {
                 }
             }
         }
+    }
+}
+
+/// Over the Reader page when the selected agent has no conversation in the reader yet. A pane started a moment ago has none: Herdr
+/// names a session only once an integration has reported one. Without this the column kept the conversation of the agent chosen
+/// before, which read as this agent's transcript.
+struct NoTranscriptNotice: View {
+    let agentName: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "text.bubble").font(.system(size: 22)).foregroundStyle(.secondary)
+            Text("No transcript yet for this agent").font(.system(size: 13, weight: .semibold))
+            Text("\(agentName) has no conversation the reader can show yet. It opens here as soon as there is one.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("reader-no-transcript")
     }
 }
 
