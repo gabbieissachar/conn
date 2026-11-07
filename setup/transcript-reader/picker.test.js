@@ -270,18 +270,23 @@ const fnBody = (page, fn) => page.slice(page.indexOf('function ' + fn + '('), pa
 function iconPage() {
   const page = pageSource();
   const make = () => ({ hidden: false, attrs: {}, title: '', setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
-  const conv = make(), docs = make(), files = make();
-  const world = { state: { view: 'reader', docPage: 'list', doc: null }, count: 0, wide: false };
+  const conv = make(), docs = make(), files = make(), expand = make();
+  const world = { state: { view: 'reader', docPage: 'list', doc: null }, count: 0, wide: false, expanded: false, phone: false, drawerOpen: false };
   const sandbox = {
     state: world.state,
     data: { documents: { open: {} } },
     wideDoc: () => world.wide,
-    document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs, 'files-quick': files })[id] },
+    canExpand: () => !world.phone,
+    expandedNow: () => world.expanded && !world.phone,
+    slideOver: () => world.expanded && !world.phone && !world.wide,
+    onFilePage: () => world.wide || (world.expanded && !world.phone) || world.state.docPage === 'file' || world.count < 2,
+    get docSideOpen() { return world.drawerOpen; },
+    document: { getElementById: (id) => ({ 'view-conv': conv, 'view-doc': docs, 'files-quick': files, 'expand-quick': expand })[id] },
     listedDocuments: () => new Array(world.count).fill(0),
     String,
   };
   const run = vm.runInNewContext(fnBody(page, 'docsLabel') + '\n  }\n' + fnBody(page, 'paintViewIcons') + '\n  }\n({ docsLabel, paintViewIcons })', sandbox);
-  return { conv, docs, files, world, ...run };
+  return { conv, docs, files, expand, world, ...run };
 }
 
 test('icons: Documents is lit on the Documents view and Conversation is offered on every other view', () => {
@@ -338,13 +343,53 @@ test('icons: Files appears only for an open multi-file document on a phone file 
   assert.equal(page.files.hidden, true, 'the Files icon hides on non-Documents views');
 });
 
+test('icons: Expand is on the file page of every device but a phone, and the Files icon opens the drawer on a narrow expanded window', () => {
+  const page = iconPage();
+  page.world.count = 2;
+  page.world.state.view = 'doc';
+  page.world.state.docPage = 'file';
+  page.world.state.doc = 'open';
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, false, 'a narrow desktop window has Expand');
+  assert.equal(page.expand.attrs['aria-pressed'], 'false');
+  page.world.wide = true;
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, false, 'and a wide one');
+  page.world.wide = false;
+  page.world.phone = true;
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, true, 'a phone has none, however wide');
+  page.world.wide = true;
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, true, 'a phone held wide is still a phone');
+  page.world.phone = false;
+  page.world.wide = false;
+  page.world.state.docPage = 'list';
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, true, 'the list page of a window that is not expanded shows no file to expand');
+  page.world.expanded = true;
+  page.paintViewIcons({});
+  assert.equal(page.expand.hidden, false, 'expanded, the file is on screen whatever the page was');
+  assert.equal(page.expand.attrs['aria-pressed'], 'true');
+  assert.equal(page.files.hidden, false, 'narrow and expanded: the Files icon is there, for the drawer');
+  assert.equal(page.files.attrs['aria-label'], 'Files and contents');
+  assert.equal(page.files.attrs['aria-pressed'], 'false');
+  page.world.drawerOpen = true;
+  page.paintViewIcons({});
+  assert.equal(page.files.attrs['aria-pressed'], 'true');
+  page.world.wide = true;
+  page.paintViewIcons({});
+  assert.equal(page.files.hidden, true, 'wide and expanded: the panel is beside the file, nothing to open');
+});
+
 test('page: the icons and the tabs go to a view by the same functions, and the Documents icon on its own view does nothing', () => {
   const page = pageSource();
   assert.match(page, /document\.getElementById\("tab-reader"\)\.addEventListener\("click", showReaderView\);/);
   assert.match(page, /document\.getElementById\("tab-doc"\)\.addEventListener\("click", showDocView\);/);
   assert.match(page, /document\.getElementById\("view-conv"\)\.addEventListener\("click", showReaderView\);/);
   assert.match(page, /document\.getElementById\("view-doc"\)\.addEventListener\("click", \(\) => \{ if \(state\.view !== "doc"\) showDocView\(\); \}\);/);
-  assert.match(page, /document\.getElementById\("files-quick"\)\.addEventListener\("click", showDocList\);/);
+  assert.match(page, /document\.getElementById\("files-quick"\)\.addEventListener\("click", \(\) => \{ if \(slideOver\(\)\) setSideOpen\(!docSideOpen\); else showDocList\(\); \}\);/, 'the Files icon opens the list page, or the drawer over an expanded file');
+  assert.match(page, /document\.getElementById\("expand-quick"\)\.addEventListener\("click", \(\) => setDocExpanded\(!docExpanded\)\);/, 'the folded header\'s Expand is the header button\'s own switch');
   assert.match(fnBody(page, 'showDocList'), /state\.docPage = "list"; docReveal = state\.doc;/, 'the Files icon opens the existing list page');
   assert.match(fnBody(page, 'showReaderView'), /if \(opening\) showLatest\(\)/, 'back to the conversation opens at its latest turn, as the tab does');
   assert.match(fnBody(page, 'paintBar'), /paintViewIcons\(session\);/, 'every draw of the bar keeps the icons right');

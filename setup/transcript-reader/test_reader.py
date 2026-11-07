@@ -1503,8 +1503,9 @@ class PageShellTest(unittest.TestCase):
             self.assertIn('<button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>', controls, mode)
             self.assertIn(".bar.collapsed .view-btn:not([hidden]) { display: grid; }", page)
             self.assertIn("  .view-btn, .to-sheet .sheet-ico { display: none; }", page)
-            self.assertIn('document.getElementById("files-quick").addEventListener("click", showDocList);', page)
-            self.assertIn('files.hidden = !(fileOpen && !wideDoc() && entries.length > 1);', page)
+            self.assertIn('document.getElementById("files-quick").addEventListener("click", () => { if (slideOver()) setSideOpen(!docSideOpen); else showDocList(); });', page)
+            self.assertIn('files.hidden = !((fileOpen && !wideDoc() && !expandedNow() && entries.length > 1) || (slideOver() && onFile));', page)
+            self.assertIn('document.getElementById("expand-quick").addEventListener("click", () => setDocExpanded(!docExpanded));', page)
 
     def test_the_documents_view_has_the_conversations_header_with_a_document_picker_in_place_of_the_session_picker(self):
         for mode, page in self.pages():
@@ -1674,7 +1675,7 @@ class PageShellTest(unittest.TestCase):
             script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
             for needle in ("const tocKeep = docfiles.tocKeeper();", "toc.open = tocKeep.opened(key, sideToc.matches);", 'toc.addEventListener("toggle"',
                            'localStorage.getItem("tr-docwide")', 'localStorage.setItem("tr-docside", docSide)', "docfiles.sideShows(docSide, Boolean(shell.toc))",
-                           "const expandedNow = () => docExpanded && wideDoc();", 'document.body.classList.toggle("docwide"'):
+                           "const expandedNow = () => docExpanded && canExpand();", "const canExpand = () => !phoneDevice.matches;", 'const phoneDevice = matchMedia("(hover: none) and (pointer: coarse)");', 'document.body.classList.toggle("docwide"'):
                 self.assertIn(needle, script, mode)
             self.assertNotIn("toc.open = sideToc.matches;  // folded above", script, "a redraw must not fold the list again (" + mode + ")")
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")

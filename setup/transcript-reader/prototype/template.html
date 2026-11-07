@@ -260,6 +260,21 @@ __HEAD_HOSTED__
   .docshell.view-list .docpane, .docshell.view-file .filespane { display: none; }
   .docpane { min-width: 0; }
   .docside { display: none; }
+  /* The panel's insides (wide: beside the file; narrow: a drawer over it, see below): Files | Contents over what the choice shows. */
+  .ds-tabs { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex: none; }
+  .ds-tabs .btn { flex: 1 1 0; text-align: center; margin: 0; }
+  .ds-tabs .btn:disabled { opacity: .5; cursor: default; }
+  .ds-tabs .ds-close { flex: none; padding: 0 12px; display: none; }
+  .ds-tabs .btn:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .ds-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative; }
+  .docside .filespane { position: static; max-height: none; overflow: visible; border: 0; border-radius: 0; background: none; }
+  .docshell.expanded .docside .filespane { display: block; }  /* over `.docshell.view-file .filespane { display: none }`: the file browser is the panel's, not a page of its own */
+  .docside .fp-filter { top: 0; border-radius: 0; }
+  .docshell.expanded .docview { display: block; }
+  .docshell.expanded .docview .doc-md { --measure: 52rem; }
+  .toc.side { position: static; z-index: auto; background: none; margin: 0; }
+  .toc.side nav { max-height: none; overflow: visible; border: 0; border-radius: 0; margin: 0; padding: 6px 0 10px; background: none; }
+  .ds-scrim { display: none; }
   .fp-filter { position: sticky; top: var(--bar-h, 110px); z-index: 2; background: var(--paper); padding: 9px 12px 8px; border-bottom: 1px solid var(--line); border-radius: 12px 12px 0 0; }
   .qbox { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); padding: 0 8px; }
   .qbox:focus-within { outline: 2px solid var(--you); outline-offset: -1px; }
@@ -319,17 +334,17 @@ __HEAD_HOSTED__
     .docshell.expanded .docpane { grid-column: 1; grid-row: 1; }
     .docshell.expanded .docside { grid-column: 2; grid-row: 1; }
     .docside { display: flex; flex-direction: column; min-width: 0; position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-    .ds-tabs { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex: none; }
-    .ds-tabs .btn { flex: 1 1 0; text-align: center; margin: 0; }
-    .ds-tabs .btn:disabled { opacity: .5; cursor: default; }
-    .ds-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative; }
-    .docside .filespane { position: static; max-height: none; overflow: visible; border: 0; border-radius: 0; background: none; }
-    .docside .fp-filter { border-radius: 0; }
-    .docshell.expanded .docview { display: block; }
-    .docshell.expanded .docview .doc-md { --measure: 52rem; }
-    .toc.side { position: static; z-index: auto; background: none; margin: 0; }
-    .toc.side nav { max-height: none; overflow: visible; border: 0; border-radius: 0; margin: 0; padding: 6px 0 10px; background: none; }
   }
+  /* Expanded in a window too narrow for a panel beside the file (a desktop window dragged narrow; a phone never expands): the file keeps the width
+     and the panel slides over it from the right, opened by the header's Panel button (or the folded header's Files icon), closed by its own ✕, Esc,
+     a click outside it, or choosing a file or a contents entry. */
+  @media (max-width: 819.98px) {
+    .docshell.expanded .docside { display: flex; flex-direction: column; position: fixed; right: 0; top: var(--bar-h, 120px); bottom: var(--dock-h, 0px); width: min(22rem, 92vw); z-index: 26; background: var(--paper); border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px; box-shadow: -8px 0 24px rgba(0, 0, 0, .18); overflow: hidden; transform: translateX(calc(100% + 24px)); visibility: hidden; transition: transform .18s ease, visibility 0s .18s; }
+    .docshell.expanded.side-open .docside { transform: none; visibility: visible; transition: transform .18s ease; }
+    .docshell.expanded.side-open .ds-scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0, 0, 0, .28); }
+    .ds-tabs .ds-close { display: block; }
+  }
+  @media (prefers-reduced-motion: reduce) { .docshell.expanded .docside { transition: none !important; } }
   .btn.sheet { display: inline-block; margin: 6px 0 2px; text-decoration: none; color: var(--you); border-color: var(--you); font-weight: 600; }
   .btn.sheet.done { color: var(--muted); border-color: var(--line); font-weight: 400; }
   .notes { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
@@ -643,7 +658,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="expand-quick" type="button" aria-label="Expand" title="Expand" aria-pressed="false" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2L9 7M2 14l5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -3480,10 +3495,14 @@ __HEAD_HOSTED__
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   const wideDoc = () => matchMedia("(min-width: 820px)").matches;
+  // A phone is a touch-only device (the CSS has the same query for its 44 px targets), not a narrow window: a desktop window dragged narrow still has
+  // the Expand button, and shows the panel as a drawer over the file (slideOver). Only a phone has the pages of its own for the list and the file.
+  const phoneDevice = matchMedia("(hover: none) and (pointer: coarse)");
+  const canExpand = () => !phoneDevice.matches;
   const sideToc = matchMedia("(min-width: 1180px)");  // the width where a document's contents list sits beside it (the CSS has the same number)
   // Whether the Documents view shows the file: always where the list fits beside it, and on a phone once a file is opened (the tab brings the
   // list first). A session with one file has no list worth a page, so its file shows at once.
-  const onFilePage = session => wideDoc() || state.docPage === "file" || listedDocuments(session).length < 2;
+  const onFilePage = session => wideDoc() || expandedNow() || state.docPage === "file" || listedDocuments(session).length < 2;
   function docPointer(d, section, passage) {
     let text = `Re the file ${d.dir}/${d.name}`;
     if (section) text += `, section "${live.clip(section, 60)}"`;
@@ -3663,7 +3682,10 @@ __HEAD_HOSTED__
   // The expanded view (a wide window): the file has the width and one panel beside it shows the file browser or the contents. Kept in this browser.
   let docExpanded = false, docSide = "contents";
   try { docExpanded = docfiles.expandedPref(localStorage.getItem("tr-docwide")); docSide = docfiles.sidePref(localStorage.getItem("tr-docside")); } catch (e) { /* defaults */ }
-  const expandedNow = () => docExpanded && wideDoc();
+  const expandedNow = () => docExpanded && canExpand();
+  // Expanded in a window too narrow for the panel beside the file: the panel is a drawer, open or not (docSideOpen, not kept).
+  const slideOver = () => expandedNow() && !wideDoc();
+  let docSideOpen = false;
   const DOC_ICON = { md: "▤", html: "◧", image: "▣" };
   const DOC_KINDS = [["all", "All"], ["md", "Docs"], ["html", "Pages"], ["image", "Pictures"]];
   // A list's time: the clock alone today, else the day and the clock.
@@ -3682,7 +3704,7 @@ __HEAD_HOSTED__
   function chooseDocument(id) {
     forgetLazyError(id);
     if (!wideDoc()) docList.scroll = window.scrollY;
-    state.doc = id; state.docFrom = null; state.docPage = "file"; docReveal = id;
+    state.doc = id; state.docFrom = null; state.docPage = "file"; docReveal = id; docSideOpen = false;
     setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
   }
   function showDocList() {
@@ -3760,7 +3782,7 @@ __HEAD_HOSTED__
     for (const b of shell.mode.children) b.setAttribute("aria-pressed", String((b.dataset.mode === "task") === tasks));
     shell.input.placeholder = tasks ? "Find a file, folder or task" : "Find a file or folder";
     shell.input.setAttribute("aria-label", shell.input.placeholder);
-    if (!docList.open) docList.open = docfiles.opened(groups, wideDoc() ? state.doc : docReveal, wideDoc());
+    if (!docList.open) docList.open = docfiles.opened(groups, wideDoc() || expandedNow() ? state.doc : docReveal, wideDoc() || expandedNow());
     if (docReveal) { const home = groups.find(g => g.files.some(f => f.id === docReveal)); if (home) docList.open.add(home.key); docReveal = null; }
     const counts = docfiles.counts(entries, docs);
     if (docList.kind !== "all" && !counts[docList.kind]) docList.kind = "all";
@@ -3823,16 +3845,24 @@ __HEAD_HOSTED__
     node.append(files, pane);
     // The panel beside the file in the expanded view: Files | Contents over what the choice shows (the file browser moves in from the left;
     // the contents list is the file's own, drawn with it). Not in the page until the view is expanded.
-    const side = $("aside", "docside"); side.setAttribute("aria-label", "Files and contents");
+    const side = $("aside", "docside"); side.id = "docside"; side.setAttribute("aria-label", "Files and contents");
     const tabs = $("div", "ds-tabs"); tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "What the panel shows");
     const tabFiles = $("button", "btn", "Files"), tabContents = $("button", "btn", "Contents");
     tabFiles.dataset.side = "files"; tabContents.dataset.side = "contents";
     for (const b of [tabFiles, tabContents]) { b.type = "button"; tabs.append(b); }
+    // Where the panel is a drawer over the file (slideOver), it closes with this, with Esc, and with a click on the scrim.
+    const close = $("button", "btn ds-close", "✕"); close.type = "button"; close.setAttribute("aria-label", "Close the panel"); close.title = "Close the panel (Esc)";
+    tabs.append(close);
     const sideBody = $("div", "ds-body");
     side.append(tabs, sideBody);
+    const scrim = $("div", "ds-scrim");
     const shell = { node, files, pane, chips, clear, count, act, list, mode, input, groups: [], matching: false, sign: "",
-      side, sideBody, tabFiles, tabContents, toc: null, sideShown: null, sideScroll: {} };
+      side, scrim, sideBody, tabFiles, tabContents, toc: null, sideShown: null, sideScroll: {} };
     for (const b of [tabFiles, tabContents]) b.addEventListener("click", () => setDocSide(b.dataset.side));
+    close.addEventListener("click", () => setSideOpen(false));
+    scrim.addEventListener("click", () => setSideOpen(false));
+    // A file or a contents entry chosen in the drawer is what the drawer was opened for: it gives way to the file.
+    sideBody.addEventListener("click", e => { if (slideOver() && e.target.closest && e.target.closest(".toc a")) setSideOpen(false); });
     input.addEventListener("input", () => { docList.q = input.value; paintFiles(shell); });
     input.addEventListener("keydown", e => { if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; docList.q = ""; paintFiles(shell); } });
     clear.addEventListener("click", () => { input.value = ""; docList.q = ""; paintFiles(shell); input.focus(); });
@@ -3847,11 +3877,14 @@ __HEAD_HOSTED__
   // The expanded view's layout: the panel (with the file browser in it) beside the file, or the file browser back on the left.
   function arrangeDocShell(shell, expanded) {
     shell.node.classList.toggle("expanded", expanded);
+    shell.node.classList.toggle("side-open", expanded && docSideOpen && slideOver());
     if (expanded) {
       if (shell.files.parentNode === shell.node) shell.files.remove();
       if (shell.side.parentNode !== shell.node) shell.node.append(shell.side);
+      if (shell.scrim.parentNode !== shell.node) shell.node.append(shell.scrim);
     } else {
       if (shell.side.parentNode) shell.side.remove();
+      if (shell.scrim.parentNode) shell.scrim.remove();
       if (shell.files.parentNode !== shell.node) shell.node.prepend(shell.files);
       shell.sideShown = null;
     }
@@ -3874,8 +3907,21 @@ __HEAD_HOSTED__
     try { localStorage.setItem("tr-docside", docSide); } catch (e) { /* not kept */ }
     if (docList.shell) paintSide(docList.shell);
   }
+  // The drawer over the file (slideOver) opens or closes; where the panel sits beside the file it has no such state.
+  function setSideOpen(open) {
+    docSideOpen = Boolean(open) && slideOver();
+    const shell = docList.shell;
+    if (shell) shell.node.classList.toggle("side-open", docSideOpen);
+    const panel = document.getElementById("panel-toggle");
+    if (panel) panel.setAttribute("aria-pressed", String(docSideOpen));
+    if (docSideOpen && shell) paintSide(shell);
+    paintBar();
+    if (docSideOpen && shell) { const now = shell.side.querySelector(".ds-tabs .btn[aria-pressed=true]") || shell.side.querySelector("button:not(:disabled)"); if (now) now.focus(); }
+  }
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && docSideOpen && slideOver()) { e.preventDefault(); setSideOpen(false); } });
   function setDocExpanded(on) {
     docExpanded = Boolean(on);
+    if (!docExpanded) docSideOpen = false;
     try { localStorage.setItem("tr-docwide", docExpanded ? "1" : "0"); } catch (e) { /* not kept */ }
     render();
   }
@@ -3931,16 +3977,26 @@ __HEAD_HOSTED__
     const message = $("button", "btn", "Message about this file");
     message.title = d.kind === "html" || d.kind === "image" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
     // On a phone the list is a page of its own, and this is the way back to it, to the folder the file is in.
-    if (!wideDoc() && docs.length > 1) {
+    if (!wideDoc() && !expanded && docs.length > 1) {
       const files = $("button", "btn", `‹ Files (${docs.length})`); files.title = "The files this session names";
       files.addEventListener("click", showDocList);
       row.append(files);
     }
-    if (wideDoc()) {
+    // Expand is on every device but a phone, at any width: in a window too narrow for a panel beside the file, the panel is a drawer over it (Panel opens it).
+    if (canExpand()) {
       const expand = $("button", "btn", "Expand"); expand.type = "button"; expand.setAttribute("aria-pressed", String(expanded));
-      expand.title = expanded ? "Back to the file list beside the file" : "Give the file the width. The file list moves into the panel on its right, which switches between Files and Contents";
+      expand.title = expanded ? (wideDoc() ? "Back to the file list beside the file" : "Back to the file list on a page of its own")
+        : wideDoc() ? "Give the file the width. The file list moves into the panel on its right, which switches between Files and Contents"
+          : "Give the file the width. The file list and the contents move into a panel that slides over the file";
       expand.addEventListener("click", () => setDocExpanded(!docExpanded));
       row.append(expand);
+      if (slideOver()) {
+        const panel = $("button", "btn", "Panel"); panel.type = "button"; panel.id = "panel-toggle";
+        panel.setAttribute("aria-pressed", String(docSideOpen)); panel.setAttribute("aria-controls", "docside");
+        panel.title = "Files and contents, in a panel over the file";
+        panel.addEventListener("click", () => setSideOpen(!docSideOpen));
+        row.append(panel);
+      }
     }
     row.append(...(entry.unnamed ? [message] : [back, message]));  // a file no turn named has no turn to go back to
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
@@ -4550,7 +4606,18 @@ __HEAD_HOSTED__
     docs.title = state.view === "doc" ? `${label} (on screen)` : label;
     const entries = session ? listedDocuments(session) : [];
     const fileOpen = state.view === "doc" && state.docPage === "file" && state.doc && data.documents && data.documents[state.doc];
-    files.hidden = !(fileOpen && !wideDoc() && entries.length > 1);
+    // Files: on a phone the way back to the list page; on a narrow desktop window, expanded, the one that opens the panel over the file.
+    const onFile = state.view === "doc" && session && state.doc && data.documents && data.documents[state.doc] && onFilePage(session);
+    files.hidden = !((fileOpen && !wideDoc() && !expandedNow() && entries.length > 1) || (slideOver() && onFile));
+    const drawer = slideOver();
+    files.setAttribute("aria-label", drawer ? "Files and contents" : "Files");
+    files.title = drawer ? (docSideOpen ? "Files and contents (open)" : "Files and contents, in a panel over the file") : "Files";
+    files.setAttribute("aria-pressed", String(drawer && docSideOpen));
+    // Expand: on the file's page, on every device but a phone, as the header's own button is.
+    const expand = document.getElementById("expand-quick");
+    expand.hidden = !(onFile && canExpand());
+    expand.setAttribute("aria-pressed", String(expandedNow()));
+    expand.title = expandedNow() ? "Expand (on): back to the file list" : "Expand: give the file the width";
   }
   // The pin icon of the folded header: the Pins control's own switch, named with the count, lit while the panel is open. The panel
   // shows on the Conversation only and gives way to the search, as the controls do.
@@ -4604,7 +4671,8 @@ __HEAD_HOSTED__
   document.getElementById("tab-doc").addEventListener("click", showDocView);
   document.getElementById("view-conv").addEventListener("click", showReaderView);
   document.getElementById("view-doc").addEventListener("click", () => { if (state.view !== "doc") showDocView(); });
-  document.getElementById("files-quick").addEventListener("click", showDocList);
+  document.getElementById("files-quick").addEventListener("click", () => { if (slideOver()) setSideOpen(!docSideOpen); else showDocList(); });
+  document.getElementById("expand-quick").addEventListener("click", () => setDocExpanded(!docExpanded));
   document.getElementById("pins-quick").addEventListener("click", togglePins);
   document.getElementById("hidden-quick").addEventListener("click", toggleShowHidden);
   document.addEventListener("keydown", e => {

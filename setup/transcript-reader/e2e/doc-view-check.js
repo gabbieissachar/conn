@@ -99,7 +99,7 @@ async function aBuild(lab, outDir) {
       return { ok: true, shell: shell && shell.className, files: box(files), filesIn: files ? files.parentElement.className : null, pane: box(q('.docpane')), body: box(q('.doc-body')), side: box(q('.docside')),
         toc: box(q('.docview > .toc')), title: (q('.doc-body h1') || {}).textContent || null };`;
     const WIDE_B = `const q = x => document.querySelector(x); const side = q('.docside'); const ex = [...document.querySelectorAll('#controls .btn')].find(b => b.textContent === 'Expand');
-      return { ok: true, tabs: side ? [...side.querySelectorAll('.ds-tabs .btn')].map(b => b.textContent + ':' + b.getAttribute('aria-pressed') + (b.disabled ? ':disabled' : '')) : null,
+      return { ok: true, tabs: side ? [...side.querySelectorAll('.ds-tabs .btn:not(.ds-close)')].map(b => b.textContent + ':' + b.getAttribute('aria-pressed') + (b.disabled ? ':disabled' : '')) : null,
         sideShows: side ? (side.querySelector('.filespane') ? 'files' : side.querySelector('.toc') ? 'contents' : 'nothing') : null, tocLinks: document.querySelectorAll('.toc nav a').length,
         expand: ex ? ex.getAttribute('aria-pressed') : null, wide: document.body.classList.contains('docwide'), scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth };`;
     const wide = () => ({ ...ev(WIDE_A), ...ev(WIDE_B) });
@@ -120,7 +120,7 @@ async function aBuild(lab, outDir) {
     check(s.top !== null && s.top < 300 && s.current === s.item, 'a Contents entry goes to its section and is marked as the one being read', JSON.stringify(s));
     axi('screenshot', path.join(shots, 'wide-3-expanded-scrolled.png'));
     // Files: the browser is in the panel
-    ev(`[...document.querySelectorAll('.ds-tabs .btn')].find(b => b.textContent === 'Files').click(); return true;`); await sleep(500);
+    ev(`[...document.querySelectorAll('.ds-tabs .btn:not(.ds-close)')].find(b => b.textContent === 'Files').click(); return true;`); await sleep(500);
     s = wide();
     check(s.sideShows === 'files' && s.tabs.join() === 'Files:true,Contents:false' && s.filesIn === 'ds-body' && s.files.x > s.pane.x, 'Files shows the file browser in the panel', JSON.stringify({ tabs: s.tabs, filesIn: s.filesIn, files: s.files }));
     axi('screenshot', path.join(shots, 'wide-4-expanded-files.png'));
@@ -138,7 +138,7 @@ async function aBuild(lab, outDir) {
     check(s.sideShows === 'files' && /Contents:false:disabled/.test(s.tabs.join()), 'a file with no contents list leaves Contents off', JSON.stringify({ tabs: s.tabs, shows: s.sideShows }));
     axi('screenshot', path.join(shots, 'wide-5-expanded-html.png'));
     ev(`const row = [...document.querySelectorAll('.docside .frow')].find(r => /notes-2/.test(r.title)); row.click(); return true;`); await sleep(900);
-    ev(`[...document.querySelectorAll('.ds-tabs .btn')].find(b => b.textContent === 'Contents').click(); return true;`); await sleep(400);
+    ev(`[...document.querySelectorAll('.ds-tabs .btn:not(.ds-close)')].find(b => b.textContent === 'Contents').click(); return true;`); await sleep(400);
     s = wide();
     check(s.sideShows === 'contents' && s.title === 'Notes 2' && s.tocLinks >= 12, 'back on a markdown file, Contents works again', JSON.stringify({ shows: s.sideShows, title: s.title, links: s.tocLinks }));
     // both choices are kept in this browser
