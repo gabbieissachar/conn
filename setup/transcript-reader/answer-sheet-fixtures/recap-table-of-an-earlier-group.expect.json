@@ -1,0 +1,15 @@
+{
+  "why": "A recap of an earlier group's calls (A1 to A3, with Decision and Recommended columns, so it looks like a table of cards) above the group the reply asks about (B1 to B3, and the reply line asks for B1 to B3). The earlier group is left out of the sheet, named in left_out, and its section is not in the sheet's text.",
+  "sheet": true,
+  "title": "Nathan, group A is settled. Here is where it landed, and the next group.",
+  "intro_starts": "Nathan, group A is settled",
+  "intro_lacks": ["Where group A ended", "Retention"],
+  "left_out": ["A1", "A2", "A3"],
+  "cards": [
+    {"key": "B1", "question": "Channel.", "options": [["a", "email", false], ["b", "the team chat", true], ["c", "both", false]], "recommended": "b)"},
+    {"key": "B2", "question": "Length.", "options": [["a", "five lines", true], ["b", "a full page", false]], "recommended": "a)"},
+    {"key": "B3", "question": "Who reviews it first.", "options": [["a", "the lead", true], ["b", "nobody", false]], "recommended": "a)"}
+  ],
+  "locked": [],
+  "resolved": []
+}

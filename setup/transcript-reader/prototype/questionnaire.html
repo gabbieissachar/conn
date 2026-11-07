@@ -296,6 +296,11 @@ __HEAD_HOSTED__
       frag.append($("div", "section", "Opens after these answers"));
       q.locked.forEach(l => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(l.key)}</span>${inline(l.text)}`; frag.append(d); });
     }
+    // One sheet is one review group: the calls of another group that the reply only mentions (a recap) are not cards here.
+    if (q.left_out && q.left_out.length) {
+      frag.append($("div", "section", "Not on this sheet"));
+      const d = $("div", "locked-item"); d.textContent = `${q.left_out.join(", ")}: calls of another group that this reply mentions. They are not asked here.`; frag.append(d);
+    }
     return frag;
   }
   function context(q) {

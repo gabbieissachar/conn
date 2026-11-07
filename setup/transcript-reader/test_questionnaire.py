@@ -322,6 +322,70 @@ class NotAQuestionnaireTest(unittest.TestCase):
                          {"A1": "accept", "A3": "pricing stays with BD", "A2": "inline"})
 
 
+class OneReviewGroupTest(unittest.TestCase):
+    """A sheet is one review group: the keys the reply line asks for name it, and other keyed rows the reply mentions are not its cards."""
+
+    TABLE = "| ID | Decision | Recommended |\n|---|---|---|\n| {k}1 | **First.** a) yes / b) no | a) |\n| {k}2 | **Second.** a) now / b) later | b) |\n"
+
+    def test_a_glossary_of_keys_is_not_a_table_of_cards(self):
+        reply = ("## Quick fix: what those keys meant\n\n| Key | In plain words |\n|---|---|\n| Z2 | Whether to close the chat first. |\n| Z3 | Whether to show the button. |\n\n"
+                 "## Review group X\n\n" + self.TABLE.format(k="X") + "\nReply with: X1=...; X2=...\n")
+        found = parse_questionnaire(reply)
+        self.assertEqual([c["key"] for c in found["cards"]], ["X1", "X2"])
+        self.assertEqual(found["left_out"], [], "the glossary was never a table of cards, so nothing was left out of one")
+
+    def test_a_status_list_with_a_state_column_is_not_a_table_of_cards_either(self):
+        reply = "| Key | Piece | State |\n|---|---|---|\n| R1 | The script | done |\n| R2 | The check | open |\n\n## Group S\n\n" + self.TABLE.format(k="S") + "\nReply with: S1=...\n"
+        self.assertEqual([c["key"] for c in parse_questionnaire(reply)["cards"]], ["S1", "S2"])
+
+    def test_cards_of_another_group_the_reply_recaps_are_left_out_and_named(self):
+        reply = "## Where group A ended\n\n" + self.TABLE.format(k="A") + "\n## Group B\n\nThe text.\n\n" + self.TABLE.format(k="B") + "\nReply with: B1=...; B2=...\n"
+        found = parse_questionnaire(reply)
+        self.assertEqual([c["key"] for c in found["cards"]], ["B1", "B2"])
+        self.assertEqual(found["left_out"], ["A1", "A2"])
+        self.assertTrue(found["intro"].startswith("## Group B"), "the recap's section is not in the sheet's text")
+        self.assertNotIn("Where group A ended", found["intro"])
+        self.assertEqual(found["title"], "Group B", "the sheet is named for what is left")
+
+    def test_a_reply_line_that_names_only_some_of_the_groups_cards_keeps_them_all(self):
+        # The line is an example of the answers (three keys of the letter) while the table holds more cards of that letter.
+        reply = self.TABLE.format(k="V") + "| V3 | **Third.** a) x / b) y | a) |\n\nReply with: V1=...; V2=...\n"
+        self.assertEqual([c["key"] for c in parse_questionnaire(reply)["cards"]], ["V1", "V2", "V3"])
+
+    def test_when_no_card_is_of_the_group_the_reply_line_names_every_card_stays(self):
+        reply = self.TABLE.format(k="A") + "\nReply with: Q1=...\n"
+        found = parse_questionnaire(reply)
+        self.assertEqual([c["key"] for c in found["cards"]], ["A1", "A2"])
+        self.assertEqual(found["left_out"], [])
+
+    def test_two_groups_asked_by_one_reply_line_are_both_cards(self):
+        reply = "## Group A\n\n" + self.TABLE.format(k="A") + "\n## Group B\n\n" + self.TABLE.format(k="B") + "\nReply with: A1=...; B1=...\n"
+        self.assertEqual([c["key"] for c in parse_questionnaire(reply)["cards"]], ["A1", "A2", "B1", "B2"])
+
+    def test_a_glossary_section_leaves_the_text_above_the_sheet_and_the_rest_of_it_stays(self):
+        reply = ("Opening line.\n\n## What those keys meant\n\n| Key | In plain words |\n|---|---|\n| Z2 | Close the chat first? |\n\n"
+                 "## Group X\n\nWhy it matters.\n\n### Cards\n\n" + self.TABLE.format(k="X") + "\nReply with: X1=...; X2=...\n")
+        found = parse_questionnaire(reply)
+        self.assertEqual(found["intro"], "Opening line.\n\n## Group X\n\nWhy it matters.\n\n### Cards")
+        self.assertEqual(found["title"], "Opening line.")
+
+    def test_a_glossary_table_inside_the_cards_section_leaves_only_the_table(self):
+        reply = ("## Group X\n\nWhy it matters.\n\n| Key | In plain words |\n|---|---|\n| Z2 | Close the chat first? |\n\nThe cards:\n\n" + self.TABLE.format(k="X")
+                 + "\nReply with: X1=...; X2=...\n")
+        found = parse_questionnaire(reply)
+        self.assertEqual(found["intro"], "## Group X\n\nWhy it matters.\n\nThe cards:")
+
+    def test_a_reply_with_headings_and_no_recap_keeps_all_its_text_from_the_top(self):
+        reply = "Intro line.\n\n## Why\n\nBecause.\n\n## Cards\n\n" + self.TABLE.format(k="A") + "\nReply with: A1=...; A2=...\n"
+        found = parse_questionnaire(reply)
+        self.assertEqual(found["intro"], "Intro line.\n\n## Why\n\nBecause.\n\n## Cards")
+        self.assertEqual(found["title"], "Intro line.")
+
+    def test_lettered_choices_separated_by_slashes_lose_the_slash(self):
+        found = parse_questionnaire(self.TABLE.format(k="A") + "\nReply with: A1=...\n")
+        self.assertEqual([o["note"] for o in found["cards"][0]["options"][:2]], ["yes", "no"])
+
+
 # Replies the owner flagged from the reader page as "this should be an answer sheet" (or "this sheet is wrong"), kept as fixtures:
 # answer-sheet-fixtures/<name>.md is invented text in the real shape (never the private reply), <name>.expect.json what the sheet must
 # be. A new flagged case is two files; reader.py sheet-flags --shape prints the shape of a flagged reply with its words masked.
@@ -351,6 +415,14 @@ class FlaggedFixturesTest(unittest.TestCase):
                 self.assertEqual([shown(card) for card in found["cards"]], expect["cards"])
                 self.assertEqual([item["key"] for item in found["locked"]], expect.get("locked", []))
                 self.assertEqual([item["key"] for item in found["resolved"]], expect.get("resolved", []))
+                if "left_out" in expect:
+                    self.assertEqual(found["left_out"], expect["left_out"], "the cards of other groups the reply mentions")
+                if "title" in expect:
+                    self.assertEqual(found["title"], expect["title"])
+                if "intro_starts" in expect:
+                    self.assertTrue(found["intro"].startswith(expect["intro_starts"]), found["intro"][:80])
+                for gone in expect.get("intro_lacks", []):
+                    self.assertNotIn(gone, found["intro"], "text that is only a recap of other groups' calls")
 
 
 if __name__ == "__main__":

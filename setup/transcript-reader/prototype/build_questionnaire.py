@@ -79,7 +79,7 @@ def strip_md(text: str) -> str:
 def lettered(cell: str) -> list[tuple[str, str]]:
     """(letter, text) for each `a)`, `b)` choice in a cell, in order."""
     marks = list(LETTER.finditer(cell))
-    return [(m.group(1), strip_md(cell[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(cell)]).rstrip(" ;"))
+    return [(m.group(1), strip_md(cell[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(cell)]).rstrip(" ;/"))
             for i, m in enumerate(marks)]
 
 
@@ -248,6 +248,12 @@ def table_card(key: str, get, header: list[str]) -> dict:
     return card
 
 
+# A table with a key column is a table of cards only if it asks something: a decision or question to answer, a recommendation, answers or
+# options to pick from, or what a card depends on. "Key | In plain words" (a glossary of calls from an earlier reply) and "Key | Piece | State"
+# (a status list) name keys and ask nothing.
+CARD_COLUMNS = ("decision", "question", "change", "call", "recommend", "answer", "option", "choice", "depends", "submitted")
+
+
 def _parse_questionnaire(reply: str) -> dict | None:
     """The cards a reply asks to be answered, or None when it asks for no keyed answers.
 
@@ -255,12 +261,19 @@ def _parse_questionnaire(reply: str) -> dict | None:
     bullets the reply line asks about; a keyed bullet the reply does not ask about yet is
     a card that opens later. Every card also offers its example answer from the reply
     line and the extra answers the reply allows (`needs explanation`).
+
+    One sheet is one review group. The keys the reply line asks for name the group (their letters: `X1=...; X2=...` is group X), so a
+    keyed table row of another group that the reply mentions (a recap of earlier calls) is left out (`left_out`), and so is the section
+    of the text above the sheet that holds nothing but such a recap or a glossary of keys.
     """
     lines = reply.splitlines()
     reply_line = next((line for line in reversed(lines) if re.search(r"\breply (?:with|like)\b", line, re.I) and re.search(rf"{KEY}\s*=", line)), "")
     asked = set(re.findall(rf"\b({KEY})\s*=", reply_line))
     cards, resolved, locked, used = [], [], [], set()
     first_block = len(lines)
+    blocks: dict[str, int] = {}  # a card's (or an answered card's, as "=" and its key) first line
+    spans: list[tuple[set[str], int, int]] = []  # each table of keyed rows or run of a card's lines: its keys and its lines
+    glossaries: list[tuple[int, int]] = []  # keyed tables that ask nothing (a glossary of earlier calls, a status list)
     # "## G2 explained: which moment fixes the cashback" names the card the text below explains.
     explained: dict[str, tuple[int, str]] = {}
     for n, line in enumerate(lines):
@@ -271,6 +284,12 @@ def _parse_questionnaire(reply: str) -> dict | None:
 
     for start, end, header, rows in tables(lines):
         key_col = column(header, "id", "card", "key")
+        if key_col is not None and not any(column(header, name) is not None for name in CARD_COLUMNS):
+            # A glossary or a status list: it names keys and asks nothing. (A table whose "id" column holds no key at all, such as a
+            # Slide | Who sees it | Taps table, is only a table in the text.)
+            if any(key_col < len(row) and re.fullmatch(KEY, strip_md(row[key_col])) for row in rows):
+                glossaries.append((start, end))
+            continue
         if key_col is None:
             # An "Option" table under a card's explaining heading lists that card's choices.
             owner = max(((at, key) for key, (at, _) in explained.items() if at < start), default=None)
@@ -293,13 +312,17 @@ def _parse_questionnaire(reply: str) -> dict | None:
             if given_col is not None and key in asked and re.search(r"\b(?:open|explain|pending|waiting)", state, re.I):
                 # Answered with a question ("Needs explanation") and asked again: still open.
                 cards.append({"key": key, "question": explained.get(key, (0, ""))[1], "depends": "", "recommended": "", "options": []})
+                blocks[key] = start
             elif given_col is not None:
                 resolved.append({"key": key, "submitted": get(given_col), "decision": get(column(header, "inferred", "decision", "what i'll do")),
                                  "state": strip_md(get(state_col))})
+                blocks["=" + key] = start
             else:
                 cards.append(table_card(key, get, header))
+                blocks[key] = start
             first_block = min(first_block, start)
             used.update(range(start, end))
+        spans.append(({strip_md(row[key_col]) for row in rows if key_col < len(row)}, start, end))
 
     for n, line in enumerate(lines):
         lead = QUESTION_LEAD.match(line.strip())
@@ -318,8 +341,10 @@ def _parse_questionnaire(reply: str) -> dict | None:
         resolved = [item for item in resolved if item["key"] != key]
         cards.append({"key": key, "question": strip_md(lead.group(3)) or strip_md(lead.group(1)), "depends": "",
                       "recommended": next((o["note"] for o in options if o["recommended"]), ""), "options": options})
+        blocks[key] = n
         first_block = min(first_block, n)
         used.update(range(n, m))
+        spans.append(({key}, n, m))
 
     # A keyed bullet the reply line asks about is an open card ("- **A1:** which moment
     # fixes it. I recommend `order-creation`."); any other one opens later.
@@ -334,6 +359,7 @@ def _parse_questionnaire(reply: str) -> dict | None:
             recommends = re.search(r"\brecommend\w*\b[^`]*`([^`]+)`", text, re.I)
             options = [option(value, recommended=bool(recommends and value == recommends.group(1))) for value in dict.fromkeys(BACKTICK.findall(text))]
             cards.append({"key": key, "question": strip_md(text), "depends": "", "recommended": "", "options": options})
+            blocks[key] = n
             first_block = min(first_block, n)
         else:
             locked.append({"key": key, "text": text})
@@ -344,6 +370,18 @@ def _parse_questionnaire(reply: str) -> dict | None:
                 card["options"].append(opt)
         if not card["recommended"]:
             card["recommended"] = next((o["note"] for o in card["options"] if o["recommended"] and o["note"]), "")
+    # One review group: the keys the reply line asks for name it by their letters. Cards of other letters (a recap of earlier calls) are left
+    # out, unless none of the cards is of the group, when the reply line is the sloppy part and every card stays.
+    groups = {key[0] for key in asked}
+    left_out: list[str] = []
+    if groups and any(card["key"][0] in groups for card in cards):
+        left_out = [card["key"] for card in cards if card["key"][0] not in groups]
+        cards = [card for card in cards if card["key"][0] in groups]
+    recaps = list(glossaries)
+    if left_out:
+        starts = [blocks[card["key"]] for card in cards if card["key"] in blocks] + [at for name, at in blocks.items() if name.startswith("=")]
+        first_block = min(starts, default=len(lines))
+        recaps += [(start, end) for keys, start, end in spans if keys and keys <= set(left_out)]
     if not reply_line:
         # With no reply line asking for answers, only cards offering choices of their own
         # ask anything; a table of decisions already taken does not.
@@ -359,10 +397,29 @@ def _parse_questionnaire(reply: str) -> dict | None:
                 values.add(value.lower())
     open_keys = {card["key"] for card in cards}
     corrections = [k for k in dict.fromkeys(re.findall(rf"\b{KEY}\b", reply_line)) if k not in open_keys and k in {r["key"] for r in resolved}]
+    # The text above the sheet is the reply's own, without the sections that are only a recap of other groups' calls or a glossary of keys
+    # (a table above first_block that was left out): the section from its heading to the next of its level, or just the table when the
+    # section goes on to the cards.
+    drop: set[int] = set()
+    for start, end in recaps:
+        if start >= first_block:
+            continue
+        drop.update(range(start, min(end, first_block)))
+        above = next((n for n in range(start - 1, -1, -1) if re.match(r"^\s*#{1,6}\s+\S", lines[n])), None)
+        if above is None:
+            continue
+        level = len(re.match(r"^\s*(#+)", lines[above]).group(1))
+        below = next((n for n in range(end, len(lines)) if (m := re.match(r"^\s*(#+)\s+\S", lines[n])) and len(m.group(1)) <= level), len(lines))
+        if below <= first_block:
+            drop.update(range(above, below))
+    intro = [line for n, line in enumerate(lines[:first_block]) if n not in drop]
+    title = strip_md(lines[0].lstrip("#")) if lines else ""
+    if drop:  # the reply's first line may have been a recap's heading: the sheet is named for what is left
+        title = strip_md(next((line for line in intro if line.strip()), "").lstrip("#"))
     return {
-        "title": strip_md(lines[0].lstrip("#")) if lines else "",
-        "intro": "\n".join(lines[:first_block]).strip(),
-        "cards": cards, "resolved": resolved, "locked": locked, "corrections": corrections,
+        "title": title,
+        "intro": re.sub(r"\n{3,}", "\n\n", "\n".join(intro)).strip(),
+        "cards": cards, "resolved": resolved, "locked": locked, "corrections": corrections, "left_out": left_out,
         "reply_line": strip_md(reply_line),
     }
 
