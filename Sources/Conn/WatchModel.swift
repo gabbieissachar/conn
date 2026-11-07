@@ -27,6 +27,10 @@ final class WatchModel: ObservableObject {
     /// view); until it does a Cmd-click opens the session in a column like a plain click.
     var onOpenInReader: ((String) -> Void)?
 
+    /// A link to a Campus conversation was clicked in a Herdr column (kind, folder, id, Cmd held, the column's index). The app decides: the column rule, or the
+    /// normal view for a Cmd-click.
+    var onOpenCampusLink: ((String, String, String, Bool, Int) -> Void)?
+
     /// True while Watch is on. Columns only have web views then: the views of a Watch that just ended may draw once more and must
     /// not make them again.
     var active = false
@@ -49,6 +53,7 @@ final class WatchModel: ObservableObject {
     /// The web view of a column, made now if the column has none yet (a column filled when Watch turned on). A column that is no
     /// longer in the layout (a view still drawing its last frame as it goes away) gets none: it must not bring its web view back.
     func box(for column: WatchColumn) -> WebBox? {
+        if CampusColumn.isCampus(column.session) { return nil }       // a Campus column draws the transcript itself: it has no web view
         if let b = boxes[column.id] { return b }
         guard active, layout.slots.contains(where: { $0?.id == column.id }) else { return nil }
         return makeBox(column, message: nil)
@@ -59,6 +64,11 @@ final class WatchModel: ObservableObject {
         let id = column.id
         b.onUse = { [weak self] in self?.used(columnID: id) }
         b.onSessionLink = { [weak self] session, inReader in self?.sessionLinkClicked(columnID: id, session: session, inReader: inReader) }
+        b.onCampusLink = { [weak self] kind, folder, cid, command in
+            guard let self = self, self.active, let i = self.columnIndex(id: id) else { return }
+            self.used(columnID: id)
+            self.onOpenCampusLink?(kind, folder, cid, command, i)
+        }
         boxes[column.id] = b
         return b
     }
@@ -89,6 +99,19 @@ final class WatchModel: ObservableObject {
             // The same column and web view, loaded again on the new session, so the old conversation does not stay in memory.
             if let b = boxes[column.id] { b.showConversation(column.session, message: ask, reload: true) } else { _ = makeBox(column, message: ask) }
         }
+        flashes[column.id, default: 0] += 1
+        objectWillChange.send()
+        return placement
+    }
+
+    /// Show a Campus conversation in a column, by the same rule as a reader session: one that already has a column keeps it (and the column flashes), else a
+    /// free column, else the least recently used one other than the column a link was clicked in. A Campus column has no web view, so a column that
+    /// changes to or from one gains or loses its view here.
+    @discardableResult
+    func openCampus(_ id: String, from clicked: Int? = nil) -> WatchPlacement {
+        let placement = layout.open(CampusColumn.key(id), from: clicked)
+        let column = layout.slots[placement.column]!
+        if case .replaced = placement { dropBox(column.id) }
         flashes[column.id, default: 0] += 1
         objectWillChange.send()
         return placement
@@ -131,7 +154,7 @@ final class WatchModel: ObservableObject {
 
     /// Fill the free columns when Watch turns on, or when there are more columns: the first candidate is the one on screen.
     func fill(with candidates: [String]) {
-        layout.fill(with: candidates.filter(WatchAddress.validSession))
+        layout.fill(with: candidates.filter { WatchAddress.validSession($0) || CampusColumn.isCampus($0) })
         objectWillChange.send()
     }
 

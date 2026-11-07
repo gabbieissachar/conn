@@ -42,6 +42,14 @@ struct AppConfig {
     var watch: Int?
     /// Force the text path (`pane.read` polling) instead of the stream: for testing it against real Herdr, or if a stream misbehaves.
     var textPanes = false
+    /// `--campus` / `--no-campus`: Campus conversations in the sidebar (README "Campus in Conn"). nil: on for a person's own launch, off for a scripted one.
+    var campusRequested: Bool?
+    /// `--campus-url ADDRESS` (or CONN_CAMPUS_URL): another Campus (the stand-in of `--fixture`, never the real one in a check).
+    var campusURLText: String?
+    /// `--campus-writes`: the "Campus writes" switch starts on (a scripted check; a person's launch always starts with it off).
+    var campusWritesAtLaunch = false
+    /// `--campus-check`: run only the Campus steps of `--ui-check` (against the stand-in Campus).
+    var campusCheck = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
     var editorTest: String?
     /// Content size of the window in points (`--window 1100x700`), for screenshots of a small and a large window.
@@ -91,6 +99,11 @@ struct AppConfig {
                 if i + 1 < a.count, let n = Int(a[i + 1]) { c.watch = WatchLayout.clamped(n); i += 1 } else { c.watch = WatchLayout.defaultCount }
             case "--web-tab": c.webTab = (next() ?? "") == "organizer" ? .organizer : .reader
             case "--text-panes": c.textPanes = true
+            case "--campus": c.campusRequested = true
+            case "--no-campus": c.campusRequested = false
+            case "--campus-url": c.campusURLText = next()
+            case "--campus-writes": c.campusWritesAtLaunch = true
+            case "--campus-check": c.campusCheck = true
             case "--editor-test": c.editorTest = next()
             case "--window":
                 let parts = (next() ?? "").split(separator: "x").compactMap { Double($0) }
@@ -115,7 +128,7 @@ struct AppConfig {
     }
 
     private var hasScriptedHook: Bool {
-        uiTour || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
+        uiTour || campusCheck || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
     }
 
     /// A launch driven by a script or a test rather than a person: any scripted hook, a background launch (whether or not it
@@ -140,6 +153,19 @@ struct AppConfig {
 
     var clientConfigPath: String? {
         clientConfig ?? ProcessInfo.processInfo.environment["CONN_HERDR_CLIENT_CONFIG"].flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Campus's address: `--campus-url`, else CONN_CAMPUS_URL, else the real one.
+    var campusBase: URL {
+        let env = ProcessInfo.processInfo.environment["CONN_CAMPUS_URL"].flatMap { $0.isEmpty ? nil : $0 }
+        return (campusURLText ?? env).flatMap { URL(string: $0) } ?? URL(string: "https://campus.shopback.com")!
+    }
+    var campusAddressGiven: Bool { campusURLText != nil || !(ProcessInfo.processInfo.environment["CONN_CAMPUS_URL"] ?? "").isEmpty }
+
+    /// Campus is part of this launch: asked for, or an address was given, or a person's own launch. A scripted launch never reaches the real Campus on its own.
+    var campusEnabled: Bool {
+        if let r = campusRequested { return r }
+        return campusAddressGiven || !isScriptedLaunch
     }
 
     var writePolicy: WritePolicy { .parse(writeSessions ?? ProcessInfo.processInfo.environment["CONN_WRITE_SESSIONS"]) }

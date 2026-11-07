@@ -48,6 +48,13 @@ final class AppModel: ObservableObject {
     let openAsks: OpenAskStore
     /// Agents at a Claude permission prompt that Herdr did not call blocked (read from their screens; see PermissionPromptWatch).
     let promptWatch: PermissionPromptWatch
+    /// Campus conversations (README "Campus in Conn"): one in-memory feed behind the CAMPUS sidebar section, the live view, the transcript and the Watch column.
+    let campus: CampusStore
+    /// The cookie-based sign-in the feed reads through (nil when Campus is not part of this launch). An API key would be another `CampusAuth`.
+    let campusAuth: CampusWebAuth?
+    /// The Campus conversation shown in the centre (and in the Reader column), or nil: a Herdr agent or a view is shown instead.
+    @Published var campusSelectedID: String?
+    @Published var campusSignInShown = false
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind
@@ -63,7 +70,7 @@ final class AppModel: ObservableObject {
         didSet {
             let resolved = viewPolicy.resolve(mode)
             if resolved != mode { mode = resolved }
-            if mode != oldValue { if watchOn { watchOn = false }; syncSessions() }
+            if mode != oldValue { if watchOn { watchOn = false }; campusSelectedID = nil; syncSessions() }
         }
     }
     /// The Agent-view flag (README "The Agent view flag"). Read once at launch; a check turns it on and off in process.
@@ -223,6 +230,10 @@ final class AppModel: ObservableObject {
         stars.start()
         promptWatch = PermissionPromptWatch(client: HerdrClient(endpoint: endpoint))
         openAsks = AppModel.makeOpenAskStore(config: config, env: env, web: web, fixtureDir: fixtureDir, herdrSession: endpoint.session)
+        // A scripted launch reads cookies from a store of its own, so a check never touches a person's own sign-in.
+        campusAuth = config.campusEnabled ? CampusWebAuth(origin: config.campusBase, persistent: !config.isScriptedLaunch) : nil
+        campus = CampusStore(auth: campusAuth, baseURL: config.campusBase)
+        web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
@@ -260,6 +271,7 @@ final class AppModel: ObservableObject {
         }.store(in: &cancellables)
         wireWatchAsks()
         openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
+        wireCampus()
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
         watch.onOpenInReader = { [weak self] session in self?.openSessionInReader(session) }
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
@@ -410,6 +422,7 @@ final class AppModel: ObservableObject {
     /// Make this the selected agent (sidebar highlight, recents, reader pin) without choosing a view.
     func highlight(_ paneID: String, pin: Bool = true) {
         guard let a = snapshot.agent(paneID) else { return }
+        campusSelectedID = nil
         recordVisit(paneID)
         selectedPaneID = paneID
         selectedWorkspaceID = a.workspaceID
@@ -441,6 +454,7 @@ final class AppModel: ObservableObject {
             mode = .herdr
             highlight(paneID, pin: pin)
         case .moveHerdrClient:
+            campusSelectedID = nil
             mode = .herdr
             recordVisit(paneID)
             moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
@@ -473,10 +487,7 @@ final class AppModel: ObservableObject {
         if let a = snapshot.agent(after: selectedPaneID, offset: delta, asks: openAsks.visible()) { select(a.id) }
     }
 
-    func jumpToWaiting() {
-        guard let a = snapshot.nextWaiting(after: selectedPaneID) else { toast("Nothing is waiting on you"); return }
-        select(a.id)
-    }
+    func jumpToWaiting() { jumpToNextWaiting() }
 
     func toggleCompare() {
         guard agentViewEnabled else { return }
@@ -855,12 +866,14 @@ final class AppModel: ObservableObject {
     /// A click on a space in the sidebar.
     func sidebarOpenWorkspace(_ id: String) {
         guard herdrClientDriving else { selectWorkspace(id); return }
+        campusSelectedID = nil
         moveHerdrClient(to: .workspace(id), label: snapshot.workspace(id)?.label ?? id, workspace: id, pane: nil)
     }
 
     /// A click on an agent in the sidebar: its tab.
     /// A row with an open ask also opens the reader column on the reply that asks; a row without one does what it always did.
     func sidebarOpenAgent(_ a: Agent) {
+        campusSelectedID = nil
         let asking = ask(for: a)
         if herdrClientDriving {
             moveHerdrClient(to: .tab(a.tabID), label: a.name, workspace: a.workspaceID, pane: a.id)
@@ -934,6 +947,6 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
-        store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()
+        campus.stop(); store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()
     }
 }

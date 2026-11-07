@@ -30,9 +30,13 @@ let package = Package(
         // The real Herdr lab cannot be provisioned on this Mac, so everything that writes to a pane runs against this.
         .target(name: "FakeHerdrKit", dependencies: ["ConnCore"]),
         .executableTarget(name: "FakeHerdr", dependencies: ["FakeHerdrKit", "ConnCore"]),
+        // A stand-in Campus (invented conversations, the private API's shapes, a cookie-gated HTTP server with an event stream) for the same purpose:
+        // fixtures, tests and `--ui-check` never talk to the real campus.shopback.com.
+        .target(name: "FakeCampusKit", dependencies: ["ConnCore"]),
+        .executableTarget(name: "FakeCampus", dependencies: ["FakeCampusKit"]),
         // The Herdr stream test (decision D2): latency, reconnect, CPU, compatibility.
         .executableTarget(name: "ConnStreamTest", dependencies: ["ConnCore"]),
-        .testTarget(name: "ConnCoreTests", dependencies: ["ConnCore", "FakeHerdrKit"]),
+        .testTarget(name: "ConnCoreTests", dependencies: ["ConnCore", "FakeHerdrKit", "FakeCampusKit"]),
         .testTarget(name: "ConnTerminalTests", dependencies: ["ConnCore", "ConnTerminal"]),
     ]
 )

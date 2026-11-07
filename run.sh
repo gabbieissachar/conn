@@ -5,6 +5,11 @@
 #   ./run.sh --write NAME         allow the compose box to send to that session (default: none)
 #   ./run.sh --fixture            a stand-in Herdr with invented agents, invented web pages; safe to screen-share,
 #                                 and the one place the compose box is exercised
+#                                 It also starts a stand-in Campus (invented conversations, a sign-in page that sets a cookie, an event stream) and points the
+#                                 CAMPUS section at it; add --no-campus to leave Campus out. A plain launch reads the real Campus (sign in inside Conn).
+#   ./run.sh --campus-url ADDRESS use another Campus (default https://campus.shopback.com); --no-campus leaves the section out; a scripted launch
+#                                 (--ui-check and the like) never reaches the real Campus unless --campus is given
+#   ./run.sh --campus-writes      start with the "Campus writes" switch on (a person's own launch starts with it off)
 #   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode herdr|agent|editor   --web on|off   --select N   --dark   --privacy   --open FILE
@@ -33,5 +38,13 @@ if [[ " $ARGS " == *" --fixture "* ]]; then
   trap 'kill $FAKE 2>/dev/null' EXIT
   sleep 0.8
   ARGS="--session fake --socket-dir $DIR/s --herdr-bin $DIR/herdr --write fake $ARGS"
+  if [[ " $ARGS " != *" --no-campus "* && " $ARGS " != *" --campus-url "* && -x build/FakeCampus ]]; then
+    build/FakeCampus serve --autorun >"$DIR/campus.log" 2>&1 &
+    FAKEC=$!
+    trap 'kill $FAKE $FAKEC 2>/dev/null' EXIT
+    for _ in $(seq 1 50); do grep -q "listening" "$DIR/campus.log" 2>/dev/null && break; sleep 0.1; done
+    CPORT=$(sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$DIR/campus.log" | head -1)
+    [ -n "$CPORT" ] && ARGS="$ARGS --campus-url http://127.0.0.1:$CPORT"
+  fi
 fi
 CONN_ARGS="$ARGS" build/Conn.app/Contents/MacOS/Conn

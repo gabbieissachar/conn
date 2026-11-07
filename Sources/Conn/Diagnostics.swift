@@ -464,6 +464,7 @@ enum UICheck {
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await WatchCheck.run(model: model, report: report, wait: wait)
         await AskRowsCheck.run(model: model, report: report, wait: wait)
+        await CampusCheck.run(model: model, report: report, wait: wait)
         await OpenAsksPageReadCheck.run(report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await ReaderFollowCheck.run(model: model, report: report, wait: wait)

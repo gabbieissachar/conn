@@ -78,7 +78,12 @@ private struct WatchColumnView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let column = slot.column {
+            if let column = slot.column, let cid = CampusColumn.id(of: column.session) {
+                // A Campus column (C5): the transcript and a live strip, drawn natively. It is not a reader session.
+                CampusColumnHeader(campus: app.campus, id: cid, watch: watch, index: slot.index)
+                Divider()
+                CampusTranscriptView(campus: app.campus, id: cid, column: slot.index)
+            } else if let column = slot.column {
                 header(column)
                 Divider()
                 if let box = watch.box(for: column) { WatchWebPane(box: box) } else { Spacer() }
@@ -159,5 +164,36 @@ private struct WatchWebPane: View {
                 .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+}
+
+/// A Campus column's header (the conversation's mark, title, a "Campus" tag, its state, a close button). It watches the feed, so the mark follows the run.
+private struct CampusColumnHeader: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var campus: CampusStore
+    let id: String
+    let watch: WatchModel
+    let index: Int
+
+    var body: some View {
+        let c = campus.conversation(id)
+        HStack(spacing: 6) {
+            if let c = c { StateGlyph(state: c.state, size: 12) } else { Image(systemName: "questionmark.circle").foregroundStyle(.tertiary).frame(width: 16) }
+            Text(c?.title ?? "Campus conversation").font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                .redacted(reason: app.privacy ? .placeholder : [])
+            Text("Campus").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(AgentState.working.color)
+                .padding(.horizontal, 5).padding(.vertical, 1).background(AgentState.working.color.opacity(0.12), in: Capsule())
+            if let c = c {
+                Text(campus.link == .expired ? "signed out" : c.state.label).font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(campus.link == .live && c.state.waitsOnCaptain ? c.state.color : Color.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { watch.close(column: index) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless).help("Close this column")
+                .accessibilityIdentifier("watch-close")
+        }
+        .padding(.horizontal, 10).frame(height: 30)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .accessibilityIdentifier("watch-campus-header")
     }
 }

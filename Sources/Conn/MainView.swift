@@ -12,6 +12,8 @@ struct SidebarView: View {
             spaces.frame(maxHeight: 236)
             Divider()
             agents.frame(maxHeight: .infinity)
+            // Campus conversations (C1): their own section, only when Campus is part of this launch.
+            if app.campus.link != .disabled { Divider(); CampusSection(campus: app.campus).frame(maxHeight: 300) }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
@@ -47,13 +49,15 @@ struct SidebarView: View {
         }
     }
 
-    private var agents: some View { AgentsSection(asks: app.openAsks) }
+    private var agents: some View { AgentsSection(asks: app.openAsks, campus: app.campus) }
 }
 
 /// The AGENTS list. It watches the open asks on its own, so a new answer from the reader redraws this list and not the whole window.
 struct AgentsSection: View {
     @EnvironmentObject var app: AppModel
     @ObservedObject var asks: OpenAskStore
+    /// Campus questions count with Herdr's in the header (C2); the rows of each section are sorted on their own.
+    @ObservedObject var campus: CampusStore
 
     var body: some View {
         let visible = asks.visible()            // unread: orders the list and is counted
@@ -61,13 +65,13 @@ struct AgentsSection: View {
         let list = app.snapshot.prioritized(asks: visible)
         let older = asks.olderCount(among: app.snapshot.agents)
         let readCount = asks.readCount(among: app.snapshot.agents)
-        let needYou = app.needYouCount
+        let needYou = app.needYouCount + campus.asks.count
         return VStack(spacing: 0) {
             header(needYou: needYou, older: older, readCount: readCount)
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
-                        SidebarRow(selected: a.id == app.selectedPaneID, action: { app.sidebarOpenAgent(a) }) {
+                        SidebarRow(selected: a.id == app.selectedPaneID && app.campusSelectedID == nil, action: { app.sidebarOpenAgent(a) }) {
                             HStack(alignment: .top, spacing: 8) {
                                 StateGlyph(state: a.state)
                                 VStack(alignment: .leading, spacing: 1) {
@@ -105,7 +109,7 @@ struct AgentsSection: View {
             HStack(spacing: 4) {
                 Text("AGENTS").font(.system(size: 11, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
                 Spacer()
-                if asks.asks.isEmpty {
+                if asks.asks.isEmpty && campus.asks.isEmpty {
                     Text("working first").font(.system(size: 11)).foregroundStyle(.tertiary)
                 } else {
                     // Unread asks only: a read ask is not counted, whether it is listed or not.
@@ -312,7 +316,11 @@ struct WebTabsColumn: View {
             .padding(.horizontal, 10).frame(height: 36)
             Divider()
             // While Watch is on this column is on its way out; it must not make the unloaded reader's web view again.
-            if !app.watchOn { WebColumn(box: app.web.box(app.webTab)) }
+            if !app.watchOn {
+                // A Campus conversation is read here as a transcript (README "Campus in Conn"); the reader's own pages are untouched.
+                if let cid = app.campusSelectedID, app.webTab == .reader { CampusTranscriptView(campus: app.campus, id: cid) }
+                else { WebColumn(box: app.web.box(app.webTab)) }
+            }
         }
     }
 }
@@ -330,6 +338,7 @@ struct StatusBar: View {
             Text("\(app.snapshot.agents.count) agents in \(app.snapshot.workspaces.count) spaces")
             Text("·").foregroundStyle(.tertiary)
             Text(app.streamVerdict.allowsStream ? "stream \(app.renderer == .swiftTerm ? "SwiftTerm" : "grid")" : "text panes")
+            CampusStatusItem()
             Spacer()
             Text(app.statsLine).font(.system(size: 11, design: .monospaced))
         }
@@ -363,14 +372,20 @@ struct QuickSwitcher: View {
     @FocusState private var focused: Bool
     @State private var index = 0
 
-    private var matches: [Agent] {
+    /// A row of the switcher: a Herdr agent, or a Campus conversation (labelled "Campus"; asks come first in both groups).
+    private enum Item { case agent(Agent), campus(CampusConversation) }
+
+    private var matches: [Item] {
         let q = app.switcherQuery.trimmingCharacters(in: .whitespaces).lowercased()
         let all = app.agentOrder
-        guard !q.isEmpty else { return all }
-        return all.filter { a in
+        let herdr: [Agent] = q.isEmpty ? all : all.filter { a in
             let space = app.snapshot.workspace(a.workspaceID)?.label.lowercased() ?? ""
             return a.name.lowercased().contains(q) || space.contains(q) || a.state.label.contains(q)
         }
+        let campus = app.campusSwitcherRows.filter { c in
+            q.isEmpty || c.title.lowercased().contains(q) || c.spaceName.lowercased().contains(q) || c.state.label.contains(q) || "campus".contains(q)
+        }
+        return herdr.map(Item.agent) + campus.map(Item.campus)
     }
 
     var body: some View {
@@ -387,14 +402,23 @@ struct QuickSwitcher: View {
                 Divider()
                 ScrollView {
                     VStack(spacing: 1) {
-                        ForEach(Array(matches.prefix(12).enumerated()), id: \.element.id) { i, a in
+                        ForEach(Array(matches.prefix(12).enumerated()), id: \.offset) { i, item in
                             HStack(spacing: 8) {
-                                StateGlyph(state: a.state)
-                                Text(a.name).font(.system(size: 14, weight: .medium)).redacted(reason: app.privacy ? .placeholder : [])
-                                Text(app.snapshot.workspace(a.workspaceID)?.label ?? "").font(.system(size: 12)).foregroundStyle(.secondary)
-                                    .redacted(reason: app.privacy ? .placeholder : [])
-                                Spacer()
-                                StateChip(state: a.state)
+                                switch item {
+                                case .agent(let a):
+                                    StateGlyph(state: a.state)
+                                    Text(a.name).font(.system(size: 14, weight: .medium)).redacted(reason: app.privacy ? .placeholder : [])
+                                    Text(app.snapshot.workspace(a.workspaceID)?.label ?? "").font(.system(size: 12)).foregroundStyle(.secondary)
+                                        .redacted(reason: app.privacy ? .placeholder : [])
+                                    Spacer()
+                                    StateChip(state: a.state)
+                                case .campus(let c):
+                                    StateGlyph(state: c.state)
+                                    Text(c.title).font(.system(size: 14, weight: .medium)).lineLimit(1).redacted(reason: app.privacy ? .placeholder : [])
+                                    Text("Campus").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    Spacer()
+                                    StateChip(state: c.state)
+                                }
                             }
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .background(i == index ? Color.accentColor.opacity(0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -430,7 +454,10 @@ struct QuickSwitcher: View {
     private func open() {
         let m = matches
         guard index < m.count else { return }
-        app.select(m[index].id, via: .quickSwitcher)
+        switch m[index] {
+        case .agent(let a): app.select(a.id, via: .quickSwitcher)
+        case .campus(let c): app.openCampus(c.id)
+        }
         app.showSwitcher = false
         app.switcherQuery = ""
     }
@@ -547,7 +574,7 @@ struct MainView: View {
                     StatusBar()
                 }
             }
-            .navigationTitle(app.privacy ? "Conn" : (app.mode == .editor ? (app.editor.current?.title ?? "Conn") : (app.selectedAgent?.name ?? "Conn")))
+            .navigationTitle(app.privacy ? "Conn" : (app.campusSelected?.title ?? (app.mode == .editor ? (app.editor.current?.title ?? "Conn") : (app.selectedAgent?.name ?? "Conn"))))
             .navigationSubtitle(app.privacy ? "privacy mode" : subtitle)
             .toolbar {
                 ToolbarItem(placement: .navigation) {
@@ -616,15 +643,25 @@ struct MainView: View {
             return any
         }
         .onChange(of: app.showWeb) { _, _ in app.pinReader(); app.updateReaderLayout() }
+        .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
     }
 
     private var subtitle: String {
+        if let c = app.campusSelected { return "Campus · \(c.spaceName.isEmpty ? "My space" : c.spaceName) · \(c.state.label)" }
         if app.mode == .editor { return app.editor.current?.url?.deletingLastPathComponent().path ?? "" }
         guard let a = app.selectedAgent else { return "" }
         return "\(app.snapshot.workspace(a.workspaceID)?.label ?? "") · \(a.state.label)"
     }
 
     @ViewBuilder private var centre: some View {
+        if let cid = app.campusSelectedID {
+            CampusLiveView(campus: app.campus, id: cid)
+        } else {
+            herdrCentre
+        }
+    }
+
+    @ViewBuilder private var herdrCentre: some View {
         switch app.mode {
         case .agent: PanesArea()
         case .editor: EditorArea(model: app.editor)

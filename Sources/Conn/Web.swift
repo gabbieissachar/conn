@@ -41,6 +41,10 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// the session it names, and whether the click was a Cmd-click (open it in the normal reader instead of another column).
     /// Lite boxes only; the full reader page keeps its own behaviour for the same link.
     var onSessionLink: ((String, Bool) -> Void)?
+    /// A link in a lite page to a conversation in Campus's own web app (`https://<campus>/spaces/<kind>/<folder>/conversations/<id>`): taken before it
+    /// leaves Conn, and opened by the Watch column rule (a Cmd-click opens the normal view). `campusHost` is Campus's host; nil takes no such link.
+    let campusHost: String?
+    var onCampusLink: ((_ kind: String, _ folder: String, _ id: String, _ command: Bool) -> Void)?
     private var useProxy: UseMessageProxy?
     private var linkProxy: SessionLinkProxy?
     /// Set by `release()`: a released box never loads or shows anything again.
@@ -52,7 +56,8 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// A link that leaves Conn. A test replaces it with a recorder so a check never opens a browser.
     var openInBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
-    init(kind: WebKind, baseURL: URL, fixtureDir: URL?, lite: Bool = false, startFragment: String? = nil) {
+    init(kind: WebKind, baseURL: URL, fixtureDir: URL?, lite: Bool = false, startFragment: String? = nil, campusHost: String? = nil) {
+        self.campusHost = campusHost
         self.kind = kind
         self.baseURL = baseURL
         self.fixtureDir = fixtureDir
@@ -67,7 +72,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         }
         let links = lite ? SessionLinkProxy() : nil
         if let links = links {
-            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.sessionLinkWatch, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.sessionLinkScript(campusHost: campusHost), injectionTime: .atDocumentStart, forMainFrameOnly: true))
             cfg.userContentController.add(links, name: WebBox.sessionLinkMessage)
         }
         webView = WKWebView(frame: .zero, configuration: cfg)
@@ -128,23 +133,42 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// navigate, and Conn is told which session the link names and whether Cmd was held. Capture phase on the window, so no handler of
     /// the page runs for that click and the page itself is not edited. The keyboard (Enter on a focused link) and a middle click arrive
     /// the same way. Only the Watch columns get this script; the full reader page is left alone.
-    static let sessionLinkWatch = """
-    (function () {
-      if (window.__connSessionLinks) return;
-      window.__connSessionLinks = true;
-      function taken(e) {
-        var t = e.target;
-        var a = t && t.closest ? t.closest('a[data-session]') : null;
-        var s = a && a.getAttribute('data-session');
-        if (!s) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ session: s, reader: !!e.metaKey }); } catch (x) {}
-      }
-      window.addEventListener('click', function (e) { if (e.button === 0) taken(e); }, true);
-      window.addEventListener('auxclick', function (e) { if (e.button === 1) taken(e); }, true);
-    })();
-    """
+    static let sessionLinkWatch = sessionLinkScript(campusHost: nil)
+
+    /// The same capture-phase handler also takes a link to a conversation in Campus's own web app (`https://<campus host>/spaces/<kind>/<folder>/conversations/<id>`,
+    /// when Campus is part of this launch): the page does not navigate, and Conn is told the address and whether Cmd was held. Conn checks the address again
+    /// (`CampusClient.conversationLink`) before it opens anything.
+    static func sessionLinkScript(campusHost: String?) -> String {
+        let host = (campusHost ?? "").replacingOccurrences(of: "\\", with: "").replacingOccurrences(of: "'", with: "")
+        return """
+        (function () {
+          if (window.__connSessionLinks) return;
+          window.__connSessionLinks = true;
+          var CAMPUS_HOST = '\(host)';
+          function taken(e) {
+            var t = e.target;
+            var a = t && t.closest ? t.closest('a[data-session]') : null;
+            var s = a && a.getAttribute('data-session');
+            if (s) {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ session: s, reader: !!e.metaKey }); } catch (x) {}
+              return;
+            }
+            if (!CAMPUS_HOST) return;
+            var l = t && t.closest ? t.closest('a[href]') : null;
+            if (!l) return;
+            var u; try { u = new URL(l.href, location.href); } catch (x) { return; }
+            if (u.hostname !== CAMPUS_HOST || !/\\/spaces\\/(private|team)\\/[^\\/]+\\/conversations\\/[^\\/]+/.test(u.pathname)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ campus: u.href, reader: !!e.metaKey }); } catch (x) {}
+          }
+          window.addEventListener('click', function (e) { if (e.button === 0) taken(e); }, true);
+          window.addEventListener('auxclick', function (e) { if (e.button === 1) taken(e); }, true);
+        })();
+        """
+    }
 
     /// Show a conversation in this column: at its newest turn, or at one turn (the lite page scrolls to that reply and outlines it).
     /// With `reload` false and the page already showing, only the address changes (the page follows it in place, so the column keeps
@@ -181,6 +205,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         linkProxy = nil
         onUse = nil
         onSessionLink = nil
+        onCampusLink = nil
     }
 
     /// Written into the reader page before its own scripts run: it records that the page listens for an address change
@@ -348,6 +373,13 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// A link to the other Conn pane switches to it (exact address, hash kept); any other link that leaves the page opens in
     /// the default browser instead of replacing the pane. Links inside the page, and everything that is not a click, load as usual.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if lite, action.navigationType == .linkActivated, let url = action.request.url, let host = campusHost,
+           let ref = CampusClient.conversationLink(url, campusHost: host) {
+            decisionHandler(.cancel)
+            let command = action.modifierFlags.contains(.command)
+            DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.onCampusLink?(ref.kind, ref.folder, ref.id, command) } }
+            return
+        }
         if action.navigationType == .linkActivated, let url = action.request.url {
             let route = WebLinkPolicy.route(for: url, ownBase: baseURL, panes: paneAddresses())
             if route != .allow { handle(route); decisionHandler(.cancel); return }
@@ -375,8 +407,18 @@ private final class UseMessageProxy: NSObject, WKScriptMessageHandler {
 private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
     weak var box: WebBox?
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let session = body["session"] as? String, WatchAddress.validSession(session) else { return }
+        guard let body = message.body as? [String: Any] else { return }
         let reader = body["reader"] as? Bool ?? false
+        if let href = body["campus"] as? String {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let box = self?.box, let host = box.campusHost, let url = URL(string: href), let ref = CampusClient.conversationLink(url, campusHost: host) else { return }
+                    box.onCampusLink?(ref.kind, ref.folder, ref.id, reader)
+                }
+            }
+            return
+        }
+        guard let session = body["session"] as? String, WatchAddress.validSession(session) else { return }
         DispatchQueue.main.async { [weak self] in self?.box?.onSessionLink?(session, reader) }
     }
 }
@@ -459,8 +501,11 @@ final class WebHub {
     /// A web view for one Watch column. It is not one of the two panes: a link that leaves the page goes to the browser (a column
     /// has no pane to switch to), and the box is dropped when Watch ends.
     func makeLiteBox(startFragment: String?) -> WebBox {
-        WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment)
+        WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment, campusHost: campusHost)
     }
+
+    /// Campus's host, so a lite page's link to a Campus conversation is told from any other link.
+    var campusHost: String?
 
     /// Watch unloads the full reader: its page holds every conversation and document (255 to 430 MB or more), which three or four
     /// columns of the lite page replace. The box is made again, and the page loaded again, the next time the Reader pane shows.

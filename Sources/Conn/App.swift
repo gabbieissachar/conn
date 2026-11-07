@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in await EditorSelfTest.run(file: file, model: model) }
         }
         if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
+        if cfg.campusCheck { Task { @MainActor in await CampusCheck.runAlone(model: model) } }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
             // The Herdr client pane is an interactive second client: this test hook may only run when both the socket
@@ -173,6 +174,13 @@ struct ConnCommands: Commands {
             if app.agentViewEnabled {
                 Divider()
                 Button(app.comparePaneID == nil ? "Compare with Previous Agent" : "Close Comparison") { app.toggleCompare() }.keyboardShortcut("\\")
+            }
+        }
+        if app.campus.link != .disabled {
+            CommandMenu("Campus") {
+                Button("Sign in to Campus…") { app.signInToCampus() }
+                Button("Open Campus in the Browser") { NSWorkspace.shared.open(app.campus.baseURL) }
+                Button("Check Campus Now") { app.campus.kick() }
             }
         }
         CommandMenu("Layout") {
