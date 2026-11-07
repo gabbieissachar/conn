@@ -109,7 +109,12 @@ class Lab:
     def pid_record(self, pid: int, session_id: str, folder: str = ".claude", cwd: str = "/work", proc_start: str | None = None) -> Path:
         path = self.home / folder / "sessions" / f"{pid}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"pid": pid, "sessionId": session_id, "cwd": cwd, "procStart": proc_start if proc_start is not None else self.start(pid), "kind": "interactive"}
+        from rstore import identity
+        shown = proc_start if proc_start is not None else self.start(pid)
+        epoch = identity.epoch_of(shown)
+        # procStart is in another time zone than `ps` prints (as in a real record); startedAt is the epoch the store compares
+        record = {"pid": pid, "sessionId": session_id, "cwd": cwd, "procStart": "(another zone) " + shown, "kind": "interactive",
+                  **({"startedAt": int((epoch + 2) * 1000)} if epoch else {})}
         path.write_text(json.dumps(record), encoding="utf-8")
         os.utime(path, (os.stat(path).st_atime, os.stat(path).st_mtime + 1))  # a change shows even within one clock tick
         return path

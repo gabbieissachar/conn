@@ -40,9 +40,9 @@ class Settings:
     age_recipient: str | None = None  # an age public key (the private key stays in the keychain, for restoring)
     keep_snapshots: int = 14  # staged snapshots beyond this many are reported as old (never deleted by this code)
     # Timing of the long-running ingest.
-    scan_seconds: float = 2.0
-    reconcile_seconds: float = 60.0
-    identity_poll_seconds: float = 2.0
+    scan_seconds: float = 3.0  # how often the logs are listed and changed ones ingested (an idle scan is about 30 ms of CPU)
+    reconcile_seconds: float = 60.0  # how often the whole Herdr inventory is read again (events are hints; this is the truth)
+    identity_poll_seconds: float = 0.5  # the loop's wake: pid records, Herdr events, panes an event named
     extra: dict = field(default_factory=dict)
 
     def validate(self) -> None:

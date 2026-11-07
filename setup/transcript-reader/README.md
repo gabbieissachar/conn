@@ -509,6 +509,10 @@ On the phone over Tailscale the same path applies, and the wait is one request, 
 
 The server compresses its text and JSON answers (`compress.js`: brotli or gzip, whichever the browser accepts), on loopback and both tailnet listeners. And an open page no longer downloads the whole built page when a reply arrives: it asks `/api/transcript-reader/delta` for what changed since the build it holds (`delta.js`) and merges that in; a page the server cannot compare (after a server restart, or an older server) takes the full page as before. See DESIGN.md, "Fast updates over the phone's link".
 
+## The shadow store (S1)
+
+`store/` holds a second, parallel system that nothing reads yet: one SQLite file every harness's session log is ingested into, with the live identity of each Herdr pane, and the checks that prove it against this reader (turn parity with `parsed/`, the store's pane binding against the send check, a builder-versus-store disagreement list). It never touches `out/`, port 8768 or a pane. See `store/README.md`; its tests run with `python3 -m unittest discover -s setup/transcript-reader/store/tests`.
+
 ## Tests
 
 ```bash

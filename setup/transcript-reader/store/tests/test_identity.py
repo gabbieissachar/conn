@@ -85,6 +85,19 @@ class Ranking(IdentityCase):
         self.assertEqual(self.one("SELECT COUNT(DISTINCT terminal_id) FROM panes"), 2)
 
 
+class RecordMatching(unittest.TestCase):
+    def test_a_record_is_matched_to_its_process_by_the_epoch_not_the_zone_dependent_string(self):
+        start = "Sat Nov  7 17:53:51 2026"  # what `ps` prints, in this machine's zone
+        epoch = identity.epoch_of(start)
+        real_shape = {"proc_start": "Sat Nov  7 10:53:51 2026", "started_at": epoch + 3}  # a real record: procStart seven hours behind ps, startedAt the epoch
+        self.assertTrue(identity.record_matches(real_shape, start))
+        self.assertFalse(identity.record_matches({**real_shape, "started_at": epoch - 3600}, start), "an earlier process with the same pid number")
+        self.assertTrue(identity.record_matches({"proc_start": start}, start), "no startedAt: the strings are compared")
+        self.assertFalse(identity.record_matches({"proc_start": "Mon Jan  1 00:00:00 2024"}, start))
+        self.assertTrue(identity.record_matches({}, start), "a record that says nothing about its process is taken")
+        self.assertIsNone(identity.epoch_of("not a date"))
+
+
 class Expiry(IdentityCase):
     def setUp(self):
         super().setUp()
@@ -357,7 +370,8 @@ class Events(IdentityCase):
 
 class FakeHerdrSafety(unittest.TestCase):
     def test_the_fake_has_no_command_that_sends_anything(self):
-        import subprocess, sys, os
+        import subprocess
+        import os
         from pathlib import Path
         lab = Lab(Path(os.environ.get("TMPDIR", "/tmp")))
         self.addCleanup(lab.close)

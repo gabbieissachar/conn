@@ -299,6 +299,11 @@ class Scorecard(StoreCase):
         self.assertIn("Overall (checks 1 to 7): **OPEN**", text)
         self.assertIn("## 8. Verdict", text)
 
+    def test_the_template_file_is_the_empty_render(self):
+        from pathlib import Path
+        shipped = (Path(__file__).resolve().parent.parent / "SCORECARD-TEMPLATE.md").read_text(encoding="utf-8")
+        self.assertEqual(shipped, scorecard.template(), "regenerate: python3 -c 'from rstore import scorecard; print(scorecard.template(), end=\"\")' > SCORECARD-TEMPLATE.md")
+
     def test_a_disagreement_or_a_parity_mismatch_is_a_fail_and_the_numbers_come_from_the_store(self):
         now = 1_790_000_000.0
         self.conn.execute("INSERT INTO parity_runs(at, trigger, sessions, turns, mismatches, unexplained) VALUES (?, 'nightly', 10, 100, 2, 2)", (now - 3600,))
@@ -309,12 +314,27 @@ class Scorecard(StoreCase):
         self.assertEqual(sum(1 for line in text.splitlines() if line.startswith("| ") and "**FAIL**" in line), 2)
         self.assertIn("Overall (checks 1 to 7): **FAIL**", text)
 
+    def test_a_pass_needs_the_soak_not_one_good_sample(self):
+        now = 1_790_000_000.0
+        self.conn.execute("INSERT INTO builder_samples(at) VALUES (?)", (now,))
+        self.conn.execute("INSERT INTO rusage_samples(at, component, user_s, sys_s, wall_s) VALUES (?, 'ingest', 1, 1, 300)", (now - 300,))
+        self.conn.execute("INSERT INTO rusage_samples(at, component, user_s, sys_s, wall_s) VALUES (?, 'parity', 2, 1, 5)", (now - 300,))
+        self.conn.execute("INSERT INTO ingest_lag(at, lag_s) VALUES (?, 1.0)", (now,))
+        self.conn.execute("INSERT INTO meta(key, value) VALUES ('clear_relink_s', '0.1')")
+        text = scorecard.render(self.conn, now=now)
+        rows = {line.split("|")[1].strip(): line for line in text.splitlines() if line.startswith("| ") and "**" in line}
+        self.assertIn("**OPEN**", rows["3. Disagreement adjudication"])
+        self.assertIn("sampled over 0.0 days", rows["3. Disagreement adjudication"])
+        self.assertIn("**OPEN**", rows["6. Cost and lag"])
+        self.assertIn("Within budget over 0.08 hours", rows["6. Cost and lag"])
+
     def test_checks_pass_when_their_evidence_is_in(self):
         now = 1_790_000_000.0
         for day in range(3):
             self.conn.execute("INSERT INTO parity_runs(at, trigger, sessions, turns, mismatches, unexplained) VALUES (?, 'nightly', 10, 100, 0, 0)", (now - day * 86400 - 600,))
         self.conn.execute("INSERT INTO send_checks(at, trigger, session_id, store_session, check_result) VALUES (?, 'send', ?, ?, 'ok')", (now, A, A))
-        self.conn.execute("INSERT INTO builder_samples(at) VALUES (?)", (now,))
+        for day in range(4):
+            self.conn.execute("INSERT INTO builder_samples(at) VALUES (?)", (now - day * 86400,))
         text = scorecard.render(self.conn, now=now)
         rows = {line.split("|")[1].strip(): line for line in text.splitlines() if line.startswith("| ") and "**" in line}
         self.assertIn("**PASS**", rows["1. Turn parity, automated"])

@@ -52,12 +52,15 @@ def check2(conn, now: float) -> tuple[str, str]:
 
 def check3(conn, now: float) -> tuple[str, str]:
     summary = disagree.summary(conn)
-    samples = conn.execute("SELECT COUNT(*) FROM builder_samples").fetchone()[0]
+    samples, first, last = conn.execute("SELECT COUNT(*), MIN(at), MAX(at) FROM builder_samples").fetchone()
+    span = ((last or 0) - (first or 0)) / DAY
     detail = f"{samples} builder samples; {summary['total']} rows: {summary['unadjudicated']} unadjudicated, {summary['store_right']} store-right, {summary['builder_right']} builder-right ({summary['open_builder_right']} open), {summary['both_wrong']} both-wrong"
     if not samples:
         return "OPEN", "the builder's mapping has not been sampled yet. " + detail
     if summary["unadjudicated"] or summary["open_builder_right"]:
         return "OPEN", detail
+    if span < 3:
+        return "OPEN", detail + f"; sampled over {span:.1f} days so far (a pass needs the soak: at least 3 days of daily samples)"
     return "PASS", detail
 
 
@@ -113,6 +116,9 @@ def check6(conn, now: float, soak_started: float | None) -> tuple[str, str]:
     else:
         parts.append("/clear-to-relink: not measured yet")
         ok = False
+    hours = (ingest["wall_s"] / 3600.0) if ingest else 0.0
+    if ok and hours < 6:
+        return "OPEN", "; ".join(parts) + f". Within budget over {hours:.2f} hours; a pass needs the soak (at least 6 hours of daemon windows)"
     return ("PASS" if ok else "OPEN"), "; ".join(parts)
 
 
@@ -164,3 +170,19 @@ def render(conn: sqlite3.Connection, *, now: float | None = None, soak_started: 
             "- Cost: `reader_store.py rusage`; lag: `ingest_lag`",
             "- Known answers: `reader_store.py known-answers check <file>`"]
     return "\n".join(out) + "\n"
+
+
+def template() -> str:
+    """The scorecard as it reads on a store with nothing in it: every row OPEN. SCORECARD-TEMPLATE.md is this text (a test keeps the two equal)."""
+    import tempfile
+    from pathlib import Path
+
+    from . import db
+
+    with tempfile.TemporaryDirectory() as folder:
+        conn = db.connect(Path(folder) / "empty.sqlite")
+        try:
+            text = render(conn, now=0.0)
+        finally:
+            conn.close()
+    return text.replace("Rendered - from the store.", "Rendered: (the date of the render) from the store.")

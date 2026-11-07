@@ -61,6 +61,7 @@ class KilledIngest(StoreCase):
                 self.conn = db.connect(config.paths(self.root).db)
                 scratch_root = Path(tempfile.mkdtemp(prefix="rstore-scratch-"))
                 scratch = db.connect(scratch_root / "s.sqlite")
+                self.addCleanup(scratch.close)
                 ingest.Ingester(scratch, config.Settings(), self.home).scan()
                 self.assertEqual(dump(self.conn), dump(scratch), "a re-ingest after the kill equals one from nothing")
                 for table in ("events", "turns", "sessions", "sources", "tool_calls"):
@@ -68,8 +69,6 @@ class KilledIngest(StoreCase):
                 dup = self.one("SELECT COUNT(*) FROM (SELECT source_id, offset FROM events GROUP BY source_id, offset HAVING COUNT(*) > 1)")
                 self.assertEqual(dup, 0)
                 scratch.close()
-                self.conn.close()
-                self.conn = db.connect(config.paths(self.root).db)
 
     def test_a_killed_ingest_of_a_growing_log_resumes_from_its_cursor(self):
         path = synth.claude_path(self.home, synth.sid(1))
@@ -88,9 +87,9 @@ class KilledIngest(StoreCase):
         self.assertEqual(self.run_ingest(None).returncode, 0)
         self.conn = db.connect(config.paths(self.root).db)
         scratch = db.connect(Path(tempfile.mkdtemp(prefix="rstore-scratch-")) / "s.sqlite")
+        self.addCleanup(scratch.close)
         ingest.Ingester(scratch, config.Settings(), self.home).scan()
         self.assertEqual(dump(self.conn), dump(scratch))
-        scratch.close()
 
 
 class DaemonLoop(StoreCase):
@@ -98,7 +97,7 @@ class DaemonLoop(StoreCase):
         self.lab = Lab(self.home)
         self.addCleanup(self.lab.close)
         where = config.paths(self.root)
-        settings = config.Settings(scan_seconds=0.1, reconcile_seconds=0.3, **kwargs)
+        settings = config.Settings(scan_seconds=0.1, identity_poll_seconds=0.05, reconcile_seconds=0.3, **kwargs)
         self.conn.close()
         d = daemon.Daemon(where, settings, self.home, client=self.lab.client(), proc_start=self.lab.proc_start, alive=self.lab.alive, subscribe=False,
                           change_parity_seconds=0.0, audit_seconds=0.0)
@@ -157,7 +156,7 @@ class DaemonLoop(StoreCase):
         self.assertFalse(d.code_changed())
         d.stamp = "an-older-stamp"  # what a landing does to the files on disk
         self.assertTrue(d.code_changed())
-        d.ticks = 29
+        d.ticks = 119
         runner = threading.Thread(target=d.run, daemon=True)
         runner.start()
         runner.join(10)

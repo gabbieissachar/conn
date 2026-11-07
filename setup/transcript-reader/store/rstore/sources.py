@@ -30,12 +30,45 @@ HARNESSES = ("claude", "codex", "copilot", "pi")
 @dataclass(frozen=True)
 class SourceDesc:
     harness: str
-    path: Path
+    path: str
     session_id: str
     home: str = ""
     kind: str = "session"
     parent_session_id: str | None = None
     home_label: str = "default"
+
+
+class DirCache:
+    """Directory listings kept until the directory's own modification time changes, so a scan of a thousand folders costs one `stat` each
+    instead of a listing each. A directory's time changes when a file is created, removed or renamed in it (not when one grows), so a new
+    log is found at the next scan, and a growing one is found by its own `stat` in `Ingester.scan`."""
+
+    def __init__(self):
+        self.cache: dict[str, tuple[int, list[str], list[str]]] = {}
+
+    def listing(self, path: str) -> tuple[list[str], list[str]]:
+        """(file names, folder names) of <path>."""
+        try:
+            stamp = os.stat(path).st_mtime_ns
+        except OSError:
+            self.cache.pop(path, None)
+            return [], []
+        hit = self.cache.get(path)
+        if hit and hit[0] == stamp:
+            return hit[1], hit[2]
+        files: list[str] = []
+        folders: list[str] = []
+        try:
+            with os.scandir(path) as handle:
+                for entry in handle:
+                    if entry.is_dir(follow_symlinks=False):
+                        folders.append(entry.name)
+                    elif entry.is_file(follow_symlinks=False):
+                        files.append(entry.name)
+        except OSError:
+            return [], []
+        self.cache[path] = (stamp, files, folders)
+        return files, folders
 
 
 def claude_homes(home_dir: Path, env: dict | None = None) -> list[Path]:
@@ -70,65 +103,62 @@ def home_label(folder: Path, home_dir: Path) -> str:
     return name[len(".claude"):].lstrip("-_.") or "default"
 
 
-def _scandir(path: Path):
-    try:
-        with os.scandir(path) as handle:
-            return list(handle)
-    except OSError:
-        return []
-
-
-def discover_claude(home_dir: Path, env: dict | None = None):
+def discover_claude(home_dir: Path, env: dict | None, dirs: DirCache):
     for folder in claude_homes(home_dir, env):
         label = home_label(folder, home_dir)
-        for project in _scandir(folder / "projects"):
-            if not project.is_dir(follow_symlinks=False):
-                continue
-            for entry in _scandir(Path(project.path)):
-                if entry.is_file(follow_symlinks=False) and entry.name.endswith(".jsonl"):
-                    yield SourceDesc("claude", Path(entry.path), entry.name[:-6], str(folder), "session", None, label)
-                elif entry.is_dir(follow_symlinks=False) and UUID_RE.match(entry.name):
-                    for sub in _scandir(Path(entry.path) / "subagents"):
-                        if sub.is_file(follow_symlinks=False) and sub.name.endswith(".jsonl"):
-                            yield SourceDesc("claude", Path(sub.path), sub.name[:-6], str(folder), "subagent", entry.name, label)
+        projects = os.path.join(folder, "projects")
+        for project in dirs.listing(projects)[1]:
+            project_path = os.path.join(projects, project)
+            files, folders = dirs.listing(project_path)
+            for name in files:
+                if name.endswith(".jsonl"):
+                    yield SourceDesc("claude", os.path.join(project_path, name), name[:-6], str(folder), "session", None, label)
+            for name in folders:
+                if UUID_RE.match(name):
+                    session_dir = os.path.join(project_path, name)
+                    if "subagents" in dirs.listing(session_dir)[1]:
+                        sub_dir = os.path.join(session_dir, "subagents")
+                        for sub in dirs.listing(sub_dir)[0]:
+                            if sub.endswith(".jsonl"):
+                                yield SourceDesc("claude", os.path.join(sub_dir, sub), sub[:-6], str(folder), "subagent", name, label)
 
 
-def discover_codex(home_dir: Path):
-    root = home_dir / ".codex" / "sessions"
-    stack = [root]
+def discover_codex(home_dir: Path, dirs: DirCache):
+    stack = [os.path.join(home_dir, ".codex", "sessions")]
     while stack:
         folder = stack.pop()
-        for entry in _scandir(folder):
-            if entry.is_dir(follow_symlinks=False):
-                stack.append(Path(entry.path))
-            elif entry.is_file(follow_symlinks=False):
-                match = CODEX_ROLLOUT.match(entry.name)
-                if match:
-                    yield SourceDesc("codex", Path(entry.path), match.group(1), str(home_dir / ".codex"), "session", None, "codex")
-
-
-def discover_copilot(home_dir: Path):
-    for entry in _scandir(home_dir / ".copilot" / "session-state"):
-        if entry.is_dir(follow_symlinks=False) and UUID_RE.match(entry.name):
-            log = Path(entry.path) / "events.jsonl"
-            if log.is_file():
-                yield SourceDesc("copilot", log, entry.name, str(home_dir / ".copilot"), "session", None, "copilot")
-
-
-def discover_pi(home_dir: Path):
-    for project in _scandir(home_dir / ".pi" / "agent" / "sessions"):
-        if not project.is_dir(follow_symlinks=False):
-            continue
-        for entry in _scandir(Path(project.path)):
-            match = PI_FILE.match(entry.name) if entry.is_file(follow_symlinks=False) else None
+        files, folders = dirs.listing(folder)
+        stack.extend(os.path.join(folder, name) for name in folders)
+        for name in files:
+            match = CODEX_ROLLOUT.match(name)
             if match:
-                yield SourceDesc("pi", Path(entry.path), match.group(1), str(home_dir / ".pi"), "session", None, "pi")
+                yield SourceDesc("codex", os.path.join(folder, name), match.group(1), str(home_dir / ".codex"), "session", None, "codex")
 
 
-def discover(home_dir: Path, env: dict | None = None) -> list[SourceDesc]:
-    """Every log on this machine, in a stable order."""
-    found = [*discover_claude(home_dir, env), *discover_codex(home_dir), *discover_copilot(home_dir), *discover_pi(home_dir)]
-    return sorted(found, key=lambda item: str(item.path))
+def discover_copilot(home_dir: Path, dirs: DirCache):
+    root = os.path.join(home_dir, ".copilot", "session-state")
+    for name in dirs.listing(root)[1]:
+        if UUID_RE.match(name):
+            log = os.path.join(root, name, "events.jsonl")
+            if "events.jsonl" in dirs.listing(os.path.join(root, name))[0]:
+                yield SourceDesc("copilot", log, name, str(home_dir / ".copilot"), "session", None, "copilot")
+
+
+def discover_pi(home_dir: Path, dirs: DirCache):
+    root = os.path.join(home_dir, ".pi", "agent", "sessions")
+    for project in dirs.listing(root)[1]:
+        project_path = os.path.join(root, project)
+        for name in dirs.listing(project_path)[0]:
+            match = PI_FILE.match(name)
+            if match:
+                yield SourceDesc("pi", os.path.join(project_path, name), match.group(1), str(home_dir / ".pi"), "session", None, "pi")
+
+
+def discover(home_dir: Path, env: dict | None = None, dirs: DirCache | None = None) -> list[SourceDesc]:
+    """Every log on this machine, in a stable order. Pass the same DirCache each time to keep scans cheap."""
+    dirs = dirs if dirs is not None else DirCache()
+    found = [*discover_claude(home_dir, env, dirs), *discover_codex(home_dir, dirs), *discover_copilot(home_dir, dirs), *discover_pi(home_dir, dirs)]
+    return sorted(found, key=lambda item: item.path)
 
 
 # ------------------------------------------------------------------------------------------------------------------ scope rules

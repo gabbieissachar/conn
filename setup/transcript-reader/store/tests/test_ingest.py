@@ -520,12 +520,19 @@ class Forget(StoreCase):
 
 class Heartbeat(StoreCase):
     def test_heartbeat_and_lag(self):
-        synth.write_jsonl(synth.claude_path(self.home, synth.sid(1)), synth.claude_conversation(n_turns=1))
+        path = synth.claude_path(self.home, synth.sid(1))
+        synth.write_jsonl(path, synth.claude_conversation(n_turns=1))
+        first = self.ing.scan()
+        self.assertEqual(first.lag, [], "the first scan of a run is the backlog: files untouched for days are not lag")
+        synth.append_jsonl(path, [synth.c_user("more", synth.T0 + 5000), synth.c_say("ok", synth.T0 + 5001)])
+        os.utime(path, None)
         result = self.ing.scan()
+        self.assertEqual(len(result.lag), 1)
+        self.assertLess(result.lag[0], 5.0, "lag is how long the change waited for a scan, not how old the file is")
         self.ing.heartbeat(result)
         row = self.rows("SELECT * FROM ingest_heartbeat")[0]
         self.assertEqual((row["files"], row["changed"], row["status"]), (1, 1, "ok"))
-        self.assertTrue(self.one("SELECT COUNT(*) FROM ingest_lag"))
+        self.assertEqual(self.one("SELECT COUNT(*) FROM ingest_lag"), 1)
         status = self.rows("SELECT * FROM v1_ingest_status")[0]
         self.assertEqual(status["sessions"], 1)
 
@@ -539,10 +546,10 @@ class Heartbeat(StoreCase):
 
 class SchemaVersion(unittest.TestCase):
     def test_a_newer_store_is_refused_and_a_new_one_is_versioned(self):
-        import sqlite3
         import tempfile
         root = Path(tempfile.mkdtemp())
         conn = db.connect(root / "s.sqlite")
+        self.addCleanup(conn.close)
         self.assertEqual(schema.version_of(conn), schema.SCHEMA_VERSION)
         self.assertEqual(conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0], str(schema.SCHEMA_VERSION))
         conn.execute(f"PRAGMA user_version = {schema.SCHEMA_VERSION + 1}")
@@ -556,6 +563,7 @@ class SchemaVersion(unittest.TestCase):
         import tempfile
         root = Path(tempfile.mkdtemp())
         conn = db.connect(root / "sub" / "s.sqlite")
+        self.addCleanup(conn.close)
         conn.execute("CREATE TABLE IF NOT EXISTS t(x)")
         self.assertEqual(os.stat(root / "sub").st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(root / "sub" / "s.sqlite").st_mode & 0o777, 0o600)

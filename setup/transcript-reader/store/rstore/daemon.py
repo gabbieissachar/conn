@@ -1,8 +1,10 @@
 """The long-running ingest: one process, one writer, the loop every other piece hangs on.
 
-Each tick (default every 2 seconds):
+The loop wakes every `identity_poll_seconds` (default 0.5) and does the cheap work each time; the logs are scanned every `scan_seconds`
+(default 3, so ingest lag p95 stays near it and an idle scan costs about 1% of a core):
   1. scan the logs and ingest what changed (ingest.Ingester.scan), and write the heartbeat row (so a reader can say "as of");
-  2. watch ~/.claude*/sessions/ for pid records (identity.poll_pid_records), an identity event source that needs no Herdr call;
+  2. watch ~/.claude*/sessions/ for pid records (identity.poll_pid_records), an identity event source that needs no Herdr call: a
+     /clear relinks within about half a second;
   3. take the Herdr subscription's events and read the panes they name (identity.on_item / process_dirty);
   4. every `reconcile_seconds` (default 60), read the whole Herdr inventory again (a reconcile read: events are hints, never the truth)
      and infer links; every few minutes, audit the store's bindings against the send check (sendrec.audit);
@@ -18,7 +20,6 @@ Never sends anything to a pane. Never writes outside the store's folder.
 from __future__ import annotations
 
 import hashlib
-import os
 import signal
 import threading
 import time
@@ -55,6 +56,7 @@ class Daemon:
         self.window = rusage.Window(self.conn, "ingest", 300.0, clock)
         self.stamp = code_stamp()
         self.last_reconcile = 0.0
+        self.last_scan = 0.0
         self.last_audit = 0.0
         self.last_parity = 0.0
         self.change_parity_seconds, self.audit_seconds = change_parity_seconds, audit_seconds
@@ -66,11 +68,14 @@ class Daemon:
 
     def tick(self) -> dict:
         now = self.clock()
-        result = self.ing.scan()
-        for row in self.conn.execute("SELECT DISTINCT session_id FROM sources WHERE last_ingested >= ? AND state = 'active'", (result.started,)):
-            self.changed_sessions.add(row[0])
-        self.ing.heartbeat(result)
-        stats = {"files": result.files, "changed": result.changed, "errors": len(result.errors)}
+        stats: dict = {}
+        if now - self.last_scan >= self.settings.scan_seconds:
+            result = self.ing.scan()
+            self.last_scan = now
+            for row in self.conn.execute("SELECT DISTINCT session_id FROM sources WHERE last_ingested >= ? AND state = 'active'", (result.started,)):
+                self.changed_sessions.add(row[0])
+            self.ing.heartbeat(result)
+            stats.update(files=result.files, changed=result.changed, errors=len(result.errors))
         stats["pid_records"] = self.ident.poll_pid_records()
         if self.feed is not None:
             for item in self.feed.drain():
@@ -119,12 +124,13 @@ class Daemon:
         try:
             while not self.stop_flag.is_set():
                 self.tick()
-                if self.ticks % 30 == 0 and self.code_changed():
+                if self.ticks % 120 == 0 and self.code_changed():  # about once a minute
                     break
-                self.stop_flag.wait(self.settings.scan_seconds)
+                self.stop_flag.wait(self.settings.identity_poll_seconds)
         finally:
             if self.feed is not None:
                 self.feed.stop()
+            self.window.tick(force=True)  # the partial window is a sample too: a short run still reports its CPU
             self.ing.heartbeat(None, status="stopped")
             self.conn.close()
         return 0

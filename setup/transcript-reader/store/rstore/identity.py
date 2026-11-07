@@ -28,7 +28,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import db, herdr as herdr_mod, sources
+from . import db, sources
 
 RANK = {"pid_record": 3, "herdr_report": 2, "cwd_inference": 1}
 SHELLS = {"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "login"}
@@ -96,6 +96,35 @@ def same_start(a: str | None, b: str | None) -> bool:
     return bool(a) and bool(b) and " ".join(str(a).split()) == " ".join(str(b).split())
 
 
+def epoch_of(lstart: str | None) -> float | None:
+    """The instant a `ps -o lstart` string names, read in this machine's own time zone."""
+    if not lstart:
+        return None
+    try:
+        parsed = time.strptime(" ".join(str(lstart).split()), "%a %b %d %H:%M:%S %Y")
+    except ValueError:
+        return None
+    return time.mktime(parsed)
+
+
+START_TOLERANCE = 120.0  # seconds between a record's startedAt and the process start `ps` reports (Claude writes the record just after it starts)
+
+
+def record_matches(record: dict, fg_start: str | None) -> bool:
+    """Is this pid record the one of the process that runs now (and not of an earlier process that had the same pid number)?
+
+    Claude's `procStart` is written in another time zone than `ps` prints (a real record read seven hours behind `ps` for the same
+    process), so the strings cannot be compared. Its `startedAt` is an epoch in milliseconds, which can: it must fall within
+    START_TOLERANCE of the process start. A record with no `startedAt` falls back to comparing the strings; one with neither is taken."""
+    started = record.get("started_at")
+    if started and fg_start:
+        epoch = epoch_of(fg_start)
+        return epoch is not None and abs(epoch - float(started)) <= START_TOLERANCE
+    if record.get("proc_start") and fg_start:
+        return same_start(record["proc_start"], fg_start)
+    return True
+
+
 class PidRecords:
     """The running Claude processes' own records, ~/.claude*/sessions/<pid>.json, read again only when a file changes. Only files named
     <digits>.json are opened (the folder also holds key files, which are never read)."""
@@ -142,7 +171,9 @@ class PidRecords:
                     record = value if isinstance(value, dict) else None
                     self.cache[path] = (stamp, record)
                 if record and isinstance(record.get("pid"), int) and isinstance(record.get("sessionId"), str) and self.alive(record["pid"]):
+                    started = record.get("startedAt")
                     found[record["pid"]] = {"session_id": record["sessionId"], "proc_start": record.get("procStart"),
+                                            "started_at": started / 1000.0 if isinstance(started, (int, float)) and started > 0 else None,
                                             "cwd": record.get("cwd"), "path": path}
         for path in list(self.cache):
             if path not in seen:
@@ -356,7 +387,7 @@ class Identity:
         self.ensure_records()
         record = self.pid_records.records.get(fg["pid"]) if fg["harness"] == "claude" else None
         current = next((f for f in open_facts if f["source"] == "pid_record"), None)
-        usable = record is not None and (not record.get("proc_start") or same_start(record.get("proc_start"), fg_start))
+        usable = record is not None and record_matches(record, fg_start)
         if current and (not usable or current["session_id"] != record["session_id"] or (current["pid"], current["proc_start"]) != identity):
             self.close_fact(current["fact_id"], "new_pid_record" if usable else "record_gone", now)
             current = None
@@ -556,7 +587,7 @@ class Identity:
         panes = self.conn.execute("SELECT * FROM panes WHERE closed_at IS NULL AND fg_pid IS NOT NULL").fetchall()
         for row in panes:
             key = (row["herdr_session"], row["life"], row["pane_id"])
-            if not self.process_is(row["fg_pid"], row["fg_proc_start"]):
+            if not self.alive(row["fg_pid"]):  # `kill -0` only: the start time is checked by the reconcile read, not by every poll
                 with db.transaction(self.conn):
                     self.expire_all(key, "process_exited", now)
                     self.conn.execute("UPDATE panes SET fg_pid = NULL, fg_proc_start = NULL, fg_harness = NULL WHERE herdr_session = ? AND life = ? AND pane_id = ?", key)

@@ -23,8 +23,6 @@ import queue
 import socket
 import subprocess
 import threading
-import time
-from pathlib import Path
 
 SUBSCRIBE_KINDS = ("pane.created", "pane.closed", "pane.updated", "pane.exited", "pane.agent_detected", "pane.moved")
 

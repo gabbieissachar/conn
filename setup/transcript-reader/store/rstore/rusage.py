@@ -47,23 +47,29 @@ def meter(conn: sqlite3.Connection | None, component: str, note: str | None = No
                          (start_wall, component, result["user_s"], result["sys_s"], result["wall_s"], result["maxrss_kb"], note))
 
 
+def total_cpu() -> tuple[float, float]:
+    """(user, system) CPU of this process and of the children it has finished with (herdr, ps): what running the daemon costs the machine."""
+    own, kids = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + kids.ru_utime, own.ru_stime + kids.ru_stime
+
+
 class Window:
-    """The daemon's own CPU, sampled every <seconds>."""
+    """The daemon's CPU, its own and its children's (the `herdr` and `ps` calls it makes), sampled every <seconds>."""
 
     def __init__(self, conn: sqlite3.Connection, component: str = "ingest", seconds: float = 300.0, clock=time.time):
         self.conn, self.component, self.seconds, self.clock = conn, component, seconds, clock
         self.reset()
 
     def reset(self) -> None:
-        self.wall0, self.use0 = self.clock(), resource.getrusage(resource.RUSAGE_SELF)
+        self.wall0, self.use0 = self.clock(), total_cpu()
 
-    def tick(self) -> bool:
+    def tick(self, force: bool = False) -> bool:
         now = self.clock()
-        if now - self.wall0 < self.seconds:
+        if now - self.wall0 < self.seconds and not force:
             return False
-        use = resource.getrusage(resource.RUSAGE_SELF)
+        use = total_cpu()
         self.conn.execute("INSERT INTO rusage_samples(at, component, user_s, sys_s, wall_s, maxrss_kb, note) VALUES (?, ?, ?, ?, ?, ?, 'window')",
-                          (self.wall0, self.component, use.ru_utime - self.use0.ru_utime, use.ru_stime - self.use0.ru_stime, now - self.wall0, maxrss_kb()))
+                          (self.wall0, self.component, use[0] - self.use0[0], use[1] - self.use0[1], now - self.wall0, maxrss_kb()))
         self.reset()
         return True
 

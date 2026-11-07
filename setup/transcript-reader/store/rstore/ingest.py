@@ -116,13 +116,15 @@ class Ingester:
         self.env = env
         self.kill_after_rows = int(os.environ.get("RSTORE_TEST_KILL_AFTER_ROWS", "0") or 0)  # lab only: a crash in the middle of a file
         self._rows_this_run = 0
+        self.prev_scan_started: float | None = None  # lag is measured only against a scan that could have seen the change
+        self.dirs = sources.DirCache()  # folder listings, kept until a folder's own time changes
 
     # ----------------------------------------------------------------------------------------------------------- scanning
 
     def scan(self) -> ScanResult:
         now = self.clock()
         result = ScanResult(started=now)
-        descs = sources.discover(self.home_dir, self.env)
+        descs = sources.discover(self.home_dir, self.env, self.dirs)
         result.files = len(descs)
         known = {row["path"]: row for row in self.conn.execute(
             "SELECT s.* FROM sources s JOIN (SELECT path, MAX(generation) g FROM sources GROUP BY path) m ON m.path = s.path AND m.g = s.generation")}
@@ -132,7 +134,7 @@ class Ingester:
         seen: set[str] = set()
         todo: list[tuple[float, sources.SourceDesc, sqlite3.Row | None, os.stat_result]] = []
         for desc in descs:
-            path = str(desc.path)
+            path = desc.path
             seen.add(path)
             try:
                 stat = os.stat(desc.path)
@@ -158,7 +160,7 @@ class Ingester:
             try:
                 outcome = self.ingest(desc, row, stat)
             except (OSError, sqlite3.Error, ValueError) as error:  # one unreadable file never stops the pass
-                result.errors.append((str(desc.path), type(error).__name__))
+                result.errors.append((desc.path, type(error).__name__))
                 with db.transaction(self.conn):
                     db.bump(self.conn, "file_event", "unreadable", now=self.clock())
                 continue
@@ -166,7 +168,10 @@ class Ingester:
             result.new += outcome == "new"
             result.replaced += outcome == "replaced"
             result.skipped += outcome == "skipped"
-            result.lag.append(max(0.0, self.clock() - stat.st_mtime))
+            if self.prev_scan_started is not None:
+                # The time since the file last changed or since we last looked, whichever is later: how long a change waited for us.
+                # The first scan of a run is the backlog (files untouched for days), which is not lag.
+                result.lag.append(max(0.0, self.clock() - max(stat.st_mtime, self.prev_scan_started)))
         for path, row in known.items():
             if path not in seen and row["state"] == "active":
                 self.mark_gone(row)
@@ -175,6 +180,7 @@ class Ingester:
             with db.transaction(self.conn):
                 self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('scope_policy_stamp', ?)", (policy_stamp,))
         result.finished = self.clock()
+        self.prev_scan_started = now
         return result
 
     def meta(self, key: str) -> str | None:
@@ -192,7 +198,7 @@ class Ingester:
             self.conn.execute(
                 "INSERT INTO sources(harness, home, path, generation, session_id, parent_session_id, kind, state, skip_reason, dev, inode, size, mtime_ns, first_seen) "
                 "VALUES (?, ?, ?, 1, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, ?)",
-                (desc.harness, desc.home, str(desc.path), desc.session_id, desc.parent_session_id, desc.kind, reason, stat.st_dev, stat.st_ino,
+                (desc.harness, desc.home, desc.path, desc.session_id, desc.parent_session_id, desc.kind, reason, stat.st_dev, stat.st_ino,
                  stat.st_size, stat.st_mtime_ns, now))
             db.bump(self.conn, "skipped_source", f"{desc.harness}:{reason}", now=now)
         else:
@@ -278,7 +284,7 @@ class Ingester:
                 source_id = self.conn.execute(
                     "INSERT INTO sources(harness, home, path, generation, session_id, parent_session_id, kind, state, dev, inode, size, mtime_ns, first_seen) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
-                    (desc.harness, desc.home, str(desc.path), generation, desc.session_id, desc.parent_session_id, desc.kind, stat.st_dev,
+                    (desc.harness, desc.home, desc.path, generation, desc.session_id, desc.parent_session_id, desc.kind, stat.st_dev,
                      stat.st_ino, stat.st_size, stat.st_mtime_ns, now)).lastrowid
             else:
                 source_id = old_id

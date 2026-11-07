@@ -246,7 +246,10 @@ def cmd_terminal_ids(ctx, args):
 
 def cmd_lab_run(ctx, args):
     """Run the lab tests (crash, file-change, identity with the fake Herdr, backup with a fake keychain) and keep the result for the scorecard."""
-    done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-v", "-s", str(STORE / "tests"), "-p", "test_*.py"], capture_output=True, text=True, cwd=str(STORE.parent.parent.parent))
+    import tempfile
+    lab_out = Path(tempfile.mkdtemp(prefix="rstore-lab-")) / "lab.json"
+    done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-v", "-s", str(STORE / "tests"), "-p", "test_*.py"], capture_output=True, text=True,
+                          cwd=str(STORE.parent.parent.parent), env={**os.environ, "RSTORE_LAB_OUT": str(lab_out)})
     text = done.stderr + done.stdout
     ran = re.search(r"Ran (\d+) tests?", text)
     failures = re.search(r"failures=(\d+)", text)
@@ -257,6 +260,11 @@ def cmd_lab_run(ctx, args):
               "returncode": done.returncode, "required_present": present, "required_ok": len(present) == len(REQUIRED_LAB)}
     with db.transaction(ctx.conn):
         ctx.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('lab_run', ?)", (json.dumps(result),))
+        if lab_out.exists():  # the lab's own measurement of /clear to relink (tests/test_crash.py)
+            relink = json.loads(lab_out.read_text(encoding="utf-8")).get("clear_relink_s")
+            if relink is not None:
+                ctx.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('clear_relink_s', ?)", (str(relink),))
+                result["clear_relink_s"] = relink
     say(result)
     return done.returncode
 
