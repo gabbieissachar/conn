@@ -16,6 +16,18 @@ const session = (id, label, extra = {}) => ({ id, pane: label === null ? null : 
 const titled = (s) => `${s.pane ? s.pane.label : 'no pane'} · ${s.pane ? s.pane.title : s.id}`;
 const ids = (entries) => entries.map(([s]) => s.id);
 
+test('closed: "closed pane" follows the pane, not the flag a conversation keeps for having once been reopened', () => {
+  const runs = (ids) => (s) => ids.includes(s.id);
+  const running = runs(['live']);
+  assert.equal(picker.closed(session('live', 'alpha', { reopened: true }), running), false, 'reopened once, a pane runs it now');
+  assert.equal(picker.closed(session('live', 'alpha'), running), false);
+  assert.equal(picker.closed(session('gone', 'beta', { reopened: true }), running), true, 'reopened, no pane runs it');
+  assert.equal(picker.closed(session('gone', 'beta'), running), true, 'seen in a pane that no longer runs it');
+  assert.equal(picker.closed(session('never', null, { reopened: true }), running), true, 'reopened by hand, never seen in a pane');
+  assert.equal(picker.closed(session('never', null), running), false, 'never seen in a pane and not reopened: not a closed pane');
+  assert.equal(picker.closed(session('kept', 'gamma', { kept: 1700000000 }), runs(['kept'])), true, 'kept on screen after its pane closed, whatever the poll says');
+});
+
 test('sections: a session no pane runs leaves the running part, keeping its index and the list order', () => {
   const list = [session('a', 'alpha'), session('b', 'beta'), session('c', 'gamma'), session('d', null)];
   const running = new Set(['a', 'c']);

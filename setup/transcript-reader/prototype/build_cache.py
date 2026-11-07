@@ -408,6 +408,7 @@ def build(args: argparse.Namespace) -> Built:
         if any(path in chain for _, chain in threads):
             continue
         threads.append((builder.session_home(homes, cwd), builder.session_chain(path)))
+    threads, held = builder.current_threads(threads)  # a conversation a newer one of its pane holds is not listed again
     builder.prune_parsed(cache)
 
     built = Built(started)
@@ -454,7 +455,7 @@ def build(args: argparse.Namespace) -> Built:
 
     labels = builder.pane_labels([thread.newest for thread in kept], out_dir / "pane-labels.json", live)
     reopened = set(builder.read_ids(out_dir / "reopened.txt"))
-    closed = builder.closed_panes(out_dir / "pane-labels.json", live, {sid for thread in kept for sid in thread.ids})
+    closed = builder.closed_panes(out_dir / "pane-labels.json", live, {sid for thread in kept for sid in thread.ids} | held)
     summaries = [summary for summary in (builder.home_summary(home) for home in homes) if summary]
 
     # Chosen sessions read newest activity first; a tie keeps the list's order.

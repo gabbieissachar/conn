@@ -1390,7 +1390,7 @@ __HEAD_HOSTED__
   const pickerName = s => picker.label(s, data.sessions, pickerSection, sessionName);
   // A session whose pane was seen but no longer runs it says so in the picker, as the header does, so it does not read as running.
   const pickerStatus = s => { const status = sessionStatus(s, HOSTED); return HOSTED && status ? status + " at last sync" : status; };
-  const sessionOption = s => [pickerStatus(s), pickerName(s) + (s.reopened || s.kept || (HOSTED && hosted.closedPane(s)) || (!HOSTED && s.pane && !paneLive(s)) ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  const sessionOption = s => [pickerStatus(s), pickerName(s) + (picker.closed(s, HOSTED ? hostedPickerLive : paneLive) ? " · closed pane" : "")].filter(Boolean).join(" · ");
   const optionText = s => (starred(s) ? "★ " : "") + sessionOption(s);
   // The hosted copy mirrors the live picker: the starred group, then the sessions Herdr said were
   // running at build time, then any unstarred sessions included by an explicitly broad scope.
@@ -1583,7 +1583,7 @@ __HEAD_HOSTED__
     const needs = $("button", "btn", "Next ask ↓"); needs.title = "Next reply that needs you (n)";
     const wakes = $("button", "btn", "Wake-ups"); wakes.setAttribute("aria-pressed", String(state.showWakes)); wakes.title = "Show or fold wake-ups (w)";
     const shut = $("button", "btn", "Close"); shut.title = "Take this closed pane's session off the reader; it stays under Closed panes in the picker";
-    shut.hidden = !(session && session.reopened && canLive);
+    shut.hidden = !(session && session.reopened && canLive && !paneLive(session));  // a pane that runs it now has nothing to close
     shut.addEventListener("click", () => changeList("close", session.id));
     const follow = $("button", "btn", "Follow Herdr"); follow.setAttribute("aria-pressed", String(state.follow));
     follow.title = "Show the session of the pane Herdr has focused, adding it to the reading list when needed";

@@ -29,6 +29,10 @@
       const found = stars.find(star => ids.includes(star.conv));
       return found ? found.conv : null;
     }
+    // Whether the picker says "closed pane" of a session: one kept on screen after its pane closed, and one that was reopened by hand or last
+    // seen in a pane that <running> says no agent runs now. A session a pane runs now is never tagged: "reopened" is a flag a conversation keeps
+    // for as long as any session of its pane was once reopened, which says nothing about the pane today.
+    const closed = (s, running) => Boolean(s.kept || ((s.reopened || s.pane) && !running(s)));
     // The name a session shows: its Herdr tab or pane label alone. Its own name (<titled>, with the session's
     // title) comes back only to tell apart two sessions with that label that <section> puts in the same part of
     // the picker, so a closed or kept session never makes a running one show its title.
@@ -44,5 +48,5 @@
       if (!name) return "Transcript reader";
       return name + (view === "doc" ? " · Documents" : " · Reader");
     }
-    return { part, sections, indexOf, starOf, label, pageTitle };
+    return { part, sections, indexOf, starOf, closed, label, pageTitle };
   })();

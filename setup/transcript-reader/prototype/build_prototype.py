@@ -1377,6 +1377,41 @@ def mark_sheets(sessions: list[dict]) -> None:
                 exchange["sheet_count"] = len(questionnaire["cards"])  # sheet_cards stops at 8; the page says how many questions there are
 
 
+MERGED_CHAIN_LIMIT = 40  # the most sessions one conversation holds once older listed sessions of its pane are read into it
+
+
+def current_threads(threads: list[tuple]) -> tuple[list[tuple], set[str]]:
+    """<threads> (each (home, chain, ...), a chain being a pane's sessions oldest first) with each pane's older listed sessions read into
+    its newest one, and the ids of the sessions of the threads that went.
+
+    A chain is cut at 20 sessions, counted back from the session it was asked for. An older session of a long-lived pane that is listed
+    too (reopened by hand, starred) therefore ends its own chain at itself and never reaches the newer sessions, while the pane's newest
+    session's chain holds it: the same conversation twice, once as a row that says "closed pane". A thread whose newest session is in
+    another thread's chain, and whose own chain does not hold that thread's newest, is the older half of that conversation. It goes, and the
+    sessions it holds before the newer thread's chain begins are put at the front of that chain (a divider marks each session), so the
+    row that stays reads the pane's history back as far as the list reaches (at most MERGED_CHAIN_LIMIT sessions). Two threads that end at
+    the same session are one: the first stays."""
+    lasts = [thread[1][-1] for thread in threads]
+    gone = {i for i, thread in enumerate(threads)
+            if any(j != i and lasts[j] != lasts[i] and lasts[i] in threads[j][1] and lasts[j] not in thread[1] for j in range(len(threads)))
+            or any(j < i and lasts[j] == lasts[i] for j in range(len(threads)))}
+    kept = []
+    for i, thread in enumerate(threads):
+        if i in gone:
+            continue
+        chain = list(thread[1])
+        pending = [j for j in sorted(gone) if lasts[j] != chain[-1]]
+        while True:
+            held = set(chain)
+            joined = next((j for j in pending if lasts[j] in held), None)
+            if joined is None:
+                break
+            pending.remove(joined)
+            chain = [member for member in threads[joined][1] if member not in held] + chain
+        kept.append((thread[0], chain[-MERGED_CHAIN_LIMIT:], *thread[2:]))
+    return kept, {log_session_id(member) for i in gone for member in threads[i][1]}
+
+
 def build(args) -> dict:
     # The build time is taken before any log is read, so a turn written while this build runs
     # leaves its log newer than the stamp and the server rebuilds again.
@@ -1410,9 +1445,9 @@ def build(args) -> dict:
     for home, path, log in chosen:
         if any(path in chain for _, chain, _ in threads):
             continue
-        chain = session_chain(path)
-        loaded = {member: (log if member == path else parsed_log(member, cache)) for member in chain}
-        threads.append((home, chain, loaded))
+        threads.append((home, session_chain(path), {path: log}))
+    threads, held = current_threads(threads)  # a conversation a newer one of its pane holds is not listed again, and its logs are not read for it
+    threads = [(home, chain, {member: (known[member] if member in known else parsed_log(member, cache)) for member in chain}) for home, chain, known in threads]
     prune_parsed(cache)
 
     sessions = []
@@ -1434,7 +1469,7 @@ def build(args) -> dict:
     for session in sessions:
         session["pane"] = labels.get(session["id"])
         session["reopened"] = bool(reopened & set(session["ids"]))
-    closed = closed_panes(out_dir / "pane-labels.json", live, {sid for s in sessions for sid in s["ids"]}) if listed else []
+    closed = closed_panes(out_dir / "pane-labels.json", live, {sid for s in sessions for sid in s["ids"]} | held) if listed else []
     if listed:
         # Chosen sessions read newest activity first; the page opens on the first one.
         sessions.sort(key=lambda s: max((e["reply_at"] or e["at"] or 0) for e in s["exchanges"]) if s["exchanges"] else 0, reverse=True)

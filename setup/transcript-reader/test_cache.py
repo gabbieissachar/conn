@@ -184,6 +184,45 @@ class SameAsFromNothing(Case):
         built = self.same(derived=[new])
         self.assertIn(b'"ids":["' + A.encode() + b'","' + new.encode() + b'"]', b"".join(built.payload))
 
+    def long_pane(self, count=24):
+        """The ids of <count> sessions of one pane, each started by a /clear of the one before, oldest first (a chain is cut at 20)."""
+        ids = [f"{n:08x}-7777-4777-8777-777777777777" for n in range(count)]
+        folder = self.lab.projects / "pane"
+        for n, sid in enumerate(ids):
+            start = LAB_T0 + 5000 + n * 1000
+            clear = [{"type": "user", "timestamp": lab_iso(start), "cwd": self.main, "message": {"role": "user", "content": CLEAR}}] if n else []
+            write_log(folder / f"{sid}.jsonl", clear + [user(f"Task {n}.", start + 20, self.main), say(f"Done {n}.", start + 30, self.main)], start + 999)
+        return ids
+
+    def test_an_older_session_of_a_long_lived_pane_listed_beside_its_newest_is_not_a_second_conversation(self):
+        # The owner's list held leader-workspaceos five times: a pane with more than 20 sessions, each of the older ones listed too (reopened,
+        # starred). A chain is cut at 20 counted back from the session it is asked for, so an older session never reaches the newer ones, while
+        # the newest session's chain holds it.
+        ids = self.long_pane()
+        old, new = ids[3], ids[-1]
+        chain = builder.session_chain(self.lab.projects / "pane" / f"{old}.jsonl")
+        self.assertEqual([len(chain), chain[-1].stem], [20, ids[19]], "the premise: the older session's chain stops at 20, short of the newest")
+        self.assertIn(ids[19], [m.stem for m in builder.session_chain(self.lab.projects / "pane" / f"{new}.jsonl")])
+        self.sessions = [old, new]
+        expected, got, built = self.both()
+        listed = [session["id"] for session in builder.build(self.args())["sessions"]]
+        self.assertEqual(listed, [new], "one conversation, under the newest session")
+        self.assertEqual(expected, got, "the cached build agrees")
+        # Every session of the pane is still covered, so none is offered again as a closed pane to reopen.
+        self.lab.panes[new] = {"label": "leader", "title": "x", "herdr": "lab", "pane": "w1:p1", "status": "idle"}
+        payload = builder.build(self.args())
+        self.assertEqual([c["id"] for c in payload["closed"] if c["id"] in ids], [])
+        # The row that stays reads the whole pane back, the older sessions put in front of its own window of 20.
+        self.assertEqual(payload["sessions"][0]["ids"], ids)
+        turns = [e["input"] for e in payload["sessions"][0]["exchanges"] if e.get("source") == "captain"]
+        self.assertEqual(turns[:2] + turns[-1:], ["Task 0.", "Task 1.", "Task 23."])
+
+    def test_two_listed_sessions_of_different_panes_stay_two_conversations(self):
+        ids = self.long_pane(3)
+        self.sessions = [A, ids[2]]
+        listed = [session["id"] for session in builder.build(self.args())["sessions"]]
+        self.assertEqual(sorted(listed), sorted([A, ids[2]]))
+
     def test_what_herdr_says_changes_the_page_without_building_any_conversation_again(self):
         self.same()
         self.lab.panes[A] = {"label": "renamed", "title": "Alpha work", "herdr": "lab", "pane": "w1:p1", "status": "idle"}
