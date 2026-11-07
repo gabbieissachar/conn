@@ -106,6 +106,7 @@ class PidRecords:
         self.home_dir, self.env, self.alive = Path(home_dir), env, alive
         self.cache: dict[str, tuple[tuple[int, int], dict | None]] = {}
         self.records: dict[int, dict] = {}
+        self.pending: set[int] = set()  # pids whose record changed since someone last took the changes: whoever polls, nobody loses one
 
     def folders(self) -> list[Path]:
         return [home / "sessions" for home in sources.claude_homes(self.home_dir, self.env)]
@@ -148,7 +149,12 @@ class PidRecords:
                 del self.cache[path]
         changed = {pid for pid, rec in found.items() if self.records.get(pid) != rec} | {pid for pid in self.records if pid not in found}
         self.records = found
+        self.pending |= changed
         return found, changed
+
+    def take_pending(self) -> set[int]:
+        taken, self.pending = self.pending, set()
+        return taken
 
 
 class Identity:
@@ -204,7 +210,12 @@ class Identity:
     def close_fact(self, fact_id: int, reason: str, now: float) -> None:
         self.conn.execute("UPDATE facts SET valid_to = ?, expired_reason = ? WHERE fact_id = ? AND valid_to IS NULL", (now, reason, fact_id))
 
-    def open_fact(self, key, source: str, session_id: str, harness: str | None, pid: int | None, start: str | None, evidence: dict, now: float) -> int:
+    def is_forgotten(self, session_id: str | None) -> bool:
+        return bool(session_id) and self.conn.execute("SELECT 1 FROM forgotten WHERE session_id = ?", (session_id,)).fetchone() is not None
+
+    def open_fact(self, key, source: str, session_id: str, harness: str | None, pid: int | None, start: str | None, evidence: dict, now: float) -> int | None:
+        if self.is_forgotten(session_id):
+            return None  # forget means forget: a pane still running that session leaves no fact, binding, event or link naming it
         return self.conn.execute(
             "INSERT INTO facts(herdr_session, life, pane_id, source, session_id, harness, pid, proc_start, observed_at, valid_from, evidence) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (*key, source, session_id, harness, pid, start, now, now, json.dumps(evidence, sort_keys=True))).lastrowid
@@ -275,6 +286,8 @@ class Identity:
         key = (name, life, pane["pane_id"])
         agent_session = pane.get("agent_session") if isinstance(pane.get("agent_session"), dict) else {}
         herdr_value = agent_session.get("value") if isinstance(agent_session.get("value"), str) and agent_session.get("value") else None
+        if self.is_forgotten(herdr_value):
+            herdr_value = None  # not even the id Herdr reported is kept
         fg = foreground_harness(info, pane.get("agent")) if read_info else None
         fg_start = self.start_of(fg["pid"]) if fg else None
         if fg and fg_start is None:
@@ -313,24 +326,28 @@ class Identity:
             fg_changed = prev_identity != new_identity
             reason = "observed"
             detail: dict = {}
+            before_binding = self.binding(key)
+            later: list[dict] = []  # events written after the binding is resolved, so each carries the session before and after
             if fg_changed:
                 expired = self.expire_all(key, "foreground_changed", now, keep_identity=new_identity if fg else None)
                 if prev_harness and not fg:
-                    self.event("foreground_changed", herdr_session=name, life=life, pane_id=pane["pane_id"], reason="harness_left_foreground", harness=prev_harness,
-                               detail={"to": "shell", "was_pid": prev_identity[0]}, at=now)
+                    later.append({"kind": "foreground_changed", "reason": "harness_left_foreground", "harness": prev_harness, "detail": {"to": "shell", "was_pid": prev_identity[0]}})
                     reason = "harness_left_foreground"
                 elif fg and not prev_harness:
-                    self.event("foreground_changed", herdr_session=name, life=life, pane_id=pane["pane_id"], reason="harness_entered_foreground", harness=fg["harness"],
-                               detail={"pid": fg["pid"]}, at=now)
+                    later.append({"kind": "foreground_changed", "reason": "harness_entered_foreground", "harness": fg["harness"], "detail": {"pid": fg["pid"]}})
                     reason = "harness_entered_foreground"
                 elif fg and prev_harness:
-                    self.event("process_restart", herdr_session=name, life=life, pane_id=pane["pane_id"], reason="harness_pid_changed", harness=fg["harness"],
-                               detail={"was_pid": prev_identity[0], "pid": fg["pid"], "was_harness": prev_harness}, at=now)
+                    later.append({"kind": "process_restart", "reason": "harness_pid_changed", "harness": fg["harness"],
+                                  "detail": {"was_pid": prev_identity[0], "pid": fg["pid"], "was_harness": prev_harness}})
                     reason = "new_process"
                 detail = {"expired_facts": expired}
             if fg:
                 self.refresh_facts(key, pane, fg, fg_start, herdr_value, prev_value, fg_changed and row is not None, now)
             self.resolve(key, now, reason, fg["harness"] if fg else prev_harness, detail)
+            after_binding = self.binding(key)
+            for item in later:
+                self.event(item["kind"], herdr_session=name, life=life, pane_id=pane["pane_id"], reason=item["reason"], harness=item["harness"], detail=item["detail"],
+                           before=before_binding["session_id"] if before_binding else None, after=after_binding["session_id"] if after_binding else None, at=now)
 
     def refresh_facts(self, key, pane: dict, fg: dict, fg_start: str | None, herdr_value: str | None, prev_value: str | None, process_changed: bool, now: float) -> None:
         identity = (fg["pid"], fg_start)
@@ -352,7 +369,9 @@ class Identity:
             report = None
         if herdr_value and report is None:
             stale = process_changed and herdr_value == prev_value  # Herdr kept the id across a process change: not reported anew
-            if not stale:
+            if self.is_forgotten(herdr_value):
+                pass
+            elif not stale:
                 self.open_fact(key, "herdr_report", herdr_value, fg["harness"], fg["pid"], fg_start, {"source": (pane.get("agent_session") or {}).get("source")}, now)
             else:
                 self.event("fact_expired", herdr_session=key[0], life=key[1], pane_id=key[2], after=herdr_value, source="herdr_report", reason="stale_report_ignored",
@@ -530,7 +549,8 @@ class Identity:
         """The identity event source that needs no Herdr call: a pid record that appeared, changed (a /clear) or went away re-resolves the
         panes whose harness process it names; a process that is no longer alive expires its facts."""
         now = self.clock()
-        _, changed = self.pid_records.poll()
+        self.pid_records.poll()
+        changed = self.pid_records.take_pending()
         self.records_at = now
         count = 0
         panes = self.conn.execute("SELECT * FROM panes WHERE closed_at IS NULL AND fg_pid IS NOT NULL").fetchall()
@@ -566,7 +586,7 @@ class Identity:
             "SELECT * FROM identity_events WHERE kind IN ('rebind', 'bind') AND before_session IS NOT NULL AND after_session IS NOT NULL").fetchall()
         for row in rows:
             before, after = row["before_session"], row["after_session"]
-            if before == after:
+            if before == after or self.is_forgotten(before) or self.is_forgotten(after):
                 continue
             exists = self.conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (after,)).fetchone()
             if not exists:

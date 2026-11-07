@@ -449,29 +449,31 @@ class Scope(unittest.TestCase):
 
 class Forget(StoreCase):
     def test_forget_removes_a_session_everywhere_and_it_is_never_taken_again(self):
-        for n in (1, 2):
-            synth.write_jsonl(synth.claude_path(self.home, synth.sid(n)), synth.claude_conversation(n_turns=2))
+        needle = "ZEBRA-UNIQUE-NEEDLE-4411"
+        first = synth.claude_conversation(n_turns=2)
+        next(r for r in first if r["type"] == "user")["message"]["content"] = f"Remember {needle} for later"
+        synth.write_jsonl(synth.claude_path(self.home, synth.sid(1)), first)
+        synth.write_jsonl(synth.claude_path(self.home, synth.sid(2)), synth.claude_conversation(n_turns=2))
         parent = synth.sid(1)
         sub = self.home / ".claude" / "projects" / "-work-alpha" / parent / "subagents" / "agent-zz.jsonl"
         synth.write_jsonl(sub, synth.claude_conversation(n_turns=1))
         self.ing.scan()
         self.conn.execute("INSERT INTO send_checks(at, trigger, session_id, check_result) VALUES (1, 'send', ?, 'ok')", (parent,))
         self.conn.execute("INSERT INTO facts(herdr_session, life, pane_id, source, session_id, observed_at, valid_from) VALUES ('h', '1', 'w1:p1', 'pid_record', ?, 1, 1)", (parent,))
-        needle = self.conn.execute("SELECT input FROM turns WHERE session_id = ? LIMIT 1", (parent,)).fetchone()[0]
-        self.assertTrue(self.conn.execute("SELECT 1 FROM search WHERE search MATCH 'alpha' AND session_id = ?", (parent,)).fetchone())
+        self.assertTrue(self.conn.execute("SELECT 1 FROM search WHERE search MATCH 'zebra' AND session_id = ?", (parent,)).fetchone())
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.assertIn(needle.encode(), (self.root / "reader-store.sqlite").read_bytes(), "the needle is in the file before the forget")
         report = forget.forget(self.conn, parent, note="test")
         self.assertEqual(report["sessions"], 2, "a forgotten session takes its sub-agents with it")
-        for table in ("sessions", "turns", "events", "sources", "tool_calls", "facts", "send_checks"):
-            col = "session_id"
-            n = self.one(f"SELECT COUNT(*) FROM {table} WHERE {col} IN (?, 'agent-zz')", parent) if table != "tool_calls" else 0
-            self.assertEqual(n, 0, table)
+        for table in ("sessions", "turns", "events", "sources", "facts", "send_checks"):
+            self.assertEqual(self.one(f"SELECT COUNT(*) FROM {table} WHERE session_id IN (?, 'agent-zz')", parent), 0, table)
         self.assertEqual(self.one("SELECT COUNT(*) FROM search WHERE session_id IN (?, 'agent-zz')", parent), 0)
         self.assertEqual(self.one("SELECT COUNT(*) FROM links WHERE from_session = ? OR to_session = ?", parent, parent), 0)
         self.assertEqual(self.one("SELECT COUNT(*) FROM sessions"), 1, "another session is untouched")
         self.assertTrue(self.one("SELECT 1 FROM forgotten WHERE session_id = ?", parent))
         # The text is out of the file, not only out of the index.
-        raw = (self.root / "store.sqlite").read_bytes() + (self.root / "store.sqlite-wal").read_bytes() if (self.root / "store.sqlite-wal").exists() else (self.root / "store.sqlite").read_bytes()
-        self.assertNotIn(needle.encode(), raw) if needle not in {r["input"] for r in self.rows("SELECT input FROM turns")} else None
+        raw = b"".join(p.read_bytes() for p in self.root.glob("reader-store.sqlite*"))
+        self.assertNotIn(needle.encode(), raw, "secure_delete, the FTS secure-delete option and the vacuum took it out of every file")
         # Another scan does not bring it back, even though the log is still on disk.
         self.ing.scan()
         self.assertEqual(self.one("SELECT COUNT(*) FROM sessions WHERE session_id IN (?, 'agent-zz')", parent), 0)

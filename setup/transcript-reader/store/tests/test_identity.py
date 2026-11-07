@@ -207,6 +207,33 @@ class Expiry(IdentityCase):
         self.assertEqual(kinds, [("bind", None, A), ("rebind", A, B), ("unbind", B, None)])
 
 
+class Forgotten(IdentityCase):
+    def test_a_pane_still_running_a_forgotten_session_leaves_no_trace_of_it(self):
+        from rstore import forget
+        synth.write_jsonl(synth.claude_path(self.home, A), synth.claude_conversation(n_turns=1))
+        synth.write_jsonl(synth.claude_path(self.home, B), synth.claude_conversation(n_turns=1))
+        self.ing.scan()
+        self.lab.session("esim")
+        self.lab.pane("esim", "w1:p1", agent="claude", agent_session=A, pid=1001)
+        self.lab.pid_record(1001, A)
+        self.reconcile()
+        self.assertEqual(self.binding()["session_id"], A)
+        forget.forget(self.conn, A)
+        self.assertEqual(self.rows("SELECT herdr_value FROM panes"), [{"herdr_value": None}], "not even the id Herdr reported is kept")
+        self.reconcile()
+        self.ident.poll_pid_records()
+        self.assertIsNone(self.binding(), "the pane still runs it, and the store says nothing")
+        for table, column in (("facts", "session_id"), ("bindings", "session_id"), ("identity_events", "after_session"), ("identity_events", "before_session")):
+            self.assertEqual(self.one(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", A), 0, f"{table}.{column}")
+        self.assertEqual(self.rows("SELECT herdr_value FROM panes"), [{"herdr_value": None}])
+        # a /clear from the forgotten session to another is not linked either, and the other session is bound as usual
+        self.lab.pid_record(1001, B)
+        self.ident.poll_pid_records()
+        self.assertEqual(self.binding()["session_id"], B)
+        self.assertEqual(self.ident.infer_links(), 0)
+        self.assertEqual(self.one("SELECT COUNT(*) FROM links WHERE from_session = ? OR to_session = ?", A, A), 0)
+
+
 class Links(IdentityCase):
     def test_a_clear_is_linked_when_the_new_session_opens_with_the_command(self):
         sid_a, sid_b = synth.sid(21), synth.sid(22)

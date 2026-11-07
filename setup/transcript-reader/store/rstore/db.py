@@ -28,9 +28,9 @@ def connect(db_path: Path, *, create: bool = True, readonly: bool = False) -> sq
         os.close(fd)
     os.chmod(db_path, 0o600)
     if readonly:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, isolation_level=None, timeout=30)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, isolation_level=None, timeout=30, check_same_thread=False)
     else:
-        conn = sqlite3.connect(db_path, isolation_level=None, timeout=30)
+        conn = sqlite3.connect(db_path, isolation_level=None, timeout=30, check_same_thread=False)  # one thread at a time: a process hands its connection over, never shares it
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
     if not readonly:

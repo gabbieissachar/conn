@@ -1,7 +1,7 @@
 """`forget <session>`: a session removed from the store everywhere, and never taken again.
 
 W1 made the store an archive, so a person needs a way to take something out of it. Forgetting a session removes, in one transaction,
-its sources, events, turns, search rows, tool steps, links, every identity fact and binding that names it, its Send checks and its
+its sources, events, turns, search rows, tool steps, links, every identity fact and binding that names it, its Send checks, the Herdr id a pane last reported for it, and its
 parity rows, and its sub-agents with it. It writes a tombstone (`forgotten`), so the next scan does not read the still-present log
 again (it is counted as skipped: forgotten). Then the file is rewritten (`secure_delete` is on, the WAL is truncated and the file is
 vacuumed) so the text is out of the file, not only out of the index.
@@ -56,6 +56,7 @@ def forget(conn: sqlite3.Connection, session_id: str, note: str | None = None, c
                               ("parity_mismatches", "session_id"), ("disagreement_rows", "store_session"), ("disagreement_rows", "builder_session"),
                               ("builder_pane_map", "session_id")):
             conn.execute(f"DELETE FROM {table} WHERE {column} IN ({marks})", ids)
+        conn.execute(f"UPDATE panes SET herdr_value = NULL WHERE herdr_value IN ({marks})", ids)
         conn.execute(f"UPDATE identity_events SET before_session = NULL WHERE before_session IN ({marks})", ids)
         conn.execute(f"UPDATE identity_events SET after_session = NULL WHERE after_session IN ({marks})", ids)
         for forgotten_id in ids:

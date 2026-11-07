@@ -26,7 +26,7 @@ class StoreCase(unittest.TestCase):
         self.home = synth.make_home()
         self.root = Path(tempfile.mkdtemp(prefix="rstore-db-"))
         self.settings = config.Settings(**self.policy)
-        self.conn = db.connect(self.root / "store.sqlite")
+        self.conn = db.connect(config.paths(self.root).db)
         self.ing = ingest.Ingester(self.conn, self.settings, self.home)
         self.addCleanup(self.conn.close)
 
