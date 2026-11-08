@@ -127,7 +127,8 @@ function createPaneWatch({
       settleTimer = timers.setTimeout(() => { settleTimer = null; readSession(name).catch(() => {}); }, READ_SETTLE_MS);
     };
     const lose = (why) => {
-      if (sub.stopped) return;
+      if (sub.stopped || sub.lost) return;  // an error and the close that follows it are one loss
+      sub.lost = true;
       sub.live = false;
       timers.clearTimeout(sub.pingTimer);
       if (sub.socket) { try { sub.socket.destroy(); } catch { /* gone */ } sub.socket = null; }

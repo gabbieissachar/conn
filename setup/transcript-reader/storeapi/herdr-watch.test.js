@@ -125,6 +125,9 @@ test('a lost stream (an explicit events_lost, or the connection ending) reads th
     l.sockets.drop('work');
     await until(() => l.watch.sessions()[0].panes[0].status === 'done', 'the inventory read after a dropped connection');
     await until(() => l.sockets.requests.filter((r) => r.method === 'events.subscribe').length >= 3, 'a third subscription');
+    await sleep(250);   // an error and the close after it are one loss: one new subscription, never two
+    assert.equal(l.sockets.requests.filter((r) => r.method === 'events.subscribe').length, 3);
+    assert.equal(l.sockets.subscribers('work'), 1);
     assert.ok(l.watch.stats().lost >= 2);
   } finally { await l.done(); }
 });
