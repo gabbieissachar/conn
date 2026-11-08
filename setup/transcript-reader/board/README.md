@@ -5,8 +5,8 @@ Firstmate already records. The design, the three review rounds and the calls (R1
 `data/task-board-prototype/report.md` and `decisions.md`; this folder is slices 1, 2 and 4 to 7 of its section 7: the data layer, the lifecycle
 config, the reader half of reply marks, the shared tagger and thread builder, the page with answering on a card, and worker boards.
 
-**Read only by default.** The routes are off unless the reader runs with `PMOS_READER_BOARD=1`, and they are never served on the tailnet listener
-(the phone's copy is its own decision, with its own sealing). Three writes exist, each behind a flag of its own that is off (the first two change a Firstmate home,
+**Read only by default.** The routes are off unless the reader runs with `PMOS_READER_BOARD=1`, and they are not served on the tailnet listeners
+unless `PMOS_READER_BOARD_TAILNET=1` is set too, and then only on the TLS address, behind the passcode, reads only (the phone's offline copy is its own decision, with its own sealing). Three writes exist, each behind a flag of its own that is off (the first two change a Firstmate home,
 the third types into a live pane):
 
 | Flag | What it turns on | What it runs |
