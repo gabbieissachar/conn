@@ -528,3 +528,21 @@ test('sheet: the way back is the conversation the sheet is of (the hosted copy\'
   assert.doesNotMatch(refresh, /live\.page\(|DOMParser/, 'never the page again: the index and the sheet\'s object');
   assert.ok(SHEET_SOURCE.includes('const idle = () => !(document.activeElement && document.activeElement.tagName === "TEXTAREA") && !sendOnce.busy();'), 'a build is not taken while a box is typed in or a send is under way');
 });
+
+// --------------------------------------------------------------------------------------------------- a session the reader does not list (2026-11-08)
+
+test('an address that names a session the reader does not list opens it as itself, empty, with no message box: never another conversation', () => {
+  assert.ok(PAGE_SOURCE.includes('function noTranscript(id, label, why = "none") {'));
+  assert.ok(PAGE_SOURCE.includes('placeholder: true, why, label: label || "", kept: Date.now() / 1000'), 'a kept session, so it leaves the list when another is shown');
+  // a fresh load (chooseOpening) and an address followed in the open page (followAddress) both go to it
+  assert.ok(PAGE_SOURCE.includes('const placeholder = wanted && fromHash < 0 && !link.opening;'));
+  assert.ok(PAGE_SOURCE.includes('placeholder ? noTranscript(wanted, "", closedHere ? "closed" : "none") : fromSaved >= 0'), 'before the list\'s own first conversation');
+  assert.ok(PAGE_SOURCE.includes('si = noTranscript(asked.session, "", hand ? "closed" : "none");'));
+  assert.doesNotMatch(PAGE_SOURCE, /so this stays on the conversation open\.` \}; renderLive\(\); return; \}\n    \}/, 'the notice that it stays on the conversation open is gone');
+  // a live tab whose agent has written no transcript yet (add-tab answers no_log)
+  assert.ok(PAGE_SOURCE.includes('if (e.code === "no_log") {'));
+  // no message box for it, no star, nothing that goes between turns, and the build that lists it opens it in place
+  assert.ok(PAGE_SOURCE.includes('&& !data.sessions[state.session].placeholder ? data.sessions[state.session] : null;'), 'the dock is hidden');
+  assert.ok(PAGE_SOURCE.includes('btn.hidden = !session || Boolean(session.placeholder);'));
+  assert.ok(PAGE_SOURCE.includes('(reading && reading.placeholder && (s.ids || [s.id]).some(id => id.startsWith(sid)))'), 'the address may be 8 characters of the id the build lists');
+});

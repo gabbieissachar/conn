@@ -106,7 +106,7 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     check(/was not found in this conversation/.test(s.note) && s.linked === 0 && /22222222/.test(s.title), 'fresh load: an unknown message opens the conversation and says plainly it was not found', s.note);
     await fresh(`#s=deadbeef&m=${m(lab.ask)}`);
     s = ev(STATE);
-    check(/Session deadbeef is not on the reader any more/.test(s.note) && s.linked === 0, 'fresh load: an unknown session says so and looks for no message in the conversation that opened', s.note);
+    check(/No transcript yet/.test(s.title) && s.linked === 0 && /No transcript yet for this session/.test(ev(`return { ok: true, main: document.getElementById('main').innerText };`).main), 'fresh load: an unknown session opens as itself, with "No transcript yet", and looks for no message in another conversation', s.title);
 
     // ---- 5. #s= and &d= as they always were
     await fresh(`#s=${OTHER}`);
@@ -156,8 +156,8 @@ const STATE = `return { hash: location.hash, note: (document.getElementById('fol
     s = await until(`const n = document.getElementById('follow-note').textContent; return { ok: /was not found in this conversation/.test(n), note: n, marker: window.__marker || null };`, 'the not-found notice in place');
     check(s.marker === 'kept', 'in place: an unknown message says so without loading the page', s.note);
     ev(`location.hash = '#s=deadbeef'; return true;`);
-    s = await until(`const n = document.getElementById('follow-note').textContent; return { ok: /Session deadbeef is not on the reader any more/.test(n), note: n, title: document.title };`, 'the unknown-session notice in place');
-    check(/22222222/.test(s.title), 'in place: an unknown session says so and stays where it was', s.note);
+    s = await until(`const n = document.getElementById('main').innerText; return { ok: /No transcript yet for this session/.test(n), note: n, title: document.title };`, 'the unknown-session notice in place');
+    check(/No transcript yet/.test(s.title) && !/22222222/.test(s.title), 'in place: an unknown session opens as itself, with "No transcript yet", and not as the conversation that was open (2026-11-08)', s.title);
 
     // ---- 10. the Documents view in place
     ev(`location.hash = '#s=${OTHER}&d=${doc}'; return true;`);

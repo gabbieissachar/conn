@@ -1459,7 +1459,7 @@ __HEAD_HOSTED__
     return frag;
   }
   // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
-  const sessionName = s => s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
+  const sessionName = s => s.placeholder ? `No transcript yet · ${s.label || s.id.slice(0, 8)}` : s.pane ? s.pane.label + (s.pane.title && s.pane.title !== s.pane.label ? " · " + s.pane.title : "")
     : homeName(s.home) + (s.where ? " · " + s.where.split("/").pop() : "") + " · " + s.id.slice(0, 8);
   // What the session's agent is doing now, as Herdr reports it, ahead of its name in the picker,
   // so a glance down the list shows which ones still run. Empty without the live server or a pane.
@@ -1522,7 +1522,7 @@ __HEAD_HOSTED__
   const pickerName = s => picker.label(s, data.sessions, pickerSection, sessionName);
   // A session whose pane was seen but no longer runs it says so in the picker, as the header does, so it does not read as running.
   const pickerStatus = s => { const status = sessionStatus(s, HOSTED); return HOSTED && status ? status + " at last sync" : status; };
-  const sessionOption = s => [pickerStatus(s), pickerName(s) + (picker.closed(s, HOSTED ? hostedPickerLive : paneLive) ? " · closed pane" : "")].filter(Boolean).join(" · ");
+  const sessionOption = s => [pickerStatus(s), pickerName(s) + (!s.placeholder && picker.closed(s, HOSTED ? hostedPickerLive : paneLive) ? " · closed pane" : "")].filter(Boolean).join(" · ");
   const optionText = s => (starred(s) ? "★ " : "") + sessionOption(s);
   // The hosted copy mirrors the live picker: the starred group, then the sessions Herdr said were
   // running at build time, then any unstarred sessions included by an explicitly broad scope.
@@ -1669,7 +1669,13 @@ __HEAD_HOSTED__
       const index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
       if (index >= 0) { state.session = index; state.view = "reader"; setAddress(); render(); showLatest(); }
       else { link.listing = { text: `${name} is built, but is not on the page yet.` }; renderLive(); }
-    } catch (e) { link.listing = { text: `Could not build ${name}: ${e.message}` }; renderLive(); }
+    } catch (e) {
+      if (e.code === "no_log") {  // the tab's agent has not written a transcript yet: that tab opens, empty, with a note, and not the conversation it was picked from
+        link.listing = null;
+        state.session = noTranscript(sid, name); state.view = "reader";
+        setAddress(); render();
+      } else { link.listing = { text: `Could not build ${name}: ${e.message}` }; renderLive(); }
+    }
     labelSessions();
   }
   // Reopen a closed pane's session or close a reopened one, then show the rebuilt page.
@@ -1763,6 +1769,7 @@ __HEAD_HOSTED__
     needs.addEventListener("click", () => jump("needs", 1));
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
     if (pickRow.parentNode !== row) row.append(pickRow);
+    for (const turnsOnly of [prev, next, needs, wakes]) turnsOnly.hidden = Boolean(session.placeholder);  // there are no turns to go between
     row.append(prev, next, needs, wakes, pinned, hiddenToggle, copyToggle, shut, follow);
     paintStar(star);
     const count = p => exs.filter(p).length;
@@ -1772,15 +1779,19 @@ __HEAD_HOSTED__
     const pane = session && session.pane;
     const first = exs.find(e => e.at), last = [...exs].reverse().find(e => e.at);
     const span = first ? (fmtShortDay(first.at) === fmtShortDay(last.at) ? fmtShortDay(first.at) : `${fmtShortDay(first.at)} to ${fmtShortDay(last.at)}`) : "no turns";
-    const where = session ? `${session.home === "workspace" ? "Your workspace" : homeName(session.home) + " home"}${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}${session.agent === "copilot" ? " · Copilot, read only" : ""}` : "";
+    const where = session && session.placeholder ? `session ${session.id.slice(0, 8)}` : session ? `${session.home === "workspace" ? "Your workspace" : homeName(session.home) + " home"}${session.where ? " · " + session.where : ""} · ${span} · session ${session.id.slice(0, 8)}${session.agent === "copilot" ? " · Copilot, read only" : ""}` : "";
     // The hosted copy has the agent's state as Herdr reported it when the laptop built the copy.
     const stated = HOSTED && pane && pane.live && session ? sessionStatus(session, true) : "";
     const asOf = stated ? ` · ${stated} at ${builtAt(data.generated)}` : "";
-    const origin = $("div", "summary", pane ? `${paneLive(session) ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
+    const origin = $("div", "summary", session.placeholder ? where : pane ? `${paneLive(session) ? "Herdr" : "Herdr pane closed, was in"} ${pane.herdr}${asOf} · ${where}` : `No Herdr pane found · ${where}`);
     const note = $("div", "follow-note"); note.id = "follow-note";
     if (row.parentNode !== controls) controls.append(row);
     controls.append(origin, summary, note);
-    if (session && session.kept) {
+    if (session && session.placeholder) {
+      controls.append($("div", "kept-note", session.why === "closed"
+        ? `This session (${session.id.slice(0, 8)}) was closed here. It is under Closed panes in the picker.`
+        : `No transcript yet for this session (${session.id.slice(0, 8)}). This page opens it as soon as it has one; the picker shows the others.`));
+    } else if (session && session.kept) {
       const closed = $("div", "kept-note", `Its Herdr pane has closed. Shown as it was at ${fmtTime(session.kept)}; Send is off. `);
       const keepIt = $("button", "btn", "Keep it on the reader"); keepIt.hidden = !canLive;
       keepIt.title = "List this closed pane's session again, until you press Close. Picking another session instead takes it off the reader; it stays under Closed panes.";
@@ -1793,7 +1804,7 @@ __HEAD_HOSTED__
     if (keepTurns && held && held.sid === session.id) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id) }; paintPins(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
-    if (!exs.length) { main.append($("div", "empty", "No turns in this session."), ...pendingNodes(session)); return; }
+    if (!exs.length) { main.append($("div", "empty", session.placeholder ? "No transcript yet for this session." : "No turns in this session."), ...(session.placeholder ? [] : pendingNodes(session))); return; }
     const sid = session.id;
     let run = null, runCount = 0;
     exs.forEach((ex, i) => {
@@ -1924,7 +1935,7 @@ __HEAD_HOSTED__
   }
   function paintStar(btn) {
     const session = state.view === "reader" && data.sessions[state.session];  // a star is for a session, chosen from the Conversation
-    btn.hidden = !session;
+    btn.hidden = !session || Boolean(session.placeholder);  // one with no transcript has nothing to keep at the top
     if (!session) return;
     const on = starred(session);
     btn.setAttribute("aria-pressed", String(on));
@@ -2174,6 +2185,16 @@ __HEAD_HOSTED__
   // opened over the conversation on screen). Either way the address then goes back to #s=, so the same link works again and a reload
   // does not jump again.
   const sessionAt = prefix => data.sessions.findIndex(s => (s.ids || [s.id]).some(id => id.startsWith(prefix)));
+  // A session asked for by its address (or picked as a Herdr tab) that the reader has no transcript of is shown as itself: an empty conversation
+  // with a note, no message box, and the address kept. It is never another conversation (DESIGN.md, 2026-11-08). It is a kept session, so it leaves the
+  // list when another is shown and survives a new build; when a build lists the real session (applyPayload) the page opens it in its place.
+  // why: "none" (no transcript yet) or "closed" (the pane was closed here: it is under Closed panes).
+  function noTranscript(id, label, why = "none") {
+    const at = data.sessions.findIndex(s => s.placeholder && s.id === id);
+    if (at >= 0) { data.sessions[at].why = why; return at; }
+    data.sessions.push({ id, ids: [id], home: "main", file: "", where: "", exchanges: [], pane: null, reopened: false, placeholder: true, why, label: label || "", kept: Date.now() / 1000 });
+    return data.sessions.length - 1;
+  }
   const messageGone = id => ({ text: `The message ${id.slice(0, 12)} was not found in this conversation. It may be in another one, or this link was cut short.` });
   // The reply the last address went to. The page is drawn again whenever a build lands, often right after the jump, so the
   // outline is put back on the redrawn reply (paintLinked, at the end of render), continuing the same 2.8 s fade (a negative
@@ -2245,7 +2266,16 @@ __HEAD_HOSTED__
         try { await live.changeList("reopen", closed.id); await refreshData(true); } catch (e) { link.listing = { text: `Could not open ${closed.label} again: ${e.message}. This stays on the conversation open.` }; renderLive(); return; }
         si = sessionAt(asked.session);
       }
-      if (si < 0) { link.listing = { text: `Session ${asked.session.slice(0, 8)} is not on the reader any more, so this stays on the conversation open.` }; renderLive(); return; }
+      if (si < 0) {
+        // Not on the reader: that session opens, empty, with a note. It never stays on the conversation that was open, which would read as the answer.
+        const hand = handClosed.some(id => id.startsWith(asked.session));
+        si = noTranscript(asked.session, "", hand ? "closed" : "none");
+        link.listing = null;
+        state.session = si; state.view = "reader"; state.pinsOpen = false;
+        setAddress();
+        whenReady(() => { render(); showLatest(); });
+        return;
+      }
     }
     if (!data.sessions[si].exchanges) {  // a lazy page loads a conversation when it is asked for
       try { await hosted.conversation(data.sessions[si]); } catch (e) { link.listing = { text: `Could not load the conversation: ${e.message}` }; renderLive(); return; }
@@ -2779,7 +2809,7 @@ __HEAD_HOSTED__
   const dockTyped = () => dock("text").value.trim();
   const dockMessage = () => { const typed = dockTyped(); return !typed ? "" : link.target && !typed.startsWith("/") ? dockPointer() + typed : typed; };
   // The bar always writes to the session on screen; the Fleet timeline mixes sessions, so it has none.
-  const dockSession = () => state.view !== "fleet" ? data.sessions[state.session] : null;
+  const dockSession = () => state.view !== "fleet" && data.sessions[state.session] && !data.sessions[state.session].placeholder ? data.sessions[state.session] : null;
   // The message in its Undo window belongs to the session on screen (its box is locked), as opposed to one switched away from meanwhile.
   const heldHere = () => { const here = dockSession(); return Boolean(link.hold && here && link.hold.sid === here.id); };
   const SENDABLE = new Set(["idle", "working", "done"]);
@@ -4346,7 +4376,7 @@ __HEAD_HOSTED__
     const reading = data.sessions[state.session];
     const builtAt = data.generated;
     data = payload;
-    let index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid));
+    let index = data.sessions.findIndex(s => (s.ids || [s.id]).includes(sid) || (reading && reading.placeholder && (s.ids || [s.id]).some(id => id.startsWith(sid))));
     // A session closed by hand leaves the page instead.
     if (index < 0 && reading && !(link.closing && (reading.ids || [reading.id]).includes(link.closing))) {
       // The conversation on screen is no longer on the reading list (its Herdr pane closed).
@@ -4831,15 +4861,18 @@ __HEAD_HOSTED__
     const lost = wanted && fromHash < 0 ? wanted : !wanted && saved && saved.session && fromSaved < 0 ? saved.session : null;
     const closedHere = lost && handClosed.some(id => id.startsWith(lost));
     link.opening = lost && live.served && !HOSTED && !closedHere ? (data.closed || []).find(c => c.id.startsWith(lost)) || null : null;
-    if (lost && !link.opening && !closedHere) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
-    state.session = fromHash >= 0 ? fromHash : fromSaved >= 0 ? fromSaved : LAZY ? waitingFirst() : data.chosen ? 0 : biggest();
+    // An address that names a session the reader does not list opens that session, empty, with a note: never another conversation. (This tab's own last
+    // conversation, found with no address, going missing still opens the list's first, with the notice.)
+    const placeholder = wanted && fromHash < 0 && !link.opening;
+    if (lost && !link.opening && !closedHere && !placeholder) link.listing = { text: `Session ${lost.slice(0, 8)} is not on the reader any more, so this is another conversation.` };
+    state.session = fromHash >= 0 ? fromHash : placeholder ? noTranscript(wanted, "", closedHere ? "closed" : "none") : fromSaved >= 0 ? fromSaved : LAZY ? waitingFirst() : data.chosen ? 0 : biggest();
     if (wantedDoc && data.documents && data.documents[wantedDoc]) { state.view = "doc"; state.doc = wantedDoc; state.docPage = "file"; docReveal = wantedDoc; }
     // The session the page opened on, by address or by this tab, wins over the first Herdr focus.
     // Decided here, before the page writes its own address below.
-    link.keepOpening = fromHash >= 0 || fromSaved >= 0;
+    link.keepOpening = fromHash >= 0 || fromSaved >= 0 || Boolean(placeholder);
     // A message address (&m=) is followed once the conversation it names is on screen (openReading, reopenLost); one whose
     // conversation is not on the reader leaves the notice above, and no message is looked for in the conversation that opened instead.
-    link.message = asked.message && (fromHash >= 0 || link.opening) ? asked.message : null;
+    link.message = asked.message && (fromHash >= 0 || link.opening) ? asked.message : null;  // (never in a session with no transcript)
     return saved;
   }
   function openReading(saved) {
