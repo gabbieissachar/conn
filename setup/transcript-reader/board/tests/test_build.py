@@ -231,6 +231,32 @@ class Landing(HomeCase):
         self.assertEqual((item["idle_days"], item["flags"]), (20, ["quiet_14d"]))
 
 
+class ProjectTag(HomeCase):
+    """The project tag on a card is the repo name the backlog record carries, as written: no table maps one name to another, so renaming a
+    project in the backlog (a fleet task renames `helm` to `conn`) shows on the board with no change here."""
+
+    def test_the_tag_is_the_records_repo_as_written(self):
+        b = self.board(snapshot([record("a", repo="conn"), record("b", repo="helm"), record("c", repo="Some.Repo_2")]))
+        self.assertEqual({i["ref"]: i["repo"] for i in b["items"]}, {"a": "conn", "b": "helm", "c": "Some.Repo_2"})
+
+    def test_a_rename_in_the_backlog_shows_on_the_next_build_and_nothing_old_lingers(self):
+        before = self.board(snapshot([record("a", repo="helm"), record("b", repo="helm")]))
+        after = self.board(snapshot([record("a", repo="conn"), record("b", repo="conn")]))
+        self.assertEqual({i["repo"] for i in before["items"]}, {"helm"})
+        self.assertEqual({i["repo"] for i in after["items"]}, {"conn"})
+        self.assertNotIn("helm", json.dumps(after["items"]))
+
+    def test_a_record_with_no_repo_says_so(self):
+        b = self.board(snapshot([record("a", repo=None)]))
+        self.assertEqual(self.item(b, "a")["repo"], "no project")
+
+    def test_no_source_file_of_the_board_maps_project_names(self):
+        from pathlib import Path
+        folder = Path(__file__).resolve().parents[1]
+        for source in [*folder.glob("*.py"), *(folder / "page").glob("*")]:
+            self.assertNotRegex(source.read_text(encoding="utf-8"), r"\bhelm\b", source.name)
+
+
 class Failures(HomeCase):
     def test_a_snapshot_that_cannot_be_taken_gives_an_empty_board_that_says_why(self):
         b = self.board(None, snapshot_error="the fleet snapshot of leader-test failed (exit 1)")
