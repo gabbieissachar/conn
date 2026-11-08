@@ -253,6 +253,8 @@ final class AppModel: ObservableObject {
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
+        // A click on a file in the reader's page (a link in a reply, a button in its Documents view) opens it in the Editor view, as `conn <path>` does.
+        web.onFileRef = { [weak self] path in self?.openReaderFile(path) }
         web.onShowPane = { [weak self] kind, url in
             guard let self = self else { return }
             self.showWeb = true
@@ -818,6 +820,17 @@ final class AppModel: ObservableObject {
     func openFromOutside(_ urls: [URL]) {
         mode = .editor
         editor.openFromOutside(urls)
+    }
+
+    /// A click on a file the reader's page names (`.file-ref[data-path]`): the Editor view opens it in this window, as `conn <path>` would. A path that is not absolute,
+    /// is gone or is not a regular file opens nothing and says so in a notice.
+    func openReaderFile(_ path: String) {
+        switch ReaderFileRef.check(path) {
+        case .open(let url): openFromOutside([url])
+        case .refused(let name, let reason):
+            let n = ReaderFileRef.notice(name: name, reason: reason)
+            toast(n.title, detail: n.detail)
+        }
     }
 
     /// Right-click an agent: its working folder in the Explorer.

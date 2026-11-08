@@ -40,7 +40,7 @@
 </head>
 <body>
 <header>
-  <div class="bar"><span class="title" id="title"></span><span class="live">live</span><span class="btn">Documents</span></div>
+  <div class="bar"><span class="title" id="title"></span><span class="live">live</span><button class="btn file-ref" data-ref-file="button" data-path="/nonexistent/conn-fixture/plan.md">plan.md</button></div>
   <div class="synced">Synced 09:41:07 · fixture data</div>
 </header>
 <main id="convo"></main>
@@ -90,7 +90,7 @@ function draw(i) {
     } else {
       html += `<div class="user" data-msg="${uid}-in">${s[2]}</div>` +
               `<div class="reply" data-msg="${uid}x"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>` +
-              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}<p class="refs">See also <a class="session-ref" data-ref="next" data-session="${neighbour(currentId, 1)}" href="#s=${neighbour(currentId, 1)}">the next session</a> and <a class="session-ref" data-ref="later" data-session="${neighbour(currentId, 2)}" href="#s=${neighbour(currentId, 2)}">the one after that</a>.</p>${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
+              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}<p class="refs">Notes in <a class="file-ref" data-ref-file="link" data-path="/nonexistent/conn-fixture/notes.md" href="#">notes.md</a>. See also <a class="session-ref" data-ref="next" data-session="${neighbour(currentId, 1)}" href="#s=${neighbour(currentId, 1)}">the next session</a> and <a class="session-ref" data-ref="later" data-session="${neighbour(currentId, 2)}" href="#s=${neighbour(currentId, 2)}">the one after that</a>.</p>${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
     }
   }
   convo.innerHTML = html;

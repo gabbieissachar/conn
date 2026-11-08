@@ -45,7 +45,7 @@
     <select id="picker"></select>
     <span class="btn star">★</span>
     <span class="live">live</span>
-    <span class="btn">Follow</span>
+    <button class="btn file-ref" data-ref-file="button" data-path="/nonexistent/conn-fixture/plan.md">plan.md</button><span class="btn">Follow</span>
     <span class="btn">⌕</span>
     <span class="btn">⌄</span>
   </div>
@@ -92,7 +92,7 @@ function render() {
     <div class="reply"><p>Two commits landed on the working branch: one tightens input validation, one renames a helper. Tests pass on both.</p></div>
     <div class="user">${s[2]}</div>
     <div class="reply"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>
-    <div class="reply ${wait?'wait':''}">${wait?'<h4>Waiting on you</h4>':''}<p>${s[4]}</p><p class="refs">See also <a class="session-ref" data-ref="next" data-session="${nb(1)}" href="#s=${nb(1)}">the next session</a>.</p>${s[1]==='working'?'<p style="color:var(--muted)">Still working…</p>':''}${wait?'<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>':''}</div>`;
+    <div class="reply ${wait?'wait':''}">${wait?'<h4>Waiting on you</h4>':''}<p>${s[4]}</p><p class="refs">Notes in <a class="file-ref" data-ref-file="link" data-path="/nonexistent/conn-fixture/notes.md" href="#">notes.md</a>. See also <a class="session-ref" data-ref="next" data-session="${nb(1)}" href="#s=${nb(1)}">the next session</a>.</p>${s[1]==='working'?'<p style="color:var(--muted)">Still working…</p>':''}${wait?'<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>':''}</div>`;
   convo.scrollTop = convo.scrollHeight;
 }
 addEventListener('hashchange', render); render();

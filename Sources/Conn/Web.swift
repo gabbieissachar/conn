@@ -45,8 +45,12 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// leaves Conn, and opened by the Watch column rule (a Cmd-click opens the normal view). `campusHost` is Campus's host; nil takes no such link.
     let campusHost: String?
     var onCampusLink: ((_ kind: String, _ folder: String, _ id: String, _ command: Bool) -> Void)?
+    /// The person clicked a file in the page (`.file-ref[data-path]`, in a reply or in the Documents view): the path the page gave, unchecked. Reader pages only (the full
+    /// Reader and the Watch columns); the app opens it in the Editor view (`ReaderFileRef`).
+    var onFileRef: ((String) -> Void)?
     private var useProxy: UseMessageProxy?
     private var linkProxy: SessionLinkProxy?
+    private var fileProxy: FileRefProxy?
     /// Set by `release()`: a released box never loads or shows anything again.
     private(set) var released = false
     /// The addresses of Conn's panes by name, so a link between them can be told from one that leaves Conn.
@@ -75,12 +79,19 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             cfg.userContentController.addUserScript(WKUserScript(source: WebBox.sessionLinkScript(campusHost: campusHost), injectionTime: .atDocumentStart, forMainFrameOnly: true))
             cfg.userContentController.add(links, name: WebBox.sessionLinkMessage)
         }
+        let files = kind == .reader ? FileRefProxy() : nil
+        if let files = files {
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.fileRefScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            cfg.userContentController.add(files, name: WebBox.fileRefMessage)
+        }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
         proxy?.box = self
         useProxy = proxy
         links?.box = self
         linkProxy = links
+        files?.box = self
+        fileProxy = files
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
@@ -170,6 +181,29 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         """
     }
 
+    static let fileRefMessage = "connFile"
+    /// A click on a file the reader names (`a.file-ref[data-path]` in a reply, `button.file-ref[data-path]` in the Documents view, the path absolute) is taken before the
+    /// page sees it: the page does not navigate or run its own handler, and Conn is told the path. Capture phase on the window, so the page itself is not edited. The
+    /// keyboard (Enter or Space on a focused button or link) and a middle click arrive the same way. The Reader column and the Watch columns both get it; the
+    /// Organizer does not. Conn checks the path again (`ReaderFileRef`) before it opens anything.
+    static let fileRefScript = """
+    (function () {
+      if (window.__connFileRefs) return;
+      window.__connFileRefs = true;
+      function taken(e) {
+        var t = e.target;
+        var el = t && t.closest ? t.closest('.file-ref[data-path]') : null;
+        var p = el && el.getAttribute('data-path');
+        if (!el || typeof p !== 'string') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        try { window.webkit.messageHandlers.\(fileRefMessage).postMessage({ path: p }); } catch (x) {}
+      }
+      window.addEventListener('click', function (e) { if (e.button === 0) taken(e); }, true);
+      window.addEventListener('auxclick', function (e) { if (e.button === 1) taken(e); }, true);
+    })();
+    """
+
     /// Show a conversation in this column: at its newest turn, or at one turn (the lite page scrolls to that reply and outlines it).
     /// With `reload` false and the page already showing, only the address changes (the page follows it in place, so the column keeps
     /// its scroll in everything else). With `reload` true, or when the page is not ready or does not follow an address change, the
@@ -201,8 +235,11 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.useMessage)
             webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.sessionLinkMessage)
         }
+        if fileProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.fileRefMessage) }
         useProxy = nil
         linkProxy = nil
+        fileProxy = nil
+        onFileRef = nil
         onUse = nil
         onSessionLink = nil
         onCampusLink = nil
@@ -423,6 +460,15 @@ private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// Receives a file click from a reader page without keeping the box alive. Only a string path is passed on; the app checks it.
+private final class FileRefProxy: NSObject, WKScriptMessageHandler {
+    weak var box: WebBox?
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let path = body["path"] as? String else { return }
+        DispatchQueue.main.async { [weak self] in self?.box?.onFileRef?(path) }
+    }
+}
+
 final class WebHub {
     let fixture: Bool
     let resourceDir: URL?
@@ -430,6 +476,8 @@ final class WebHub {
     private(set) var organizerBox: WebBox?
     /// A link in one pane points at the other: the app switches tabs and has the box show the address.
     var onShowPane: ((WebKind, URL) -> Void)?
+    /// A click on a file in a reader page (the Reader column or a Watch column): the page's `data-path`, unchecked.
+    var onFileRef: ((String) -> Void)?
 
     /// A test's stand-in reader: the address the Reader pane (and the asks) use instead of `CONN_READER_URL`.
     private let readerURL: URL?
@@ -465,6 +513,7 @@ final class WebHub {
             return Dictionary(uniqueKeysWithValues: WebKind.allCases.map { ($0.rawValue, self.baseURL($0)) })
         }
         box.showInPane = { [weak self] k, url in self?.onShowPane?(k, url) }
+        box.onFileRef = { [weak self] path in self?.onFileRef?(path) }
         return box
     }
 
@@ -508,7 +557,9 @@ final class WebHub {
     /// A web view for one Watch column. It is not one of the two panes: a link that leaves the page goes to the browser (a column
     /// has no pane to switch to), and the box is dropped when Watch ends.
     func makeLiteBox(startFragment: String?) -> WebBox {
-        WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment, campusHost: campusHost)
+        let box = WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment, campusHost: campusHost)
+        box.onFileRef = { [weak self] path in self?.onFileRef?(path) }
+        return box
     }
 
     /// Campus's host, so a lite page's link to a Campus conversation is told from any other link.
