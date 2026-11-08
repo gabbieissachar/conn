@@ -21,7 +21,10 @@ const fs = require('fs');
 
 const PING_MS = 20 * 1000;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
-const TURN_BATCH = 200;
+const TURN_BATCH = 100;
+// A notice that the log grew can come before the commit it belongs to is visible (the frames are written, then synced, then the commit shows):
+// looked at again after these delays (ms) until the change counter moves, so a commit is seen within a few milliseconds of becoming visible.
+const SETTLE = [3, 6, 12, 24, 48, 96];
 
 const sigOf = (turn) => [turn.idx, turn.reply_at, turn.reply.length, turn.input.length, turn.tools, turn.verdict, turn.ask_lines.length].join(':');
 const liveSig = (live) => (live ? [live.herdr, live.pane, live.label, live.status].join('|') : '');
@@ -38,6 +41,8 @@ function createHub({ store, livePanes, scopeOf, asksNow, watch, now = () => Date
   let pinger = null;
   let unwatch = null;
   let queued = false;
+  let settleStep = 0;
+  let settleTimer = null;
   let counter = 0;
   const stats = { clients: 0, changes: 0, events: 0, turn_events: 0, dropped: 0, processing_ms: 0, last_ms: 0 };
 
@@ -74,7 +79,7 @@ function createHub({ store, livePanes, scopeOf, asksNow, watch, now = () => Date
       try {
         fileWatch = fs.watch(store.file + '-wal', { persistent: false }, (event) => {
           if (event === 'rename') { try { fileWatch.close(); } catch { /* already closed */ } fileWatch = null; setTimeout(() => { if ((clients.size || listeners.size) && !fileWatch) arm(); }, 200); }
-          later();
+          later('wal');
         });
         fileWatch.on('error', () => { try { fileWatch.close(); } catch { /* closed */ } fileWatch = null; });
       } catch { fileWatch = null; }
@@ -88,7 +93,8 @@ function createHub({ store, livePanes, scopeOf, asksNow, watch, now = () => Date
 
   function sleep() {
     if (fileWatch) { try { fileWatch.close(); } catch { /* closed */ } fileWatch = null; }
-    clearInterval(tick); clearInterval(pinger); tick = pinger = null;
+    clearInterval(tick); clearInterval(pinger); clearTimeout(settleTimer); tick = pinger = settleTimer = null; settleStep = 0;
+    counters = new Map(); liveSigs = new Map(); asksSig = null;  // nothing is held while nobody listens
     if (unwatch) { unwatch(); unwatch = null; }
   }
 
@@ -108,9 +114,13 @@ function createHub({ store, livePanes, scopeOf, asksNow, watch, now = () => Date
     let storeChanged = false;
     try {
       const next = store.dataVersion();
+      if (next === version && (source === 'wal' || source === 'settle') && settleStep < SETTLE.length && !settleTimer) {
+        settleTimer = setTimeout(() => { settleTimer = null; later('settle'); }, SETTLE[settleStep++]);
+      }
       if (next !== version) {
         version = next;
         storeChanged = true;
+        settleStep = 0;
         const rows = store.counters();
         const seen = new Map();
         for (const row of rows) {

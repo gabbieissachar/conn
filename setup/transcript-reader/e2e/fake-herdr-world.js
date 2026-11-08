@@ -20,6 +20,8 @@ const log = process.env.FAKE_HERDR_LOG || '';
 const args = process.argv.slice(2);
 const out = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const note = (line) => { if (log) fs.appendFileSync(log, line + '\n'); };
+// FAKE_HERDR_CALLS: one line for every call made, with the time, so a lab can count how often the reader asks Herdr (store-api-gate.js).
+if (process.env.FAKE_HERDR_CALLS) fs.appendFileSync(process.env.FAKE_HERDR_CALLS, Date.now() + ' ' + args.join(' ') + '\n');
 
 // <FAKE_HERDR_DIR>/control.json, read on every call: { "delay_ms": n } makes each `agent send-keys` (the first step of a send, which empties the pane's
 // input box, in 25 calls) take n ms, as a real pane does; { "fail_prompt": true } makes `agent prompt` fail.

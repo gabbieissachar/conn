@@ -26,6 +26,8 @@ class FakeHerdrSockets {
   start(name) {
     fs.mkdirSync(this.dir, { recursive: true });
     const socketPath = path.join(this.dir, name.replace(/[^A-Za-z0-9._-]/g, '_') + '.sock');
+    // A unix socket's path holds at most 103 bytes on macOS: a longer one cannot be bound or connected to (the store's Python client fails with an OSError).
+    if (Buffer.byteLength(socketPath) > 103) throw new Error('a unix socket path is at most 103 bytes on macOS, this one is ' + Buffer.byteLength(socketPath) + ': ' + socketPath);
     try { fs.unlinkSync(socketPath); } catch { /* none there */ }
     const entry = { path: socketPath, conns: new Set(), subscribed: new Set(), server: null };
     entry.server = net.createServer((conn) => {

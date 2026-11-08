@@ -26,7 +26,7 @@
   window.__readerWindowed = S;  // the lab and the tests read it
   const stats = window.__stats = { events: 0, renders: 0, nodes: 0, fetches: 0, streams: 0 };
   const marks = window.__marks = {};  // the lab's marker: a turn whose text holds LAB-MARK-<n> is stamped with the time it was on screen
-  const LAB = /LAB-MARK-(\d+)/;
+  const LAB = /LAB-MARK-(\d+)/g;
 
   async function api(path, options = {}) {
     if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("This page has no server token: open it from the address the reader prints.");
@@ -141,8 +141,11 @@
   const main = byId("main");
   const sig = (ex, fold, open) => [ex.idx, ex.reply_at, ex.reply.length, ex.input.length, ex.tools, ex.verdict, ex.ask_lines.length, fold, open].join(":");
   function stamp(ex) {
-    const found = LAB.exec(ex.reply) || LAB.exec(ex.input);
-    if (found && !marks[found[1]]) requestAnimationFrame(() => { if (!marks[found[1]]) marks[found[1]] = Date.now(); });
+    // Every marker the turn holds (a reply that grows keeps the markers it had), each stamped once, when it is on screen.
+    for (const found of (ex.reply + "\n" + ex.input).matchAll(LAB)) {
+      const n = found[1];
+      if (!marks[n]) requestAnimationFrame(() => { if (!marks[n]) marks[n] = Date.now(); });
+    }
   }
   // Brings the page's nodes in line with S.turns: a node is drawn when its turn is new or changed (its signature moved, which includes a fold
   // or an open ask changing), and left alone otherwise. A new turn at the end is one append.
@@ -192,15 +195,21 @@
   // New or changed turns of the open session, from the stream or a catch-up: the changed ones replace theirs by index, the new ones are appended.
   function merge(turns, marksNow) {
     if (!turns.length) return;
-    const wasEnd = nearEnd() && !S.jumped;
     S.marks = marksNow || S.marks;
+    if (S.jumped) {
+      // The newest turns are not what is on screen (a search hit, older turns being read): a turn already held is updated in place, and
+      // nothing is added at the end, so the window stays one run of turns. The newest ones wait behind "Back to the latest".
+      for (const ex of turns) { const at = S.turns.findIndex(t => t.idx === ex.idx); if (at >= 0) S.turns[at] = ex; }
+      paint();
+      return;
+    }
+    const wasEnd = nearEnd();
     for (const ex of turns) {
       const at = S.turns.findIndex(t => t.idx === ex.idx);
       if (at >= 0) S.turns[at] = ex;
       else if (ex.idx > S.lastIdx) S.turns.push(ex);
     }
     S.lastIdx = S.turns.length ? S.turns[S.turns.length - 1].idx : -1;
-    if (S.jumped) { paint(); return; }  // the newest turns are not what is on screen: they wait behind "Back to the latest"
     // The window is cut at the far end only while following the newest turns: what is read stays.
     let cut = false;
     while (wasEnd && S.turns.length > MOUNTED) { S.turns.shift(); cut = true; }
@@ -234,15 +243,17 @@
   async function catchUp() {
     if (!S.cur || S.jumped) return;
     try {
-      const answer = await api(`sessions/${S.cur}/turns?after=${Math.max(-1, S.lastIdx - 1)}&limit=200`);
+      const answer = await api(`sessions/${S.cur}/turns?after=${Math.max(-1, S.lastIdx - 1)}&limit=100`);
       if (answer.more_after) { setWindow(await api(`sessions/${S.cur}/turns?limit=${FIRST}`)); return; }
       merge(answer.turns, answer.marks);
     } catch (error) { say(error.message, true); }
   }
 
   // ---------------------------------------------------------------- sessions, panes, asks
+  let pickerDirty = false, listing = false;
   const liveOf = id => S.live.get(id) || null;
-  const nameOf = s => (liveOf(s.id) && liveOf(s.id).label) || s.title || `${s.harness} · ${s.id.slice(0, 8)}`;
+  const folderName = cwd => String(cwd || "").split("/").filter(Boolean).pop() || "";
+  const nameOf = s => (liveOf(s.id) && liveOf(s.id).label) || s.title || (folderName(s.cwd) ? `${folderName(s.cwd)} · ${s.id.slice(0, 8)}` : `${s.harness} · ${s.id.slice(0, 8)}`);
   function optionText(s) {
     const live = liveOf(s.id);
     const state = live ? (PANE_STATES[live.status] || "Live") + " · " : "";
@@ -250,7 +261,8 @@
   }
   function fillPicker() {
     const select = byId("session");
-    if (select.matches(":focus") && document.activeElement === select && select._open) return;
+    if (document.activeElement === select) { pickerDirty = true; return; }  // an open list is not redrawn under the hand: it is, when it is let go
+    pickerDirty = false;
     const asking = [], live = [], starred = [], recent = [];
     for (const s of S.sessions) (s.open_asks && liveOf(s.id) ? asking : liveOf(s.id) ? live : s.starred ? starred : recent).push(s);
     select.replaceChildren();
@@ -324,7 +336,7 @@
     } else if (name === "session") {
       const row = S.byId.get(data.id);
       if (row) { row.turns = data.turns; row.last_at = data.last_at; if (data.title) row.title = data.title; row.log_state = data.log_state; fillPicker(); }
-      else loadSessions().catch(() => {});  // a session this page has not listed yet
+      else if (!listing) { listing = true; loadSessions().catch(() => {}).finally(() => { listing = false; }); }  // a session this page has not listed yet
     } else if (name === "turns") {
       if (data.id === S.cur) merge(data.turns, data.marks);
     } else if (name === "resync") {
@@ -383,7 +395,7 @@
       box.append($("div", "notes", `${answer.results.length} conversation${answer.results.length === 1 ? "" : "s"}${answer.scope === "curated" ? " among the starred and open ones" : ""}`));
       for (const hit of answer.results) {
         const b = $("button", "hit"); b.type = "button";
-        b.append($("b", null, hit.title || hit.id.slice(0, 8)), $("span", "when", " · " + (hit.last_at ? ago(hit.last_at) : "")));
+        b.append($("b", null, (liveOf(hit.id) && liveOf(hit.id).label) || hit.title || folderName(hit.cwd) || hit.id.slice(0, 8)), $("span", "when", " · " + (hit.last_at ? ago(hit.last_at) : "")));
         const snippet = $("div", "snip");
         const parts = String(hit.snippet || "").split(/(\[\[|\]\])/);
         let on = false;
@@ -406,7 +418,8 @@
     paintHeader();
   }
 
-  byId("session").addEventListener("change", e => openSession(e.target.value));
+  byId("session").addEventListener("change", e => { openSession(e.target.value); e.target.blur(); });
+  byId("session").addEventListener("blur", () => { if (pickerDirty) fillPicker(); });
   byId("q").addEventListener("keydown", e => { if (e.key === "Enter") search(); else if (e.key === "Escape") byId("results").hidden = true; });
   byId("send").addEventListener("click", sendMessage);
   byId("text").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendMessage(); } });

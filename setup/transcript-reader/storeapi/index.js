@@ -28,6 +28,7 @@ const compat = require('./compat');
 
 const ID_RE = /^[0-9A-Za-z_-]{1,64}$/;
 const MAX_LIMIT = 200;
+const MAX_TURNS = 100;  // a turn can be a long brief: a window is at most this many
 const DEFAULT_TURNS = 40;
 const OLDER_THAN_MS = 24 * 60 * 60 * 1000;
 const ASK_LINE = 200;
@@ -135,7 +136,7 @@ function createStoreApi({
     const scope = scopeOf(remote, live);
     const row = store.session(id);
     if (!row || (scope && !scope.has(id))) throw new RequestError('Not found.', 404, 'not_found');
-    const limit = integer(query.get('limit'), DEFAULT_TURNS, 1, MAX_LIMIT);
+    const limit = integer(query.get('limit'), DEFAULT_TURNS, 1, MAX_TURNS);
     const after = integer(query.get('after'), null, -1, 1e9);
     const before = integer(query.get('before'), null, 0, 1e9);
     if (Number.isNaN(limit) || Number.isNaN(after) || Number.isNaN(before) || (after !== null && before !== null)) throw new RequestError('Invalid window.', 400, 'bad_request');

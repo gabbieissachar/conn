@@ -168,7 +168,7 @@ test('turns: the newest window, older turns before an index, newer after one; th
     assert.equal(older.previous.idx, older.turns[0].idx - 1);
     const newer = (await t.get(`sessions/${t.ids.gamma}/turns?after=${tail.turns[0].idx}&limit=50`)).json;
     assert.deepEqual(newer.turns.map((turn) => turn.idx), tail.turns.slice(1).map((turn) => turn.idx));
-    const whole = (await t.get(`sessions/${t.ids.gamma}/turns?limit=200`)).json;
+    const whole = (await t.get(`sessions/${t.ids.gamma}/turns?limit=100`)).json;
     assert.equal(whole.turns.length, whole.marks.total);
     assert.equal(whole.more_before, false);
     assert.equal(whole.previous, null);
