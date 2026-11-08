@@ -194,19 +194,29 @@ struct CampusRow: View {
 
     var body: some View {
         let live = campus.link == .live
+        let starred = app.campusIsStarred(c.id)
         SidebarRow(selected: app.campusSelectedID == c.id, action: { app.openCampus(c.id) }) {
             HStack(alignment: .top, spacing: 8) {
                 StateGlyph(state: c.state)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(c.title).font(.system(size: 13, weight: .medium)).lineLimit(2).truncationMode(.tail)
-                        .redacted(reason: app.privacy ? .placeholder : [])
-                        .help(app.privacy ? "Campus conversation" : c.title)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(c.title).font(.system(size: 13, weight: .medium)).lineLimit(2).truncationMode(.tail)
+                            .redacted(reason: app.privacy ? .placeholder : [])
+                            .help(app.privacy ? "Campus conversation" : c.title)
+                        if starred { Image(systemName: "star.fill").font(.system(size: 8.5)).foregroundStyle(.secondary).accessibilityIdentifier("campus-row-star") }
+                    }
                     Text(CampusWords.sub(c, link: campus.link, asOf: campus.asOf)).font(.system(size: 11))
                         .foregroundStyle(live && c.state.waitsOnCaptain ? c.state.color : Color.secondary).lineLimit(1)
                     if live, c.needsYou, let ask = CampusWords.openAsk(c) { AskBlock(ask: ask, privacy: app.privacy) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .contextMenu {
+            Button(starred ? "Remove Star" : "Star in the Reader Row") { app.toggleCampusStar(c) }
+            Button("Open in a Watch Column") { app.showCampusInWatch(c.id) }
+            Divider()
+            Button("Open in Campus (Web)") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }
         }
         .padding(.leading, indent ? 8 : 0)
         .opacity(dim ? 0.55 : 1)
@@ -325,7 +335,16 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if campus.link == .disabled { Text("Campus is not part of this launch.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            Section("Starred conversations") {
+                HStack {
+                    Text(app.campusStars.entries.isEmpty ? "None starred" : "\(app.campusStars.entries.count) starred in the Reader column's row")
+                    Spacer()
+                    Button("Remove All Stars") { app.campusStars.clear() }.disabled(app.campusStars.entries.isEmpty).accessibilityIdentifier("campus-stars-clear")
+                }
+                Text("Conn keeps only where each one is (its space and id) and their order, in its own settings. No title or text is written to disk.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .formStyle(.grouped).frame(width: 460, height: 230)
+        .formStyle(.grouped).frame(width: 460, height: 330)
     }
 }

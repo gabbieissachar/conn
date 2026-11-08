@@ -172,7 +172,7 @@ struct WebColumn: View {
             HStack(spacing: 8) {
                 if box.kind == .reader {
                     // The tab above already says "Reader": the row is for the starred sessions.
-                    StarredBar(starred: app.stars, box: box)
+                    ReaderStarredBar(box: box)
                 } else {
                     Image(systemName: box.kind.symbol).foregroundStyle(.secondary)
                     Text(box.kind.rawValue).font(.system(size: 12, weight: .semibold))
@@ -227,22 +227,40 @@ struct NoTranscriptNotice: View {
     }
 }
 
-/// The Reader pane's header row: one chip per starred session, in the order the captain arranged. A click opens that
-/// session in the reader; the chip for the session on screen is filled; a drag onto another chip moves it there.
-/// More chips than fit scroll sideways (the selected one is brought into view), so none is hidden in a menu and every
-/// one stays a drop target. With nothing starred the row says where to star.
+/// The starred row over the reader's own page: it follows the address the page is on (which chip is filled).
+struct ReaderStarredBar: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var box: WebBox
+
+    var body: some View {
+        StarredBar(starred: app.stars, campusStars: app.campusStars, campus: app.campus, shown: box.shownSession)
+    }
+}
+
+/// The Reader pane's header row: one chip per starred session, in the order the captain arranged, then the Campus conversations starred in Conn (S1: ids and order
+/// only, kept in Conn's own settings; each chip carries a small Campus mark). A click opens that session in the reader, or that Campus conversation by the Watch rule
+/// (`openCampus`); the chip for what is on screen is filled; a drag onto another chip of its own kind moves it there. More chips than fit scroll sideways (the
+/// selected one is brought into view), so none is hidden in a menu and every one stays a drop target. With nothing starred the row says where to star.
+/// `shown` is the reader's own address (nil when the reader is not what is on screen, as when a Campus conversation fills the column).
 struct StarredBar: View {
     @EnvironmentObject var app: AppModel
     @ObservedObject var starred: StarredSessions
-    @ObservedObject var box: WebBox
+    @ObservedObject var campusStars: CampusStarStore
+    @ObservedObject var campus: CampusStore
+    let shown: String?
     @State private var dragging: String?
+    @State private var draggingCampus: String?
 
     var body: some View {
-        let selected = StarSelection.selected(convs: starred.order, shown: box.shownSession)
+        let campusOn = app.campusSelectedID != nil
+        let selected = campusOn ? nil : StarSelection.selected(convs: starred.order, shown: shown)
         let names = app.agentNamesBySession
+        let campusEntries = campus.link == .disabled ? [] : campusStars.entries
+        let anchor = campusOn ? app.campusSelectedID.map { "campus:" + $0 } : selected
         Group {
-            if starred.order.isEmpty {
-                Text("Star a session in the reader to keep it here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+            if starred.order.isEmpty && campusEntries.isEmpty {
+                Text(campus.link == .disabled ? "Star a session in the reader to keep it here" : "Star a session in the reader or a Campus conversation here to keep it in this row")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
                     .accessibilityIdentifier("starred-empty")
             } else {
                 ScrollViewReader { proxy in
@@ -251,22 +269,28 @@ struct StarredBar: View {
                             ForEach(starred.order, id: \.self) { conv in
                                 chip(conv, label: starred.label(for: conv, agentNames: names), selected: conv == selected)
                             }
+                            ForEach(campusEntries, id: \.chipID) { a in
+                                campusChip(a, selected: app.campusSelectedID == a.id)
+                            }
                         }
                         .padding(.vertical, 2)
                     }
-                    .onChange(of: selected) { _, now in if let c = now { withAnimation { proxy.scrollTo(c, anchor: .center) } } }
+                    .onChange(of: anchor) { _, now in if let c = now { withAnimation { proxy.scrollTo(c, anchor: .center) } } }
                     // Also when the row first appears or the column is resized: the chip on screen must not sit out of sight.
-                    .onAppear { reveal(selected, proxy) }
-                    .background(GeometryReader { g in Color.clear.onChange(of: g.size.width) { _, _ in reveal(selected, proxy) } })
+                    .onAppear { reveal(anchor, proxy) }
+                    .task(id: anchor) { try? await Task.sleep(nanoseconds: 200_000_000); if let c = anchor { proxy.scrollTo(c, anchor: .center) } }
+                    .background(GeometryReader { g in Color.clear.onChange(of: g.size.width) { _, _ in reveal(anchor, proxy) } })
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func reveal(_ conv: String?, _ proxy: ScrollViewProxy) {
-        guard let c = conv else { return }
+    private func reveal(_ id: String?, _ proxy: ScrollViewProxy) {
+        guard let c = id else { return }
+        // Twice: the row may be laid out a moment after it appears (a Campus conversation takes the column over from the reader's page).
         DispatchQueue.main.async { proxy.scrollTo(c, anchor: .center) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo(c, anchor: .center) }
     }
 
     private func chip(_ conv: String, label: String, selected: Bool) -> some View {
@@ -289,6 +313,37 @@ struct StarredBar: View {
             .accessibilityAction { app.openStarred(conv) }
             .accessibilityIdentifier("starred-chip")
     }
+
+    /// A Campus chip: the conversation's title (read from the feed; a plain word until the feed has it), a small mark, dimmed while the feed does not have the conversation.
+    private func campusChip(_ a: CampusAddress, selected: Bool) -> some View {
+        let c = campus.conversation(a.id)
+        let label = c?.title ?? "Campus conversation"
+        let known = c != nil
+        return HStack(spacing: 4) {
+            Image(systemName: "building.columns").font(.system(size: 8.5)).foregroundStyle(.secondary)
+            Text(label).lineLimit(1).truncationMode(.middle).redacted(reason: app.privacy ? .placeholder : [])
+        }
+        .font(.system(size: 10.5, weight: selected ? .semibold : .regular))
+        .frame(maxWidth: 170)
+        .padding(.horizontal, 8).padding(.vertical, 2.5)
+        .background(selected ? Color.accentColor.opacity(0.24) : Color.primary.opacity(0.07), in: Capsule())
+        .opacity(known && campus.link != .expired ? 1 : 0.55)
+        .contentShape(Capsule())
+        .onTapGesture { app.openCampusStar(a.id) }
+        .onDrag { draggingCampus = a.id; return NSItemProvider(object: ("campus:" + a.id) as NSString) }
+        .onDrop(of: [.plainText], delegate: CampusChipDrop(target: a.id, stars: campusStars, dragging: $draggingCampus))
+        .contextMenu {
+            Button("Open in a Watch Column") { app.showCampusInWatch(a.id) }.disabled(!known)
+            Button("Remove Star") { campusStars.unstar(a.id) }
+        }
+        .help(app.privacy ? "Starred Campus conversation" : "Campus: \(label) (drag to reorder)")
+        .id(a.chipID)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.privacy ? "Starred Campus conversation" : "Campus: \(label)")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { app.openCampusStar(a.id) }
+        .accessibilityIdentifier("starred-campus-chip")
+    }
 }
 
 /// A chip dragged over another takes its place while the pointer is over it, so the row shows the result before the drop.
@@ -299,6 +354,24 @@ struct ChipDrop: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         if let d = dragging, d != target { withAnimation(.easeInOut(duration: 0.15)) { starred.move(d, onto: target) } }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
+}
+
+extension CampusAddress {
+    /// The chip's identity in the row: the scroll target that brings the chip on screen into view (the reader's chips use their session id; a Campus id can never equal one).
+    var chipID: String { "campus:" + id }
+}
+
+/// A Campus chip dragged over another Campus chip takes its place while the pointer is over it (the reader's chips are a separate order).
+struct CampusChipDrop: DropDelegate {
+    let target: String
+    let stars: CampusStarStore
+    @Binding var dragging: String?
+
+    func dropEntered(info: DropInfo) {
+        if let d = dragging, d != target { withAnimation(.easeInOut(duration: 0.15)) { stars.move(d, onto: target) } }
     }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
     func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
@@ -318,7 +391,15 @@ struct WebTabsColumn: View {
             // While Watch is on this column is on its way out; it must not make the unloaded reader's web view again.
             if !app.watchOn {
                 // A Campus conversation is read here as a transcript (README "Campus in Conn"); the reader's own pages are untouched.
-                if let cid = app.campusSelectedID, app.webTab == .reader { CampusTranscriptView(campus: app.campus, id: cid) }
+                if let cid = app.campusSelectedID, app.webTab == .reader {
+                    // The starred row stays over a Campus conversation, so a star is one click from any other (it does not make the reader's page: `shown` is nil).
+                    VStack(spacing: 0) {
+                        HStack(spacing: 8) { StarredBar(starred: app.stars, campusStars: app.campusStars, campus: app.campus, shown: nil) }
+                            .padding(.horizontal, 12).frame(height: 32)
+                        Divider()
+                        CampusTranscriptView(campus: app.campus, id: cid)
+                    }
+                }
                 else { WebColumn(box: app.web.box(app.webTab)) }
             }
         }
@@ -415,6 +496,7 @@ struct QuickSwitcher: View {
                                 case .campus(let c):
                                     StateGlyph(state: c.state)
                                     Text(c.title).font(.system(size: 14, weight: .medium)).lineLimit(1).redacted(reason: app.privacy ? .placeholder : [])
+                                    if app.campusIsStarred(c.id) { Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                                     Text("Campus").font(.system(size: 12)).foregroundStyle(.secondary)
                                     Spacer()
                                     StateChip(state: c.state)

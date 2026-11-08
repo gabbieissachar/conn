@@ -1,6 +1,7 @@
 // Campus in the app model: which conversation is shown, how a link or a row opens one (the Watch column rule, C6), the sign-in sheet, Cmd+J and
 // the quick switcher's Campus rows. The feed itself is `CampusStore` (ConnCore); this file only decides where a conversation goes on screen.
 import SwiftUI
+import Combine
 import ConnCore
 
 /// Something that waits on the person: a Herdr agent or a Campus conversation.
@@ -15,6 +16,14 @@ extension AppModel {
         if config.campusWritesAtLaunch && config.isScriptedLaunch { campus.writesEnabled = true }
         campusAuth?.onSignIn = { [weak self] in self?.campusSignInShown = true }
         watch.onOpenCampusLink = { [weak self] kind, folder, id, command, column in self?.openCampusLink(kind: kind, folder: folder, id: id, command: command, fromColumn: column) }
+        // The stars the person keeps: the feed asks for the ones its lists do not carry, and a change redraws the row, the rows and the switcher.
+        campus.starAddresses = campusStars.entries
+        campusStars.$list.dropFirst().sink { [weak self] list in
+            guard let self = self else { return }
+            self.campus.starAddresses = list.entries
+            self.campus.kick()
+            self.objectWillChange.send()
+        }.store(in: &cancellables)
         campus.start()
     }
 
@@ -39,6 +48,32 @@ extension AppModel {
                 openCampus(id, fromColumn: column)
             }
         }
+    }
+
+    // MARK: stars (S1)
+
+    func campusIsStarred(_ id: String) -> Bool { campusStars.isStarred(id) }
+
+    /// Star a conversation, or take its star off (the row's menu, the Campus menu, the header button).
+    func toggleCampusStar(_ c: CampusConversation) {
+        let was = campusStars.isStarred(c.id)
+        let on = campusStars.toggle(CampusAddress(c))
+        if !was && !on { toast("Campus stars are full", detail: "Remove one first: at most \(CampusStarList.limit) Campus conversations are kept in the starred row.") }
+    }
+
+    /// A Campus chip: the conversation opens by the Watch rule (`openCampus`: a column when Watch is on, else the centre and the Reader column). One the feed
+    /// does not have yet (Campus not signed in, or not yet listed) is asked for by its address first.
+    func openCampusStar(_ id: String) {
+        if campus.conversation(id) != nil { openCampus(id); return }
+        guard let a = campusStars.list.address(of: id) else { return }
+        openCampusLink(kind: a.kind, folder: a.folder, id: a.id, command: false, fromColumn: nil)
+    }
+
+    /// "Open in a Watch Column" (a CAMPUS row, a chip, the Campus menu): turn Watch on if it is off, then place the conversation by the column rule.
+    func showCampusInWatch(_ id: String) {
+        guard campus.conversation(id) != nil else { toast("That Campus conversation is not available"); return }
+        if !watchOn { watchOn = true }
+        openCampus(id)
     }
 
     /// The Campus conversation on screen, if any.
@@ -71,7 +106,16 @@ extension AppModel {
     // MARK: the quick switcher
 
     /// The quick switcher's rows: Herdr agents as before, then Campus conversations (asks first), each with the label "Campus".
-    var campusSwitcherRows: [CampusConversation] { campus.link == .disabled ? [] : campus.attentionOrder }
+    /// Asks first, then the starred ones in the order the person arranged them, then the rest.
+    var campusSwitcherRows: [CampusConversation] {
+        guard campus.link != .disabled else { return [] }
+        let all = campus.attentionOrder
+        let starIDs = campusStars.list.ids
+        let asks = all.filter { $0.needsYou }
+        let starred = starIDs.compactMap { id in all.first { $0.id == id && !$0.needsYou } }
+        let rest = all.filter { !$0.needsYou && !starIDs.contains($0.id) }
+        return asks + starred + rest
+    }
 
     /// Show the sign-in sheet's page.
     func signInToCampus() { campusAuth?.beginSignIn() }

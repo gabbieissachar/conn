@@ -196,6 +196,7 @@ struct CampusLiveView: View {
             if let m = c.model { pill(m) }
             if let a = c.agent { pill(a) }
             if campus.link == .live { pill("live", tint: AgentState.done.color) }
+            CampusStarButton(c: c)
             CampusStopButton(campus: campus, c: c)
         }
         .padding(.horizontal, 14).frame(height: 36)
@@ -357,6 +358,7 @@ struct CampusTranscriptView: View {
             HStack(spacing: 8) {
                 Text(c.title).font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.tail).redacted(reason: app.privacy ? .placeholder : [])
                 Spacer(minLength: 4)
+                CampusStarButton(c: c)
                 Text(word).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(tint).padding(.horizontal, 7).padding(.vertical, 1.5).background(tint.opacity(0.14), in: Capsule())
             }
             HStack(spacing: 6) {
@@ -478,6 +480,19 @@ struct CampusHeldBanner: View {
             .padding(.horizontal, 12).padding(.top, 8)
             .accessibilityIdentifier("campus-held")
         }
+    }
+}
+
+/// The header's star: keeps this conversation in the Reader column's starred row (and takes it out again).
+struct CampusStarButton: View {
+    @EnvironmentObject var app: AppModel
+    let c: CampusConversation
+
+    var body: some View {
+        let on = app.campusIsStarred(c.id)
+        Button { app.toggleCampusStar(c) } label: { Image(systemName: on ? "star.fill" : "star").font(.system(size: 11)).foregroundStyle(on ? Color.accentColor : Color.secondary) }
+            .buttonStyle(.plain).help(on ? "Remove the star: this conversation leaves the Reader column's starred row" : "Star: keep this conversation in the Reader column's starred row")
+            .accessibilityLabel(on ? "Remove star" : "Star conversation").accessibilityIdentifier("campus-star-button")
     }
 }
 

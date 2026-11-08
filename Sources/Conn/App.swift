@@ -184,6 +184,11 @@ struct ConnCommands: Commands {
                 Divider()
                 CampusNewMenuItems(campus: app.campus).environmentObject(app)
                 Divider()
+                // The conversation on screen: keep it in the Reader column's starred row, or put it in a Watch column (no shortcut: Cmd+K, Cmd+J and Cmd+1..9 are taken).
+                Button(app.campusSelected.map { app.campusIsStarred($0.id) } == true ? "Remove Star from This Conversation" : "Star This Conversation") { if let c = app.campusSelected { app.toggleCampusStar(c) } }
+                    .disabled(app.campusSelected == nil)
+                Button("Open This Conversation in a Watch Column") { if let c = app.campusSelected { app.showCampusInWatch(c.id) } }.disabled(app.campusSelected == nil)
+                Divider()
                 Toggle("Campus Writes", isOn: Binding(get: { app.campus.writesEnabled }, set: { on in if on { app.requestCampusWrites() } else { app.disableCampusWrites() } }))
             }
         }

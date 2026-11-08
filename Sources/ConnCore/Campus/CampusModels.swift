@@ -29,7 +29,8 @@ public struct CampusSpace: Equatable, Sendable, Identifiable {
     }
 
     /// A space folder or conversation id goes into a request path: only plain characters are allowed.
-    public static func validFolder(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil }
+    /// `.` and `..` are plain characters too, but as a path segment they walk out of the space: never a folder.
+    public static func validFolder(_ s: String) -> Bool { s != "." && s != ".." && s.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil }
     public static func validConversationID(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9_-]{4,80}$", options: .regularExpression) != nil }
 }
 

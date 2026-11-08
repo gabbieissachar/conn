@@ -45,6 +45,10 @@ public final class CampusStore: ObservableObject {
     /// The Idempotency-Key of a start that has not gone through yet, by space and text (CampusWrites.swift).
     var createKeys: [String: String] = [:]
 
+    /// Conversations the person starred in Conn (`CampusStarStore`): the list read does not carry one older than its space's 50 most recent, so each refresh asks for
+    /// the ones it did not find, by address. Set by the app; empty means no extra reads.
+    public var starAddresses: [CampusAddress] = []
+
     public let auth: CampusAuth?
     public let baseURL: URL
     public var client: CampusClient? { auth.map(CampusClient.init) }
@@ -180,6 +184,19 @@ public final class CampusStore: ObservableObject {
             case .starting: link = .starting; return
             case .failed: failedSpaces.insert(s.id)
             case .ok(let list): for c in list { next[c.id] = merged(c) }
+            }
+        }
+        // A starred conversation the lists did not carry (older than its space's first 50) is asked for by its address, its state read with it.
+        for a in starAddresses.prefix(CampusStarList.limit) where next[a.id] == nil && !failedSpaces.contains(a.spaceID) {
+            switch await client.conversation(kind: a.kind, folder: a.folder, id: a.id) {
+            case .unauthorized: setExpired(); return
+            case .starting: link = .starting; return
+            case .failed: continue
+            case .ok(var c):
+                if let sp = spaces.first(where: { $0.id == a.spaceID }) { c.spaceName = sp.displayName }
+                if case .ok(let st) = await client.status(of: c) { c.working = st.run == .busy; c.needsYou = st.run == .needsYou; c.unread = st.unread }
+                linked.insert(a.id)
+                next[a.id] = merged(c)
             }
         }
         // A space that did not answer keeps its rows; a conversation opened from a link stays until it is gone from Campus too.

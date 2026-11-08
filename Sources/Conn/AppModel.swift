@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
     let campus: CampusStore
     /// The cookie-based sign-in the feed reads through (nil when Campus is not part of this launch). An API key would be another `CampusAuth`.
     let campusAuth: CampusWebAuth?
+    /// The Campus conversations the person starred in Conn (S1): addresses and order only, in Conn's own settings; shown as chips beside the reader's stars.
+    let campusStars: CampusStarStore
     /// The Campus conversation shown in the centre (and in the Reader column), or nil: a Herdr agent or a view is shown instead.
     @Published var campusSelectedID: String?
     @Published var campusSignInShown = false
@@ -193,7 +195,7 @@ final class AppModel: ObservableObject {
     var inactivePauseSeconds: TimeInterval = ProcessInfo.processInfo.environment["CONN_INACTIVE_PAUSE"].flatMap(Double.init) ?? 30
     @Published var confirmWrites = false
 
-    private var cancellables = Set<AnyCancellable>()
+    var cancellables = Set<AnyCancellable>()
     private var recents: [String] = []
     private var pinWork: DispatchWorkItem?
     private var heldTimer: Timer?
@@ -239,6 +241,8 @@ final class AppModel: ObservableObject {
         // A scripted launch reads cookies from a store of its own, so a check never touches a person's own sign-in.
         campusAuth = config.campusEnabled ? CampusWebAuth(origin: config.campusBase, persistent: !config.isScriptedLaunch) : nil
         campus = CampusStore(auth: campusAuth, baseURL: config.campusBase)
+        // A fixture launch keeps its Campus stars apart from the real ones (as it does the reader's chip order).
+        campusStars = CampusStarStore(defaults: AppModel.defaults, key: config.fixture ? "conn.campusStars.fixture" : "conn.campusStars")
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
