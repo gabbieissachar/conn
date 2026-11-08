@@ -457,6 +457,34 @@ function namesReaderOut(root, req) {
   return requestsOut(root, path.join(root, 'setup', 'transcript-reader', 'out'), req, url).inside;
 }
 
+function canonicalSessionId(value) {
+  if (typeof value !== 'string') return null;
+  if (SESSION_ID_RE.test(value)) return value;
+  if (path.basename(value) === COPILOT_EVENTS && SESSION_ID_RE.test(path.basename(path.dirname(value)))) return path.basename(path.dirname(value));
+  const match = CODEX_ROLLOUT_RE.exec(path.basename(value));
+  return match ? match[1] : null;
+}
+
+
+// A pane's name as Herdr shows it: its own label, else its tab's label, else the terminal title.
+function readSnapshot(name, snapshot) {
+  const tabLabels = new Map((snapshot.tabs || []).map((tab) => [tab.tab_id, tab.label || '']));
+  const panes = [];
+  for (const pane of snapshot.panes || []) {
+    const sessionId = (pane.agent_session || {}).value;
+    if (typeof pane.pane_id !== 'string' || !PANE_ID_RE.test(pane.pane_id)) continue;
+    panes.push({
+      pane_id: pane.pane_id,
+      session_id: canonicalSessionId(sessionId),
+      agent: typeof pane.agent === 'string' ? pane.agent : null,
+      status: typeof pane.agent_status === 'string' ? pane.agent_status : 'unknown',
+      label: String(pane.label || tabLabels.get(pane.tab_id) || pane.terminal_title_stripped || pane.pane_id).slice(0, 120),
+    });
+  }
+  return { name, focused: typeof snapshot.focused_pane_id === 'string' ? snapshot.focused_pane_id : null, panes };
+}
+
+
 function create({
   root, port, runner = defaultRunner, env = process.env, now = () => Date.now(),
   pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -527,14 +555,6 @@ function create({
   const focusSeen = new Map();
   const focus = { seq: 0, herdr: null };
   const build = { running: null, lastEnd: 0, lastStart: -Infinity, failedAt: 0, error: null, failedAdds: new Map(), paneClosed: false, newest: 0, rebuiltFor: 0 };
-
-  function canonicalSessionId(value) {
-    if (typeof value !== 'string') return null;
-    if (SESSION_ID_RE.test(value)) return value;
-    if (path.basename(value) === COPILOT_EVENTS && SESSION_ID_RE.test(path.basename(path.dirname(value)))) return path.basename(path.dirname(value));
-    const match = CODEX_ROLLOUT_RE.exec(path.basename(value));
-    return match ? match[1] : null;
-  }
 
   // Listed sessions seen running in a pane. One that leaves while Herdr still answers had
   // its pane closed or cleared, so a rebuild runs and reader.py drops it from the list.
@@ -908,24 +928,6 @@ function create({
       else if (!processes.some((process) => process.argv0 === 'claude')) pane.session_id = null;
     }
     return session;
-  }
-
-  // A pane's name as Herdr shows it: its own label, else its tab's label, else the terminal title.
-  function readSnapshot(name, snapshot) {
-    const tabLabels = new Map((snapshot.tabs || []).map((tab) => [tab.tab_id, tab.label || '']));
-    const panes = [];
-    for (const pane of snapshot.panes || []) {
-      const sessionId = (pane.agent_session || {}).value;
-      if (typeof pane.pane_id !== 'string' || !PANE_ID_RE.test(pane.pane_id)) continue;
-      panes.push({
-        pane_id: pane.pane_id,
-        session_id: canonicalSessionId(sessionId),
-        agent: typeof pane.agent === 'string' ? pane.agent : null,
-        status: typeof pane.agent_status === 'string' ? pane.agent_status : 'unknown',
-        label: String(pane.label || tabLabels.get(pane.tab_id) || pane.terminal_title_stripped || pane.pane_id).slice(0, 120),
-      });
-    }
-    return { name, focused: typeof snapshot.focused_pane_id === 'string' ? snapshot.focused_pane_id : null, panes };
   }
 
   // The pane Herdr focused most recently. focus.seq moves whenever the focused pane,
@@ -2111,4 +2113,4 @@ function create({
   return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane, permissions, publishHook: (port) => permissions.publishHook(port) };
 }
 
-module.exports = { create, otherClaudeHomes, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };
+module.exports = { create, readSnapshot, canonicalSessionId, otherClaudeHomes, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };

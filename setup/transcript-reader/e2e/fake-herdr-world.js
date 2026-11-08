@@ -6,7 +6,7 @@
 // (`session list`, `api snapshot`, `pane list`, `tab list`, `pane process-info`) and writes every `agent send-keys` and `agent prompt` to
 // FAKE_HERDR_LOG, so a run can show what would have been typed into a pane. It reaches nothing real.
 //
-//   { "sessions": [ { "name": "esim", "focused": "w1:p1",
+//   { "sessions": [ { "name": "esim", "focused": "w1:p1", "socket": "<unix socket path of fake-herdr-socket.js, optional: session list then names it as Herdr's socket_path>",
 //       "tabs": [ { "tab_id": "w1:t1", "label": "alpha" } ],
 //       "panes": [ { "pane_id": "w1:p1", "tab_id": "w1:t1", "label": null, "agent": "claude", "agent_status": "idle",
 //                    "agent_session": "<id or null: Herdr's own idea of the session>", "title": "Alpha work",
@@ -38,7 +38,7 @@ const paneOf = (pane) => {
 };
 
 if (args[0] === 'session' && args[1] === 'list') {
-  out({ sessions: (world.sessions || []).map((entry) => ({ name: entry.name, default: false, running: true, session_dir: process.env.FAKE_HERDR_DIR || '' })) });
+  out({ sessions: (world.sessions || []).map((entry) => ({ name: entry.name, default: false, running: entry.running !== false, session_dir: process.env.FAKE_HERDR_DIR || '', ...(entry.socket ? { socket_path: entry.socket } : {}) })) });
 } else if (!session) {
   process.stderr.write('fake herdr: unknown session ' + args.join(' ') + '\n'); process.exit(1);
 } else if (rest[0] === 'pane' && rest[1] === 'list') out({ result: { panes: session.panes.map(paneOf) } });
