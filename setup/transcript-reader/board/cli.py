@@ -66,7 +66,10 @@ def read_stdin() -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="board_cli.py", description="The Tasks board's data layer. Reads are read only; mark and answer are flagged writes.")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name, help_text in (("board", "print one session's board as JSON"), ("check-config", "validate a home's config/task-board.json"),
+    quick = sub.add_parser("board", help="print one session's board as JSON")
+    quick.add_argument("--session", required=True)
+    quick.add_argument("--quick", action="store_true", help="read the backlog without asking each worker (a second or two); the board says quick: true")
+    for name, help_text in (("check-config", "validate a home's config/task-board.json"),
                             ("mark", "file one reply mark on a task's record (json on stdin: task, turn, mark, source)"),
                             ("answer", "record one answer to a call (json on stdin: task, call, src, option|text|later)"),
                             ("reply", "print the whole text of one reply, read only (json on stdin: sid, uid)")):
@@ -120,7 +123,7 @@ def main(argv=None) -> int:
             return emit({"ok": True, "answer": answer_lib.answer(session, root, body)})
         except (marks_lib.MarkError, answer_lib.AnswerError) as error:
             return emit({"ok": False, "status": error.status, "message": str(error)})
-    collector = Collector(registry.fm_root)
+    collector = Collector(registry.fm_root, quick=args.quick)
     board = build_board(session, collector, threads=thread_source(registry))
     if registry.error:
         board["source"]["errors"].append(registry.error)

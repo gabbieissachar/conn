@@ -171,10 +171,63 @@ class Files(HomeCase):
         c = Collector(None, runner=lambda a, e, t: (_ for _ in ()).throw(subprocess.TimeoutExpired("git", 1)))
         self.assertEqual(c.branch_state(self.home / "projects" / "proj", "fm/a")["state"], "unknown")
 
+    def test_the_two_call_shortcut_gives_what_asking_branch_by_branch_gives(self):
+        repo = self.git_project(branches={"fm/a": 2, "fm/b": 0})
+        fast, slow = Collector(None), Collector(None)
+        slow._project_refs = lambda project: None  # an older git: branch by branch
+        for branch in ("fm/a", "fm/b", "fm/none"):
+            self.assertEqual(fast.branch_state(repo, branch), slow.branch_state(repo, branch), branch)
+        calls = []
+        counting = Collector(None, runner=lambda argv, env, timeout: (calls.append(argv), Collector._subprocess(argv, env, timeout))[1])
+        for branch in ("fm/a", "fm/b", "fm/none"):
+            counting.branch_state(repo, branch)
+        self.assertEqual(len(calls), 2, "two git calls for the whole project, however many branches")
+
     def test_master_is_the_base_when_there_is_no_main(self):
         repo = self.git_project(branches={"fm/a": 1})
         subprocess.run(["git", "-C", str(repo), "branch", "-m", "main", "master"], check=True, capture_output=True)
         self.assertEqual(Collector(None).branch_state(repo, "fm/a"), {"state": "ahead", "ahead": 1, "base": "master"})
+
+
+class QuickRead(HomeCase):
+    """The quick read (Collector.light_snapshot): the backlog from the script's --contribution-input, the task rows from the home's own meta files."""
+
+    def collector(self, runner):
+        c = Collector(None, runner=runner, quick=True)
+        root = self.tmp / "fm"
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        (root / "bin" / "fm-fleet-snapshot.sh").write_text("#!/bin/sh\n")
+        c.fm_root = root
+        return c
+
+    def test_it_asks_for_the_backlog_only_and_builds_a_task_row_from_each_meta_file(self):
+        seen = {}
+
+        def run(argv, env, timeout):
+            seen.update(argv=argv)
+            return done(json.dumps({"backlog": {"records": [record("a")]}, "tasks": []}))
+
+        (self.home / "state" / "a.meta").write_text("kind=scout\nproject=/p/proj\nbranch=fm/a\nspawn_gen=s1794000000.1.1\npr=https://x/pull/1\nbranch=fm/a2\ndriver=captain\ndriver_since=1794000100\ndriver_by=captain\n")
+        (self.home / "state" / "b.meta").write_text("window=x\n")
+        (self.home / "state" / "..bad.meta").write_text("kind=ship\n")
+        data = self.collector(run).snapshot(self.session)
+        self.assertEqual(seen["argv"][1:], ["--contribution-input"])
+        self.assertEqual(data["backlog"]["records"][0]["id"], "a")
+        rows = {r["id"]: r for r in data["tasks"]}
+        self.assertEqual(sorted(rows), ["a", "b"])
+        self.assertEqual((rows["a"]["kind"], rows["a"]["project"], rows["a"]["branch"], rows["a"]["pr"]["url"]), ("scout", "/p/proj", "fm/a2", "https://x/pull/1"), "the last of a repeated key wins")
+        self.assertEqual(rows["a"]["driver"], {"since": 1794000100, "by": "captain", "typed_at": None})
+        self.assertEqual((rows["b"]["kind"], rows["b"]["driver"], rows["b"]["branch"]), ("ship", None, None))
+
+    def test_a_board_built_quick_says_so_and_a_whole_one_does_not(self):
+        run = lambda argv, env, timeout: done(json.dumps({"backlog": {"records": [record("a")]}, "tasks": []}))
+        self.assertTrue(build_board(self.session, self.collector(run))["quick"])
+
+    def test_it_fails_in_one_plain_sentence(self):
+        for result, text in ((done("", 3), "failed"), (done("nope"), "not JSON"), (done(json.dumps({"x": 1})), "unknown shape")):
+            with self.assertRaises(CollectError) as caught:
+                self.collector(lambda a, e, t, r=result: r).snapshot(self.session)
+            self.assertIn(text, str(caught.exception))
 
 
 class RealScripts(HomeCase):

@@ -72,17 +72,27 @@ def match_replies(replies: list[dict], tasks: list[dict]) -> list[dict]:
     reply_df = Counter(w for words in reply_words for w in words)
     reply_df_max = max(3, int(0.04 * len(replies)))
     whole = {d["id"]: (_whole(d["id"]), _whole(d["stem"]) if len(d["stem"]) >= 14 else None) for d in described}
+    labels_re = {label: _whole(label) for d in described for label in d["labels"]}
+
+    def names(d: dict, text: str) -> bool:
+        """Whether `text` names the task as a whole word (by id, or by an id stem of 14+ characters). A plain substring test goes first: the whole-word
+        pattern can only match where the needle appears at all, and most replies name none of the sixty tasks, so this is the same answer in far less time."""
+        if not text:
+            return False
+        w_id, w_stem = whole[d["id"]]
+        return bool((d["id"] in text and w_id.search(text)) or (w_stem is not None and d["stem"] in text and w_stem.search(text)))
+
     out = []
     for index, reply in enumerate(replies):
         text = reply["text"]
-        named = {d["id"] for d in described if whole[d["id"]][0].search(text) or (whole[d["id"]][1] and whole[d["id"]][1].search(text))}
+        named = {d["id"] for d in described if names(d, text)}
         sweep = len(named) > 3
         tools = reply.get("tools") or ""
-        called = {d["id"] for d in described if tools and (whole[d["id"]][0].search(tools) or (whole[d["id"]][1] and whole[d["id"]][1].search(tools)))}
+        called = {d["id"] for d in described if names(d, tools)}
         if len(called) > 3:
             called = set()  # a sweep of many tasks in one turn is weak for each, as a roundup reply is
         trigger = reply.get("trigger") or ""
-        woken = {d["id"] for d in described if trigger and (whole[d["id"]][0].search(trigger) or (whole[d["id"]][1] and whole[d["id"]][1].search(trigger)))}
+        woken = {d["id"] for d in described if names(d, trigger)}
         if len(woken) > 3:
             woken = set()  # a wake-up that lists many tasks is a roundup, not about each
         link_set = set(LAVISH.findall(text))
@@ -106,12 +116,12 @@ def match_replies(replies: list[dict], tasks: list[dict]) -> list[dict]:
             if why:
                 found[tid] = {"lvl": "sure", "why": why}
                 continue
-            keyed = next((label for label in d["labels"] if len(by_label.get(label, ())) == 1 and _whole(label).search(text)), None)
+            keyed = next((label for label in d["labels"] if len(by_label.get(label, ())) == 1 and label in text and labels_re[label].search(text)), None)
             hit_stem = [w for w in d["stem_words"] if df[w] <= 2 and w in reply_words[index]]
             hits = sorted(set(hit_stem + [w for w in d["words"] if df[w] <= 2 and w in reply_words[index] and reply_df[w] <= reply_df_max]))
             if tid in named and sweep:
                 found[tid] = {"lvl": "weak", "why": [f"named in a sweep of {len(named)} tasks"]}
-            elif tools and re.search(r"(?<![\w-])" + re.escape(tid) + r"(?![\w-])", tools):
+            elif tools and tid in tools and whole[tid][0].search(tools):
                 found[tid] = {"lvl": "weak", "why": ["named in a sweep of tool calls"]}
             elif len(hit_stem) >= 3:
                 found[tid] = {"lvl": "possible", "why": ["id words: " + ", ".join(sorted(hit_stem)[:4])]}

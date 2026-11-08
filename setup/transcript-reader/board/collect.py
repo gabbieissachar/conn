@@ -68,8 +68,9 @@ def parse_status_line(line: str) -> dict | None:
 class Collector:
     """The real collector. `fm_root` is the Firstmate checkout whose scripts run; a session's own `root` wins."""
 
-    def __init__(self, fm_root: Path | None, runner=None, now=time.time):
+    def __init__(self, fm_root: Path | None, runner=None, now=time.time, quick: bool = False):
         self.fm_root = fm_root
+        self.quick = quick
         self._run = runner or self._subprocess
         self.now = now
         self._git_cache: dict = {}
@@ -89,6 +90,72 @@ class Collector:
         return script
 
     def snapshot(self, session) -> dict:
+        """What the board reads of a home: the backlog and a row per task. The whole `--json` snapshot, which asks every worker for its live state and so takes
+        ten to forty seconds; or, for a quick board (`quick=True`, shown while the whole one is still being read), `light_snapshot`."""
+        return self.light_snapshot(session) if self.quick else self.full_snapshot(session)
+
+    def light_snapshot(self, session) -> dict:
+        """The home's backlog from the snapshot script's own `--contribution-input` mode (the canonical backlog parser, without asking any worker or any
+        other home: a second or two where the whole snapshot takes ten to forty), and a task row per `state/<id>.meta` read here, read only. A row carries
+        the fields a card uses (kind, project, branch, PR, spawn stamp, the captain-driven mark). What it lacks is the open-decision set the whole snapshot
+        reconciles against each worker's live state: the board falls back to folding the task's own status lines, which can show a decision the worker has
+        since moved past. That is why a quick board is only ever shown until the whole one arrives. Shaped like the whole snapshot."""
+        script = self._script(session, "fm-fleet-snapshot.sh")
+        env = script_env(session.home, {"FM_SNAPSHOT_CACHE_DIR": str(cache_dir() / "snapshot" / session.id)})
+        try:
+            done = self._run([str(script), "--contribution-input"], env, SNAPSHOT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise CollectError(f"the backlog of {session.id} took longer than {SNAPSHOT_TIMEOUT} seconds to read") from None
+        except OSError as error:
+            raise CollectError(f"the backlog read could not start ({error.strerror or error.__class__.__name__})") from None
+        if done.returncode != 0:
+            raise CollectError(f"the backlog read of {session.id} failed (exit {done.returncode})")
+        try:
+            data = json.loads(done.stdout)
+        except ValueError:
+            raise CollectError(f"the backlog read of {session.id} was not JSON") from None
+        backlog = data.get("backlog") if isinstance(data, dict) else None
+        if not isinstance(backlog, dict) or not isinstance(backlog.get("records"), list):
+            raise CollectError(f"the backlog read of {session.id} has an unknown shape")
+        return {"schema": "fm-fleet-snapshot.v1", "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now())), "light": True,
+                "backlog": backlog, "tasks": self.task_rows(session)}
+
+    @staticmethod
+    def meta_values(path: Path) -> dict:
+        """key=value lines of a task's meta file; the last of a repeated key wins, as in Firstmate's own reader (fm_meta_get)."""
+        values: dict = {}
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    key, sep, value = line.rstrip("\n").partition("=")
+                    if sep and key:
+                        values[key] = value
+        except OSError:
+            pass
+        return values
+
+    def task_rows(self, session) -> list[dict]:
+        state = Path(session.home) / "state"
+        try:
+            names = sorted(n for n in os.listdir(state) if n.endswith(".meta"))
+        except OSError:
+            return []
+        rows = []
+        for name in names:
+            task_id, path = name[:-5], state / name
+            if not TASK_ID.match(task_id) or path.is_symlink() or not path.is_file():
+                continue
+            meta = self.meta_values(path)
+            driver = None
+            if meta.get("driver") == "captain":
+                since = meta.get("driver_since", "")
+                driver = {"since": int(since) if since.isdigit() else None, "by": meta.get("driver_by") or None, "typed_at": None}
+            rows.append({"id": task_id, "kind": meta.get("kind") or "ship", "project": meta.get("project") or "", "branch": meta.get("branch") or None,
+                         "pr": {"url": meta.get("pr") or None, "head": meta.get("pr_head") or None}, "spawn_gen": meta.get("spawn_gen") or "", "driver": driver,
+                         "paths": {"worktree": {"path": meta.get("worktree") or None}}})
+        return rows
+
+    def full_snapshot(self, session) -> dict:
         script = self._script(session, "fm-fleet-snapshot.sh")
         env = script_env(session.home, {"FM_SNAPSHOT_CACHE_DIR": str(cache_dir() / "snapshot" / session.id), "FM_SNAPSHOT_SECONDMATES": "1"})
         try:
@@ -195,6 +262,31 @@ class Collector:
         except (subprocess.TimeoutExpired, OSError):
             return None
 
+    def _project_refs(self, project: Path):
+        """(base, {branch: commits main lacks}) for every branch of a project clone, in two git calls instead of three or four per branch (a home with sixty cards
+        asked git two hundred times). None when git cannot say it this way (an older git has no `ahead-behind`), and branch_state then asks branch by branch."""
+        key = ("refs", str(project))
+        if key in self._git_cache:
+            return self._git_cache[key]
+        found = None
+        names = self._git(project, "for-each-ref", "--format=%(refname:short)", "refs/heads/main", "refs/heads/master")
+        if names is not None and names.returncode == 0:
+            base = next((b for b in ("main", "master") if b in names.stdout.split()), None)
+            if base is None:
+                found = (None, {})
+            else:
+                listing = self._git(project, "for-each-ref", f"--format=%(refname:short)\t%(ahead-behind:{base})", "refs/heads")
+                if listing is not None and listing.returncode == 0:
+                    ahead_by = {}
+                    for line in listing.stdout.splitlines():
+                        name, _, counts = line.partition("\t")
+                        parts = counts.split()
+                        if name and len(parts) == 2 and parts[0].isdigit():
+                            ahead_by[name] = int(parts[0])
+                    found = (base, ahead_by)
+        self._git_cache[key] = found
+        return found
+
     def branch_state(self, project: Path | None, branch: str | None) -> dict:
         """Where a task's branch stands against main in its project clone (read-only refs):
         state none (no branch named) | missing (no such ref) | merged (nothing main lacks) | ahead (n commits main does not have) | unknown."""
@@ -206,6 +298,16 @@ class Collector:
         if cache_key in self._git_cache:
             return self._git_cache[cache_key]
         project = Path(project)
+        refs = self._project_refs(project)
+        if refs is not None:
+            base, ahead_by = refs
+            if branch not in ahead_by:
+                result = {"state": "missing", "ahead": None, "base": base} if base else {"state": "unknown", "ahead": None, "base": None}
+            else:
+                ahead = ahead_by[branch]
+                result = {"state": "ahead" if ahead else "merged", "ahead": ahead, "base": base}
+            self._git_cache[cache_key] = result
+            return result
         result = {"state": "unknown", "ahead": None, "base": None}
         have = self._git(project, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
         if have is not None:

@@ -601,3 +601,22 @@ class LegacyChip(HomeCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaggerShortcut(unittest.TestCase):
+    """The substring test before each whole-word pattern changes nothing about the answer, only the time."""
+
+    def test_the_answers_are_the_same_as_without_it(self):
+        import re
+        from board import tagger
+        tasks = [{"id": "2026-11-01-alpha-route-build", "title": "Alpha route build"}, {"id": "beta-sync", "title": "Beta sync"}, {"id": "gamma", "title": "Gamma", "labels": ["R2"]}]
+        replies = [{"text": "Done with 2026-11-01-alpha-route-build and also alpha-route-build-extra, see beta-sync."},
+                   {"text": "Nothing about any task here, just a plain sentence of sufficient length to count as a reply."},
+                   {"text": "R2 asks which route to take for the work.", "tools": "fm-send.sh beta-sync", "trigger": "wake: gamma", "signal": "gamma.turn-ended"},
+                   {"text": "x " + " ".join(f"t{n}-id" for n in range(5)) + " beta-sync gamma alpha-route-build"}]
+        got = tagger.match_replies(replies, tasks)
+        self.assertEqual(got[0]["2026-11-01-alpha-route-build"]["why"], ["mention"])
+        self.assertEqual(got[0]["beta-sync"]["why"], ["mention"])
+        self.assertEqual(got[1], {})
+        self.assertIn("command", got[2]["beta-sync"]["why"])
+        self.assertIn("signal", got[2]["gamma"]["why"])

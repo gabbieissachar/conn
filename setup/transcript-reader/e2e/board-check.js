@@ -122,6 +122,15 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     ev(`document.querySelector('.sheet .th-item[data-key="${key0}"] .rmd .more').click(); return true;`);
     await until(`const r = document.querySelector('.sheet .th-item[data-key="${key0}"]'); return { ok: !!r && !!r.querySelector('.rmd .clip') };`, 'clipped again');
     check(true, 'and Show less clips it again');
+    // round 5: an opened reply can be shut from where you read it (a button stuck to the foot of the window and one in the reply's own row), and a tag explains itself when pressed
+    ev(`document.querySelector('.sheet .th-item[data-key="${key0}"] .rmd .more').click(); return true;`);
+    await until(`const r = document.querySelector('.sheet .th-item[data-key="${key0}"]'); return { ok: !!r && !!r.querySelector('.rmd .more.less') };`, 'the reply open again');
+    check(ev(`const b = document.querySelector('.sheet .th-item[data-key="${key0}"] .rmd .more.less'); return getComputedStyle(b).position === 'sticky';`), 'an opened long reply has a Show less that sticks to the foot of the window');
+    ev(`document.querySelector('.sheet .th-item[data-key="${key0}"] .mk.less-top').click(); return true;`);
+    await until(`const r = document.querySelector('.sheet .th-item[data-key="${key0}"]'); return { ok: !!r && !!r.querySelector('.rmd .clip') && !r.querySelector('.less-top') };`, 'clipped from the top button');
+    check(ev(`const r = document.querySelector('.sheet .th-item[data-key="${key0}"]'), b = document.querySelector('.sheet .sh-body'); return r.getBoundingClientRect().top >= b.getBoundingClientRect().top - 1;`), 'Show less from the reply\'s own row clips it and keeps its top in view');
+    const tag = ev(`const t = document.querySelector('.sheet .th-item.reply button.why'); if (!t) return null; t.click(); const note = t.closest('.th-item').querySelector('.why-note'); const a = note ? note.textContent : ''; t.click(); return { tip: t.title, note: a, shut: !t.closest('.th-item').querySelector('.why-note'), tap: t.dataset.tip === t.title };`);
+    check(tag && tag.tip && tag.note.includes(tag.tip) && tag.shut && tag.tap, 'pressing a tag shows its explanation under the row (no hover needed), and pressing it again hides it', JSON.stringify(tag));
     // hide and show again: the reader's own list (here a scratch file)
     const hiddenFile = () => { try { return JSON.parse(fs.readFileSync(lab.hidden, 'utf8')).hidden.map((h) => h.key); } catch (e) { return []; } };
     ev(`document.querySelector('.sheet .th-item[data-key="${key0}"] .mk.hide').click(); return true;`);

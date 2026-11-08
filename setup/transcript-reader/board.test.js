@@ -14,23 +14,32 @@ const boardLib = require('./board');
 const ROOT = '/repo';
 const SCRIPT = path.join(ROOT, 'setup', 'transcript-reader', 'board_cli.py');
 
-function fixture({ ttlMs = 1000, fail = null } = {}) {
+// quickRead is off in most of these tests (they are about one whole board and its cache); the quick tier has its own tests below.
+function fixture({ ttlMs = 1000, fail = null, quickRead = false, persistDir = null, warm = false, sessionList = [] } = {}) {
   let clock = 1000;
   const state = { fail };
   const calls = [];
   const gates = [];
+  const wholeGates = [];
+  let live = 0, overlap = 0;
   const run = (file, args, options) => {
     calls.push({ file, args, env: options.env, timeout: options.timeout });
+    if (args.includes('sessions')) return Promise.resolve(JSON.stringify({ sessions: sessionList }));
+    const isQuick = args.includes('--quick');
+    const session = args[args.indexOf('--session') + 1];
     return new Promise((resolve, reject) => {
+      live += 1; overlap = Math.max(overlap, live);
       const finish = () => {
+        live -= 1;
         if (state.fail) { const error = new Error('exit'); error.code = state.fail; reject(error); return; }
-        resolve(JSON.stringify({ schema: 'task-board.v1', session: { id: args[args.length - 1] }, built: calls.length }));
+        if (state.snapshotFails && !isQuick) { resolve(JSON.stringify({ schema: 'task-board.v1', session: { id: session }, items: [], source: { snapshot_at: null, errors: ['the fleet snapshot of ' + session + ' took longer than 90 seconds'] } })); return; }
+        resolve(JSON.stringify({ schema: 'task-board.v1', session: { id: session }, built: calls.length, ...(isQuick ? { quick: true } : {}), source: { snapshot_at: 'now', errors: [] }, items: [] }));
       };
-      if (gates.hold) gates.push(finish); else finish();
+      if (gates.hold || (state.holdWhole && !isQuick)) (state.holdWhole && !isQuick ? wholeGates : gates).push(finish); else finish();
     });
   };
-  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1', KEEP: 'yes' }, run, now: () => clock, ttlMs });
-  return { b, calls, gates, state, tick: (ms) => { clock += ms; }, release: () => gates.splice(0).forEach((f) => f()) };
+  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1', KEEP: 'yes' }, run, now: () => clock, ttlMs, quickRead, persistDir, warm });
+  return { b, calls, gates, state, overlap: () => overlap, tick: (ms) => { clock += ms; }, release: () => gates.splice(0).forEach((f) => f()), releaseWhole: () => wholeGates.splice(0).forEach((f) => f()) };
 }
 
 test('the flag: off unless PMOS_READER_BOARD=1 or enabled is passed', () => {
@@ -75,6 +84,7 @@ test('fresh waits for a new build, and two requests share one build', async () =
   t.gates.hold = true;
   const one = t.b.board('leader-nip', { fresh: true });
   const two = t.b.board('leader-nip', { fresh: true });
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(t.calls.length, 2, 'one build for both');
   t.release();
   const [a, b] = await Promise.all([one, two]);
@@ -115,16 +125,120 @@ test('a background rebuild that fails leaves the stale answer and raises nothing
   assert.equal(stale.stale, true);
   assert.equal(stale.board.built, 1);
   await new Promise((resolve) => setImmediate(resolve));
-  const again = await t.b.board('s');  // the failed build left the old answer in place and is tried again
+  const again = await t.b.board('s');  // the failed read left the old board in place, says so, and waits a little before it tries again
   assert.equal(again.stale, true);
-  assert.equal(t.calls.length, 3);
+  assert.equal(again.board.built, 1);
+  assert.match(again.board.source.errors.join(' '), /latest read of the fleet failed/);
+  assert.equal(t.calls.length, 2, 'no second try yet');
+  t.tick(31000);
+  await t.b.board('s');
+  assert.equal(t.calls.length, 3, 'tried again after the wait');
+});
+
+test('a read where the snapshot timed out never replaces a good board, and is told as a line on it', async () => {
+  const t = fixture();
+  await t.b.board('s');
+  t.tick(5000);
+  t.state.snapshotFails = true;
+  await t.b.board('s');  // starts the rebuild behind the stale answer
+  await new Promise((resolve) => setImmediate(resolve));
+  const kept = await t.b.board('s');
+  assert.equal(kept.board.built, 1, 'the good board is still the one served');
+  assert.match(kept.board.source.errors.join(' '), /took longer than 90 seconds/);
+});
+
+test('with nothing to show, a quick board is sent at once and the whole one replaces it when it lands', async () => {
+  const t = fixture({ quickRead: true });
+  t.state.holdWhole = true;
+  const got = await t.b.board('s');  // the whole read is still going: the answer is the quick board
+  assert.deepEqual(t.calls.map((c) => c.args.includes('--quick')), [true, false], 'the quick read first, the whole read right behind it');
+  assert.equal(got.board.quick, true);
+  assert.equal(got.stale, true, 'a whole board is on its way');
+  t.state.holdWhole = false;
+  t.releaseWhole();
+  await new Promise((resolve) => setImmediate(resolve));
+  const whole = await t.b.board('s');
+  assert.equal(whole.board.quick, undefined);
+  assert.equal(whole.stale, false);
+});
+
+test('a fresh read with a board on hand answers with a quick one, not the old board', async () => {
+  const t = fixture({ quickRead: true });
+  await t.b.board('s');
+  await new Promise((resolve) => setImmediate(resolve));
+  t.tick(500);
+  t.state.holdWhole = true;
+  const got = await t.b.board('s', { fresh: true });
+  assert.equal(got.board.quick, true);
+  assert.equal(got.cached_at > 1000, true);
+});
+
+test('a board a couple of minutes old is sent at once and a quick one is read behind it', async () => {
+  const t = fixture({ quickRead: true });
+  await t.b.board('s');
+  await new Promise((resolve) => setImmediate(resolve));
+  t.tick(3 * 60 * 1000);
+  const before = t.calls.length;
+  const old = await t.b.board('s');
+  assert.equal(old.stale, true);
+  assert.equal(old.board.quick, undefined);
+  assert.equal(t.calls.slice(before).some((c) => c.args.includes('--quick')), true);
+});
+
+test('a board someone asks for is read at once, not behind the boards read at start', async () => {
+  const t = fixture({ warm: true, sessionList: [{ id: 'big-boss', kind: 'big-boss', enabled: true }, { id: 'leader-a', kind: 'leader', enabled: true }] });
+  t.state.holdWhole = true;
+  await new Promise((resolve) => setTimeout(resolve, 1800));  // the start-up read of big-boss is under way, held
+  const asked = t.b.board('leader-a');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(t.calls.filter((c) => c.args.includes('board') && c.args.includes('leader-a')).length, 1, 'leader-a is being read for the person asking');
+  t.state.holdWhole = false; t.releaseWhole();
+  await asked;
+});
+
+test('the last whole board is kept on disk (owner only) and answers at once after a restart', async () => {
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'board-persist-'));
+  const one = fixture({ persistDir: dir });
+  await one.b.board('leader-esim');
+  const file = path.join(dir, 'boards', 'leader-esim.json');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const two = fixture({ persistDir: dir });
+  two.tick(60000);
+  two.state.holdWhole = true;
+  const got = await two.b.board('leader-esim');  // nothing is released: the answer is the remembered board
+  assert.equal(got.board.built, 1);
+  assert.equal(got.stale, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(two.calls.length, 1, 'and a new read has started behind it');
+  two.state.holdWhole = false; two.releaseWhole();
+});
+
+test('a quick board is never written to disk', async () => {
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'board-persist-'));
+  const t = fixture({ quickRead: true, persistDir: dir });
+  t.state.holdWhole = true;
+  const got = await t.b.board('s');
+  assert.equal(got.board.quick, true);
+  assert.equal(fs.existsSync(path.join(dir, 'boards', 's.json')), false);
+  t.state.holdWhole = false; t.releaseWhole();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fs.existsSync(path.join(dir, 'boards', 's.json')), true, 'the whole one is');
+});
+
+test('warm start reads each leader and big-boss board once, one at a time, never a worker board', async () => {
+  const t = fixture({ warm: true, sessionList: [{ id: 'big-boss', kind: 'big-boss', enabled: true }, { id: 'leader-a', kind: 'leader', enabled: true }, { id: 'w1', kind: 'worker', enabled: true }, { id: 'off', kind: 'leader', enabled: false }] });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const boards = t.calls.filter((c) => c.args.includes('board')).map((c) => c.args[c.args.indexOf('--session') + 1]);
+  assert.deepEqual(boards, ['big-boss', 'leader-a']);
+  assert.equal(t.overlap(), 1);
 });
 
 test('sessions come from board_cli.py sessions', async () => {
   const t = fixture();
   const out = await t.b.sessions();
   assert.deepEqual(t.calls[0].args, ['-I', SCRIPT, 'sessions']);
-  assert.equal(out.schema, 'task-board.v1');
+  assert.deepEqual(out.sessions, []);
 });
 
 // ---- the writes (marks, answers), the workers' switch and the page's own source

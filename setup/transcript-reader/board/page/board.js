@@ -74,11 +74,22 @@
       const data = await api("board?session=" + encodeURIComponent(asked) + (fresh ? "&fresh=1" : ""));
       if (asked !== S.session) return;
       S.board = data.board; S.write = data.write || S.write; S.loadedAt = data.cached_at || Date.now(); S.error = null; S.stale = !!data.stale;
-      if (data.stale) setTimeout(() => { if (S.session === asked) loadBoard(false); }, 9000);  // an older board came at once; the new one is being built
+      if (data.stale) setTimeout(() => { if (S.session === asked) loadBoard(false); }, 4000);  // an older (or quick) board came at once; the whole one is being built
     } catch (e) { if (asked === S.session) { S.error = e.message; S.board = S.board && S.board.session.id === asked ? S.board : null; } }
     S.loading = false;
-    await loadHidden();
-    render();
+    render();  // the cards first: the hidden list is only needed for the replies in an open card
+    const before = S.hidden.size;
+    loadHidden().then(() => { if (S.hidden.size || before) render(); });
+    markTiming();
+  }
+  /* How long the board took on this page (performance.now() counts from the page's own start): when the first cards were drawn, and when the whole board (not the
+     quick one) was. The browser check and the reading of "why is it slow" use these. */
+  const TIMING = { firstCards: null, whole: null, quick: null };
+  function markTiming() {
+    if (!S.board || !S.board.items.length && !S.board.columns.length) return;
+    const t = Math.round(performance.now());
+    if (TIMING.firstCards == null) { TIMING.firstCards = t; TIMING.quick = !!S.board.quick; }
+    if (TIMING.whole == null && !S.board.quick && !S.stale) TIMING.whole = t;
   }
   function chooseSession(id) {
     if (id === S.session) return;
@@ -138,12 +149,13 @@
     if (!S.board) return;
     (S.board.source.errors || []).forEach((e) => add(e));
     const th = S.board.threads || {};
+    if (S.board.quick) add("A quick read: the workers have not been asked yet, so a card can still show a call that a worker has since moved past. The full read follows in a moment.", "info");
     if (th.status && th.status !== "ok") add("Reply threads are off for this board: " + (th.message || th.status) + ". Cards still show their calls and where the task stands.", "info");
     if (S.notice.config) add(S.notice.config);
     const as = $("asof"); as.textContent = "";
     const d = new Date((S.board.generated_at || 0) * 1000);
     as.append(S.board.session.label + " · read ", el("b", "", d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })));
-    if (S.stale) as.append(el("span", "", " · refreshing"));
+    if (S.stale || S.board.quick) as.append(el("span", "", " · refreshing"));
     if (th.asof) as.append(" · transcripts as of " + new Date(th.asof * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
     const on = [S.write.answer ? "answers" : null, S.write.marks ? "marks" : null, S.write.send ? "messages to the supervisor" : null].filter(Boolean);
     as.append(" · " + (on.length ? "writes on: " + on.join(" and ") : "read only"));
@@ -218,7 +230,7 @@
     const colsEl = $("cols"), colbar = $("colbar");
     const keep = {}; document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b) keep[c.dataset.col] = b.scrollTop; });
     colsEl.textContent = ""; colbar.textContent = ""; S.order = {};
-    if (!S.board) { colsEl.append(el("div", "loading", S.error ? "Nothing to show yet." : "Reading the fleet... the first read of a session takes about fifteen seconds.")); $("upkeep").hidden = true; return; }
+    if (!S.board) { colsEl.append(el("div", "loading", S.error ? "Nothing to show yet." : "Reading the fleet...")); $("upkeep").hidden = true; return; }
     const cols = S.board.columns, ph = phone();
     if (!cols.some((c) => c.id === S.col)) S.col = "needs";
     const lists = Object.fromEntries(cols.map((col) => [col.id, items().filter((t) => t.col === col.id && visible(t))]));
@@ -662,16 +674,21 @@
 
   async function start() {
     render();
-    await loadSessions();
     const wanted = new URLSearchParams(location.hash.slice(1)).get("s");
+    // A page opened on a board (#s=...) asks for it at once, beside the list of sessions, instead of after it.
+    const early = wanted && /^[A-Za-z0-9._-]{1,128}$/.test(wanted) ? wanted : null;
+    if (early) { S.session = early; render(); }
+    const sessionsDone = loadSessions();
+    const earlyBoard = early ? loadBoard(false) : null;
+    await sessionsDone;
     const first = S.sessions.find((s) => s.id === wanted && s.enabled !== false) || S.sessions.find((s) => s.enabled !== false);
     if (!first) { S.error = S.error || "No sessions are set up for the board."; render(); return; }
-    S.session = first.id; render();
-    await loadBoard(false);
+    if (early && first.id === early) await earlyBoard;
+    else { if (early) { S.board = null; } S.session = first.id; render(); await loadBoard(false); }
     if (S.pendingJump) { const go = S.pendingJump; S.pendingJump = null; go(); } else fromHash();
     setInterval(() => { if (!document.hidden && Date.now() - S.loadedAt > 45000) loadBoard(false); }, 15000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - S.loadedAt > 20000) loadBoard(false); });
   }
-  window.__board = { S, render, jumpTo };
+  window.__board = { S, render, jumpTo, timing: TIMING };
   start();
 })();

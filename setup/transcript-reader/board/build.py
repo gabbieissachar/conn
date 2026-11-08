@@ -31,6 +31,8 @@ def build_board(session, collector: Collector, now: float | None = None, threads
         "config": config, "columns": [], "items": [], "projects": [], "counts": {},
         "source": {"errors": errors, "asks": None, "skipped": 0, "snapshot_at": None},
     }
+    if getattr(collector, "quick", False):
+        board["quick"] = True  # read without asking the workers: the whole board follows (see Collector.light_snapshot)
     started = time.monotonic()
     try:
         snapshot = collector.snapshot(session)

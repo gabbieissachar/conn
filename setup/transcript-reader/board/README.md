@@ -49,10 +49,37 @@ GET /api/transcript-reader/board-sessions
 | Report presence and a one-paragraph summary | `data/<id>/report.md`, else the first `data/*.md` the task's own text names |
 | Task creation time | the `Created:` line Firstmate puts first in a new task's body; none for older tasks |
 
-The snapshot takes about 15 s for a home (it asks every worker), so the route keeps an answer for 20 s and sends a stale one at once while a new
-one builds (`stale: true`); `fresh=1` waits for a new build. The snapshot's one side effect (a cache of other homes' summaries) is pointed at
-`~/.config/pmos-transcript-reader/board-cache/` (`PMOS_READER_BOARD_CACHE` moves it), so no Firstmate home's state is written. Scripts run with a
-small environment of their own (the target `FM_HOME`, `PATH`, nothing else the caller set) and a timeout.
+### Why a board takes a while, and what keeps the page from waiting on it (round 5)
+
+Measured on a busy machine (load average 12 to 22), a home's board took 9 to 41 s to build, and 20 to 50 s from the page's first request to its first cards.
+Where it went, in seconds, for the four homes (the whole snapshot / the rest: asks, git, replies):
+
+| Home | cards | snapshot | git (per branch) | replies (tagger) | rest |
+| --- | --- | --- | --- | --- | --- |
+| big-boss | 18 | 41 | 1.1 | 0.6 | 0.4 |
+| eSIM | 64 | 36 | 3.1 | 1.3 | 0.4 |
+| workspaceOS | 76 | 16 | 1.4 | 7.4 (0.9 reading the store, 6.5 matching) | 0.3 |
+| NIP | 26 | 9.5 | 0.3 | 0.9 | 0.3 |
+
+The page and its JSON were never the cost (the page is 88 KB gzipped; a board is 12 to 122 KB gzipped; drawing the cards takes under 100 ms). So:
+
+- **The snapshot** (`fm-fleet-snapshot.sh --json`) asks every worker for its live state. It is still how a board is built (Firstmate's open-decision set is
+  reconciled against each worker's state only there), but it is off the page's path: the route keeps the last whole board of each session in memory and on disk
+  (`<board cache>/boards/<session>.json`, owner only; `PMOS_READER_BOARD_CACHE` moves it) and answers from it at once, with `stale: true`, while a new one is built.
+  When the reader runs for real it reads every session's board once at start, one at a time (four snapshots at once on a busy machine each take longer than the
+  90 s limit, which is how three of the four boards came back empty once). A board someone asks for does not wait behind those.
+- **A quick board** is built when there is nothing to show yet, when the board on hand is two minutes old, or when the page asks for a fresh read (Refresh, or after
+  an answer): the snapshot script's own `--contribution-input` mode (the canonical backlog parser, without asking any worker) plus the home's `state/*.meta` for each
+  task's project, branch, PR and captain-driven mark (`board_cli.py board --quick`, `collect.py light_snapshot`). It takes 2 to 5 s. It lacks the open-decision
+  set the whole snapshot reconciles against live worker state; the board falls back to folding the task's own status lines, which on the real homes differed on 2 of
+  172 cards (a decision a worker had moved past, and one the fold missed). That is why the page says "A quick read" while one is on view, and the whole board replaces
+  it as soon as it lands (the page asks again every 4 s while a board is quick or stale).
+- **A read that fails** (timeout, script error) never replaces a good board: the good one stays with a line saying the latest read failed, and the next background
+  read waits 30 s.
+- **Branch against main** is two git calls per project (`for-each-ref` with `%(ahead-behind:main)`) instead of three or four per branch; the old way remains for a
+  git without `ahead-behind`. Same answers on every branch of the eSIM clones, 3.6 times faster.
+- **Matching replies to tasks** (`tagger.py`) tests for the task id as a plain substring before the whole-word pattern: 9 times faster on workspaceOS, byte for
+  byte the same threads.
 
 A call with a typed card shows the card (`src: ask`). A hold written before typed records exists is split into calls by the prototype's text
 rules (`hold_parse.py`, `src: hold`), so old calls stay readable and new ones are exact. Keyed open decisions in a worker's status lines are

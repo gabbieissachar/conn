@@ -520,7 +520,8 @@ function create({
   const hidden = pinstore.createHidden({ file: hiddenFile, now });
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
-  const board = boardLib.create({ root, env, now, pythonBin, ...(boardOption && typeof boardOption === 'object' ? boardOption : {}), ...(boardOption ? { enabled: true } : {}) });
+  // A reader that runs for real (watch: server.js turns it on) remembers each board on disk and reads them all once at start (board.js says why); a test's does not.
+  const board = boardLib.create({ root, env, now, pythonBin, persistDir: watch ? boardLib.boardCacheDir(env) : null, warm: watch, ...(boardOption && typeof boardOption === 'object' ? boardOption : {}), ...(boardOption ? { enabled: true } : {}) });
   // The Tasks board on the phone's TLS address: its own flag, off by default (PMOS_READER_BOARD_TAILNET=1 or board.tailnet). Only its page and its read routes go
   // there, behind the same passcode, token, Host and Origin checks as every page of the reader; its writes (mark, answer, worker switch, send) stay loopback-only.
   const boardTailnet = Boolean(board.enabled && httpsLane && ((boardOption && typeof boardOption === 'object' && boardOption.tailnet) || env.PMOS_READER_BOARD_TAILNET === '1'));
