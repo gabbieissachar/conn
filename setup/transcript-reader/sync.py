@@ -353,6 +353,7 @@ class Build:
             self._stars = [star for star in values if isinstance(star, dict) and isinstance(star.get("conv"), str)
                            and isinstance(star.get("starred"), (int, float)) and not isinstance(star.get("starred"), bool)] \
                 if isinstance(values, list) else []
+            self._stars.sort(key=lambda star: -star["starred"])  # newest first, as the reader's own file has them (pinstore.js)
         return self._stars
 
     def copied_stars(self, conversations: list[tuple[str, dict]]) -> list[dict]:

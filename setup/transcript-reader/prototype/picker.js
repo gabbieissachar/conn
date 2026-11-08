@@ -9,10 +9,23 @@
     // The listed sessions with their index, split into the starred ones (the picker's top group), those <running> says
     // an agent runs now and the rest, each part in list order. The rest are still readable: the picker keeps them under
     // Closed panes.
-    function sections(sessions, running, starred = () => false) {
+    // starRank, when given, puts the starred group in the order of the stars (0 first: the newest), the list order breaking a tie; without it the starred group is in list order.
+    function sections(sessions, running, starred = () => false, starRank = null) {
       const entries = sessions.map((s, i) => [s, i]);
       const only = name => entries.filter(([s]) => part(s, running, starred) === name);
-      return { starred: only("starred"), running: only("running"), idle: only("idle") };
+      const top = only("starred");
+      if (starRank) top.sort(([a, i], [b, j]) => (starRank(a) - starRank(b)) || (i - j));
+      return { starred: top, running: only("running"), idle: only("idle") };
+    }
+    // The rank (0 is first) of the star that names a session, in the stars' own order: newest first, by when each was starred, and a star the
+    // list does not hold last. Built once for a picker: a function of the session.
+    function starRanker(stars) {
+      const order = stars.map((star, n) => [star, n]).sort(([a, n], [b, m]) => (b.starred - a.starred) || (n - m)).map(([star]) => star.conv);
+      return session => {
+        const conv = starOf(session, stars);
+        const at = conv === null ? -1 : order.indexOf(conv);
+        return at < 0 ? order.length : at;
+      };
     }
     // Which session an option of the picker names. The option holds the session's id, never its place in the list: the list is put
     // in a new order by every build (newest reply first), and a picker that is held open (its options are drawn again once it
@@ -48,5 +61,5 @@
       if (!name) return "Transcript reader";
       return name + (view === "doc" ? " · Documents" : " · Reader");
     }
-    return { part, sections, indexOf, starOf, closed, label, pageTitle };
+    return { part, sections, starRanker, indexOf, starOf, closed, label, pageTitle };
   })();

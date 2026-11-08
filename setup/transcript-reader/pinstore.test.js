@@ -214,3 +214,51 @@ test('hidden messages: a fourth file beside the pins, holding a turn id and part
   mixed.change(hide);
   assert.equal(fs.readFileSync(other + '.unreadable', 'utf8'), '{"not":"mine"}');
 });
+
+// ---------------------------------------------------------------------------------------------------- stars: newest first (2026-11-08)
+
+const C1 = '11111111-1111-4111-8111-111111111111';
+const C2 = '22222222-2222-4222-8222-222222222222';
+const C3 = '33333333-3333-4333-8333-333333333333';
+
+test('stars: a star added goes to the top, and the file is written in that order, which is the order Conn\'s row reads', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'stars.json');
+  let clock = 1_000_000;
+  const store = createStars({ file, now: () => clock });
+  store.change({ op: 'star', conv: C1 });
+  clock += 1000;
+  store.change({ op: 'star', conv: C2 });
+  clock += 1000;
+  const after = store.change({ op: 'star', conv: C3 });
+  assert.deepEqual(after.stars.map((star) => star.conv), [C3, C2, C1], 'the newest first');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).stars.map((star) => star.conv), [C3, C2, C1], 'and so in the file');
+  // Unstarring and starring again puts it back at the top, not where it was.
+  clock += 1000;
+  store.change({ op: 'unstar', conv: C2 });
+  clock += 1000;
+  assert.deepEqual(store.change({ op: 'star', conv: C2 }).stars.map((star) => star.conv), [C2, C3, C1]);
+  // Pins keep the order they always had: the order they were pinned in.
+  const pins = create({ file: path.join(folder, 'pins.json'), now: () => clock });
+  pins.change({ op: 'pin', key: K1, conv: CONV, at: 1 });
+  assert.deepEqual(pins.change({ op: 'pin', key: K2, conv: CONV, at: 2 }).pins.map((pin) => pin.key), [K1, K2]);
+});
+
+test('stars: a file from before (oldest first) is read newest first, and normalize() puts it in that order once, moving the revision', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'stars.json');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, rev: 4, stars: [{ conv: C1, starred: 10 }, { conv: C2, starred: 30 }, { conv: C3, starred: 20 }] }));
+  const store = createStars({ file });
+  assert.deepEqual(store.read().stars.map((star) => star.conv), [C2, C3, C1], 'read in order whatever the file holds');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).stars[0].conv, C1, 'the file is not touched by a read');
+  assert.equal(store.normalize(), true);
+  const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(written.stars.map((star) => star.conv), [C2, C3, C1]);
+  assert.equal(written.rev, 5, 'the revision moved, so a page holding the old list takes the new one');
+  assert.equal(store.normalize(), false, 'once');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).rev, 5);
+  assert.equal(createStars({ file: path.join(folder, 'none.json') }).normalize(), false, 'no file, nothing written');
+  fs.writeFileSync(path.join(folder, 'bad.json'), 'not json');
+  assert.equal(createStars({ file: path.join(folder, 'bad.json') }).normalize(), false, 'a file that is not stars is left alone');
+  assert.equal(fs.readFileSync(path.join(folder, 'bad.json'), 'utf8'), 'not json');
+});

@@ -503,6 +503,7 @@ function create({
   let sending = false;
   const pins = pinstore.create({ file: pinsFile, now });
   const stars = pinstore.createStars({ file: starsFile, now });
+  stars.normalize();  // a stars file from before is oldest first; Conn's row reads the file as it stands, and the newest star goes first
   const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });
   const hidden = pinstore.createHidden({ file: hiddenFile, now });
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).

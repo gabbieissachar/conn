@@ -127,8 +127,8 @@ test('page: the template repaints the tab title where the picker names change', 
 test('page: both pickers lead with the Starred group, the option text carries the star, and a star change redraws them', () => {
   const page = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const body = (fn) => page.slice(page.indexOf('function ' + fn + '('), page.indexOf('\n  }\n', page.indexOf('function ' + fn + '(')));
-  assert.match(body('fillSessionsInto'), /picker\.sections\(data\.sessions, paneLive, starred\)[\s\S]*Starred · /, 'the local picker');
-  assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, hostedPickerLive, starred\)[\s\S]*Starred · /, 'the hosted copy\'s picker uses Herdr state from the build');
+  assert.match(body('fillSessionsInto'), /picker\.sections\(data\.sessions, paneLive, starred, picker\.starRanker\(stars\.all\(\)\)\)[\s\S]*Starred · /, 'the local picker');
+  assert.match(body('fillHostedSessions'), /picker\.sections\(data\.sessions, hostedPickerLive, starred, picker\.starRanker\(data\.stars \|\| \[\]\)\)[\s\S]*Starred · /, 'the hosted copy\'s picker uses Herdr state from the build');
   assert.doesNotMatch(body('fillHostedSessions'), /homes\.map\(home/, 'the hosted copy mirrors the live sections instead of regrouping by home');
   assert.match(page, /const hostedPickerLive = s => Boolean\(s\.pane && s\.pane\.live\)/, 'the hosted picker uses the pane state carried by the copy');
   assert.match(page, /data\.stars/, 'the hosted page reads stars carried by the copied index');
@@ -537,4 +537,24 @@ test('page: the session picker offers ids, and a choice is looked up in the list
   assert.match(body, /picker\.indexOf\(data\.sessions, value\)/);
   assert.doesNotMatch(body, /Number\(value\)/, 'the value is not a number');
   assert.match(body, /if \(index < 0\) \{ render\(\); return; \}/, 'a session that left the page changes nothing but the picker');
+});
+
+// ---------------------------------------------------------------------------------------------------- the starred group is in the stars' order (2026-11-08)
+
+test('sections: with a star ranker the starred group is newest star first, the list order breaking a tie, and the other groups are as they were', () => {
+  const list = [session('a', 'alpha'), session('b', 'beta'), session('c', 'gamma'), session('d', null), session('e', 'epsilon')];
+  const stars = [{ conv: 'a', starred: 10 }, { conv: 'c', starred: 30 }, { conv: 'd', starred: 20 }];
+  const starred = (s) => stars.some((star) => star.conv === s.id);
+  const rank = picker.starRanker(stars);
+  assert.deepEqual([...list].map(rank), [2, 3, 0, 1, 3], 'rank 0 is the newest star; a session with no star is ranked after them all');
+  const sections = picker.sections(list, () => false, starred, rank);
+  assert.deepEqual(ids(sections.starred), ['c', 'd', 'a'], 'gamma (starred last) first, alpha (first) last');
+  assert.deepEqual(sections.starred.map(([, i]) => i), [2, 3, 0], 'each keeps its index in the list');
+  assert.deepEqual(ids(sections.idle), ['b', 'e']);
+  assert.deepEqual(ids(picker.sections(list, () => false, starred).starred), ['a', 'c', 'd'], 'with no ranker it is the list order, as before');
+  // Two stars of one moment: list order. A session named by an older id of its chain takes that star's place.
+  const moved = { id: 'new-id', ids: ['new-id', 'old-id'] };
+  const tied = picker.starRanker([{ conv: 'a', starred: 5 }, { conv: 'old-id', starred: 5 }]);
+  assert.equal(tied(session('a', 'alpha')), 0);
+  assert.equal(tied(moved), 1);
 });

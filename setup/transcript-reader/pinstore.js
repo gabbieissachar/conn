@@ -14,6 +14,8 @@
 // The starred sessions of the session picker are kept the same way, by the same code, in a file beside it:
 //
 //   { "version": 1, "rev": 3, "stars": [{ "conv": "<conversation id>", "starred": <epoch> }] }
+// newest star first: a star added goes to the top, and the file is always written in that order (Conn's Starred row reads it as it stands).
+// A file from before is read in that order too, and put in it by normalize() when the server starts.
 //
 // PMOS_READER_STARS names another file; the default is ~/.config/pmos-transcript-reader/stars.json.
 //
@@ -118,6 +120,7 @@ const STARS = {
   checkAdd: () => {},
   make: (body, epoch) => ({ conv: body.conv, starred: epoch }),
   valid: (star) => Boolean(star) && typeof star === 'object' && CONV_RE.test(star.conv) && Number.isFinite(star.starred),
+  order: (a, b) => b.starred - a.starred,  // newest first; a stable sort, so stars of one moment keep the order they were in
 };
 
 // A reply marked from the page: its turn id (the pin's key, for the reply), the conversation, when the reply was written and which way it
@@ -166,6 +169,7 @@ function createList(kind, { file, now = () => Date.now() }) {
       const saved = JSON.parse(text);
       const items = Array.isArray(saved[kind.list]) ? saved[kind.list].filter(kind.valid) : null;
       if (!items || !Number.isInteger(saved.rev)) throw new Error('not ' + kind.list);
+      if (kind.order) items.sort(kind.order);
       return { rev: saved.rev, [kind.list]: items, unreadable: false };
     } catch { return { ...empty, unreadable: true }; }
   }
@@ -225,11 +229,28 @@ function createList(kind, { file, now = () => Date.now() }) {
     if (has) return view(state);
     if (items.length >= kind.max) throw new PinError(kind.tooMany, 409, 'too_many');
     const more = [...items, kind.make(body, now() / 1000)];
+    if (kind.order) more.sort(kind.order);
     save(state.rev + 1, more, state.unreadable);
     return { rev: state.rev + 1, [kind.list]: more };
   }
 
-  return { read, change, file };
+  // Put a file written before the list had an order in it (a stars file from before: oldest first) in order, once. The revision moves, so a page that
+  // holds the old list takes the new one. Nothing is written when the file is as it should be, or cannot be read as this list.
+  function normalize() {
+    if (!kind.order) return false;
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { return false; }
+    let saved;
+    try { saved = JSON.parse(text); } catch { return false; }
+    if (!saved || !Array.isArray(saved[kind.list]) || !Number.isInteger(saved.rev)) return false;
+    const kept = saved[kind.list].filter(kind.valid);
+    const sorted = kept.slice().sort(kind.order);
+    if (sorted.every((item, n) => item === kept[n])) return false;
+    save(saved.rev + 1, sorted, false);
+    return true;
+  }
+
+  return { read, change, file, normalize };
 }
 
 const create = (options = {}) => createList(PINS, { file: defaultFile(), ...options });

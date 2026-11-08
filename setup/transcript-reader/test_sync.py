@@ -457,6 +457,15 @@ class PanesScopeTest(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in lab.index()["conversations"]], [A, M])
         self.assertEqual(lab.index()["stars"], [{"conv": M, "starred": 2}, {"conv": A, "starred": 1}])
 
+    def test_the_copys_stars_are_newest_first_even_from_a_stars_file_written_oldest_first(self):
+        lab = self.lab()
+        lab.stars.parent.mkdir(parents=True, exist_ok=True)
+        lab.stars.write_text(json.dumps({"version": 1, "rev": 2, "stars": [
+            {"conv": A, "starred": 1}, {"conv": M, "starred": 2},
+        ]}), encoding="utf-8")
+        self.assertEqual(lab.build_only_args("--build-only", "--panes", "open"), 0)
+        self.assertEqual(lab.index()["stars"], [{"conv": M, "starred": 2}, {"conv": A, "starred": 1}], "the newest star first, as the reader's own file has them")
+
     def test_narrowing_prunes_the_dropped_objects_documents_and_sheets_and_widening_brings_them_back(self):
         lab = self.lab()
         lab.build()

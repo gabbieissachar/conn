@@ -1528,7 +1528,7 @@ __HEAD_HOSTED__
   // running at build time, then any unstarred sessions included by an explicitly broad scope.
   function fillHostedSessions(select) {
     const option = ([s, i]) => { const opt = $("option", null, optionText(s)); opt.value = s.id; opt.selected = i === state.session; return opt; };
-    const { starred: top, running, idle } = picker.sections(data.sessions, hostedPickerLive, starred);
+    const { starred: top, running, idle } = picker.sections(data.sessions, hostedPickerLive, starred, picker.starRanker(data.stars || []));
     const starredGroup = $("optgroup"); starredGroup.label = `Starred · ${top.length}`;
     starredGroup.append(...top.map(option));
     select.replaceChildren(...(top.length ? [starredGroup] : []), ...running.map(option), ...(idle.length ? [(() => {
@@ -1575,7 +1575,7 @@ __HEAD_HOSTED__
       const opt = $("option", null, optionText(s));
       opt.value = s.id; opt.selected = i === state.session; return opt;
     };
-    const { starred: top, running, idle } = picker.sections(data.sessions, paneLive, starred);
+    const { starred: top, running, idle } = picker.sections(data.sessions, paneLive, starred, picker.starRanker(stars.all()));
     const starredGroup = $("optgroup"); starredGroup.label = `Starred · ${top.length}`;
     starredGroup.append(...top.map(option));
     select.replaceChildren(...(top.length ? [starredGroup] : []), ...running.map(option));

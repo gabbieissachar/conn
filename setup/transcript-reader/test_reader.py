@@ -1570,7 +1570,7 @@ class PageShellTest(unittest.TestCase):
             self.assertIn("const picker = (() => {", page, mode)
             self.assertNotIn("/*__PICKER__*/", page, mode)
             self.assertIn("picker.label(s, data.sessions, pickerSection, sessionName)", page, mode)
-            self.assertIn("picker.sections(data.sessions, paneLive, starred)", page, mode)
+            self.assertIn("picker.sections(data.sessions, paneLive, starred, picker.starRanker(stars.all()))", page, mode)
 
     def test_the_reader_pages_carry_the_comment_shortcut_that_commentkey_test_js_runs(self):
         for mode, page in self.pages():
