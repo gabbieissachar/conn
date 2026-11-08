@@ -69,6 +69,12 @@ __HEAD_HOSTED__
   .md code, .card code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
   .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; }
 
+  .group-head { margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .group-head:first-of-type { border-top: 0; padding-top: 0; }
+  .group-head h2 { margin: 0 0 2px; font-size: 14px; font-weight: 700; color: var(--ink); }
+  .group-head h2 .gtitle { font-weight: 500; color: var(--muted); }
+  .group-head h2 .gtitle::before { content: " \00b7  "; }
+  .group-head .md p { margin: .2em 0; font-size: 14px; color: var(--muted); }
   .key { display: inline-block; font: 700 12px var(--mono); background: var(--ask-wash); color: var(--ask); border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
   .key.done { background: var(--ok-wash); color: var(--ok); }
   .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
@@ -303,6 +309,13 @@ __HEAD_HOSTED__
     }
     return frag;
   }
+  function groupHead(g) {
+    const head = $("section", "group-head"), title = $("h2", null, `Review group ${g.label}`);
+    if (g.title) title.append($("span", "gtitle", g.title));
+    head.append(title);
+    if (g.text) head.append(markdown(g.text));
+    return head;
+  }
   function context(q) {
     const d = $("details", "context"); d.append($("summary", null, "What this is about"));
     d.open = openContexts.has(storeKey(q));
@@ -316,7 +329,12 @@ __HEAD_HOSTED__
   // ---------------------------------------------------------------- page
   function viewCards(q, main) {
     main.append(context(q));
-    q.cards.forEach(c => main.append(cardNode(c)));
+    // A reply written in review groups: each group's own heading and lead-in stand above its cards (one answer line still covers them all).
+    let group = null;
+    q.cards.forEach(c => {
+      if (q.groups && q.groups.length && c.group != null && c.group !== group) { group = c.group; main.append(groupHead(q.groups[group])); }
+      main.append(cardNode(c));
+    });
     // Once every card is answered in the session, an optional correction is only shown when it was sent too, and not changeable.
     const reopened = again.has(storeKey(q)), answered = isAnswered(q, reopened);
     q.corrections.filter(k => !answered || k in sentOf(q, reopened)).forEach(k => {

@@ -386,6 +386,62 @@ class OneReviewGroupTest(unittest.TestCase):
         self.assertEqual([o["note"] for o in found["cards"][0]["options"][:2]], ["yes", "no"])
 
 
+class AnswerCellLettersTest(unittest.TestCase):
+    """A table whose Answer cell holds backtick letters with their words, and replies written in review groups (2026-11-08)."""
+
+    CELL = """| ID | Decision | Recommended | Answer |
+| --- | --- | --- | --- |
+| **P1** | Which list | `b` | `a` the short one / `b` the long one, with notes / `c` neither |
+| **P2** | Where it shows | `a` | `a` the toolbar / `b` the menu bar |
+
+Reply with keyed answers: `P1=...; P2=...`
+"""
+
+    def test_each_letter_comes_with_its_words_in_the_replys_order(self):
+        found = parse_questionnaire(self.CELL)
+        p1 = found["cards"][0]
+        self.assertEqual([(o["value"], o["note"], o["recommended"]) for o in p1["options"]],
+                         [("a", "the short one", False), ("b", "the long one, with notes", True), ("c", "neither", False)])
+        self.assertEqual(p1["recommended"], "the long one, with notes", "the recommendation is shown by its words, not its letter")
+
+    def test_a_cell_of_bare_values_still_gives_the_values(self):
+        found = parse_questionnaire(self.CELL.replace("`a` the short one / `b` the long one, with notes / `c` neither", "`later`, `earlier`, or `needs explanation`").replace("`b` |", "later |"))
+        self.assertEqual([o["value"] for o in found["cards"][0]["options"]], ["later", "earlier", "needs explanation"])
+
+    GROUPS = """Intro line.
+
+## Review group A - first things
+
+Lead-in of A.
+
+| ID | Decision | Recommended | Answer |
+| --- | --- | --- | --- |
+| **A1** | One | `a` | `a` yes / `b` no |
+
+## Review group B - second things
+
+| ID | Decision | Recommended | Answer |
+| --- | --- | --- | --- |
+| **B1** | Two | `b` | `a` yes / `b` no |
+
+Reply with keyed answers: `A1=...; B1=...`
+"""
+
+    def test_two_review_group_headings_label_their_cards_and_keep_one_sheet(self):
+        found = parse_questionnaire(self.GROUPS)
+        self.assertEqual([(g["label"], g["title"]) for g in found["groups"]], [("A", "first things"), ("B", "second things")])
+        self.assertEqual([(c["key"], c["group"]) for c in found["cards"]], [("A1", 0), ("B1", 1)])
+        self.assertEqual(found["groups"][0]["text"], "Lead-in of A.")
+        self.assertEqual(found["groups"][1]["text"], "")
+        self.assertEqual(found["intro"], "Intro line.", "the group headings and lead-ins are the groups', not the sheet's text")
+
+    def test_one_review_group_heading_is_one_sheet_with_no_groups(self):
+        one = self.GROUPS.replace("## Review group B - second things", "## More")
+        found = parse_questionnaire(one)
+        self.assertEqual(found["groups"], [])
+        self.assertTrue(all("group" not in c for c in found["cards"]))
+
+
 # Replies the owner flagged from the reader page as "this should be an answer sheet" (or "this sheet is wrong"), kept as fixtures:
 # answer-sheet-fixtures/<name>.md is invented text in the real shape (never the private reply), <name>.expect.json what the sheet must
 # be. A new flagged case is two files; reader.py sheet-flags --shape prints the shape of a flagged reply with its words masked.
@@ -417,6 +473,13 @@ class FlaggedFixturesTest(unittest.TestCase):
                 self.assertEqual([item["key"] for item in found["resolved"]], expect.get("resolved", []))
                 if "left_out" in expect:
                     self.assertEqual(found["left_out"], expect["left_out"], "the cards of other groups the reply mentions")
+                if "groups" in expect:
+                    self.assertEqual([{"label": g["label"], "title": g["title"], "text_starts": g["text"][:len(want["text_starts"])],
+                                       "cards": [c["key"] for c in found["cards"] if c.get("group") == i]}
+                                      for i, (g, want) in enumerate(zip(found["groups"], expect["groups"]))], expect["groups"], "the review groups, each with its lead-in and its cards")
+                    self.assertEqual(len(found["groups"]), len(expect["groups"]))
+                else:
+                    self.assertEqual(found["groups"], [], "one review group is one sheet, with no group headings on it")
                 if "title" in expect:
                     self.assertEqual(found["title"], expect["title"])
                 if "intro_starts" in expect:

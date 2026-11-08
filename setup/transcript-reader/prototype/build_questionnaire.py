@@ -104,7 +104,11 @@ def plain_choices(cell: str) -> list[str]:
 
 def cell_choices(cell: str) -> list[dict]:
     """The choices one table cell offers, by the first rule that finds two or more:
-    backtick values, lettered a) b), then a plain short list (labelled `choice:` or split by /)."""
+    backtick letters that run on from `a` with their words (``a` agents only / `b` the whole Mac`), backtick values,
+    lettered a) b), then a plain short list (labelled `choice:` or split by /)."""
+    with_words = inline_options(cell)[1]
+    if with_words:
+        return with_words
     ticked = BACKTICK.findall(cell)
     if ticked:
         return [{"value": value, "note": "", "recommended": False} for value in ticked]
@@ -145,7 +149,7 @@ def inline_options(cell: str) -> tuple[str, list[dict]]:
     options = []
     for index, mark in enumerate(run):
         end = run[index + 1].start() if index + 1 < len(run) else len(cell)
-        options.append(option(mark.group(1), strip_md(cell[mark.end(): end]).strip(" ;.,")))
+        options.append(option(mark.group(1), strip_md(cell[mark.end(): end]).strip(" ;.,/")))
     return strip_md(cell[: run[0].start()]).strip(" :;"), options
 
 
@@ -231,7 +235,16 @@ def table_card(key: str, get, header: list[str]) -> dict:
     for col in dict.fromkeys(c for c in (answer_col, column(header, "other", "option", "choice")) if c is not None and c != rec_col):
         found = cell_choices(get(col))
         if found:
-            options += [o for o in found if o["value"] not in {k["value"] for k in options}]
+            # A recommended cell that only names a choice (`b`) gets the words the answer cell gives it.
+            # The answer cell's order is the reply's own, so its choices lead and the marked one keeps its star where it stands.
+            by_value = {k["value"]: k for k in options}
+            for o in found:
+                if o["value"] in by_value:
+                    by_value[o["value"]]["note"] = by_value[o["value"]]["note"] or o["note"]
+            if set(by_value) <= {o["value"] for o in found}:
+                options = [by_value.get(o["value"], o) for o in found]
+            else:
+                options += [o for o in found if o["value"] not in by_value]
             break
     if not options and lettered(question):
         marks = list(LETTER.finditer(question))
@@ -252,6 +265,38 @@ def table_card(key: str, get, header: list[str]) -> dict:
 # options to pick from, or what a card depends on. "Key | In plain words" (a glossary of calls from an earlier reply) and "Key | Piece | State"
 # (a status list) name keys and ask nothing.
 CARD_COLUMNS = ("decision", "question", "change", "call", "recommend", "answer", "option", "choice", "depends", "submitted")
+
+
+# "## Review group A - what "quiet" means": a heading that names one review group of a reply that asks several.
+GROUP_HEADING = re.compile(r"^\s*(#{1,6})\s+(?:\*\*)?review group\s+([A-Za-z0-9]+)\b[\s:.\-–—]*(.*?)(?:\*\*)?\s*$", re.I)
+
+
+def review_groups(lines: list[str], cards: list[dict], blocks: dict[str, int], drop: set[int]) -> tuple[list[dict], int | None]:
+    """The review groups a reply is written in, when it has two or more `Review group X` headings that each hold a card: for each, its
+    label, its title, and the words between its heading and its first card (the lead-in). Each card gets `group`, the index of its
+    group. Returns the groups and the line the first of them starts at (the text above it is the sheet's own); ([], None) when the reply
+    has one group or none, which is one sheet as ever."""
+    headings = []
+    for n, line in enumerate(lines):
+        found = GROUP_HEADING.match(line)
+        if found:
+            headings.append((n, len(found.group(1)), found.group(2), strip_md(found.group(3))))
+    spans = []
+    for n, level, label, title in headings:
+        end = next((m for m in range(n + 1, len(lines)) if (h := re.match(r"^\s*(#+)\s+\S", lines[m])) and len(h.group(1)) <= level), len(lines))
+        owned = [card for card in cards if card["key"] in blocks and n < blocks[card["key"]] < end]
+        if owned:
+            spans.append((n, end, label, title, owned))
+    if len(spans) < 2:
+        return [], None
+    groups = []
+    for index, (n, end, label, title, owned) in enumerate(spans):
+        first = min(blocks[card["key"]] for card in owned)
+        lead = [line for m, line in enumerate(lines[n + 1:first], n + 1) if m not in drop]
+        groups.append({"label": label, "title": title, "text": re.sub(r"\n{3,}", "\n\n", "\n".join(lead)).strip()})
+        for card in owned:
+            card["group"] = index
+    return groups, spans[0][0]
 
 
 def _parse_questionnaire(reply: str) -> dict | None:
@@ -412,6 +457,9 @@ def _parse_questionnaire(reply: str) -> dict | None:
         below = next((n for n in range(end, len(lines)) if (m := re.match(r"^\s*(#+)\s+\S", lines[n])) and len(m.group(1)) <= level), len(lines))
         if below <= first_block:
             drop.update(range(above, below))
+    groups, groups_at = review_groups(lines, cards, blocks, drop)
+    if groups_at is not None:
+        first_block = min(first_block, groups_at)  # each group's own heading and lead-in are its, not the sheet's
     intro = [line for n, line in enumerate(lines[:first_block]) if n not in drop]
     title = strip_md(lines[0].lstrip("#")) if lines else ""
     if drop:  # the reply's first line may have been a recap's heading: the sheet is named for what is left
@@ -419,7 +467,7 @@ def _parse_questionnaire(reply: str) -> dict | None:
     return {
         "title": title,
         "intro": re.sub(r"\n{3,}", "\n\n", "\n".join(intro)).strip(),
-        "cards": cards, "resolved": resolved, "locked": locked, "corrections": corrections, "left_out": left_out,
+        "cards": cards, "groups": groups, "resolved": resolved, "locked": locked, "corrections": corrections, "left_out": left_out,
         "reply_line": strip_md(reply_line),
     }
 

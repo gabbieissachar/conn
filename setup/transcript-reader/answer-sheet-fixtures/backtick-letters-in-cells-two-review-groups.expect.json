@@ -1,0 +1,155 @@
+{
+  "why": "Flagged 2026-11-08: a reply with two review groups (A: three calls, B: three calls), each a table whose Answer cell holds its choices as backtick letters with their words (`a` ... / `b` ...) and whose Recommended cell names only the letter. The sheet showed bare letters with no words, and both groups as one list. The choices come with their words, the recommended one is marked and shown by its words, and each group keeps its own heading and lead-in above its cards (one answer line still covers all six keys).",
+  "sheet": true,
+  "title": "Nathan, I added this to the list as top priority. Two groups of questions to start the design are below. The sketch comes after your answers.",
+  "intro_starts": "Nathan, I added this to the list",
+  "intro_lacks": [
+    "Review group A",
+    "Answer these in order",
+    "These are independent"
+  ],
+  "left_out": [],
+  "groups": [
+    {
+      "label": "A",
+      "title": "what \"quiet\" means",
+      "text_starts": "Answer these in order. P1 deci",
+      "cards": [
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "label": "B",
+      "title": "the timer",
+      "text_starts": "These are independent of each ",
+      "cards": [
+        "P4",
+        "P5",
+        "P6"
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "key": "P1",
+      "question": "What a quiet session mutes",
+      "options": [
+        [
+          "a",
+          "the app and the digest only: items 1-2 above, calendar and chat untouched",
+          false
+        ],
+        [
+          "b",
+          "the app, the digest and the system: also switches the system mode on and off through your shortcut",
+          true
+        ],
+        [
+          "c",
+          "the app's own badge and count only",
+          false
+        ]
+      ],
+      "recommended": "the app, the digest and the system: also switches the system mode on and off through your shortcut"
+    },
+    {
+      "key": "P2",
+      "question": "What happens to reminders that arrive during a quiet session",
+      "options": [
+        [
+          "a",
+          "held, then shown as one short list when the session ends",
+          true
+        ],
+        [
+          "b",
+          "dropped (they stay visible in the item list)",
+          false
+        ]
+      ],
+      "recommended": "held, then shown as one short list when the session ends"
+    },
+    {
+      "key": "P3",
+      "question": "Can anything break through",
+      "options": [
+        [
+          "a",
+          "nothing",
+          true
+        ],
+        [
+          "b",
+          "an item waiting on you for more than N minutes",
+          false
+        ],
+        [
+          "c",
+          "named lists only",
+          false
+        ]
+      ],
+      "recommended": "nothing"
+    },
+    {
+      "key": "P4",
+      "question": "Session shape",
+      "options": [
+        [
+          "a",
+          "classic: 25 min focus, 5 min break, a 15 min break after every 4, all editable",
+          true
+        ],
+        [
+          "b",
+          "one block of a length you choose, no breaks",
+          false
+        ],
+        [
+          "c",
+          "both as presets",
+          false
+        ]
+      ],
+      "recommended": "classic: 25 min focus, 5 min break, a 15 min break after every 4, all editable"
+    },
+    {
+      "key": "P5",
+      "question": "Where the countdown shows",
+      "options": [
+        [
+          "a",
+          "a pill in the toolbar plus a countdown in the menu bar",
+          true
+        ],
+        [
+          "b",
+          "toolbar only",
+          false
+        ]
+      ],
+      "recommended": "a pill in the toolbar plus a countdown in the menu bar"
+    },
+    {
+      "key": "P6",
+      "question": "When a session ends",
+      "options": [
+        [
+          "a",
+          "soft chime, then a \"Session done\" screen with Restart and Start break buttons, nothing starts on its own",
+          false
+        ],
+        [
+          "b",
+          "the break starts on its own, then the next session",
+          true
+        ]
+      ],
+      "recommended": "the break starts on its own, then the next session"
+    }
+  ],
+  "locked": [],
+  "resolved": []
+}
