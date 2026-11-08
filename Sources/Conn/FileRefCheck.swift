@@ -87,7 +87,7 @@ enum FileRefCheck {
         let wInjected = await js(column, "String(window.__connFileRefs)")
         let wHash = await js(column, "location.hash")
         report("a Watch column's page has the same handler", wInjected == "true" && column.lite, "handler=\(wInjected)")
-        reset()
+        closeAll(); model.toastText = nil; model.toastDetail = nil      // not `reset()`: choosing the Agent view again would end the Watch that is on
         let w1 = await click(column, "link", path: notes.path); await wait(0.6)
         let wHashAfter = await js(column, "location.hash")
         report("a click on a file link in a Watch column opens it in the Editor view and the column does not navigate",

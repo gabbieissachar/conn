@@ -159,7 +159,7 @@ enum UICheck {
                "agentViewFlag=\(launchedWithAgentView) scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
-        // `CONN_UI_CHECK_ONLY=name,name` runs just those checks (reader-follow, asks, sidebar, prompt, file-ref, focus, watch-setups, watch-setups-write, watch-setups-read), with the Agent view on as
+        // `CONN_UI_CHECK_ONLY=name,name` runs just those checks (reader-follow, asks, sidebar, prompt, file-ref, focus, watch-setups, watch-setups-write, watch-setups-read, watch-trips, watch-trips-write, watch-trips-read), with the Agent view on as
         // the full suite has it by then, so one area can be run in half a minute instead of three.
         let only = Set((ProcessInfo.processInfo.environment["CONN_UI_CHECK_ONLY"] ?? "").split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
         if !only.isEmpty {
@@ -173,6 +173,9 @@ enum UICheck {
             if only.contains("watch-setups") { await WatchSetupsCheck.run(model: model, report: report, wait: wait) }
             if only.contains("watch-setups-write") { await WatchSetupsCheck.writeLaunch(model: model, report: report, wait: wait) }
             if only.contains("watch-setups-read") { await WatchSetupsCheck.readLaunch(model: model, report: report, wait: wait) }
+            if only.contains("watch-trips") { await WatchTripsCheck.run(model: model, report: report, wait: wait) }
+            if only.contains("watch-trips-write") { await WatchTripsCheck.writeLaunch(model: model, report: report, wait: wait) }
+            if only.contains("watch-trips-read") { await WatchTripsCheck.readLaunch(model: model, report: report, wait: wait) }
             print("ui-check: done (only \(only.sorted().joined(separator: ", ")))")
             model.shutdown(); NSApplication.shared.terminate(nil)
             return
@@ -469,6 +472,7 @@ enum UICheck {
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await WatchCheck.run(model: model, report: report, wait: wait)
         await WatchSetupsCheck.run(model: model, report: report, wait: wait)
+        await WatchTripsCheck.run(model: model, report: report, wait: wait)
         await FileRefCheck.run(model: model, report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await AskRowsCheck.run(model: model, report: report, wait: wait)

@@ -91,13 +91,16 @@ final class AppModel: ObservableObject {
     @Published var comparePaneID: String?
     @Published var selectedWorkspaceID: String?
     /// The launch sets the first view (`LaunchPlan`): the Herdr client for a person's own launch, the Agent view for a scripted one.
-    /// Choosing another view leaves Watch, which stands in for the centre pane and the reader column while it is on.
+    /// Choosing a view leaves Watch, which stands in for the centre pane and the reader column while it is on, and that includes the view the window
+    /// is already on: Watch turned on over the Editor view and then a file opened (a link in a column, `conn <path>`, a menu item) must show the Editor,
+    /// not open the file behind the columns.
     /// Every way of setting the view lands here, so with the Agent view off (`ViewPolicy`) nothing can reach it.
     @Published var mode: CenterMode = .herdr {
         didSet {
             let resolved = viewPolicy.resolve(mode)
             if resolved != mode { mode = resolved }
-            if mode != oldValue { if watchOn { watchOn = false }; campusSelectedID = nil; syncSessions() }
+            if watchOn { watchOn = false }
+            if mode != oldValue { campusSelectedID = nil; syncSessions() }
         }
     }
     /// The Agent-view flag (README "The Agent view flag"). Read once at launch; a check turns it on and off in process.
