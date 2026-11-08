@@ -28,6 +28,12 @@ extension AppModel {
         if config.campusBridgeAtLaunch && config.isScriptedLaunch { campusBridge?.setEnabled(true) }
         campusBridge?.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
         campusBridge?.ownership.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
+        // The silent refresh: it waits while the sign-in sheet is open (the person is signing in by hand) and looks at the session again when the sheet closes.
+        if let keeper = campusKeeper {
+            $campusSignInShown.sink { shown in keeper.paused = shown; if !shown { keeper.nudge() } }.store(in: &cancellables)
+            keeper.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
+            keeper.start()
+        }
         campus.start()
     }
 
@@ -124,7 +130,7 @@ extension AppModel {
     /// Show the sign-in sheet's page.
     func signInToCampus() { campusAuth?.beginSignIn() }
 
-    func closeCampusSignIn() { campusSignInShown = false; campus.kick() }
+    func closeCampusSignIn() { campusSignInShown = false; campus.kick(); campusKeeper?.nudge() }
 
     var campusTimeText: String? { campus.asOf.map { CampusTime.clock($0) } }
 }
@@ -132,6 +138,11 @@ extension AppModel {
 enum CampusTime {
     static func clock(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; return f.string(from: d)
+    }
+    /// The time of day, with the date when it is not today.
+    static func stamp(_ d: Date, now: Date = Date()) -> String {
+        if Calendar.current.isDate(d, inSameDayAs: now) { return clock(d) }
+        let f = DateFormatter(); f.dateFormat = "d MMM HH:mm"; return f.string(from: d)
     }
 }
 
@@ -236,5 +247,17 @@ extension AppModel {
     /// "Share with Agents" on a Campus row: nothing, reading, or reading and sending. A thread the bridge started is always shared.
     func shareCampus(_ c: CampusConversation, _ mode: BridgeShare?) {
         campusBridge?.ownership.setShared(CampusAddress(c), mode)
+    }
+}
+
+// MARK: - the silent session refresh
+
+extension AppModel {
+    /// Where the attempts are logged: Conn's own folder for a person's launch; a scripted launch writes a folder of its own, never the person's.
+    static func makeRenewalLog(config: AppConfig) -> CampusRenewalLog {
+        let dir = config.isScriptedLaunch
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("conn-campus-refresh-\(getpid())", isDirectory: true)
+            : ConnMigration.stateDirectory().appendingPathComponent("campus", isDirectory: true)
+        return CampusRenewalLog(file: dir.appendingPathComponent("session-refresh.log"))
     }
 }

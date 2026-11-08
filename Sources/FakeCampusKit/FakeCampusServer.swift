@@ -56,7 +56,7 @@ public final class FakeCampusServer: @unchecked Sendable {
         let p = requestLine.split(separator: " ").map(String.init)
         guard p.count >= 2 else { c.cancel(); return }
         let r = world.route(method: p[0], path: p[1], cookie: headers["cookie"], body: body, headers: headers)
-        var head = "HTTP/1.1 \(r.status) \(r.status == 200 ? "OK" : "Status")\r\nContent-Type: \(r.contentType)\r\nCache-Control: no-cache, no-transform\r\nConnection: close\r\n"
+        var head = "HTTP/1.1 \(r.status) \(r.status == 200 ? "OK" : r.status == 302 ? "Found" : "Status")\r\nContent-Type: \(r.contentType)\r\nCache-Control: no-cache, no-transform\r\nConnection: close\r\n"
         for (k, v) in r.headers { head += "\(k): \(v)\r\n" }
         if r.isStream {
             head += "Transfer-Encoding: chunked\r\n\r\n"
@@ -73,7 +73,9 @@ public final class FakeCampusServer: @unchecked Sendable {
             c.stateUpdateHandler = { s in if case .cancelled = s { task.cancel() }; if case .failed = s { task.cancel() } }
         } else {
             head += "Content-Length: \(r.body.count)\r\n\r\n"
-            c.send(content: Data(head.utf8) + r.body, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+            let payload = Data(head.utf8) + r.body
+            let send = { c.send(content: payload, isComplete: true, completion: .contentProcessed { _ in c.cancel() }) }
+            if r.delay > 0 { queue.asyncAfter(deadline: .now() + r.delay, execute: send) } else { send() }
         }
     }
 }

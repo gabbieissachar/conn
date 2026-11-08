@@ -12,6 +12,8 @@ public struct FakeCampusResponse: Sendable {
     public var body = Data()
     public var headers: [String: String] = [:]
     public var isStream = false
+    /// Seconds the server holds the answer back (a sign-in that never finishes).
+    public var delay: TimeInterval = 0
 }
 
 public final class FakeCampusWorld: @unchecked Sendable {
@@ -34,8 +36,30 @@ public final class FakeCampusWorld: @unchecked Sendable {
     public var stepDelay: TimeInterval = 0.35
     /// Where the stand-in says it lives, for the links inside its replies (the HTTP server sets its own address).
     public var publicBase = "https://campus.example.test"
-    /// The token the stand-in's login page sets as the `campus_session` cookie: an invented value, not a credential of anything.
-    public static let cookieValue = "fake-session-not-a-secret"
+    /// The first segment of every token the stand-in sets as the `campus_session` cookie (the base64url of `{"alg":"none","typ":"JWT"}`): an invented value, not a credential
+    /// of anything. A check that no Conn-side data holds the cookie looks for this.
+    public static let tokenMarker = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"
+
+    /// What a hidden visit to Campus's sign-in path (`GET /campus/login`) does (the silent refresh). The default is the real login page, which waits for a click.
+    public enum RenewMode: String, Sendable {
+        /// The login page itself (needs a click).
+        case page
+        /// A person with a valid session is sent straight back into the app with a new token that lives longer; one without gets the login page.
+        case renews
+        /// Sent back into the app, but nothing is renewed: the cookie stays as it was.
+        case lands
+        /// Sent to another site's account chooser (a page that waits for input).
+        case google
+        /// The answer never comes (held back for two minutes).
+        case hang
+    }
+
+    /// A token that looks like Google's: three segments, the middle one carrying `exp` (seconds since 1970). Unsigned, invented.
+    public static func makeToken(exp: Date, serial: Int) -> String {
+        func b64(_ d: Data) -> String { d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
+        let payload = (try? JSONSerialization.data(withJSONObject: ["exp": Int(exp.timeIntervalSince1970), "sub": "usr_fake", "n": serial], options: [.sortedKeys])) ?? Data()
+        return tokenMarker + "." + b64(payload) + ".not-a-signature"
+    }
 
     private let lock = NSLock()
     private var convs: [Conv] = []
@@ -44,6 +68,12 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var starting = false
     private var failWrites = false
     private var signedOutCode = 401
+    private var token = ""
+    private var tokenExp = Date.distantPast
+    private var tokenSerial = 0
+    private var tokenLife: TimeInterval = 3600
+    private var renewMode = RenewMode.page
+    private var renewals = 0
     private var moduleRequired = false
     /// What the next run does (the agent bridge's checks): the default, end on a question, end on a permission request, or never end until released.
     public enum NextRun: String { case normal, ask, permission, hold }
@@ -231,14 +261,19 @@ public final class FakeCampusWorld: @unchecked Sendable {
         if path.hasPrefix("/__fake/") { return control(path, query) }
         if path == "/campus/login" || path == "/campus/login/ok" {
             var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"
-            if path.hasSuffix("/ok") { lock.lock(); loggedIn = true; lock.unlock(); r.headers["Set-Cookie"] = "campus_session=\(Self.cookieValue); Path=/; HttpOnly; SameSite=Lax" }
+            if path == "/campus/login", let silent = silentLogin(cookie: cookie) { return silent }
+            if path.hasSuffix("/ok") { r.headers["Set-Cookie"] = "campus_session=\(mintToken()); Path=/; HttpOnly; SameSite=Lax" }
             r.body = Data("<!doctype html><html><head><title>Stand-in Campus sign-in</title></head><body style=\"font:15px -apple-system;margin:40px\"><h2>Stand-in Campus</h2><p>Invented sign-in page for Conn's own checks.</p><p><a id=\"go\" href=\"/campus/login/ok\">Sign in with ShopBack</a></p><p id=\"state\">\(path.hasSuffix("/ok") ? "signed in" : "signed out")</p></body></html>".utf8)
+            return r
+        }
+        if path == "/campus" || path == "/campus/" {
+            var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"
+            r.body = Data("<!doctype html><html><head><title>Stand-in Campus</title></head><body style=\"font:15px -apple-system;margin:40px\"><h2>Stand-in Campus</h2><p>The app, as the stand-in has it.</p></body></html>".utf8)
             return r
         }
         lock.lock(); let isIn = loggedIn; let isStarting = starting; let outCode = signedOutCode; let needsModule = moduleRequired; lock.unlock()
         if authMode == .cookie {
-            let has = (cookie ?? "").contains("campus_session=\(Self.cookieValue)")
-            if !(has && isIn) { return err(outCode, "no valid campus_session cookie") }
+            if !(isIn && validSession(cookie)) { return err(outCode, "no valid campus_session cookie") }
         }
         if needsModule && path.hasPrefix("/api/") { var r = FakeCampusResponse(); r.status = 403; r.body = Self.data(["error": "module_required", "module": "workspace"]); return r }
         if path == "/campus/api/me" { return ok(["id": "usr_fake", "email": "person@example.test", "displayName": "Test Person", "modules": ["workspace"]]) }
@@ -332,8 +367,70 @@ public final class FakeCampusWorld: @unchecked Sendable {
 
     private func lockedConvs() -> [Conv] { lock.lock(); defer { lock.unlock() }; return convs }
 
+    /// A new token that lives `tokenLife` seconds, now the only valid one; the person is signed in.
+    private func mintToken() -> String {
+        lock.lock(); defer { lock.unlock() }
+        tokenSerial += 1
+        tokenExp = Date().addingTimeInterval(tokenLife)
+        token = Self.makeToken(exp: tokenExp, serial: tokenSerial)
+        loggedIn = true
+        return token
+    }
+
+    /// The Cookie header carries the current token and it has not run out.
+    private func validSession(_ cookie: String?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !token.isEmpty && Date() < tokenExp && (cookie ?? "").contains("campus_session=\(token)")
+    }
+
+    /// What `GET /campus/login` does under the current `RenewMode`; nil: serve the login page.
+    private func silentLogin(cookie: String?) -> FakeCampusResponse? {
+        lock.lock(); let mode = renewMode; lock.unlock()
+        switch mode {
+        case .page: return nil
+        case .renews:
+            lock.lock(); let isIn = loggedIn; lock.unlock()
+            guard isIn, validSession(cookie) else { return nil }
+            lock.lock(); renewals += 1; lock.unlock()
+            var r = FakeCampusResponse(); r.status = 302; r.contentType = "text/html; charset=utf-8"
+            r.headers["Location"] = "/campus/"
+            r.headers["Set-Cookie"] = "campus_session=\(mintToken()); Path=/; HttpOnly; SameSite=Lax"
+            return r
+        case .lands:
+            var r = FakeCampusResponse(); r.status = 302; r.contentType = "text/html; charset=utf-8"
+            r.headers["Location"] = "/campus/"
+            return r
+        case .google:
+            var r = FakeCampusResponse(); r.status = 302; r.contentType = "text/html; charset=utf-8"
+            // Another host name (the stand-in listens on loopback, so `localhost` is another site to the browser): a page of Google's, not of Campus's.
+            let other = publicBase.contains("127.0.0.1") ? publicBase.replacingOccurrences(of: "127.0.0.1", with: "localhost") : "https://accounts.example.test"
+            r.headers["Location"] = other + "/__fake/google"
+            return r
+        case .hang:
+            var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"; r.delay = 120
+            r.body = Data("<!doctype html><title>late</title>".utf8)
+            return r
+        }
+    }
+
+    /// How long the next tokens live, in seconds (the real one is 3600).
+    public func setSessionLife(_ seconds: TimeInterval) { lock.lock(); tokenLife = max(1, seconds); lock.unlock() }
+    public func setRenewMode(_ m: RenewMode) { lock.lock(); renewMode = m; lock.unlock() }
+    /// How many silent sign-ins made a new token.
+    public var renewalCount: Int { lock.lock(); defer { lock.unlock() }; return renewals }
+    /// The current token's expiry (nil: no token yet).
+    public var sessionExpiry: Date? { lock.lock(); defer { lock.unlock() }; return token.isEmpty ? nil : tokenExp }
+
     private func control(_ path: String, _ q: [String: String]) -> FakeCampusResponse {
         switch path {
+        case "/__fake/renew": setRenewMode(RenewMode(rawValue: q["mode"] ?? "page") ?? .page); return ok(["ok": true])
+        case "/__fake/session-life": if let s = q["seconds"].flatMap(Double.init) { setSessionLife(s) }; return ok(["ok": true])
+        case "/__fake/renewals": return ok(["renewals": renewalCount])
+        case "/__fake/session": return ok(["exp": sessionExpiry.map { Int($0.timeIntervalSince1970) } ?? 0, "renewals": renewalCount])
+        case "/__fake/google":
+            var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"
+            r.body = Data("<!doctype html><html><head><title>Stand-in account chooser</title></head><body style=\"font:15px -apple-system;margin:40px\"><h2>Choose an account</h2><p>Invented page of another site, for Conn's own checks. It waits for a click.</p><p><button id=\"pick\">person@example.test</button></p></body></html>".utf8)
+            return r
         case "/__fake/expire": expireLogin(); return ok(["ok": true])
         case "/__fake/starting": setStarting(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/signed-out-status":

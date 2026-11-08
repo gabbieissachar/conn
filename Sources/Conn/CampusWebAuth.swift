@@ -17,6 +17,8 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
     var kind: String { "cookie" }
     let apiView: WKWebView
     let signInView: WKWebView
+    /// The one cookie store the API view, the sign-in view and the silent refresh's hidden view share.
+    let store: WKWebsiteDataStore
     /// The store shows the sign-in sheet.
     var onSignIn: (() -> Void)?
     private var loaded = false
@@ -29,6 +31,7 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
     init(origin: URL, persistent: Bool) {
         self.origin = origin
         let store: WKWebsiteDataStore = persistent ? .default() : .nonPersistent()
+        self.store = store
         func config() -> WKWebViewConfiguration { let c = WKWebViewConfiguration(); c.websiteDataStore = store; return c }
         let apiCfg = config()
         let proxy = CampusStreamProxy()

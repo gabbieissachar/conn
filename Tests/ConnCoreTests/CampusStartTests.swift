@@ -34,14 +34,13 @@ private let growth = CampusSpace(kind: "team", folder: "growth-ops", displayName
     }
 
     @Test func aStartIsSentOnceAfterTheWindowAndTheNewConversationIsInTheRows() async throws {
-        let (s, _, world) = await liveStore(hold: 2.0)
+        let (s, _, world) = await liveStore(hold: 1.0)
         s.writesEnabled = true
         var made: [CampusConversation?] = []
         #expect(s.startConversation(in: mine, text: "  Plan the offsite dinner  ") { made.append($0) } == nil)
         #expect(s.held?.phase == .held && s.held?.conversationID == CampusStore.startKey(mine))
-        try await Task.sleep(nanoseconds: 100_000_000)
-        #expect(world.writes().isEmpty)                         // still inside the window
-        #expect(await until { s.held?.phase == .sent })
+        #expect(world.writes().isEmpty)                         // still inside the window: read right after the start, not after a pause a busy machine could stretch past it
+        #expect(await until(20) { s.held?.phase == .sent })
         let w = world.writes()
         #expect(w.count == 1 && w[0].hasPrefix("POST /api/spaces/private/default/conversations {") && w[0].contains("\"text\":\"Plan the offsite dinner\"") && w[0].contains("[Idempotency-Key: "))
         let c = try #require(made.first ?? nil)

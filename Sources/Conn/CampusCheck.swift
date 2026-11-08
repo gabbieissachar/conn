@@ -58,7 +58,7 @@ enum CampusCheck {
         let documentCookie = await js(auth.apiView, "document.cookie")
         let described = String(describing: campus.conversations) + String(describing: campus.openForms) + String(describing: campus.timelines)
         report("Campus: the cookie never reaches Conn: it is HttpOnly (the page cannot read it) and no Conn-side data holds it",
-               documentCookie.isEmpty && !described.contains("fake-session-not-a-secret") && !(HTTPCookieStorage.shared.cookies ?? []).contains { $0.name == "campus_session" && $0.domain.contains("127.0.0.1") },
+               documentCookie.isEmpty && !described.contains("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0") && !(HTTPCookieStorage.shared.cookies ?? []).contains { $0.name == "campus_session" && $0.domain.contains("127.0.0.1") },
                "document.cookie='\(documentCookie)'")
 
         // 3. Rows, marks, order, counts.
@@ -163,6 +163,8 @@ enum CampusCheck {
         await starChecks(model: model, report: report, wait: wait, until: until, shot: shot)
 
         await bridgeChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
+
+        await renewalChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
 
         model.campusSelectedID = nil
         // Leave Watch as it was found: the checks after this one open it again and must not meet a Campus column.

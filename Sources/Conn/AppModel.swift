@@ -56,6 +56,10 @@ final class AppModel: ObservableObject {
     let campusStars: CampusStarStore
     /// The agent bridge (S2): leaders ask Campus through Conn. Off at every launch; nil when Campus is not part of this launch.
     let campusBridge: BridgeEngine?
+    /// The silent session refresh (J7=a): knows when the Campus session ends and, about five minutes before, signs in again by itself in a hidden web view when
+    /// Google and Campus finish it unaided; otherwise says "sign in again". nil when Campus is not part of this launch.
+    let campusKeeper: CampusSessionKeeper?
+    let campusRenewal: CampusSilentRenewal?
     /// Asking before the "Agent bridge" switch goes on, and the activity sheet.
     @Published var campusConfirmBridge = false
     @Published var campusBridgeActivityShown = false
@@ -249,6 +253,8 @@ final class AppModel: ObservableObject {
         // A fixture launch keeps its Campus stars apart from the real ones (as it does the reader's chip order).
         campusStars = CampusStarStore(defaults: AppModel.defaults, key: config.fixture ? "conn.campusStars.fixture" : "conn.campusStars")
         campusBridge = config.campusEnabled ? AppModel.makeBridge(config: config, env: env, store: campus) : nil
+        campusRenewal = campusAuth.map { CampusSilentRenewal(origin: config.campusBase, store: $0.store) }
+        campusKeeper = campusRenewal.map { CampusSessionKeeper(renewer: $0, log: AppModel.makeRenewalLog(config: config)) }
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
@@ -977,6 +983,7 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         campusBridge?.shutdown()
+        campusKeeper?.stop()
         campus.stop(); store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()
     }
 }

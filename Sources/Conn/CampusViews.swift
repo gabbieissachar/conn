@@ -38,6 +38,8 @@ struct CampusSection: View {
                     case .starting where campus.conversations.isEmpty: starting
                     default:
                         if expired { expiredNote }
+                        // The silent refresh could not finish on its own: the session still works, but only a sign-in will keep it going.
+                        if !expired, campus.link == .live, let keeper = app.campusKeeper { CampusRenewNote(keeper: keeper) }
                         if case .unreachable(let why) = campus.link { note(title: "Campus is not reachable", text: why, error: true, signIn: true) }
                         if !(expired && campus.conversations.isEmpty) { content(dim: expired) }
                     }
@@ -177,6 +179,60 @@ struct CampusSection: View {
         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
         .background((error ? AgentState.blocked.color : Color.primary).opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .padding(.horizontal, 4)
+    }
+}
+
+/// "Campus: sign in again": the hidden attempt to renew the session ran into a page that needs the person (Google waiting for a click or an account, Campus's own
+/// login page), so Conn stopped. The session still works until it ends; the normal Sign in action is the way on.
+struct CampusRenewNote: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var keeper: CampusSessionKeeper
+
+    var body: some View {
+        if keeper.needsSignIn {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Campus: sign in again").font(.system(size: 12, weight: .semibold))
+                Text("Conn could not renew your Campus sign-in on its own\(keeper.expiry.map { ", so it ends at \(CampusTime.clock($0))" } ?? ""). Sign in again to keep your conversations live. The sign-in stays in Conn's own web view and nothing is copied out of it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Sign in to Campus") { app.signInToCampus() }.controlSize(.small).accessibilityIdentifier("campus-renew-signin")
+            }
+            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            .background(AgentState.blocked.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AgentState.blocked.color.opacity(0.35)))
+            .padding(.horizontal, 4).padding(.vertical, 4)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("campus-renew-note")
+        }
+    }
+}
+
+/// Settings: when the session ends and what the last silent refresh came to.
+struct CampusSessionSettingsSection: View {
+    @ObservedObject var keeper: CampusSessionKeeper
+
+    static func lastText(_ a: CampusRenewalAttempt?) -> String {
+        guard let a = a else { return "No silent refresh yet. Conn tries about 5 minutes before the session ends." }
+        var s = "\(CampusTime.stamp(a.at)): \(a.outcome.label)"
+        if a.outcome == .renewed, let n = a.newExpiry { s += ", the session now ends at \(CampusTime.stamp(n))" }
+        if a.outcome == .needsSignIn { s += ", sign in again" }
+        return s
+    }
+
+    var body: some View {
+        Section("Campus session") {
+            HStack {
+                Text("Session ends")
+                Spacer()
+                Text(keeper.expiry.map { CampusTime.stamp($0) } ?? "no session in Conn's web view").foregroundStyle(.secondary).accessibilityIdentifier("campus-session-ends")
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Last silent refresh")
+                Spacer()
+                Text(keeper.attempting ? "trying now…" : Self.lastText(keeper.lastAttempt)).foregroundStyle(.secondary).multilineTextAlignment(.trailing).accessibilityIdentifier("campus-session-last")
+            }
+            Text("About 5 minutes before the session ends Conn opens Campus's own sign-in in a hidden web view that shares its sign-in. If Google and Campus finish it without asking you anything, the session carries on. If any page needs a click, an account or a password, Conn stops there and the CAMPUS section says to sign in again. Conn never clicks, types or answers anything in that view, and never writes the sign-in token anywhere: the log (Application Support, Conn, campus, session-refresh.log) holds times and outcomes only.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -338,6 +394,7 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if campus.link == .disabled { Text("Campus is not part of this launch.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            if let k = app.campusKeeper { CampusSessionSettingsSection(keeper: k) }
             if let b = app.campusBridge { BridgeSettingsSection(bridge: b) }
             Section("Starred conversations") {
                 HStack {
@@ -349,6 +406,6 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .formStyle(.grouped).frame(width: 520, height: 640)
+        .formStyle(.grouped).frame(width: 520, height: 760)
     }
 }
