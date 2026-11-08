@@ -155,8 +155,12 @@ function main(argv) {
   const httpsHost = option('--https-host', '');
   const https_ = httpsHost ? { host: httpsHost, port: Number(option('--https-port', '8443')), certFile: option('--cert-file', ''), keyFile: option('--key-file', '') } : null;
   if (https_ && (!tailnetIp || !Number.isInteger(https_.port) || https_.port < 1 || https_.port > 65535)) { process.stderr.write('--https-host needs --tailnet-ip and a valid --https-port\n'); process.exit(2); }
-  start({ root, port, tailnet: tailnetIp ? { ip: tailnetIp, passcodeFile, ...(https_ ? { https: https_ } : {}) } : null }).then((server) => {
+  // The store-backed API (storeapi/, S2): off unless PMOS_READER_STORE_API=1. PMOS_READER_STORE_DIR names the store's folder (the owner's default
+  // otherwise); PMOS_READER_STORE_API_COMPAT=1 also keeps out/pane-labels.json and glance.json current from it (the compatibility writers).
+  const storeApi = process.env.PMOS_READER_STORE_API === '1' ? { compat: process.env.PMOS_READER_STORE_API_COMPAT === '1' ? { writeGlance: true } : false } : null;
+  start({ root, port, tailnet: tailnetIp ? { ip: tailnetIp, passcodeFile, ...(https_ ? { https: https_ } : {}) } : null, ...(storeApi ? { storeApi } : {}) }).then((server) => {
     process.stdout.write(`Transcript reader serving ${root} on http://localhost:${port}\n`);
+    if (storeApi) process.stdout.write(`Store API: on (windowed page at /setup/transcript-reader/windowed/index.html)\n`);
     if (server.tailnet) process.stdout.write(`Tailnet: also serving http://${server.tailnet.ip}:${server.tailnet.port}, passcode required\n`);
     else if (tailnetIp) process.stdout.write(`Tailnet: not served, ${server.tailnetError}\n`);
     if (server.tailnet && server.tailnet.https) process.stdout.write(`Tailnet HTTPS: https://${server.tailnet.https.host}:${server.tailnet.https.port}, passcode required, certificate valid until ${new Date(server.tailnet.https.expires * 1000).toISOString().slice(0, 10)}\n`);

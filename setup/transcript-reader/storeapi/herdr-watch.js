@@ -60,6 +60,8 @@ function createPaneWatch({
     const snapshot = answer && answer.result && answer.result.snapshot;
     if (!snapshot) return false;
     const read = readSnapshot(name, snapshot);
+    const titles = new Map((snapshot.panes || []).map((pane) => [pane.pane_id, typeof pane.terminal_title_stripped === 'string' ? pane.terminal_title_stripped : null]));
+    for (const pane of read.panes) pane.title = titles.get(pane.pane_id) || null;
     const before = JSON.stringify([entry.focused, entry.panes]);
     entry.focused = read.focused;
     entry.panes = read.panes;

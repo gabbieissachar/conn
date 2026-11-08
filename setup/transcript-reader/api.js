@@ -212,6 +212,9 @@ const permissionsLib = require('./permissions');
 const permLogLib = require('./permlog');
 const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
+const { createStoreApi } = require('./storeapi');
+const { createPaneWatch } = require('./storeapi/herdr-watch');
+const WINDOWED_PAGE = '/setup/transcript-reader/windowed/index.html';
 
 const API = '/api/transcript-reader/';
 const PAGES = new Set(['prototype.html', 'questionnaire.html', 'live/index.html', 'live/sheet.html', 'live/embed.html', 'hosted/index.html', 'hosted/sheet.html', 'bucket/index.html', 'bucket/sheet.html']);
@@ -527,6 +530,11 @@ function create({
   board: boardOption,
   // Claude's permission asks answered from the page (permissions.js): true or an options object turns it on (the default follows PMOS_READER_PERMISSIONS=1).
   permissions: permissionsOption,
+  // The store-backed API (S2, storeapi/): off unless this is set (server.js sets it from PMOS_READER_STORE_API). { store, watch, compat }: the
+  // store's folder or file, Herdr watch timings, and whether the compatibility writers keep out/pane-labels.json (and glance.json) current.
+  // With it on, Herdr is watched through its event stream instead of read on a timer, the routes in storeapi/index.js answer, and the windowed
+  // lite page is served. Every old route and page is unchanged.
+  storeApi: storeApiOption = null,
 } = {}) {
   const projectsDir = projectsOption || path.join(os.homedir(), '.claude', 'projects');
   const claudeSessionsDir = claudeSessionsOption || path.join(os.homedir(), '.claude', 'sessions');
@@ -546,6 +554,7 @@ function create({
   const guardFor = (req) => guards.get(req) || guard;
   // The answer to a request the guard refused: the short page for a tab opening the address, otherwise plain(), the route's own answer.
   const refused = (req, res, verdict, plain) => tailnetLane.refuse(req, res, verdict, guardFor(req).origin, plain);
+  const listeners = new WeakMap();  // the listener each request came in on, for the phone's scope (W3)
   const readerScript = path.join(root, 'setup', 'transcript-reader', 'reader.py');
   const copy = copyId(root);
   const runEnv = () => childEnv(env);
@@ -566,6 +575,14 @@ function create({
   stars.normalize();  // a stars file from before is oldest first; Conn's row reads the file as it stands, and the newest star goes first
   const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });
   const hidden = pinstore.createHidden({ file: hiddenFile, now });
+  // The store API's own object (routes, stream, compatibility writers), made once the stars store it reads exists.
+  const paneWatch = storeApiOption ? createPaneWatch({
+    runner, herdrBin, env, readSnapshot, runEnv: () => runEnv(), sessionNameOk: (name) => SESSION_NAME_RE.test(name), ...(storeApiOption.watch || {}),
+  }) : null;
+  const storeApi = storeApiOption ? createStoreApi({
+    store: storeApiOption.store || {}, env, now, outDir, watch: paneWatch, stars, send, fail, RequestError, compatWrite: storeApiOption.compat || false,
+    pageSource: () => storeApiPage(), pollMs: storeApiOption.pollMs,
+  }) : null;
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
   // A reader that runs for real (watch: server.js turns it on) remembers each board on disk and reads them all once at start (board.js says why); a test's does not.
@@ -737,6 +754,7 @@ function create({
   // Every running named Herdr session with its focused pane and agent panes.
   // Read-only: `herdr session list --json` and `herdr --session <name> api snapshot`.
   async function scan({ fresh = false, maxAge = 0 } = {}) {
+    if (paneWatch) return scanFromWatch(fresh);
     if (!fresh && scanned && now() - scanned.at < SCAN_TTL_MS) return scanned.sessions;
     if (!fresh && maxAge && scanned && now() - scanned.at < maxAge) {
       if (!scanning) scan().catch(() => {});  // the reading the next call sees
@@ -759,6 +777,42 @@ function create({
       return sessions;
     })().finally(() => { scanning = null; });
     return scanning;
+  }
+
+
+  // With the store API on, Herdr is not read on a timer: storeapi/herdr-watch.js holds its panes from events.subscribe (and a reconcile read a
+  // minute), and the pane of a session is the store's live binding when there is one (S1's identity: a liveness-checked fact), else what
+  // Herdr says. The same checks as always (checkSessions) then run, but only when the panes or the bindings changed, not at each poll.
+  let watchStarted = null;
+  let watched = null;
+  const ensureWatch = () => (watchStarted || (watchStarted = paneWatch.start().catch(() => {})));
+
+  function bindingPanes() {
+    const found = new Map();
+    if (!storeApi) return found;
+    try { for (const binding of storeApi.store.liveBindings()) found.set(binding.herdr_session + '|' + binding.pane_id, binding); } catch { /* no store: Herdr alone says */ }
+    return found;
+  }
+
+  async function scanFromWatch(fresh) {
+    await ensureWatch();
+    if (fresh) await paneWatch.reconcile();
+    const bindings = bindingPanes();
+    const key = paneWatch.version + '|' + [...bindings.values()].map((b) => b.herdr_session + b.pane_id + b.session_id).sort().join(',');
+    if (watched && watched.key === key && !fresh) { scanned = { at: now(), sessions: watched.sessions, rollouts: rolloutsOnce() }; return watched.sessions; }
+    const rollouts = rolloutsOnce();
+    const sessions = [];
+    for (const raw of paneWatch.sessions()) {
+      const session = { name: raw.name, focused: raw.focused, panes: raw.panes.map((pane) => ({ pane_id: pane.pane_id, session_id: pane.session_id, agent: pane.agent, status: pane.status, label: pane.label })) };
+      for (const pane of session.panes) {
+        const binding = bindings.get(session.name + '|' + pane.pane_id);
+        if (binding && (!raw.life || !binding.life || raw.life === binding.life)) pane.session_id = binding.session_id;
+      }
+      sessions.push(await checkSessions(session, rollouts));
+    }
+    watched = { key, sessions };
+    scanned = { at: now(), sessions, rollouts };
+    return sessions;
   }
 
   // pid -> session id of every running Claude Code process, from the record each keeps in
@@ -1150,6 +1204,8 @@ function create({
     permissions.close();
     stopWatching();
     if (readerWorker) readerWorker.stop();
+    if (storeApi) storeApi.close();
+    if (paneWatch) paneWatch.stop();
   }
 
   // A listed conversation whose pane now runs a session that is not listed (a /clear, a /new, an agent started again in the pane), by the
@@ -1805,6 +1861,26 @@ function create({
     res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
   }
 
+  // The windowed lite page (storeapi/page.js), served like any page: only to a browser tab opening it, with the per-start token written in.
+  const storeApiPage = () => require('./storeapi/page').build(root);
+  function serveWindowedPage(req, res) {
+    const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
+    const verdict = guardFor(req).check(req, { requireToken: false });
+    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (req.method !== 'GET') { text(405, 'GET only'); return; }
+    const mode = req.headers['sec-fetch-mode'];
+    const dest = req.headers['sec-fetch-dest'];
+    if ((mode !== undefined && mode !== 'navigate') || (dest !== undefined && dest !== 'document')) { text(403, 'Open this page in its own browser tab.'); return; }
+    let html;
+    try { html = storeApi.pageHtml(); } catch { html = null; }
+    if (!html) { text(404, 'Not found'); return; }
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin', [COPY_HEADER]: copy,
+    });
+    res.end(html.replace(TOKEN_META, () => TOKEN_META.replace(TOKEN_SLOT, guard.token)));
+  }
+
   // The service worker, manifest and icons beside a copy's shell pages: not secret, but behind the same Host, Origin and (on the tailnet) sign-in checks.
   function serveStatic(req, res, folder, name) {
     const verdict = guardFor(req).check(req, { requireToken: false });
@@ -1859,6 +1935,12 @@ function create({
   async function dispatch(req, res, pathname, query) {
     const verdict = guardFor(req).check(req);
     if (!verdict.ok) { refused(req, res, verdict, () => fail(res, verdict.status, 'refused', verdict.message)); return; }
+    if (storeApi && storeApi.claims(pathname, API)) {
+      const listener = listeners.get(req) || 'loopback';
+      await ensureWatch();
+      storeApi.handle(req, res, pathname, query, { api: API, remote: listener !== 'loopback' });
+      return;
+    }
     if (pathname === API + 'page' && req.method === 'GET') {
       const name = query.get('name');
       if (!PAGES.has(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
@@ -2085,15 +2167,17 @@ function create({
     if (url.pathname === API + 'permission-ask') { permissionAsk(req, res, listener); return true; }
     const page = insideOut(req, url);
     const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
+    listeners.set(req, listener);
+    const windowed = Boolean(storeApi) && url.pathname === WINDOWED_PAGE;
     if (listener === 'tailnet' || listener === 'tailnet-https') {
       const lanes = listener === 'tailnet' ? lane : httpsLane;
       if (!lanes) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
-      const asksForBoard = boardPage && boardTailnet && listener === 'tailnet-https';
-      if (lanes.intercept(req, res, url, (page.inside && page.name.endsWith('.html')) || asksForBoard, viewing)) return true;
+      if (lanes.intercept(req, res, url, (page.inside && page.name.endsWith('.html')) || asksForBoard || windowed, viewing)) return true;
       guards.set(req, lanes.guard);
       if (asksForBoard) { serveBoardPage(req, res); return true; }
     }
     if (viewing) { serveView(req, res); return true; }
+    if (windowed) { serveWindowedPage(req, res); return true; }
     if (page.inside) {
       const folder = Object.keys(OBJECTS).find((name) => page.name.startsWith(name + path.sep));
       if (folder && Object.hasOwn(STATIC_TYPES, page.name.slice(folder.length + 1))) serveStatic(req, res, folder, page.name.slice(folder.length + 1));
@@ -2110,7 +2194,10 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane, permissions, publishHook: (port) => permissions.publishHook(port) };
+  // The compatibility writers need Herdr watched from the start, not from the first page that asks.
+  if (storeApi && storeApiOption.compat) ensureWatch();
+
+  return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane, permissions, publishHook: (port) => permissions.publishHook(port), storeApi };
 }
 
 module.exports = { create, readSnapshot, canonicalSessionId, otherClaudeHomes, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };

@@ -151,13 +151,14 @@ class StoreReader {
       MAX(CASE WHEN reply <> '' THEN idx END) AS last_reply_any FROM v1_turns WHERE session_id = ?`, id);
   }
 
-  // The open asks of a session: replies that need the captain with nothing from the captain after them (build_prototype.mark_asks: "open"
-  // is exactly that; a later message of yours makes it quiet, and settled, which only changes a quiet one, never an open one).
+  // The open asks of a session: replies that need the captain with no message from the captain in a LATER turn (build_prototype.mark_asks:
+  // "open" is exactly that; a later message of yours makes it quiet, and settled only changes a quiet one, never an open one). A turn is an
+  // exchange, a message of yours and the reply to it, so the reply to your newest message is after it and stays open.
   openAsks(id) {
     const marks = this.marks(id);
     if (!marks || marks.total === 0) return [];
     const floor = marks.last_captain === null ? -1 : marks.last_captain;
-    return this.all(`SELECT v.idx, v.uid, v.at, v.reply_at, v.asks, v.verdict FROM v1_turns v WHERE v.session_id = ? AND v.verdict = 'needs-you' AND v.idx > ? ORDER BY v.idx ASC`, id, floor)
+    return this.all(`SELECT v.idx, v.uid, v.at, v.reply_at, v.asks, v.verdict FROM v1_turns v WHERE v.session_id = ? AND v.verdict = 'needs-you' AND v.idx >= ? ORDER BY v.idx ASC`, id, floor)
       .map((row) => ({ idx: row.idx, uid: row.uid, at: row.reply_at || row.at, asks: json(row.asks, []) }));
   }
 
