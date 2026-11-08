@@ -79,6 +79,35 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(/Answering on the card is off/.test(sheet) && !/Record this answer/.test(sheet), 'answering is off and says so');
     check(ev(`return [...document.querySelectorAll('.th-item.reply .why')].some(w => w.textContent === 'mention');`), 'the thread says why a reply is there');
     check(!ev(`return !!document.querySelector('.th-item .mk');`), 'marking is off: no mark buttons');
+    // round 4, item 5: every tag on a reply explains itself, and a small legend says what each means
+    check(ev(`const w = [...document.querySelectorAll('.th-item.reply .why')].find(x => x.textContent === 'mention'); return !!w && /names the task id/.test(w.title);`), 'a reply tag has a plain tooltip');
+    const legend = ev(`const d = document.querySelector('.sheet details.legend'); if (!d) return null; d.open = true; return [...d.querySelectorAll('dt')].map(x => x.textContent);`);
+    check(legend && ['mention', 'command', 'pointer', 'wake'].every((k) => legend.includes(k)) && legend.some((k) => /^roundup/.test(k)) && legend.includes('keyed'), 'a legend lists mention, command, pointer, wake, roundup and keyed', JSON.stringify(legend));
+    // round 4, item 2: Back and Next (and the arrow keys) walk the cards of this column as shown
+    const nav = () => ev(`const s = document.querySelector('.sheet'); const b = [...s.querySelectorAll('.navbtn')]; return { ref: s.querySelector('.sh-ref').textContent, pos: (s.querySelector('.sh-nav .pos') || {}).textContent, back: b[0] && !b[0].disabled, next: b[1] && !b[1].disabled, order: window.__board.S.order.needs };`);
+    let at = nav();
+    check(/^\d+ of \d+ in Needs you$/.test(at.pos) && at.order.includes(at.ref), 'the sheet says where it is in its column', JSON.stringify(at));
+    ev(`window.__board.S.open = null; document.getElementById('layer').textContent = ''; return true;`);
+    ev(`window.__board.jumpTo(window.__board.S.order.needs[0]); return true;`);
+    await until(`return { ok: !!document.querySelector('.sheet .navbtn') };`, 'the first card of the column');
+    at = nav(); const order = at.order;
+    check(at.ref === order[0] && !at.back && (order.length < 2 || at.next), 'on the first card Back is off and Next is on', JSON.stringify(at));
+    if (order.length > 1) {
+      ev(`document.querySelector('.sheet .navbtn[data-nav="\u2192"]').click(); return true;`);
+      check(nav().ref === order[1], 'Next opens the next card');
+      ev(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); return true;`);
+      check(nav().ref === order[0], 'the left arrow goes back');
+      ev(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return true;`);
+      check(nav().ref === order[1], 'the right arrow goes on');
+      ev(`const i = document.querySelector('.sheet .other input') || document.querySelector('.sheet input, .sheet textarea'); if (!i) return false; i.focus(); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return true;`);
+      check(nav().ref === order[1], 'arrow keys typed in a text box never change the card');
+      ev(`document.activeElement && document.activeElement.blur(); window.__board.jumpTo(window.__board.S.order.needs[window.__board.S.order.needs.length - 1]); return true;`);
+      await sleep(300);
+      at = nav(); check(at.next === false && at.back === true, 'on the last card Next is off', JSON.stringify(at));
+    }
+    ev(`window.__board.S.open = null; document.getElementById('layer').textContent = ''; return true;`);
+    ev(`window.__board.jumpTo('alpha-route', 'Z1'); return true;`);
+    await until(`return { ok: !!document.querySelector('.sheet .callbox') };`, 'the sheet again');
     check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at desktop width');
     // a long worker name: cut with an ellipsis inside its chip, the same padding as the others, the whole name in the tooltip
     const chip = ev(`const sl = document.getElementById('sessline'), b = document.createElement('button'), s = document.createElement('span'); b.className = 'sess worker'; s.className = 'sl'; s.textContent = '2026-11-06-esim-listing-output-sync-run-with-a-very-long-tail'; b.title = s.textContent; b.append(s); sl.append(b); const r = b.getBoundingClientRect(), pad = getComputedStyle(b).paddingLeft; const o = sl.querySelector('.sess:not(.worker)'); return { cut: s.scrollWidth > s.clientWidth, ell: getComputedStyle(s).textOverflow, w: Math.round(r.width), pad, pad0: o ? getComputedStyle(o).paddingLeft : pad, tip: b.title.length > 40 };`);

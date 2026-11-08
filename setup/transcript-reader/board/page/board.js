@@ -21,7 +21,7 @@
   const S = {
     sessions: [], session: null, board: null, write: { marks: false, answer: false }, loadedAt: 0, error: null, loading: false,
     project: "all", q: "", col: "needs", open: null, grouped: true, shut: {}, barOpen: false, workersOpen: false,
-    drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {},
+    drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {}, order: {},
   };
   const items = () => (S.board ? S.board.items : []);
   const byRef = () => Object.fromEntries(items().map((t) => [t.ref, t]));
@@ -198,7 +198,7 @@
     renderBar(); renderBanners(); renderWorkers();
     const colsEl = $("cols"), colbar = $("colbar");
     const keep = {}; document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b) keep[c.dataset.col] = b.scrollTop; });
-    colsEl.textContent = ""; colbar.textContent = "";
+    colsEl.textContent = ""; colbar.textContent = ""; S.order = {};
     if (!S.board) { colsEl.append(el("div", "loading", S.error ? "Nothing to show yet." : "Reading the fleet... the first read of a session takes about fifteen seconds.")); $("upkeep").hidden = true; return; }
     const cols = S.board.columns, ph = phone();
     if (!cols.some((c) => c.id === S.col)) S.col = "needs";
@@ -222,6 +222,7 @@
       else if (col.id === "done") list.sort((a, b) => (b.done_date || "").localeCompare(a.done_date || "")).forEach((x) => body.append(card(x)));
       else list.forEach((x) => body.append(card(x)));
       c.append(body); colsEl.append(c);
+      S.order[col.id] = [...body.querySelectorAll(".card[data-ref]")].map((n) => n.dataset.ref);  // the cards as shown (groups and sort included): what Back and Next walk
     });
     document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b && keep[c.dataset.col]) b.scrollTop = keep[c.dataset.col]; });
     renderUpkeep(); requestAnimationFrame(updateOverflow);
@@ -279,22 +280,44 @@
   }
 
   /* ---- the thread ---- */
+  /* What each tag on a reply says, in plain words: its tooltip, and the legend under the thread's heading. The tags come from board/tagger.py. */
+  const TAGS = [
+    { name: "mention", test: (w) => w === "mention", tip: "The reply names the task id." },
+    { name: "command", test: (w) => w === "command", tip: "The turn's own tool calls name the task (for example a message sent to its worker)." },
+    { name: "pointer", test: (w) => w === "pointer", tip: "The reply points at the task's files, its branch or PR, or its own review board." },
+    { name: "wake", test: (w) => w === "wake", tip: "The wake-up that started this turn named the task." },
+    { name: "signal", test: (w) => w === "signal", tip: "The reader tied the wake-up that started this turn to the task." },
+    { name: "roundup: N tasks", test: (w) => /^roundup: \d+ tasks$/.test(w), tip: "A reply about several tasks at once. It sits on each of their cards, so it says little about any one of them." },
+    { name: "keyed", test: (w) => /^keyed /.test(w), tip: "A call key (like R2) that only this task carries appears in the reply. A weak hint." },
+    { name: "title / id words", test: (w) => /^(title|id) words: /.test(w), tip: "Rare words of the task's title or id appear in the reply. A weak hint, so it only counts when three id words match." },
+    { name: "named in a sweep", test: (w) => /^named in a sweep/.test(w), tip: "The task id is one of many in a long list. Weak, so the reply stays off the card unless you mark it." },
+    { name: "you marked it", test: (w) => /^you marked it/.test(w), tip: "You put this reply on (or took it off) this card yourself." },
+    { name: "this worker's own session", test: (w) => w === "this worker's own session", tip: "A worker board: every reply in the worker's own session is about its task." },
+  ];
+  const tagTip = (w) => { const t = TAGS.find((x) => x.test(w)); return t ? t.tip : ""; };
+  function whyChip(text, cls) { const c = el("span", "why " + cls, text), tip = tagTip(text); if (tip) c.title = tip; return c; }
+  function tagLegend() {
+    const d = el("details", "legend"); d.append(el("summary", "", "What the tags on a reply mean"));
+    const dl = el("dl"); TAGS.filter((t) => t.name !== "title / id words" && t.name !== "named in a sweep").concat(TAGS.filter((t) => t.name === "title / id words")).forEach((t) => { dl.append(el("dt", "", t.name), el("dd", "", t.tip)); });
+    d.append(dl, el("p", "hint", "Solid tags are exact (the rules are sure the reply is about this task). Dashed cards are possible matches: say yes or no and the board learns it."));
+    return d;
+  }
   function threadItem(t, it) {
     const box = el("div", "th-item " + (it.k === "reply" ? "reply" + (it.lvl === "possible" ? " possible" : "") + (it.lvl === "out" ? " out" : "") : "you" + (it.req ? " possible" : ""))); box.dataset.key = it.key || "";
     const h = el("div", "th-h"); h.append(el("span", "who", it.k === "reply" ? S.board.session.label : "you"), el("span", "", it.hm));
     const mk = (text, mark, yes) => { const b = el("button", "mk" + (yes ? " yes" : ""), text); b.type = "button"; b.onclick = () => sendMark(t.ref, it.key, mark); return b; };
     if (it.k === "reply") {
-      (it.why || []).forEach((w) => h.append(el("span", "why " + (it.lvl === "sure" || it.lvl === "marked" ? "sure" : it.lvl === "out" ? "out" : "poss"), w)));
-      if (it.n >= 3) h.append(el("span", "why round", "roundup: " + it.n + " tasks"));
+      (it.why || []).forEach((w) => h.append(whyChip(w, it.lvl === "sure" || it.lvl === "marked" ? "sure" : it.lvl === "out" ? "out" : "poss")));
+      if (it.n >= 3) h.append(whyChip("roundup: " + it.n + " tasks", "round"));
       h.append(el("span", "sp"));
       if (S.write.marks) {
         if (it.lvl === "out") h.append(mk("Put it back", "clear", true));
         else { if (it.lvl === "possible") h.append(mk("Yes, this task", "in", true)); h.append(it.lvl === "marked" ? mk("Withdraw mark", "clear") : mk("Not this task", "out")); }
       }
     } else if (it.req) {
-      h.append(el("span", "why poss", "your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later")), el("span", "sp"));
+      const rq = el("span", "why poss", "your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later")); rq.title = "Your message with no reply above it, sent shortly before this task started. A possible match: say yes or no."; h.append(rq, el("span", "sp"));
       if (S.write.marks) { h.append(mk("Yes, this task", "in", true), mk("Not this task", "out")); }
-    } else { if (it.how) h.append(el("span", "why", it.how)); h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
+    } else { if (it.how) { const hw = el("span", "why", it.how); hw.title = /^keyed /.test(it.how) ? "Your message uses a call key (like R2) from the reply above it." : it.how === "answer sheet" ? "Your comment from an answer sheet, tied to the reply it quotes." : it.how === "next message" ? "Your message right after this reply." : /^you marked/.test(it.how) ? "You put this message on this card yourself." : it.how; h.append(hw); } h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
     const link = readerLink(it.link); if (link) { const a = el("a", "open-link", "open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; h.append(a); }
     box.append(h);
     if (it.part) box.append(el("div", "th-part", "on: " + it.part));
@@ -303,6 +326,7 @@
   }
   function threadSection(t) {
     const sec = el("div", "sec"); sec.dataset.call = "thread"; sec.append(el("h4", "", "Thread"));
+    if ((S.board.threads || {}).status === "ok" && t.thread.length) sec.append(tagLegend());
     const th = S.board.threads || {};
     if (th.status && th.status !== "ok") { sec.append(el("div", "th-empty", "Reply threads are off: " + (th.message || th.status) + ".")); return sec; }
     if (!t.thread.length) {
@@ -434,7 +458,7 @@
     const cr = el("button", "copy", "Copy ref"); cr.type = "button"; cr.onclick = () => copy(t.ref, "reference");
     const cl = el("button", "copy", "Copy link"); cl.type = "button"; cl.onclick = () => copy(location.origin + location.pathname + "#s=" + encodeURIComponent(S.session) + "&t=" + encodeURIComponent(t.ref), "link");
     const x = el("button", "x", "✕"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.onclick = closeSheet;
-    row.append(x, cr, cl); head.append(row); head.append(el("div", "sh-title", t.title));
+    row.append(x, cr, cl); head.append(row); head.append(navRow(t)); head.append(el("div", "sh-title", t.title));
     const top = el("div", "c-top"); chips(t, top); const cn = S.board.columns.find((c) => c.id === t.col);
     top.append(el("span", "chip " + (t.col === "needs" ? "warn" : ["ready", "review", "pr", "done"].includes(t.col) ? "ok" : ""), cn ? cn.name : t.col)); head.append(top); sh.append(head);
     const body = el("div", "sh-body");
@@ -463,8 +487,29 @@
     if (t.blocked_by.length) { const w = el("span"); const refs = byRef(); t.blocked_by.forEach((r, i) => { if (i) w.append(", "); if (refs[r]) { const b = el("button", "linkbtn", r); b.type = "button"; b.onclick = () => jumpTo(r); w.append(b); } else w.append(r); }); add("Blocked by", w); }
     const sec = el("div", "sec"); sec.append(el("h4", "", "Details"), kv); body.append(sec);
     sh.append(body); L.append(sh);
+    document.querySelectorAll(".card.current").forEach((n) => n.classList.remove("current"));
+    const cur = document.querySelector('.col [data-ref="' + CSS.escape(t.ref) + '"]'); if (cur) cur.classList.add("current");
     if (S.open.scrollTo) { const n = body.querySelector('[data-call="' + S.open.scrollTo + '"]'); if (n) { n.scrollIntoView({ block: "start" }); n.classList.add("flash"); } S.open.scrollTo = null; }
     if (S.open.keepScroll != null) { body.scrollTop = S.open.keepScroll; S.open.keepScroll = null; }
+  }
+  /* Back and Next walk the cards of this card's column as the board shows them now (its filters, its groups, its sort); arrow keys do the same. */
+  function neighbours(t) {
+    const list = (S.order && S.order[t.col]) || [], i = list.indexOf(t.ref);
+    return i < 0 ? null : { i, n: list.length, prev: i > 0 ? list[i - 1] : null, next: i < list.length - 1 ? list[i + 1] : null };
+  }
+  function navRow(t) {
+    const nb = neighbours(t), row = el("div", "sh-nav");
+    const cn = S.board.columns.find((c) => c.id === t.col), colName = cn ? cn.name : t.col;
+    if (!nb) { row.append(el("span", "pos", "Not in " + colName + " with the filters now on")); return row; }
+    const mk = (text, ref, label, key) => { const b = el("button", "navbtn", text); b.type = "button"; b.disabled = !ref; b.setAttribute("aria-label", label); b.title = label + " (" + key + ")"; b.dataset.nav = key; b.onclick = () => stepSheet(ref); return b; };
+    row.append(mk("\u2039 Back", nb.prev, "Previous card in " + colName, "\u2190"), el("span", "pos", (nb.i + 1) + " of " + nb.n + " in " + colName), mk("Next \u203a", nb.next, "Next card in " + colName, "\u2192"));
+    return row;
+  }
+  function stepSheet(ref) {
+    if (!ref || !byRef()[ref]) return;
+    S.open = { ref, scrollTo: null }; S.confirm = null; renderSheet();
+    const body = document.querySelector(".sh-body"); if (body) body.scrollTop = 0;
+    const node = document.querySelector('.col [data-ref="' + CSS.escape(ref) + '"]'); if (node) node.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   function openSheet(ref, callId) { S.open = { ref, scrollTo: callId || null }; render(); }
   function closeSheet() { S.open = null; S.confirm = null; $("layer").textContent = ""; }
@@ -487,7 +532,16 @@
   $("find").addEventListener("input", (e) => { S.q = e.target.value.trim(); const r = parseRef(S.q); if (r && (S.q === r.ref || S.q.includes("#") || S.q.includes("/"))) { S.q = ""; jumpTo(r.ref, r.call); return; } render(); });
   $("find").addEventListener("keydown", (e) => { if (e.key === "Enter") { const r = parseRef($("find").value); if (r) { S.q = ""; jumpTo(r.ref, r.call); } } });
   $("bar-toggle").onclick = () => { S.barOpen = $("bar").classList.contains("collapsed"); renderBar(); };
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.open) closeSheet(); });
+  document.addEventListener("keydown", (e) => {
+    if (!S.open) return;
+    if (e.key === "Escape") { closeSheet(); return; }
+    if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+    const a = document.activeElement, typing = a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable);
+    if (typing) return;  // arrows move the caret in a text box, never the card
+    const t = byRef()[S.open.ref], nb = t && neighbours(t); if (!nb) return;
+    const ref = e.key === "ArrowLeft" ? nb.prev : nb.next; if (!ref) return;
+    e.preventDefault(); stepSheet(ref);
+  });
   let wasPhone = phone();
   $("cols").addEventListener("scroll", updateOverflow, { passive: true });
   window.addEventListener("resize", () => { renderBar(); if (wasPhone !== phone()) { wasPhone = phone(); render(); } else updateOverflow(); });

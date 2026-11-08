@@ -385,3 +385,22 @@ a.open-link { color: var(--you); text-decoration: underline; }
 .sessline .sess .sl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sessline .sess .n { flex: none; }
 .sessline .sess::before { flex: none; }
+
+/* Back and Next through the cards of the open card's column */
+.sh-nav { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+.sh-nav .pos { flex: 1; text-align: center; font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.navbtn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 3px 12px; font-size: 13.5px; font-weight: 600; color: var(--you); min-height: 30px; }
+.navbtn:disabled { opacity: .4; cursor: default; }
+.card.current { outline: 2px solid var(--you); outline-offset: -2px; }
+@media (hover: none) and (pointer: coarse), (max-width: 440px) { .navbtn { min-height: 44px; padding: 0 14px; } }
+
+/* the tags on a reply: tooltips on each, a legend under the heading */
+.why[title] { cursor: help; }
+.legend { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+.legend > summary { cursor: pointer; list-style: none; display: inline-block; border: 1px solid var(--line); border-radius: 99px; padding: 1px 10px; background: var(--wash); }
+.legend > summary::-webkit-details-marker { display: none; }
+.legend[open] > summary { color: var(--ink); }
+.legend dl { margin: 6px 0 4px; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; }
+.legend dt { font-weight: 700; color: var(--ink); white-space: nowrap; }
+.legend dd { margin: 0; }
+@media (max-width: 440px) { .legend dl { grid-template-columns: minmax(0, 1fr); gap: 0; } .legend dd { margin-bottom: 5px; } }
