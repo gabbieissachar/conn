@@ -244,6 +244,18 @@ def cmd_terminal_ids(ctx, args):
          "terminal_ids_shared_by_several_panes": len(shared), "shared_by_panes_open_at_the_same_time": len(overlapping)})
 
 
+def lab_ok_names(text: str, returncode: int) -> set[str]:
+    """The tests that passed, read from `unittest -v` output. A test's header line is `name (module.Class.name) ... `, and its verdict follows it
+    on that line, but stray output (a warning from a garbage-collected connection) can land between the two, so a test counts as passed when its
+    header is there, it is not in a FAIL or ERROR block and not skipped, and the whole run succeeded."""
+    if returncode != 0:
+        return set()
+    ran = set(re.findall(r"^(test_\w+) \([^)]*\) \.\.\.", text, re.M))
+    bad = set(re.findall(r"^(?:FAIL|ERROR): (test_\w+)", text, re.M))
+    skipped = set(re.findall(r"^(test_\w+) \([^)]*\) \.\.\. .*skipped", text, re.M))
+    return ran - bad - skipped
+
+
 def cmd_lab_run(ctx, args):
     """Run the lab tests (crash, file-change, identity with the fake Herdr, backup with a fake keychain) and keep the result for the scorecard."""
     import tempfile
@@ -254,7 +266,7 @@ def cmd_lab_run(ctx, args):
     ran = re.search(r"Ran (\d+) tests?", text)
     failures = re.search(r"failures=(\d+)", text)
     errors = re.search(r"errors=(\d+)", text)
-    ok_names = set(re.findall(r"(test_\w+) \([^)]*\) \.\.\. ok", text))
+    ok_names = lab_ok_names(text, done.returncode)
     present = [name for name in REQUIRED_LAB if name in ok_names]
     result = {"at": time.time(), "tests": int(ran.group(1)) if ran else 0, "failures": int(failures.group(1)) if failures else 0, "errors": int(errors.group(1)) if errors else 0,
               "returncode": done.returncode, "required_present": present, "required_ok": len(present) == len(REQUIRED_LAB)}

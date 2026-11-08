@@ -141,5 +141,19 @@ class Cli(StoreCase):
             self.assertIn("another ingest holds", done.stderr)
 
 
+class LabRunParse(unittest.TestCase):
+    """`lab-run` reads which tests passed from the unittest output; one stray line between a test's name and its verdict must not hide it."""
+
+    def test_a_stray_line_between_the_name_and_the_verdict_does_not_hide_a_pass(self):
+        from rstore import cli
+        text = ("test_a_one (m.C.test_a_one) ... ok\n"
+                "test_b_two (m.C.test_b_two) ... ResourceWarning: unclosed database\nok\n"
+                "test_c_three (m.C.test_c_three) ... skipped 'no gpg'\n"
+                "test_d_four (m.C.test_d_four) ... FAIL\n"
+                "\n======\nFAIL: test_d_four (m.C.test_d_four)\n")
+        self.assertEqual(cli.lab_ok_names(text, 0), {"test_a_one", "test_b_two"})
+        self.assertEqual(cli.lab_ok_names(text, 1), set(), "a failed run proves nothing")
+
+
 if __name__ == "__main__":
     unittest.main()
