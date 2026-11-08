@@ -9,7 +9,7 @@ extension CampusCheck {
     static func starChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool, shot: (String) async -> Void) async {
         let campus = model.campus, stars = model.campusStars, watch = model.watch
         guard campus.link == .live else { report("Campus stars: the checks need a live Campus", false, "link=\(campus.link)"); return }
-        model.watchOn = false; model.mode = .herdr; model.showWeb = true; model.webTab = .reader
+        model.watchOn = false; model.showWeb = true; model.webTab = .reader
         stars.clear()
         let ids = ["ses_fakeSprint03", "ses_fakeKpi06", "ses_fakeOffsite04"]
         func columns() -> [String] { watch.layout.slots.map { $0?.session ?? "-" } }

@@ -203,6 +203,7 @@ struct CampusRow: View {
                         Text(c.title).font(.system(size: 13, weight: .medium)).lineLimit(2).truncationMode(.tail)
                             .redacted(reason: app.privacy ? .placeholder : [])
                             .help(app.privacy ? "Campus conversation" : c.title)
+                        if app.campusBridge?.ownership.mode(of: c.id) != nil { Image(systemName: "cpu").font(.system(size: 8.5)).foregroundStyle(.secondary).help("Agents may use this thread (agent bridge)").accessibilityIdentifier("campus-row-shared") }
                         if starred { Image(systemName: "star.fill").font(.system(size: 8.5)).foregroundStyle(.secondary).accessibilityIdentifier("campus-row-star") }
                     }
                     Text(CampusWords.sub(c, link: campus.link, asOf: campus.asOf)).font(.system(size: 11))
@@ -215,6 +216,7 @@ struct CampusRow: View {
         .contextMenu {
             Button(starred ? "Remove Star" : "Star in the Reader Row") { app.toggleCampusStar(c) }
             Button("Open in a Watch Column") { app.showCampusInWatch(c.id) }
+            BridgeShareMenu(c: c)
             Divider()
             Button("Open in Campus (Web)") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }
         }
@@ -261,6 +263,7 @@ private struct CampusStatusInner: View {
                 .buttonStyle(.plain).help("Campus writes: sending, steering, answers, Stop and the model and agent pickers need this on")
                 .accessibilityIdentifier("campus-writes-switch")
             }
+            BridgeStatusItem()
         }
     }
 
@@ -335,6 +338,7 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if campus.link == .disabled { Text("Campus is not part of this launch.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            if let b = app.campusBridge { BridgeSettingsSection(bridge: b) }
             Section("Starred conversations") {
                 HStack {
                     Text(app.campusStars.entries.isEmpty ? "None starred" : "\(app.campusStars.entries.count) starred in the Reader column's row")
@@ -345,6 +349,6 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .formStyle(.grouped).frame(width: 460, height: 330)
+        .formStyle(.grouped).frame(width: 520, height: 640)
     }
 }

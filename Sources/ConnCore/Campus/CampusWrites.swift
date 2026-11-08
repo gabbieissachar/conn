@@ -45,11 +45,15 @@ extension CampusClient {
     }
     /// `POST /api/spaces/<kind>/<folder>/conversations` with an `Idempotency-Key` header and `{"text"}` (the first message): the call Campus's own front end makes
     /// to start a conversation (scout report 3.3, from the shipped bundle; nobody has fired it yet). The key is the client's, so a retry of the same start is the same start.
-    public static func createRequest(in space: CampusSpace, text: String, key: String) -> CampusRequest {
-        var r = json("POST", "/api/spaces/\(space.kind)/\(space.folder)/conversations", ["text": text])
+    public static func createRequest(in space: CampusSpace, text: String, key: String, agent: String? = nil) -> CampusRequest {
+        var body: [String: Any] = ["text": text]
+        if let a = agent { body["agent"] = a }       // the create body takes an agent id (scout report 3.3)
+        var r = json("POST", "/api/spaces/\(space.kind)/\(space.folder)/conversations", body)
         r.headers["Idempotency-Key"] = key
         return r
     }
+    /// `PATCH .../<id> {"title"}` (scout report 3.4): the agent bridge titles the threads it starts.
+    public static func renameRequest(kind: String, folder: String, id: String, title: String) -> CampusRequest { json("PATCH", conversationPath(kind: kind, folder: folder, id: id), ["title": title]) }
     public static func interruptRequest(_ c: CampusConversation) -> CampusRequest { json("POST", conversationPath(c) + "/interrupt", [:]) }
     public static func answerRequest(_ c: CampusConversation, form: CampusForm, answers: [String]) -> CampusRequest {
         // One question: its answer as text; several: the answers in order.

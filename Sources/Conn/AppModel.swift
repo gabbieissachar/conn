@@ -54,6 +54,11 @@ final class AppModel: ObservableObject {
     let campusAuth: CampusWebAuth?
     /// The Campus conversations the person starred in Conn (S1): addresses and order only, in Conn's own settings; shown as chips beside the reader's stars.
     let campusStars: CampusStarStore
+    /// The agent bridge (S2): leaders ask Campus through Conn. Off at every launch; nil when Campus is not part of this launch.
+    let campusBridge: BridgeEngine?
+    /// Asking before the "Agent bridge" switch goes on, and the activity sheet.
+    @Published var campusConfirmBridge = false
+    @Published var campusBridgeActivityShown = false
     /// The Campus conversation shown in the centre (and in the Reader column), or nil: a Herdr agent or a view is shown instead.
     @Published var campusSelectedID: String?
     @Published var campusSignInShown = false
@@ -243,6 +248,7 @@ final class AppModel: ObservableObject {
         campus = CampusStore(auth: campusAuth, baseURL: config.campusBase)
         // A fixture launch keeps its Campus stars apart from the real ones (as it does the reader's chip order).
         campusStars = CampusStarStore(defaults: AppModel.defaults, key: config.fixture ? "conn.campusStars.fixture" : "conn.campusStars")
+        campusBridge = config.campusEnabled ? AppModel.makeBridge(config: config, env: env, store: campus) : nil
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
         fallback = FallbackTerminalController()
@@ -957,6 +963,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        campusBridge?.shutdown()
         campus.stop(); store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()
     }
 }

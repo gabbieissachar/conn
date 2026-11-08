@@ -23,6 +23,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
         public var agent = "build", model = "general-flash"
         public var messages: [[String: Any]] = []   // oldest first
         public var form: [String: Any]?
+        /// Pending permission requests (`GET .../form` lists them next to the forms). Nothing in Conn answers one; the stand-in has no route that does, so a test can say so.
+        public var permissions: [[String: Any]] = []
         public var gen = 0                // bumped to cancel a running script
     }
 
@@ -43,6 +45,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var failWrites = false
     private var signedOutCode = 401
     private var moduleRequired = false
+    /// What the next run does (the agent bridge's checks): the default, end on a question, end on a permission request, or never end until released.
+    public enum NextRun: String { case normal, ask, permission, hold }
+    private var nextRun = NextRun.normal
+    private var nextReply: String?
     private var createdKeys: [String: String] = [:]     // Idempotency-Key -> the conversation it made
     private var createdCount = 0
     private var subscribers: [Int: AsyncStream<String>.Continuation] = [:]
@@ -133,9 +139,21 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private func conv(_ id: String) -> Conv? { lock.lock(); defer { lock.unlock() }; return convs.first { $0.id == id } }
     public func conversation(_ id: String) -> Conv? { conv(id) }
 
+    /// The next run (a prompt, a form reply or a start) does `mode` and, when it ends with a reply, says `reply`. Taken once.
+    public func setNextRun(_ mode: NextRun, reply: String? = nil) { lock.lock(); nextRun = mode; nextReply = reply; lock.unlock() }
+    private func takeNextRun() -> (NextRun, String?) { lock.lock(); defer { lock.unlock(); nextRun = .normal; nextReply = nil }; return (nextRun, nextReply) }
+
+    /// Let a held run end with its reply.
+    public func release(_ id: String) {
+        mutate(id) { $0.messages.append(["id": "msg_a\(UUID().uuidString.prefix(6))", "type": "assistant", "content": [["type": "text", "text": "Released: here is the reply."]], "tokens": ["input": 100, "output": 10], "finish": "stop"]); $0.state = "idle"; $0.unread = true }
+        emit("session.idle", id)
+    }
+
     /// Start a scripted run on a conversation: `ask` ends it on a question, otherwise it ends done (unread).
-    public func startRun(_ id: String, userText: String?, ask: Bool) {
+    public func startRun(_ id: String, userText: String?, ask askRequested: Bool) {
         guard conv(id) != nil else { return }
+        let (mode, say) = takeNextRun()
+        let ask = askRequested || mode == .ask
         var gen = 0
         mutate(id) { $0.gen += 1; gen = $0.gen; $0.state = "busy"; $0.form = nil; $0.unread = false; if let t = userText { $0.messages.append(["id": "msg_u\(UUID().uuidString.prefix(6))", "type": "user", "text": t]) } }
         if let t = userText { emit("session.inbox.enqueued", id, ["item": ["type": "user", "payload": ["text": t], "delivery": "steer"]]) }
@@ -163,8 +181,15 @@ public final class FakeCampusWorld: @unchecked Sendable {
             }
             Thread.sleep(forTimeInterval: delay)
             guard self.conv(id)?.gen == gen else { return }
-            let answer = "Table B pays more on 14 of the 20 merchants. The gap is widest on travel and food delivery."
+            if mode == .hold { return }           // stays busy until `release`
+            let answer = say ?? "Table B pays more on 14 of the 20 merchants. The gap is widest on travel and food delivery."
             let a: [String: Any] = ["id": "msg_a\(UUID().uuidString.prefix(6))", "type": "assistant", "content": [["type": "text", "text": answer]], "tokens": ["input": 3400, "output": 212], "finish": "stop"]
+            if mode == .permission {
+                let perm: [String: Any] = ["id": "per_demo\(gen)", "permission": "bash", "patterns": ["curl https://example.test"]]
+                self.mutate(id) { $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm] }
+                self.emit("session.step.ended", id, ["tokens": ["input": 3400, "output": 212]])
+                return
+            }
             if ask {
                 let form: [String: Any] = ["id": "frm_demo_\(gen)", "questions": [["question": "Which merchants should the summary lead with?", "options": [["label": "Top 5 by volume"], ["label": "Biggest rate gaps"], ["label": "All 20 in a table"]]]]]
                 self.mutate(id) { $0.messages.append(a); $0.state = "needs_you"; $0.form = form }
@@ -248,7 +273,11 @@ public final class FakeCampusWorld: @unchecked Sendable {
             r.body = Data(String(decoding: r.body, as: UTF8.self).replacingOccurrences(of: "{{CAMPUS}}", with: publicBase).utf8)
             return r
         case ("GET", ["status"]): return ok(["state": c.state, "unread": c.unread, "parked": [Any](), "held": [Any](), "spaceDirectory": "/workspace/spaces/\(kind)/\(folder)"])
-        case ("GET", ["form"]): return ok(["sessionIDs": [id], "permissions": [Any](), "forms": c.form.map { [$0] } ?? []])
+        case ("GET", ["form"]): return ok(["sessionIDs": [id], "permissions": c.permissions, "forms": c.form.map { [$0] } ?? []])
+        case ("PATCH", []):
+            record("PATCH \(path) \(String(data: body ?? Data(), encoding: .utf8) ?? "")")
+            if let t = CampusJSON.parse(body ?? Data())?["title"].string { mutate(id) { $0.title = t } }
+            return ok(["ok": true])
         case ("POST", ["prompt"]):
             record("POST \(path) \(String(data: body ?? Data(), encoding: .utf8) ?? "")")
             let text = CampusJSON.parse(body ?? Data())?["text"].string ?? ""
@@ -316,6 +345,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
         case "/__fake/log": return ok(["writes": writes()])
         case "/__fake/reset": reset(); return ok(["ok": true])
         case "/__fake/drop-streams": dropStreams(); return ok(["ok": true])
+        case "/__fake/next-run": setNextRun(NextRun(rawValue: q["mode"] ?? "normal") ?? .normal, reply: q["reply"]); return ok(["ok": true])
+        case "/__fake/release": if let c = q["c"] { release(c) }; return ok(["ok": true])
         case "/__fake/run": if let c = q["c"] { startRun(c, userText: q["text"], ask: q["ask"] == "1") }; return ok(["ok": true])
         case "/__fake/subscribers": return ok(["subscribers": subscriberCount])
         default: return err(404, "not_found")

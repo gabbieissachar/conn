@@ -731,6 +731,13 @@ struct MainView: View {
         } message: {
             Text("Conn will be able to send a message, answer a question, stop a run and change the model or agent in your Campus conversations, as you. Campus acts on what it receives. Every write waits 3 seconds with an Undo. The switch is off again at the next launch.")
         }
+        .confirmationDialog("Let agents use Campus through Conn?", isPresented: $app.campusConfirmBridge, titleVisibility: .visible) {
+            Button("Turn on the Agent bridge", role: .destructive) { app.enableCampusBridge() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("big-boss and the leader homes will be able to start threads in your My space, send to them and read the replies, as you, without asking each time: up to 6 new threads an hour per home and 20 a day. Campus acts on what it receives, and its agent reaches your connectors. Never a worker or a personal home. The switch is off again at the next launch, and you can turn it off at any time.")
+        }
+        .sheet(isPresented: $app.campusBridgeActivityShown) { if let b = app.campusBridge { BridgeActivitySheet(bridge: b).environmentObject(app) } }
         .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
         .sheet(item: $app.campusNewIn) { space in CampusNewConversationSheet(campus: app.campus, space: space).environmentObject(app) }
     }

@@ -48,6 +48,10 @@ struct AppConfig {
     var campusURLText: String?
     /// `--campus-writes`: the "Campus writes" switch starts on (a scripted check; a person's launch always starts with it off).
     var campusWritesAtLaunch = false
+    /// `--campus-bridge`: the "Agent bridge" switch starts on (a scripted check; a person's launch always starts with it off).
+    var campusBridgeAtLaunch = false
+    /// `--campus-bridge-lab SECONDS`: sign in to the stand-in Campus, turn the Agent bridge on, answer whatever arrives in the session registry for that long, then quit (a lab for real `fm-ask`).
+    var campusBridgeLab: Double?
     /// `--campus-check`: run only the Campus steps of `--ui-check` (against the stand-in Campus).
     var campusCheck = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
@@ -103,6 +107,8 @@ struct AppConfig {
             case "--no-campus": c.campusRequested = false
             case "--campus-url": c.campusURLText = next()
             case "--campus-writes": c.campusWritesAtLaunch = true
+            case "--campus-bridge": c.campusBridgeAtLaunch = true
+            case "--campus-bridge-lab": c.campusBridgeLab = next().flatMap(Double.init) ?? 120
             case "--campus-check": c.campusCheck = true
             case "--editor-test": c.editorTest = next()
             case "--window":
@@ -128,7 +134,7 @@ struct AppConfig {
     }
 
     private var hasScriptedHook: Bool {
-        uiTour || campusCheck || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
+        uiTour || campusCheck || campusBridgeLab != nil || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
     }
 
     /// A launch driven by a script or a test rather than a person: any scripted hook, a background launch (whether or not it

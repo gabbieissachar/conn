@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
         if cfg.campusCheck { Task { @MainActor in await CampusCheck.runAlone(model: model) } }
+        if let secs = cfg.campusBridgeLab { Task { @MainActor in await CampusCheck.bridgeLab(model: model, seconds: secs) } }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
             // The Herdr client pane is an interactive second client: this test hook may only run when both the socket
@@ -190,6 +191,10 @@ struct ConnCommands: Commands {
                 Button("Open This Conversation in a Watch Column") { if let c = app.campusSelected { app.showCampusInWatch(c.id) } }.disabled(app.campusSelected == nil)
                 Divider()
                 Toggle("Campus Writes", isOn: Binding(get: { app.campus.writesEnabled }, set: { on in if on { app.requestCampusWrites() } else { app.disableCampusWrites() } }))
+                if let b = app.campusBridge {
+                    Toggle("Agent Bridge", isOn: Binding(get: { b.enabled }, set: { on in if on { app.requestCampusBridge() } else { app.disableCampusBridge() } }))
+                    Button("Agent Bridge Activity…") { app.campusBridgeActivityShown = true }
+                }
             }
         }
         CommandMenu("Layout") {

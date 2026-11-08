@@ -162,6 +162,8 @@ enum CampusCheck {
 
         await starChecks(model: model, report: report, wait: wait, until: until, shot: shot)
 
+        await bridgeChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
+
         model.campusSelectedID = nil
         // Leave Watch as it was found: the checks after this one open it again and must not meet a Campus column.
         model.watchOn = false

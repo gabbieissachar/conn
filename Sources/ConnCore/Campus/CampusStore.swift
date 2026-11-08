@@ -217,6 +217,8 @@ public final class CampusStore: ObservableObject {
     }
 
     func markExpired() { setExpired() }
+    /// A conversation's title as Campus now has it (the agent bridge renames the threads it starts).
+    func setTitle(_ id: String, _ title: String) { conversations[id]?.title = title }
     func requestStatus(_ id: String) { scheduleStatus(id) }
 
     private func setExpired() {

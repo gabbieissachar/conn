@@ -24,6 +24,10 @@ extension AppModel {
             self.campus.kick()
             self.objectWillChange.send()
         }.store(in: &cancellables)
+        // The agent bridge: its switch is off at every launch (only a scripted check may start it on); what it shows redraws the status bar and the rows.
+        if config.campusBridgeAtLaunch && config.isScriptedLaunch { campusBridge?.setEnabled(true) }
+        campusBridge?.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
+        campusBridge?.ownership.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
         campus.start()
     }
 
@@ -192,5 +196,43 @@ extension AppModel {
     func closeCampusNew() {
         if let space = campusNewIn, campus.held?.conversationID == CampusStore.startKey(space), campus.held?.phase == .held { campus.undo() }
         campusNewIn = nil
+    }
+}
+
+// MARK: - the agent bridge (S2)
+
+extension AppModel {
+    static let bridgeAlsoAllowedKey = "conn.campus.bridge.alsoAllowed"
+
+    /// The bridge's files: a person's own launch uses the real session registry (`FM_SESSIONS_DIR`, else `~/.local/state/firstmate/sessions`) and Conn's own folder for the audit.
+    /// A scripted launch never touches either: its registry is `FM_SESSIONS_DIR` when the launch is told one (a lab), else a folder of its own, and so is its audit.
+    static func makeBridge(config: AppConfig, env: [String: String], store: CampusStore) -> BridgeEngine {
+        let scripted = config.isScriptedLaunch
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("conn-bridge-\(getpid())", isDirectory: true)
+        let labGiven = !(env["FM_SESSIONS_DIR"] ?? "").isEmpty
+        let registryDir = scripted && !labGiven ? scratch.appendingPathComponent("registry", isDirectory: true) : BridgeRegistry.defaultDirectory(env: env)
+        let auditFile = scripted ? scratch.appendingPathComponent("audit.jsonl") : ConnMigration.stateDirectory().appendingPathComponent("campus-bridge/audit.jsonl")
+        let ownership = BridgeOwnership(defaults: AppModel.defaults, key: config.fixture ? "conn.campus.bridge.threads.fixture" : "conn.campus.bridge.threads")
+        let also = (AppModel.defaults.array(forKey: bridgeAlsoAllowedKey) as? [String]) ?? []
+        return BridgeEngine(store: store, registry: BridgeRegistry(directory: registryDir), ownership: ownership, audit: BridgeAuditLog(file: auditFile), callers: BridgeCallers(alsoAllowed: also))
+    }
+
+    /// Turning the switch on asks first; turning it off is immediate.
+    func requestCampusBridge() { campusConfirmBridge = true }
+    func enableCampusBridge() {
+        campusBridge?.setEnabled(true)
+        if let why = campusBridge?.problem { toast("The Agent bridge did not start", detail: why) } else { toast("The Agent bridge is on") }
+    }
+    func disableCampusBridge() { campusBridge?.setEnabled(false) }
+
+    func setCampusBridgeAlsoAllowed(_ labels: [String]) {
+        let clean = Array(Set(labels.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0.range(of: "^[A-Za-z0-9._-]{1,80}$", options: .regularExpression) != nil })).sorted()
+        AppModel.defaults.set(clean, forKey: Self.bridgeAlsoAllowedKey)
+        campusBridge?.callers = BridgeCallers(alsoAllowed: clean)
+    }
+
+    /// "Share with Agents" on a Campus row: nothing, reading, or reading and sending. A thread the bridge started is always shared.
+    func shareCampus(_ c: CampusConversation, _ mode: BridgeShare?) {
+        campusBridge?.ownership.setShared(CampusAddress(c), mode)
     }
 }
