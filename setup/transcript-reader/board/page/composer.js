@@ -378,7 +378,7 @@
       const focused = document.activeElement === text, from = text.selectionStart, to = text.selectionEnd;
       parent.append(root); attached = true; render();
       if (focused) { text.focus(); try { text.setSelectionRange(from, to); } catch (e) { /* not selectable */ } }
-      if (!pollTimer) { poll(); pollTimer = setInterval(poll, POLL_MS); }
+      if (!pollTimer && host.sendOn()) { poll(); pollTimer = setInterval(poll, POLL_MS); }  // the pane is only asked about when Send can be on
     }
     function detach() { attached = false; hideFloat(); clearInterval(pollTimer); pollTimer = 0; if (root.parentNode) root.remove(); }
     window.addEventListener("beforeunload", (e) => { if (link.hold || link.sending) { e.preventDefault(); e.returnValue = ""; } });

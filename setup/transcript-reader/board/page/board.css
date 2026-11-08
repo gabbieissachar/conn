@@ -484,3 +484,4 @@ a.open-link { color: var(--you); text-decoration: underline; }
 }
 .th-item .mk.hide:hover, .th-item .mk.reply-to:hover, .hidden-toggle:hover { color: var(--you); border-color: var(--you); }
 @media (max-width: 440px) { .cmp-body { max-height: 40vh; } }
+.cmp textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

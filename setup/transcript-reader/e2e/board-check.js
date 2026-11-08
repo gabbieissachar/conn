@@ -148,7 +148,7 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     ev(`document.querySelector('.cmp-float').click(); return true;`);
     await until(`return { ok: !document.querySelector('.cmp-chip').hidden };`, 'the pointer chip');
     c = cmp();
-    check(/^Reply to .* · /.test(ev(`return document.querySelector('.cmp-chip .cmp-head span').textContent;`)) && c.passage.length > 5 && /^\[From session 5e551001, an earlier session of this conversation\] Re your reply at \d\d:\d\d, which began: "Nathan, alpha-route/.test(c.line) && /the part "/.test(c.line), 'the chip names the reply, shows the selected words and the exact line Send would type (a reply from an earlier session is described by its words, since the live one never saw it)', JSON.stringify({ line: c.line, passage: c.passage }));
+    check(/^Reply to .* · /.test(ev(`return document.querySelector('.cmp-chip .cmp-head span').textContent;`)) && c.passage.length > 5 && /^Re your reply at \d\d:\d\d \("Nathan, alpha-route needs your pick[^"]*"\), the part "Nathan, alpha-route need": …$/.test(c.line), 'the chip names the reply, shows the selected words and the exact line Send would type', JSON.stringify({ line: c.line, passage: c.passage }));
     ev(`const t = document.querySelector('.cmp textarea'); t.value = 'first comment'; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.cmp-row .alt').click(); return true;`);
     c = cmp();
     check(c.batch === 1 && !c.chip && c.value === '' && /Added to the batch \(1\)/.test(c.why) && /1 in the batch/.test(c.bar), 'Add puts the comment in the batch', JSON.stringify(c));
@@ -156,7 +156,7 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     ev(`document.querySelector('.cmp-batchtoggle').click(); document.querySelector('.cmp-acts .cmp-linkbtn').click(); return true;`);
     c = cmp();
     check(c.batch === 1 && c.sendText === 'Send 2', 'a batch of one plus the box reads Send 2', JSON.stringify(c));
-    check(/^2 comments:\n\n1\. \[From session 5e551001[^\]]*\] Re your reply at/.test(ev(`return document.querySelector('.cmp-preview .cmp-line').textContent;`)), 'Exact text shows the numbered message Send would type');
+    check(/^2 comments:\n\n1\. Re your reply at \d\d:\d\d \("Nathan, alpha-route/.test(ev(`return document.querySelector('.cmp-preview .cmp-line').textContent;`)), 'Exact text shows the numbered message Send would type');
     // the draft and the batch survive the card being redrawn and another card being opened
     ev(`window.__board.render(); return true;`); await sleep(200);
     c = cmp(); check(c.value === 'second, plain' && c.batch === 1, 'the draft and the batch survive a redraw', JSON.stringify(c));
@@ -253,6 +253,11 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(got.length === 1 && /^PROMPT lab w1:p1 2 comments:/.test(got[0]) && /1\. Re your reply at \d\d:\d\d \("Nathan, here are the calls/.test(got[0]) && /: go with R1/.test(got[0]) && /2\. and R2 too/.test(got[0]), 'the pane got one numbered message, as the conversation view sends a batch', JSON.stringify(got).slice(0, 400));
     await until(`return { ok: /Sent to lab-supervisor/.test(document.querySelector('.cmp-pending') ? document.querySelector('.cmp-pending').innerText : '') || /^Sent to/.test(document.querySelector('.cmp-why').textContent) };`, 'the sent note', 30000);
     check(true, 'the faded message says it was sent');
+    // a reply from an earlier session than the one the box writes to is described by its words (that session never saw it)
+    await openBoard(port, '&t=alpha-route');
+    await until(`return { ok: !!document.querySelector('.sheet .cmp') && /To lab-supervisor/.test(document.querySelector('.cmp-why').textContent) };`, 'the box aimed at the live pane', 30000);
+    ev(`[...document.querySelectorAll('.sheet .th-item.reply')][0].querySelector('.reply-to').click(); return true;`);
+    check(/^\[From session 5e551001, an earlier session of this conversation\] Re your reply at \d\d:\d\d, which began: "Nathan, alpha-route/.test(ev(`return document.querySelector('.cmp-chip .cmp-line').textContent;`)), 'a reply from an earlier session is pointed at by its opening words, with the session it came from');
     // a send to a session the board does not read is refused by the route, and the reader's own checks stand
     const refused = await fetch(`http://127.0.0.1:${port}/api/transcript-reader/board-send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 'leader-lab', session_id: lab.sup, text: 'x' }) });
     check(refused.status === 403, 'a script without the page\'s token cannot post a send', String(refused.status));
