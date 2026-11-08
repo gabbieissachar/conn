@@ -314,7 +314,24 @@
     { name: "this worker's own session", test: (w) => w === "this worker's own session", tip: "A worker board: every reply in the worker's own session is about its task." },
   ];
   const tagTip = (w) => { const t = TAGS.find((x) => x.test(w)); return t ? t.tip : ""; };
-  function whyChip(text, cls) { const c = el("span", "why " + cls, text), tip = tagTip(text); if (tip) c.title = tip; return c; }
+  /* A tag explains itself three ways: hover (a bubble beside it and the browser's own title), and tap, click or Enter, which opens a line of words under the
+     row (a phone has no hover). The line stays until the same tag is pressed again or another is. */
+  function explain(chip, name, tip) {
+    const row = chip.closest(".th-h") || chip.parentElement, host = row.parentElement;
+    const old = host.querySelector(":scope > .why-note"), same = !!old && old.dataset.for === name;
+    if (old) old.remove();
+    host.querySelectorAll("button.why[aria-expanded=true]").forEach((b) => b.setAttribute("aria-expanded", "false"));
+    if (same) return;
+    const note = el("div", "why-note"); note.dataset.for = name; note.setAttribute("role", "note"); note.append(el("b", "", name + ": "), tip);
+    row.after(note); chip.setAttribute("aria-expanded", "true");
+  }
+  function tipChip(text, cls, tip) {
+    if (!tip) return el("span", "why " + cls, text);
+    const c = el("button", "why " + cls, text); c.type = "button"; c.title = tip; c.dataset.tip = tip; c.setAttribute("aria-expanded", "false");
+    c.onclick = (e) => { e.stopPropagation(); explain(c, text, tip); };
+    return c;
+  }
+  const whyChip = (text, cls) => tipChip(text, cls, tagTip(text));
   function tagLegend() {
     const d = el("details", "legend"); d.append(el("summary", "", "What the tags on a reply mean"));
     const dl = el("dl"); TAGS.filter((t) => t.name !== "title / id words" && t.name !== "named in a sweep").concat(TAGS.filter((t) => t.name === "title / id words")).forEach((t) => { dl.append(el("dt", "", t.name), el("dd", "", t.tip)); });
@@ -326,7 +343,8 @@
   const hideKey = (it) => (it.link && it.link.m ? it.link.m + ":reply" : "");
   const isHidden = (it) => !!hideKey(it) && S.hidden.has(hideKey(it));
   const replyTexts = () => (S.board && S.board.threads && S.board.threads.texts) || {};
-  const keepSheetPlace = () => { if (!S.open) return; const sb = document.querySelector(".sh-body"); if (sb) S.open.keepScroll = sb.scrollTop; renderSheet(); };
+  /* Draw the sheet again where the reader was. anchor: a reply (its key) that must stay in view, for when it just got shorter: the sheet scrolls back up to its top. */
+  const keepSheetPlace = (anchor) => { if (!S.open) return; const sb = document.querySelector(".sh-body"); if (sb) S.open.keepScroll = sb.scrollTop; S.open.anchor = anchor || null; renderSheet(); };
   async function setHidden(it, hide) {
     const key = hideKey(it); if (!key) return;
     try {
@@ -337,7 +355,7 @@
     if (hide) toast("Hid the reply. \"Hidden\" above the thread shows it again.");
   }
   async function toggleFull(it, info, open) {
-    if (!open) { delete S.full[it.key]; keepSheetPlace(); return; }
+    if (!open) { delete S.full[it.key]; keepSheetPlace(it.key); return; }
     S.full[it.key] = true;
     if (info.more && !S.fullText[it.key]) {
       S.fullBusy[it.key] = true; keepSheetPlace();
@@ -376,6 +394,8 @@
         if (it.lvl === "out") h.append(mk("Put it back", "clear", true));
         else { if (it.lvl === "possible") h.append(mk("Yes, this task", "in", true)); h.append(it.lvl === "marked" ? mk("Withdraw mark", "clear") : mk("Not this task", "out")); }
       }
+      const open = replyTexts()[it.key];
+      if (open && S.full[it.key] && S.fullText[it.key]) { const lb = el("button", "mk less-top", "Show less"); lb.type = "button"; lb.title = "Back to the short view of this reply"; lb.onclick = () => toggleFull(it, open, false); h.append(lb); }
       if (hideKey(it)) {
         const hb = el("button", "mk hide", gone ? "Show again" : "Hide"); hb.type = "button"; hb.setAttribute("aria-pressed", String(gone));
         hb.title = gone ? "Show this reply in the thread again" : "Hide this reply here and in the conversation view. The session log is not changed; \"Hidden\" above the thread shows it again.";
@@ -386,9 +406,9 @@
         rb.onclick = () => composer.quote(box); h.append(rb);
       }
     } else if (it.req) {
-      const rq = el("span", "why poss", "your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later")); rq.title = "Your message with no reply above it, sent shortly before this task started. A possible match: say yes or no."; h.append(rq, el("span", "sp"));
+      const rq = tipChip("your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later"), "poss", "Your message with no reply above it, sent shortly before this task started. A possible match: say yes or no."); h.append(rq, el("span", "sp"));
       if (S.write.marks) { h.append(mk("Yes, this task", "in", true), mk("Not this task", "out")); }
-    } else { if (it.how) { const hw = el("span", "why", it.how); hw.title = /^keyed /.test(it.how) ? "Your message uses a call key (like R2) from the reply above it." : it.how === "answer sheet" ? "Your comment from an answer sheet, tied to the reply it quotes." : it.how === "next message" ? "Your message right after this reply." : /^you marked/.test(it.how) ? "You put this message on this card yourself." : it.how; h.append(hw); } h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
+    } else { if (it.how) { h.append(tipChip(it.how, "", /^keyed /.test(it.how) ? "Your message uses a call key (like R2) from the reply above it." : it.how === "answer sheet" ? "Your comment from an answer sheet, tied to the reply it quotes." : it.how === "next message" ? "Your message right after this reply." : /^you marked/.test(it.how) ? "You put this message on this card yourself." : it.how)); } h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
     const link = readerLink(it.link); if (link) { const a = el("a", "open-link", "open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; a.title = "Open this reply in the conversation view"; h.append(a); }
     box.append(h);
     if (it.part) box.append(el("div", "th-part", "on: " + it.part));
@@ -518,7 +538,7 @@
     if (a && prev && prev.asked && prev.asked.key === a.key) { r.append("Asked in the same reply as ", el("b", "", label(prev) || "the call above"), "."); return r; }
     const th = S.board.threads || {};
     if (!a) { r.append(el("span", "quiet", th.status === "ok" ? "Asking reply: none found in the conversations the reader keeps (the call may be older than they are)." : "Asking reply: not available while reply threads are off.")); return r; }
-    r.append("Asked in the reply of ", el("b", "", fmt(a.d) + " " + a.hm), a.how === "exact" ? el("span", "why sure", "names this ask") : a.how === "nearest" ? el("span", "why poss", "nearest reply to the hold time") : el("span", "why sure", "set in this reply's turn"));
+    r.append("Asked in the reply of ", el("b", "", fmt(a.d) + " " + a.hm), a.how === "exact" ? tipChip("names this ask", "sure", "The reply carries this call's own ask id, so it is the reply that asked it.") : a.how === "nearest" ? tipChip("nearest reply to the hold time", "poss", "No reply names the ask, so this is the closest one before the call was held. It may not be the one that asked.") : tipChip("set in this reply's turn", "sure", "The call was held by a command the supervisor ran in this reply's turn."));
     r.append(el("div", "ask-q", "“" + short(a.text, 160) + "”"));
     const link = readerLink(a.link); if (link) { const open = el("a", "ghost", "Open this reply in the reader"); open.href = link; open.target = "_blank"; open.rel = "noopener"; r.append(open); }
     return r;
@@ -574,6 +594,11 @@
     const cur = document.querySelector('.col [data-ref="' + CSS.escape(t.ref) + '"]'); if (cur) cur.classList.add("current");
     if (S.open.scrollTo) { const n = body.querySelector('[data-call="' + S.open.scrollTo + '"]'); if (n) { n.scrollIntoView({ block: "start" }); n.classList.add("flash"); } S.open.scrollTo = null; }
     if (S.open.keepScroll != null) { body.scrollTop = S.open.keepScroll; S.open.keepScroll = null; }
+    if (S.open.anchor) {  // a reply that just got shorter: if its top is now above the window, bring it back to the top
+      const n = body.querySelector('.th-item[data-key="' + CSS.escape(S.open.anchor) + '"]');
+      if (n) { const d = n.getBoundingClientRect().top - body.getBoundingClientRect().top; if (d < 0) body.scrollTop += d - 8; }
+      S.open.anchor = null;
+    }
   }
   /* Back and Next walk the cards of this card's column as the board shows them now (its filters, its groups, its sort); arrow keys do the same. */
   function neighbours(t) {

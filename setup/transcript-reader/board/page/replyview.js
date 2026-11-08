@@ -36,7 +36,7 @@
       const wrap = make("div", "rmd");
       if (words <= WORDS && !open) { wrap.append(box); return wrap; }
       const inner = make("div", open ? "" : "clip"); inner.append(box); wrap.append(inner);
-      const more = make("button", "more", busy ? "Loading the whole reply..." : open ? "Show less" : `Show full reply (${words} words)`);
+      const more = make("button", "more" + (open ? " less" : ""), busy ? "Loading the whole reply..." : open ? "Show less" : `Show full reply (${words} words)`);  // open: it sticks to the foot of the window while the reply is long, so the way back is always in reach
       more.type = "button"; more.setAttribute("aria-expanded", String(Boolean(open))); more.disabled = Boolean(busy);
       more.addEventListener("click", () => toggle(!open));
       wrap.append(more);
