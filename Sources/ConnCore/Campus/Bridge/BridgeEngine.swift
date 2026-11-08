@@ -46,6 +46,9 @@ public final class BridgeEngine: ObservableObject {
     /// After a send, how long a thread may stay idle without a new reply before the request says so.
     public var startGrace: TimeInterval = 20
     public var preamble = BridgeCommand.preamble
+    /// The agents a request may name. A caller never picks the thread's powers: only these (read-only, planning) agents are accepted, `plan` by default; any other name is refused
+    /// before anything is sent. Settable from Conn's settings (`conn.campus.bridge.agents`), never from a request.
+    public var allowedAgents: [String] = [BridgeCommand.defaultAgent]
 
     public let store: CampusStore
     public let registry: BridgeRegistry
@@ -60,6 +63,8 @@ public final class BridgeEngine: ObservableObject {
     private var reservedNew: [String: (home: String, at: Date)] = [:]
     private var runningNew = 0
     private var runningThreads: Set<String> = []
+    /// Threads with a `continue` between its check and its audit entry: one at a time per thread, so two requests cannot both pass the turn cap on the same count.
+    private var continuing: Set<String> = []
     private var finishedBroken: Set<String> = []
 
     public init(store: CampusStore, registry: BridgeRegistry, ownership: BridgeOwnership, audit: BridgeAuditLog, callers: BridgeCallers = BridgeCallers(), pid: Int32 = getpid(), now: @escaping () -> Date = Date.init) {
@@ -158,6 +163,7 @@ public final class BridgeEngine: ObservableObject {
             return finish(c, .init(.refused, thread: c.thread, reason: "the message is over \(limits.requestBytes / 1024) KB"))
         }
         if let why = BridgeContent.refusal(payload) { return finish(c, .init(.refused, thread: c.thread, reason: "not sent: \(why)")) }
+        if let a = command.agent, !allowedAgents.contains(a) { return finish(c, .init(.refused, thread: c.thread, reason: "agent '\(a)' is not allowed: the bridge uses \(allowedAgents.joined(separator: ", "))")) }
         if command.answer != nil, !command.text.isEmpty { return finish(c, .init(.failed, thread: c.thread, reason: "format: give either a message or an answer, not both")) }
         // Campus must be signed in and answering; a signed-out Campus is an answer at once, never a queue.
         switch store.link {
@@ -209,6 +215,9 @@ public final class BridgeEngine: ObservableObject {
     private func runContinue(_ c: inout Ctx, _ cmd: BridgeCommand, id: String) async {
         guard let (addr, mode) = ownership.share(for: id) else { return finish(c, .init(.refused, thread: id, reason: "that thread is not one the bridge started or the person shared with agents")) }
         guard mode.maySend else { return finish(c, .init(.refused, thread: id, reason: "that thread is shared with agents for reading only")) }
+        // Reserved before any await and released after the audit entry is written (finish runs inside), so the turn count below is complete when it is read.
+        guard continuing.insert(id).inserted else { return finish(c, .init(.refused, thread: id, reason: "another request is already using this thread: wait for its reply")) }
+        defer { continuing.remove(id) }
         let history = audit.read(now: now())
         if BridgeCaps.turns(on: id, history: history) >= limits.turnsPerThread { return finish(c, .init(.refused, thread: id, reason: "this thread has used its \(limits.turnsPerThread) turns: start a new one")) }
         guard let conv = await store.ensureConversation(kind: addr.kind, folder: addr.folder, id: addr.id), let client = store.client else { return finish(c, .init(.failed, thread: id, reason: "Campus does not have that thread")) }

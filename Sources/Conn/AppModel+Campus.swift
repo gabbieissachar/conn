@@ -214,7 +214,9 @@ extension AppModel {
         let auditFile = scripted ? scratch.appendingPathComponent("audit.jsonl") : ConnMigration.stateDirectory().appendingPathComponent("campus-bridge/audit.jsonl")
         let ownership = BridgeOwnership(defaults: AppModel.defaults, key: config.fixture ? "conn.campus.bridge.threads.fixture" : "conn.campus.bridge.threads")
         let also = (AppModel.defaults.array(forKey: bridgeAlsoAllowedKey) as? [String]) ?? []
-        return BridgeEngine(store: store, registry: BridgeRegistry(directory: registryDir), ownership: ownership, audit: BridgeAuditLog(file: auditFile), callers: BridgeCallers(alsoAllowed: also))
+        let engine = BridgeEngine(store: store, registry: BridgeRegistry(directory: registryDir), ownership: ownership, audit: BridgeAuditLog(file: auditFile), callers: BridgeCallers(alsoAllowed: also))
+        if let agents = AppModel.defaults.array(forKey: "conn.campus.bridge.agents") as? [String], !agents.isEmpty { engine.allowedAgents = agents }
+        return engine
     }
 
     /// Turning the switch on asks first; turning it off is immediate.

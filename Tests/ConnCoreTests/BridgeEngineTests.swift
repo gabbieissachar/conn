@@ -221,6 +221,39 @@ private extension BridgeRegistry {
     }
 }
 
+@Suite("Bridge: the agent and the turn reservation") @MainActor struct BridgeReservationTests {
+    @Test func aRequestCannotPickAnAgentOutsideTheAllowedList() async throws {
+        let lab = await Lab(); lab.on()
+        let bad = try await lab.ask("req-ag1", "campus: new\nagent: build\n---\nPlease do the work.")
+        #expect(lab.field(bad, "status") == "refused" && lab.field(bad, "reason")?.contains("agent 'build' is not allowed") == true && lab.writes().isEmpty)
+        let ok = try await lab.ask("req-ag2", "campus: new\nagent: plan\n---\nPlease plan the work.")
+        #expect(lab.field(ok, "status") == "done" && lab.writes("conversations {").first?.contains("\"agent\":\"plan\"") == true)
+        lab.engine.allowedAgents = ["plan", "review"]
+        let rev = try await lab.ask("req-ag3", "campus: new\nagent: review\n---\nPlease review.")
+        #expect(lab.field(rev, "status") == "done" && lab.writes("conversations {").last?.contains("\"agent\":\"review\"") == true)
+        // A continue that names a disallowed agent is refused too (it would be ignored, which hides the attempt).
+        let thread = try #require(lab.field(ok, "thread"))
+        let c = try await lab.ask("req-ag4", "campus: continue \(thread)\nagent: build\n---\nhi")
+        #expect(lab.field(c, "status") == "refused" && lab.writes("/prompt").isEmpty)
+    }
+
+    @Test func twoContinuesOnOneThreadCannotBothPassTheTurnCap() async throws {
+        var lim = BridgeLimits(); lim.turnsPerThread = 2
+        let lab = await Lab(limits: lim); lab.on()
+        let r = try await lab.ask("req-tr0", lab.newText())                 // turn 1
+        let thread = try #require(lab.field(r, "thread"))
+        try lab.drop("req-tr1", "campus: continue \(thread)\n---\nfirst")
+        try lab.drop("req-tr2", "campus: continue \(thread)\n---\nsecond")
+        lab.engine.scan(); await lab.engine.waitIdle()
+        func status(_ id: String) -> String {
+            let raw = (try? String(contentsOf: lab.registry.replies.appendingPathComponent(id), encoding: .utf8)) ?? ""
+            return lab.field(raw.components(separatedBy: "\n--\n").dropFirst().joined(separator: "\n--\n"), "status") ?? "?"
+        }
+        let s = [status("req-tr1"), status("req-tr2")].sorted()
+        #expect(s == ["done", "refused"] && lab.writes("/prompt").count == 1, "\(s)")
+    }
+}
+
 @Suite("Bridge: what is refused before anything is sent") @MainActor struct BridgeRefusalTests {
     @Test func formatSecretsSizeAttachmentsAndStaleRequestsAreRefusedWithAReplyAndNoCampusCall() async throws {
         let lab = await Lab(); lab.on()
