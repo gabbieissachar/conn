@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 
 from . import answer as answer_lib
@@ -13,6 +14,9 @@ from . import homes, lifecycles, threads, transcripts, workers
 from . import marks as marks_lib
 from .build import build_board
 from .collect import Collector
+
+
+SAFE_ID = re.compile(r"[0-9A-Za-z_-]{8,80}")
 
 
 def thread_source(registry):
@@ -64,7 +68,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (("board", "print one session's board as JSON"), ("check-config", "validate a home's config/task-board.json"),
                             ("mark", "file one reply mark on a task's record (json on stdin: task, turn, mark, source)"),
-                            ("answer", "record one answer to a call (json on stdin: task, call, src, option|text|later)")):
+                            ("answer", "record one answer to a call (json on stdin: task, call, src, option|text|later)"),
+                            ("reply", "print the whole text of one reply, read only (json on stdin: sid, uid)")):
         sub.add_parser(name, help=help_text).add_argument("--session", required=True)
     sub.add_parser("sessions", help="list the sessions that have a board, with the workers you drive and whether each is on")
     switch = sub.add_parser("worker-switch", help="turn one worker's board on or off")
@@ -88,6 +93,23 @@ def main(argv=None) -> int:
         _, source = lifecycles.resolve_lifecycle(session.lifecycle, session.home)
         emit(source)
         return 1 if source["error"] else 0
+    if args.command == "reply":
+        body = read_stdin()
+        sid, uid = str(body.get("sid") or ""), str(body.get("uid") or "")
+        if not (SAFE_ID.fullmatch(sid) and SAFE_ID.fullmatch(uid)):
+            return emit({"ok": False, "status": 400, "message": "Invalid reply."})
+        store = registry.store / transcripts.STORE_FILE if registry.store else None
+        try:
+            conn = transcripts.open_store(store)
+            try:
+                text = transcripts.fetch_reply(conn, session.transcript_cwds(), sid, uid)
+            finally:
+                conn.close()
+        except transcripts.StoreUnavailable as error:
+            return emit({"ok": False, "status": 503, "message": str(error)})
+        if text is None:
+            return emit({"ok": False, "status": 404, "message": "That reply is not in the conversations this board reads."})
+        return emit({"ok": True, "md": text, "words": threads.word_count(text)})
     if args.command in ("mark", "answer"):
         body = read_stdin()
         root = session.root or registry.fm_root

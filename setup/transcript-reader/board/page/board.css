@@ -404,3 +404,83 @@ a.open-link { color: var(--you); text-decoration: underline; }
 .legend dt { font-weight: 700; color: var(--ink); white-space: nowrap; }
 .legend dd { margin: 0; }
 @media (max-width: 440px) { .legend dl { grid-template-columns: minmax(0, 1fr); gap: 0; } .legend dd { margin-bottom: 5px; } }
+
+/* replies drawn with the reader's renderer (markdown.css), hidden ones, the top row of the thread */
+.th-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.th-top > h4 { margin: 0; flex: 1; }
+.th-item .rmd { font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.th-item.reply .rmd .clip::after { background: linear-gradient(transparent, var(--mate-wash)); }
+.th-item.reply.possible .rmd .clip::after { background: linear-gradient(transparent, var(--paper)); }
+.th-item .rmd .md > :last-child { margin-bottom: 0; }
+.th-item .rmd .codebox .copy { min-height: 0; padding: 1px 8px; }
+.th-item.gone { opacity: .6; border-style: dashed; }
+.th-item.gone .th-h::after { content: "hidden"; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 99px; padding: 0 7px; order: 9; }
+.th-item .mk.hide[aria-pressed="true"], .hidden-toggle[aria-pressed="true"] { color: var(--you); border-color: var(--you); }
+.th-item.is-target { outline: 2px solid var(--you); outline-offset: 1px; }
+
+/* the message box at the foot of a card (composer.js): the conversation view's dock, in the sheet */
+.cmp { flex: none; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -4px 14px rgb(0 0 0 / .07); }
+.cmp-bar { display: flex; align-items: center; gap: 8px; padding: 2px 12px; }
+.cmp-toggle { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; border: 0; background: none; padding: 7px 0; text-align: left; font-size: 13.5px; color: var(--ink); }
+.cmp-toggle b { flex: none; }
+.cmp-chev { flex: none; align-self: center; width: 7px; height: 7px; border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-2px, -2px); }
+.cmp.shut .cmp-chev { transform: rotate(-135deg) translate(-2px, -2px); }
+.cmp-say { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); font-weight: 400; }
+.cmp-barundo { border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 8px; padding: 2px 12px; font-size: 13px; font-weight: 600; }
+.cmp-body { padding: 0 12px 9px; max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
+.cmp-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--muted); }
+.cmp-head > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-head button, .cmp-linkbtn { border: 0; background: none; color: var(--muted); padding: 0 2px; font-size: 12.5px; }
+.cmp-linkbtn:hover:not(:disabled), .cmp-head button:hover:not(:disabled) { color: var(--you); }
+.cmp-linkbtn:disabled { opacity: .45; cursor: default; }
+.cmp-chip { border: 1px solid color-mix(in srgb, var(--you) 35%, transparent); background: var(--you-wash); border-radius: 8px; padding: 5px 8px; margin: 2px 0 6px; }
+.cmp-passage { border-left: 3px solid var(--ask-line); padding-left: 8px; font-size: 13px; color: var(--muted); margin: 3px 0; }
+.cmp-passage span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cmp-label { font-size: 11px; color: var(--faint); margin-top: 4px; }
+.cmp-line { font: 12px/1.4 var(--mono); background: var(--paper); border-radius: 6px; padding: 4px 7px; overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 2px; max-height: 8.5em; overflow-y: auto; }
+.cmp-fold { display: inline; font: inherit; color: var(--you); background: none; border: 0; padding: 0; margin: 0 4px 0 0; text-align: left; cursor: pointer; }
+.cmp-acts { display: flex; gap: 10px; align-items: baseline; min-height: 20px; margin-top: 2px; }
+.cmp-why { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-why.bad { color: var(--open); white-space: normal; }
+.cmp-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cmp-count.bad { color: var(--open); font-weight: 600; }
+.cmp-row { display: flex; gap: 6px; align-items: flex-end; margin-top: 4px; }
+.cmp textarea { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 6px 9px; background: var(--paper); color: var(--ink); font: 14px/1.4 var(--sans); resize: none; max-height: 9.5em; }
+.cmp textarea:focus { outline: 2px solid var(--you); outline-offset: -1px; }
+.cmp textarea:read-only { opacity: .6; }
+.cmp-row button { background: var(--you); border: 1px solid var(--you); color: var(--paper); font-weight: 600; border-radius: 10px; padding: 7px 14px; font-size: 14px; }
+.cmp-row button.alt { background: var(--paper); color: var(--you); padding: 7px 10px; }
+.cmp-row button.undo { background: var(--paper); color: var(--you); min-width: 5.2em; font-variant-numeric: tabular-nums; }
+.cmp button:disabled { opacity: .45; cursor: default; }
+.cmp-batch { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; margin: 2px 0 6px; }
+.cmp-batch .cmp-head button:first-child { flex: 1; min-width: 0; text-align: left; color: var(--ink); font-weight: 600; }
+.cmp-batch .cmp-head button.armed { color: var(--open); font-weight: 600; }
+.cmp-batch ol { list-style: none; margin: 3px 0 0; padding: 0; max-height: 22vh; overflow-y: auto; }
+.cmp-batch li { display: flex; gap: 6px; align-items: baseline; font-size: 13px; padding: 4px 0; border-top: 1px solid var(--line); }
+.cmp-batch li .n { color: var(--faint); font-variant-numeric: tabular-nums; }
+.cmp-batch li .what { flex: 1; min-width: 0; }
+.cmp-batch li .what small { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-batch li .what span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.cmp-batch li button { border: 0; background: none; color: var(--muted); font-size: 12px; padding: 0 2px; }
+.cmp-preview { margin: 0 0 6px; max-height: 24vh; overflow-y: auto; }
+.cmp-preview .cmp-line { max-height: none; border: 1px solid var(--line); }
+.cmp-pending { border: 1px dashed var(--you); border-radius: 8px; padding: 5px 8px; margin: 2px 0 6px; background: var(--you-wash); opacity: .92; }
+.cmp-pending.refused { border-color: var(--open); }
+.cmp-pending .cmp-head { flex-wrap: wrap; }
+.cmp-pending .cmp-head b { color: var(--you); }
+.cmp-pendsay { flex: 1 1 12ch; white-space: normal !important; font-size: 12px; }
+.cmp-pendbtn { border: 1px solid var(--line) !important; background: var(--paper) !important; border-radius: 99px !important; padding: 0 9px !important; font-size: 12px; color: var(--muted); }
+.cmp-pendbtn.undo { border-color: var(--you) !important; background: var(--you) !important; color: var(--paper); font-weight: 600; }
+.cmp-pendtext { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 3px; max-height: 6em; overflow-y: auto; }
+.cmp-hint { font-size: 12px; color: var(--muted); }
+.cmp-float { position: fixed; z-index: 45; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 12px; font-size: 13px; font-weight: 600; box-shadow: 0 4px 14px rgb(0 0 0 / .25); }
+@media (hover: none) and (pointer: coarse), (max-width: 440px) {
+  .cmp-row button { min-height: 44px; min-width: 44px; }
+  .cmp textarea { min-height: 44px; }
+  .cmp-head button, .cmp-linkbtn, .cmp-batch li button { padding: 8px 6px; }
+  .cmp-toggle { min-height: 44px; }
+  .cmp-body { max-height: 46vh; }
+  .cmp-float { min-height: 38px; }
+}
+.th-item .mk.hide:hover, .th-item .mk.reply-to:hover, .hidden-toggle:hover { color: var(--you); border-color: var(--you); }
+@media (max-width: 440px) { .cmp-body { max-height: 40vh; } }

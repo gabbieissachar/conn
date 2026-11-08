@@ -1,0 +1,49 @@
+/* The reader's own rules for drawn markdown, copied line for line from prototype/template.html (the conversation view), under .rmd so they only
+   reach what the Tasks page draws with the same renderer. board.test.js fails when a line here no longer matches the reader's. */
+.rmd { --measure: 35rem; }
+.rmd .clip { max-height: 13.5em; overflow: hidden; position: relative; }
+.rmd .clip::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5em; background: linear-gradient(transparent, var(--paper)); pointer-events: none; }
+.rmd .more { border: 0; background: none; color: var(--you); padding: 2px 0; font-size: 13px; }
+.rmd .md > :is(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6) { max-width: var(--measure); }
+.rmd .md p { margin: 0 0 .55em; }
+.rmd .md ul, .rmd .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
+.rmd .md li { margin: 0 0 .25em; }
+.rmd .md li > p { margin: 0 0 .35em; }
+.rmd .md li > ul, .rmd .md li > ol { margin: .25em 0; }
+.rmd .md li.task { list-style: none; position: relative; }
+.rmd .md li.task::before { content: "\2610"; position: absolute; left: -1.4em; }
+.rmd .md li.task.done::before { content: "\2611"; }
+.rmd .md h4 { margin: .6em 0 .3em; font-size: 15px; }
+.rmd .md .ask { background: var(--ask-wash); box-shadow: -4px 0 0 var(--ask-wash), 4px 0 0 var(--ask-wash); border-radius: 3px; }
+.rmd .md .reminder { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+.rmd .md code, .rmd .empty code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+.rmd .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+.rmd .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+.rmd .md a.session-ref { color: var(--mate); text-decoration: underline dotted currentColor; text-underline-offset: 3px; text-decoration-thickness: 1px; cursor: pointer; border-radius: 3px; }
+.rmd .md a.session-ref:hover { text-decoration-style: solid; background: var(--mate-wash); }
+.rmd .md a.session-ref:focus-visible { outline: 2px solid var(--mate); outline-offset: 2px; }
+.rmd .md a.session-ref code { color: inherit; }
+.rmd .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
+.rmd .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
+.rmd .md blockquote > :last-child { margin-bottom: 0; }
+.rmd .codebox { position: relative; margin: 0 0 .55em; }
+.rmd .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rmd .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--dim); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+.rmd .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; user-select: none; -webkit-user-select: none; }
+.rmd .copy::before { content: attr(data-label); }
+.rmd .copy:hover { color: var(--you); border-color: var(--you); }
+.rmd .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+.rmd .table-cue { position: relative; margin: 0 0 .7em; }
+.rmd .table-cue .table-wrap { margin: 0; }
+.rmd .table-cue .cue { position: absolute; top: 1px; bottom: 1px; width: 30px; display: none; pointer-events: none; }
+.rmd .table-cue .cue.l { left: 1px; border-radius: 7px 0 0 7px; background: linear-gradient(to right, var(--cue), transparent); }
+.rmd .table-cue .cue.r { right: 1px; border-radius: 0 7px 7px 0; background: linear-gradient(to left, var(--cue), transparent); }
+.rmd .table-cue .cue::after { position: absolute; top: 6px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--paper); border: 1px solid var(--line); color: var(--muted); font-size: 17px; line-height: 1; padding-bottom: 2px; }
+.rmd .table-cue .cue.l::after { content: "\2039"; left: 3px; }
+.rmd .table-cue .cue.r::after { content: "\203a"; right: 3px; }
+.rmd .table-cue.more-l .cue.l, .rmd .table-cue.more-r .cue.r { display: block; }
+.rmd .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
+.rmd .md th, .rmd .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
+.rmd .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
+.rmd .md td:first-child, .rmd .md th:first-child { min-width: 2.5rem; }
+.rmd .md tr.ask td { background: var(--ask-wash); }

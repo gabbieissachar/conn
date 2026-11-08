@@ -6,12 +6,14 @@ Firstmate already records. The design, the three review rounds and the calls (R1
 config, the reader half of reply marks, the shared tagger and thread builder, the page with answering on a card, and worker boards.
 
 **Read only by default.** The routes are off unless the reader runs with `PMOS_READER_BOARD=1`, and they are never served on the tailnet listener
-(the phone's copy is its own decision, with its own sealing). Two writes into Firstmate homes exist, each behind a flag of its own that is off:
+(the phone's copy is its own decision, with its own sealing). Three writes exist, each behind a flag of its own that is off (the first two change a Firstmate home,
+the third types into a live pane):
 
 | Flag | What it turns on | What it runs |
 | --- | --- | --- |
 | `PMOS_READER_BOARD_MARKS=1` | the page's "Yes, this task" / "Not this task" / "Belongs to task..." | `bin/fm-reply-mark.sh <task> in\|out\|clear <turn> --source card`, one line on `data/<task>/reply-marks.jsonl` |
 | `PMOS_READER_BOARD_ANSWER=1` | "Record this answer" on a call | the one Firstmate command that owns that kind of call (`answer.py`) |
+| `PMOS_READER_BOARD_SEND=1` | Send in the message box at the foot of a card | the reader's own guarded Send (`api.js sendPrompt`: the same pane, foreground-session and Herdr checks as the conversation view), for a session this board's own transcripts name as a supervisor |
 
 With a flag off the route answers 404 and the page hides that control (answers then offer "Copy answer for chat", `<task>#<call> = <answer>`).
 The reader's own switch for worker boards is a small file of the reader's (`board-workers.json`), never a Firstmate home.
@@ -21,7 +23,12 @@ GET  /setup/transcript-reader/board/                                        the 
 POST /api/transcript-reader/board-mark    { session, task, turn, mark }     flagged
 POST /api/transcript-reader/board-answer  { session, task, call, src, ... } flagged
 POST /api/transcript-reader/board-worker  { leader, task, enabled }         a worker board on or off
+GET  /api/transcript-reader/board-reply?session=&sid=&uid=                  the whole text of one reply, read only (for "Show full reply")
+POST /api/transcript-reader/board-send    { session, session_id, text }     flagged: the composer's Send
 ```
+
+Hiding a reply uses the reader's own routes (`GET`/`POST /api/transcript-reader/hidden`, the reader's `hidden.json`), so a reply hidden here is hidden in the conversation
+view and the reverse. The board does not keep a list of its own.
 
 ```
 python3 -I setup/transcript-reader/board_cli.py sessions                    # which sessions have a board
@@ -76,6 +83,27 @@ version has one, else the same definition (`store/PROPOSED-v1-turn-tools.sql`, t
 schema-1 tables**. A temp view lives in the board's own read-only connection: nothing is written to the store file (a test compares the file byte for
 byte), and a store whose tables differ just loses that signal. That is the one read of a table rather than a view; `PMOS_READER_BOARD_TOOL_TEXT=0`
 turns it off. Making `v1_turn_tools` a real versioned view is an S2 migration and is not done here (S1's soak is untouched).
+
+## Reading and answering a reply on a card (`replyview.js`, `composer.js`)
+
+The card view is a reading and writing surface for its thread, built from the reader's own pieces. `board.js` (server side) pastes them into the page when it serves it:
+the reader's `live.js` (the pointer words and the pane list), the vendored markdown-it with `markdown.js` (the renderer every reply of the conversation view goes through),
+`undosend.js` (the Undo window and the faded message's wording) and `commentkey.js`, then the board's two files. `markdown.css` holds the reader's own rules for drawn
+markdown, copied line for line under `.rmd`; `board.test.js` fails when a line stops matching `prototype/template.html`.
+
+| What | How |
+| --- | --- |
+| A reply | drawn by `markdownView` into the reader's `div.md`, the start of it (whole blocks up to the one that crosses 90 words, cut by the server: `threads.preview`) behind "Show full reply (N words)"; the rest is read on demand from `board-reply`. The button turns into "Show less". Markup in a reply shows as text and runs nothing (raw HTML is off, as in the reader). |
+| Hide / Show again | each reply; `Hidden (n)` above the thread shows the hidden ones (dashed, each with Show again). The key is the reader's: `<turn id>:reply`. |
+| Back / Next | through the cards of the open card's column as the board shows them (filters, groups, sort); the arrow keys too (not while typing in a box). |
+| Reply tags | each tag has a tooltip, and "What the tags on a reply mean" lists them. |
+| The message box | pinned to the foot of the card, folds into a bar (kept in this browser; folded by default on a phone). It writes to the supervisor conversation of the board that has a live Herdr pane (the newest if several), else the newest one. |
+| Comment on a reply | Reply, or select words in a reply (the "Comment on this" button, or Cmd/Ctrl+Enter): the box gets a pointer, `Re your reply at 10:00 ("Nathan, ..."), the part "...": your words`, built by the reader's `live.pointer`. A reply from an earlier session than the one written to is described by its opening words, since that session never saw it. |
+| Batch, Send, Undo, Send now | as in the conversation view: comments wait together and go as one numbered message (`N comments:` then `1. ...`); Send holds the message for `UNDO_SECONDS` with the box locked (Send turns into Undo, Add into Now; Enter sends now, Esc takes it back); Enter sends, Shift+Enter starts a line, Cmd/Ctrl+Enter adds to the batch; a command (`/clear`) goes alone and asks first. Drafts and batches are kept per conversation in the tab. |
+| Not in the box | photos (the conversation view's attach button), the hosted copy's queue (the board is loopback only), and a held message surviving a reload (the draft does). |
+
+With `PMOS_READER_BOARD_SEND=1` off the box still drafts, quotes, batches and copies, and says why Send is off. Tests: `e2e/board-check.js` (round 3) sends through the reader's own
+guarded Send to a fake Herdr that types nowhere (`e2e/fake-herdr-world.js`), and `api.test.js` covers the route (flag, token, origin, a session the board does not read, the reader's own refusals).
 
 ## Answering a call (`answer.py`)
 

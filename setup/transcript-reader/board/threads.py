@@ -26,6 +26,8 @@ REQUEST_AFTER_START = 2700
 HOLD_REPLY_BEFORE = 90          # a hold is set in the same turn as the reply that announces it
 HOLD_REPLY_AFTER = 2400
 WORKER_REPLY_AFTER = 6 * 3600   # a worker's own question is relayed later: only a task-matched reply within 6 hours counts
+PREVIEW_WORDS = 90              # the reader clips a reply at 90 words behind "Show full reply"; the card's first look is the same size
+PREVIEW_CHARS = 2400
 
 
 def plain(text: str) -> str:
@@ -39,6 +41,42 @@ def clip(text: str, limit: int) -> str:
     text = re.sub(r"[ \t]+\n", "\n", plain(text)).strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def word_count(text: str) -> int:
+    return len((text or "").split())
+
+
+def preview(text: str) -> tuple[str, bool]:
+    """(the markdown the card shows first, whether more follows). Whole blocks (paragraphs, lists, tables, a fenced code box) up to the one that
+    crosses PREVIEW_WORDS, so the reader's own renderer draws a complete piece; the rest comes from `board-reply` when "Show full reply" is pressed."""
+    text = (text or "").strip("\n")
+    if word_count(text) <= PREVIEW_WORDS:
+        return text, False
+    blocks, current, fenced = [], [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        if not line.strip() and not fenced:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            continue
+        current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    shown, count = [], 0
+    for block in blocks:
+        shown.append(block)
+        count += word_count(block)
+        if count >= PREVIEW_WORDS:
+            break
+    md = "\n\n".join(shown)
+    if len(md) > PREVIEW_CHARS:
+        md = md[:PREVIEW_CHARS].rsplit("\n", 1)[0]
+    if md.count("```") % 2:
+        md += "\n```"
+    return md, md != text
 
 
 def day(epoch: float) -> str:
@@ -166,9 +204,16 @@ def build(session, items: list[dict], transcript: Transcript, now: float | None 
     levels = {"sure": 0, "possible": 0, "weak": 0, "none": 0}
     for found in matches:
         levels[tagger.best_level(found)] += 1
+    shown = {e["key"] for t in threads.values() for e in t["thread"] if e["k"] == "reply"}
+    texts = {}
+    for reply in replies:
+        if reply["key"] in shown:
+            md, more = preview(reply["text"])
+            texts[reply["key"]] = {"md": md, "words": word_count(reply["text"]), "more": more}
     return {
         "status": "ok", "asof": transcript.asof, "sessions": len(transcript.sessions), "replies": len(replies), "yours": len(transcript.humans),
-        "tasks": threads, "asked": asked,
+        "session_list": [{"id": s["id"], "replies": s["replies"], "last": s.get("last")} for s in transcript.sessions],
+        "texts": texts, "tasks": threads, "asked": asked,
         "upkeep": {"n": len(upkeep), "items": upkeep[::-1][:ROW_KEEP]}, "notask": {"n": len(no_task), "items": no_task[::-1][:ROW_KEEP]},
         "stats": {"levels": levels, "roundups": sum(1 for f in matches if tagger.sure_count(f) >= 3), "requests": {"total": request_total, "linked": request_linked},
                   "marks": sum(len(m) for m in marks.values())},

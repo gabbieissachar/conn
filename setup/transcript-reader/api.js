@@ -50,6 +50,9 @@
 //   GET  /api/transcript-reader/board-sessions      the sessions that have a board (same flag, same limits)
 //   POST /api/transcript-reader/board-{mark,answer,worker}  the board's writes (board.js): a reply mark and an answer, each behind a flag of its own, and a worker's
 //                                                   on/off switch; GET /setup/transcript-reader/board/ is its page (loopback only)
+//   GET  /api/transcript-reader/board-reply         the whole text of one reply a card shows (board.js), read only
+//   POST /api/transcript-reader/board-send          the card view's message box: the board's flag (PMOS_READER_BOARD_SEND=1) and a supervisor session its own
+//                                                   transcripts name, then the reader's own Send (below), unchanged
 //   POST /api/transcript-reader/sync                the Sync button: reads Herdr again at once, lists every live
 //                                                   Claude pane's session that is not listed (unless a person closed
 //                                                   or removed it) and rebuilds the pages from the session logs and
@@ -1836,6 +1839,20 @@ function create({
       }
       if (pathname === API + 'board' && req.method === 'GET') {
         try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: board.write }); } catch (error) { if (!boardFail(error)) throw error; }
+        return;
+      }
+      if (pathname === API + 'board-reply' && req.method === 'GET') {
+        try { send(res, 200, { status: 'ok', ...(await board.reply(query.get('session'), query.get('sid'), query.get('uid'))) }); } catch (error) { if (!boardFail(error)) throw error; }
+        return;
+      }
+      // A message to a supervisor's pane, from the Tasks page's composer: the board's own flag and its own session list first (board.sendCheck), then the
+      // reader's Send itself, unchanged (the same pane, foreground and Herdr checks as the conversation view's). The body is checked there, not here.
+      if (pathname === API + 'board-send' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        try {
+          board.sendCheck(body.session, body.session_id);
+          send(res, 200, { status: 'ok', ...(await sendPrompt({ session_id: body.session_id, text: body.text, ...(body.images ? { images: body.images } : {}) })) });
+        } catch (error) { if (!boardFail(error)) throw error; }
         return;
       }
       if (req.method === 'POST' && (pathname === API + 'board-mark' || pathname === API + 'board-answer' || pathname === API + 'board-worker')) {

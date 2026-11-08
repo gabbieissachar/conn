@@ -2,7 +2,7 @@
 replies about them (the S1 ingest over synthetic logs), and the reader's board config pointing at both. Everything is made in the folder given as argv[1]
 (use a fresh one); nothing real is read or written. Prints one JSON line: the home, the config file and the folders the server needs in its environment.
 Needs a Firstmate checkout with typed ask records (FM_ROOT, or the installed fm-ask link); exits 3 when there is none."""
-import json, os, subprocess, sys, time
+import json, os, stat, subprocess, sys, time
 from pathlib import Path
 R = str(Path(__file__).resolve().parents[1])
 sys.path.insert(0, R + "/board/tests"); sys.path.insert(0, R)
@@ -41,8 +41,13 @@ lab = Lab()
 cwd = "/lab/homes/esim"
 base = hold_at - 600
 big = " That is a longer reply so it counts for the card and shows in the thread."
-lab.session(cwd, [
-    ("what is open on alpha", "Nathan, alpha-route needs your pick before it can start. I opened a card Z1 for it." + big, "bin/fm-send.sh alpha-route hello"),
+# a long reply in markdown: headings, a list, a table, a code box, a link, and markup that must show as text (the reader's renderer escapes it)
+rich = ("Nathan, alpha-route needs your pick before it can start. I opened a card Z1 for it.\n\n## The routes\n\n- **the shared plugin** (recommended): `bin/fm-send.sh alpha-route hello`\n- a fresh repo\n- skip it\n\n"
+        "| route | cost | risk |\n|---|---|---|\n| plugin | low | low |\n| repo | high | medium |\n\n```sh\nbin/fm-send.sh alpha-route go\n```\n\n"
+        "See [the notes](https://example.test/notes) and <script>window.__pwned = 1</script> and <img src=x onerror=\"window.__pwned = 2\"> too.\n\n"
+        + "\n\n".join("Paragraph %d of the longer reply, with enough words in it to push the whole text well past the point where the card clips it." % n for n in range(1, 9)))
+sup1 = lab.session(cwd, [
+    ("what is open on alpha", rich + big, "bin/fm-send.sh alpha-route hello"),
     ("go on with the lesson", "Nathan, the lesson six draft is ready for you to read at data/zeta-lesson/report.md." + big),
     ('Re your reply at %s ("Nathan, alpha-route needs your pick"): looking now' % time.strftime("%H:%M", time.localtime(base + 50)), "Nathan, noted; I will wait on the alpha-route card." + big),
     ("status?", "Nathan, shipshape."),
@@ -50,10 +55,20 @@ lab.session(cwd, [
     ("anything else", "Nathan, the colour of the footer is still undecided and it needs your view when you have a minute, please read the options on the board." + big),
 ], base=base)
 # the asking reply of the holds: a reply right after the hold time
-lab.session(cwd, [
+sup2 = lab.session(cwd, [
     ("hold time", "Nathan, here are the calls: R1 and R2 on delta-two-calls need you." + big, "bin/fm-captain-hold.sh hold delta-two-calls --reason x"),
     ("again", "Nathan, shipshape."), ("and", "Nathan, shipshape again.")], base=hold_at + 20)
 lab.ingest()
+# the reader's own Send, against a fake Herdr that types nothing anywhere: one idle Claude pane runs the newest supervisor conversation
+(tmp / "out").mkdir(); (tmp / "bin").mkdir()
+(tmp / "out" / "sessions.txt").write_text(sup1 + "\n" + sup2 + "\n")
+(tmp / "world.json").write_text(json.dumps({"sessions": [{"name": "lab", "focused": "w1:p1", "tabs": [{"tab_id": "w1:t1", "label": "supervisor"}], "panes": [
+    {"pane_id": "w1:p1", "tab_id": "w1:t1", "label": "lab-supervisor", "agent": "claude", "agent_status": "idle", "agent_session": sup2, "title": "Supervisor", "cwd": cwd,
+     "process": [{"pid": 1001, "argv0": "claude", "cwd": cwd}]}]}]}))
+herdr = tmp / "bin" / "herdr"
+herdr.write_text(f"#!/bin/sh\nFAKE_HERDR_WORLD={tmp / 'world.json'} FAKE_HERDR_LOG={tmp / 'herdr.log'} FAKE_HERDR_DIR={tmp} exec node {Path(__file__).resolve().parent / 'fake-herdr-world.js'} \"$@\"\n")
+herdr.chmod(herdr.stat().st_mode | stat.S_IEXEC)
 (tmp / "board.json").write_text(json.dumps({"fm_root": str(FM), "store": str(lab.root), "sessions": [{"id": "leader-lab", "label": "Lab", "home": str(home), "lifecycle": "software", "cwds": [cwd]}]}))
 (tmp / "cache").mkdir(); (tmp / "conf").mkdir()
-print(json.dumps({"home": str(home), "config": str(tmp / "board.json"), "cache": str(tmp / "cache"), "conf": str(tmp / "conf")}))
+print(json.dumps({"home": str(home), "config": str(tmp / "board.json"), "cache": str(tmp / "cache"), "conf": str(tmp / "conf"), "out": str(tmp / "out"), "herdr": str(herdr),
+                  "log": str(tmp / "herdr.log"), "hidden": str(tmp / "hidden.json"), "sup": sup2, "sup_old": sup1}))

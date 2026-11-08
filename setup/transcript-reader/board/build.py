@@ -105,4 +105,4 @@ def _attach_threads(session, items: list[dict], threads, now: float, errors: lis
         item.update(data["tasks"].get(item["ref"], {}))
         for call in item["calls"]:
             call["asked"] = (data["asked"].get(item["ref"]) or {}).get(call["id"])
-    return {key: data[key] for key in ("status", "asof", "sessions", "replies", "yours", "upkeep", "notask", "stats")}
+    return {key: data[key] for key in ("status", "asof", "sessions", "session_list", "texts", "replies", "yours", "upkeep", "notask", "stats")}

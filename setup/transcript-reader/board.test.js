@@ -6,6 +6,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const vm = require('vm');
 const path = require('path');
 const boardLib = require('./board');
 
@@ -136,10 +138,11 @@ function writeFixture({ marks = false, answer = false, reply = { ok: true, mark:
   return { b, runs, inputs };
 }
 
-test('writes: both are off unless their own flag is on, and off they run nothing', async () => {
-  assert.deepEqual(boardLib.create({ root: ROOT, env: {} }).write, { marks: false, answer: false });
-  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_MARKS: '1' } }).write, { marks: true, answer: false });
-  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_ANSWER: '1' } }).write, { marks: false, answer: true });
+test('writes: all three are off unless their own flag is on, and off they run nothing', async () => {
+  assert.deepEqual(boardLib.create({ root: ROOT, env: {} }).write, { marks: false, answer: false, send: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_MARKS: '1' } }).write, { marks: true, answer: false, send: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_ANSWER: '1' } }).write, { marks: false, answer: true, send: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_SEND: '1' } }).write, { marks: false, answer: false, send: true });
   const t = writeFixture();
   await assert.rejects(() => t.b.mark('leader-esim', { task: 'a', turn: 't', mark: 'in' }), (e) => e.status === 404 && e.code === 'not_found');
   await assert.rejects(() => t.b.answer('leader-esim', { task: 'a', call: 'Z1', src: 'ask' }), (e) => e.status === 404);
@@ -180,7 +183,65 @@ test('page: the three source files make one document with the token tag and no s
   const real = path.resolve(__dirname, '..', '..');
   const html = boardLib.create({ root: real, env: {} }).page();
   assert.ok(html.includes('<meta name="reader-token" content="__READER_TOKEN__">'));
-  assert.equal(/__CSS__|__JS__/.test(html), false);
+  assert.equal(/__[A-Z_]+__\*\//.test(html.replace('__READER_TOKEN__', '')), false, 'no slot is left');
   assert.ok(html.includes('--paper') && html.includes('window.__board'));
   assert.equal(html.includes('</script><script'), false);
+});
+
+// ---- round 4: the page carries the reader's own pieces
+
+const REAL = path.resolve(__dirname, '..', '..');
+const pageHtml = () => boardLib.create({ root: REAL, env: {} }).page();
+const pageScript = () => pageHtml().match(/<script>([\s\S]*)<\/script>/)[1];
+
+test('page: the reader\'s live link, markdown renderer, Undo window and comment key are pasted in whole, and the script still parses', () => {
+  const html = pageHtml();
+  for (const [name, file] of [['live.js', 'live.js'], ['markdown.js', 'markdown.js'], ['undosend.js', 'undosend.js'], ['commentkey.js', 'commentkey.js'], ['markdown-it', path.join('vendor', 'markdown-it.min.js')]]) {
+    assert.ok(html.includes(fs.readFileSync(path.join(__dirname, 'prototype', file), 'utf8')), `${name} is in the page exactly as the reader has it`);
+  }
+  for (const own of ['replyview.js', 'composer.js']) assert.ok(html.includes(fs.readFileSync(path.join(__dirname, 'board', 'page', own), 'utf8')), own);
+  assert.doesNotThrow(() => new vm.Script(pageScript()), 'one script that parses');
+  assert.equal((html.match(/<\/script/gi) || []).length, 1, 'nothing in a pasted file closes the script early');
+});
+
+test('page: every rule of markdown.css is a line of the reader\'s own template, so the two cannot drift apart', () => {
+  const template = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const rules = fs.readFileSync(path.join(__dirname, 'board', 'page', 'markdown.css'), 'utf8').split('\n').filter((line) => line.startsWith('.rmd .') && line.includes(' {'));
+  assert.ok(rules.length >= 40, 'the rules are there: ' + rules.length);
+  const unscoped = (line) => line.replace(/^\.rmd /, '').replace(/, \.rmd /g, ', ');
+  const missing = rules.map(unscoped).filter((rule) => !template.includes(rule));
+  assert.deepEqual(missing, [], 'rules that no longer match the reader\'s');
+});
+
+test('page: a reply is drawn by markdown.js into the reader\'s own shape, and markup in it stays text', () => {
+  const sandbox = { document: { querySelector: () => null } };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, 'prototype', 'vendor', 'markdown-it.min.js'), 'utf8'), sandbox);
+  const view = vm.runInContext(fs.readFileSync(path.join(__dirname, 'prototype', 'markdown.js'), 'utf8') + '\nmarkdownView;', sandbox);
+  const drawn = view.render('## Heading\n\n- one\n- **two**\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```sh\necho hi\n```\n\n<script>alert(1)</script> <img src=x onerror=alert(2)> [a](https://example.test) [b](javascript:alert(3))', { ask: [], reminder: [], doc: false }).html;
+  assert.match(drawn, /<h4/);
+  assert.match(drawn, /<div class="table-wrap"><table>/);
+  assert.match(drawn, /<div class="codebox">/);
+  assert.match(drawn, /<a href="https:\/\/example.test" target="_blank" rel="noopener noreferrer">a<\/a>/);
+  assert.equal(/<script|<img|href="javascript/i.test(drawn), false, 'raw tags and script links are never markup');
+  assert.match(drawn, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test('reply text: the route checks its ids, and the send route needs its own flag and a session the board reads', async () => {
+  const inputs = [];
+  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1' }, run: async (f, a) => JSON.stringify({ items: [], threads: { status: 'ok', session_list: [{ id: 'abcdefgh-1' }] } }), runInput: async (f, a, o, input) => { inputs.push([a, input]); return JSON.stringify({ ok: true, md: 'whole', words: 1 }); } });
+  assert.equal(b.write.send, false);
+  await assert.rejects(() => b.reply('leader-esim', '../x', 'abcdefgh'), (e) => e.status === 400);
+  await assert.rejects(() => b.reply('../x', 'abcdefgh', 'abcdefgh'), (e) => e.status === 400);
+  assert.equal(inputs.length, 0);
+  assert.deepEqual(await b.reply('leader-esim', 'abcdefgh-1', 'ijklmnop-2'), { md: 'whole', words: 1 });
+  assert.deepEqual(inputs[0][0].slice(2), ['reply', '--session', 'leader-esim']);
+  assert.throws(() => b.sendCheck('leader-esim', 'abcdefgh-1'), (e) => e.status === 404, 'flag off');
+  const on = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1', PMOS_READER_BOARD_SEND: '1' }, run: async () => JSON.stringify({ items: [], threads: { status: 'ok', session_list: [{ id: 'abcdefgh-1' }] } }) });
+  assert.equal(on.write.send, true);
+  assert.throws(() => on.sendCheck('leader-esim', 'abcdefgh-1'), (e) => e.status === 409 && e.code === 'not_a_board_session', 'before the board is read it names no supervisor');
+  await on.board('leader-esim');
+  assert.doesNotThrow(() => on.sendCheck('leader-esim', 'abcdefgh-1'));
+  assert.throws(() => on.sendCheck('leader-esim', 'zzzzzzzz-9'), (e) => e.code === 'not_a_board_session');
+  assert.throws(() => on.sendCheck('../x', 'abcdefgh-1'), (e) => e.status === 400);
 });

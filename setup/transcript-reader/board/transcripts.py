@@ -141,7 +141,7 @@ def load(conn: sqlite3.Connection, cwds: list[str], days: int = DEFAULT_DAYS, no
         mine = [t for t in turns if (t["reply"] or "").lstrip().startswith("Nathan")] if addressed_only else [t for t in turns if (t["reply"] or "").strip()]
         if addressed_only and len(mine) < 3 and not HANDOFF_PATH.match(first.split("\n")[0].strip()):
             continue
-        transcript.sessions.append({"id": sid, "replies": len(mine)})
+        transcript.sessions.append({"id": sid, "replies": len(mine), "last": max((t["reply_at"] or t["at"] or 0) for t in turns) or None})
         for t in mine:
             if not t["uid"]:
                 continue
@@ -172,6 +172,19 @@ def load(conn: sqlite3.Connection, cwds: list[str], days: int = DEFAULT_DAYS, no
             items.append({**part, "e": h["e"], "sid": h["sid"], "uid": h["uid"], "key": f"{h['sid'][:8]}:{h['uid'][:8]}:in"})
     transcript.humans = items
     return transcript
+
+
+def fetch_reply(conn: sqlite3.Connection, cwds: list[str], sid: str, uid: str) -> str | None:
+    """The whole text of one reply, when it is in a session working in one of `cwds` (the same sessions the board reads), else None."""
+    cwds = [str(c).rstrip("/") for c in cwds if c]
+    if not cwds:
+        return None
+    try:
+        row = conn.execute("SELECT t.reply FROM v1_turns t JOIN v1_sessions s ON s.session_id = t.session_id "
+                           f"WHERE t.session_id = ? AND t.uid = ? AND s.cwd IN {_in_clause(cwds)} LIMIT 1", [sid, uid, *cwds]).fetchone()
+    except sqlite3.Error as error:
+        raise StoreUnavailable(f"the reader store could not be read ({error.__class__.__name__})") from None
+    return row[0] if row and row[0] else None
 
 
 def _turn_tools(conn: sqlite3.Connection, sessions: set, cut: float) -> dict:

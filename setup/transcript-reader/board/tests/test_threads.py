@@ -281,6 +281,41 @@ class ThreadBuild(HomeCase):
         self.assertEqual(data["tasks"]["other"]["thread"], [])
 
 
+class ReplyText(HomeCase):
+    """The text a card draws a reply from: a preview of whole blocks (the reader's own renderer draws it), the full text on request."""
+
+    def test_a_short_reply_is_shown_whole_and_a_long_one_stops_at_a_block_after_90_words(self):
+        short = "Nathan, a short reply.\n\n- one\n- two"
+        self.assertEqual(threads.preview(short), (short, False))
+        para = lambda n: " ".join(f"w{n}x{i}" for i in range(40))  # noqa: E731
+        long = "\n\n".join(para(n) for n in range(6))
+        md, more = threads.preview(long)
+        self.assertTrue(more)
+        self.assertEqual(md, "\n\n".join(para(n) for n in range(3)))  # 40 + 40 + 40 words: the block that crosses 90 is the last one shown
+        self.assertEqual(threads.word_count(long), 240)
+
+    def test_a_fenced_code_box_is_never_cut_in_half_and_a_cut_one_is_closed(self):
+        code = "```sh\n" + "\n".join(f"echo {i}" for i in range(400)) + "\n```"
+        md, more = threads.preview("Intro " + "word " * 100 + "\n\n" + code)
+        self.assertTrue(more)
+        self.assertEqual(md.count("```") % 2, 0)
+        self.assertLessEqual(len(md), threads.PREVIEW_CHARS + 8)
+        text = "Start of a reply " + "word " * 100 + "\n\n```\n" + "x\n" * 2000 + "```"
+        cut, _ = threads.preview(text)
+        self.assertEqual(cut.count("```") % 2, 0)
+
+    def test_the_board_carries_each_shown_reply_once_with_its_words_and_whether_more_follows(self):
+        long = "Nathan, reader-fix-batch is ready.\n\n" + "\n\n".join(" ".join(["more"] * 50) for _ in range(5))
+        r1 = reply(long, NOW - 5000, key="s:r1:reply")
+        tr = transcripts.Transcript(replies=[r1], humans=[], sessions=[{"id": "s", "replies": 1, "last": NOW - 5000}], asof=NOW)
+        data = threads.build(self.session, [item("reader-fix-batch"), item("other-task")], tr, NOW)
+        self.assertEqual(list(data["texts"]), ["s:r1:reply"])
+        got = data["texts"]["s:r1:reply"]
+        self.assertEqual((got["more"], got["words"] > 90), (True, True))
+        self.assertTrue(got["md"].startswith("Nathan, reader-fix-batch is ready."))
+        self.assertEqual(data["session_list"], [{"id": "s", "replies": 1, "last": NOW - 5000}])
+
+
 class AskedReply(HomeCase):
     LONG = " That reply is long enough to count as a real one."
 
@@ -370,6 +405,19 @@ class StoreBacked(HomeCase):
         self.assertEqual(len(tr.replies), 3)
         self.assertTrue(all(r["key"].startswith(sid[:8] + ":") and r["key"].endswith(":reply") for r in tr.replies))
         self.assertIsNone(tr.asof, "a lab store has no ingest heartbeat, which is not an error")
+
+    def test_the_whole_text_of_one_reply_comes_from_the_store_only_for_the_boards_own_folders(self):
+        self.supervisor()
+        self.lab.ingest()
+        tr = self.read()
+        first = tr.replies[0]
+        conn = transcripts.open_store(self.lab.db_path)
+        self.addCleanup(conn.close)
+        self.assertIn("alpha-report scout is finished", transcripts.fetch_reply(conn, [CWD], first["sid"], first["uid"]))
+        self.assertIsNone(transcripts.fetch_reply(conn, ["/somewhere/else"], first["sid"], first["uid"]))
+        self.assertIsNone(transcripts.fetch_reply(conn, [CWD], first["sid"], "no-such-turn"))
+        self.assertIsNone(transcripts.fetch_reply(conn, [], first["sid"], first["uid"]))
+        self.assertTrue(all(s["last"] for s in tr.sessions))
 
     def test_a_short_session_is_not_a_supervisor_but_a_worker_you_drive_is_read_whole(self):
         self.lab.session(CWD, [("hi", "Nathan, one" + self.BIG), ("hi", "Nathan, two" + self.BIG)])

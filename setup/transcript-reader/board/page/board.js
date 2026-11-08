@@ -19,10 +19,24 @@
   const readerLink = (l) => (l && l.s && l.m ? READER + "#s=" + encodeURIComponent(l.s) + "&m=" + encodeURIComponent(l.m) : null);
 
   const S = {
-    sessions: [], session: null, board: null, write: { marks: false, answer: false }, loadedAt: 0, error: null, loading: false,
+    sessions: [], session: null, board: null, write: { marks: false, answer: false, send: false }, loadedAt: 0, error: null, loading: false,
     project: "all", q: "", col: "needs", open: null, grouped: true, shut: {}, barOpen: false, workersOpen: false,
     drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {}, order: {},
+    hidden: new Map(), showHidden: false, full: {}, fullText: {}, fullBusy: {},
   };
+  /* The message box at the foot of a card (composer.js): it writes to the supervisor conversation this board reads that has a live Herdr pane (the newest if
+     several), else the newest one, and says why Send is off. Its send is the board's own flagged route (PMOS_READER_BOARD_SEND=1). */
+  const composer = boardComposer({
+    sendOn: () => !!S.write.send,
+    target: () => composerTarget(),
+    send: (sid, text) => post("board-send", { session: S.session, session_id: sid, text }),
+  });
+  function composerTarget() {
+    const th = S.board && S.board.threads; if (!th || th.status !== "ok") return null;
+    const list = (th.session_list || []).slice().sort((a, b) => (b.last || 0) - (a.last || 0)); if (!list.length) return null;
+    const panes = composer.state().panes || {}, pick = list.find((x) => panes[x.id]) || list[0];
+    return { sid: pick.id, name: (panes[pick.id] && panes[pick.id].label) || S.board.session.label };
+  }
   const items = () => (S.board ? S.board.items : []);
   const byRef = () => Object.fromEntries(items().map((t) => [t.ref, t]));
   const ageDays = (d) => (d && S.board ? Math.round((utc(S.board.today) - utc(d)) / 864e5) : null);
@@ -48,6 +62,10 @@
       if (data.error) S.notice.config = data.error; else delete S.notice.config;
     } catch (e) { S.error = e.message; }
   }
+  /* The replies hidden from view are the reader's own list (its hidden.json behind /hidden, keys "<turn id>:reply"): hiding here hides there, and the reverse. */
+  async function loadHidden() {
+    try { const r = await live.hiddenList(); S.hidden = new Map((r.hidden || []).map((h) => [h.key, h])); } catch (_) { /* no list: nothing is hidden */ }
+  }
   async function loadBoard(fresh) {
     if (!S.session) return;
     const asked = S.session;
@@ -59,12 +77,13 @@
       if (data.stale) setTimeout(() => { if (S.session === asked) loadBoard(false); }, 9000);  // an older board came at once; the new one is being built
     } catch (e) { if (asked === S.session) { S.error = e.message; S.board = S.board && S.board.session.id === asked ? S.board : null; } }
     S.loading = false;
+    await loadHidden();
     render();
   }
   function chooseSession(id) {
     if (id === S.session) return;
     S.session = id; S.board = null; S.project = "all"; S.q = ""; S.open = null; S.col = "needs"; S.drafts = {}; S.confirm = null; S.error = null; S.stale = false;
-    $("find").value = ""; $("layer").textContent = "";
+    $("find").value = ""; composer.detach(); $("layer").textContent = "";
     history.replaceState(null, "", "#s=" + encodeURIComponent(id));
     render(); loadBoard(false);
   }
@@ -126,7 +145,7 @@
     as.append(S.board.session.label + " · read ", el("b", "", d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })));
     if (S.stale) as.append(el("span", "", " · refreshing"));
     if (th.asof) as.append(" · transcripts as of " + new Date(th.asof * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
-    const on = [S.write.answer ? "answers" : null, S.write.marks ? "marks" : null].filter(Boolean);
+    const on = [S.write.answer ? "answers" : null, S.write.marks ? "marks" : null, S.write.send ? "messages to the supervisor" : null].filter(Boolean);
     as.append(" · " + (on.length ? "writes on: " + on.join(" and ") : "read only"));
   }
 
@@ -302,8 +321,51 @@
     d.append(dl, el("p", "hint", "Solid tags are exact (the rules are sure the reply is about this task). Dashed cards are possible matches: say yes or no and the board learns it."));
     return d;
   }
+  /* A reply is drawn by the reader's own renderer (replyview.js): the start of it, then "Show full reply" (the rest is read on demand). A reply can be hidden
+     (the reader's list), and commented on: select words in it, or press Reply, and the message box at the foot of the card points at it. */
+  const hideKey = (it) => (it.link && it.link.m ? it.link.m + ":reply" : "");
+  const isHidden = (it) => !!hideKey(it) && S.hidden.has(hideKey(it));
+  const replyTexts = () => (S.board && S.board.threads && S.board.threads.texts) || {};
+  const keepSheetPlace = () => { if (!S.open) return; const sb = document.querySelector(".sh-body"); if (sb) S.open.keepScroll = sb.scrollTop; renderSheet(); };
+  async function setHidden(it, hide) {
+    const key = hideKey(it); if (!key) return;
+    try {
+      const r = await live.hiddenChange(hide ? { op: "hide", key, conv: it.link.s, at: it.e } : { op: "unhide", key });
+      S.hidden = new Map((r.hidden || []).map((h) => [h.key, h]));
+    } catch (e) { toast("Could not " + (hide ? "hide" : "show") + " the reply: " + e.message); return; }
+    keepSheetPlace();
+    if (hide) toast("Hid the reply. \"Hidden\" above the thread shows it again.");
+  }
+  async function toggleFull(it, info, open) {
+    if (!open) { delete S.full[it.key]; keepSheetPlace(); return; }
+    S.full[it.key] = true;
+    if (info.more && !S.fullText[it.key]) {
+      S.fullBusy[it.key] = true; keepSheetPlace();
+      try { S.fullText[it.key] = (await api("board-reply?session=" + encodeURIComponent(S.session) + "&sid=" + encodeURIComponent(it.link.s) + "&uid=" + encodeURIComponent(it.link.m))).md; }
+      catch (e) { delete S.full[it.key]; toast("Could not read the whole reply: " + e.message); }
+      delete S.fullBusy[it.key];
+    }
+    keepSheetPlace();
+  }
+  function replyBody(it) {
+    const info = replyTexts()[it.key];
+    if (!info) return el("div", "th-body", it.text);  // a board built before the texts came with it: the plain preview
+    const md = S.full[it.key] && S.fullText[it.key] ? S.fullText[it.key] : info.md;
+    return replyView.clipped(replyView.draw(md), { words: info.words, open: !!S.full[it.key], busy: !!S.fullBusy[it.key], toggle: (open) => toggleFull(it, info, open) });
+  }
+  /* The pointer a comment on this reply starts with: the conversation view's own words (live.pointer). A reply from an earlier session of the
+     conversation than the one the box writes to is described by its words, since that session never saw it. */
+  function replyTarget(it) {
+    const info = replyTexts()[it.key], text = (S.full[it.key] && S.fullText[it.key]) || (info && info.md) || it.text;
+    return (passage) => {
+      const to = composerTarget(), earlier = !!(to && to.sid !== it.link.s);
+      return { sid: it.link.s, passage, title: "Reply to " + (to ? to.name : S.board.session.label) + " · " + fmt(it.d) + " " + it.hm,
+        pointer: (p) => (earlier ? "[From session " + it.link.s.slice(0, 8) + ", an earlier session of this conversation] " : "") + live.pointer(it.e, text, p, earlier, []) };
+    };
+  }
   function threadItem(t, it) {
-    const box = el("div", "th-item " + (it.k === "reply" ? "reply" + (it.lvl === "possible" ? " possible" : "") + (it.lvl === "out" ? " out" : "") : "you" + (it.req ? " possible" : ""))); box.dataset.key = it.key || "";
+    const gone = it.k === "reply" && isHidden(it);
+    const box = el("div", "th-item " + (it.k === "reply" ? "reply" + (it.lvl === "possible" ? " possible" : "") + (it.lvl === "out" ? " out" : "") + (gone ? " gone" : "") : "you" + (it.req ? " possible" : ""))); box.dataset.key = it.key || "";
     const h = el("div", "th-h"); h.append(el("span", "who", it.k === "reply" ? S.board.session.label : "you"), el("span", "", it.hm));
     const mk = (text, mark, yes) => { const b = el("button", "mk" + (yes ? " yes" : ""), text); b.type = "button"; b.onclick = () => sendMark(t.ref, it.key, mark); return b; };
     if (it.k === "reply") {
@@ -314,30 +376,51 @@
         if (it.lvl === "out") h.append(mk("Put it back", "clear", true));
         else { if (it.lvl === "possible") h.append(mk("Yes, this task", "in", true)); h.append(it.lvl === "marked" ? mk("Withdraw mark", "clear") : mk("Not this task", "out")); }
       }
+      if (hideKey(it)) {
+        const hb = el("button", "mk hide", gone ? "Show again" : "Hide"); hb.type = "button"; hb.setAttribute("aria-pressed", String(gone));
+        hb.title = gone ? "Show this reply in the thread again" : "Hide this reply here and in the conversation view. The session log is not changed; \"Hidden\" above the thread shows it again.";
+        hb.onclick = () => setHidden(it, !gone); h.append(hb);
+      }
+      if (it.lvl !== "out") {
+        const rb = el("button", "mk reply-to", "Reply"); rb.type = "button"; rb.title = "Reply to this in its session. Select words in the reply first to comment on just those.";
+        rb.onclick = () => composer.quote(box); h.append(rb);
+      }
     } else if (it.req) {
       const rq = el("span", "why poss", "your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later")); rq.title = "Your message with no reply above it, sent shortly before this task started. A possible match: say yes or no."; h.append(rq, el("span", "sp"));
       if (S.write.marks) { h.append(mk("Yes, this task", "in", true), mk("Not this task", "out")); }
     } else { if (it.how) { const hw = el("span", "why", it.how); hw.title = /^keyed /.test(it.how) ? "Your message uses a call key (like R2) from the reply above it." : it.how === "answer sheet" ? "Your comment from an answer sheet, tied to the reply it quotes." : it.how === "next message" ? "Your message right after this reply." : /^you marked/.test(it.how) ? "You put this message on this card yourself." : it.how; h.append(hw); } h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
-    const link = readerLink(it.link); if (link) { const a = el("a", "open-link", "open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; h.append(a); }
+    const link = readerLink(it.link); if (link) { const a = el("a", "open-link", "open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; a.title = "Open this reply in the conversation view"; h.append(a); }
     box.append(h);
     if (it.part) box.append(el("div", "th-part", "on: " + it.part));
-    box.append(el("div", "th-body", it.text));
+    if (it.k === "reply") { box.append(replyBody(it)); if (it.lvl !== "out") composer.bind(box, replyTarget(it)); }
+    else box.append(el("div", "th-body", it.text));
     return box;
   }
   function threadSection(t) {
-    const sec = el("div", "sec"); sec.dataset.call = "thread"; sec.append(el("h4", "", "Thread"));
-    if ((S.board.threads || {}).status === "ok" && t.thread.length) sec.append(tagLegend());
+    const sec = el("div", "sec"); sec.dataset.call = "thread";
+    const hh = el("div", "th-top"); hh.append(el("h4", "", "Thread")); sec.append(hh);
     const th = S.board.threads || {};
     if (th.status && th.status !== "ok") { sec.append(el("div", "th-empty", "Reply threads are off: " + (th.message || th.status) + ".")); return sec; }
     if (!t.thread.length) {
       sec.append(el("div", "th-empty", "No reply matched this task. The rules found nothing, which is what a mark is for: open a reply under No task found and say it belongs here." + (S.write.marks ? "" : " (Marking is off in this reader.)")));
       return sec;
     }
-    const sum = el("p", "th-sum"); sum.append(el("b", "", t.thread_n + " repl" + (t.thread_n === 1 ? "y" : "ies")), " from " + S.board.session.label + (t.thread_you ? ", " + t.thread_you + " of yours attached" : "") + ", oldest first.");
+    sec.append(tagLegend());
+    const nHidden = t.thread.filter((it) => it.k === "reply" && isHidden(it)).length;
+    if (nHidden || S.showHidden) {
+      const tb = el("button", "mk hidden-toggle", S.showHidden ? "Hide the hidden replies" : "Hidden (" + nHidden + ")"); tb.type = "button"; tb.setAttribute("aria-pressed", String(S.showHidden));
+      tb.title = S.showHidden ? "Take the hidden replies out of the thread again" : nHidden + " repl" + (nHidden === 1 ? "y is" : "ies are") + " hidden. Show them (each can be shown again for good).";
+      tb.onclick = () => { S.showHidden = !S.showHidden; keepSheetPlace(); }; hh.append(tb);
+    }
+    const sum = el("p", "th-sum"); sum.append(el("b", "", t.thread_n + " repl" + (t.thread_n === 1 ? "y" : "ies")), " from " + S.board.session.label + (t.thread_you ? ", " + t.thread_you + " of yours attached" : "") + (nHidden && !S.showHidden ? ", " + nHidden + " hidden" : "") + ", oldest first.");
     sec.append(sum);
     if (t.thread_cut) sec.append(el("div", "th-more", "+" + t.thread_cut + " earlier repl" + (t.thread_cut === 1 ? "y" : "ies") + " not shown."));
     const list = el("div", "thread"); let day = null;
-    t.thread.forEach((it) => { if (it.d !== day) { day = it.d; list.append(el("div", "th-day", fmt(it.d))); } list.append(threadItem(t, it)); });
+    t.thread.forEach((it) => {
+      if (it.k === "reply" && isHidden(it) && !S.showHidden) return;
+      if (it.d !== day) { day = it.d; list.append(el("div", "th-day", fmt(it.d))); }
+      list.append(threadItem(t, it));
+    });
     sec.append(list); return sec;
   }
 
@@ -450,7 +533,7 @@
     return bx;
   }
   function renderSheet() {
-    const t = byRef()[S.open.ref]; if (!t) { S.open = null; $("layer").textContent = ""; return; }
+    const t = byRef()[S.open.ref]; if (!t) { S.open = null; composer.detach(); $("layer").textContent = ""; return; }
     const L = $("layer"); L.textContent = "";
     const scrim = el("div", "scrim"); scrim.onclick = closeSheet; L.append(scrim);
     const sh = el("aside", "sheet"); sh.setAttribute("role", "dialog"); sh.setAttribute("aria-label", t.title);
@@ -486,7 +569,7 @@
     if (t.pr) add("PR", t.pr);
     if (t.blocked_by.length) { const w = el("span"); const refs = byRef(); t.blocked_by.forEach((r, i) => { if (i) w.append(", "); if (refs[r]) { const b = el("button", "linkbtn", r); b.type = "button"; b.onclick = () => jumpTo(r); w.append(b); } else w.append(r); }); add("Blocked by", w); }
     const sec = el("div", "sec"); sec.append(el("h4", "", "Details"), kv); body.append(sec);
-    sh.append(body); L.append(sh);
+    sh.append(body); L.append(sh); composer.attach(sh);
     document.querySelectorAll(".card.current").forEach((n) => n.classList.remove("current"));
     const cur = document.querySelector('.col [data-ref="' + CSS.escape(t.ref) + '"]'); if (cur) cur.classList.add("current");
     if (S.open.scrollTo) { const n = body.querySelector('[data-call="' + S.open.scrollTo + '"]'); if (n) { n.scrollIntoView({ block: "start" }); n.classList.add("flash"); } S.open.scrollTo = null; }
@@ -512,7 +595,7 @@
     const node = document.querySelector('.col [data-ref="' + CSS.escape(ref) + '"]'); if (node) node.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   function openSheet(ref, callId) { S.open = { ref, scrollTo: callId || null }; render(); }
-  function closeSheet() { S.open = null; S.confirm = null; $("layer").textContent = ""; }
+  function closeSheet() { S.open = null; S.confirm = null; composer.detach(); $("layer").textContent = ""; }
 
   /* ---- references: #s=<session>&t=<ref>[/<call>], and the find box ---- */
   function parseRef(s) {
@@ -523,7 +606,7 @@
     const t = byRef()[ref]; if (!t) { toast("No task in " + (S.board ? S.board.session.label : "this session") + " has the reference " + ref); return; }
     let notice = null;
     if (!visible(t)) { S.project = "all"; S.q = ""; $("find").value = ""; notice = "Filters cleared to show it."; }
-    S.col = t.col; S.open = null; $("layer").textContent = ""; render();
+    S.col = t.col; S.open = null; composer.detach(); $("layer").textContent = ""; render();
     const node = document.querySelector('.col [data-ref="' + CSS.escape(ref) + '"]');
     if (node) { const g = node.closest("details"); if (g) g.open = true; node.scrollIntoView({ block: "center" }); node.classList.add("flash"); }
     openSheet(ref, callId);
@@ -534,7 +617,7 @@
   $("bar-toggle").onclick = () => { S.barOpen = $("bar").classList.contains("collapsed"); renderBar(); };
   document.addEventListener("keydown", (e) => {
     if (!S.open) return;
-    if (e.key === "Escape") { closeSheet(); return; }
+    if (e.key === "Escape") { if (e.target && e.target.tagName === "TEXTAREA") return; closeSheet(); return; }
     if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
     const a = document.activeElement, typing = a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable);
     if (typing) return;  // arrows move the caret in a text box, never the card

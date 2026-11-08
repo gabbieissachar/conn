@@ -2934,6 +2934,66 @@ test('board: a build that fails is a plain 502', async () => {
   } finally { await t.close(); }
 });
 
+// ---- the board's reply text and its send (a flag of its own; the reader's own guarded Send does the sending, so every refusal of it stands)
+
+const boardRunWith = (sessionList) => async (file, args) => {
+  if (args[2] === 'sessions') return JSON.stringify({ sessions: [{ id: 'leader-esim', label: 'eSIM', lifecycle: 'pm', kind: 'leader', parent: null, task: null }], source: 'defaults', error: null });
+  return JSON.stringify({ schema: 'task-board.v1', session: { id: args[4] }, items: [], columns: [], threads: { status: 'ok', session_list: sessionList } });
+};
+
+test('board reply: read only, the ids are checked before anything runs, and the text comes from board_cli.py', async () => {
+  const inputs = [];
+  const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(2), input }); return JSON.stringify({ ok: true, md: 'The whole **reply**.', words: 3 }); };
+  let t = await start();
+  try { assert.equal((await t.get('board-reply?session=leader-esim&sid=abcdefgh&uid=ijklmnop')).status, 404, 'no board flag'); } finally { await t.close(); }
+  t = await start({ options: { board: { run: fakeBoardRun([]), runInput } } });
+  try {
+    assert.equal((await t.get('board-reply?session=leader-esim&sid=..%2Fx&uid=ijklmnop')).status, 400);
+    assert.equal((await t.get('board-reply?session=..%2Fx&sid=abcdefgh&uid=ijklmnop')).status, 400);
+    assert.equal(inputs.length, 0);
+    const got = await t.get('board-reply?session=leader-esim&sid=abcdefgh-0000&uid=ijklmnop-1111');
+    assert.equal(got.status, 200);
+    assert.deepEqual([got.json.md, got.json.words], ['The whole **reply**.', 3]);
+    assert.deepEqual(inputs[0].args, ['reply', '--session', 'leader-esim']);
+    assert.deepEqual(JSON.parse(inputs[0].input), { sid: 'abcdefgh-0000', uid: 'ijklmnop-1111' });
+    const refusing = await start({ options: { board: { run: fakeBoardRun([]), runInput: async () => JSON.stringify({ ok: false, status: 404, message: 'That reply is not in the conversations this board reads.' }) } } });
+    try { const r = await refusing.get('board-reply?session=leader-esim&sid=abcdefgh&uid=ijklmnop'); assert.equal(r.status, 404); assert.match(r.json.message, /not in the conversations/); } finally { await refusing.close(); }
+  } finally { await t.close(); }
+});
+
+test('board send: off unless its flag is on; then only to a supervisor the board itself reads, and through the reader\'s own Send', async () => {
+  let t = await start({ options: { board: { run: boardRunWith([{ id: A, replies: 3, last: 1 }]), marks: true, answer: true } } });
+  try {
+    await t.get('board?session=leader-esim');
+    assert.equal((await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'hello' })).status, 404, 'send flag off');
+    assert.equal(t.herdr.prompts().length, 0);
+  } finally { await t.close(); }
+  t = await start({ options: { board: { run: boardRunWith([{ id: A, replies: 3, last: 1 }]), send: true } } });
+  try {
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/board-send', headers: { 'Content-Type': 'application/json', Origin: t.origin }, body: { session: 'leader-esim', session_id: A, text: 'x' } })).status, 403, 'no token');
+    assert.equal((await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'x' }, { Origin: 'http://evil.example' })).status, 403, 'foreign origin');
+    const early = await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'before any board was read' });
+    assert.equal((early.status, early.json.code), (409, 'not_a_board_session'), 'a board nobody has read names no supervisors');
+    await t.get('board?session=leader-esim');
+    const other = await t.post('board-send', { session: 'leader-esim', session_id: B, text: 'to a session the board does not read' });
+    assert.equal(other.status, 409);
+    assert.equal(other.json.code, 'not_a_board_session');
+    assert.equal(t.herdr.prompts().length, 0, 'nothing reached Herdr');
+    assert.equal((await t.post('board-send', { session: '../x', session_id: A, text: 'x' })).status, 400);
+    const sent = await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'Re your reply at 10:00 ("Nathan, a"): yes' });
+    assert.equal(sent.status, 200);
+    assert.deepEqual(t.herdr.prompts().map((call) => call.args[call.args.length - 1]), ['Re your reply at 10:00 ("Nathan, a"): yes']);
+    // the reader's own refusals stand: a blocked pane is not written to
+    t.herdr.promptResult = { code: 1, stdout: '', stderr: 'error: agent_blocked' };
+    const blocked = await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'again' });
+    assert.equal((blocked.status, blocked.json.code), (409, 'agent_blocked'));
+    assert.equal((await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'x'.repeat(5000) })).status, 413, 'the reader\'s own length limit');
+    t.herdr.promptResult = { code: 0, stdout: '{}', stderr: '' };
+    assert.equal((await t.post('board-send', { session: 'leader-esim', session_id: A, text: 'x', extra: 1 })).status, 200, 'only the known fields go on');
+  } finally { await t.close(); }
+});
+
+
 // ---- the Tasks board's page, and its writes (flagged; board_cli.py is faked)
 
 const REAL_ROOT = path.resolve(__dirname, '..', '..');
