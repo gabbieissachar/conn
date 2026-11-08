@@ -212,8 +212,7 @@ const permissionsLib = require('./permissions');
 const permLogLib = require('./permlog');
 const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
-const { createStoreApi } = require('./storeapi');
-const { createPaneWatch } = require('./storeapi/herdr-watch');
+// The store API's code (storeapi/) is loaded only when the flag is on, so a copy of the reader without it, or with the flag off, runs none of it.
 const WINDOWED_PAGE = '/setup/transcript-reader/windowed/index.html';
 
 const API = '/api/transcript-reader/';
@@ -576,10 +575,10 @@ function create({
   const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });
   const hidden = pinstore.createHidden({ file: hiddenFile, now });
   // The store API's own object (routes, stream, compatibility writers), made once the stars store it reads exists.
-  const paneWatch = storeApiOption ? createPaneWatch({
+  const paneWatch = storeApiOption ? require('./storeapi/herdr-watch').createPaneWatch({
     runner, herdrBin, env, readSnapshot, runEnv: () => runEnv(), sessionNameOk: (name) => SESSION_NAME_RE.test(name), ...(storeApiOption.watch || {}),
   }) : null;
-  const storeApi = storeApiOption ? createStoreApi({
+  const storeApi = storeApiOption ? require('./storeapi').createStoreApi({
     store: storeApiOption.store || {}, env, now, outDir, watch: paneWatch, stars, send, fail, RequestError, compatWrite: storeApiOption.compat || false,
     pageSource: () => storeApiPage(), pollMs: storeApiOption.pollMs,
   }) : null;

@@ -123,6 +123,11 @@ const state = (expr) => ev(`const S = window.__readerWindowed; return ${expr};`)
     await sleep(500);
     shot('06-phone.png');
     mark(ev(`return document.documentElement.scrollWidth <= innerWidth + 1;`), 'no sideways scroll at a phone\'s width');
+    axi('emulate', '--viewport', '1000x900x1', '--color-scheme', 'dark');
+    await sleep(500);
+    shot('07-dark.png');
+    mark(ev(`return getComputedStyle(document.body).backgroundColor !== 'rgb(244, 245, 248)';`), 'the dark scheme follows the browser (the reader\'s own dark colours)');
+    mark(ev(`return /Live/.test(document.getElementById('conn').textContent);`), 'the header says Live while the stream is connected');
   } catch (error) {
     mark(false, 'the check ran to the end', error.message);
   } finally { finish(); }

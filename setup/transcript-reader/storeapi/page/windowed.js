@@ -278,7 +278,11 @@
     document.title = (s ? nameOf(s) : "Reader") + " · Reader (windowed)";
     byId("send").disabled = !live; byId("text").disabled = !live;
     byId("text").placeholder = live ? "Message" : "No open pane runs this session";
-    byId("asof").textContent = S.asOf ? "Store as of " + fmtTime(Date.parse(S.asOf) / 1000) : "";
+    // The connection says whether what is on screen is current; the store's own time is shown only when it is not.
+    const conn = byId("conn");
+    conn.textContent = S.live_ok ? "Live" : (S.retrying ? "Reconnecting…" : "");
+    conn.className = "live" + (S.live_ok ? " on" : "");
+    byId("asof").textContent = !S.live_ok && S.asOf ? "Not live: the store was last heard from at " + fmtTime(Date.parse(S.asOf) / 1000) : "";
   }
   function paintAsks() {
     const strip = byId("asks-strip");
@@ -354,7 +358,7 @@
     try {
       const response = await fetch(API + "stream" + (S.cur ? "?sessions=" + encodeURIComponent(S.cur) : ""), { cache: "no-store", signal: mine.signal, headers: { "x-transcript-reader-token": token } });
       if (!response.ok || !response.body) throw new Error("stream " + response.status);
-      retry = 0; byId("conn").textContent = "";
+      retry = 0; S.live_ok = true; S.retrying = false; paintHeader();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -372,13 +376,13 @@
       }
     } catch (error) { if (error && error.name === "AbortError") return; }
     if (mine !== controller || document.hidden) return;
-    byId("conn").textContent = "Reconnecting…";
+    S.live_ok = false; S.retrying = true; paintHeader();
     retry += 1;
     await pause(Math.min(30000, 500 * 2 ** retry));
     if (mine === controller && !document.hidden) { await catchUp(); connect(); }
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { if (controller) { controller.abort(); controller = null; } return; }
+    if (document.hidden) { if (controller) { controller.abort(); controller = null; } S.live_ok = false; return; }
     catchUp().then(() => connect());
   });
 
