@@ -67,6 +67,7 @@ STEPS_SCRIPT = HERE / "steps.js"
 DOCFILES_SCRIPT = HERE / "docfiles.js"
 ADDRESS_SCRIPT = HERE / "address.js"
 SESSIONREFS_SCRIPT = HERE / "sessionrefs.js"
+FILEREFS_SCRIPT = HERE / "filerefs.js"
 EMBED_SCRIPT = HERE / "embed.js"
 MARKDOWN_SCRIPT = HERE / "markdown.js"
 MARKDOWN_IT_SCRIPT = HERE / "vendor" / "markdown-it.min.js"  # vendored, see vendor/README.md
@@ -3091,6 +3092,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ADDRESS__*/", ADDRESS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SESSIONREFS__*/", SESSIONREFS_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__FILEREFS__*/", FILEREFS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__EMBED__*/", EMBED_SCRIPT.read_text(encoding="utf-8"))
     hosted = SEAL_SCRIPT.read_text(encoding="utf-8") + HOSTED_SCRIPT.read_text(encoding="utf-8")
     page = page.replace("/*__HOSTED__*/", hosted if mode in ("hosted", "live") else "const hosted = null;")

@@ -494,6 +494,33 @@ webView.evaluateJavaScript("window.readerEmbed.set(\(json))")   // a JSON object
 
 Checked in a real browser by `e2e/embed-check.js` (below); the page's rules are `embed.test.js`, the build's `test_live.py`, the route's `lite.test.js`.
 
+## Markdown files open in an editor
+
+A markdown file can be opened in an editor from two places, and both are drawn as an element a host can find by one selector, so Conn (or any web view that hosts the reader) can open the file in its own Editor view while a plain browser still does something useful.
+
+### The contract for a host: `.file-ref[data-path]`
+
+In short: a link is `a.file-ref[data-path]`, the Documents view's button is `button.file-ref[data-path]`, and a click on either is a host's to take.
+
+| Where | Element | Always carries |
+|---|---|---|
+| An **absolute `.md` path in a reply** (in prose, or alone in an inline-code span) | `<a class="file-ref" data-path="/abs/path.md" href="…">` | `data-path`: the absolute path, as written in the reply |
+| The **Documents view** of a markdown file the reader lists | `<button class="btn file-ref" data-path="/abs/path.md" type="button">Open in editor</button>` | `data-path`: the file's absolute path on disk |
+
+A host handles a click on `.file-ref[data-path]` anywhere in the reader page and the lite page (the full reader and Watch web views): read `element.closest('.file-ref[data-path]').dataset.path`, open that file in its editor and call `event.preventDefault()`. Nothing else is needed:
+
+- the page looks at `event.defaultPrevented` **after** the event has gone by every listener (a zero-delay timeout), so a host listener registered before or after the page's own, in the capture or the bubble phase, has the last word; the page then does nothing more;
+- the contract is only those two names and the one attribute; the link's `href`, `title` and text may change.
+
+What counts as a path in a reply (`prototype/filerefs.js`, `filerefs.test.js`): it starts at `/` and ends in `.md`, with no `..`, `.` or empty segment; the character before the first `/` is not a word, a path or a web address (`https://x/y.md` is a web address, `~/x.md`, `docs/x.md` and `./x.md` do not say which file); a line number or anchor after it (`/a/b.md:12`, `#top`) is not part of it, and `plan.md.bak` or `plan.mdx` is another name. Prose, and an inline-code span that is the path and nothing else, link; a command that holds a path (`` `cat /a/b.md` ``) and a fenced code block do not. Only replies link (a message from you or Firstmate is not touched, and neither is a markdown file's own text in the Documents view). The embed page links nothing: a Campus conversation has no files here.
+
+### With no host (a plain browser)
+
+- **A link** keeps the reader's own behaviour: a file the reader lists as a document opens in the Documents view (the link's `href` is that address, `#s=<session>&d=<document>`, followed in place) and any other path opens in VS Code (`vscode://file/<path>`). The hosted copy links only the documents it holds, since it is not on the machine the paths are on.
+- **The button** opens `vscode://file/<path>` (each segment encoded). It is on the served page only, for a markdown file with a path (never a sketch or a picture, which are not text to edit).
+
+Checked in headless Chrome by `e2e/file-ref-check.js` (which paths link and which do not; the host's `preventDefault` gets each path and nothing moves; a listed file opens in the Documents view; the button's `vscode://file/<path>` is caught by the Navigation API before it leaves the page, so no editor starts; no button on a page; the lite page draws the same links). Design: DESIGN.md, "Markdown files open in an editor".
+
 ## The hosted copy
 
 The way towards reading the transcripts from a phone while the laptop is off (the hosted reader plan, ships 1 and 2).
@@ -618,6 +645,18 @@ The embed page, in a real browser (by hand: it needs chrome-devtools-axi and Chr
 
 ```bash
 node setup/transcript-reader/e2e/embed-check.js <scratch folder> [screenshots folder]
+```
+
+The answer sheet, the picker and the Documents view, in a real browser (by hand: chrome-devtools-axi and Chrome, headless; each builds a lab copy with a fake Herdr on a free port and never touches a real pane or the live reader):
+
+```bash
+node setup/transcript-reader/e2e/sheet-cells-check.js <scratch folder> [screenshots folder]      # choices in table cells, review groups
+node setup/transcript-reader/e2e/sheet-scope-check.js <scratch folder> [screenshots folder]      # the sheet lists the open conversation's sheets
+node setup/transcript-reader/e2e/sheet-reply-check.js <scratch folder> [screenshots folder]      # the original reply beside the sheet
+node setup/transcript-reader/e2e/sheet-back-latency.js <scratch folder> [rounds]                  # the way back from the sheet, timed (LAB_FILLERS, LAB_BIG_EXCHANGES)
+node setup/transcript-reader/e2e/session-unlisted-check.js <scratch folder> [screenshots folder] # "No transcript yet" for a session the reader does not list
+node setup/transcript-reader/e2e/star-order-check.js <scratch folder> [screenshots folder]       # a new star goes to the top
+LAB_DOCS=2 node setup/transcript-reader/e2e/file-ref-check.js <scratch folder> [screenshots folder]  # .md paths and the editor button
 ```
 
 The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change, then the same landing on the lite page (`out/live/index.html`: a reply scrolled to just under the header and outlined once, from a fresh load and in place):

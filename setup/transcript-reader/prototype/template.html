@@ -179,6 +179,11 @@ __HEAD_HOSTED__
   .md a.session-ref:hover { text-decoration-style: solid; background: var(--mate-wash); }
   .md a.session-ref:focus-visible { outline: 2px solid var(--mate); outline-offset: 2px; }
   .md a.session-ref code { color: inherit; }
+  /* A markdown file named by its absolute path (filerefs.js): a link, drawn as the other links of a reply are, dotted until hovered. */
+  .md a.file-ref { color: var(--you); text-decoration: underline dotted currentColor; text-underline-offset: 3px; text-decoration-thickness: 1px; cursor: pointer; border-radius: 3px; overflow-wrap: anywhere; }
+  .md a.file-ref:hover { text-decoration-style: solid; background: var(--you-wash); }
+  .md a.file-ref:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .md a.file-ref code { color: inherit; }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
   .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
   .md blockquote > :last-child { margin-bottom: 0; }
@@ -793,6 +798,7 @@ __HEAD_HOSTED__
 /*__DOCFILES__*/
 /*__ADDRESS__*/
 /*__SESSIONREFS__*/
+/*__FILEREFS__*/
 /*__EMBED__*/
 /*__SELECTCOPY__*/
   const selectCopy = readerSelectCopy;
@@ -899,6 +905,62 @@ __HEAD_HOSTED__
       node.replaceWith(frag);
     }
     return box;
+  }
+  // ---------------------------------------------------------------- markdown files named by their absolute path, as links (filerefs.js, README.md "Markdown files open in an editor")
+  // Each is <a class="file-ref" data-path="/abs/path.md">, the contract a host reads: Conn catches a click on `.file-ref[data-path]` in its reader and Watch
+  // web views and opens the file in its own editor. Without a host: a file the build lists as a document opens in the Documents view (the address
+  // #s=...&d=..., followed in place), and any other opens in VS Code (vscode://file/...) on the served page, where the files are the browser's own.
+  // The hosted copy links the documents it holds and nothing else; the embed page, whose conversations have no files here, links nothing.
+  const pathIndex = { docs: null, map: new Map() };
+  function documentOfPath(path) {
+    if (pathIndex.docs !== data.documents) {
+      pathIndex.docs = data.documents;
+      pathIndex.map = new Map(Object.values(data.documents || {}).filter(d => d && d.path && (d.kind || "md") === "md").map(d => [d.path, d]));
+    }
+    return pathIndex.map.get(path) || null;
+  }
+  function fileRefLink(path, content, sid) {
+    const doc = documentOfPath(path);
+    if (!doc && !canLive) return null;
+    const a = $("a", "file-ref");
+    a.dataset.path = path;
+    if (doc && sid) { a.href = address.build({ session: sid, doc: doc.id }); a.title = `Open ${path} in the Documents view`; }
+    else { a.href = fileRefs.vscodeUrl(path); a.title = `Open ${path} in your editor`; }
+    if (typeof content === "string") a.textContent = content; else a.append(content);
+    return a;
+  }
+  function linkFilePaths(box, sid) {
+    if (EMBED) return box;
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT), nodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+    for (const node of nodes) {
+      const host = node.parentElement, text = node.nodeValue;
+      if (!host || host.closest("a, pre, button")) continue;
+      if (host.tagName === "CODE") {  // a code span links only when all of it is the path: a command that holds one stays a command
+        const path = host.childNodes.length === 1 ? fileRefs.whole(text) : null;
+        const a = path && fileRefLink(path, "", sid);
+        if (a) { host.replaceWith(a); a.append(host); }
+        continue;
+      }
+      const found = fileRefs.scan(text);
+      if (!found.length) continue;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const f of found) {
+        const a = fileRefLink(f.path, text.slice(f.start, f.end), sid);
+        if (!a) continue;
+        frag.append(text.slice(at, f.start), a); at = f.end;
+      }
+      if (!at) continue;
+      frag.append(text.slice(at));
+      node.replaceWith(frag);
+    }
+    return box;
+  }
+  // What a click on a file reference does where no host took it: a link has its own address; the Documents view's button (below) opens VS Code. A host
+  // that handles the click calls preventDefault, which is looked at after the event has gone by it, so the host's answer is the one that stands.
+  function openInEditor(event, path) {
+    setTimeout(() => { if (!event.defaultPrevented) location.href = fileRefs.vscodeUrl(path); }, 0);
   }
   // A table wider than its box scrolls sideways inside it; a shadow on the edge that has more behind it (and an arrow) says so, and goes
   // when the edge is reached. The shadow sits on a box around the scrolling one so that it stays put while the table moves.
@@ -1089,6 +1151,7 @@ __HEAD_HOSTED__
     const boxed = Boolean(box) && ex.reply_words > 90 && !state.open.has(replyKey);
     if (ex.reply) {
       const md = renderMarkdown(ex.reply, open ? ex.ask_lines : [], ex.reminder_lines);
+      linkFilePaths(md, sid);  // before the sessions: a path holds words that could read as a tab label, and a link is never linked again
       linkSessionRefs(md, sid);
       if (sid && ex.uid) md.dataset.find = `${ex.uid}:reply`;
       body = clipped(md, ex.reply_words, 90, "Show full reply", replyKey, box ? place : null);
@@ -4081,6 +4144,7 @@ __HEAD_HOSTED__
     renderDocViewIn();
     if (docList.shell) paintSide(docList.shell);
   }
+  const framed0 = d => d.kind === "html" || d.kind === "image";  // shown in a frame or as a picture: not text to edit
   function renderDocViewIn() {
     const session = data.sessions[state.session];
     const docs = listedDocuments(session);
@@ -4150,7 +4214,13 @@ __HEAD_HOSTED__
         row.append(panel);
       }
     }
-    row.append(...(entry.unnamed ? [message] : [back, message]));  // a file no turn named has no turn to go back to
+    // A markdown file opens in an editor: a button the host reads like a link in a reply (`button.file-ref[data-path]`), and VS Code where no host does.
+    const edit = framed0(d) || !d.path || !canLive ? null : $("button", "btn file-ref", "Open in editor");
+    if (edit) {
+      edit.type = "button"; edit.dataset.path = d.path; edit.title = `Open ${d.path} in your editor`;
+      edit.addEventListener("click", event => openInEditor(event, d.path));
+    }
+    row.append(...(entry.unnamed ? [message] : [back, message]), ...(edit ? [edit] : []));  // a file no turn named has no turn to go back to
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     // When the file changed is said once: here for a markdown file, in the viewer's own toolbar for an HTML file or a picture.
     const framed = d.kind === "html" || d.kind === "image";
