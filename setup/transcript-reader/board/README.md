@@ -72,7 +72,7 @@ The page and its JSON were never the cost (the page is 88 KB gzipped; a board is
   an answer): the snapshot script's own `--contribution-input` mode (the canonical backlog parser, without asking any worker) plus the home's `state/*.meta` for each
   task's project, branch, PR and captain-driven mark (`board_cli.py board --quick`, `collect.py light_snapshot`). It takes 2 to 5 s. It lacks the open-decision
   set the whole snapshot reconciles against live worker state; the board falls back to folding the task's own status lines, which on the real homes differed on 2 of
-  172 cards (a decision a worker had moved past, and one the fold missed). That is why the page says "A quick read" while one is on view, and the whole board replaces
+  44 cards checked (NIP and big-boss: a decision a worker had moved past, and one the fold missed). That is why the page says "A quick read" while one is on view, and the whole board replaces
   it as soon as it lands (the page asks again every 4 s while a board is quick or stale).
 - **A read that fails** (timeout, script error) never replaces a good board: the good one stays with a line saying the latest read failed, and the next background
   read waits 30 s.
