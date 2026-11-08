@@ -761,6 +761,34 @@ class CacheTest(unittest.TestCase):
         self.assertNotIn(b'"typed"', thread.turns)
 
 
+class LocalSheetTest(unittest.TestCase):
+    """The full page's answer sheet (out/questionnaire.html) is built by build_questionnaire.collect, from the logs alone: it lays the typed asks
+    over the prose questionnaires the same way (typed_chain)."""
+
+    def test_the_local_sheets_builder_lays_the_typed_asks_over_the_prose_ones_only_with_the_flag_on(self):
+        world = World(self)
+        typed_asks._FILES.clear()
+        typed_asks._BACKLOGS.clear()
+        sha = world.record(world.home, ASK, [card("Z1", "Which mapping?", [("a", "", True)], gate=gate("g1")), card("Z2", "Who closes it?", gate=gate("g1"))], writer=WRITER)
+        world.backlog(world.home, [("g1", "held", "Pick it", "2027-01-10T01:00:00Z", 0)])
+        records = turn(0, "Please ask me", f"I put the choices in the doc.\n\nask: {ASK}", [("bin/fm-captain-ask.sh open --title T", line_of(ASK, sha))]) + turn(30, "Z2=hook", "Noted.")
+        log = world.root / f"{WRITER}.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+        cache = world.root / "parsed"
+        cache.mkdir()
+        with mock.patch.object(builder, "MAIN_HOME", world.home):
+            with mock.patch.dict(os.environ, {"PMOS_READER_TYPED_ASKS": "0"}):
+                self.assertEqual(sheets.chain_questionnaires([log], cache, typed=True), [])  # the prose finder reads nothing in this reply
+            with mock.patch.dict(os.environ, {"PMOS_READER_TYPED_ASKS": "1"}):
+                found = sheets.chain_questionnaires([log], cache, typed=True)
+                self.assertEqual(sheets.chain_questionnaires([log], cache), [])  # a caller that does not ask for typed (the hosted copy) gets none
+        self.assertEqual(len(found), 1)
+        self.assertEqual([c["key"] for c in found[0]["cards"]], ["Z1", "Z2"])
+        self.assertEqual(found[0]["sent"], {"Z2": "hook"})  # the chat answer, before the record is told
+        self.assertEqual((found[0]["session"], found[0]["typed"]["id"]), (WRITER, ASK))
+        self.assertEqual(sheets.list_entry(found[0])["open"], 1)
+
+
 class HostedTest(unittest.TestCase):
     """The hosted copy and the offline phone copy build their conversations with typed=False: no record, no hold reason, no typed count."""
 

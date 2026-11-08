@@ -293,8 +293,10 @@ def read_backlog(home: Path) -> dict | None:
     known = _BACKLOGS.get(str(path))
     if known and known[0] == signature:
         return known[1]
-    data = read_bytes(path)
-    if data is None:
+    try:
+        with open(path, "rb") as handle:  # not through read_bytes: a backlog is the biggest file read here and is kept parsed, not twice
+            data = handle.read()
+    except OSError:
         return None
     rows = parse_backlog(data.decode("utf-8", "replace"))
     if len(_BACKLOGS) >= 64:
