@@ -1176,6 +1176,7 @@ test('a shell page opens in a tab as before, and the page itself may fetch it fo
 
 const BOARD_PAGE = '/setup/transcript-reader/board/';
 const BOARD_API = '/api/transcript-reader/';
+const STATE_API = BOARD_API + 'state';
 // The board's page is put together from files of this copy, so a scratch copy gets the real ones.
 function boardCopy(root) {
   const here = __dirname;
@@ -1214,6 +1215,11 @@ test('the board stays off the phone unless its own flag is on: not on the TLS ad
     assert.equal((await s.onTailnet({ path: urlPath, headers: { ...headers, Cookie: plain, [TOKEN_HEADER]: token } })).status, 404, 'plain ' + urlPath);
   }
   assert.equal(s.calls.length, 0, 'nothing was built for the phone');
+  // The reader page's Tasks link follows the same line: its state says there is a board on loopback only, and nothing of one to the phone.
+  const stateHeaders = (extra) => ({ ...extra, [TOKEN_HEADER]: token });
+  assert.equal((await s.onLoopback({ path: STATE_API, headers: stateHeaders({}) })).json.board.page, BOARD_PAGE, 'loopback');
+  assert.equal('board' in (await s.onHttps({ path: STATE_API, headers: stateHeaders({ Cookie: cookie }) })).json, false, 'TLS');
+  assert.equal('board' in (await s.onTailnet({ path: STATE_API, headers: stateHeaders({ Cookie: plain }) })).json, false, 'plain');
 });
 
 test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind the passcode, reads only, and never on the plain tailnet address', async (t) => {
@@ -1245,8 +1251,13 @@ test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind t
     assert.equal(refused.json.code, 'not_on_the_phone', name);
   }
   assert.equal(s.herdr.prompts().length, 0, 'nothing was typed into a pane');
+  // The reader page's Tasks link: the TLS address says the board is served (the phone's link shows), loopback too, the plain tailnet address says nothing of it.
+  const stateOf = async (reach, headers) => (await reach({ path: STATE_API, headers })).json;
+  assert.equal((await stateOf(s.onHttps, { Cookie: cookie, [TOKEN_HEADER]: token })).board.page, BOARD_PAGE, 'TLS');
+  assert.equal((await stateOf(s.onLoopback, { [TOKEN_HEADER]: token })).board.page, BOARD_PAGE, 'loopback');
   // The plain tailnet address, signed in, still has no board.
   const plain = await s.signedIn();
+  assert.equal('board' in (await stateOf(s.onTailnet, { Cookie: plain, [TOKEN_HEADER]: token })), false, 'plain tailnet: no Tasks link');
   assert.equal((await s.onTailnet({ path: BOARD_PAGE, headers: { ...NAVIGATE, Cookie: plain } })).status, 404);
   assert.equal((await s.onTailnet({ path: BOARD_API + 'board-sessions', headers: { Cookie: plain, [TOKEN_HEADER]: token } })).status, 404);
 });

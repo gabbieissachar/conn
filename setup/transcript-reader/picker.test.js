@@ -558,3 +558,62 @@ test('sections: with a star ranker the starred group is newest star first, the l
   assert.equal(tied(session('a', 'alpha')), 0);
   assert.equal(tied(moved), 1);
 });
+
+// ---- the Tasks link: the tab of the open header and the icon of the folded one, shown only where the server says it serves the board
+
+test('page: the Tasks link is a link in the header, an icon among the folded ones and a tab-looking link beside the tabs, hidden until the server says there is a board', () => {
+  const page = pageSource();
+  const title = page.match(/<div class="title">([\s\S]*?)<\/div>/)[1];
+  assert.match(title, /<a class="view-btn" id="view-tasks" href="\/setup\/transcript-reader\/board\/" aria-label="Tasks" title="[^"]*" hidden>/);
+  assert.ok(title.indexOf('id="view-doc"') < title.indexOf('id="view-tasks"') && title.indexOf('id="view-tasks"') < title.indexOf('id="files-quick"'), 'after Documents, before Files');
+  assert.match(title.match(/id="view-tasks"[\s\S]*?<\/a>/)[0], /stroke="currentColor" stroke-width="1\.4"/, 'the same stroke weight as its neighbours');
+  const tabs = page.match(/<div class="tabs">([\s\S]*?)<div id="controls">/)[1];
+  assert.match(tabs, /<div class="tablist" role="tablist">[\s\S]*id="tab-doc"[\s\S]*<\/div>\s*<a class="tab tab-link" id="tab-tasks" href="\/setup\/transcript-reader\/board\/" title="[^"]*" hidden>Tasks<\/a>/, 'the tabs keep their list; the link is beside it, not a tab of it');
+  assert.doesNotMatch(tabs.match(/<a class="tab tab-link"[^>]*>/)[0], /role=/, 'a link to another page is not a view');
+  assert.match(page, /\.tablist \{ display: contents; \}/);
+  assert.match(page, /\.tab-link:not\(\[hidden\]\) \{ display: flex;/, 'hidden stays hidden: the link only takes a display when it shows');
+  assert.match(fnBody(page, 'paintBar'), /paintTasksLink\(session\);/, 'every draw of the bar keeps the link right');
+  assert.match(page, /takeState\(s\);\s*paintTasksLink\(data\.sessions\[state\.session\]\);/, 'and the first state, which may come after the page was drawn, shows it');
+  assert.match(fnBody(page, 'takeState'), /link\.board = s\.board && typeof s\.board\.page === "string" \? s\.board : null;/);
+});
+
+function tasksPage({ canLive = true, board = null } = {}) {
+  const page = pageSource();
+  const make = () => ({ hidden: true, attrs: { href: '/setup/transcript-reader/board/' }, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
+  const tab = make(), icon = make();
+  const sandbox = { canLive, link: { board }, document: { getElementById: (id) => ({ 'tab-tasks': tab, 'view-tasks': icon })[id] }, Boolean, Object, encodeURIComponent };
+  const run = vm.runInNewContext(fnBody(page, 'paintTasksLink') + '\n  }\n({ paintTasksLink })', sandbox);
+  return { tab, icon, sandbox, ...run };
+}
+
+test('Tasks link: shown on a served page that was told of a board, and nowhere else', () => {
+  const off = tasksPage({ board: null });
+  off.paintTasksLink({ id: 'aaaaaaaa-1' });
+  assert.equal(off.tab.hidden, true, 'the server did not say there is a board (flag off, a phone on the plain address)');
+  assert.equal(off.icon.hidden, true);
+  const copy = tasksPage({ canLive: false, board: { page: '/setup/transcript-reader/board/', boards: {} } });
+  copy.paintTasksLink({ id: 'aaaaaaaa-1' });
+  assert.equal(copy.tab.hidden, true, 'a file copy, the hosted copy or the embed page cannot reach a server, so it has no Tasks link');
+  assert.equal(copy.icon.hidden, true);
+  const on = tasksPage({ board: { page: '/setup/transcript-reader/board/', boards: {} } });
+  on.paintTasksLink({ id: 'aaaaaaaa-1' });
+  assert.equal(on.tab.hidden, false);
+  assert.equal(on.icon.hidden, false);
+  assert.equal(on.tab.attrs.href, '/setup/transcript-reader/board/', 'no board reads this conversation: the board page opens on its own first board');
+  on.paintTasksLink(undefined);
+  assert.equal(on.tab.attrs.href, '/setup/transcript-reader/board/', 'no conversation on screen');
+});
+
+test('Tasks link: opens the board that reads the conversation on screen (its newest id or an older one of the same pane), and goes back when the conversation changes', () => {
+  const t = tasksPage({ board: { page: '/setup/transcript-reader/board/', boards: { 'aaaaaaaa-1': 'big-boss', 'older-id-9': 'leader-esim' } } });
+  t.paintTasksLink({ id: 'aaaaaaaa-1', ids: ['aaaaaaaa-1'] });
+  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/#s=big-boss');
+  assert.equal(t.icon.attrs.href, '/setup/transcript-reader/board/#s=big-boss', 'the folded icon goes to the same place');
+  t.paintTasksLink({ id: 'newest-77', ids: ['older-id-9', 'newest-77'] });
+  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/#s=leader-esim', 'a pane whose earlier session is one the board reads');
+  t.paintTasksLink({ id: 'other-0', ids: ['other-0'] });
+  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/', 'a conversation no board reads');
+  t.sandbox.link.board = { page: '/setup/transcript-reader/board/', boards: { __proto__: null, constructor: 'x' } };
+  t.paintTasksLink({ id: 'toString', ids: ['toString'] });
+  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/', 'a conversation id is looked up as its own key only');
+});

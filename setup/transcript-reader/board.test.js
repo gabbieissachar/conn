@@ -234,6 +234,26 @@ test('warm start reads each leader and big-boss board once, one at a time, never
   assert.equal(t.overlap(), 1);
 });
 
+test('readerBoards: which board reads each conversation, from the boards already read, and nothing is built to say so', async () => {
+  const lists = { 'big-boss': ['aaaaaaaa-1', 'bbbbbbbb-2'], 'leader-esim': ['cccccccc-3', 'aaaaaaaa-1'] };
+  const calls = [];
+  const run = async (file, args) => {
+    calls.push(args);
+    const session = args[args.indexOf('--session') + 1];
+    return JSON.stringify({ schema: 'task-board.v1', session: { id: session }, items: [], source: { snapshot_at: 'now', errors: [] }, threads: { session_list: (lists[session] || []).map((id) => ({ id, replies: 1, last: 1 })) } });
+  };
+  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1' }, run, now: () => 1000, quickRead: false });
+  assert.deepEqual(b.readerBoards(), {}, 'no board read yet: no conversation is named');
+  await b.board('big-boss'); await b.board('leader-esim');
+  assert.deepEqual(b.readerBoards(), { 'aaaaaaaa-1': 'big-boss', 'bbbbbbbb-2': 'big-boss', 'cccccccc-3': 'leader-esim' }, 'a conversation two boards read goes to the first board read');
+  const before = calls.length;
+  b.readerBoards();
+  assert.equal(calls.length, before, 'it reads the boards in memory and runs nothing');
+  const failing = boardLib.create({ root: ROOT, env: {}, enabled: true, run: async () => { const error = new Error('exit'); error.code = 1; throw error; }, now: () => 1000 });
+  await failing.board('big-boss').catch(() => {});
+  assert.deepEqual(failing.readerBoards(), {}, 'a board that failed to read names nothing');
+});
+
 test('sessions come from board_cli.py sessions', async () => {
   const t = fixture();
   const out = await t.b.sessions();

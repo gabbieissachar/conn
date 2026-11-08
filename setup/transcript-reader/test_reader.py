@@ -1489,7 +1489,7 @@ class PageShellTest(unittest.TestCase):
         for mode, page in self.pages():
             title = re.search(r'<div class="title">(.*?)</div>', page, re.S).group(1)
             # Conversation (hidden on its own view), Documents, Files and the answer sheet, in that order, ahead of Follow.
-            order = [title.index(mark) for mark in ('id="view-conv"', 'id="view-doc"', 'id="files-quick"', 'class="to-sheet"', 'id="follow-quick"')]
+            order = [title.index(mark) for mark in ('id="view-conv"', 'id="view-doc"', 'id="view-tasks"', 'id="files-quick"', 'class="to-sheet"', 'id="follow-quick"')]
             self.assertEqual(order, sorted(order), mode)
             self.assertRegex(title, r'<button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden>', mode)
             self.assertRegex(title, r'<button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false">', mode)
@@ -1501,6 +1501,9 @@ class PageShellTest(unittest.TestCase):
             controls = re.search(r'<div id="bar-more">.*?<div id="controls">', page, re.S).group(0)
             self.assertNotIn("view-btn", controls, mode)
             self.assertIn('<button class="tab" role="tab" id="tab-doc" aria-selected="false">Documents</button>', controls, mode)
+            # The Tasks link is in every copy's markup, hidden; only a served page that the server says serves the board shows it (link.board).
+            self.assertRegex(controls, r'<a class="tab tab-link" id="tab-tasks" href="/setup/transcript-reader/board/"[^>]* hidden>Tasks</a>', mode)
+            self.assertRegex(title, r'<a class="view-btn" id="view-tasks" href="/setup/transcript-reader/board/" aria-label="Tasks"[^>]* hidden>', mode)
             self.assertIn(".bar.collapsed .view-btn:not([hidden]) { display: grid; }", page)
             self.assertIn("  .view-btn, .to-sheet .sheet-ico { display: none; }", page)
             self.assertIn('document.getElementById("files-quick").addEventListener("click", () => { if (slideOver()) setSideOpen(!docSideOpen); else showDocList(); });', page)

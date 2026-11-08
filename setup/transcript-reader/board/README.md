@@ -20,6 +20,8 @@ The reader's own switch for worker boards is a small file of the reader's (`boar
 
 ```
 GET  /setup/transcript-reader/board/                                        the Tasks page (open it in a tab; #s=<session>&t=<task>[/<call>] opens a card)
+GET  /api/transcript-reader/state                                           also { board: { page, boards } } where the page is served: the reader's Tasks link (header) shows, and opens
+                                                                            the board in `boards` that reads the conversation on screen (from the boards already read; nothing is built for it)
 POST /api/transcript-reader/board-mark    { session, task, turn, mark }     flagged
 POST /api/transcript-reader/board-answer  { session, task, call, src, ... } flagged
 POST /api/transcript-reader/board-worker  { leader, task, enabled }         a worker board on or off
@@ -192,6 +194,7 @@ python3 -I -m unittest discover -s setup/transcript-reader/board/tests     # the
 node --test setup/transcript-reader/board.test.js                          # board.js: cache, stale-while-revalidate, failures, the flagged writes, the page source
 node --test setup/transcript-reader/api.test.js                            # the routes (flags off by default, guard, loopback only, the page's token)
 node setup/transcript-reader/e2e/board-check.js                            # by hand: the page in a real browser against a scratch home and a lab store (24 checks; needs chrome-devtools-axi)
+node setup/transcript-reader/e2e/tasks-link-check.js                       # by hand: the reader's Tasks tab and icon in a real browser (flag off and on, which board, 1440 to 390 px, the click and the way back)
 ```
 
 `RealScripts` in `test_collect.py` runs the real snapshot and ask scripts against a scratch home when a Firstmate checkout is installed, and

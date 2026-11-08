@@ -2934,6 +2934,24 @@ test('board: a build that fails is a plain 502', async () => {
   } finally { await t.close(); }
 });
 
+test('board: the state route says where the board is served and which board reads each conversation, so the reader page can show its Tasks link', async () => {
+  let t = await start();
+  try {
+    const off = await t.get('state');
+    assert.equal(off.status, 200);
+    assert.equal('board' in off.json, false, 'no board flag: the state says nothing of a board');
+  } finally { await t.close(); }
+  t = await start({ options: { board: { run: boardRunWith([{ id: 'abcdef12-0000', replies: 3, last: 1 }]) } } });
+  try {
+    const before = await t.get('state');
+    assert.deepEqual(before.json.board, { page: '/setup/transcript-reader/board/', boards: {} }, 'on, with no board read yet: the page is named, no conversation is');
+    await t.get('board?session=leader-esim');
+    const after = await t.get('state');
+    assert.deepEqual(after.json.board, { page: '/setup/transcript-reader/board/', boards: { 'abcdef12-0000': 'leader-esim' } });
+    assert.equal((await t.get('state?boot=1')).json.board.page, '/setup/transcript-reader/board/', 'the first call of a page says it too');
+  } finally { await t.close(); }
+});
+
 // ---- the board's reply text and its send (a flag of its own; the reader's own guarded Send does the sending, so every refusal of it stands)
 
 const boardRunWith = (sessionList) => async (file, args) => {

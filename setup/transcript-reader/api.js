@@ -38,7 +38,10 @@
 //   GET  /api/transcript-reader/state[?follow=1][&boot=1]  page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes. boot=1, which a page sends
 //                                                   with its first call only, may be answered from a Herdr reading up to
-//                                                   BOOT_SCAN_MAX_AGE_MS old (a fresh one is taken meanwhile)
+//                                                   BOOT_SCAN_MAX_AGE_MS old (a fresh one is taken meanwhile). It also says { board: { page, boards } }
+//                                                   where the Tasks page is served from the address asked (the board's flag, and on the TLS
+//                                                   address its tailnet flag), for the reader page's Tasks link; boards maps a conversation
+//                                                   to the board that reads it, from the boards already read
 //   GET  /api/transcript-reader/open-asks           the conversations that ask you something, one for each live Herdr pane, newest ask
 //                                                   first (README, "The open-asks route"); read from the glance feed and Herdr, parses nothing
 //   GET  /api/transcript-reader/events?reader=<stamp>&sheet=<stamp>&wait=<ms>
@@ -1803,7 +1806,9 @@ function create({
       return;
     }
     if (pathname === API + 'state' && req.method === 'GET') {
-      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')) });
+      // Where the Tasks page is served from this address, the reader page shows its Tasks link (and which board each conversation belongs to, from the boards already read).
+      const boardHere = board.enabled && (!guards.has(req) || (boardTailnet && guards.get(req) === httpsLane.guard));
+      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')), ...(boardHere ? { board: { page: BOARD_PAGE, boards: board.readerBoards() } } : {}) });
       return;
     }
     // The open asks of the live panes, for a client that lists them: { generated_at, as_of, asks: [{ pane_id, herdr, session, message, lines, at, tags, older }] }.

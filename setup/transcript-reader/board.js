@@ -10,7 +10,8 @@
 //   GET  /api/transcript-reader/board-reply?session=<id>&sid=<session>&uid=<turn>   the whole text of one reply, read only (for "Show full reply")
 //   POST /api/transcript-reader/board-send                    { session, session_id, text }: send a message to a supervisor's Herdr pane, through the
 //                                                             reader's own guarded Send (api.js sendPrompt)                                           (PMOS_READER_BOARD_SEND=1)
-//   GET  /setup/transcript-reader/board/                      the Tasks page (board/page/): opened in a browser tab, loopback only
+//   GET  /setup/transcript-reader/board/                      the Tasks page (board/page/): opened in a browser tab, loopback only (and the TLS address with PMOS_READER_BOARD_TAILNET=1)
+//   the reader's state route also says { board: { page, boards } } where the board is served, so the reader page can show its Tasks link (api.js)
 //
 // Off unless the reader is started with PMOS_READER_BOARD=1 (or create({ board: true })); off, both routes answer 404 as if they did not
 // exist. Read only: the board is built from Firstmate's snapshot, its typed ask records, status files and git refs, and nothing is written
@@ -225,6 +226,18 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
 
   const write = { marks: Boolean(marks), answer: Boolean(answer), send: Boolean(send) };
 
+  // Which board each conversation of the reader belongs to, for the reader page's Tasks link: { <conversation id>: <board session id> }, from the boards
+  // already read (their threads name the supervisor conversations each one reads), so it never builds or reads anything. A conversation two boards read goes
+  // to the first board read; a board not read yet names none, and the link then opens the board page on its own first board.
+  function readerBoards() {
+    const found = {};
+    for (const [id, entry] of cache) {
+      const list = entry && entry.value && entry.value.threads && Array.isArray(entry.value.threads.session_list) ? entry.value.threads.session_list : [];
+      for (const conversation of list) if (conversation && typeof conversation.id === 'string' && !(conversation.id in found)) found[conversation.id] = id;
+    }
+    return found;
+  }
+
   // The whole text of one reply, read only, from the store (board_cli.py reply): the card shows a preview and asks for the rest on "Show full reply".
   const ID_RE = /^[0-9A-Za-z_-]{8,80}$/;
   async function reply(session, sid, uid) {
@@ -300,7 +313,7 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     return result;
   }
 
-  return { enabled, write, board, sessions, mark, answer: answerCall, workerSwitch, reply, sendCheck, page, ttlMs };
+  return { enabled, write, board, sessions, mark, answer: answerCall, workerSwitch, reply, sendCheck, readerBoards, page, ttlMs };
 }
 
 module.exports = { create, boardCacheDir, SESSION_RE, TTL_MS };
