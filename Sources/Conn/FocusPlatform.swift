@@ -67,7 +67,7 @@ final class SystemChimes: FocusChiming {
 final class SystemFocusStatus: FocusStatusReading {
     private var hasUsageDescription: Bool { Bundle.main.object(forInfoDictionaryKey: "NSFocusStatusUsageDescription") != nil }
 
-    private static func map(_ s: INFocusStatusAuthorizationStatus) -> FocusAuthorization {
+    private nonisolated static func map(_ s: INFocusStatusAuthorizationStatus) -> FocusAuthorization {
         switch s {
         case .authorized: return .authorized
         case .denied: return .denied
@@ -96,18 +96,28 @@ final class SystemFocusStatus: FocusStatusReading {
 
 // MARK: the timer
 
-/// A repeating main-thread timer in the common modes (it keeps firing while a menu is open).
+/// A repeating main-thread timer in the common modes (it keeps firing while a menu is open). While it runs, Conn holds an activity so App Nap cannot coalesce it into
+/// late ticks when Conn is covered by other apps: a chime that comes a minute late is a wrong timer. The activity allows the Mac to sleep.
 @MainActor
 final class TimerTicker: FocusTicking {
     private var timer: Timer?
+    private var activity: NSObjectProtocol?
+
     func start(every seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) {
         timer?.invalidate()
         let t = Timer(timeInterval: seconds, repeats: true) { _ in MainActor.assumeIsolated { fire() } }
         t.tolerance = min(0.2, seconds * 0.1)
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        if activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep], reason: "Conn Focus: a focus session or the eye clock is running")
+        }
     }
-    func stop() { timer?.invalidate(); timer = nil }
+
+    func stop() {
+        timer?.invalidate(); timer = nil
+        if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
+    }
 }
 
 // MARK: the eye-break panel (decisions F9, F20, F22)

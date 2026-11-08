@@ -140,7 +140,8 @@ struct FocusPanelView: View {
             focus.beginWatching()
             customOn = !FocusSession.presetMinutes.contains(focus.chosenMinutes)
             customMinutes = max(5, (focus.chosenMinutes / 5) * 5)
-            if focus.setupStatus == nil, focus.session.isIdle { Task { await focus.checkSetup() } }
+            // Until both shortcuts have been seen, each time the start view opens it looks again (a listing only; nothing is run), so making them in Shortcuts is noticed.
+            if focus.setupStatus?.isReady != true, focus.session.isIdle { Task { await focus.checkSetup() } }
         }
         .onDisappear { focus.endWatching(); confirmStop = false }
     }
@@ -200,7 +201,9 @@ struct FocusPanelView: View {
         let s = focus.session
         let paused = s.isPaused
         return VStack(alignment: .leading, spacing: 8) {
-            if focus.link.isRed { redBox(focus.link) } else if case .onUnconfirmed(let why) = focus.link { neutralNote("Conn Focus is on, but not confirmed: \(why).") }
+            if focus.link.isRed { redBox(focus.link) }
+            else if case .onUnconfirmed(let why) = focus.link { neutralNote("Conn Focus is on, but not confirmed: \(why).") }
+            else if focus.link == .switchingOn { neutralNote("Switching on Conn Focus…") }
             Text(FocusTimeFormat.clock(s.remaining(at: face.now))).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(paused ? Color.secondary : FocusStyle.focus)
             Text(subline(s)).font(.system(size: 12)).foregroundStyle(.secondary)
             ProgressView(value: s.progress(at: face.now)).tint(paused ? .gray : FocusStyle.focus)
