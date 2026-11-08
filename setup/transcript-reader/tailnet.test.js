@@ -48,7 +48,7 @@ function fakeHerdr() {
 
 // A reader server with its loopback listeners and, unless withTailnet is false, a tailnet listener.
 // sharedPasscodeFile: another boot's passcode file, so this server shares its passcode and sessions (a restart, or a second server).
-async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFile = null, secure = null } = {}) {
+async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFile = null, secure = null, board = null } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-tailnet-'));
   const root = path.join(base, 'repo');
   const outDir = path.join(root, 'setup', 'transcript-reader', 'out');
@@ -73,7 +73,7 @@ async function boot({ passcode = PASSCODE, withTailnet = true, sharedPasscodeFil
   // secure: { host, certFile, keyFile, recheckMs } turns the TLS listener on (certificate files made by makeCertificate).
   const server = await start({
     root, port, tailnet: withTailnet ? { ip: '127.0.0.1', port: tailnetPort, passcodeFile, ...(secure ? { https: { port: httpsPort, ...secure } } : {}) } : null,
-    log: (line) => lines.push(line), runner: herdr.runner, env: {}, projectsDir, claudeSessionsDir: path.join(base, 'sessions'), pinsFile: path.join(base, 'config', 'pins.json'), now: () => clock, pause: async () => {},
+    ...(board ? { board } : {}), log: (line) => lines.push(line), runner: herdr.runner, env: {}, projectsDir, claudeSessionsDir: path.join(base, 'sessions'), pinsFile: path.join(base, 'config', 'pins.json'), now: () => clock, pause: async () => {},
   });
 
   const request = (target, { method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -1169,4 +1169,84 @@ test('a shell page opens in a tab as before, and the page itself may fetch it fo
   assert.equal((await s.onHttps({ path: shell, headers: { ...FETCH, [TOKEN_HEADER]: token } })).status, 401, 'and never without the sign-in');
   // The local reader page keeps the old rule: a script's fetch of it never gets it, even with the token.
   assert.equal((await s.onHttps({ path: PAGE, headers: { ...FETCH, Cookie: cookie, [TOKEN_HEADER]: token } })).status, 403);
+});
+
+
+// ---------------------------------------------------------------- the Tasks board on the phone's TLS address
+
+const BOARD_PAGE = '/setup/transcript-reader/board/';
+const BOARD_API = '/api/transcript-reader/';
+// The board's page is put together from files of this copy, so a scratch copy gets the real ones.
+function boardCopy(root) {
+  const here = __dirname;
+  for (const [from, to] of [['board/page', 'board/page'], ['prototype/live.js', 'prototype/live.js'], ['prototype/vendor/markdown-it.min.js', 'prototype/vendor/markdown-it.min.js'],
+    ['prototype/markdown.js', 'prototype/markdown.js'], ['prototype/undosend.js', 'prototype/undosend.js'], ['prototype/commentkey.js', 'prototype/commentkey.js']]) {
+    const source = path.join(here, from);
+    const target = path.join(root, 'setup', 'transcript-reader', to);
+    const isFolder = fs.statSync(source).isDirectory();
+    fs.mkdirSync(isFolder ? target : path.dirname(target), { recursive: true });
+    if (isFolder) for (const name of fs.readdirSync(source)) fs.copyFileSync(path.join(source, name), path.join(target, name));
+    else fs.copyFileSync(source, target);
+  }
+}
+async function bootBoard(t, board) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-cert-'));
+  const cert = makeCertificate(dir, HOST);
+  if (!cert) { t.skip('openssl cannot make a scratch certificate here'); return null; }
+  const calls = [];
+  const run = async (file, args) => { calls.push(args); return JSON.stringify({ schema: 'task-board.v1', session: { id: args[args.length - 1] }, threads: { session_list: [] } }); };
+  const s = await boot({ secure: cert, board: { enabled: true, run, ...board } });
+  t.after(s.close);
+  boardCopy(path.join(s.base, 'repo'));
+  return { ...s, calls };
+}
+
+test('the board stays off the phone unless its own flag is on: not on the TLS address, not on the plain one, loopback as before', async (t) => {
+  const s = await bootBoard(t, {});
+  if (!s) return;
+  const loopbackPage = await s.onLoopback({ path: BOARD_PAGE, headers: NAVIGATE });
+  assert.equal(loopbackPage.status, 200);
+  const token = tokenIn(loopbackPage.raw);  // the token is the server's, the same on every address: the flag is what keeps the board off the phone
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  const plain = await s.signedIn();
+  for (const [urlPath, headers] of [[BOARD_PAGE, NAVIGATE], [BOARD_API + 'board-sessions', {}], [BOARD_API + 'board?session=big-boss', {}]]) {
+    assert.equal((await s.onHttps({ path: urlPath, headers: { ...headers, Cookie: cookie, [TOKEN_HEADER]: token } })).status, 404, 'TLS ' + urlPath);
+    assert.equal((await s.onTailnet({ path: urlPath, headers: { ...headers, Cookie: plain, [TOKEN_HEADER]: token } })).status, 404, 'plain ' + urlPath);
+  }
+  assert.equal(s.calls.length, 0, 'nothing was built for the phone');
+});
+
+test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind the passcode, reads only, and never on the plain tailnet address', async (t) => {
+  const s = await bootBoard(t, { tailnet: true, marks: true, answer: true, send: true });
+  if (!s) return;
+  // Signed out: the passcode page for the board's page, a refusal for its routes. Nothing of the board, no token.
+  const out = await s.onHttps({ path: BOARD_PAGE, headers: NAVIGATE });
+  assert.equal(out.status, 401);
+  assert.match(out.raw, /Passcode/);
+  assert.ok(!/reader-token|content="[0-9a-f]{64}"/.test(out.raw));
+  for (const urlPath of [BOARD_API + 'board-sessions', BOARD_API + 'board?session=big-boss', BOARD_API + 'board-reply?session=big-boss&sid=x&uid=y']) assert.equal((await s.onHttps({ path: urlPath })).status, 401, urlPath);
+  assert.equal(s.calls.length, 0);
+  // Signed in: the page carries the token, the reads work with it and not without it, and every flagged write is refused on the phone even when its flag is on.
+  const cookie = (await signInSecure(s)).headers['set-cookie'][0].split(';')[0];
+  const page = await s.onHttps({ path: BOARD_PAGE, headers: { ...NAVIGATE, Cookie: cookie } });
+  assert.equal(page.status, 200);
+  assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+  const token = tokenIn(page.raw);
+  assert.match(token, /^[0-9a-f]{64}$/);
+  assert.equal((await s.onHttps({ path: BOARD_API + 'board-sessions', headers: { Cookie: cookie } })).status, 403, 'the session alone is not enough');
+  const read = await s.onHttps({ path: BOARD_API + 'board?session=big-boss', headers: { Cookie: cookie, [TOKEN_HEADER]: token } });
+  assert.equal(read.status, 200, read.raw);
+  assert.deepEqual(read.json.write, { marks: false, answer: false, send: false }, 'the phone is told it cannot write');
+  const own = await s.onLoopback({ path: BOARD_API + 'board?session=big-boss', headers: { [TOKEN_HEADER]: tokenIn((await s.onLoopback({ path: BOARD_PAGE, headers: NAVIGATE })).raw) } });
+  assert.deepEqual(own.json.write, { marks: true, answer: true, send: true }, 'loopback keeps its flags');
+  for (const name of ['board-mark', 'board-answer', 'board-worker', 'board-send']) {
+    const refused = await s.onHttps({ method: 'POST', path: BOARD_API + name, headers: { Cookie: cookie, Origin: SECURE_ORIGIN(s), 'Content-Type': 'application/json', [TOKEN_HEADER]: token, 'Sec-Fetch-Site': 'same-origin' }, body: { session: 'big-boss', session_id: A, text: 'from the phone' } });
+    assert.equal(refused.status, 403, name);
+    assert.equal(refused.json.code, 'not_on_the_phone', name);
+  }
+  assert.equal(s.herdr.prompts().length, 0, 'nothing was typed into a pane');
+  // The plain tailnet address, signed in, still has no board.
+  const plain = await s.signedIn();
+  assert.equal((await s.onTailnet({ path: BOARD_PAGE, headers: { ...NAVIGATE, Cookie: plain } })).status, 404);
+  assert.equal((await s.onTailnet({ path: BOARD_API + 'board-sessions', headers: { Cookie: plain, [TOKEN_HEADER]: token } })).status, 404);
 });

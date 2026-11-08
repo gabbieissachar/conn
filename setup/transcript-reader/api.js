@@ -46,7 +46,7 @@
 //                                                   stamp(s) given, or after the wait (at most 30 s) with the same stamps: how an
 //                                                   open page learns of a new build at once instead of at its next poll
 //   GET  /api/transcript-reader/board?session=<id>  the Tasks board of one session (board.js; board/README.md), as JSON; 404 unless the reader is
-//                                                   started with PMOS_READER_BOARD=1, and never served on the tailnet listener
+//                                                   started with PMOS_READER_BOARD=1, and not on the tailnet listeners unless PMOS_READER_BOARD_TAILNET=1 too (the TLS one only, reads only)
 //   GET  /api/transcript-reader/board-sessions      the sessions that have a board (same flag, same limits)
 //   POST /api/transcript-reader/board-{mark,answer,worker}  the board's writes (board.js): a reply mark and an answer, each behind a flag of its own, and a worker's
 //                                                   on/off switch; GET /setup/transcript-reader/board/ is its page (loopback only)
@@ -521,6 +521,9 @@ function create({
   // The recent builds of the reader page, for answering what changed since the one an open page holds (delta.js).
   const deltas = deltaStore.create();
   const board = boardLib.create({ root, env, now, pythonBin, ...(boardOption && typeof boardOption === 'object' ? boardOption : {}), ...(boardOption ? { enabled: true } : {}) });
+  // The Tasks board on the phone's TLS address: its own flag, off by default (PMOS_READER_BOARD_TAILNET=1 or board.tailnet). Only its page and its read routes go
+  // there, behind the same passcode, token, Host and Origin checks as every page of the reader; its writes (mark, answer, worker switch, send) stay loopback-only.
+  const boardTailnet = Boolean(board.enabled && httpsLane && ((boardOption && typeof boardOption === 'object' && boardOption.tailnet) || env.PMOS_READER_BOARD_TAILNET === '1'));
 
   // ------------------------------------------------------------- local records
 
@@ -1829,16 +1832,17 @@ function create({
       send(res, 200, { status: 'ok', outputs: kept });
       return;
     }
-    // The Tasks board (a flag, off by default; loopback only: the phone's copy is a separate decision, with its own sealing). Its two writes have a flag
-    // each (board.js): a mark on a task's record, and an answer to a call.
-    if (pathname.startsWith(API + 'board') && board.enabled && !guards.has(req)) {
+    // The Tasks board (a flag, off by default; loopback only, and its reads also on the TLS address when boardTailnet is on: the phone's offline copy is a
+    // separate decision, with its own sealing). Its writes have a flag each (board.js): a mark on a task's record, an answer to a call, the message box.
+    const boardLoopback = !guards.has(req);
+    if (pathname.startsWith(API + 'board') && board.enabled && (boardLoopback || (boardTailnet && guards.get(req) === httpsLane.guard))) {
       const boardFail = (error) => { if (error && error.status) { fail(res, error.status, error.code, error.message); return true; } return false; };
       if (pathname === API + 'board-sessions' && req.method === 'GET') {
-        send(res, 200, { status: 'ok', ...(await board.sessions()), write: board.write });
+        send(res, 200, { status: 'ok', ...(await board.sessions()), write: boardLoopback ? board.write : { marks: false, answer: false, send: false } });
         return;
       }
       if (pathname === API + 'board' && req.method === 'GET') {
-        try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: board.write }); } catch (error) { if (!boardFail(error)) throw error; }
+        try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: boardLoopback ? board.write : { marks: false, answer: false, send: false } }); } catch (error) { if (!boardFail(error)) throw error; }
         return;
       }
       if (pathname === API + 'board-reply' && req.method === 'GET') {
@@ -1847,6 +1851,7 @@ function create({
       }
       // A message to a supervisor's pane, from the Tasks page's composer: the board's own flag and its own session list first (board.sendCheck), then the
       // reader's Send itself, unchanged (the same pane, foreground and Herdr checks as the conversation view's). The body is checked there, not here.
+      if (!boardLoopback && req.method !== 'GET') { fail(res, 403, 'not_on_the_phone', 'The board\'s writes are not offered on the phone.'); return; }
       if (pathname === API + 'board-send' && req.method === 'POST') {
         const body = await readJsonBody(req);
         try {
@@ -1959,15 +1964,19 @@ function create({
       res.end('Bad request');
       return true;
     }
-    // The Tasks page (board/page/): a built-in page of the reader's own, opened in a browser tab like the others; off with the board flag, never on the tailnet.
-    if (board.enabled && listener === 'loopback' && (url.pathname === BOARD_PAGE || url.pathname === BOARD_PAGE + 'index.html')) { serveBoardPage(req, res); return true; }
+    // The Tasks page (board/page/): a built-in page of the reader's own, opened in a browser tab like the others; off with the board flag, on the TLS address
+    // only with boardTailnet, and never on the plain tailnet one.
+    const boardPage = board.enabled && (url.pathname === BOARD_PAGE || url.pathname === BOARD_PAGE + 'index.html');
+    if (boardPage && listener === 'loopback') { serveBoardPage(req, res); return true; }
     const page = insideOut(req, url);
     const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
     if (listener === 'tailnet' || listener === 'tailnet-https') {
       const lanes = listener === 'tailnet' ? lane : httpsLane;
       if (!lanes) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
-      if (lanes.intercept(req, res, url, page.inside && page.name.endsWith('.html'), viewing)) return true;
+      const asksForBoard = boardPage && boardTailnet && listener === 'tailnet-https';
+      if (lanes.intercept(req, res, url, (page.inside && page.name.endsWith('.html')) || asksForBoard, viewing)) return true;
       guards.set(req, lanes.guard);
+      if (asksForBoard) { serveBoardPage(req, res); return true; }
     }
     if (viewing) { serveView(req, res); return true; }
     if (page.inside) {
