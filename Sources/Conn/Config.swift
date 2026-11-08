@@ -54,6 +54,10 @@ struct AppConfig {
     var campusBridgeLab: Double?
     /// `--campus-check`: run only the Campus steps of `--ui-check` (against the stand-in Campus).
     var campusCheck = false
+    /// `--focus-check`: run only the Conn Focus steps of `--ui-check` (README "Focus sessions"): a hand-moved clock, stand-ins for the sound, `shortcuts`, the Focus and the panel.
+    var focusCheck = false
+    /// `--focus-show-panel`: in a `--foreground` scripted launch, let the eye-break panel really show (silent, with stand-ins for everything else), so a person can look at it.
+    var focusShowPanel = false
     /// Test hook: open FILE in the editor, type into the text view as a user would, save, and report.
     var editorTest: String?
     /// Content size of the window in points (`--window 1100x700`), for screenshots of a small and a large window.
@@ -110,6 +114,8 @@ struct AppConfig {
             case "--campus-bridge": c.campusBridgeAtLaunch = true
             case "--campus-bridge-lab": c.campusBridgeLab = next().flatMap(Double.init) ?? 120
             case "--campus-check": c.campusCheck = true
+            case "--focus-check": c.focusCheck = true
+            case "--focus-show-panel": c.focusShowPanel = true
             case "--editor-test": c.editorTest = next()
             case "--window":
                 let parts = (next() ?? "").split(separator: "x").compactMap { Double($0) }
@@ -134,7 +140,7 @@ struct AppConfig {
     }
 
     private var hasScriptedHook: Bool {
-        uiTour || campusCheck || campusBridgeLab != nil || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
+        uiTour || campusCheck || focusCheck || campusBridgeLab != nil || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil
     }
 
     /// A launch driven by a script or a test rather than a person: any scripted hook, a background launch (whether or not it

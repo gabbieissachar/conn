@@ -156,3 +156,18 @@ private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 12, _ min: Int = 0) -
         #expect(f.midX == above.midX && f.maxY < above.maxY && f.minY > above.minY)
     }
 }
+
+@Suite("Focus time format") struct FocusTimeFormatTests {
+    @Test func aCountdownRoundsUpSoItNeverShowsZeroWhileTimeIsLeft() {
+        #expect(FocusTimeFormat.clock(1500) == "25:00" && FocusTimeFormat.clock(1499.2) == "25:00" && FocusTimeFormat.clock(1498.9) == "24:59")
+        #expect(FocusTimeFormat.clock(0.4) == "0:01" && FocusTimeFormat.clock(0) == "0:00" && FocusTimeFormat.clock(-3) == "0:00")
+        #expect(FocusTimeFormat.clock(65) == "1:05" && FocusTimeFormat.clock(3600) == "1:00:00" && FocusTimeFormat.clock(3669) == "1:01:09" && FocusTimeFormat.clock(10_800) == "3:00:00")
+    }
+
+    @Test func theEndTimeIsShortAndInThePersonsZone() {
+        let utc = TimeZone(identifier: "UTC")!
+        let d = Date(timeIntervalSince1970: 1_800_000_000)          // 2027-01-15 08:00 UTC
+        #expect(FocusTimeFormat.endTime(d, locale: Locale(identifier: "en_GB"), timeZone: utc) == "08:00")
+        #expect(FocusTimeFormat.endTime(d, locale: Locale(identifier: "en_US"), timeZone: utc).hasPrefix("8:00"))
+    }
+}

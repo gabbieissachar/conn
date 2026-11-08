@@ -159,7 +159,7 @@ enum UICheck {
                "agentViewFlag=\(launchedWithAgentView) scripted=\(Runtime.config.isScriptedLaunch) attaches=\(Runtime.config.launchPlan.attachesClient) mode=\(model.mode.rawValue) clientRunning=\(model.fallback.running)")
         let list = model.snapshot.prioritized
         guard list.count > 3 else { print("ui-check: not enough agents"); return }
-        // `CONN_UI_CHECK_ONLY=name,name` runs just those checks (reader-follow, asks, sidebar, prompt, file-ref), with the Agent view on as
+        // `CONN_UI_CHECK_ONLY=name,name` runs just those checks (reader-follow, asks, sidebar, prompt, file-ref, focus), with the Agent view on as
         // the full suite has it by then, so one area can be run in half a minute instead of three.
         let only = Set((ProcessInfo.processInfo.environment["CONN_UI_CHECK_ONLY"] ?? "").split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
         if !only.isEmpty {
@@ -169,6 +169,7 @@ enum UICheck {
             if only.contains("sidebar") { await SidebarCheck.run(model: model, report: report, wait: wait) }
             if only.contains("asks") { await AskRowsCheck.run(model: model, report: report, wait: wait) }
             if only.contains("file-ref") { await FileRefCheck.run(model: model, report: report, wait: wait) }
+            if only.contains("focus") { await FocusCheck.run(model: model, report: report, wait: wait) }
             print("ui-check: done (only \(only.sorted().joined(separator: ", ")))")
             model.shutdown(); NSApplication.shared.terminate(nil)
             return
@@ -468,6 +469,7 @@ enum UICheck {
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await AskRowsCheck.run(model: model, report: report, wait: wait)
         await CampusCheck.run(model: model, report: report, wait: wait)
+        await FocusCheck.run(model: model, report: report, wait: wait)
         await OpenAsksPageReadCheck.run(report: report, wait: wait)
         model.webTab = .reader; model.pinReader(); await wait(0.5)
         await ReaderFollowCheck.run(model: model, report: report, wait: wait)

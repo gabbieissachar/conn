@@ -332,13 +332,14 @@ private extension BridgeRegistry {
     }
 
     @Test func signedOutAnswersAtOnceAndSendsNothing() async throws {
-        let lab = await Lab(); lab.on()
+        // A 30-second budget and a 20-second bound: "at once" means it did not wait for the budget, and a bound as tight as the old 5 s budget failed on a loaded machine.
+        let lab = await Lab(budget: 30); lab.on()
         lab.auth.override = { _ in CampusReply(status: 403, body: Data("{\"error\":\"no valid campus_session cookie\"}".utf8)) }
         await lab.store.refresh()
         #expect(lab.store.link == .expired)
         let t0 = Date()
         let r = try await lab.ask("req-so", lab.newText())
-        #expect(lab.field(r, "status") == "signed-out" && Date().timeIntervalSince(t0) < 5 && lab.writes().isEmpty)
+        #expect(lab.field(r, "status") == "signed-out" && Date().timeIntervalSince(t0) < 20 && lab.writes().isEmpty)
         lab.auth.override = nil
     }
 

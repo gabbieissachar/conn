@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = cfg.webTab { model.webTab = t }
         if let n = cfg.watch { model.setWatchCount(n); model.watchOn = true }
         model.privacy = cfg.privacy
+        // Conn Focus: remove a marker whose Conn is gone, switch the Focus off if the last run left it on, start the eye clock if its switch is on.
+        model.focus.launch()
         // The first view was set when the model was made (`LaunchPlan`). A person's own launch on the Herdr client view
         // attaches the client here, so the view is ready without a click; a scripted launch never does.
         if cfg.launchPlan.attachesClient { model.attachHerdrClient() }
@@ -44,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if cfg.uiTour { Task { @MainActor in await UICheck.run(model: model) } }
         if cfg.campusCheck { Task { @MainActor in await CampusCheck.runAlone(model: model) } }
+        if cfg.focusCheck { Task { @MainActor in await FocusCheck.runAlone(model: model) } }
         if let secs = cfg.campusBridgeLab { Task { @MainActor in await CampusCheck.bridgeLab(model: model, seconds: secs) } }
         if cfg.probeDraw { Task { @MainActor in await DrawProbe.run(model: model) } }
         if cfg.startFallback {
@@ -118,6 +121,7 @@ enum TextFinderCommand {
 
 struct ConnCommands: Commands {
     @ObservedObject var app: AppModel
+    @ObservedObject var focus: FocusCoordinator
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -197,6 +201,24 @@ struct ConnCommands: Commands {
                 }
             }
         }
+        CommandMenu("Focus") {
+            // No shortcuts: every Command chord that is free is already taken (README "Focus sessions").
+            switch focus.session.phase {
+            case .idle: Button("Start Focus Session…") { app.focusPopoverShown = true }
+            case .running: Button("Pause Session") { focus.pauseSession() }
+            case .paused: Button("Resume Session") { focus.resumeSession() }
+            case .done: Button("Restart \(focus.session.lengthMinutes) min Session") { focus.restart() }
+            }
+            Button("Add 5 Minutes") { focus.extendSession() }.disabled(!focus.session.isActive)
+            Button("Stop Session Early") { focus.stopEarly() }.disabled(!focus.session.isActive)
+            Button("Show Focus Controls") { app.focusPopoverShown = true }
+            Divider()
+            Toggle("Eye Breaks (20-20-20)", isOn: Binding(get: { focus.eyeEnabled }, set: { focus.setEyeEnabled($0) }))
+            Button("Skip This Eye Break") { focus.skipBreak() }.disabled(!focus.eye.isOnBreak)
+            Divider()
+            Button("Set Up Conn Focus…") { app.focusSetupShown = true }
+            Button("Check Focus Setup") { app.focusSetupShown = true; Task { await focus.checkSetup() } }
+        }
         CommandMenu("Layout") {
             // A view keeps its own number (Editor stays Opt+Cmd+3) when the Agent view is off.
             ForEach(app.viewPolicy.modes) { m in
@@ -238,6 +260,8 @@ struct ConnCommands: Commands {
 struct ConnApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let app = MainActor.assumeIsolated { Runtime.model }
+    /// Observed so the menu-bar item below appears and goes with the session (the countdown itself is drawn by `FocusFace`, not by this scene).
+    @ObservedObject private var focus = MainActor.assumeIsolated { Runtime.model.focus }
 
     var body: some Scene {
         // One window: the model and its terminal views are shared, and a second window would fight over them.
@@ -247,12 +271,21 @@ struct ConnApp: App {
                 .frame(minWidth: 1000, minHeight: 600)
         }
         .defaultSize(width: 1500, height: 920)
-        .commands { ConnCommands(app: app) }
+        .commands { ConnCommands(app: app, focus: focus) }
 
         MenuBarExtra(isInserted: .constant(!Runtime.config.runsInBackground)) {
             WaitingMenu().environmentObject(app)
         } label: {
             MenuBarLabel(app: app)
+        }
+        .menuBarExtraStyle(.window)
+
+        // The focus session's second menu-bar item: the countdown, and the same controls, with Conn behind other apps. It is there while a session runs or is paused, and
+        // stays after Done until the person restarts or dismisses it.
+        MenuBarExtra(isInserted: Binding(get: { !Runtime.config.runsInBackground && (focus.session.isActive || focus.session.isDone) }, set: { _ in })) {
+            FocusPanelView(focus: focus, face: focus.face).environmentObject(app)
+        } label: {
+            FocusMenuBarLabel(focus: focus, face: focus.face)
         }
         .menuBarExtraStyle(.window)
 

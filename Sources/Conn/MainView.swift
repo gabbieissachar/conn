@@ -674,6 +674,7 @@ struct MainView: View {
                     .pickerStyle(.segmented).labelsHidden().frame(width: app.viewPolicy.modes.count == 3 ? 330 : 230)
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
+                    FocusToolbarButton(focus: app.focus, shown: $app.focusPopoverShown)
                     Toggle(isOn: $app.watchOn) { Image(systemName: "rectangle.split.3x1") }.help("Watch several sessions side by side (⇧⌘W)")
                     Toggle(isOn: $app.readerToggle) { Image(systemName: "sidebar.right") }.help("Show the reader and organizer (⌥⌘R)")
                     Toggle(isOn: $app.readerFollows) { Image(systemName: "pin") }.help("Reader follows the selected agent (⌥⌘F)")
@@ -737,6 +738,7 @@ struct MainView: View {
         } message: {
             Text("big-boss and the leader homes will be able to start threads in your My space, send to them and read the replies, as you, without asking each time: up to 6 new threads an hour per home and 20 a day. Campus acts on what it receives, and its agent reaches your connectors. Never a worker or a personal home. The switch is off again at the next launch, and you can turn it off at any time.")
         }
+        .sheet(isPresented: $app.focusSetupShown) { FocusSetupSheet(focus: app.focus).environmentObject(app) }
         .sheet(isPresented: $app.campusBridgeActivityShown) { if let b = app.campusBridge { BridgeActivitySheet(bridge: b).environmentObject(app) } }
         .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
         .sheet(item: $app.campusNewIn) { space in CampusNewConversationSheet(campus: app.campus, space: space).environmentObject(app) }

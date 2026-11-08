@@ -57,6 +57,7 @@ cat > "$APP/Contents/Info.plist.new.$$" <<'PLIST'
     <key>LSItemContentTypes</key><array><string>public.folder</string></array>
   </dict></array>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>NSFocusStatusUsageDescription</key><string>Conn checks whether a Focus is on, so it can warn you if Conn Focus did not switch on during a focus session. It cannot see which Focus it is.</string>
 </dict></plist>
 PLIST
 mv -f "$APP/Contents/Info.plist.new.$$" "$APP/Contents/Info.plist"

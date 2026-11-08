@@ -19,12 +19,16 @@ private func stub(_ body: String) -> (url: URL, log: URL) {
     return (script, log)
 }
 
+/// A runner with roomy time-outs: a call that should finish returns the moment its process exits, and the whole suite runs in parallel on a machine that may be busy, so a
+/// tight bound would fail for a slow shell start and not for a bug. Only the time-out test uses short ones on purpose.
+private func patient(_ url: URL) -> ShortcutRunner { ShortcutRunner(executable: url, runTimeout: 60, listTimeout: 60, quitTimeout: 60) }
+
 private func lines(_ url: URL) -> [String] { ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init) }
 
 @Suite("Shortcut runner") struct ShortcutRunnerTests {
     @Test func onAndOffRunExactlyTheTwoFixedNames() {
         let s = stub(#"echo "$@" >> "$LOG"; exit 0"#)
-        let r = ShortcutRunner(executable: s.url)
+        let r = patient(s.url)
         #expect(r.setBlocking(on: true) == .done && r.setBlocking(on: false) == .done)
         #expect(lines(s.log) == ["run Conn Focus On", "run Conn Focus Off"])
         #expect(FocusShortcut.allCases.map(\.rawValue) == ["Conn Focus On", "Conn Focus Off"])
@@ -32,14 +36,14 @@ private func lines(_ url: URL) -> [String] { ((try? String(contentsOf: url, enco
 
     @Test func theAsyncCallRunsTheSameThing() async {
         let s = stub(#"echo "$@" >> "$LOG"; exit 0"#)
-        let r = ShortcutRunner(executable: s.url)
+        let r = patient(s.url)
         #expect(await r.set(on: true) == .done)
         #expect(lines(s.log) == ["run Conn Focus On"])
     }
 
     @Test func aFailureReportsTheFirstLineItSaid() {
         let s = stub(#"echo "Error: Couldn't find shortcut 'Conn Focus On'" >&2; echo "second line"; exit 1"#)
-        let r = ShortcutRunner(executable: s.url).setBlocking(on: true)
+        let r = patient(s.url).setBlocking(on: true)
         #expect(r == .failed("Error: Couldn't find shortcut 'Conn Focus On'"))
         #expect(r.problem == "the shortcut said: Error: Couldn't find shortcut 'Conn Focus On'" && !r.isDone)
     }
@@ -48,9 +52,9 @@ private func lines(_ url: URL) -> [String] { ((try? String(contentsOf: url, enco
         let s = stub(#"echo $$ >> "$LOG"; sleep 30"#)
         let start = Date()
         var runner = ShortcutRunner(executable: s.url)
-        runner.runTimeout = 2; runner.quitTimeout = 2
+        runner.runTimeout = 5; runner.quitTimeout = 5          // roomy for the shell to start, short enough to end the test
         #expect(runner.setBlocking(on: true) == .timedOut)
-        #expect(Date().timeIntervalSince(start) < 8)
+        #expect(Date().timeIntervalSince(start) < 12)
         // the child was ended, not left running
         let pid = try #require(lines(s.log).first.flatMap { Int32($0) })
         #expect(kill(pid, 0) != 0)
@@ -65,15 +69,15 @@ private func lines(_ url: URL) -> [String] { ((try? String(contentsOf: url, enco
 
     @Test func checkSetupListsAndRunsNothing() {
         let s = stub(#"echo "$@" >> "$LOG"; if [ "$1" = list ]; then printf 'Morning\nConn Focus On\nConn Focus Off\n'; fi"#)
-        #expect(ShortcutRunner(executable: s.url).checkSetupBlocking() == .ready)
+        #expect(patient(s.url).checkSetupBlocking() == .ready)
         #expect(lines(s.log) == ["list"])          // only a listing: no `run`
     }
 
     @Test func checkSetupNamesWhatIsMissing() {
         let one = stub(#"printf 'Conn Focus On\nOther\n'"#)
-        #expect(ShortcutRunner(executable: one.url).checkSetupBlocking() == .missing([.off]))
+        #expect(patient(one.url).checkSetupBlocking() == .missing([.off]))
         let none = stub(#"printf 'Other\n'"#)
-        #expect(ShortcutRunner(executable: none.url).checkSetupBlocking() == .missing([.on, .off]))
+        #expect(patient(none.url).checkSetupBlocking() == .missing([.on, .off]))
         // a near name is not the name
         #expect(ShortcutRunner.setupStatus(listing: "Conn Focus On (old)\nConn Focus Off \n") == .missing([.on]))
         #expect(ShortcutRunner.setupStatus(listing: "  Conn Focus On\r\nConn Focus Off\n") == .ready)
@@ -81,19 +85,19 @@ private func lines(_ url: URL) -> [String] { ((try? String(contentsOf: url, enco
 
     @Test func aListingThatFailsIsUnavailableNotMissing() {
         let s = stub("exit 3")
-        if case .unavailable(let why) = ShortcutRunner(executable: s.url).checkSetupBlocking() { #expect(why.contains("3")) } else { Issue.record("expected .unavailable") }
+        if case .unavailable(let why) = patient(s.url).checkSetupBlocking() { #expect(why.contains("3")) } else { Issue.record("expected .unavailable") }
     }
 
     @Test func aHugeOutputDoesNotHangTheCall() {
         let s = stub(#"i=0; while [ $i -lt 4000 ]; do echo "line number $i with some padding to make it long enough to fill a pipe buffer quickly"; i=$((i+1)); done"#)
-        let r = ShortcutRunner(executable: s.url).execute(["list"], timeout: 8)
+        let r = patient(s.url).execute(["list"], timeout: 60)
         #expect(!r.timedOut && r.status == 0 && r.output.count <= 64 * 1024 + 8192)
     }
 
     @Test func aGrandchildHoldingThePipeDoesNotHoldTheCallUp() {
-        let s = stub("sleep 20 &\nexit 0")
+        let s = stub("sleep 90 &\nexit 0")
         let start = Date()
-        #expect(ShortcutRunner(executable: s.url).execute(["run", "Conn Focus On"], timeout: 5).status == 0)
-        #expect(Date().timeIntervalSince(start) < 4)
+        #expect(patient(s.url).execute(["run", "Conn Focus On"], timeout: 60).status == 0)
+        #expect(Date().timeIntervalSince(start) < 45)          // it did not wait for the grandchild's 90 seconds
     }
 }

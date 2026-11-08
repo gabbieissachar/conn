@@ -9,7 +9,9 @@ func shortSocketDir() -> String {
     return d
 }
 
-func waitUntil(_ timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+/// Polls `condition` until it holds. The default is generous on purpose: a wait that succeeds returns at once, and a 5-second bound failed whenever the machine was busy
+/// (several agents building at once), which showed up as a different timing test failing on each full run.
+func waitUntil(_ timeout: TimeInterval = 20, _ condition: () -> Bool) -> Bool {
     let end = Date().addingTimeInterval(timeout)
     while Date() < end {
         if condition() { return true }

@@ -97,9 +97,11 @@ public final class SilentChimes: FocusChiming {
 public final class ScriptedPanel: EyePanelPresenting {
     public private(set) var presented = 0
     public private(set) var dismissed = 0
+    public private(set) var completedCount = 0
     public private(set) var isUp = false
     public init() {}
     public func present() { presented += 1; isUp = true }
+    public func completed() { completedCount += 1; isUp = false }
     public func dismiss() { dismissed += 1; isUp = false }
 }
 

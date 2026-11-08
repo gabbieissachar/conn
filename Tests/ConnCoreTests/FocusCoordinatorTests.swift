@@ -308,7 +308,7 @@ private final class Rig {
         r.advance(19)
         #expect(r.panel.isUp)
         r.advance(1)
-        #expect(!r.coordinator.eye.isOnBreak && !r.panel.isUp && r.chimes.played == [.eyeBreakStarted, .eyeBreakEnded])
+        #expect(!r.coordinator.eye.isOnBreak && !r.panel.isUp && r.panel.completedCount == 1 && r.chimes.played == [.eyeBreakStarted, .eyeBreakEnded])
         #expect(r.totalsStore.today(at: r.clock.now).breaksTaken == 1 && r.totalsStore.today(at: r.clock.now).breaksSkipped == 0 && r.ticker.interval == 5)
     }
 

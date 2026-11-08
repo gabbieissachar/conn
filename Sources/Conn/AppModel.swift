@@ -72,6 +72,14 @@ final class AppModel: ObservableObject {
     let campusDraftRestore = PassthroughSubject<(String, String), Never>()
     /// The space a "New conversation" sheet is open for (nil: no sheet).
     @Published var campusNewIn: CampusSpace?
+    /// Focus sessions and 20-20-20 eye breaks (README "Focus sessions"): the session, the eye clock, Conn Focus (the macOS Focus Conn switches through a Shortcut), the marker file
+    /// other tools read, and the daily total. A scripted launch runs it on stand-ins (see `FocusRuntime`).
+    let focus: FocusCoordinator
+    let focusPanel: EyeBreakPanelController
+    let focusStandIns: FocusStandInSet?
+    /// The toolbar popover of the focus session, and the one-time setup sheet.
+    @Published var focusPopoverShown = false
+    @Published var focusSetupShown = false
     let editor: EditorModel
     let fallback: FallbackTerminalController
     let renderer: RendererKind
@@ -179,7 +187,12 @@ final class AppModel: ObservableObject {
     /// Decides when the sidebar follows Herdr's focus pointer while the client runs.
     private var clientFocus = HerdrClientFocusFollower()
     private var herdrAdoptPending = false
-    @Published var privacy = false { didSet { if privacy { primaryHistory = nil; secondaryHistory = nil } } }
+    @Published var privacy = false {
+        didSet {
+            if privacy { primaryHistory = nil; secondaryHistory = nil }
+            focus.privacyActive = privacy          // the eye-break panel is hidden from screen capture while Privacy mode is on
+        }
+    }
     @Published var showSwitcher = false
     @Published var switcherQuery = ""
     @Published var compose = ""
@@ -257,6 +270,8 @@ final class AppModel: ObservableObject {
         campusKeeper = campusRenewal.map { CampusSessionKeeper(renewer: $0, log: AppModel.makeRenewalLog(config: config)) }
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
+        let made = FocusRuntime.make(config: config)
+        focus = made.coordinator; focusPanel = made.panel; focusStandIns = made.standIns
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
         // A click on a file in the reader's page (a link in a reply, a button in its Documents view) opens it in the Editor view, as `conn <path>` does.
@@ -982,6 +997,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        focus.shutdown()          // the session ends, the marker goes, Conn Focus is switched off (waiting a few seconds for it)
         campusBridge?.shutdown()
         campusKeeper?.stop()
         campus.stop(); store.stop(); primary.stop(); secondary.stop(); fallback.stop(); promptWatch.stop()

@@ -53,6 +53,8 @@ public protocol FocusChiming: AnyObject {
 public protocol EyePanelPresenting: AnyObject {
     /// Show the break panel (never taking the keyboard); it reads what to draw from the coordinator.
     func present()
+    /// The 20 seconds ran out: the panel may say so for a moment ("Good. Back to it.") and then goes away.
+    func completed()
     func dismiss()
 }
 
@@ -274,9 +276,9 @@ public final class FocusCoordinator: ObservableObject {
             case .breakStarted:
                 chimes.eyeBreakStarted(); panel.present()
             case .breakEnded(let outcome):
-                panel.dismiss()
+                if outcome != .completed { panel.dismiss() }
                 switch outcome {
-                case .completed: chimes.eyeBreakEnded(); totals = totalsStore.addBreak(taken: true, at: now)
+                case .completed: panel.completed(); chimes.eyeBreakEnded(); totals = totalsStore.addBreak(taken: true, at: now)
                 case .leftTheScreen: totals = totalsStore.addBreak(taken: true, at: now)
                 case .skipped: totals = totalsStore.addBreak(taken: false, at: now)
                 case .switchedOff: break
