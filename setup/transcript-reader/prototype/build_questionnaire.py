@@ -28,6 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import build_prototype as builder  # noqa: E402
+import typed_asks  # noqa: E402
 
 TEMPLATE = HERE / "questionnaire.html"
 OUT = HERE.parent / "out"
@@ -489,6 +490,17 @@ def parse_questionnaire(reply: str) -> dict | None:
     return copy.deepcopy(found) if found else found
 
 
+def reply_questionnaire(exchange: dict) -> dict | None:
+    """The questionnaire a turn's reply stands for: the typed ask record it carries when the reader's typed-ask flag is on and the record
+    passed its checks (typed_asks.annotate_exchanges attached it as exchange["typed"]), else the prose parse. Never the record when the flag
+    is off, so the sheets are what they were."""
+    prose = parse_questionnaire(exchange["reply"]) if exchange.get("reply") else None
+    typed = exchange.get("typed")
+    if typed and typed.get("ok"):
+        return typed_asks.sheet_from_summary(typed, prose)
+    return prose
+
+
 def sent_answers(text: str) -> dict[str, str]:
     """Keyed answers in a message the captain sent, such as `A1=accept;A2=inline`."""
     return {key: value.strip() for key, value in KEYED_ANSWER.findall(text)}
@@ -536,19 +548,66 @@ def kept_questionnaires(member: Path, head: str, parsed: Path) -> list[dict]:
     return found
 
 
-def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = None, kept: bool = False) -> list[dict]:
+def typed_questionnaire(prose: dict | None, exchange: dict, head: str, logs: dict[str, str]) -> dict:
+    """One typed ask's questionnaire as the sheet page takes it: the record's cards (the prose parse of the same reply only lends its title and
+    its text above the cards), the answers the record and the chat hold as `sent`, and where the reply came from."""
+    summary = exchange["typed"]
+    at = exchange["reply_at"] or exchange["at"]
+    sent = typed_asks.sent_of(summary)
+    answered_at = exchange.get("answered_at")  # annotate_exchanges: the latest answer of the record or the chat
+    questionnaire = {**typed_asks.sheet_from_summary(summary, prose), "session": head, "at": at, "reply": exchange["reply"], "sent": sent,
+                     "sent_at": answered_at if sent else None}
+    if prose:
+        questionnaire.update({key: prose[key] for key in ("from_session", "log", "compacted_away") if key in prose})
+    elif exchange.get("from_session") and logs.get(exchange["from_session"]):
+        questionnaire.update(from_session=exchange["from_session"], log=logs[exchange["from_session"]])
+    elif exchange.get("compacted_away") and logs.get(head):
+        questionnaire.update(compacted_away=True, log=logs[head])
+    return questionnaire
+
+
+def overlay_typed(found: list[dict], exchanges: list[dict], head: str, logs: dict[str, str] | None = None) -> list[dict]:
+    """The questionnaires of a conversation (<found>, the prose ones, which are shared and never changed here) with its typed asks laid over
+    them: a reply that carries a record that passed its checks gets the record's questionnaire, and a typed ask the prose finder did not see
+    gets one of its own. <exchanges> are the conversation's turns as annotate_exchanges left them. Oldest first, as <found> is."""
+    logs = logs or {}
+    typed = {(e["reply_at"] or e["at"]): e for e in exchanges if (e.get("typed") or {}).get("ok") and e.get("reply")}
+    if not typed:
+        return found
+    merged = [typed_questionnaire(q, typed[q["at"]], head, logs) if q["at"] in typed else q for q in found]
+    have = {q["at"] for q in found}
+    merged += [typed_questionnaire(None, e, head, logs) for at, e in typed.items() if at not in have]
+    return sorted(merged, key=lambda q: q["at"] or 0)
+
+
+def chain_questionnaires(chain: list[Path], parsed: Path, seen: set | None = None, kept: bool = False, typed: bool = False) -> list[dict]:
     """The questionnaires of one pane's sessions (a /clear chain), oldest log first, each with the
     keyed answers you sent after it. A pane cleared with /clear answers in its newest session, as in
     the reader. The hosted copy (sync.py) builds each conversation's sheet with this too."""
     seen = set() if seen is None else seen
     head = chain[-1].stem
     found = []
+    fresh = all(member not in seen for member in chain)
     for member in chain:
         if member in seen:
             continue
         seen.add(member)
         found += (kept_questionnaires if kept else member_questionnaires)(member, head, parsed)
+    if typed and fresh and typed_asks.settings().render:
+        found = typed_chain(chain, parsed, found)
     return found
+
+
+def typed_chain(chain: list[Path], parsed: Path, found: list[dict]) -> list[dict]:
+    """<found> with the conversation's typed asks laid over it (overlay_typed), for a caller that has no build's turns to take them from: the
+    local answer sheet's builder. The turns are the chain's parsed logs read as thread_session reads them."""
+    loaded = {member: builder.parsed_log(member, parsed) for member in chain}
+    exchanges = builder.chain_exchanges(chain, loaded)
+    homes, parent_of = builder.fleet_homes(builder.MAIN_HOME)
+    home = builder.session_home(homes, loaded[chain[-1]]["cwd"])
+    ids = [builder.log_session_id(member) for member in chain]
+    typed_asks.annotate_exchanges(exchanges, typed_asks.Context(typed_asks.record_homes(home["home"], parent_of.get(home["id"])), ids, home["id"]))
+    return overlay_typed(found, exchanges, chain[-1].stem, {member.stem: str(member) for member in chain})
 
 
 def open_cards(questionnaire: dict) -> list[dict]:
@@ -573,7 +632,7 @@ def collect(session_names: list[str]) -> list[dict]:
     for name in session_names:
         path = builder.find_session_file(name)
         if path:
-            found += [{**q, "pane": cache.get(q["session"])} for q in chain_questionnaires(builder.session_chain(path), OUT / "parsed", seen, kept=True)]
+            found += [{**q, "pane": cache.get(q["session"])} for q in chain_questionnaires(builder.session_chain(path), OUT / "parsed", seen, kept=True, typed=True)]
     found.sort(key=lambda q: q["at"] or 0, reverse=True)
     return found
 

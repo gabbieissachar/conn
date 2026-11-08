@@ -51,6 +51,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
 import task_tags  # noqa: E402
 import tool_steps  # noqa: E402
+import typed_lines  # noqa: E402  (the typed-ask lines of a turn, found when it is finished)
+import typed_asks  # noqa: E402  (the typed ask records those lines name: read fresh on every build, behind a flag that is off by default)
 
 TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
@@ -397,6 +399,13 @@ def new_exchange(source, kind, label, text, timestamp, absorbed=False, uid=None)
     }
 
 
+def keep_open(exchange: dict) -> None:
+    """Keep a turn out of the wake-up folds on purpose (the newest turn, the answer to your own message, where the session stands). The mark
+    is kept with the turn's typed lines (typed_asks.apply_marker_fold leaves such a turn open whatever the wake marker says)."""
+    exchange["folded"] = False
+    exchange.setdefault("typed_lines", {})["keep_open"] = True
+
+
 def session_exchanges(records: list[dict]) -> list[dict]:
     """Split a session into exchanges: one input and the replies that answer it.
 
@@ -471,18 +480,18 @@ def session_exchanges(records: list[dict]) -> list[dict]:
     # newest reply is where the session stands (a worker often reports its finished task in
     # a wake-up's turn): both stay open so the reader shows what the session is doing now.
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
-        exchanges[-1]["folded"] = False
+        keep_open(exchanges[-1])
     # A reply that follows your own message stays out of the wake-up folds, whatever wake-up turn
     # carries it: you typed or ran something, the turn that answered it came as a wake-up.
     for previous, exchange in zip(exchanges, exchanges[1:]):
         if (exchange["folded"] and exchange["reply_words"] >= ANSWER_WORDS and not previous["reply"]
                 and (previous["source"] == "captain" or (previous["source"], previous["kind"]) == ("session", "command"))):
-            exchange["folded"] = False
+            keep_open(exchange)
     # The turn-end guard's own reply is never where the session stands.
     latest = next((e for e in reversed(exchanges) if e["reply"] and e["kind"] != "hook"), None) \
         or next((e for e in reversed(exchanges) if e["reply"]), None)
     if latest:
-        latest["folded"] = False
+        keep_open(latest)
     return exchanges
 
 
@@ -592,10 +601,10 @@ def codex_session_exchanges(records) -> list[dict]:
         run = next((n for n, item in enumerate(later) if not item["absorbed"]), len(later))
         exchange["answered_below"] = not exchange["reply"] and any(item["reply"] for item in later[:run])
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
-        exchanges[-1]["folded"] = False
+        keep_open(exchanges[-1])
     latest = next((item for item in reversed(exchanges) if item["reply"]), None)
     if latest:
-        latest["folded"] = False
+        keep_open(latest)
     return exchanges
 
 
@@ -747,10 +756,10 @@ def copilot_session_exchanges(records) -> list[dict]:
         run = next((n for n, item in enumerate(later) if not item["absorbed"]), len(later))
         exchange["answered_below"] = not exchange["reply"] and any(item["reply"] for item in later[:run])
     if exchanges and exchanges[-1]["folded"] and not exchanges[-1]["reply"]:
-        exchanges[-1]["folded"] = False
+        keep_open(exchanges[-1])
     latest = next((item for item in reversed(exchanges) if item["reply"]), None)
     if latest:
-        latest["folded"] = False
+        keep_open(latest)
     return exchanges
 
 
@@ -768,6 +777,11 @@ def finish_exchange(exchange: dict) -> None:
     exchange.update(classify_reply(exchange["reply"]))
     # Wake-ups fold unless their reply asks something; session events are dividers.
     exchange["folded"] = exchange["source"] == "wake" and exchange["verdict"] != "needs-you"
+    # The lines Firstmate prints for typed asks and the wake acknowledgement (typed_lines.py). Kept with the parsed turn; thread_session
+    # reads them (typed_asks.annotate_exchanges) and takes them off, so the page never holds them.
+    found = typed_lines.scan(exchange)
+    if found:
+        exchange["typed_lines"] = found
 
 
 # ------------------------------------------------------- fleet records (View B)
@@ -1247,6 +1261,9 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     mark_asks(exchanges)
     if leader:
         attach_task_tags(exchanges, chain, loaded, leader_home(cwd), leader["tasks"])
+    typed_asks.annotate_exchanges(exchanges, typed_asks.Context(typed_asks.record_homes(home["home"], parent), ids, home["id"]))
+    for exchange in exchanges:
+        exchange.pop("typed_lines", None)  # what the typed-ask code read of the turn; the page never holds it
     return session
 
 
@@ -1379,7 +1396,9 @@ def sheet_cards(questionnaire: dict) -> list[dict]:
     """The open cards of a reply's answer sheet, as the reply's ask box lists them: key, question, and the
     recommended default when the card names one."""
     cards = []
-    for card in questionnaire["cards"][:8]:
+    typed = questionnaire.get("typed")
+    shown = [card for card in questionnaire["cards"] if not typed or card["key"] in typed["open"]]  # a typed ask lists what is still to answer
+    for card in shown[:8]:
         recommended = next((o["value"] for o in card["options"] if o["recommended"]), "") or card["recommended"]
         cards.append({"key": card["key"], "q": clip_words(card["question"], 140),
                       **({"rec": clip_words(recommended, 80)} if recommended.strip() else {})})
@@ -1390,14 +1409,14 @@ def mark_sheets(sessions: list[dict]) -> None:
     """A reply that asks for keyed answers links to the answer sheet, which opens on it."""
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
-    from build_questionnaire import parse_questionnaire  # it imports this module, so only here
+    from build_questionnaire import reply_questionnaire  # it imports this module, so only here
     for session in sessions:
         for exchange in session["exchanges"]:
-            questionnaire = parse_questionnaire(exchange["reply"]) if exchange["reply"] else None
+            questionnaire = reply_questionnaire(exchange)
             if questionnaire:
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
                 exchange["sheet_cards"] = sheet_cards(questionnaire)
-                exchange["sheet_count"] = len(questionnaire["cards"])  # sheet_cards stops at 8; the page says how many questions there are
+                exchange["sheet_count"] = len(questionnaire["typed"]["open"] if questionnaire.get("typed") else questionnaire["cards"])  # sheet_cards stops at 8; the page says how many questions there are
 
 
 # ------------------------------------------------- which turns are about which task (a leader's conversation)
@@ -2526,7 +2545,7 @@ def make_private(folder: Path) -> None:
 # A rebuild reads every listed log, but between two rebuilds most logs have not changed.
 # Each log's turns are kept parsed on disk, under the version of the log and of this file
 # (its rules decide the turns), and a log is parsed again only once either changes.
-PARSE_RULES = hashlib.sha256(Path(__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()).hexdigest()[:16]
+PARSE_RULES = hashlib.sha256(Path(__file__).read_bytes() + Path(tool_steps.__file__).read_bytes() + Path(typed_lines.__file__).read_bytes()).hexdigest()[:16]
 PARSED_KEEP_DAYS = 7  # a parsed log no build has used for this long is removed
 
 
@@ -3275,11 +3294,14 @@ def lite_documents(documents: dict[str, dict], session: dict) -> dict[str, dict]
     return {doc: lite_document(documents[doc]) for doc in sorted(named) if doc in documents}
 
 
-def session_sheet(chain: list[Path], cache: Path | None) -> "LiveSheet | None":
+def session_sheet(chain: list[Path], cache: Path | None, session: dict | None = None) -> "LiveSheet | None":
     """The conversation's answer sheet for the lite page (its pane's questionnaires across a /clear chain, as the local sheet and the hosted
-    copy's a/ objects collect them), or None when no reply of it asks for keyed answers."""
-    from build_questionnaire import chain_questionnaires, list_entry  # it imports this module, so only here
+    copy's a/ objects collect them), or None when no reply of it asks for keyed answers. <session> is the conversation as the build made it:
+    with the typed-ask flag on, its typed asks (annotate_exchanges, read inside the build's recording) are the sheets' typed cards."""
+    from build_questionnaire import chain_questionnaires, list_entry, overlay_typed  # it imports this module, so only here
     found = chain_questionnaires(chain, cache, kept=True)
+    if session is not None and typed_asks.settings().render:
+        found = overlay_typed(found, session["exchanges"], chain[-1].stem if chain else "")
     if not found:
         return None
     piece = payload_json({"questionnaires": found}).encode("utf-8")
@@ -3332,7 +3354,7 @@ def live_from_payload(payload: dict, cache: Path | None = None) -> LiveBuild:
         body = {key: value for key, value in session.items() if key not in ("pane", "reopened")}
         piece = payload_json({**body, "documents": lite}).encode("utf-8")
         md_files.update({doc: record["path"] for doc, record in lite.items() if record.get("lazy") and record.get("path")})
-        sheet = session_sheet(session_chain(Path(session["file"])), cache)
+        sheet = session_sheet(session_chain(Path(session["file"])), cache, session)
         found.append(LiveConversation(entry, glance, session.get("pane"), bool(session.get("reopened")), [piece], pieces_stamp([piece]), sheet))
     return LiveBuild(payload["generated"], payload.get("since") or 0, payload.get("homes") or [], payload.get("closed") or [], found, md_files)
 

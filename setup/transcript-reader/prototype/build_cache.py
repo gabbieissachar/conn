@@ -280,7 +280,7 @@ def derive(home: dict, chain: list[Path], parent: Path | None, cache: Path, key:
         builder.mark_sheets([session])
         documents = builder.attach_documents([session], html=True, images=True)
     outputs = tool_steps.take_outputs(session["exchanges"])
-    sheet = builder.session_sheet(chain, cache)  # outside the recording, as the logs above are: the reader's own cache files are not what the page is made of
+    sheet = builder.session_sheet(chain, cache, session)  # outside the recording, as the logs above are: the reader's own cache files are not what the page is made of
     return (Thread(key, reads, session, documents, bool(outputs), sheet),
             plain({"outputs": outputs}).encode("utf-8", "replace") if outputs else None)
 

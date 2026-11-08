@@ -503,7 +503,9 @@ class ToolStepsTest(unittest.TestCase):
         self.assertEqual(turn["steps"][0]["l"], 1, "the count stays with the step")
 
     def test_steps_are_part_of_what_is_parsed_so_new_rules_parse_every_log_again(self):
-        self.assertEqual(builder.PARSE_RULES, __import__("hashlib").sha256(Path(builder.__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()).hexdigest()[:16])
+        # typed_lines.py finds the typed-ask lines of a finished turn, which the parsed log keeps, so it is part of what is parsed too
+        self.assertEqual(builder.PARSE_RULES, __import__("hashlib").sha256(Path(builder.__file__).read_bytes() + Path(tool_steps.__file__).read_bytes()
+                                                                           + Path(builder.typed_lines.__file__).read_bytes()).hexdigest()[:16])
 
 
 HOOK_TEXT = "Stop hook feedback:\n[exec ./guard.sh --claude]: TURN WOULD END BLIND - SUPERVISION IS OFF\n2 task(s) in flight, but no live watcher holds this home lock."
