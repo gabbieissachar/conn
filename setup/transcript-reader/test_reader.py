@@ -1708,8 +1708,15 @@ class PageShellTest(unittest.TestCase):
             # The hand-written pass that missed bold around code is gone, and so is the second reading of a reply in find.js.
             self.assertNotIn(r"replace(/\*\*([^*]+)\*\*/g", script, mode)
             self.assertIn("markdownView.plain(text)", script, mode)
+        # The answer sheet draws its own cards and its "What this is about" text by hand; only its "Original reply" panel (2026-11-08) uses the reader's
+        # parser, the same one in the same order, so a table and a code box read in it as they do in the conversation.
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
-        self.assertNotIn("markdownView", sheet)
+        script = re.search(r"<script>(.*?)</script>", sheet, re.S).group(1)
+        self.assertEqual(script.count("const markdownView = (() => {"), 1)
+        self.assertEqual(script.count("/*! markdown-it "), 1)
+        self.assertLess(script.index("/*! markdown-it "), script.index("const markdownView"))
+        self.assertLess(script.index("const markdownView"), script.index("function paintReply()"))
+        self.assertEqual(script.count("markdownView.render("), 1, "the panel is the only thing that reads through it")
 
 
 class PrivateFilesTest(unittest.TestCase):

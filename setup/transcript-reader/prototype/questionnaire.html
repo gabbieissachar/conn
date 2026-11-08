@@ -11,6 +11,8 @@
   the same way, from the lite page's index.json and a/<conversation>.json, but it is served and live like this one:
   Send goes straight to the pane, and a build is taken where it is. It is opened from a conversation of the lite
   page (#q=<session>:<time>, or #s=<session>), shows only that conversation's sheets, and links back to it.
+  Every sheet holds the reply it was made from (q.reply). The "Original reply" button opens it beside the sheet in a panel, drawn by the reader's own
+  markdown code (markdown-it and markdown.js are pasted in below, as in the reader page), so a table or a code box reads as it does in the conversation.
 -->
 <html lang="en">
 <head>
@@ -49,6 +51,10 @@ __HEAD_HOSTED__
   .proto { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
   select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
   .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .meta-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .meta-row .meta { margin-top: 0; flex: 1 1 auto; min-width: 0; }
+  .reply-btn { flex: none; border: 1px solid var(--line); background: var(--paper); color: var(--you); border-radius: 99px; padding: 2px 11px; font-size: 12px; font-weight: 600; }
+  .reply-btn[aria-expanded="true"] { background: var(--you-wash); border-color: var(--you); }
   /* The hosted copy's "As of" line, as the reader's: the laptop's build time, in the warning colour once it is old. */
   .asof { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .asof.stale { color: var(--ask); font-weight: 600; }
@@ -115,13 +121,54 @@ __HEAD_HOSTED__
   .dock button.primary { background: var(--you); border-color: var(--you); color: var(--paper); font-weight: 600; }
   .empty { color: var(--muted); text-align: center; padding: 30px 0; }
   [hidden] { display: none !important; }
+
+  /* The original reply, beside the sheet. Where the window is wide the sheet moves to the left and the reply takes the rest, so both are read at once;
+     on a narrower one it floats above the answer line, over the lower part of the sheet, and Close gives the sheet back. */
+  .reply-panel { position: fixed; z-index: 8; left: 8px; right: 8px; bottom: calc(var(--dock-h, 0px) + 8px); height: 52vh; display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .22); }
+  .rp-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); font-size: 14px; font-weight: 700; }
+  .rp-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--muted); }
+  .rp-close { flex: none; width: 32px; height: 32px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; font-size: 14px; line-height: 1; }
+  .rp-body { overflow: auto; padding: 10px 14px 16px; overscroll-behavior: contain; }
+  @media (min-width: 900px) {
+    body.reply-open .bar .inner, body.reply-open main, body.reply-open .dock .inner { margin-left: 16px; margin-right: 0; }
+    .reply-panel { top: 12px; left: calc(30rem + 48px); right: 16px; bottom: 12px; height: auto; }
+  }
+  /* The reply is drawn as the reader draws a reply (markdown.js): the same rules for prose, tables and code boxes. */
+  .rp-body .md { font-size: 15px; }
+  .rp-body .md > :is(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6) { max-width: 75ch; }
+  .rp-body .md p { margin: 0 0 .55em; }
+  .rp-body .md ul, .rp-body .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
+  .rp-body .md li { margin: 0 0 .25em; }
+  .rp-body .md li > p { margin: 0 0 .35em; }
+  .rp-body .md li > ul, .rp-body .md li > ol { margin: .25em 0; }
+  .rp-body .md li.task { list-style: none; position: relative; }
+  .rp-body .md li.task::before { content: "\2610"; position: absolute; left: -1.4em; }
+  .rp-body .md li.task.done::before { content: "\2611"; }
+  .rp-body .md h4 { margin: .6em 0 .3em; font-size: 15px; }
+  .rp-body .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .rp-body .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+  .rp-body .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+  .rp-body .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
+  .rp-body .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
+  .rp-body .codebox { position: relative; margin: 0 0 .55em; }
+  .rp-body .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .rp-body .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--faint); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+  .rp-body .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; user-select: none; -webkit-user-select: none; }
+  .rp-body .copy::before { content: attr(data-label); }
+  .rp-body .copy:hover { color: var(--you); border-color: var(--you); }
+  .rp-body .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+  .rp-body .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
+  .rp-body .md th, .rp-body .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
+  .rp-body .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
+  .rp-body .md td:first-child, .rp-body .md th:first-child { min-width: 2.5rem; }
   /* A sealed copy asks for its passphrase first; the picker and the answer line wait for it. */
   .locked .pick, .locked .meta, .locked .asof, .locked .dock { display: none; }
   /* On a phone or a touch screen every control is at least 44 px tall. */
   @media (max-width: 440px), (pointer: coarse) {
     .proto { display: none; }
     .title a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; }
-    select.pick, .opt, .dock button, .sent button { min-height: 44px; }
+    select.pick, .opt, .dock button, .sent button, .reply-btn, .rp-close { min-height: 44px; }
+    .rp-close { min-width: 44px; }
     details.context summary { padding: 10px 0; margin: -8px 0; }
     .other { min-height: 44px; }
     .dock button { padding: 6px 12px; font-size: 14px; }
@@ -132,7 +179,7 @@ __HEAD_HOSTED__
 <header class="bar"><div class="inner">
   <div class="title">Answer sheet <span class="proto">prototype</span><a href="prototype.html">← Reader</a></div>
   <select class="pick" id="pick" aria-label="Answer sheet"></select>
-  <div class="meta" id="meta"></div>
+  <div class="meta-row"><div class="meta" id="meta"></div><button class="reply-btn" id="reply-open" type="button" aria-controls="reply-panel" aria-expanded="false" title="The reply this sheet was made from, beside the sheet" hidden>Original reply</button></div>
   <div class="asof" id="asof" hidden aria-live="polite"></div>
 </div></header>
 <main id="main"></main>
@@ -147,6 +194,10 @@ __HEAD_HOSTED__
   </div>
   <div class="why" id="why" aria-live="polite"></div>
 </div></div>
+<section class="reply-panel" id="reply-panel" role="dialog" aria-label="Original reply" hidden>
+  <div class="rp-head"><span>Original reply</span><span class="rp-meta" id="reply-meta"></span><button class="rp-close" id="reply-close" type="button" aria-label="Close the original reply" title="Close (Esc)">&#x2715;</button></div>
+  <div class="rp-body" id="reply-body"></div>
+</section>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
 (() => {
@@ -160,6 +211,8 @@ __HEAD_HOSTED__
   const HOSTED = MODE === "hosted";
 /*__LIVE__*/
 /*__SENDONCE__*/
+/*__MARKDOWN_IT__*/
+/*__MARKDOWN__*/
 /*__HOSTED__*/
   let data = LAZY ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
   const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
@@ -473,8 +526,8 @@ __HEAD_HOSTED__
   }
   function render() {
     const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
-    if (!q) { main.append($("div", "empty", onlySession ? "This conversation has no answer sheet: no reply of it asks for keyed answers." : "No answer sheet found in the listed sessions.")); return; }
-    if (!q.cards) { main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
+    if (!q) { main.append($("div", "empty", onlySession ? "This conversation has no answer sheet: no reply of it asks for keyed answers." : "No answer sheet found in the listed sessions.")); paintReply(); return; }
+    if (!q.cards) { paintReply(); main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
     const meta = document.getElementById("meta");
     const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
     meta.textContent = `${where} · asked ${fmtWhen(q.at)}`;
@@ -498,7 +551,47 @@ __HEAD_HOSTED__
     }
     viewCards(q, main);
     renderDock();
+    paintReply();
   }
+  // ---------------------------------------------------------------- the original reply, beside the sheet
+  // The reply is part of the sheet's data (q.reply), so it is there offline and in the hosted copy too. It is drawn by markdownView, which is the reader's
+  // own: tables, code boxes, lists and links as the conversation draws them, and nothing in it can add markup (raw HTML is off). Open or closed is kept for the
+  // tab, so the next sheet opens beside its reply too.
+  let replyOpen = false;
+  try { replyOpen = sessionStorage.getItem("tr-q-reply") === "1"; } catch (e) { /* starts closed */ }
+  // The panel floats above the answer line on a narrow window, so it needs the line's height, which changes with the window and with what is picked.
+  const dockHeight = () => { const dock = document.querySelector(".dock"); document.documentElement.style.setProperty("--dock-h", (dock.hidden ? 0 : dock.offsetHeight) + "px"); };
+  if (window.ResizeObserver) new ResizeObserver(dockHeight).observe(document.querySelector(".dock"));
+  function paintReply() {
+    const q = qs[state.q], button = document.getElementById("reply-open"), panel = document.getElementById("reply-panel");
+    const has = Boolean(q && q.cards && q.reply), show = has && replyOpen;
+    button.hidden = !has;
+    button.setAttribute("aria-expanded", String(show));
+    panel.hidden = !show;
+    document.body.classList.toggle("reply-open", show);
+    dockHeight();
+    if (!show) { panel.removeAttribute("data-key"); return; }
+    // Drawn again only for another sheet: a rebuild of the same one leaves the reading place alone.
+    if (panel.dataset.key === storeKey(q)) return;
+    panel.dataset.key = storeKey(q);
+    document.getElementById("reply-meta").textContent = `asked ${fmtWhen(q.at)}`;
+    const body = document.getElementById("reply-body");
+    const box = $("div", "md"); box.innerHTML = markdownView.render(q.reply, { ask: [], reminder: [], doc: false }).html;
+    body.replaceChildren(box); body.scrollTop = 0;
+  }
+  function setReply(open) {
+    replyOpen = open;
+    try { sessionStorage.setItem("tr-q-reply", open ? "1" : "0"); } catch (e) { /* not kept */ }
+    paintReply();
+  }
+  document.getElementById("reply-open").addEventListener("click", () => setReply(!replyOpen));
+  document.getElementById("reply-close").addEventListener("click", () => setReply(false));
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && replyOpen && !document.getElementById("reply-panel").hidden) setReply(false); });
+  document.getElementById("reply-body").addEventListener("click", e => {
+    const button = e.target.closest("button.copy"); if (!button) return;
+    const text = button.parentElement.querySelector("pre").textContent;
+    navigator.clipboard.writeText(text).then(() => { button.dataset.label = "Copied"; setTimeout(() => { button.dataset.label = "Copy"; }, 1200); }, () => {});
+  });
   async function copy() {
     const text = message(qs[state.q]); if (!text) return;
     let ok = false;

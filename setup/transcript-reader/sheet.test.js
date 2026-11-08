@@ -134,3 +134,26 @@ test('sheet: the reader page\'s title bar link and the sheet\'s way back both na
   assert.ok(HTML.includes('back.href = (LAZY ? "index.html" : "prototype.html") + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");'));
   assert.ok(HTML.includes('qs = data.questionnaires.filter(ofSession);'), 'a rebuild of the served sheet is scoped the same way');
 });
+
+// --------------------------------------------------------------------------------------------------- the original reply beside the sheet (2026-11-08)
+
+test('sheet: every sheet carries its reply, and the "Original reply" panel draws it through the reader\'s own markdown code', () => {
+  assert.ok(HTML.includes('/*__MARKDOWN_IT__*/\n/*__MARKDOWN__*/'), 'the vendored parser and the reader\'s glue are pasted in, in that order');
+  assert.ok(HTML.includes('markdownView.render(q.reply, { ask: [], reminder: [], doc: false }).html'));
+  assert.equal((HTML.match(/markdownView\.render\(/g) || []).length, 1, 'the panel is the only reader of it; the cards and the context text keep the sheet\'s own');
+  assert.ok(HTML.includes('const has = Boolean(q && q.cards && q.reply)'), 'a sheet whose reply is not there has no button');
+  const py = execFileSync('python3', ['-c',
+    'import json,sys; sys.path.insert(0, sys.argv[1]); from build_questionnaire import member_questionnaires; import inspect; print(json.dumps("reply" in inspect.getsource(member_questionnaires)))',
+    path.join(__dirname, 'prototype')], { encoding: 'utf8' });
+  assert.equal(JSON.parse(py), true, 'build_questionnaire keeps the reply text with each questionnaire (member_questionnaires)');
+});
+
+test('sheet: the reply panel is closed until asked for, closes with Esc and Close, and is beside the sheet only where the window is wide', () => {
+  assert.match(HTML, /<section class="reply-panel" id="reply-panel" role="dialog" aria-label="Original reply" hidden>/);
+  assert.match(HTML, /<button class="reply-btn" id="reply-open"[^>]*aria-expanded="false"[^>]*hidden>Original reply<\/button>/, 'closed and out of sight until a sheet with a reply is on screen');
+  assert.ok(HTML.includes('if (e.key === "Escape" && replyOpen'));
+  assert.match(HTML, /@media \(min-width: 900px\) \{\s*body\.reply-open \.bar \.inner, body\.reply-open main, body\.reply-open \.dock \.inner \{ margin-left: 16px; margin-right: 0; \}/, 'the sheet moves left to make room');
+  assert.match(HTML, /\.reply-panel \{ top: 12px; left: calc\(30rem \+ 48px\)/, 'and the reply takes the rest, clear of the 30rem sheet column');
+  assert.match(HTML, /select\.pick, \.opt, \.dock button, \.sent button, \.reply-btn, \.rp-close \{ min-height: 44px; \}/, 'touch widths get 44 px controls');
+  assert.ok(HTML.includes('new ResizeObserver(dockHeight).observe(document.querySelector(".dock"))'), 'on a narrow window it floats above the answer line, whatever height that has');
+});
