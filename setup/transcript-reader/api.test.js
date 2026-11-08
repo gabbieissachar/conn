@@ -849,6 +849,31 @@ test('state: the focus counter moves when Herdr focuses another pane or the focu
   } finally { await t.close(); }
 });
 
+test('state: a page\'s first call (boot=1) is answered from a Herdr reading up to 10 seconds old while a fresh one is taken; every other call reads fresh', async () => {
+  const t = await start();
+  try {
+    const boot = () => t.request({ path: '/api/transcript-reader/state?boot=1', headers: { [TOKEN_HEADER]: t.token } });
+    const reads = () => t.herdr.calls.filter((call) => call.args[0] === 'session').length;
+    const settled = async (count) => { for (let i = 0; i < 100 && reads() < count; i++) await new Promise((resolve) => setTimeout(resolve, 10)); await new Promise((resolve) => setTimeout(resolve, 50)); };
+    assert.equal((await boot()).json.focus.session_id, A, 'no reading yet: it reads, as any call does');
+    assert.equal(reads(), 1);
+    t.tick(3000);
+    t.herdr.focused = 'w1:p2';
+    assert.equal((await boot()).json.focus.session_id, A, 'a reading 3 seconds old answers it, as it was');
+    await settled(2);
+    assert.equal(reads(), 2, 'and a fresh one was taken meanwhile');
+    assert.equal((await t.state()).json.focus.session_id, B, 'which the next call sees');
+    t.tick(3000);
+    t.herdr.focused = 'w1:p1';
+    assert.equal((await t.state()).json.focus.session_id, A, 'a call that is not a first one reads fresh, whatever the age');
+    assert.equal(reads(), 3);
+    t.tick(11000);
+    t.herdr.focused = 'w1:p2';
+    assert.equal((await boot()).json.focus.session_id, B, 'a reading older than 10 seconds is not answered from: it reads first');
+    assert.equal(reads(), 4);
+  } finally { await t.close(); }
+});
+
 test('state: following adds a focused session that has a log; not following never does', async () => {
   const t = await start();
   try {

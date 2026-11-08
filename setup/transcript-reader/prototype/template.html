@@ -4411,9 +4411,13 @@ __HEAD_HOSTED__
   }
   // A lazy page that is served (the lite page) holds nothing until its first index is in: its poll and its wait for builds start then.
   let started = !LAZY;
+  // The page's first call to the server asks for the state it has, even a few seconds old, so the dock can name its pane at once: the Herdr read
+  // that makes a fresh answer takes half a second or more, and the page was open and drawn long before it. The next poll brings the fresh one.
+  let bootState = true;
   if (!HOSTED) live.poll(async () => {
     let s;
-    try { s = await live.state(state.follow); } catch (e) { noteSyncFail(e); throw e; }
+    try { s = await live.state(state.follow, bootState); } catch (e) { noteSyncFail(e); throw e; }
+    bootState = false;
     takeState(s);
     if (!started) return;
     markRead();

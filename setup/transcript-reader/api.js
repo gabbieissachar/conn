@@ -35,8 +35,10 @@
 //                                                   (a/), to their own token-bearing fetches only. Read from files: nothing here parses the
 //                                                   34 MB page or asks the worker.
 //   GET  /api/transcript-reader/page?name=<page>    the built page again, for a page's own refresh
-//   GET  /api/transcript-reader/state[?follow=1]    page build stamps, the session Herdr
-//                                                   has focused, the listed sessions' live panes
+//   GET  /api/transcript-reader/state[?follow=1][&boot=1]  page build stamps, the session Herdr
+//                                                   has focused, the listed sessions' live panes. boot=1, which a page sends
+//                                                   with its first call only, may be answered from a Herdr reading up to
+//                                                   BOOT_SCAN_MAX_AGE_MS old (a fresh one is taken meanwhile)
 //   GET  /api/transcript-reader/open-asks           the conversations that ask you something, one for each live Herdr pane, newest ask
 //                                                   first (README, "The open-asks route"); read from the glance feed and Herdr, parses nothing
 //   GET  /api/transcript-reader/events?reader=<stamp>&sheet=<stamp>&wait=<ms>
@@ -294,6 +296,9 @@ const cancelledName = (id) => '.cancelled-' + id;
 const QUEUE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SEALED_MAGIC = Buffer.from('HRC1');
 const SCAN_TTL_MS = 700;
+// A page that has just opened asks for the state once, and its dock cannot name a pane until it comes: a reading this old is answered at once, and a new one is
+// taken meanwhile, which the page's next call (two seconds on) sees. Every later call, and Send, wants a fresh one.
+const BOOT_SCAN_MAX_AGE_MS = 10000;
 // Between two rebuilds, a short pause: a log changed during a rebuild is picked up by the next one at once, and a writer that
 // writes without a pause does not start rebuilds faster than a build can finish.
 const REBUILD_GAP_MS = 250;
@@ -648,8 +653,12 @@ function create({
 
   // Every running named Herdr session with its focused pane and agent panes.
   // Read-only: `herdr session list --json` and `herdr --session <name> api snapshot`.
-  async function scan({ fresh = false } = {}) {
+  async function scan({ fresh = false, maxAge = 0 } = {}) {
     if (!fresh && scanned && now() - scanned.at < SCAN_TTL_MS) return scanned.sessions;
+    if (!fresh && maxAge && scanned && now() - scanned.at < maxAge) {
+      if (!scanning) scan().catch(() => {});  // the reading the next call sees
+      return scanned.sessions;
+    }
     if (scanning) return scanning;
     scanning = (async () => {
       const listing = await runner(herdrBin, ['session', 'list', '--json'], { env: runEnv(), timeoutMs: 5000 });
@@ -1112,10 +1121,10 @@ function create({
 
   // What every call that a page or a client polls does first: it is there (the logs are watched while it is), Herdr is read (at most once
   // in SCAN_TTL_MS), pane changes and focus are noted, and a rebuild is started when a listed log or pane says one is due.
-  async function tend(follow) {
+  async function tend(follow, boot = false) {
     seen();
     const ids = listed();
-    const sessions = await scan();
+    const sessions = await scan({ maxAge: boot ? BOOT_SCAN_MAX_AGE_MS : 0 });
     const focused = trackFocus(sessions);
     notePaneChanges(ids, sessions);
     // A page built after the last failed rebuild (by `reader.py add`, say) ends that failure:
@@ -1126,8 +1135,8 @@ function create({
     return { ids, sessions, focused };
   }
 
-  async function state(follow) {
-    const { ids, sessions, focused } = await tend(follow);
+  async function state(follow, boot = false) {
+    const { ids, sessions, focused } = await tend(follow, boot);
     const panes = {};
     for (const session of sessions) {
       for (const pane of session.panes) {
@@ -1758,7 +1767,7 @@ function create({
       return;
     }
     if (pathname === API + 'state' && req.method === 'GET') {
-      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1')) });
+      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')) });
       return;
     }
     // The open asks of the live panes, for a client that lists them: { generated_at, as_of, asks: [{ pane_id, herdr, session, message, lines, at, tags, older }] }.

@@ -222,3 +222,20 @@ test('a phone the server signed out reloads once to the sign-in page from its wa
   await settle(); await settle();
   assert.equal(reloads.length, 1);
 });
+
+test('the state call names Follow and the page\'s first call (boot), and nothing else, in its query', async () => {
+  const { live, fetched } = load();
+  await live.state(false);
+  await live.state(true);
+  await live.state(false, true);
+  await live.state(true, true);
+  assert.deepEqual(fetched.map((f) => f.url), ['/api/transcript-reader/state', '/api/transcript-reader/state?follow=1', '/api/transcript-reader/state?boot=1', '/api/transcript-reader/state?follow=1&boot=1']);
+});
+
+test('the reader page asks with boot on its first poll only, and keeps asking that way until one answer has come', () => {
+  const PAGE = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
+  const poll = PAGE.slice(PAGE.indexOf('let bootState = true;'), PAGE.indexOf('// A new build is taken the moment the server publishes it'));
+  assert.ok(poll.includes('live.state(state.follow, bootState)'));
+  assert.ok(poll.indexOf('bootState = false;') > poll.indexOf('live.state(state.follow, bootState)'), 'after the call');
+  assert.ok(poll.indexOf('catch (e) { noteSyncFail(e); throw e; }') < poll.indexOf('bootState = false;'), 'and not when the call failed');
+});

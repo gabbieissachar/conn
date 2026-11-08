@@ -50,7 +50,8 @@
       if (!served) throw new Error("Open the served page (reader.py prints its address) to send or follow.");
       return request(path, options);
     }
-    const state = follow => call("state" + (follow ? "?follow=1" : ""));
+    // boot: this is the page's first call, which the server may answer from a Herdr reading a few seconds old (api.js, state).
+    const state = (follow, boot) => call("state" + (follow || boot ? "?" + [follow ? "follow=1" : "", boot ? "boot=1" : ""].filter(Boolean).join("&") : ""));
     // The built page's current text, for a page that swaps in new turns without reloading.
     const page = name => call("page?name=" + encodeURIComponent(name)).then(j => j.html);
     // What changed since the build the page holds (its `generated` time), in place of the whole page: the turns after the ones it
