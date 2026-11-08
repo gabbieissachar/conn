@@ -446,7 +446,9 @@ test('sheet: the lite page\'s title bar link goes to this conversation\'s sheet,
   assert.deepEqual(sheetLink({ mode: 'live', sheets: { [A]: { object: `a/${A}.json` } } }), { style: { display: '' }, href: 'sheet.html#s=aaaaaaaa' });
   assert.deepEqual(sheetLink({ mode: 'live', sheets: {} }), { style: { display: 'none' }, href: 'questionnaire.html' });
   assert.equal(sheetLink({ mode: 'live', sheets: { [B]: {} } }).style.display, 'none', 'another conversation\'s sheet is not this one\'s');
-  for (const mode of ['local', 'hosted']) assert.deepEqual(sheetLink({ mode, sheets: { [A]: {} } }), { style: { display: '' }, href: 'questionnaire.html' }, mode + ': the link is as it was');
+  // The sheet lists the conversation on screen's sheets only, on the full reader and the hosted copy too (2026-11-08).
+  assert.deepEqual(sheetLink({ mode: 'local', sheets: {} }), { style: { display: '' }, href: 'questionnaire.html#s=aaaaaaaa' }, 'the full reader\'s link is always there, and names the conversation');
+  assert.deepEqual(sheetLink({ mode: 'hosted', sheets: { [A]: {} } }), { style: { display: '' }, href: 'sheet.html#s=aaaaaaaa' }, 'the hosted copy\'s too');
 });
 
 test('sheet: a reply\'s "Answer sheet" link opens the lite page\'s own sheet, in the same window, on that questionnaire', () => {
@@ -490,33 +492,36 @@ test('sheet: what loads lazily is asked of LAZY and what needs a laptop to queue
 });
 
 // The part of the sheet that scopes its list to one conversation and finds the way back.
-function sheetScope(hash, index) {
-  const source = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('const addressed = '), SHEET_SOURCE.indexOf('// The list from the index: one entry per questionnaire'));
-  return vm.runInNewContext(`${source}\n({ onlySession, inConversation })`, { URLSearchParams, location: { hash }, MODE: 'live' });
+function sheetScope(hash, mode = 'live') {
+  const part = (from, to) => SHEET_SOURCE.slice(SHEET_SOURCE.indexOf(from), SHEET_SOURCE.indexOf(to));
+  const source = [part('const sessionOfAddress', '/* rules:end */'), part('const addressed = ', 'qs = data.questionnaires'), part('const inConversation', '// The list from the index: one entry per questionnaire')].join('\n');
+  return vm.runInNewContext(`${source}\n({ onlySession, inConversation })`, { URLSearchParams, location: { hash }, MODE: mode, String });
 }
 
 test('sheet: the lite sheet shows the conversation its address names and no other (#q=<session 8>:<time>, or #s=<session>)', () => {
   const index = { conversations: [{ id: A, ids: ['00000000-0000-4000-8000-000000000000', A] }, { id: B, ids: [B] }] };
   for (const hash of ['#q=aaaaaaaa%3A1793860599', '#q=aaaaaaaa:1793860599', '#s=aaaaaaaa', '#s=aaaaaaaa-1111-4111-8111-111111111111&q=aaaaaaaa:5']) {
-    const scope = sheetScope(hash, index);
+    const scope = sheetScope(hash);
     assert.equal(scope.inConversation(index, A), true, hash);
     assert.equal(scope.inConversation(index, B), false, hash);
   }
-  assert.equal(sheetScope('#s=00000000', index).inConversation(index, A), true, 'an older session of the conversation names it too');
-  const all = sheetScope('', index);
+  assert.equal(sheetScope('#s=00000000').inConversation(index, A), true, 'an older session of the conversation names it too');
+  const all = sheetScope('');
   assert.equal(all.onlySession, '');
   assert.equal(all.inConversation(index, A) && all.inConversation(index, B), true, 'with no address it lists every sheet');
 });
 
-test('sheet: the lite sheet is not scoped in the hosted copy, which lists every conversation\'s', () => {
-  const source = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('const addressed = '), SHEET_SOURCE.indexOf('// The list from the index: one entry per questionnaire'));
-  const scope = vm.runInNewContext(`${source}\n({ onlySession })`, { URLSearchParams, location: { hash: '#q=aaaaaaaa:1' }, MODE: 'hosted' });
-  assert.equal(scope.onlySession, '');
+test('sheet: the hosted copy\'s sheet and the full reader\'s are scoped by their address the same way (2026-11-08), and list every conversation\'s only with none', () => {
+  for (const mode of ['hosted', 'local']) {
+    assert.equal(sheetScope('#q=aaaaaaaa:1', mode).onlySession, 'aaaaaaaa', mode);
+    assert.equal(sheetScope('#s=aaaaaaaa', mode).onlySession, 'aaaaaaaa', mode);
+    assert.equal(sheetScope('', mode).onlySession, '', mode);
+  }
 });
 
 test('sheet: the way back is the conversation the sheet is of (the hosted copy\'s is its reader), and a build is taken from the lite index where it stands', () => {
-  assert.ok(SHEET_SOURCE.includes('back.href = "index.html" + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");'));
-  assert.ok(SHEET_SOURCE.includes('if (!HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";'));
+  assert.ok(SHEET_SOURCE.includes('back.href = (LAZY ? "index.html" : "prototype.html") + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");'));
+  assert.ok(SHEET_SOURCE.includes('if (LAZY && !HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";'));
   const refresh = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf('async function refreshLive()'), SHEET_SOURCE.indexOf('// Served, the sheet takes in a rebuild where it is'));
   assert.match(refresh, /hosted\.index\(\)/);
   assert.match(refresh, /hosted\.pageChanged\(next\.sheet_template\)/, 'new page code reloads it');

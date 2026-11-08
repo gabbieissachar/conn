@@ -14,8 +14,8 @@ const { execFileSync } = require('child_process');
 const HTML = fs.readFileSync(path.join(__dirname, 'prototype', 'questionnaire.html'), 'utf8');
 const rules = HTML.slice(HTML.indexOf('/* rules:start'), HTML.indexOf('/* rules:end */'));
 const sandbox = vm.runInNewContext(
-  `const fields = q => [...q.cards.map(c => ({ ...c, kind: 'card' })), ...q.corrections.map(k => ({ key: k, kind: 'correction' }))];\n${rules}\n({ settledKeys, isAnswered, openCards, answerLine, messageOf, fillPlan, leftOut, countText })`,
-  { Boolean });
+  `const fields = q => [...q.cards.map(c => ({ ...c, kind: 'card' })), ...q.corrections.map(k => ({ key: k, kind: 'correction' }))];\n${rules}\n({ settledKeys, isAnswered, openCards, answerLine, messageOf, fillPlan, leftOut, countText, sessionOfAddress, inSession })`,
+  { Boolean, URLSearchParams, String });
 
 const REVIEW = `Review group B (3 cards): the monthly release note.
 
@@ -110,4 +110,27 @@ test('every control is at least 44 px tall on a phone or a touch screen', () => 
   assert.match(block, /min-height: 44px/);
   assert.match(block, /\.title a \{[^}]*min-height: 44px/);
   assert.match(block, /\.other \{ min-height: 44px/);
+});
+
+// --------------------------------------------------------------------------------------------------- scoped to the conversation (2026-11-08)
+
+test('sheet: the address names the conversation whose sheets it lists, by #s= or by a reply\'s #q= link, and no address lists them all', () => {
+  assert.equal(sandbox.sessionOfAddress('#s=AAAA1111'), 'aaaa1111');
+  assert.equal(sandbox.sessionOfAddress('#q=bbbb2222%3A1762600000'), 'bbbb2222');
+  assert.equal(sandbox.sessionOfAddress('#s=cccc3333&q=bbbb2222:1'), 'cccc3333', 'the conversation is named first');
+  assert.equal(sandbox.sessionOfAddress(''), '');
+  assert.equal(sandbox.sessionOfAddress('#pick=bbbb2222:1'), '', 'the page\'s own memory of a pick does not narrow the list to it');
+});
+
+test('sheet: a sheet is of the conversation when its pane\'s newest session or the session it was asked in starts with the address', () => {
+  const list = [{ session: 'aaaa1111-0000' }, { session: 'bbbb2222-0000' }, { session: 'bbbb2222-0000', from_session: 'cccc3333-0000' }];
+  assert.deepEqual(list.filter((q) => sandbox.inSession(q, 'bbbb2222')).length, 2);
+  assert.deepEqual(list.filter((q) => sandbox.inSession(q, 'cccc3333')), [list[2]], 'a questionnaire from before a /clear is of the same conversation');
+  assert.deepEqual(list.filter((q) => sandbox.inSession(q, '')).length, 3, 'no address: every conversation\'s');
+  assert.equal(list.filter((q) => sandbox.inSession(q, 'dddd4444')).length, 0);
+});
+
+test('sheet: the reader page\'s title bar link and the sheet\'s way back both name the conversation', () => {
+  assert.ok(HTML.includes('back.href = (LAZY ? "index.html" : "prototype.html") + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");'));
+  assert.ok(HTML.includes('qs = data.questionnaires.filter(ofSession);'), 'a rebuild of the served sheet is scoped the same way');
 });

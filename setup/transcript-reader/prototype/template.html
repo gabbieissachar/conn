@@ -4658,14 +4658,14 @@ __HEAD_HOSTED__
     renderDock();
     paintLinked();
   }
-  // The lite page's title bar link goes to the sheet of the conversation on screen, and is there only when the conversation has one (the
-  // reader page's goes to the sheet of every conversation, and the hosted copy's is its own).
+  // The title bar link goes to the sheet of the conversation on screen, on every page (the sheet lists that conversation's sheets only; a
+  // link with no conversation lists them all). The lite page shows it only when the conversation has one.
   function paintSheetLink() {
-    if (MODE !== "live") return;
     const session = data.sessions[state.session], anchor = document.querySelector(".to-sheet");
+    if (!anchor) return;
     const has = Boolean(session && data.sheets && data.sheets[session.id]);
-    anchor.style.display = has ? "" : "none";
-    if (has) anchor.href = SHEET_PAGE + "#s=" + encodeURIComponent(session.id.slice(0, 8));
+    if (MODE === "live") anchor.style.display = has ? "" : "none";
+    if (session && (MODE !== "live" || has)) anchor.href = SHEET_PAGE + "#s=" + encodeURIComponent(session.id.slice(0, 8));
   }
   // "Documents (3)": the tab's text, and the name of the Documents icon in the folded header.
   function docsLabel(session) {

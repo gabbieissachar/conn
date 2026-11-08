@@ -189,7 +189,7 @@ __HEAD_HOSTED__
     return box;
   }
 
-  let qs = data.questionnaires;
+  let qs = [];  // set below, once the address has said whose sheets these are
   const state = { q: 0 };
   // "What this is about" stays as you left it, across re-renders and reloads.
   const openContexts = new Set();
@@ -238,7 +238,16 @@ __HEAD_HOSTED__
     const done = open.length - left.length;
     return `${done} of ${open.length} answered` + (done && left.length ? `. ${listKeys(left)} ${left.length > 1 ? "are" : "is"} left out of what Send types.` : "");
   };
+  // The sheet is one conversation's when its address names one: #s=<session 8>, or #q=<session 8>:<time> as a reply's link has it. The reader
+  // links here from the conversation on screen, so the list holds that conversation's sheets and not every conversation's. No address (a
+  // bookmark of the page itself) lists them all.
+  const sessionOfAddress = hash => { const a = new URLSearchParams(hash.replace(/^#/, "")); return (a.get("s") || (a.get("q") || "").split(":")[0]).toLowerCase(); };
+  const inSession = (q, only) => !only || [q.session, q.from_session].some(id => String(id || "").toLowerCase().startsWith(only));
   /* rules:end */
+  const addressed = new URLSearchParams(location.hash.slice(1));
+  const onlySession = sessionOfAddress(location.hash);
+  const ofSession = q => inSession(q, onlySession);
+  qs = data.questionnaires.filter(ofSession);
 
   // ---------------------------------------------------------------- shared pieces
   function optionButtons(card, onPick) {
@@ -525,10 +534,7 @@ __HEAD_HOSTED__
     line.textContent = hosted.outdated() || (old ? `Laptop asleep or not syncing since ${builtAt(data.generated)}` : `As of ${builtAt(data.generated)}`);
     line.title = `The laptop built this copy at ${fmtWhen(data.generated)}; the cards and the Herdr states are as of then.`;
   }
-  // The lite page's sheet is one conversation's: the one its address names (#q=<session 8>:<time>, or #s=<session>), which it links back to.
-  // A hosted copy's lists every conversation that has one.
-  const addressed = new URLSearchParams(location.hash.slice(1));
-  const onlySession = MODE === "live" ? (addressed.get("s") || (addressed.get("q") || "").split(":")[0]).toLowerCase() : "";
+  // A lazy copy's list comes from its index, where a conversation's ids are all its /clear chain's.
   const inConversation = (index, session) => !onlySession || ((index.conversations || []).find(c => c.id === session) || { ids: [session] }).ids.some(id => id.startsWith(onlySession));
   // The list from the index: one entry per questionnaire, its cards loaded with its conversation's sheet.
   function hostedList(index, before = []) {
@@ -549,17 +555,18 @@ __HEAD_HOSTED__
     if (!found) throw new Error("this answer sheet is not in its conversation's copy any more");
     Object.assign(q, found, { pane: q.pane, sheet: q.sheet });
   }
-  if (LAZY) {
-    // The way back: the hosted copy's reader, or the lite page on the conversation this sheet is of.
+  {
+    // The way back: the reader (the lazy copies' is index.html) on the conversation this sheet is of.
     const back = document.querySelector(".title a");
-    back.href = "index.html" + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");
-    if (!HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";
+    back.href = (LAZY ? "index.html" : "prototype.html") + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");
+    if (LAZY && !HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";
   }
   fillPick();
   pick.addEventListener("change", () => {
     state.q = Number(pick.value);
-    // Kept in the address, so a reload after a rebuild reopens the same questionnaire.
-    history.replaceState(null, "", "#q=" + encodeURIComponent(`${qs[state.q].session.slice(0, 8)}:${Math.round(qs[state.q].at || 0)}`));
+    // Kept in the address, so a reload after a rebuild reopens the same questionnaire. A list of every conversation keeps it as #pick, which
+    // does not narrow the list to that conversation on the next load (#q is a reply's link, and does).
+    history.replaceState(null, "", (onlySession ? "#q=" : "#pick=") + encodeURIComponent(`${qs[state.q].session.slice(0, 8)}:${Math.round(qs[state.q].at || 0)}`));
     render();
   });
   document.getElementById("copy").addEventListener("click", copy);
@@ -571,7 +578,7 @@ __HEAD_HOSTED__
     save(); render();
   });
   // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
-  const wanted = addressed.get("q") || "";
+  const wanted = addressed.get("q") || addressed.get("pick") || "";
   function openLinked() {
     const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
     if (linked >= 0) { state.q = linked; pick.value = String(linked); }
@@ -621,7 +628,7 @@ __HEAD_HOSTED__
     const payload = JSON.parse(next.getElementById("payload").textContent);
     if (payload.generated <= data.generated) return;
     const shown = qs[state.q], before = JSON.stringify(shown);
-    data = payload; qs = data.questionnaires;
+    data = payload; qs = data.questionnaires.filter(ofSession);
     Object.keys(answers).forEach(k => delete answers[k]);  // indexes may have moved; drafts reload from storage
     const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
     state.q = index >= 0 ? index : 0;
