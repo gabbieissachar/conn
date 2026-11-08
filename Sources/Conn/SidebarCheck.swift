@@ -51,6 +51,7 @@ enum SidebarCheck {
 
         // Watch: its columns share what the sidebar gives up.
         model.showWeb = true
+        model.watch.forgetEverything()
         model.watchOn = true
         model.setWatchCount(3)
         await wait(2.5)

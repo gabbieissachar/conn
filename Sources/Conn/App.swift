@@ -245,6 +245,7 @@ struct ConnCommands: Commands {
             Picker("Watch Columns", selection: Binding(get: { app.watch.count }, set: { app.setWatchCount($0) })) {
                 ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0) columns").tag($0) }
             }
+            WatchPresetMenuItems(watch: app.watch)
             Divider()
             Toggle("Reader and Organizer", isOn: $app.readerToggle).keyboardShortcut("r", modifiers: [.command, .option])
             Toggle("Reader Follows Selected Agent", isOn: $app.readerFollows).keyboardShortcut("f", modifiers: [.command, .option])

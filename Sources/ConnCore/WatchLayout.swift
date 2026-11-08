@@ -60,6 +60,40 @@ public struct WatchLayout: Equatable, Sendable {
 
     public func index(of session: String) -> Int? { slots.firstIndex { $0.map { WatchLayout.same($0.session, session) } ?? false } }
 
+    /// What the columns hold now, to keep: the count and each column's session, left to right.
+    public var setup: WatchSetup { WatchSetup(columns: slots.map { $0?.session }) }
+
+    /// Make the columns exactly this setup: the count, and each session in its place. A column that already shows the same session in
+    /// the same place keeps its identity (so its web view stays); the others are new. Nothing says which column was used last, so the
+    /// columns count as used from left to right: the leftmost is the one a new session replaces first.
+    /// `isGone` names a session that no longer exists: its column is left free (for the normal fill rule) and it is returned.
+    /// A setup with a number of columns Watch does not have is not applied.
+    @discardableResult
+    public mutating func apply(_ setup: WatchSetup, isGone: (String) -> Bool = { _ in false }) -> [String] {
+        guard let s = setup.sanitized() else { return [] }
+        var gone: [String] = []
+        var next: [WatchColumn?] = []
+        for (i, session) in s.columns.enumerated() {
+            guard let session = session else { next.append(nil); continue }
+            if isGone(session) { gone.append(session); next.append(nil); continue }
+            if i < slots.count, let kept = slots[i], kept.session == session {
+                next.append(WatchColumn(id: kept.id, session: session, lastUsed: 0))
+            } else {
+                next.append(WatchColumn(id: nextID, session: session, lastUsed: 0))
+                nextID += 1
+            }
+        }
+        for i in next.indices where next[i] != nil { next[i]!.lastUsed = tick() }
+        slots = next
+        return gone
+    }
+
+    /// A layout holding this setup.
+    public init(restoring setup: WatchSetup, isGone: (String) -> Bool = { _ in false }) {
+        self.init(count: setup.count)
+        apply(setup, isGone: isGone)
+    }
+
     /// The occupied column used longest ago (the leftmost one on a tie, which cannot happen with the counter clock).
     public var leastRecentlyUsed: Int? { leastRecentlyUsed(excluding: nil) }
 

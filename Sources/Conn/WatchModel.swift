@@ -12,6 +12,9 @@ final class WatchModel: ObservableObject {
     /// The columns. Changes that matter to the view (open, close, count) publish; a column being used does not, because it only
     /// moves a counter that no view draws.
     private(set) var layout: WatchLayout
+    /// The last setup of each column count and the saved presets (ConnCore `WatchSetups`): session ids and order only, kept in Conn's own
+    /// settings (`setupsKey`). The layout above is written into it as it changes, so a launch opens on the setup it was left in.
+    private(set) var setups: WatchSetups
     /// Each column's web view, by the column's id. Made when a column is first shown and let go of when it is closed or Watch ends.
     private(set) var boxes: [Int: WebBox] = [:]
     /// How many times each column was asked to draw attention to itself (the view flashes an outline when it changes).
@@ -35,15 +38,32 @@ final class WatchModel: ObservableObject {
     /// not make them again.
     var active = false
 
+    /// Says whether a session no longer exists, so a remembered column that holds it is left free for the normal fill rule instead of
+    /// showing nothing. The app sets it (a Campus conversation the feed no longer lists; an id the lite page could not open).
+    var isGone: (String) -> Bool = { WatchSetup.isGone($0, campusKnown: false, campusHas: { _ in true }) }
+
     private let hub: WebHub
     private let defaults: UserDefaults
     static let countKey = "conn.watch.columns"
+    static let setupsKey = "conn.watch.setups"
 
     init(hub: WebHub, defaults: UserDefaults) {
         self.hub = hub
         self.defaults = defaults
         let saved = defaults.object(forKey: WatchModel.countKey) as? Int ?? WatchLayout.defaultCount
-        layout = WatchLayout(count: saved)
+        setups = WatchSetups.decode(defaults.data(forKey: WatchModel.setupsKey))
+        // A launch opens on the last setup of the count it was left on. Which sessions still exist is asked when Watch turns on.
+        if let last = setups.last(forCount: WatchLayout.clamped(saved)), !last.isEmpty { layout = WatchLayout(restoring: last) } else { layout = WatchLayout(count: saved) }
+    }
+
+    /// Write what the columns hold now as the last setup of their count, and keep it (a no-op when nothing changed).
+    private func layoutChanged() {
+        defaults.set(layout.count, forKey: WatchModel.countKey)
+        if setups.remember(layout.setup) { persistSetups() }
+    }
+
+    private func persistSetups() {
+        if let d = setups.encoded() { defaults.set(d, forKey: WatchModel.setupsKey) }
     }
 
     var count: Int { layout.count }
@@ -100,6 +120,7 @@ final class WatchModel: ObservableObject {
             if let b = boxes[column.id] { b.showConversation(column.session, message: ask, reload: true) } else { _ = makeBox(column, message: ask) }
         }
         flashes[column.id, default: 0] += 1
+        layoutChanged()
         objectWillChange.send()
         return placement
     }
@@ -113,6 +134,7 @@ final class WatchModel: ObservableObject {
         let column = layout.slots[placement.column]!
         if case .replaced = placement { dropBox(column.id) }
         flashes[column.id, default: 0] += 1
+        layoutChanged()
         objectWillChange.send()
         return placement
     }
@@ -138,23 +160,111 @@ final class WatchModel: ObservableObject {
         guard let id = layout.slots.indices.contains(index) ? layout.slots[index]?.id : nil else { return }
         layout.close(index)
         dropBox(id)
+        layoutChanged()
         objectWillChange.send()
     }
 
+    /// What `setCount` did.
+    struct CountChange {
+        /// The count went up.
+        var grew = false
+        /// The new count's own last setup was put back (otherwise the columns were added or closed as before).
+        var restored = false
+        /// Sessions of that setup that no longer exist: their columns are free.
+        var gone: [String] = []
+    }
+
+    /// Choose how many columns there are (2 to 4). The setup being left is kept as that count's last one; the new count opens on its
+    /// own last setup when it has one (a session that no longer exists leaves its column free), and otherwise as it always did: more
+    /// columns add free ones on the right, fewer keep the most recently used sessions.
     @discardableResult
-    func setCount(_ n: Int) -> Bool {
+    func setCount(_ n: Int) -> CountChange {
+        let target = WatchLayout.clamped(n)
         let before = layout.count
-        layout.setCount(n)
-        defaults.set(layout.count, forKey: WatchModel.countKey)
+        var change = CountChange()
+        if target != before {
+            if setups.remember(layout.setup) { persistSetups() }
+            if let last = setups.last(forCount: target), !last.isEmpty {
+                change.gone = layout.apply(last, isGone: isGone)
+                change.restored = true
+            } else {
+                layout.setCount(target)
+            }
+        }
+        dropDeadBoxes()
+        layoutChanged()
+        objectWillChange.send()
+        change.grew = layout.count > before
+        return change
+    }
+
+    /// Make the columns exactly this setup (a preset): the count and every column. Returns the sessions that no longer exist.
+    @discardableResult
+    func apply(_ setup: WatchSetup) -> [String] {
+        let gone = layout.apply(setup, isGone: isGone)
+        dropDeadBoxes()
+        layoutChanged()
+        objectWillChange.send()
+        return gone
+    }
+
+    /// Free the columns whose session no longer exists (a remembered setup read when Watch turns on). Returns those sessions.
+    @discardableResult
+    func pruneGone() -> [String] {
+        var gone: [String] = []
+        for i in layout.slots.indices {
+            if let c = layout.slots[i], isGone(c.session) { gone.append(c.session); layout.close(i); dropBox(c.id) }
+        }
+        if !gone.isEmpty { layoutChanged(); objectWillChange.send() }
+        return gone
+    }
+
+    private func dropDeadBoxes() {
         let alive = Set(layout.slots.compactMap { $0?.id })
         for id in boxes.keys where !alive.contains(id) { dropBox(id) }
+    }
+
+    // MARK: presets
+
+    func savePreset(name: String) -> WatchSetups.SaveResult {
+        let r = setups.savePreset(name: name, setup: layout.setup)
+        if case .refused = r { return r }
+        persistSetups(); objectWillChange.send()
+        return r
+    }
+
+    func renamePreset(id: String, to name: String) -> WatchSetups.Refusal? {
+        let r = setups.renamePreset(id: id, to: name)
+        if r == nil { persistSetups(); objectWillChange.send() }
+        return r
+    }
+
+    @discardableResult
+    func deletePreset(id: String) -> Bool {
+        guard setups.deletePreset(id: id) else { return false }
+        persistSetups(); objectWillChange.send()
+        return true
+    }
+
+    /// Forget every remembered setup and preset and empty the columns (the count stays as it is): a check's clean start.
+    func forgetEverything() {
+        setups = WatchSetups()
+        defaults.removeObject(forKey: WatchModel.setupsKey)
+        emptyColumns()
+    }
+
+    /// Close every column (the presets and the other counts' setups stay).
+    func emptyColumns() {
+        for i in layout.slots.indices { layout.close(i) }
+        dropDeadBoxes()
+        layoutChanged()
         objectWillChange.send()
-        return layout.count > before
     }
 
     /// Fill the free columns when Watch turns on, or when there are more columns: the first candidate is the one on screen.
     func fill(with candidates: [String]) {
         layout.fill(with: candidates.filter { WatchAddress.validSession($0) || CampusColumn.isCampus($0) })
+        layoutChanged()
         objectWillChange.send()
     }
 

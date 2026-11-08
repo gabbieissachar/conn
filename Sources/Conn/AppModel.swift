@@ -72,6 +72,8 @@ final class AppModel: ObservableObject {
     let campusDraftRestore = PassthroughSubject<(String, String), Never>()
     /// The space a "New conversation" sheet is open for (nil: no sheet).
     @Published var campusNewIn: CampusSpace?
+    /// The sheet that names a Watch preset to save, or lists the presets to rename and delete (`AppModel+WatchSetups`).
+    @Published var watchPresetSheet: WatchPresetSheet?
     /// Focus sessions and 20-20-20 eye breaks (README "Focus sessions"): the session, the eye clock, Conn Focus (the macOS Focus Conn switches through a Shortcut), the marker file
     /// other tools read, and the daily total. A scripted launch runs it on stand-ins (see `FocusRuntime`).
     let focus: FocusCoordinator
@@ -309,6 +311,7 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async { self?.refreshDockBadge() }
         }.store(in: &cancellables)
         wireWatchAsks()
+        wireWatchSetups()
         openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
         wireCampus()
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
@@ -653,8 +656,14 @@ final class AppModel: ObservableObject {
         if watchOn {
             pinWork?.cancel()
             web.evictReader()
-            watchSeedPending = watchCandidates().isEmpty
-            watch.fill(with: watchCandidates())
+            // Watch opens on the setup it was left in: kept while another view was shown, and across launches (`WatchModel.setups`). A
+            // session that no longer exists leaves its column free, and only free columns the person did not choose (none at all, or
+            // the ones that session left) are filled from the sidebar's order; a column the person closed stays closed.
+            let gone = watch.pruneGone()
+            if !gone.isEmpty { toastWatchGone(gone) }
+            let needsFill = watch.layout.openCount == 0 || !gone.isEmpty
+            watchSeedPending = needsFill && watchCandidates().isEmpty
+            if needsFill { watch.fill(with: watchCandidates()) }
         } else {
             watchSeedPending = false
             watch.unload()
@@ -665,7 +674,7 @@ final class AppModel: ObservableObject {
     }
 
     /// The sessions Watch opens on, best first: the selected agent (else Herdr's focused one), then the agents in the sidebar's order (needs you first).
-    private func watchCandidates() -> [String] {
+    func watchCandidates() -> [String] {
         ((selectedAgent ?? snapshot.agent(snapshot.focusedPaneID)).flatMap(watchConversation).map { [$0] } ?? []) + agentOrder.compactMap(watchConversation)
     }
 
@@ -682,9 +691,12 @@ final class AppModel: ObservableObject {
     }
 
     /// Choose how many columns Watch has (2 to 4, remembered). More columns are filled from the sidebar's order.
+    /// Each count opens on its own last setup (`WatchSetups`); a count never used is filled from the sidebar's order, as are the columns
+    /// of a remembered setup whose session no longer exists.
     func setWatchCount(_ n: Int) {
-        let grew = watch.setCount(n)
-        if grew && watchOn { watch.fill(with: watchCandidates()) }
+        let change = watch.setCount(n)
+        if !change.gone.isEmpty { toastWatchGone(change.gone) }
+        if watchOn && ((change.grew && !change.restored) || !change.gone.isEmpty) { watch.fill(with: watchCandidates()) }
     }
 
     // MARK: history view (the toggle that stands in for scrollback)

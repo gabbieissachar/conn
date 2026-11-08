@@ -742,6 +742,7 @@ struct MainView: View {
         .sheet(isPresented: $app.campusBridgeActivityShown) { if let b = app.campusBridge { BridgeActivitySheet(bridge: b).environmentObject(app) } }
         .sheet(isPresented: $app.campusSignInShown) { CampusSignInSheet(campus: app.campus).environmentObject(app) }
         .sheet(item: $app.campusNewIn) { space in CampusNewConversationSheet(campus: app.campus, space: space).environmentObject(app) }
+        .sheet(item: $app.watchPresetSheet) { kind in WatchPresetSheetView(watch: app.watch, kind: kind).environmentObject(app) }
     }
 
     private var subtitle: String {

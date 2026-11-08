@@ -19,6 +19,7 @@ enum WatchCheck {
         let savedCount = model.watch.count, savedMode = model.mode, savedWeb = model.showWeb, savedTab = model.webTab
         // The count is remembered across launches (and a test launch's own domain keeps it between runs): start from the default, because the
         // fixture's conversations repeat every few sessions, so four columns can show the same one twice and fail "its own conversation".
+        model.watch.forgetEverything()      // the remembered setups are kept in the same settings: a clean start, so every count fills from the sidebar's order
         model.setWatchCount(WatchLayout.defaultCount)
         model.mode = .agent; model.showWeb = true; model.webTab = .reader; await wait(0.5)
         let shots = fixture ? ProcessInfo.processInfo.environment["CONN_UI_CHECK_SHOT_DIR"].map { URL(fileURLWithPath: $0) } : nil

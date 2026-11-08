@@ -38,6 +38,8 @@ enum CampusCheck {
         report("Campus: before the first sign-in the link is signed out with no rows and no 'as of' time",
                campus.link == .expired && campus.conversations.isEmpty && campus.asOf == nil && campus.asks.isEmpty && model.campusAuth?.kind == "cookie",
                "link=\(campus.link) rows=\(campus.conversations.count) asOf=\(campus.asOf.map { "\($0)" } ?? "nil") auth=\(model.campusAuth?.kind ?? "-")")
+        report("Campus: while signed out no remembered Campus column is judged gone (a signed-out Campus never empties a Watch setup)",
+               !model.watch.isGone(CampusColumn.key("ses_noLongerThere99")) && !model.watch.isGone(CampusColumn.key("ses_fakeRates01")), "link=\(campus.link)")
         await shot("campus-1-signed-out.png")
 
         // 2. Sign in inside Conn's own web view. The stand-in's login page sets an HttpOnly cookie; nothing of it reaches Conn's code.
@@ -378,6 +380,7 @@ enum CampusCheck {
     static func watchChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
                             js: (WKWebView, String) async -> String, shot: (String) async -> Void, host: String) async {
         let campus = model.campus, watch = model.watch
+        watch.forgetEverything()
         watch.setCount(3)
         let herdr = model.snapshot.prioritized.filter { $0.sessionID != nil }
         guard herdr.count >= 6 else { report("Campus: Watch checks need agents with a conversation", false, "only \(herdr.count)"); return }
@@ -402,6 +405,10 @@ enum CampusCheck {
         model.openCampus("ses_fakeSprint03"); await wait(0.5)
         let two = opened().filter(CampusColumn.isCampus).count
         report("Campus: two Campus columns can sit beside Herdr's", two == 2, "columns=\(short(opened()))")
+        // A remembered Campus column (Watch setups, README "Watch view") is gone only when the live feed no longer lists the conversation.
+        report("Campus: a remembered Campus column is gone only when the live feed does not list it (a listed one is kept, a reader id is never judged by Campus)",
+               campus.link == .live && campus.asOf != nil && !model.watch.isGone(CampusColumn.key("ses_fakeRates01")) && model.watch.isGone(CampusColumn.key("ses_noLongerThere99")) && !model.watch.isGone(herdr[0].sessionID!),
+               "link=\(campus.link) listed=\(!model.watch.isGone(CampusColumn.key("ses_fakeRates01"))) unlisted=\(model.watch.isGone(CampusColumn.key("ses_noLongerThere99")))")
         if let u = model.web.embedURL, u.isFileURL {
             var columns: [(Int, String)] = []
             for i in watch.layout.slots.indices { if let s = watch.layout.slots[i], let cid = CampusColumn.id(of: s.session) { columns.append((i, cid)) } }

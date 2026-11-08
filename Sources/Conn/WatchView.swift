@@ -58,6 +58,10 @@ private struct WatchBar: View {
             Text("\(watch.layout.openCount) of \(watch.count) columns").font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(app.sidebarVisible ? "Click an agent to show it here" : "⌘K picks an agent to show here").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+            Menu { WatchPresetMenuItems(watch: watch) } label: { Image(systemName: "bookmark") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Save the columns as a preset, or load one")
+                .accessibilityIdentifier("watch-presets")
             Picker("Columns", selection: Binding(get: { watch.count }, set: { app.setWatchCount($0) })) {
                 ForEach(Array(WatchLayout.allowedCounts), id: \.self) { Text("\($0)").tag($0) }
             }

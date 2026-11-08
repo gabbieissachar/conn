@@ -41,6 +41,7 @@ extension CampusCheck {
         await shot("campus-14-starred-row.png")
 
         // 4. Watch on: the same click goes to a column by the column rule (the one on screen keeps its column, another takes a free one).
+        watch.forgetEverything()
         model.watchOn = true
         _ = await until(20) { watch.layout.openCount >= 2 }
         model.openCampusStar("ses_fakeKpi06")
