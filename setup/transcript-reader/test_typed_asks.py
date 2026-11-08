@@ -51,6 +51,23 @@ def gate(task, identity="2027-01-10T01:00:00Z#0", mode="done"):
     return {"task": task, "mode": mode, "identity": identity}
 
 
+def write_record(home, ask_id, cards, title="Sample ask", writer=WRITER, role="leader", created="2027-01-10T02:00:00Z", expires=None,
+           revises=(), schema="fm-ask.v1", events=(), label="leader-sample", origin=None):
+    body = {"schema": schema, "id": ask_id, "created_at": created, "home": {"path": str(home), "label": label, "role": "leader"},
+            "writer": {"session_id": writer, "harness": "claude", "role": role, "captain_driven": False, "task_id": "t-1"},
+            "title": title, "kind": "decision", "cards": cards, "revises": [{"id": i, "key": k} for i, k in revises], "expires_at": expires}
+    if origin:
+        body["origin"] = origin
+    folder = Path(home) / "state" / "ask-records"
+    folder.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(body, separators=(",", ":")) + "\n").encode()
+    (folder / f"{ask_id}.json").write_bytes(data)
+    sha = sha12_of(data)
+    lines = [{"at": created, "event": "opened", "sha": sha}, *events]
+    (folder / f"{ask_id}.events").write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in lines), encoding="utf-8")
+    return sha
+
+
 class World:
     """Homes in a temporary folder: records, events and backlogs written as Firstmate writes them."""
 
@@ -84,21 +101,8 @@ class World:
         lines += ["## Done"] + done
         (home / "data" / "backlog.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def record(self, home, ask_id, cards, title="Sample ask", writer=WRITER, role="leader", created="2027-01-10T02:00:00Z", expires=None,
-               revises=(), schema="fm-ask.v1", events=(), label="leader-sample", origin=None):
-        body = {"schema": schema, "id": ask_id, "created_at": created, "home": {"path": str(home), "label": label, "role": "leader"},
-                "writer": {"session_id": writer, "harness": "claude", "role": role, "captain_driven": False, "task_id": "t-1"},
-                "title": title, "kind": "decision", "cards": cards, "revises": [{"id": i, "key": k} for i, k in revises], "expires_at": expires}
-        if origin:
-            body["origin"] = origin
-        folder = home / "state" / "ask-records"
-        folder.mkdir(exist_ok=True)
-        data = (json.dumps(body, separators=(",", ":")) + "\n").encode()
-        (folder / f"{ask_id}.json").write_bytes(data)
-        sha = sha12_of(data)
-        lines = [{"at": created, "event": "opened", "sha": sha}, *events]
-        (folder / f"{ask_id}.events").write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in lines), encoding="utf-8")
-        return sha
+    def record(self, home, ask_id, cards, **kwargs):
+        return write_record(home, ask_id, cards, **kwargs)
 
     def event(self, home, ask_id, **fields):
         with open(home / "state" / "ask-records" / f"{ask_id}.events", "a", encoding="utf-8") as handle:
@@ -582,7 +586,7 @@ class SheetTest(unittest.TestCase):
         self.assertEqual([c["key"] for c in found["cards"]], ["Z1", "Z2"])
         first = found["cards"][0]
         self.assertEqual({k: first[k] for k in ("key", "question", "depends", "recommended", "options")},
-                         {"key": "Z1", "question": "Which mapping?", "depends": "", "recommended": "one",
+                         {"key": "Z1", "question": "Which mapping?", "depends": "", "recommended": "a (one)",
                           "options": [{"value": "a", "note": "one", "recommended": True}, {"value": "b", "note": "two", "recommended": False}]})
         self.assertEqual(found["reply_line"], "Reply with keyed answers: Z1=...; Z2=...")
         self.assertEqual(found["title"], prose["title"])  # the reply's own words lend the title and the text above the cards
@@ -755,6 +759,29 @@ class CacheTest(unittest.TestCase):
         looked = [path for kind in thread.reads.seen.values() for path in kind]
         self.assertFalse([path for path in looked if "ask-records" in path or path.endswith("backlog.md")], looked)
         self.assertNotIn(b'"typed"', thread.turns)
+
+
+class HostedTest(unittest.TestCase):
+    """The hosted copy and the offline phone copy build their conversations with typed=False: no record, no hold reason, no typed count."""
+
+    def test_a_build_for_the_hosted_copy_has_no_typed_ask_whatever_the_flag_says(self):
+        world = World(self)
+        typed_asks._FILES.clear()
+        typed_asks._BACKLOGS.clear()
+        sha = world.record(world.home, ASK, [card("Z1", "Which mapping?", gate=gate("g1"))], writer=WRITER)
+        world.backlog(world.home, [("g1", "held", "A private hold reason", "2027-01-10T01:00:00Z", 0)])
+        records = turn(0, "Please ask me", REPLY, [("bin/fm-captain-ask.sh open --title T", line_of(ASK, sha, cards="Z1", gates=1))])
+        log = world.root / f"{WRITER}.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+        loaded = {log: builder.parsed_log(log, None)}
+        with mock.patch.dict(os.environ, {"PMOS_READER_TYPED_ASKS": "1"}):
+            session = builder.thread_session({"id": "leader", "home": world.home}, [log], loaded, None, typed=False)
+            builder.mark_sheets([session])
+        text = json.dumps(session)
+        self.assertNotIn("A private hold reason", text)
+        self.assertNotIn('"typed"', text)
+        self.assertNotIn("typed_lines", text)
+        self.assertEqual(session["exchanges"][0]["sheet_count"], 2)  # the prose sheet it always had
 
 
 class RealWriterTest(unittest.TestCase):

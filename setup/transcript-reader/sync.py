@@ -491,7 +491,7 @@ class Build:
         found = sources([e for member in chain for e in loaded[member]["exchanges"]], [h for h in (home["home"], self.parent_of.get(home["id"])) if h],
                         builder.leader_home(loaded[chain[-1]]["cwd"]))
         inputs = inputs_stamp(found)
-        session = builder.thread_session(home, chain, loaded, self.parent_of.get(home["id"]))
+        session = builder.thread_session(home, chain, loaded, self.parent_of.get(home["id"]), typed=False)  # the copy carries no typed ask
         exchanges = session["exchanges"]
         # The fleet timeline's own rows from this conversation: your messages and the replies to
         # you, kept with every turn's time and wake-up tasks so later builds can link and window

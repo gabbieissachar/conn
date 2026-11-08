@@ -153,6 +153,8 @@ __HEAD_HOSTED__
   .chip { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; }
   .chip.needs { background: var(--ask-wash); color: var(--ask); }
   .chip.reminder, .chip.asked, .chip.answered { background: var(--code); color: var(--muted); font-weight: 600; }
+  /* A typed ask: a record Firstmate's captain-ask command wrote and the reader checked (README, "Typed asks"). The mark only says where the ask came from. */
+  .chip.typed { background: var(--you-wash); color: var(--you); font-weight: 600; }
   .chip.open { background: color-mix(in srgb, var(--open) 15%, transparent); color: var(--open); }
   .asks { background: var(--ask-wash); border-radius: 8px; padding: 6px 9px; margin: 6px 0; font-size: 15px; }
   .asks div + div { margin-top: 4px; }
@@ -1110,8 +1112,20 @@ __HEAD_HOSTED__
   // ---------------------------------------------------------------- View A pieces
   const askState = askRules.state, isOpen = askRules.isOpen;
   function verdictChip(ex) {
-    if (askState(ex) === "quiet") { const c = $("span", "chip asked", "Asked"); c.title = "Asked, and you have written since without answering it"; return c; }
-    if (askState(ex) === "settled") { const c = $("span", "chip answered", "Answered"); c.title = ex.answered_at ? `You answered this at ${fmtWhen(ex.answered_at)}` : "You answered this"; return c; }
+    if (askState(ex) === "quiet") {
+      const c = $("span", "chip asked", "Asked");
+      c.title = ex.quiet_by === "typed-only home" ? "Asked in prose. This home counts typed asks only, so it no longer counts here"
+        : ex.quiet_by === "wake-repeat" ? "A wake-up turn that only restates an earlier ask: Firstmate's own marker says nothing new came in"
+        : ex.quiet_by ? `Its typed ask is ${String(ex.quiet_by).replace("-", " ")}, so nothing is left to answer`
+        : "Asked, and you have written since without answering it";
+      return c;
+    }
+    if (askState(ex) === "settled") {
+      const c = $("span", "chip answered", ex.settled_by === "chat" && ex.typed ? "Answered in chat" : "Answered");
+      c.title = (ex.answered_at ? `You answered this at ${fmtWhen(ex.answered_at)}` : "You answered this")
+        + (ex.settled_by === "chat" && ex.typed ? ". Its record was not told: the leader has not run its answered call" : "");
+      return c;
+    }
     if (ex.verdict === "needs-you") return $("span", "chip needs", "Needs you");
     if (ex.verdict === "no-action") return null;  // nothing to flag: "Needs you" stands alone
     if (ex.answered_below) return $("span", "chip reminder", "Answered below");
@@ -1207,6 +1221,15 @@ __HEAD_HOSTED__
     else if (form.status === "cancelled") box.append($("div", "notes", "Not answered: the question was cancelled."));
     return box;
   }
+  // The mark on a reply that carries a typed ask record: who wrote it, its state and which cards are still open, in the chip's tooltip.
+  function typedChip(typed) {
+    const w = typed.writer || {};
+    const chip = $("span", "chip typed", "Typed ask");
+    chip.title = [`Record ${typed.id} (${typed.sha}), ${typed.state}`, typed.home ? `written in ${typed.home}` : "", w.session ? `by session ${w.session}` : "",
+      typed.open.length ? `open: ${typed.open.join(", ")}` : "no card is open",
+      typed.chat && typed.chat.length ? `answered in chat, record not told: ${typed.chat.join(", ")}` : ""].filter(Boolean).join(" · ");
+    return chip;
+  }
   // key names the turn for state.open; sid, when given, makes the reply answerable from here.
   function replyCard(ex, key, sid) {
     // A reply hidden from this view is not drawn (the session log keeps it), unless the hidden ones are on show.
@@ -1219,6 +1242,7 @@ __HEAD_HOSTED__
     const who = $("div", "who");
     const verdict = verdictChip(ex);
     if (verdict) who.append(verdict);
+    if (ex.typed) who.append(typedChip(ex.typed));
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
     if (sid && ex.reply && (!EMBED || embedHost)) {
@@ -1265,10 +1289,12 @@ __HEAD_HOSTED__
     // The hosted copy's answer sheet is sheet.html beside it; the lite page's is the local one, a folder up.
     if (sheetLink) sheetLink.href = SHEET_PAGE + "#q=" + encodeURIComponent(ex.sheet);
     let body = null, notesNode = null;
+    // A typed ask's cards come from its record, so a reply that does not repeat them still lists them: the box stays, clipped reply or not.
+    const typedBox = Boolean(box && ex.typed && cards.length);
     const place = isClipped => {
       card.classList.toggle("boxed", isClipped);
       if (isClipped) { card.insertBefore(box, body); if (sheetLink) card.insertBefore(sheetLink, body); }
-      else { box.remove(); if (sheetLink) card.insertBefore(sheetLink, notesNode); }
+      else { if (typedBox) card.insertBefore(box, body); else box.remove(); if (sheetLink) card.insertBefore(sheetLink, notesNode); }
     };
     const boxed = Boolean(box) && ex.reply_words > 90 && !state.open.has(replyKey);
     if (ex.reply) {
@@ -1279,6 +1305,7 @@ __HEAD_HOSTED__
       body = clipped(md, ex.reply_words, 90, "Show full reply", replyKey, box ? place : null);
       card.append(body);
       if (boxed) place(true);
+      else if (typedBox) card.insertBefore(box, body);
     }
     const chips = docChips(ex.documents, key);
     if (chips) card.append(chips);

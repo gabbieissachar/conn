@@ -554,7 +554,8 @@ def typed_questionnaire(prose: dict | None, exchange: dict, head: str, logs: dic
     summary = exchange["typed"]
     at = exchange["reply_at"] or exchange["at"]
     sent = typed_asks.sent_of(summary)
-    answered_at = exchange.get("answered_at")  # annotate_exchanges: the latest answer of the record or the chat
+    stamps = [c["chat"]["at"] for c in summary["cards"] if "chat" in c and c["chat"].get("at")] + [c["answered_at"] for c in summary["cards"] if c.get("answered_at")]
+    answered_at = max(stamps) if stamps else exchange.get("answered_at")  # the latest answer, of the record or of the chat
     questionnaire = {**typed_asks.sheet_from_summary(summary, prose), "session": head, "at": at, "reply": exchange["reply"], "sent": sent,
                      "sent_at": answered_at if sent else None}
     if prose:

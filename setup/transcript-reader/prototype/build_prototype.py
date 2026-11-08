@@ -1238,10 +1238,11 @@ def fleet_homes(main_home: str | Path, extra: list[str] | None = None) -> tuple[
     return homes, {mate["id"]: homes[0]["home"] for mate in homes[1:]}
 
 
-def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], parent: Path | None) -> dict:
+def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], parent: Path | None, typed: bool = True) -> dict:
     """One conversation as the page shows it: the turns of a pane's sessions (each a parsed_log,
     oldest first), with the steering messages and task instructions they delivered, under the
-    newest session's id."""
+    newest session's id. <typed> False leaves the typed asks out whatever the reader's flag says: the hosted copy takes none (the hold
+    reasons they show are the backlog's text, which the copy never carries)."""
     path = chain[-1]
     exchanges = chain_exchanges(chain, loaded)
     attach_inbox_bodies(exchanges, [h for h in (home["home"], parent) if h])
@@ -1261,7 +1262,8 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     mark_asks(exchanges)
     if leader:
         attach_task_tags(exchanges, chain, loaded, leader_home(cwd), leader["tasks"])
-    typed_asks.annotate_exchanges(exchanges, typed_asks.Context(typed_asks.record_homes(home["home"], parent), ids, home["id"]))
+    if typed:
+        typed_asks.annotate_exchanges(exchanges, typed_asks.Context(typed_asks.record_homes(home["home"], parent), ids, home["id"]))
     for exchange in exchanges:
         exchange.pop("typed_lines", None)  # what the typed-ask code read of the turn; the page never holds it
     return session

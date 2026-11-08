@@ -105,6 +105,16 @@ __HEAD_HOSTED__
   .done-item, .locked-item { font-size: 14px; padding: 7px 0; border-top: 1px solid var(--line); }
   .done-item small, .locked-item small { color: var(--muted); display: block; }
   .locked-item { color: var(--muted); }
+  /* A typed ask (a record Firstmate's captain-ask command wrote): where it came from and how it was checked, and each card's gate beside the backlog's own hold reason. */
+  .typed-row { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--you); border-radius: 12px; padding: 7px 12px; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+  .typed-row b { color: var(--ink); font-weight: 600; }
+  .typed-row .check { white-space: nowrap; }
+  .typed-row .check.bad { color: var(--open); font-weight: 600; }
+  .typed-row .lag { margin-top: 4px; color: var(--ask); }
+  .gate { font-size: 12px; color: var(--muted); margin: 4px 0 6px; overflow-wrap: anywhere; }
+  .gate b { color: var(--ink); font-weight: 600; }
+  .gate.stale, .gate.closed { color: var(--ask); }
+  .gate .why { display: block; margin-top: 1px; }
 
   .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); }
   .dock .inner { padding: 8px 12px 10px; }
@@ -350,9 +360,45 @@ __HEAD_HOSTED__
     const el = $("div", "card" + (sent || load(state.q)[card.key] ? " answered" : ""));
     const head = $("div", "q"); head.append($("span", "key", card.key)); head.append(Object.assign(document.createElement("span"), { innerHTML: inline(card.question) }));
     el.append(head);
-    [recLine(card), sent ? null : dependsHint(card)].forEach(n => n && el.append(n));
+    [recLine(card), gateLine(card), chatHint(card), sent ? null : dependsHint(card)].forEach(n => n && el.append(n));
     el.append(optionButtons(card, onPick));
     return el;
+  }
+  // ---------------------------------------------------------------- typed asks (README, "Typed asks")
+  const CHECKS = [["linked", "linked to its turn"], ["unmodified", "file unmodified"], ["writer", "written by this conversation"]];
+  const GATE_SAYS = {
+    open: "held for you in the backlog",
+    stale: "held again since this was asked, so it is a different call now",
+    closed: "no longer a call held for you (closed elsewhere)",
+    unknown: "the backlog could not be read",
+  };
+  function typedRow(q) {
+    const t = q.typed, row = $("div", "typed-row"), w = t.writer || {};
+    const who = [w.role ? (w.captain_driven ? "a worker you drive" : w.role) : "", t.home ? "in " + t.home : "", w.session ? "session " + w.session : "", w.task ? "task " + w.task : ""].filter(Boolean).join(", ");
+    const head = $("div"); head.append($("b", null, "Typed ask"), document.createTextNode(` · written by ${who || "Firstmate"}${t.created_at ? " · " + fmtWhen(t.created_at) : ""} · record ${t.sha}${t.kind && t.kind !== "decision" ? " · " + t.kind : ""}`));
+    row.append(head);
+    const checks = $("div");
+    CHECKS.forEach(([name, label], i) => { const c = $("span", "check" + (t.checks && t.checks[name] ? "" : " bad"), (t.checks && t.checks[name] ? "✓ " : "✗ ") + label); if (i) checks.append(document.createTextNode(" · ")); checks.append(c); });
+    row.append(checks);
+    if (t.chat && t.chat.length) {
+      const lag = $("div", "lag", t.lag && t.lag.length
+        ? `You answered ${listKeys(t.chat)} in chat and the record was not told (${listKeys(t.lag)} over an hour ago): the leader has not run its answered call.`
+        : `You answered ${listKeys(t.chat)} in chat. The record is not told yet; it counts as answered here.`);
+      row.append(lag);
+    }
+    return row;
+  }
+  function gateLine(card) {
+    const t = card.typed, g = t && t.gate;
+    if (!g) return null;
+    const line = $("div", "gate " + g.state);
+    line.append($("b", null, "Backlog: " + g.task), document.createTextNode(" - " + (GATE_SAYS[g.state] || g.state) + (g.mode === "release" ? " (answering frees held work)" : "")));
+    if (g.reason) line.append($("span", "why", "Hold reason: " + g.reason));
+    return line;
+  }
+  function chatHint(card) {
+    const c = card.typed && card.typed.chat;
+    return c ? $("div", "hint", `You answered ${card.key} in chat (${c.value}). The record has not been told.`) : null;
   }
   function aside(q) {
     const frag = document.createDocumentFragment();
@@ -363,6 +409,11 @@ __HEAD_HOSTED__
     if (q.locked.length) {
       frag.append($("div", "section", "Opens after these answers"));
       q.locked.forEach(l => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(l.key)}</span>${inline(l.text)}`; frag.append(d); });
+    }
+    // A typed ask's cards that will not be asked any more: withdrawn, replaced by a later ask, expired, or whose held task changed or closed.
+    if (q.typed && q.typed.closed && q.typed.closed.length) {
+      frag.append($("div", "section", "Not asked any more"));
+      q.typed.closed.forEach(c => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(c.key)}</span>${inline(c.state.replace("-", " "))}`; frag.append(d); });
     }
     // One sheet is one review group: the calls of another group that the reply only mentions (a recap) are not cards here.
     if (q.left_out && q.left_out.length) {
@@ -390,6 +441,7 @@ __HEAD_HOSTED__
 
   // ---------------------------------------------------------------- page
   function viewCards(q, main) {
+    if (q.typed) main.append(typedRow(q));
     main.append(context(q));
     // A reply written in review groups: each group's own heading and lead-in stand above its cards (one answer line still covers them all).
     let group = null;
@@ -536,7 +588,8 @@ __HEAD_HOSTED__
       // them picked and read-only; "Answer again" opens them.
       const reopened = reopenedNow(q), sent = $("div", "sent"), what = $("div", "what");
       const line = $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";"));
-      what.append(reopened ? `You answered this ${fmtWhen(q.sent_at)}: ` : isAnswered(q, false) ? `Answered ${fmtWhen(q.sent_at)}: ` : `Part answered ${fmtWhen(q.sent_at)}: `, line);
+      const when = q.sent_at ? " " + fmtWhen(q.sent_at) : "";  // a sheet whose answers carry no time says none, rather than "Part answered : ..."
+      what.append(reopened ? `You answered this${when}: ` : isAnswered(q, false) ? `Answered${when}: ` : `Part answered${when}: `, line);
       sent.append(what);
       if (!reopened && settledKeys(q, false).length) {
         const reopen = $("button", null, "Answer again");

@@ -764,6 +764,59 @@ class Rebuilds(unittest.TestCase):
                             (home / "a" / "b" / "c" / "d.md", "~/a/b/c")):
             self.assertEqual(builder.shown_dir(path), shown)
 
+class TypedAsksSameAsFromNothing(Case):
+    """With the typed-ask flag on, a conversation with a typed ask is the same page both ways (the kept build and the plain one read the record
+    and the backlog through the same functions) and is built again when its record, its events or its backlog change."""
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.dict(os.environ, {"PMOS_READER_TYPED_ASKS": "1"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import typed_asks
+        typed_asks._FILES.clear()
+        typed_asks._BACKLOGS.clear()
+
+    def typed_turn(self):
+        import test_typed_asks as t
+        main = self.lab.main
+        gate = {"task": "g1", "mode": "done", "identity": "2026-11-01T01:00:00Z#0"}
+        cards = [t.card("Z1", "Which mapping?", [("a", "one", True)], gate=gate), t.card("Z2", "Who closes it?", gate=gate)]
+        sha = t.write_record(main, t.ASK, cards, writer=A)
+        (main / "data").mkdir(parents=True, exist_ok=True)
+        (main / "data" / "backlog.md").write_text("## In flight\n\n## Queued\n- [ ] g1 - Mapping (repo: x) (kind: captain) (hold: fm-hold-v1:cGljayBpdA) (hold-kind: captain)\n  Captain hold set: 2026-11-01T01:00:00Z\n\n## Done\n", encoding="utf-8")
+        at = LAB_T0 + 900
+        call = {"type": "assistant", "timestamp": lab_iso(at + 1), "cwd": self.main, "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_typed", "name": "Bash", "input": {"command": "bin/fm-captain-ask.sh open --title T"}}]}}
+        result = {"type": "user", "timestamp": lab_iso(at + 2), "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_typed", "content": t.line_of(t.ASK, sha)}]}}
+        append_log(self.lab.logs[A], [user("Ask me.", at, self.main), call, result, say(t.REPLY, at + 3, self.main)])
+        return t, main
+
+    def test_the_two_builds_agree_and_a_change_to_the_record_or_the_backlog_builds_the_conversation_again(self):
+        t, main = self.typed_turn()
+        self.same(derived=[A, W, M])
+        # A conversation with tool output is built again when the page writer has not left its output file (steps/<id>.json): leave one.
+        (self.lab.root / "out" / "steps").mkdir(parents=True, exist_ok=True)
+        (self.lab.root / "out" / "steps" / f"{A}.json").write_text("{}", encoding="utf-8")
+        built = self.same(derived=[])
+        page = b"".join(built.payload)
+        self.assertIn(b'"typed":{"id":"' + t.ASK.encode() + b'"', page)
+        self.assertIn(b'"sheet_cards"', page)
+        t.write_record(main, t.ASK, [t.card("Z1", "Which mapping?", [("a", "one", True)], gate={"task": "g1", "mode": "done", "identity": "2026-11-01T01:00:00Z#0"}),
+                                     t.card("Z2", "Who closes it?", gate={"task": "g1", "mode": "done", "identity": "2026-11-01T01:00:00Z#0"})], writer=A,
+                       events=[{"at": "2026-11-01T02:00:00Z", "event": "card_answered", "key": "Z1", "value": "a"}])
+        self.newer(main / "state" / "ask-records" / (t.ASK + ".events"))
+        built = self.same(derived=[A])
+        self.assertIn(b'"state":"partial"', b"".join(built.payload))
+        (main / "data" / "backlog.md").write_text("## In flight\n\n## Queued\n\n## Done\n", encoding="utf-8")
+        self.newer(main / "data" / "backlog.md")
+        built = self.same(derived=[A])
+        self.assertIn(b'closed-elsewhere', b"".join(built.payload))
+        self.same(derived=[])
+
+
 
 if __name__ == "__main__":
     unittest.main()

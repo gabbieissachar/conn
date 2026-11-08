@@ -1,0 +1,126 @@
+{
+ "note": "Replies with the keyed answers both readers must find: `answers` is what the reader finds (typed_asks.keyed_answers, build_prototype.answered_keys, build_questionnaire.sent_answers, in test_keyed_replies.py), and `shell` what Firstmate's bin/fm-captain-ask.jq `reply` mode finds where it differs on purpose, with `why`. Invented text. Firstmate's own tests can read this file too.",
+ "cases": [
+  {
+   "name": "two answers with spaces",
+   "reply": "Z1=a; Z2=b",
+   "answers": {
+    "Z1": "a",
+    "Z2": "b"
+   }
+  },
+  {
+   "name": "no spaces",
+   "reply": "A1=accept;A2=inline",
+   "answers": {
+    "A1": "accept",
+    "A2": "inline"
+   }
+  },
+  {
+   "name": "spaces around the equals sign and the value",
+   "reply": "Z1 = a ; Z2=  b c  ",
+   "answers": {
+    "Z1": "a",
+    "Z2": "b c"
+   }
+  },
+  {
+   "name": "one answer per line",
+   "reply": "Z1=a\nZ2=b",
+   "answers": {
+    "Z1": "a",
+    "Z2": "b"
+   }
+  },
+  {
+   "name": "a later answer to the same key wins",
+   "reply": "Z1=a; Z1=b",
+   "answers": {
+    "Z1": "b"
+   }
+  },
+  {
+   "name": "a value keeps its commas and equals signs",
+   "reply": "Z1=a,b ; Z2=c; Z3=a=b",
+   "answers": {
+    "Z1": "a,b",
+    "Z2": "c",
+    "Z3": "a=b"
+   }
+  },
+  {
+   "name": "words between answers are not answers",
+   "reply": "Z1=a; and some words; Z2=b",
+   "answers": {
+    "Z1": "a",
+    "Z2": "b"
+   }
+  },
+  {
+   "name": "a pointer line before the answers",
+   "reply": "Re your reply at 09:04 (\"Which mapping\"): Z1=a;Z2=b",
+   "answers": {
+    "Z1": "a",
+    "Z2": "b"
+   }
+  },
+  {
+   "name": "later is an answer for the reader and for Firstmate (the record keeps the card open)",
+   "reply": "Z1=later",
+   "answers": {
+    "Z1": "later"
+   }
+  },
+  {
+   "name": "only a capital letter and one or two digits is a key",
+   "reply": "z1=a; XZ1=b; Z100=c; Z9=d",
+   "answers": {
+    "Z9": "d"
+   }
+  },
+  {
+   "name": "a key with no value answers nothing",
+   "reply": "Z1=; Z2=b",
+   "answers": {
+    "Z2": "b"
+   },
+   "why": "Both readers drop an empty value. (build_questionnaire.sent_answers lists it with an empty value, and the reader's own code treats that as no answer.)"
+  },
+  {
+   "name": "the format's placeholder is not an answer for the reader",
+   "reply": "Z1=...; Z2=b",
+   "answers": {
+    "Z2": "b"
+   },
+   "shell": {
+    "Z1": "...",
+    "Z2": "b"
+   },
+   "why": "Firstmate's reply reader keeps `...` as the value; the reader never takes it for an answer, so a placeholder that reaches a record is counted as the record's, not the captain's."
+  },
+  {
+   "name": "an ellipsis character is a placeholder too",
+   "reply": "Z1=…; Z2=b",
+   "answers": {
+    "Z2": "b"
+   },
+   "shell": {
+    "Z1": "…",
+    "Z2": "b"
+   },
+   "why": "As the previous case."
+  },
+  {
+   "name": "a long value is cut by Firstmate at 200 characters, not by the reader",
+   "reply": "Z1=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "answers": {
+    "Z1": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   },
+   "shell": {
+    "Z1": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   },
+   "why": "bin/fm-captain-ask.jq keeps the first 200 characters of a value; the reader shows what the captain typed."
+  }
+ ]
+}

@@ -21,6 +21,11 @@ Usage (from the repo root):
                                                              the replies marked in the page as "should be an answer sheet" or "this
                                                              sheet is wrong" and what the sheet finder makes of each now; --shape
                                                              prints one reply's shape with its words masked, to write a parser fixture
+  python3 setup/transcript-reader/reader.py typed-coverage [--json]
+                                                             per home, how much of what the leaders ask arrives as a typed record
+                                                             (Firstmate's captain-ask command), and whether the home may stop counting
+                                                             prose-only asks; `typed-coverage adjudicate <record id> <verdict>` marks a
+                                                             disagreement between a record and the reply's prose
   python3 setup/transcript-reader/reader.py worker           stay running and take rebuild, follow, adopt, reopen and
                                                              close from the reader's server on standard input, one JSON
                                                              line each (the server starts this); what one build learns
@@ -522,7 +527,8 @@ def show(ids: list[str]) -> None:
 # What the server may ask of a worker, with how many names each takes after it (None: one or more).
 WORKER_COMMANDS = {"rebuild": 0, "follow": 1, "adopt": None, "reopen": 1, "close": 1, "tab": 1}
 SOURCES = (HERE / "reader.py", HERE / "prototype" / "build_prototype.py", HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "build_cache.py",
-           HERE / "prototype" / "task_tags.py", HERE / "board" / "tagger.py", HERE / "board" / "marks.py")
+           HERE / "prototype" / "task_tags.py", HERE / "board" / "tagger.py", HERE / "board" / "marks.py",
+           HERE / "prototype" / "typed_asks.py", HERE / "prototype" / "typed_lines.py")
 
 
 def worker_request(line: str) -> tuple[object, list[str]]:
@@ -584,6 +590,9 @@ def main(argv: list[str]) -> int:
     if command == "sheet-flags":
         import sheet_flags  # the replies marked from the page as "should be an answer sheet" or "this sheet is wrong"
         return sheet_flags.main(names)
+    if command == "typed-coverage":
+        import typed_coverage  # how much of what the leaders ask arrives as a typed record, per home
+        return typed_coverage.main(names, read_list())
     ids = read_list()
     if command == "refresh":
         return rebuild(ids)

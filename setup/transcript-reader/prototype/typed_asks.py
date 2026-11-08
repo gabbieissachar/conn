@@ -431,6 +431,19 @@ class Context:
         self.settings = settings_ if settings_ is not None else settings()
 
 
+def keyed_answers(text: str) -> dict[str, str]:
+    """The keyed answers in a message of the captain's (`Z1=a; Z2=b`): each key with its value, stripped. A key with no value, or with only the
+    format's own placeholder (`Z1=...`), answers nothing; a later answer to the same key wins. This is the reader's reading of what
+    Firstmate's bin/fm-captain-ask.jq reads with the same pattern; typed-ask-fixtures/keyed-replies.json holds the replies both must read alike, and
+    where they differ on purpose."""
+    found: dict[str, str] = {}
+    for key, value in KEY_ANSWER.findall(text or ""):
+        value = value.strip()
+        if value.strip(".…"):
+            found[key] = value
+    return found
+
+
 def chat_answers(exchanges: list[dict], index: int, ask_id: str, keys) -> dict[str, dict]:
     """The keyed answers the captain typed in chat to the ask a turn opened: for each of its card keys, the first later message of the captain
     that answers it (`Z1=value`; a key with no value, or a placeholder such as `Z1=...`, answers nothing). A later turn that opens another ask
@@ -441,9 +454,8 @@ def chat_answers(exchanges: list[dict], index: int, ask_id: str, keys) -> dict[s
         if not waiting:
             break
         if later.get("source") == "captain":
-            for key, value in KEY_ANSWER.findall(later.get("input") or ""):
-                value = value.strip()
-                if key in waiting and key not in found and value.strip(".…"):
+            for key, value in keyed_answers(later.get("input") or "").items():
+                if key in waiting and key not in found:
                     found[key] = {"value": value, "at": later.get("at")}
         for record in (later.get("typed_lines") or {}).get("records", []):
             if record.get("id") != ask_id:
@@ -495,6 +507,8 @@ def card_summary(card: dict, chat: dict | None) -> dict:
                     for o in card.get("options") or [] if isinstance(o, dict)],
         "recommended": str(card.get("recommended") or ""), "state": card["state"], "value": card.get("value"),
     }
+    if card.get("answered_at"):
+        out["answered_at"] = card["answered_at"]
     if chat:
         out["chat"] = {"value": chat["value"], "at": chat.get("at")}
     if gate:
@@ -556,8 +570,8 @@ def sheet_from_summary(summary: dict, prose: dict | None = None) -> dict:
             continue
         recommended = card["recommended"]
         marked = next((o for o in card["options"] if o["recommended"]), None)
-        if marked and marked["note"]:
-            recommended = marked["note"]
+        if marked:  # the choice and what its note says: the sheet shows it above the choices
+            recommended = f"{marked['value']} ({marked['note']})" if marked["note"] else marked["value"]
         cards.append({"key": card["key"], "question": card["question"], "depends": "", "recommended": recommended, "options": card["options"],
                       "typed": {key: card[key] for key in ("state", "gate", "chat") if key in card}})
     title = (prose or {}).get("title") or summary["title"]
