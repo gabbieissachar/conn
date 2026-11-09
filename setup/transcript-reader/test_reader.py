@@ -1673,16 +1673,18 @@ class PageShellTest(unittest.TestCase):
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("tr-docgroup", sheet)
 
-    def test_both_copies_keep_the_contents_list_open_through_redraws_and_have_an_expanded_view_with_a_panel_of_files_or_contents(self):
+    def test_both_copies_keep_the_contents_list_open_through_redraws_and_have_an_expanded_view_dialog_with_a_panel_of_files_or_contents(self):
         for mode, page in self.pages():
             script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
             for needle in ("const tocKeep = docfiles.tocKeeper();", "toc.open = tocKeep.opened(key, sideToc.matches);", 'toc.addEventListener("toggle"',
-                           'localStorage.getItem("tr-docwide")', 'localStorage.setItem("tr-docside", docSide)', "docfiles.sideShows(docSide, Boolean(shell.toc))",
+                           'sessionStorage.getItem("tr-docdialog")', 'sessionStorage.setItem("tr-docdialog", docExpanded ? "1" : "0")', 'localStorage.setItem("tr-docside", docSide)',
+                           'shell.node.setAttribute("role", "dialog")', 'close.addEventListener("click", () => setDocExpanded(false))', 'document.getElementById("bar").inert = state.view === "doc" && expandedNow();', "docfiles.sideShows(docSide, Boolean(shell.toc))",
                            "const expandedNow = () => docExpanded && canExpand();", "const canExpand = () => !phoneDevice.matches;", 'const phoneDevice = matchMedia("(hover: none) and (pointer: coarse)");', 'document.body.classList.toggle("docwide"'):
                 self.assertIn(needle, script, mode)
             self.assertNotIn("toc.open = sideToc.matches;  // folded above", script, "a redraw must not fold the list again (" + mode + ")")
         sheet, _ = builder.fill_template(builder.HERE / "questionnaire.html", "null")
         self.assertNotIn("tr-docwide", sheet)
+        self.assertNotIn("tr-docdialog", sheet)
 
     def test_both_copies_empty_the_message_box_when_a_send_starts_and_put_it_back_only_when_the_send_fails(self):
         for mode, page in self.pages():

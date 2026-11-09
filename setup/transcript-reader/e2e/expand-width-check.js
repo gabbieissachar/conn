@@ -20,7 +20,7 @@ const shots = path.resolve(process.argv[3] || path.join(folder, 'screenshots'));
 const { axi, ev, until, check, startLab, openPage, pick, finish, sleep } = make('reader-expand-width-check');
 
 // Short expressions (chrome-devtools-axi drops an argument of about 1000 characters or more).
-const HEADER = `const b = [...document.querySelectorAll('#controls .btn')].filter(x => x.offsetParent); const icon = id => { const n = document.getElementById(id); return n && !n.hidden && getComputedStyle(n).display !== 'none'; };
+const HEADER = `const b = [...document.querySelectorAll('#controls .btn, .dlg-head .btn')].filter(x => x.offsetParent); const icon = id => { const n = document.getElementById(id); return n && !n.hidden && getComputedStyle(n).display !== 'none'; };
   return { ok: true, expand: b.some(x => x.textContent === 'Expand'), pressed: (b.find(x => x.textContent === 'Expand') || { getAttribute: () => null }).getAttribute('aria-pressed'), panel: b.some(x => x.textContent === 'Panel'),
     filesBack: b.some(x => /^‹ Files/.test(x.textContent)), iconExpand: icon('expand-quick'), iconFiles: icon('files-quick'), collapsed: document.getElementById('bar').classList.contains('collapsed') };`;
 const LAYOUT = `const q = x => document.querySelector(x); const box = n => { const r = n && n.getBoundingClientRect(); return r ? { x: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width), y: Math.round(r.top) } : null; };

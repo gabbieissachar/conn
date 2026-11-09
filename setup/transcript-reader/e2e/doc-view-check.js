@@ -10,8 +10,8 @@
 // port with a fake Herdr (never a real pane, never the owner's server) and drives a browser session of its own.
 //   1. Narrow window (a phone): the contents list above a document, once opened, stays open while the page is drawn again by new builds
 //      (it used to close itself), until the owner closes it or picks an item.
-//   2. Wide window: the expanded mode, where the document has the width and the panel on its right switches between the file browser and the
-//      contents.
+//   2. Wide window: the expanded view, a dialog over the page where the document has the window and the panel on its right switches between the
+//      file browser and the contents; it closes with its Close button and with Esc, and the page behind it does not scroll.
 
 const fs = require('fs');
 const path = require('path');
@@ -89,7 +89,7 @@ async function aBuild(lab, outDir) {
     check(s.toc && s.toc.open === false && s.title !== 'Notes 3', 'a different document opens with its list folded', JSON.stringify(s));
 
     // ---- 2. a wide window: the expanded view
-    ev(`localStorage.removeItem('tr-docwide'); localStorage.removeItem('tr-docside'); return true;`);
+    ev(`localStorage.removeItem('tr-docside'); sessionStorage.removeItem('tr-docdialog'); return true;`);
     await openPage(page, '1440x900x1');
     pick('crew-1'); await sleep(900);
     ev(`(document.getElementById('tab-doc').offsetParent ? document.getElementById('tab-doc') : document.getElementById('view-doc')).click(); return true;`); await sleep(900);
@@ -111,6 +111,11 @@ async function aBuild(lab, outDir) {
     ev(`[...document.querySelectorAll('#controls .btn')].find(x => x.textContent === 'Expand').click(); return true;`); await sleep(700);
     s = wide();
     check(/expanded/.test(s.shell) && s.side && s.pane && s.pane.x < s.side.x && s.expand === 'true' && s.wide, 'Expand: the file on the left, one panel on its right, the button pressed', JSON.stringify({ shell: s.shell, pane: s.pane, side: s.side, expand: s.expand }));
+    const dlg = ev(`const q = x => document.querySelector(x); const sh = q('.docshell'), r = sh.getBoundingClientRect(), c = q('.dlg-close'), cr = c && c.getBoundingClientRect(); return { ok: true, role: sh.getAttribute('role'), label: sh.getAttribute('aria-label'), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight, close: c ? c.textContent : null, closeShown: Boolean(c && cr.width > 0 && document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2) === c), head: Boolean(q('.dlg-head')), barInert: document.getElementById('bar').inert, scrollY: scrollY, focus: document.activeElement === c };`);
+    check(dlg.role === 'dialog' && dlg.label && dlg.close === '✕ Close' && dlg.closeShown && dlg.focus && dlg.barInert, 'Expand opens a dialog: named, a visible Close that has the focus, the page header out of reach behind it', JSON.stringify(dlg));
+    check(dlg.w >= dlg.vw - 24 && dlg.h >= dlg.vh - 150 && dlg.y <= 12 && dlg.x <= 12, 'the dialog covers the window (the message bar stays under it)', JSON.stringify(dlg));
+    const pageBehind = ev(`const before = scrollY; window.scrollTo(0, 500); return { ok: true, before, after: scrollY, overflow: getComputedStyle(document.body).overflow, mainH: Math.round(document.getElementById('main').getBoundingClientRect().height) };`);
+    check(pageBehind.overflow === 'hidden' && pageBehind.after === 0, 'the page behind the dialog does not scroll', JSON.stringify(pageBehind));
     check(s.sideShows === 'contents' && s.tabs.join() === 'Files:false,Contents:true' && s.tocLinks >= 12 && !s.toc, 'the panel opens on Contents (the list is not drawn twice)', JSON.stringify({ tabs: s.tabs, shows: s.sideShows, links: s.tocLinks, toc: s.toc }));
     check(s.body.w > normalBody + 150 && s.scrollW <= s.innerW, 'the file is wider than before and the page does not scroll sideways', `${normalBody} -> ${s.body.w}; page ${s.scrollW} of ${s.innerW}`);
     axi('screenshot', path.join(shots, 'wide-2-expanded-contents.png'));
@@ -141,15 +146,16 @@ async function aBuild(lab, outDir) {
     ev(`[...document.querySelectorAll('.ds-tabs .btn:not(.ds-close)')].find(b => b.textContent === 'Contents').click(); return true;`); await sleep(400);
     s = wide();
     check(s.sideShows === 'contents' && s.title === 'Notes 2' && s.tocLinks >= 12, 'back on a markdown file, Contents works again', JSON.stringify({ shows: s.sideShows, title: s.title, links: s.tocLinks }));
-    // both choices are kept in this browser
-    axi('open', 'about:blank'); axi('open', page);
-    await until(`return { ok: / · Reader$/.test(document.title) && document.getElementById('main').children.length > 0 };`, 'the page again');
-    await sleep(800);
+    // the panel is kept in this browser and the open dialog in this tab: a reload on the same address (it names the file) opens it again
+    // (The lab's sessions share their first 8 characters, which is all the page writes into its address, so the address is given in full here.)
+    const addr = ev(`return { ok: true, sid: document.querySelector('select[name=session]').value, d: (location.hash.match(/d=([0-9a-f]{10})/) || [])[1] };`);
+    axi('open', 'about:blank'); axi('open', `${page}#s=${addr.sid}&d=${addr.d}`); await sleep(1500);
+    await until(`return { ok: document.getElementById('main').children.length > 0 && Boolean(document.querySelector('.docshell')), title: document.title };`, 'the page again, on the file');
     s = ev(`return { ok: true, stored: [localStorage.getItem('tr-docwide'), localStorage.getItem('tr-docside')], view: location.hash };`);
-    check(s.stored.join() === '1,contents', 'the expanded view and the panel are kept in the browser', JSON.stringify(s));
-    ev(`(document.getElementById('tab-doc').offsetParent ? document.getElementById('tab-doc') : document.getElementById('view-doc')).click(); return true;`); await sleep(1000);
+    check(s.stored.join() === ',contents' && String(ev(`return sessionStorage.getItem('tr-docdialog');`)) === '1', 'the panel is kept in the browser, the dialog open for this tab', JSON.stringify(s));
+    await sleep(1000);
     s = wide();
-    check(/expanded/.test(s.shell) && s.sideShows === 'contents', 'a reload opens Documents expanded again, on the same panel', JSON.stringify({ shell: s.shell, shows: s.sideShows }));
+    check(/expanded/.test(s.shell) && s.sideShows === 'contents', 'a reload of the tab opens Documents expanded again, on the same panel', JSON.stringify({ shell: s.shell, shows: s.sideShows }));
     // narrowing the window to a phone: no panel, the phone's own pages
     const openDocs = async () => {  // a resized window loads the page again, on the conversation
       pick('crew-1'); await sleep(900);
@@ -158,16 +164,30 @@ async function aBuild(lab, outDir) {
     axi('emulate', '--viewport', '390x844x2,mobile,touch'); await sleep(1200);
     await openDocs();
     s = wide();
-    check(/docshell/.test(s.shell) && !/expanded/.test(s.shell) && !s.side && !s.wide && s.expand === null && s.scrollW <= s.innerW, 'on a phone there is no panel and no Expand button, though the choice is kept', JSON.stringify({ shell: s.shell, side: s.side, expand: s.expand }));
+    check(/docshell/.test(s.shell) && !/expanded/.test(s.shell) && !s.side && !s.wide && s.expand === null && s.scrollW <= s.innerW, 'on a phone there is no panel and no Expand button', JSON.stringify({ shell: s.shell, side: s.side, expand: s.expand }));
     axi('emulate', '--viewport', '1440x900x1'); await sleep(1200);
     await openDocs();
     s = wide();
-    check(/expanded/.test(s.shell) && s.side && s.expand === 'true', 'at the wide size again the expanded view is back', s.shell);
-    // collapse
-    ev(`[...document.querySelectorAll('#controls .btn')].find(x => x.textContent === 'Expand').click(); return true;`); await sleep(700);
+    check(!/expanded/.test(s.shell) && !s.side && s.expand === 'false', 'at the wide size again, on a page opened afresh (on the conversation), the dialog is closed: it belongs to the Documents view you left', s.shell);
+    ev(`[...document.querySelectorAll('#controls .btn')].find(x => x.textContent === 'Expand').click(); return true;`); await sleep(800);
     s = wide();
-    check(!/expanded/.test(s.shell) && !s.side && s.files && s.files.x < s.pane.x && s.expand === 'false' && !s.wide && s.toc, 'pressing Expand again puts the file list back on the left', JSON.stringify({ shell: s.shell, files: s.files, pane: s.pane, expand: s.expand }));
+    check(/expanded/.test(s.shell) && s.side, 'and Expand opens it', s.shell);
+    // Esc closes the dialog, the file list is back on the left, and the focus returns to Expand
+    ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`); await sleep(700);
+    s = wide();
+    const back = ev(`const e = document.activeElement; return { ok: true, tag: e && e.textContent, role: document.querySelector('.docshell').getAttribute('role'), inert: document.getElementById('bar').inert, stored: sessionStorage.getItem('tr-docdialog') };`);
+    check(!/expanded/.test(s.shell) && !s.side && s.files && s.files.x < s.pane.x && s.expand === 'false' && !s.wide && s.toc && back.role === null && !back.inert && back.stored === '0', 'Esc closes the dialog: the file list is back on the left, the page header usable', JSON.stringify({ shell: s.shell, files: s.files, pane: s.pane, expand: s.expand, back }));
+    check(back.tag === 'Expand', 'and the focus is back on the Expand button', JSON.stringify(back));
     axi('screenshot', path.join(shots, 'wide-6-collapsed.png'));
+    // the Close button does the same, and the place being read goes with it
+    ev(`[...document.querySelectorAll('#controls .btn')].find(x => x.textContent === 'Expand').click(); return true;`); await sleep(700);
+    ev(`const a = [...document.querySelectorAll('.docside .toc nav a')][9]; window.__item = a.textContent; a.click(); return true;`); await sleep(800);
+    ev(`document.querySelector('.dlg-close').click(); return true;`); await sleep(800);
+    s = ev(`const h = [...document.querySelectorAll('.doc-md h2, .doc-md h3')].find(n => n.textContent === window.__item); const top = h ? Math.round(h.getBoundingClientRect().top) : null; return { ok: true, top, bar: document.getElementById('bar').offsetHeight, shell: document.querySelector('.docshell').className, scrollY: Math.round(scrollY) };`);
+    check(!/expanded/.test(s.shell) && s.top !== null && s.top >= 0 && s.top < 400 && s.scrollY > 0, 'Close closes it and the section being read is still on screen in the page', JSON.stringify(s));
+    ev(`[...document.querySelectorAll('#controls .btn')].find(x => x.textContent === 'Expand').click(); return true;`); await sleep(800);
+    s = ev(`const h = [...document.querySelectorAll('.doc-md h2, .doc-md h3')].find(n => n.textContent === window.__item); const p = document.querySelector('.docpane').getBoundingClientRect(); const top = h ? Math.round(h.getBoundingClientRect().top - p.top) : null; return { ok: true, top };`);
+    check(s.top !== null && s.top >= 0 && s.top < 300, 'and opened again, the dialog is at the same section', JSON.stringify(s));
   } catch (error) {
     check(false, 'the run finished', error.message);
     try { axi('screenshot', path.join(shots, '99-stuck.png')); } catch (e) { /* no page */ }

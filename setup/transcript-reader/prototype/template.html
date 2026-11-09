@@ -285,7 +285,22 @@ __HEAD_HOSTED__
   .docshell.expanded .docside .filespane { display: block; }  /* over `.docshell.view-file .filespane { display: none }`: the file browser is the panel's, not a page of its own */
   .docside .fp-filter { top: 0; border-radius: 0; }
   .docshell.expanded .docview { display: block; }
-  .docshell.expanded .docview .doc-md { --measure: 52rem; }
+  .docshell.expanded .docview .doc-md { --measure: 56rem; }
+  /* Expanded: the file in a dialog over the page, the whole window (the message bar under it stays) and no page header, so a narrow Watch column
+     gets the width and the height it has. The dialog's own header (Close, the file's name, Panel, Message, Editor), the file scrolling in its own
+     pane, and one panel beside it (Files | Contents) or, in a window under 820 px, over it from the right. */
+  .docshell.expanded { position: fixed; inset: 0 var(--rail) var(--dock-h, 0px) 0; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0; align-items: stretch; background: var(--wash); overflow: hidden; }
+  .docshell.expanded .dlg-head { grid-column: 1 / -1; grid-row: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; background: var(--paper); border-bottom: 1px solid var(--line); min-width: 0; }
+  .dlg-head .btn { margin: 0; flex: none; }
+  .dlg-head .dlg-close { font-weight: 600; }
+  .dlg-title { flex: 1 1 7rem; min-width: 0; font-size: 15px; font-weight: 700; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dlg-head .short { display: none; }
+  @media (max-width: 560px) { .dlg-head .long { display: none; } .dlg-head .short { display: inline; } }
+  .docshell.expanded .docpane { grid-column: 1; grid-row: 2; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px; }
+  .docshell.expanded .doc-body { max-width: 100rem; margin: 0 auto; border-radius: 10px; padding: 12px 14px; }
+  .docshell.expanded .doc-md :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 12px; }
+  .docshell.expanded .docpane > .htmlview { min-height: 100%; box-sizing: border-box; }  /* a page fills the dialog; the frame takes what the toolbar leaves */
+  .docshell.expanded .docpane > .htmlview:not(.full) .htmlframe { flex: 1 1 auto; height: auto; min-height: 18rem; }
   .toc.side { position: static; z-index: auto; background: none; margin: 0; }
   .toc.side nav { max-height: none; overflow: visible; border: 0; border-radius: 0; margin: 0; padding: 6px 0 10px; background: none; }
   .ds-scrim { display: none; }
@@ -342,22 +357,24 @@ __HEAD_HOSTED__
     .docshell.view-list .docpane, .docshell.view-file .filespane { display: block; }
     .filespane { position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); overflow-y: auto; overscroll-behavior: contain; }
     .fp-filter { top: 0; }
-    /* Expanded: the file has the width, and one panel on its right switches between the file browser (moved there from the left) and the file's contents. */
-    .docmode.docwide { --col: 96rem; }
-    .docshell.expanded { grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem); }
-    .docshell.expanded .docpane { grid-column: 1; grid-row: 1; }
-    .docshell.expanded .docside { grid-column: 2; grid-row: 1; }
-    .docside { display: flex; flex-direction: column; min-width: 0; position: sticky; top: calc(var(--bar-h, 120px) + 10px); max-height: calc(100vh - var(--bar-h, 120px) - var(--dock-h, 70px) - 24px); background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    /* Expanded, wide enough for a panel beside the file: the dialog is inset a little from the window with the page dimmed behind it, and the panel on its right
+       switches between the file browser (moved there from the left) and the file's contents. */
+    .docshell.expanded { inset: 10px calc(10px + var(--rail)) calc(var(--dock-h, 0px) + 10px) 10px; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .38), 0 12px 40px rgba(0, 0, 0, .3); grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem); }
+    .docshell.expanded .dlg-head { border-radius: 14px 14px 0 0; padding: 10px 14px; }
+    .docshell.expanded .docpane { padding: 12px; }
+    .docshell.expanded .docside { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 12px 12px 12px 0; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
   }
-  /* Expanded in a window too narrow for a panel beside the file (a desktop window dragged narrow; a phone never expands): the file keeps the width
-     and the panel slides over it from the right, opened by the header's Panel button (or the folded header's Files icon), closed by its own ✕, Esc,
-     a click outside it, or choosing a file or a contents entry. */
+  /* Expanded in a window too narrow for a panel beside the file (a Watch column, a desktop window dragged narrow; a phone never expands): the dialog fills
+     the window, and the panel slides over the file from the right, opened by the dialog's Panel button, closed by its own ✕, Esc, a click outside it,
+     or choosing a file or a contents entry. */
   @media (max-width: 819.98px) {
-    .docshell.expanded .docside { display: flex; flex-direction: column; position: fixed; right: 0; top: var(--bar-h, 120px); bottom: var(--dock-h, 0px); width: min(22rem, 92vw); z-index: 26; background: var(--paper); border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px; box-shadow: -8px 0 24px rgba(0, 0, 0, .18); overflow: hidden; transform: translateX(calc(100% + 24px)); visibility: hidden; transition: transform .18s ease, visibility 0s .18s; }
+    .docshell.expanded .docside { display: flex; flex-direction: column; position: absolute; grid-column: 1 / -1; grid-row: 2; top: 0; right: 0; bottom: 0; width: min(22rem, 92vw); z-index: 26; background: var(--paper); border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px; box-shadow: -8px 0 24px rgba(0, 0, 0, .18); overflow: hidden; transform: translateX(calc(100% + 24px)); visibility: hidden; transition: transform .18s ease, visibility 0s .18s; }
     .docshell.expanded.side-open .docside { transform: none; visibility: visible; transition: transform .18s ease; }
-    .docshell.expanded.side-open .ds-scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0, 0, 0, .28); }
+    .docshell.expanded.side-open .ds-scrim { display: block; position: absolute; grid-column: 1 / -1; grid-row: 2; inset: 0; z-index: 25; background: rgba(0, 0, 0, .28); }
     .ds-tabs .ds-close { display: block; }
   }
+  body.docwide { overflow: hidden; }  /* the page behind the dialog does not scroll */
+  .docshell.expanded:has(.htmlview.full) { z-index: 20; }
   @media (prefers-reduced-motion: reduce) { .docshell.expanded .docside { transition: none !important; } }
   .btn.sheet { display: inline-block; margin: 6px 0 2px; text-decoration: none; color: var(--you); border-color: var(--you); font-weight: 600; }
   .btn.sheet.done { color: var(--muted); border-color: var(--line); font-weight: 400; }
@@ -3907,9 +3924,11 @@ __HEAD_HOSTED__
   let docReveal = null;  // a file opened from outside the list: its folder opens when the list is next drawn
   // The contents list above a phone's document stays as the owner left it through the redraws of every build (docfiles.tocKeeper).
   const tocKeep = docfiles.tocKeeper();
-  // The expanded view (a wide window): the file has the width and one panel beside it shows the file browser or the contents. Kept in this browser.
+  // The expanded view: the file in a dialog over the page, with one panel that shows the file browser or the contents. Open or not is kept for this tab
+  // (a reload, or the page's own code changing, keeps it open; a new window starts closed); Files or Contents is kept in this browser.
   let docExpanded = false, docSide = "contents";
-  try { docExpanded = docfiles.expandedPref(localStorage.getItem("tr-docwide")); docSide = docfiles.sidePref(localStorage.getItem("tr-docside")); } catch (e) { /* defaults */ }
+  try { docExpanded = docfiles.expandedPref(sessionStorage.getItem("tr-docdialog")); } catch (e) { /* closed */ }
+  try { docSide = docfiles.sidePref(localStorage.getItem("tr-docside")); } catch (e) { /* defaults */ }
   const expandedNow = () => docExpanded && canExpand();
   // Expanded in a window too narrow for the panel beside the file: the panel is a drawer, open or not (docSideOpen, not kept).
   const slideOver = () => expandedNow() && !wideDoc();
@@ -3933,7 +3952,7 @@ __HEAD_HOSTED__
     forgetLazyError(id);
     if (!wideDoc()) docList.scroll = window.scrollY;
     state.doc = id; state.docFrom = null; state.docPage = "file"; docReveal = id; docSideOpen = false;
-    setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); });
+    setAddress(); whenReady(() => { render(); window.scrollTo(0, 0); if (docList.shell) docList.shell.pane.scrollTop = 0; });
   }
   function showDocList() {
     state.docPage = "list"; docReveal = state.doc;
@@ -4084,8 +4103,10 @@ __HEAD_HOSTED__
     const sideBody = $("div", "ds-body");
     side.append(tabs, sideBody);
     const scrim = $("div", "ds-scrim");
+    const head = $("div", "dlg-head");  // the dialog's header: only in the page while the view is expanded
     const shell = { node, files, pane, chips, clear, count, act, list, mode, input, groups: [], matching: false, sign: "",
-      side, scrim, sideBody, tabFiles, tabContents, toc: null, sideShown: null, sideScroll: {} };
+      side, scrim, head, sideBody, tabFiles, tabContents, toc: null, sideShown: null, sideScroll: {} };
+    pane.addEventListener("scroll", () => { if (!docSpy.frame) docSpy.frame = requestAnimationFrame(spyDoc); }, { passive: true });  // in the dialog the file scrolls itself
     for (const b of [tabFiles, tabContents]) b.addEventListener("click", () => setDocSide(b.dataset.side));
     close.addEventListener("click", () => setSideOpen(false));
     scrim.addEventListener("click", () => setSideOpen(false));
@@ -4107,10 +4128,14 @@ __HEAD_HOSTED__
     shell.node.classList.toggle("expanded", expanded);
     shell.node.classList.toggle("side-open", expanded && docSideOpen && slideOver());
     if (expanded) {
+      shell.node.setAttribute("role", "dialog"); shell.node.setAttribute("aria-label", "The file, expanded");
+      if (shell.head.parentNode !== shell.node) shell.node.prepend(shell.head);
       if (shell.files.parentNode === shell.node) shell.files.remove();
       if (shell.side.parentNode !== shell.node) shell.node.append(shell.side);
       if (shell.scrim.parentNode !== shell.node) shell.node.append(shell.scrim);
     } else {
+      shell.node.removeAttribute("role"); shell.node.removeAttribute("aria-label");
+      if (shell.head.parentNode) shell.head.remove();
       if (shell.side.parentNode) shell.side.remove();
       if (shell.scrim.parentNode) shell.scrim.remove();
       if (shell.files.parentNode !== shell.node) shell.node.prepend(shell.files);
@@ -4146,12 +4171,32 @@ __HEAD_HOSTED__
     paintBar();
     if (docSideOpen && shell) { const now = shell.side.querySelector(".ds-tabs .btn[aria-pressed=true]") || shell.side.querySelector("button:not(:disabled)"); if (now) now.focus(); }
   }
-  document.addEventListener("keydown", e => { if (e.key === "Escape" && docSideOpen && slideOver()) { e.preventDefault(); setSideOpen(false); } });
+  // Esc: the drawer first; then the dialog itself (not while a box has its own Esc: the file filter, the search, the message box).
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (docSideOpen && slideOver()) { e.preventDefault(); setSideOpen(false); return; }
+    if (state.view === "doc" && expandedNow() && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "")) { e.preventDefault(); setDocExpanded(false); }
+  });
+  // The section being read (an index into the file's headings): the dialog and the page behind it scroll separately, so the place is carried across.
+  function readingAt() {
+    const heads = docSpy.headings, shell = docList.shell;
+    if (!heads.length || !shell) return -1;
+    const line = (shell.node.classList.contains("expanded") ? shell.pane.getBoundingClientRect().top : document.getElementById("bar").offsetHeight) + 24;
+    let at = 0;
+    heads.forEach((h, i) => { if (h.el.getBoundingClientRect().top <= line) at = i; });
+    return at;
+  }
   function setDocExpanded(on) {
+    const at = readingAt();
     docExpanded = Boolean(on);
     if (!docExpanded) docSideOpen = false;
-    try { localStorage.setItem("tr-docwide", docExpanded ? "1" : "0"); } catch (e) { /* not kept */ }
+    try { sessionStorage.setItem("tr-docdialog", docExpanded ? "1" : "0"); } catch (e) { /* not kept */ }
     render();
+    const h = docSpy.headings[at];
+    if (at > 0 && h && h.el.isConnected) h.el.scrollIntoView({ block: "start" });
+    // Focus goes into the dialog when it opens, and back to the Expand button when it closes.
+    const next = docExpanded ? document.querySelector(".dlg-close") : [...document.querySelectorAll("#controls .btn")].find(b => b.textContent === "Expand");
+    if (next) next.focus({ preventScroll: true });
   }
   function renderDocView() {
     renderDocViewIn();
@@ -4203,6 +4248,7 @@ __HEAD_HOSTED__
       const el = document.getElementById(`ex-${index}`) || [...document.querySelectorAll("#main [id^='ex-']")].find(n => Number(n.id.slice(3)) >= index);
       if (el) el.scrollIntoView({ block: "start" });
     });
+    let panel = null;  // the drawer's button, in the dialog's header
     const message = $("button", "btn", "Message about this file");
     message.title = d.kind === "html" || d.kind === "image" ? "Write to the session about this file" : "Write to the session about the whole file. Select a passage to comment on it.";
     // On a phone the list is a page of its own, and this is the way back to it, to the folder the file is in.
@@ -4220,11 +4266,10 @@ __HEAD_HOSTED__
       expand.addEventListener("click", () => setDocExpanded(!docExpanded));
       row.append(expand);
       if (slideOver()) {
-        const panel = $("button", "btn", "Panel"); panel.type = "button"; panel.id = "panel-toggle";
+        panel = $("button", "btn", "Panel"); panel.type = "button"; panel.id = "panel-toggle";
         panel.setAttribute("aria-pressed", String(docSideOpen)); panel.setAttribute("aria-controls", "docside");
         panel.title = "Files and contents, in a panel over the file";
         panel.addEventListener("click", () => setSideOpen(!docSideOpen));
-        row.append(panel);
       }
     }
     // A markdown file opens in an editor: a button the host reads like a link in a reply (`button.file-ref[data-path]`), and VS Code where no host does.
@@ -4233,7 +4278,16 @@ __HEAD_HOSTED__
       edit.type = "button"; edit.dataset.path = d.path; edit.title = `Open ${d.path} in your editor`;
       edit.addEventListener("click", event => openInEditor(event, d.path));
     }
-    row.append(...(entry.unnamed ? [message] : [back, message]), ...(edit ? [edit] : []));  // a file no turn named has no turn to go back to
+    if (expanded) {
+      // The dialog covers the page's header: its own has the way out (Close), the file's name and the file's buttons, with short names where it is narrow.
+      const close = $("button", "btn dlg-close", "✕ Close"); close.type = "button"; close.title = "Close the expanded view (Esc)"; close.setAttribute("aria-label", "Close the expanded view");
+      close.addEventListener("click", () => setDocExpanded(false));
+      const name = $("div", "dlg-title", d.name); name.title = `${d.dir}/${d.name}`;
+      const both = (button, long, short) => { button.replaceChildren($("span", "long", long), $("span", "short", short)); return button; };
+      shell.head.replaceChildren(close, name, ...(panel ? [panel] : []), both(message, "Message about this file", "Message"), ...(edit ? [both(edit, "Open in editor", "Editor")] : []));
+    } else {
+      row.append(...(entry.unnamed ? [message] : [back, message]), ...(edit ? [edit] : []));  // a file no turn named has no turn to go back to
+    }
     const shown = keep && fileView.info;  // the frame's own reading of the file, newer than the build's
     // When the file changed is said once: here for a markdown file, in the viewer's own toolbar for an HTML file or a picture.
     const framed = d.kind === "html" || d.kind === "image";
@@ -4315,7 +4369,7 @@ __HEAD_HOSTED__
   function spyDoc() {
     docSpy.frame = 0;
     if (state.view !== "doc" || !docSpy.headings.length) return;
-    const line = document.getElementById("bar").offsetHeight + 24;
+    const shell = docList.shell, line = (shell && shell.node.classList.contains("expanded") ? shell.pane.getBoundingClientRect().top : document.getElementById("bar").offsetHeight) + 24;
     let current = docSpy.headings.filter(h => h.toc)[0];
     for (const h of docSpy.headings) if (h.toc && h.el.getBoundingClientRect().top <= line) current = h;
     docSpy.headings.forEach(h => { if (h.toc) h.toc.removeAttribute("aria-current"); });
@@ -4767,7 +4821,9 @@ __HEAD_HOSTED__
     keepTurns = keepTurns && state.view === "reader" && !look.open && !link.opening;
     if (!keepTurns) reveals.clear();  // the openers of the turns drawn now: kept turns keep theirs
     document.body.classList.toggle("docmode", state.view === "doc");
+    if (docExpanded && state.view !== "doc") { docExpanded = false; docSideOpen = false; try { sessionStorage.setItem("tr-docdialog", "0"); } catch (e) { /* not kept */ } }  // the dialog belongs to the Documents view
     document.body.classList.toggle("docwide", state.view === "doc" && expandedNow());
+    document.getElementById("bar").inert = state.view === "doc" && expandedNow();  // the dialog covers the page's header
     for (const view of ["reader", "fleet", "doc"]) document.getElementById("tab-" + view).setAttribute("aria-selected", String(state.view === view));
     document.getElementById("tab-doc").textContent = docsLabel(data.sessions[state.session]);
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
