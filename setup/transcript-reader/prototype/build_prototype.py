@@ -49,6 +49,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+import task_tags  # noqa: E402
 import tool_steps  # noqa: E402
 
 TEMPLATE = HERE / "template.html"
@@ -63,6 +64,7 @@ COMMENTKEY_SCRIPT = HERE / "commentkey.js"
 SELECTCOPY_SCRIPT = HERE / "selectcopy.js"
 ASKS_SCRIPT = HERE / "asks.js"
 FIND_SCRIPT = HERE / "find.js"
+TASKTAGS_SCRIPT = HERE / "tasktags.js"
 STEPS_SCRIPT = HERE / "steps.js"
 DOCFILES_SCRIPT = HERE / "docfiles.js"
 ADDRESS_SCRIPT = HERE / "address.js"
@@ -1243,6 +1245,8 @@ def thread_session(home: dict, chain: list[Path], loaded: dict[Path, dict], pare
     if leader:
         session["leader"] = leader
     mark_asks(exchanges)
+    if leader:
+        attach_task_tags(exchanges, chain, loaded, leader_home(cwd), leader["tasks"])
     return session
 
 
@@ -1394,6 +1398,34 @@ def mark_sheets(sessions: list[dict]) -> None:
                 exchange["sheet"] = f"{session['id'][:8]}:{round(exchange['reply_at'] or exchange['at'] or 0)}"
                 exchange["sheet_cards"] = sheet_cards(questionnaire)
                 exchange["sheet_count"] = len(questionnaire["cards"])  # sheet_cards stops at 8; the page says how many questions there are
+
+
+# ------------------------------------------------- which turns are about which task (a leader's conversation)
+#
+# task_tags.py runs the Tasks board's own rules (board/tagger.py) and reads its reply marks (board/marks.py) over a leader's turns; each turn comes out with
+# `tags` ([[task id, why], ...]) or `tag_row` ("upkeep" or "none"). The page's task menu reads them. Recomputed from the turns each time, like the asks.
+
+def reply_pointers(exchanges: list[dict]) -> dict[int, list[int]]:
+    """{the index of one of your messages: the indexes of the replies its "Re your reply at 09:04" pointers name} (a pointer that names none, or cannot tell
+    two apart, is left out)."""
+    index_of = {id(exchange): i for i, exchange in enumerate(exchanges)}
+    local: dict = {}
+    found: dict[int, list[int]] = {}
+    for index, exchange in enumerate(exchanges):
+        if exchange.get("source") != "captain" or "Re your reply at" not in (exchange.get("input") or ""):
+            continue
+        named = [target for pointer in POINTER.finditer(exchange["input"]) for target in [pointed_at(exchanges, index, pointer, local)] if target is not None]
+        if named:
+            found[index] = [index_of[id(target)] for target in named]
+    return found
+
+
+def attach_task_tags(exchanges: list[dict], chain: list[Path], loaded: dict[Path, dict], home: Path | None, tasks: dict[str, dict]) -> None:
+    """Tag the turns of a leader's conversation (task_tags.tag_exchanges): <tasks> is its home's backlog and archive (`leader_tasks`), <home> where its tasks' marks are."""
+    sids = [log_session_id(member) for member in chain for _ in loaded[member]["exchanges"]]
+    if len(sids) != len(exchanges):  # a turn the chain's logs did not give (none today): tag with the newest session, never mis-key a mark
+        sids = [log_session_id(chain[-1])] * len(exchanges)
+    task_tags.tag_exchanges(exchanges, sids, tasks, home, reply_pointers(exchanges))
 
 
 MERGED_CHAIN_LIMIT = 40  # the most sessions one conversation holds once older listed sessions of its pane are read into it
@@ -3070,7 +3102,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
     The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, attach.js, commentkey.js, the vendored markdown-it with markdown.js,
-    steps.js, find.js, docfiles.js, address.js and sessionrefs.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
+    steps.js, find.js, tasktags.js, docfiles.js, address.js and sessionrefs.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__. Mode "live" (the lite page, out/live/index.html) pastes the same two: it loads one
     conversation at a time like the hosted shell and is the served page in every other way (README, "The lite page"). Mode "embed" (the embed page,
     out/live/embed.html) is the local page with an empty payload that reaches no server, keeps nothing and takes its turns from a host's JSON (README,
@@ -3089,6 +3121,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__MARKDOWN__*/", MARKDOWN_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__STEPS__*/", STEPS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__FIND__*/", FIND_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__TASKTAGS__*/", TASKTAGS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__DOCFILES__*/", DOCFILES_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ADDRESS__*/", ADDRESS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SESSIONREFS__*/", SESSIONREFS_SCRIPT.read_text(encoding="utf-8"))

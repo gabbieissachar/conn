@@ -439,6 +439,59 @@ __HEAD_HOSTED__
   .fold .t { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
   .fold .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .foldrun { margin: 8px 0; }
+  /* Task tags (tasktags.js): a turn's chip, the banner in the header that says what the switches hide, the row that holds the hidden turns, and the menu itself:
+     a rail beside the column from 820 px (the Documents list's own width rule, tasktags.js RAIL_MIN) and a bottom sheet below it. */
+  .task-chip { flex: 0 1 auto; display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; border: 1px solid var(--line); background: var(--wash); color: var(--muted); border-radius: 99px; padding: 0 8px; font-size: 11px; line-height: 1.7; }
+  .who > .task-chip { white-space: nowrap; }
+  .task-chip .nm { min-width: 0; max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
+  .task-chip .plus { color: var(--dim); font-weight: 700; }
+  .task-chip:hover { color: var(--you); border-color: var(--you); }
+  .task-chip:focus-visible, .trow .btn:focus-visible, .tm-head button:focus-visible, .tm-sub button:focus-visible, .trow input:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .task-banner { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--you); background: var(--you-wash); color: var(--you); border-radius: 8px; font-size: 13px; }
+  .task-banner span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .task-banner .btn { flex: none; color: var(--you); border-color: var(--you); background: var(--paper); }
+  .taskfold { display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left; border: 1px dashed var(--line); border-radius: 8px; background: none; padding: 6px 10px; margin: 6px 0; font-size: 13px; color: var(--muted); }
+  .taskfold .t { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+  .taskfold .l { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .taskfold .a { flex: none; color: var(--you); }
+  .taskfold:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .taskrun { margin: 4px 0; }
+  .taskmenu { position: fixed; z-index: 31; left: 0; right: 0; bottom: 0; max-height: 78vh; max-height: 78dvh; display: flex; flex-direction: column; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: 0 -6px 24px rgb(0 0 0 / .25); padding-bottom: env(safe-area-inset-bottom); }
+  .tm-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid var(--line); }
+  .tm-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 700; }
+  .tm-sub { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tm-sub span { flex: 1; min-width: 0; }
+  .tm-find { padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--line); }
+  .tm-find input { display: block; width: 100%; font: inherit; font-size: 14px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+  .tm-find input:focus-visible { outline: 2px solid var(--you); outline-offset: 1px; }
+  .tm-none { padding: 12px 14px; font-size: 13px; color: var(--muted); }
+  .tm-list { overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 10px; }
+  .tgroup { display: flex; gap: 8px; align-items: baseline; padding: 10px 14px 2px; font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+  .tgroup small { font-weight: 400; color: var(--faint); font-size: 12px; }
+  .trow { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 3px 8px 3px 14px; }
+  .trow input[type="checkbox"] { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--you); }
+  .trow label { flex: 1; min-width: 0; padding: 3px 0; cursor: pointer; }
+  .trow .tt { display: block; font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+  .trow .ts { display: block; font-size: 11.5px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
+  .trow .tn { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .trow .btn { flex: none; font-size: 12px; padding: 2px 8px; }
+  @media (hover: hover) { .trow:hover { background: var(--wash); } }
+  .trow.off .tt { color: var(--muted); }
+  .trow.off .tt, .trow.off .ts { opacity: .75; }
+  .trow.is-here { background: var(--you-wash); transition: background .6s ease-out; }
+  .trow.rows { border-top: 1px solid var(--line); }
+  .view-btn[data-active="true"] { color: var(--you); border-color: var(--you); }
+  @media (min-width: 820px) {
+    .taskmenu { z-index: 5; left: auto; top: 0; right: 0; bottom: 0; width: var(--rail); max-height: none; border-width: 0 0 0 1px; border-radius: 0; box-shadow: none; padding-bottom: 0; }
+    .tm-head { padding: 12px 10px 8px 14px; }
+  }
+  @media (max-width: 440px), (pointer: coarse) {
+    .trow { min-height: 48px; }
+    .trow input[type="checkbox"] { width: 22px; height: 22px; }
+    .trow .btn, .tm-head button, .tm-sub button, .task-banner .btn { min-height: 44px; min-width: 44px; }
+    .tm-find input { height: 44px; font-size: 16px; }
+  }
+  @media (pointer: coarse) { .bar .task-banner .btn { min-height: 44px; } }
   .is-target { animation: flash 1.2s ease-out; }
   @keyframes flash { from { box-shadow: 0 0 0 3px var(--you); } to { box-shadow: 0 0 0 0 transparent; } }
   /* The reply a message address (#s=...&m=...) went to: outlined for a moment longer than a pin's or a search's jump, as the link was followed from elsewhere. */
@@ -654,7 +707,7 @@ __HEAD_HOSTED__
     .bar.collapsed .title > .search-toggle { order: 4; }
     .bar.collapsed .title > .bar-toggle { order: 5; }
     /* The Tasks icon goes up beside the search where the width wraps: the second line has room for the jumps, Documents, the answer sheet, Pins and Follow, and no more. */
-    .bar.collapsed .title > #view-tasks { order: 3; margin-top: 0; }
+    .bar.collapsed .title > :is(#view-tasks, #tasks-quick) { order: 3; margin-top: 0; }
     .bar.collapsed .title::after { content: ""; order: 6; flex: 0 0 100%; height: 0; }
     .bar.collapsed .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { order: 7; margin-top: 6px; }
     .bar.collapsed .asof:not(.stale) { display: none; }
@@ -718,7 +771,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="view-btn" id="view-tasks" href="/setup/transcript-reader/board/" aria-label="Tasks" title="Tasks: the board of this session's open items and calls" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="1.8" y="2.6" width="3.6" height="10.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="6.2" y="2.6" width="3.6" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="10.6" y="2.6" width="3.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></a><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="expand-quick" type="button" aria-label="Expand" title="Expand" aria-pressed="false" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2L9 7M2 14l5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="view-btn" id="view-tasks" href="/setup/transcript-reader/board/" aria-label="Tasks" title="Tasks: the board of this session's open items and calls" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="1.8" y="2.6" width="3.6" height="10.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="6.2" y="2.6" width="3.6" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="10.6" y="2.6" width="3.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></a><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="expand-quick" type="button" aria-label="Expand" title="Expand" aria-pressed="false" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2L9 7M2 14l5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="view-btn" id="tasks-quick" type="button" aria-controls="taskmenu" aria-pressed="false" aria-label="By task" title="By task" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2 3.2h12L9.4 8.5v4.3L6.6 11.4V8.5L2 3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -762,9 +815,12 @@ __HEAD_HOSTED__
       <div id="controls"></div>
     </div>
     <div id="pins-panel" hidden></div>
+    <div class="task-banner" id="task-banner" role="status" hidden><span id="task-banner-text"></span><button class="btn" id="task-banner-all" type="button" title="Switch every task back on">Show all</button></div>
   </div>
 </header>
 <main id="main"></main>
+<aside class="taskmenu" id="taskmenu" hidden></aside>
+<div class="scrim" id="task-scrim" hidden></div>
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
 <div class="copy-note" id="copy-note" role="status" aria-live="polite">Copied</div>
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
@@ -826,6 +882,7 @@ __HEAD_HOSTED__
 /*__MARKDOWN__*/
 /*__STEPS__*/
 /*__FIND__*/
+/*__TASKTAGS__*/
 /*__DOCFILES__*/
 /*__ADDRESS__*/
 /*__SESSIONREFS__*/
@@ -1535,7 +1592,7 @@ __HEAD_HOSTED__
         // One line: a background command's label can run to several.
         const head = $("div", "who wake-who", `Wake-up · ${fmtWhen(ex.at)} · ${ex.label}`); head.title = ex.label;
         box.append(head);
-        if (ex.reply || ex.tools) box.append(replyCard(ex, key, sid));
+        if (ex.reply || ex.tools) { box.append(replyCard(ex, key, sid)); addTaskChip(ex, box); }
         frag.append(box); return frag;
       }
       const row = $("button", "fold");
@@ -1553,6 +1610,7 @@ __HEAD_HOSTED__
     }
     frag.append(inputBlock(ex, index, key, sid));
     if (ex.reply || ex.tools) frag.append(replyCard(ex, key, sid));
+    addTaskChip(ex, frag);
     return frag;
   }
   // Named as in Herdr (pane or tab label, then the pane's title), so it matches the pane you are reading.
@@ -1867,7 +1925,8 @@ __HEAD_HOSTED__
     wakes.addEventListener("click", () => { state.showWakes = !state.showWakes; render(); });
     if (pickRow.parentNode !== row) row.append(pickRow);
     for (const turnsOnly of [prev, next, needs, wakes]) turnsOnly.hidden = Boolean(session.placeholder);  // there are no turns to go between
-    row.append(prev, next, needs, wakes, pinned, hiddenToggle, copyToggle, shut, follow);
+    const tasksToggle = taskButton();
+    row.append(prev, next, needs, wakes, ...(tasksToggle ? [tasksToggle] : []), pinned, hiddenToggle, copyToggle, shut, follow);
     paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", summaryLine(exs.length, [
@@ -1898,13 +1957,23 @@ __HEAD_HOSTED__
     }
     renderLive();
     // The controls above are drawn for every build; the turns below only when they changed (turnsUnchanged, in applyPayload).
-    if (keepTurns && held && held.sid === session.id) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id) }; paintPins(); return; }
+    // (The task switches are part of what the turns were drawn from: a change of them always draws again, and this keeps the rule even if a caller forgets.)
+    if (keepTurns && held && held.sid === session.id && held.tasks === taskSignature()) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id), tasks: taskSignature() }; paintPins(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", session.placeholder ? "No transcript yet for this session." : "No turns in this session."), ...(session.placeholder ? [] : pendingNodes(session))); return; }
     const sid = session.id;
-    let run = null, runCount = 0;
+    let run = null, runCount = 0, taskRun = null, taskCount = 0;
     exs.forEach((ex, i) => {
+      if (!taskShows(ex)) {  // every task it touches is switched off: it joins the run of such turns (one row that opens in place)
+        if (run) { collapseRun(run); run = null; }
+        if (!taskRun) { taskRun = $("div", "foldrun taskrun"); taskCount = 0; taskRun.dataset.key = `${sid}:${i}:tasks`; main.append(taskRun); }
+        taskCount += 1; taskRun.dataset.count = taskCount;
+        if (ex.at) { if (!taskRun.dataset.first) taskRun.dataset.first = ex.at; taskRun.dataset.last = ex.reply_at || ex.at; }
+        taskRun.append(exchangeNode(ex, i, sid));
+        return;
+      }
+      if (taskRun) { collapseTaskRun(taskRun); taskRun = null; }
       const hide = ex.folded && !state.showWakes;
       if (hide) {
         if (!run) { run = $("div", "foldrun"); runCount = 0; run.dataset.key = `${sid}:${i}:run`; main.append(run); }
@@ -1917,8 +1986,9 @@ __HEAD_HOSTED__
       main.append(exchangeNode(state.showWakes ? { ...ex, folded: false } : ex, i, sid));
     });
     if (run) collapseRun(run);
+    if (taskRun) collapseTaskRun(taskRun);
     main.append(...pendingNodes(session));
-    turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, sid) };
+    turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, sid), tasks: taskSignature() };
     paintPins();
   }
   // ---------------------------------------------------------------- drawing the turns again only when they changed (DESIGN.md, 2026-11-05)
@@ -2019,6 +2089,238 @@ __HEAD_HOSTED__
     setAddress();
     whenReady(() => { render(); show(); });
   }
+
+  // ---------------------------------------------------------------- the task menu (tasktags.js has every rule; task_tags.py tags the turns when the page is built)
+  // A leader's conversation touches many fleet tasks. Each turn carries its tasks (a chip says which); the menu lists them with a switch each, an Only button and
+  // the two rows no task owns (Fleet upkeep, No task). A turn shows while any of its tasks is on; the turns of switched-off tasks fold into one row that opens in
+  // place ("N turns in other tasks"), as folded wake-ups do, so a pin, a search match or a link into one still lands. The header's banner always says what is
+  // hidden, with Show all. The switches are kept for each conversation in this browser. The menu is a rail beside the column from 820 px and a bottom sheet below it.
+  const TASK_STORE = (HOSTED ? "tr-hosted-" : "tr-") + "tasks", TASK_RAIL = "tr-task-rail";
+  const railQuery = matchMedia(`(min-width: ${taskTags.RAIL_MIN}px)`);
+  const taskUi = { sheet: false, off: new Map(), changed: new Map(), pulse: null, locked: false, find: "", opened: Date.now() / 1000 };
+  let taskState = null;  // the conversation on screen as the menu sees it, made by every render (readTasks); null when it carries no tags
+  const keptValue = key => { try { return localStorage.getItem(key); } catch (e) { return null; } };
+  const keepValue = (key, value) => { try { localStorage.setItem(key, value); } catch (e) { /* not kept */ } };
+  function readTasks() {
+    taskState = null;
+    const session = data.sessions[state.session];
+    if (EMBED || state.view !== "reader" || !session || session.placeholder || !Array.isArray(session.exchanges)) return;
+    const tasks = (session.leader && session.leader.tasks) || {};
+    const sum = taskTags.summary(session.exchanges, tasks);
+    if (!sum.tagged || !sum.tasks.length) return;  // no tags (a worker's conversation, an old copy), or nothing but the two rows: no menu
+    const ids = session.ids && session.ids.length ? session.ids : [session.id], key = ids[ids.length - 1];
+    let off = taskUi.off.get(key);
+    if (!off) { off = taskTags.recall(keptValue(TASK_STORE), ids); taskUi.off.set(key, off); }
+    const counts = taskTags.counts(session.exchanges, sum, off, taskUi.changed.get(key) || taskUi.opened);
+    taskState = { session, ids, key, tasks, sum, off, counts, active: counts.off > 0 };
+  }
+  // Whether the switches leave a turn on screen (always, while none is off).
+  const taskShows = ex => !taskState || !taskState.active || taskTags.visible(ex, taskState.off);
+  const taskSignature = () => taskState && taskState.active ? [...taskState.off].sort().join("\u0001") : "";
+  function setTaskOff(off) {
+    const s = taskState; if (!s) return;
+    const now = Date.now() / 1000;
+    taskUi.off.set(s.key, off); taskUi.changed.set(s.key, now);
+    keepValue(TASK_STORE, taskTags.remember(keptValue(TASK_STORE), s.ids, off, now));
+    const anchor = readingAnchor();
+    render();
+    restoreAnchor(anchor);
+  }
+  const railWide = () => railQuery.matches;
+  const menuShown = () => Boolean(taskState) && (railWide() ? taskTags.railOpen(keptValue(TASK_RAIL), innerWidth, taskState.sum) : taskUi.sheet);
+  function openTaskMenu(focusKey) {
+    if (!taskState) return;
+    taskUi.pulse = focusKey || null;
+    if (railWide()) keepValue(TASK_RAIL, "1"); else taskUi.sheet = true;
+    paintTaskMenu(); paintBar();
+  }
+  function closeTaskMenu() {
+    if (railWide()) keepValue(TASK_RAIL, "0"); else taskUi.sheet = false;
+    paintTaskMenu(); paintBar();
+    // The controls row is drawn again by every switch, so the control that opened the menu may be a new node: the focus goes to whichever of the two is on screen.
+    const control = [document.getElementById("tasks-toggle"), document.getElementById("tasks-quick")].find(n => n && !n.hidden && n.offsetParent !== null);
+    if (control) control.focus();
+  }
+  const toggleTaskMenu = () => { if (menuShown()) closeTaskMenu(); else openTaskMenu(null); };
+  const taskPlural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  function taskRow(item, index) {
+    const s = taskState;
+    const row = $("div", "trow" + (s.off.has(item.id) ? " off" : "")); row.dataset.key = item.id;
+    const box = $("input"); box.type = "checkbox"; box.id = `tm-${index}`; box.checked = !s.off.has(item.id); box.dataset.focus = `c:${item.id}`;
+    const label = $("label"); label.htmlFor = box.id;
+    const name = taskTags.nameOf(item.id, s.tasks), parts = [];
+    if (item.title) parts.push(taskTags.stem(item.id));
+    if (item.state) parts.push(item.state);
+    if (item.last) parts.push(`${fmtShortDay(item.last)} ${fmtTime(item.last)}`);
+    label.append($("span", "tt", name), $("span", "ts", parts.join(" · ")));
+    label.title = [name, ...parts].join(" · ");
+    box.addEventListener("change", () => { const off = new Set(s.off); if (box.checked) off.delete(item.id); else off.add(item.id); setTaskOff(off); });
+    const count = $("span", "tn", String(item.turns)); count.title = taskPlural(item.turns, "turn", "turns");
+    const onlyNow = s.active && s.counts.off === taskTags.only(s.sum, item.id).size && !s.off.has(item.id);
+    const only = $("button", "btn", "Only"); only.type = "button"; only.dataset.focus = `o:${item.id}`; only.setAttribute("aria-pressed", String(onlyNow));
+    only.title = onlyNow ? "Only this task is on: press to switch every task back on" : "Switch every other task off";
+    only.setAttribute("aria-label", `Only ${name}`);
+    only.addEventListener("click", () => setTaskOff(onlyNow ? new Set() : taskTags.only(s.sum, item.id)));
+    row.append(box, label, count, only);
+    return row;
+  }
+  function paintTaskMenu() {
+    const node = document.getElementById("taskmenu"), scrim = document.getElementById("task-scrim");
+    const wide = railWide(), show = menuShown(), s = taskState;
+    node.hidden = !show; scrim.hidden = !(show && !wide);
+    document.documentElement.style.setProperty("--rail", show && wide ? taskTags.railRem(innerWidth) + "rem" : "0px");
+    const lock = show && !wide;
+    if (lock) { document.body.style.overflow = "hidden"; taskUi.locked = true; } else if (taskUi.locked) { document.body.style.overflow = ""; taskUi.locked = false; }
+    if (!show) { node.replaceChildren(); delete node.dataset.sig; return; }
+    // A build arrives every few seconds while the fleet works: the menu is drawn again only when what it shows changed, so a tap on a switch is never lost to a redraw.
+    const sig = JSON.stringify([wide, [...s.off].sort(), s.sum]);
+    if (node.dataset.sig === sig && !taskUi.pulse) return;
+    node.dataset.sig = sig;
+    const was = node.querySelector(".tm-list"), top = was ? was.scrollTop : 0;
+    const active = node.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+    node.setAttribute("role", wide ? "complementary" : "dialog");
+    if (wide) node.removeAttribute("aria-modal"); else node.setAttribute("aria-modal", "true");
+    node.setAttribute("aria-label", "Tasks in this conversation");
+    const head = $("div", "tm-head"), title = $("h2", null, "Tasks in this conversation");
+    const close = $("button", "btn", "✕"); close.type = "button"; close.dataset.focus = "x"; close.setAttribute("aria-label", "Close the task menu"); close.title = "Close the task menu (Esc)";
+    close.addEventListener("click", closeTaskMenu);
+    head.append(title, close);
+    const sub = $("div", "tm-sub"), all = $("button", "btn", "Show all"); all.type = "button"; all.dataset.focus = "a"; all.disabled = !s.active;
+    all.title = s.active ? "Switch every task back on" : "Every task is on";
+    all.addEventListener("click", () => setTaskOff(new Set()));
+    sub.append($("span", null, `${taskPlural(s.sum.tasks.length, "task", "tasks")} · ${taskPlural(s.sum.total, "turn", "turns")}`), all);
+    const list = $("div", "tm-list");
+    let index = 0;
+    for (const group of taskTags.groups(s.sum.tasks)) {
+      if (group.label) { const g = $("div", "tgroup", group.label); g.append($("small", null, `${taskPlural(group.tasks.length, "task", "tasks")} · ${taskPlural(group.turns, "turn", "turns")}`)); list.append(g); }
+      for (const item of group.tasks) list.append(taskRow(item, index++));
+    }
+    s.sum.rows.forEach((item, at) => {
+      const row = $("div", "trow rows" + (s.off.has(item.key) ? " off" : "")); row.dataset.key = item.key;
+      const box = $("input"); box.type = "checkbox"; box.id = `tm-r${at}`; box.checked = !s.off.has(item.key); box.dataset.focus = `c:${item.key}`;
+      const label = $("label"); label.htmlFor = box.id; label.title = item.hint;
+      label.append($("span", "tt", item.name), $("span", "ts", item.hint));
+      box.addEventListener("change", () => { const off = new Set(s.off); if (box.checked) off.delete(item.key); else off.add(item.key); setTaskOff(off); });
+      const count = $("span", "tn", String(item.turns)); count.title = taskPlural(item.turns, "turn", "turns");
+      const onlyNow = s.active && s.counts.off === taskTags.only(s.sum, item.key).size && !s.off.has(item.key);
+      const only = $("button", "btn", "Only"); only.type = "button"; only.dataset.focus = `o:${item.key}`; only.setAttribute("aria-pressed", String(onlyNow)); only.setAttribute("aria-label", `Only ${item.name}`);
+      only.title = onlyNow ? "Only this is on: press to switch every task back on" : "Switch every task but this off";
+      only.addEventListener("click", () => setTaskOff(onlyNow ? new Set() : taskTags.only(s.sum, item.key)));
+      row.append(box, label, count, only);
+      list.append(row);
+    });
+    // A long conversation touches a hundred tasks or more: past ten, a find box narrows the list (the two rows below it always stay).
+    let find = null;
+    if (s.sum.tasks.length > 10) {
+      find = $("div", "tm-find");
+      const box = $("input"); box.type = "search"; box.placeholder = "Find a task"; box.value = taskUi.find; box.dataset.focus = "f"; box.autocomplete = "off"; box.spellcheck = false;
+      box.setAttribute("aria-label", "Find a task"); box.setAttribute("autocapitalize", "off"); box.title = "Words from a task's name, id or state, in any order";
+      box.addEventListener("input", () => { taskUi.find = box.value; applyTaskFind(node); });
+      box.addEventListener("keydown", e => { if (e.key === "Escape" && box.value) { e.preventDefault(); e.stopPropagation(); box.value = ""; taskUi.find = ""; applyTaskFind(node); } });
+      find.append(box);
+    }
+    const none = $("div", "tm-none", "No task matches."); none.hidden = true;
+    list.append(none);
+    node.replaceChildren(head, sub, ...(find ? [find] : []), list);
+    applyTaskFind(node);
+    list.scrollTop = top;
+    if (taskUi.pulse) {
+      const row = [...list.querySelectorAll(".trow")].find(r => r.dataset.key === taskUi.pulse);
+      taskUi.pulse = null;
+      if (row) { row.scrollIntoView({ block: "nearest" }); row.classList.add("is-here"); setTimeout(() => row.classList.remove("is-here"), 1600); }
+    }
+    if (!wide && !node.contains(document.activeElement)) (node.querySelector('[data-focus="x"]') || node).focus();
+    else if (active) {
+      const again = [...node.querySelectorAll("[data-focus]")].find(n => n.dataset.focus === active);
+      if (again && !again.disabled) { again.focus(); if (again.setSelectionRange && typeof again.value === "string") again.setSelectionRange(again.value.length, again.value.length); }
+    }
+  }
+  // The find box narrows the task rows (and hides a group heading with none left); Fleet upkeep and No task always stay.
+  function applyTaskFind(node) {
+    const s = taskState; if (!s) return;
+    const query = taskUi.find.trim(), byId = new Map(s.sum.tasks.map(t => [t.id, t]));
+    let shown = 0;
+    node.querySelectorAll(".tm-list .trow:not(.rows)").forEach(row => { const ok = !query || taskTags.matches(byId.get(row.dataset.key) || { id: row.dataset.key }, s.tasks, query); row.hidden = !ok; if (ok) shown += 1; });
+    node.querySelectorAll(".tm-list .tgroup").forEach(heading => {
+      let next = heading.nextElementSibling, any = false;
+      while (next && next.classList.contains("trow") && !next.classList.contains("rows")) { if (!next.hidden) any = true; next = next.nextElementSibling; }
+      heading.hidden = !any;
+    });
+    const none = node.querySelector(".tm-none");
+    if (none) none.hidden = !(query && !shown);
+  }
+  // The banner in the header says what the switches hide, whatever else is on screen.
+  function paintTaskBanner() {
+    const box = document.getElementById("task-banner"), s = taskState;
+    const text = s && s.active ? taskTags.banner(s.counts) : "";
+    box.hidden = !text;
+    document.getElementById("task-banner-text").textContent = text;
+  }
+  const taskButtonLabel = () => taskState && taskState.active ? `By task · ${taskState.counts.shownTasks} of ${taskState.counts.totalTasks}` : "By task";
+  // The header's control: the controls row's button, and the folded header's icon (paintTasksQuick).
+  function taskButton() {
+    if (!taskState) return null;
+    const button = $("button", "btn", taskButtonLabel()); button.type = "button"; button.id = "tasks-toggle";
+    button.setAttribute("aria-pressed", String(menuShown())); button.setAttribute("aria-controls", "taskmenu");
+    button.title = "Show the tasks this conversation touches, and switch some off";
+    button.addEventListener("click", toggleTaskMenu);
+    return button;
+  }
+  function paintTasksQuick() {
+    const icon = document.getElementById("tasks-quick"), label = taskButtonLabel();
+    icon.hidden = !taskState;
+    icon.setAttribute("aria-pressed", String(menuShown())); icon.setAttribute("aria-label", label);
+    icon.dataset.active = String(Boolean(taskState && taskState.active));
+    icon.title = taskState && taskState.active ? `${label} (turns of the other tasks are folded)` : label;
+  }
+  function taskChip(ex) {
+    if (!taskState || ex.source === "session") return null;
+    const c = taskTags.chip(ex, taskState.tasks);
+    if (!c) return null;
+    const chip = $("button", "task-chip"); chip.type = "button"; chip.title = c.title;
+    chip.append($("span", "nm", c.text));
+    if (c.more) chip.append($("span", "plus", `+${c.more}`));
+    chip.setAttribute("aria-label", `Task: ${c.text}${c.more ? ` and ${c.more} more` : ""}. Open the task menu`);
+    chip.addEventListener("click", () => openTaskMenu(c.ids[0]));
+    return chip;
+  }
+  // The chip goes in the first header line of the turn that is drawn: your message's, else the reply's.
+  function addTaskChip(ex, root) {
+    const chip = taskChip(ex);
+    if (!chip) return;
+    const who = root.querySelector(".input .who") || root.querySelector(".reply .who");
+    if (who) who.append(chip);
+  }
+  // The turns of switched-off tasks, one row that opens in place (B1). The run's key is `<session>:<first turn>:tasks`, so runOf finds it for a pin or a search match.
+  function collapseTaskRun(run) {
+    const count = Number(run.dataset.count), key = run.dataset.key;
+    if (state.open.has(key)) { run.classList.add("open"); return; }
+    const kids = [...run.children];
+    const toggle = $("button", "taskfold"); toggle.type = "button"; toggle.setAttribute("aria-expanded", "false");
+    // "01:01–01:01" for a turn answered in the same minute is just "01:01".
+    toggle.append($("span", "t", runSpan(Number(run.dataset.first), Number(run.dataset.last)).replace(/^(\d\d:\d\d)–\1$/, "$1")), $("span", "l", taskTags.foldLabel(count)), $("span", "a", "Show"));
+    toggle.title = "Switched off in the task menu. Press to read them here.";
+    run.replaceChildren(toggle);
+    const expand = () => { run.replaceChildren(...kids); run.classList.add("open"); state.open.add(key); };
+    toggle.addEventListener("click", expand);
+    reveals.set(key, { open: expand, close: () => { run.replaceChildren(toggle); run.classList.remove("open"); state.open.delete(key); }, shown: () => !run.contains(toggle) });
+  }
+  document.getElementById("task-banner-all").addEventListener("click", () => setTaskOff(new Set()));
+  document.getElementById("tasks-quick").addEventListener("click", toggleTaskMenu);
+  document.getElementById("task-scrim").addEventListener("click", closeTaskMenu);
+  document.getElementById("taskmenu").addEventListener("keydown", e => {
+    if (railWide() && e.key !== "Tab") { if (e.key === "Escape") { e.preventDefault(); closeTaskMenu(); } return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeTaskMenu(); return; }
+    if (e.key !== "Tab") return;
+    const items = [...e.currentTarget.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  // Across 820 px the menu changes from a sheet to a rail (or back), and across 1030 px the rail changes width.
+  railQuery.addEventListener("change", () => { taskUi.sheet = false; paintTaskMenu(); paintBar(); });
+  matchMedia(`(min-width: ${taskTags.RAIL_WIDE}px)`).addEventListener("change", () => { paintTaskMenu(); });
 
   // ---------------------------------------------------------------- stars: the picker's favourite sessions
   // A star names a conversation (stars.js keeps them, in the same two places as pins), so it holds across rebuilds, Sync
@@ -4835,6 +5137,7 @@ __HEAD_HOSTED__
   function render({ keepTurns = false } = {}) {
     if (missing()) { turnsDrawn = null; whenReady(() => render()); return; }  // the hosted copy loads first
     pruneKept();
+    readTasks();  // which tasks the conversation on screen touches, and which of them are switched off
     document.getElementById("tab-fleet").hidden = !fleetOn();
     if (!fleetOn() && state.view === "fleet") state.view = "reader";
     if (look.open && (state.view !== "reader" || !data.sessions[state.session])) endSearch();  // the search is for the conversation on screen
@@ -4851,6 +5154,8 @@ __HEAD_HOSTED__
     // The live badge too: a page with no poll to paint it (a file copy, the hosted shell) may open on a document.
     if (state.view === "reader") renderReader(keepTurns); else { turnsDrawn = null; if (state.view === "doc") renderDocView(); else renderFleet(); renderLive(); }
     paintBar();
+    paintTaskMenu();
+    paintTaskBanner();
     paintSheetLink();
     refreshSearch();  // the page was drawn again: the query runs on it as it is now
     markRead();
@@ -4912,6 +5217,7 @@ __HEAD_HOSTED__
     crumb.title = `${crumb.textContent} · show the tabs and controls`;
     paintViewIcons(session);
     paintTasksLink(session);
+    paintTasksQuick();
     paintPinsIcon(session);
     paintHiddenIcon(session);
     for (const id of ["jump-prev", "jump-next", "jump-ask"]) document.getElementById(id).hidden = state.view !== "reader" || !session || !session.exchanges.length;

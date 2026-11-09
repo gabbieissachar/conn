@@ -253,7 +253,8 @@ def rules() -> str:
     threading (build_prototype.PARSE_RULES), the answer-sheet finder's and this file's. A
     record built under other rules is not fresh, so a fix to either reaches every object."""
     parts = [builder.PARSE_RULES] + [hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-                                     for path in (HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "inline_html.py", Path(__file__).resolve())]
+                                     for path in (HERE / "prototype" / "build_questionnaire.py", HERE / "prototype" / "inline_html.py", HERE / "prototype" / "task_tags.py",
+                                                  HERE / "board" / "tagger.py", HERE / "board" / "marks.py", Path(__file__).resolve())]
     return stamp_of("|".join(parts).encode("utf-8"))
 
 
@@ -261,7 +262,7 @@ def sources(exchanges: list[dict], homes: list[Path], leader: Path | None = None
     """What a conversation reads besides its logs: the steering inboxes its doorbells name, whose
     messages it shows in their place (attach_inbox_bodies), the task-instruction files its
     pointers name (attach_operational_input), and, for a leader's conversation (<leader> is its
-    home), the home's backlog and archive, whose rows give the Documents view its task titles."""
+    home), the home's backlog and archive, whose rows give the Documents view its task titles (and the turns their tags), and the reply marks of its tasks."""
     doorbells, briefs = set(), set()
     for exchange in exchanges:
         if exchange["source"] != "firstmate":
@@ -285,7 +286,10 @@ def inputs_stamp(found: dict) -> str:
         parts.append([str(directory), [[str(path.relative_to(directory)), version(path)] for path in messages]])
     parts += [[path, version(Path(path))] for path in found["briefs"]]
     if found.get("leader"):
-        parts += [[name, version(Path(found["leader"]) / "data" / name)] for name in ("backlog.md", "done-archive.md")]
+        home = Path(found["leader"])
+        parts += [[name, version(home / "data" / name)] for name in ("backlog.md", "done-archive.md")]
+        # The turns of a leader's conversation carry their tasks (task_tags.py), and your corrections are the board's reply marks in each task's own folder.
+        parts += [[task, version(home / "data" / task / "reply-marks.jsonl")] for task in sorted(builder.leader_tasks(home)) if version(home / "data" / task / "reply-marks.jsonl")]
     return stamp_of(encode(parts))
 
 

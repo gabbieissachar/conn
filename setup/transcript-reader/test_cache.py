@@ -290,6 +290,41 @@ class Leaders(Case):
         built = self.same(derived=[A])
         self.assertIn(b'"state":"Done"', b"".join(built.payload))
 
+    def leader_turns(self, built):
+        """The turns of the leader conversation (A) as the page holds them."""
+        payload = json.loads(b"".join(built.payload).decode("utf-8"))
+        return next(s for s in payload["sessions"] if s["id"] == A)["exchanges"]
+
+    def test_the_turns_of_a_leader_carry_their_tasks_and_a_worker_s_do_not(self):
+        built = self.same()
+        turns = self.leader_turns(built)
+        tagged = [t for t in turns if t.get("tags")]
+        self.assertTrue(tagged and all(tag[0] == "fix-login" for t in tagged for tag in t["tags"]), "the wake-up for fix-login and its reply are about that task")
+        payload = json.loads(b"".join(built.payload).decode("utf-8"))
+        worker = next(s for s in payload["sessions"] if s["id"] == W)
+        self.assertTrue(all("tags" not in t and "tag_row" not in t for t in worker["exchanges"]), "a worker's conversation is not a leader's and carries no tags")
+
+    def test_a_reply_mark_on_a_task_changes_the_tags_and_builds_the_leader_again(self):
+        built = self.same()
+        turn = next(t for t in self.leader_turns(built) if t.get("tags") and t.get("reply"))
+        index = self.leader_turns(built).index(turn)
+        sid, uid = A[:8], turn["uid"][:8]
+        (self.task / "reply-marks.jsonl").write_text(json.dumps({"turn": f"{sid}:{uid}:reply", "mark": "out", "at": 1, "by": "card"}) + "\n", encoding="utf-8")
+        built = self.same(derived=[A])
+        marked = self.leader_turns(built)[index]
+        self.assertFalse(any(tag[0] == "fix-login" for tag in marked.get("tags", [])), "the board's out mark takes the task off the turn here too")
+        (self.task / "reply-marks.jsonl").write_text("", encoding="utf-8")
+        self.newer(self.task / "reply-marks.jsonl")
+        built = self.same(derived=[A])
+        self.assertTrue(any(tag[0] == "fix-login" for tag in self.leader_turns(built)[index].get("tags", [])))
+        self.same(derived=[])
+
+    def test_a_new_task_in_the_backlog_tags_turns_already_kept(self):
+        self.same()
+        (self.lab.main / "data" / "backlog.md").write_text("## In flight\n- [ ] fix-login - Fix the login page (repo: x)\n- [ ] another-task-here - Another (repo: x)\n", encoding="utf-8")
+        built = self.same(derived=[A])
+        self.assertIn(b'"another-task-here"', b"".join(built.payload))
+
     def test_a_task_folder_cut_short_says_how_many_files_it_left_out(self):
         for number in range(5):
             (self.task / f"extra-{number}.md").write_text("x", encoding="utf-8")

@@ -26,6 +26,9 @@ check can run at the size of the owner's reading list (about 90 conversations, t
 
 LAB_REFS=1 makes crew-1's latest reply name other sessions (its tab labels, a role, an id), for the session-reference links.
 
+LAB_LEADER=1 makes crew-1 a leader's conversation (its working folder is a made-up Firstmate home, <home>/fm-leader, with a backlog of thirteen tasks): 38 turns that
+name those tasks by id, wake up for them, point at replies, run fleet commands, and touch none, for the task menu (task-tags-check.js).
+
 LAB_DOCS=<n> writes n markdown files (a few headings each, long enough to scroll) and one HTML page into <home>/lab-docs/ and makes crew-1's latest reply
 name them, so its Documents view lists them.
 
@@ -141,6 +144,108 @@ def lab_docs(home, count):
     return paths
 
 
+LEADER_BACKLOG = """# Backlog
+
+## In flight
+- [ ] bc-39-specs-task - Write the BC-39 specs (repo: pmos) (kind: task)
+- [ ] lv-50-finish-flow - Finish the LV-50 flow (repo: pmos) (kind: task)
+- [ ] 2026-11-03-esim-annual-global-l3-requirements - Annual global requirements, first draft (repo: pmos)
+- [ ] reader-task-tags-build - Task tags in the reader (repo: pmos)
+
+## Queued
+- [ ] bc-39-review-round - BC-39 review round (repo: pmos)
+
+## Done
+- [x] old-archived-task - A finished task (repo: pmos)
+- [x] ab-12-alpha-copy - AB-12 alpha copy (repo: pmos)
+- [x] ab-12-beta-copy - AB-12 beta copy (repo: pmos)
+- [x] ab-12-gamma-copy - AB-12 gamma copy (repo: pmos)
+- [x] reader-fix-group-9 - A fix with a word and a number in its id (repo: pmos)
+- [x] misc-cleanup-one - Cleanup one (repo: pmos)
+- [x] misc-cleanup-two - Cleanup two (repo: pmos)
+- [x] misc-cleanup-three - Cleanup three (repo: pmos)
+"""
+
+
+def leader_home(home):
+    """A made-up Firstmate home the reader takes for a leader's (it has data/, state/ and projects/), with the backlog above; its path."""
+    folder = home / "fm-leader"
+    for name in ("data", "state", "projects"):
+        (folder / name).mkdir(parents=True, exist_ok=True)
+    (folder / "data" / "backlog.md").write_text(LEADER_BACKLOG, encoding="utf-8")
+    return folder
+
+
+def leader_log(path, cwd, sid_name):
+    """38 turns of a leader's conversation, the last one four minutes ago: replies that name tasks (by id, by wake-up, by a fleet command, by pointing at an
+    earlier reply), upkeep wake-ups, and talk with no task. The words are invented."""
+    turns = []  # (input kind, input text or task id, reply, command)
+    T = lambda kind, text, reply, command=None: turns.append((kind, text, reply, command))
+    long_note = "A longer note with nothing in it about any task, written so that the reply is more than a short line and reads as talk. " * 3
+    for name in ("ab-12-alpha-copy", "ab-12-beta-copy", "ab-12-gamma-copy", "reader-fix-group-9", "misc-cleanup-one", "misc-cleanup-two", "misc-cleanup-three"):
+        T("you", f"Check {name}", f"Nathan, {name} is done and filed, and there is nothing left for you to do for it.")
+    T("you", "How is BC-39 going?", "Nathan, bc-39-specs-task has its second draft ready for you, and bc-39-review-round waits for you to read that draft first. Reply with A1=ok if the draft is right.")
+    T("signal", "bc-39-specs-task", "Nathan, the worker finished the third section of the BC-39 specs; nothing needs you for it yet.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("you", "@POINT1 ok, carry on with the draft", "Nathan, I told the worker to carry on with the draft.", "fm-send.sh bc-39-specs-task 'carry on with the draft'")
+    T("you", "What do you make of the weather this week?", "Nathan, " + long_note)
+    T("signal", "lv-50-finish-flow", "Nathan, the LV-50 flow worker reported its branch is ready, so I will check it before it lands.")
+    T("signal", "lv-50-finish-flow", "Nathan, the check of the LV-50 flow passed; it is ready for you to merge when you are.")
+    T("you", "Please look at esim-annual-global-l3-requirements next", "Nathan, esim-annual-global-l3-requirements has its first draft; I put it on your list for tonight.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, nothing new.")
+    T("you", "And the reader tags?", "Nathan, reader-task-tags-build is under way; the worker is on the tagger and the menu now, and lv-50-finish-flow is still waiting on your merge.")
+    T("signal", "reader-task-tags-build", "Nathan, the worker of the reader tags reported it has the tagger done; no decision needed.")
+    T("you", "Thanks", "Nathan, you are welcome.")
+    T("you", "Start the BC-39 review", "Nathan, started the review round for BC-39.", "fm-spawn.sh bc-39-review-round --brief x")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("signal", "bc-39-review-round", "Nathan, the review round has two questions for you about the second draft, listed below. Reply with B1=yes; B2=no when you can.")
+    T("you", "@POINT2 B1=yes; B2=no", "Nathan, recorded both answers on bc-39-review-round.")
+    T("you", "Summarise today", "Nathan, today: bc-39-specs-task moved to its third section, bc-39-review-round started, lv-50-finish-flow is ready to merge, and the rest are quiet.")
+    T("signal", "lv-50-finish-flow", "Nathan, the LV-50 flow merged; the task is done.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("you", "What is left in the backlog?", "Nathan, reader-task-tags-build, esim-annual-global-l3-requirements and bc-39-specs-task are still in flight; nothing else is open.")
+    T("you", "Check old-archived-task for me", "Nathan, old-archived-task is finished and archived; there is nothing to do for it.")
+    T("signal", "2026-11-03-esim-annual-global-l3-requirements", "Nathan, the esim worker asks whether to include the annual plans in the draft; I would include them. Shall I tell it to?")
+    T("you", "@POINT3 yes include them", "Nathan, told the worker to include the annual plans.", "fm-send.sh 2026-11-03-esim-annual-global-l3-requirements 'include the annual plans'")
+    T("you", "Anything else I should know?", "Nathan, " + long_note)
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, shipshape.")
+    T("signal", "reader-task-tags-build", "Nathan, the worker of the reader tags has the menu drawn; it is checking the narrow widths now.")
+    T("you", "Good. And the BC-39 specs?", "Nathan, bc-39-specs-task is at its last section; I expect it ready for your read within the hour.")
+    T("heartbeat", "cycle boundary: the watcher restarted", "Nathan, nothing new since the last check.")
+    now = NOW
+    count = len(turns)
+    stamp = lambda n: now - (count - n) * 240  # the last turn is four minutes old
+    records, reply_at = [], {}
+    for n, (kind, text, reply, command) in enumerate(turns):
+        at = stamp(n)
+        uid = f"u-{sid_name}-{n:03d}-aaaaaaaa"
+        if kind == "you":
+            if text.startswith("@POINT"):
+                target = {"@POINT1": 7, "@POINT2": 23, "@POINT3": 31}[text.split()[0]]
+                shown = time.strftime("%H:%M", time.localtime(reply_at[target]))
+                text = f"Re your reply at {shown}: " + text.split(" ", 1)[1]
+            body = text
+            records.append({"type": "user", "uuid": uid, "timestamp": iso(at), "cwd": cwd, "message": {"role": "user", "content": body}})
+        elif kind == "signal":
+            body = f"<task-notification>\nfirstmate watcher wake\nsignal: {cwd}/state/{text}.status\n</task-notification>"
+            records.append({"type": "user", "uuid": uid, "timestamp": iso(at), "cwd": cwd, "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": body}})
+        else:
+            body = f"<task-notification>\nfirstmate watcher wake\nsupervision-host: {text}\n</task-notification>"
+            records.append({"type": "user", "uuid": uid, "timestamp": iso(at), "cwd": cwd, "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": body}})
+        if command:
+            block = {"type": "tool_use", "id": f"t{n}", "name": "Bash", "input": {"command": command, "description": "Tell the worker"}}
+            records.append({"type": "assistant", "timestamp": iso(at + 5), "cwd": cwd, "message": {"role": "assistant", "content": [block]}})
+            records.append({"type": "user", "timestamp": iso(at + 6), "cwd": cwd, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{n}", "content": "ok"}]}})
+        records.append({"type": "assistant", "timestamp": iso(at + 20), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}})
+        reply_at[n] = at + 20
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    os.utime(path, (now - 200, now - 200))
+
+
 def sleeper():
     """A process the reader can see is alive; the driver stops it."""
     return subprocess.Popen(["sleep", "6000"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True).pid
@@ -180,7 +285,11 @@ def main(folder: Path) -> None:
         named = ("The notes are written:\n\n" + "\n".join(f"- `{d}`" for d in docs)) if docs and n == 0 else None
         if os.environ.get("LAB_REFS") and n == 0:
             named = REFS_REPLY.format(crew=CREW[2])
-        claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named)
+        if os.environ.get("LAB_LEADER") and n == 0:
+            cwd = str(leader_home(home))
+            leader_log(primary / "projects" / "-lab-crew-1" / f"{sid}.jsonl", cwd, "crew-1")
+        else:
+            claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named)
         pids[f"crew-{n + 1}"] = sleeper(); record(primary, pids[f"crew-{n + 1}"], sid)
 
     tabs = [{"tab_id": "w1:t1", "label": "cp-ontology-learning"}, {"tab_id": "w1:t2", "label": "cp-ontology-search"}, {"tab_id": "w1:t3", "label": "cp-whatapps-tool"},

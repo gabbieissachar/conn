@@ -877,6 +877,25 @@ class LeaderTasksTest(unittest.TestCase):
         self.assertEqual([rel for rel in after if after[rel] != before.get(rel) and rel.startswith("s/")], [f"s/{A}.json"])
 
 
+    def test_the_turns_of_a_leader_carry_their_tasks_into_the_copy_and_a_workers_carry_none(self):
+        turns = self.lab.object(f"s/{A}.json")["exchanges"]
+        self.assertTrue(any(t.get("tags") and t["tags"][0][0] == "fix-login" for t in turns), "the wake-up for fix-login and the reply after it are about that task")
+        self.assertTrue(any(t.get("tag_row") for t in turns) or all(t.get("tags") for t in turns if t["source"] != "session"))
+        self.assertFalse(any("tags" in t or "tag_row" in t for t in self.lab.object(f"s/{W}.json")["exchanges"]))
+
+    def test_a_reply_mark_writes_the_leaders_conversation_again_and_no_other(self):
+        turns = self.lab.object(f"s/{A}.json")["exchanges"]
+        turn = next(t for t in turns if t.get("tags") and t.get("reply"))
+        before = self.lab.mtimes()
+        wait_a_tick()
+        (self.lab.main / "data" / "fix-login" / "reply-marks.jsonl").write_text(json.dumps({"turn": f"{A[:8]}:{turn['uid'][:8]}:reply", "mark": "out", "at": 1, "by": "card"}) + "\n", encoding="utf-8")
+        self.lab.build()
+        marked = next(t for t in self.lab.object(f"s/{A}.json")["exchanges"] if t["uid"] == turn["uid"])
+        self.assertFalse(any(tag[0] == "fix-login" for tag in marked.get("tags", [])), "the board's out mark takes the task off the turn in the copy too")
+        after = self.lab.mtimes()
+        self.assertEqual([rel for rel in after if after[rel] != before.get(rel) and rel.startswith("s/")], [f"s/{A}.json"])
+
+
 class HtmlDocumentsTest(unittest.TestCase):
     """An HTML file a reply names is in the copy with the same name, location and size rules as the local viewer, folded into
     one text that the page shows in its sandboxed viewer (inline_html.py holds the rules; the page's viewer is tested in hosted.test.js)."""
