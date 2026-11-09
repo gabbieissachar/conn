@@ -67,7 +67,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var loggedIn = true
     private var starting = false
     private var failWrites = false
-    private var signedOutCode = 401
+    private var blockedNetwork = false
     private var token = ""
     private var tokenExp = Date.distantPast
     private var tokenSerial = 0
@@ -245,8 +245,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
 
     public func expireLogin() { lock.lock(); loggedIn = false; lock.unlock(); dropStreams() }
     public func setStarting(_ on: Bool) { lock.lock(); starting = on; lock.unlock() }
-    /// What a request without a valid sign-in is answered with: 401 (the default) or 403, which is what the real Campus answers to a person who is not signed in.
-    public func setSignedOutStatus(_ code: Int) { lock.lock(); signedOutCode = code; lock.unlock() }
+    /// While on, every path (the pages, the API and the stream) is answered with nginx's own `403 Forbidden` page: what the public ingress answers off the company private network.
+    public func setBlockedNetwork(_ on: Bool) { lock.lock(); blockedNetwork = on; lock.unlock(); if on { dropStreams() } }
+    /// The exact page the real ingress answers with (HTML, no Campus JSON).
+    public static let nginxForbidden = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
     /// While on, every signed-in API call is refused with `403 {"error":"module_required",...}`: signed in, but the account lacks the module.
     public func setModuleRequired(_ on: Bool) { lock.lock(); moduleRequired = on; lock.unlock() }
 
@@ -259,6 +261,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
         let path = comps?.path ?? rawPath
         let query = Dictionary((comps?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
         if path.hasPrefix("/__fake/") { return control(path, query) }
+        lock.lock(); let blocked = blockedNetwork; lock.unlock()
+        if blocked { var r = FakeCampusResponse(); r.status = 403; r.contentType = "text/html"; r.body = Data(Self.nginxForbidden.utf8); return r }
         if path == "/campus/login" || path == "/campus/login/ok" {
             var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"
             if path == "/campus/login", let silent = silentLogin(cookie: cookie) { return silent }
@@ -271,9 +275,9 @@ public final class FakeCampusWorld: @unchecked Sendable {
             r.body = Data("<!doctype html><html><head><title>Stand-in Campus</title></head><body style=\"font:15px -apple-system;margin:40px\"><h2>Stand-in Campus</h2><p>The app, as the stand-in has it.</p></body></html>".utf8)
             return r
         }
-        lock.lock(); let isIn = loggedIn; let isStarting = starting; let outCode = signedOutCode; let needsModule = moduleRequired; lock.unlock()
+        lock.lock(); let isIn = loggedIn; let isStarting = starting; let needsModule = moduleRequired; lock.unlock()
         if authMode == .cookie {
-            if !(isIn && validSession(cookie)) { return err(outCode, "no valid campus_session cookie") }
+            if !(isIn && validSession(cookie)) { return err(401, "no valid campus_session cookie") }
         }
         if needsModule && path.hasPrefix("/api/") { var r = FakeCampusResponse(); r.status = 403; r.body = Self.data(["error": "module_required", "module": "workspace"]); return r }
         if path == "/campus/api/me" { return ok(["id": "usr_fake", "email": "person@example.test", "displayName": "Test Person", "modules": ["workspace"]]) }
@@ -433,10 +437,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
             return r
         case "/__fake/expire": expireLogin(); return ok(["ok": true])
         case "/__fake/starting": setStarting(q["on"] != "0"); return ok(["ok": true])
-        case "/__fake/signed-out-status":
-            if let c = q["code"].flatMap(Int.init) { setSignedOutStatus(c) }          // without `code`, only reads
-            lock.lock(); let code = signedOutCode; lock.unlock()
-            return ok(["code": code])
+        case "/__fake/blocked-network":
+            if let on = q["on"] { setBlockedNetwork(on != "0") }                       // without `on`, only reads
+            lock.lock(); let on = blockedNetwork; lock.unlock()
+            return ok(["on": on])
         case "/__fake/module-required": setModuleRequired(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/fail-writes": lock.lock(); failWrites = q["on"] != "0"; lock.unlock(); return ok(["ok": true])
         case "/__fake/log": return ok(["writes": writes()])

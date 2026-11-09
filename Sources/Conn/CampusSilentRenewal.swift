@@ -9,6 +9,8 @@
 //   - Campus's login page, or any other site (Google's account chooser or password page), that stays after the page settled for `settleDelay` seconds with no new
 //     navigation: a page that waits for the person, so the attempt stops there and the view is dropped;
 //   - a popup, a script dialog, a credential challenge or a media request: also a page that waits for the person (the request is declined, not answered);
+//   - a 403 from Campus's own host: the network refusing the connection (nginx's page, off the company private network), reported as blocked, never as a page that
+//     waits for a click;
 //   - nothing within the timeout, or a load that failed.
 // Redirects that pass through another site on the way back to Campus (no page of theirs finishes loading and stays) are what a silent renewal looks like, so they
 // are let through.
@@ -36,6 +38,7 @@ final class CampusSilentRenewal: NSObject, CampusRenewing, WKNavigationDelegate,
     private final class Run {
         var settled: CampusRenewalPage?
         var failed = false
+        var blocked = false
         var done = false
         var token = 0
     }
@@ -87,7 +90,7 @@ final class CampusSilentRenewal: NSObject, CampusRenewing, WKNavigationDelegate,
         web.stopLoading()
         view = nil
         run = nil
-        return CampusRenewalResult(settled: timedOut ? nil : r.settled, timedOut: timedOut, failed: r.failed)
+        return CampusRenewalResult(settled: timedOut ? nil : r.settled, timedOut: timedOut, failed: r.failed, blocked: r.blocked)
     }
 
     private func finish(_ page: CampusRenewalPage) {
@@ -108,6 +111,18 @@ final class CampusSilentRenewal: NSObject, CampusRenewing, WKNavigationDelegate,
                 finish(.elsewhere)
                 return
             }
+        }
+        decisionHandler(.allow)
+    }
+
+    /// A main-frame 403 from Campus's own host is the network's refusal: stop there and say so.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let r = run, !r.done, navigationResponse.isForMainFrame, let http = navigationResponse.response as? HTTPURLResponse, http.statusCode == 403,
+           http.url?.host?.lowercased() == origin.host?.lowercased() {
+            r.blocked = true
+            r.done = true
+            decisionHandler(.cancel)
+            return
         }
         decisionHandler(.allow)
     }

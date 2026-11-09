@@ -61,8 +61,8 @@ private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
     @Test func successNeedsCampusSignedInWithALaterExpiry() {
         let later = t0.addingTimeInterval(3600), earlier = t0
-        func o(_ settled: CampusRenewalPage?, timedOut: Bool = false, failed: Bool = false, old: Date? = earlier, new: Date? = later) -> CampusRenewalOutcome {
-            CampusRenewalRules.outcome(settled: settled, timedOut: timedOut, failed: failed, oldExpiry: old, newExpiry: new)
+        func o(_ settled: CampusRenewalPage?, timedOut: Bool = false, failed: Bool = false, blocked: Bool = false, old: Date? = earlier, new: Date? = later) -> CampusRenewalOutcome {
+            CampusRenewalRules.outcome(settled: settled, timedOut: timedOut, failed: failed, blocked: blocked, oldExpiry: old, newExpiry: new)
         }
         #expect(o(.campus) == .renewed)
         #expect(o(.campus, old: nil) == .renewed)                                    // there was no readable expiry before, now there is
@@ -77,10 +77,15 @@ private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         #expect(o(.campus, failed: true) == .error)
         #expect(o(nil) == .error)
         #expect(o(nil, timedOut: true, failed: true) == .error)
+        // The network's 403 page is blocked, never "sign in again", wherever the view stood still.
+        #expect(o(nil, blocked: true) == .blocked)
+        #expect(o(.login, blocked: true) == .blocked && o(.elsewhere, blocked: true) == .blocked && o(.campus, blocked: true) == .blocked)
+        #expect(o(nil, timedOut: true, blocked: true) == .blocked)
     }
 
     @Test func eachOutcomeHasAWordForSettings() {
-        #expect(Set([CampusRenewalOutcome.renewed, .needsSignIn, .timeout, .error].map(\.label)).count == 4)
+        #expect(Set([CampusRenewalOutcome.renewed, .needsSignIn, .timeout, .error, .blocked].map(\.label)).count == 5)
+        #expect(CampusRenewalOutcome.blocked.rawValue == "blocked" && CampusRenewalOutcome.blocked.label == "blocked by the network")
         #expect(CampusRenewalOutcome.needsSignIn.rawValue == "needs-sign-in" && CampusRenewalOutcome.timeout.rawValue == "time-out")
     }
 }
@@ -246,6 +251,24 @@ private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         clock.advance(to: clock.now.addingTimeInterval(61)); await keeper.tick()
         #expect(renewer.attempts == 3 && !keeper.needsSignIn)
         #expect(log.recent().map(\.outcome) == [.timeout, .timeout, .timeout])
+    }
+
+    @Test func aBlockedNetworkIsNotSignInAgainAndIsTriedAgainLaterThenGivenUp() async throws {
+        let (keeper, renewer, world, clock, log) = make(mode: .renews)
+        let old = try #require(await renewer.sessionExpiry())
+        world.setBlockedNetwork(true)                                // off the company private network: nginx's 403 page on /campus/login
+        clock.advance(to: old.addingTimeInterval(-250))
+        await keeper.tick()
+        #expect(keeper.lastAttempt?.outcome == .blocked && !keeper.needsSignIn && renewer.attempts == 1)
+        await keeper.tick()                                          // a minute has not passed
+        #expect(renewer.attempts == 1)
+        clock.advance(to: clock.now.addingTimeInterval(61)); await keeper.tick()
+        world.setBlockedNetwork(false)                               // the network is back: the next try renews
+        world.setSessionLife(3600)
+        clock.advance(to: clock.now.addingTimeInterval(61)); await keeper.tick()
+        #expect(renewer.attempts == 3 && keeper.lastAttempt?.outcome == .renewed && !keeper.needsSignIn)
+        #expect(log.recent().map(\.outcome) == [.blocked, .blocked, .renewed])
+        world.setRenewMode(.google)
     }
 
     @Test func aSessionThatAlreadyEndedGetsOneTry() async throws {

@@ -1,6 +1,6 @@
 // The web side of the silent refresh, without a web view (unit tests): a `CampusRenewing` that keeps a cookie jar of its own and visits the stand-in's
 // `/campus/login` the way a hidden web view would, following redirects and taking Set-Cookie. It stands still on the first page that is not a redirect and says
-// whether that is Campus, Campus's login page or another site. It never answers a page: the stand-in's pages only wait.
+// whether that is Campus, Campus's login page or another site (a 403 is the network refusing the connection). It never answers a page: the stand-in's pages only wait.
 import Foundation
 import ConnCore
 
@@ -44,6 +44,7 @@ public final class FakeCampusRenewer: CampusRenewing {
             guard url.host == campusHost else { return CampusRenewalResult(settled: .elsewhere) }
             let r = world.route(method: "GET", path: url.path, cookie: jar, body: nil, headers: ["host": url.host ?? ""])
             if r.delay > timeout { try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000)); return CampusRenewalResult(timedOut: true) }
+            if r.status == 403 { return CampusRenewalResult(blocked: true) }            // the page the network answers with: refused, not a page that waits for a click
             take(r)
             if r.status == 302, let loc = r.headers["Location"], let next = URL(string: loc, relativeTo: url)?.absoluteURL { url = next; continue }
             return CampusRenewalResult(settled: CampusRenewalRules.page(for: url, campusHost: campusHost))

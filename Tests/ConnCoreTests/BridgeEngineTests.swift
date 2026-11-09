@@ -334,7 +334,7 @@ private extension BridgeRegistry {
     @Test func signedOutAnswersAtOnceAndSendsNothing() async throws {
         // A 30-second budget and a 20-second bound: "at once" means it did not wait for the budget, and a bound as tight as the old 5 s budget failed on a loaded machine.
         let lab = await Lab(budget: 30); lab.on()
-        lab.auth.override = { _ in CampusReply(status: 403, body: Data("{\"error\":\"no valid campus_session cookie\"}".utf8)) }
+        lab.auth.override = { _ in CampusReply(status: 401, body: Data("{\"error\":\"no valid campus_session cookie\"}".utf8)) }
         await lab.store.refresh()
         #expect(lab.store.link == .expired)
         let t0 = Date()
@@ -345,9 +345,27 @@ private extension BridgeRegistry {
 
     @Test func campusSigningOutDuringACallIsSignedOutToo() async throws {
         let lab = await Lab(); lab.on()
-        lab.auth.override = { r in r.method == "POST" ? CampusReply(status: 403, body: Data("{\"error\":\"no valid campus_session cookie\"}".utf8)) : nil }
+        lab.auth.override = { r in r.method == "POST" ? CampusReply(status: 401, body: Data("{\"error\":\"no valid campus_session cookie\"}".utf8)) : nil }
         let r = try await lab.ask("req-so2", lab.newText())
         #expect(lab.field(r, "status") == "signed-out" && lab.store.link == .expired)
+    }
+
+    @Test func aBlockedNetworkAnswersAtOnceAsFailedWithTheNetworkWordsNotSignedOut() async throws {
+        let lab = await Lab(budget: 30); lab.on()
+        lab.auth.override = { _ in CampusReply(status: 403, body: Data(FakeCampusWorld.nginxForbidden.utf8)) }
+        await lab.store.refresh()
+        #expect(lab.store.link == .blocked)
+        let t0 = Date()
+        let r = try await lab.ask("req-bl", lab.newText())
+        #expect(lab.field(r, "status") == "failed" && lab.field(r, "reason")?.contains("Zscaler") == true && Date().timeIntervalSince(t0) < 20 && lab.writes().isEmpty)
+        lab.auth.override = nil
+    }
+
+    @Test func theNetworkBlockingDuringACallBlocksTheLinkAndIsNotSignedOut() async throws {
+        let lab = await Lab(); lab.on()
+        lab.auth.override = { r in r.method == "POST" ? CampusReply(status: 403, body: Data(FakeCampusWorld.nginxForbidden.utf8)) : nil }
+        let r = try await lab.ask("req-bl2", lab.newText())
+        #expect(lab.field(r, "status") == "failed" && lab.field(r, "reason")?.contains("Zscaler") == true && lab.store.link == .blocked)
     }
 
     @Test func anUnexpectedAnswerToAStartIsAShapeFailureWithoutAThread() async throws {

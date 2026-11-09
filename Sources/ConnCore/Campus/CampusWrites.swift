@@ -117,6 +117,7 @@ extension CampusStore {
                 self.clearHeld(after: 2.5)
             } else {
                 if reply?.signedOut == true { self.markExpired() }
+                if reply?.blockedByNetwork == true { self.markBlocked() }
                 // Nothing is lost: the text goes back into the box.
                 self.heldRestore?(); self.heldRestore = nil
                 self.held?.phase = .failed(reply?.failureText ?? "Campus did not answer")

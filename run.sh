@@ -12,7 +12,7 @@
 #   CONN_EMBED_URL=ADDRESS ./run.sh ...   the reader's embed page that draws Campus conversations (default: the live reader's; a --fixture launch has none, so it keeps the native transcript;
 #                                 a file copy of embed.html is what the --campus-check embed steps use)
 #   ./run.sh --campus-writes      start with the "Campus writes" switch on (a person's own launch starts with it off)
-#   ./run.sh --fixture --campus-signed-out-403   the stand-in Campus answers 403 (what the real one answers) instead of 401 to a person who is not signed in
+#   ./run.sh --fixture --campus-blocked-network   the stand-in Campus answers nginx's 403 Forbidden page on every path (what the real one does off the company private network)
 #   ./run.sh --renderer grid      the cell-grid pane view (SwiftTerm is the default)
 #   ./run.sh --text-panes         poll pane text (pane.read) instead of streaming: works across Herdr protocol changes
 #   ./run.sh --mode herdr|agent|editor   --web on|off   --select N   --dark   --privacy   --open FILE
@@ -43,7 +43,7 @@ if [[ " $ARGS " == *" --fixture "* ]]; then
   ARGS="--session fake --socket-dir $DIR/s --herdr-bin $DIR/herdr --write fake $ARGS"
   if [[ " $ARGS " != *" --no-campus "* && " $ARGS " != *" --campus-url "* && -x build/FakeCampus ]]; then
     FAKEC_ARGS=(--autorun)
-    [[ " $ARGS " == *" --campus-signed-out-403 "* ]] && FAKEC_ARGS+=(--signed-out-403)
+    [[ " $ARGS " == *" --campus-blocked-network "* ]] && FAKEC_ARGS+=(--blocked-network)
     build/FakeCampus serve "${FAKEC_ARGS[@]}" >"$DIR/campus.log" 2>&1 &
     FAKEC=$!
     trap 'kill $FAKE $FAKEC 2>/dev/null' EXIT

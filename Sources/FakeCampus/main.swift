@@ -1,4 +1,4 @@
-// FakeCampus serve [--port N] [--autorun] [--step SECONDS] [--signed-out-403]
+// FakeCampus serve [--port N] [--autorun] [--step SECONDS] [--blocked-network]
 // A stand-in Campus on 127.0.0.1 (invented content; see FakeCampusWorld). Conn's `--fixture` launch points its Campus web view at it
 // (`CONN_CAMPUS_URL`). `--autorun` starts a scripted run that ends on a question a few seconds after the first stream opens.
 import Foundation
@@ -6,14 +6,15 @@ import FakeCampusKit
 
 func fail(_ s: String) -> Never { FileHandle.standardError.write(Data((s + "\n").utf8)); exit(2) }
 var args = Array(CommandLine.arguments.dropFirst())
-guard args.first == "serve" else { fail("usage: FakeCampus serve [--port N] [--autorun] [--step SECONDS] [--signed-out-403]") }
+guard args.first == "serve" else { fail("usage: FakeCampus serve [--port N] [--autorun] [--step SECONDS] [--blocked-network]") }
 args.removeFirst()
 func option(_ name: String) -> String? { guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }; return args[i + 1] }
 
 let world = FakeCampusWorld(authMode: .cookie)
 if let s = option("--step").flatMap(Double.init) { world.stepDelay = s }
-// The real Campus answers 403 (not 401) to a person who is not signed in; the default stays 401 so both are checked (`/__fake/signed-out-status?code=403` flips it live).
-if args.contains("--signed-out-403") { world.setSignedOutStatus(403) }
+// Off the company private network the real Campus is a public ingress that answers every path with nginx's `403 Forbidden` page; `--blocked-network` starts the stand-in
+// that way (`/__fake/blocked-network?on=1` and `?on=0` flip it live).
+if args.contains("--blocked-network") { world.setBlockedNetwork(true) }
 let server = FakeCampusServer(world: world)
 do { try server.start(port: UInt16(option("--port") ?? "0") ?? 0) } catch { fail("could not listen: \(error)") }
 print("fake campus listening: http://127.0.0.1:\(server.port)")

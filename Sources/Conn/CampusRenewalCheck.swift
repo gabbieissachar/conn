@@ -125,6 +125,18 @@ extension CampusCheck {
         report("Campus refresh: an answer that never comes ends at the time limit, the hidden view never sat in a window, and it does not say sign in again",
                timedOut && hiddenWindow == false && !keeper.needsSignIn && !renewal.isAttempting && renewal.hiddenViewHasWindow == nil, "outcome=\(keeper.lastAttempt?.outcome.rawValue ?? "nil") hadWindow=\(hiddenWindow.map { "\($0)" } ?? "nil")")
 
+        // 8b. nginx's 403 page on the sign-in path (off the company private network): blocked, never "sign in again"; the view is dropped and no click is made.
+        await signIn(life: 3600)
+        let attemptsBeforeBlock = keeper.attemptCount
+        await control("/__fake/blocked-network?on=1")
+        await arm("page")
+        let blockedTry = await until(25) { keeper.lastAttempt?.outcome == .blocked }
+        let blockedText = CampusSessionSettingsSection.lastText(keeper.lastAttempt)
+        report("Campus refresh: a 403 page on the sign-in path ends the attempt as blocked by the network, not as sign in again; the view is gone and Settings says so",
+               blockedTry && !keeper.needsSignIn && keeper.attemptCount == attemptsBeforeBlock + 1 && !renewal.isAttempting && renewal.hiddenViewHasWindow == nil && blockedText.contains("blocked by the network") && !blockedText.contains("sign in again"),
+               "outcome=\(keeper.lastAttempt?.outcome.rawValue ?? "nil") needsSignIn=\(keeper.needsSignIn) text='\(blockedText)'")
+        await control("/__fake/blocked-network?on=0")
+
         // 9. Put everything back.
         await signIn(life: 3600)
         keeper.attemptTimeout = 25

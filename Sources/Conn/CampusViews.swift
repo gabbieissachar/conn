@@ -30,6 +30,7 @@ struct CampusSection: View {
 
     var body: some View {
         let expired = campus.link == .expired
+        let blocked = campus.link == .blocked
         return VStack(spacing: 0) {
             header
             ScrollView {
@@ -38,10 +39,11 @@ struct CampusSection: View {
                     case .starting where campus.conversations.isEmpty: starting
                     default:
                         if expired { expiredNote }
+                        if blocked { CampusBlockedNote(onTryAgain: { app.retryCampus() }, id: "campus-blocked-note", button: "campus-tryagain") }
                         // The silent refresh could not finish on its own: the session still works, but only a sign-in will keep it going.
                         if !expired, campus.link == .live, let keeper = app.campusKeeper { CampusRenewNote(keeper: keeper) }
                         if case .unreachable(let why) = campus.link { note(title: "Campus is not reachable", text: why, error: true, signIn: true) }
-                        if !(expired && campus.conversations.isEmpty) { content(dim: expired) }
+                        if !((expired || blocked) && campus.conversations.isEmpty) { content(dim: expired) }
                     }
                 }
                 .padding(.horizontal, 6).padding(.bottom, 6)
@@ -63,6 +65,7 @@ struct CampusSection: View {
             case .starting: ProgressView().controlSize(.mini); Text("starting…").font(.system(size: 11)).foregroundStyle(.tertiary)
             case .expired: Text("signed out").font(.system(size: 11)).foregroundStyle(AgentState.blocked.color)
             case .unreachable: Text("offline").font(.system(size: 11)).foregroundStyle(.tertiary)
+            case .blocked: Text("blocked").font(.system(size: 11)).foregroundStyle(AgentState.blocked.color)
             default:
                 let asks = campus.asks.count
                 if asks > 0 { Text("\(asks) ask\(asks == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(AgentState.blocked.color); Text("·").font(.system(size: 11)).foregroundStyle(.tertiary) }
@@ -182,6 +185,32 @@ struct CampusSection: View {
     }
 }
 
+/// "Campus refused the connection": the network answered, not Campus (nginx's 403 page, off the company private network). Says so, says what to check, and offers
+/// Try again (never Sign in: the sign-in is not the problem). Used in the sidebar and, bigger, over the sign-in sheet's web view.
+struct CampusBlockedNote: View {
+    let onTryAgain: () -> Void
+    let id: String
+    let button: String
+    var roomy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: roomy ? 10 : 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "network.slash").font(.system(size: roomy ? 15 : 11, weight: .semibold)).foregroundStyle(AgentState.blocked.color)
+                Text(CampusNetworkBlock.title).font(.system(size: roomy ? 14 : 12, weight: .semibold))
+            }
+            Text(CampusNetworkBlock.note).font(.system(size: roomy ? 12.5 : 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button("Try again", action: onTryAgain).controlSize(roomy ? .regular : .small).accessibilityIdentifier(button)
+        }
+        .padding(roomy ? 16 : 10).frame(maxWidth: roomy ? 420 : .infinity, alignment: .leading)
+        .background(AgentState.blocked.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AgentState.blocked.color.opacity(0.35)))
+        .padding(.horizontal, roomy ? 0 : 4).padding(.vertical, roomy ? 0 : 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(id)
+    }
+}
+
 /// "Campus: sign in again": the hidden attempt to renew the session ran into a page that needs the person (Google waiting for a click or an account, Campus's own
 /// login page), so Conn stopped. The session still works until it ends; the normal Sign in action is the way on.
 struct CampusRenewNote: View {
@@ -234,6 +263,36 @@ struct CampusSessionSettingsSection: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
+}
+
+/// Settings: when the network last refused Campus. Campus answers only on the company private network; the log (Application Support, Conn, campus, sign-in-hops.log) holds the
+/// sign-in sheet's hops as time, host, path and status, never a query, a cookie or a token.
+struct CampusConnectionSettingsSection: View {
+    @ObservedObject var campus: CampusStore
+    let hops: CampusHopLog?
+    @State private var logged: Date?
+
+    static func blockedText(link: CampusLink, thisRun: Date?, logged: Date?) -> String {
+        if link == .blocked { return "now" + (thisRun.map { " (since \(CampusTime.stamp($0)))" } ?? "") }
+        guard let last = [thisRun, logged].compactMap({ $0 }).max() else { return "never" }
+        return CampusTime.stamp(last)
+    }
+
+    var body: some View {
+        Section("Campus connection") {
+            HStack {
+                Text("Last blocked by the network")
+                Spacer()
+                Text(Self.blockedText(link: campus.link, thisRun: campus.lastBlockedAt, logged: logged)).foregroundStyle(.secondary).accessibilityIdentifier("campus-last-blocked")
+            }
+            Text("Campus answers only on the company private network (Zscaler private access). Off it, a public address answers every request with an nginx \"403 Forbidden\" page. Conn calls that blocked, not signed out: the CAMPUS section and the sign-in sheet say to check Zscaler and offer Try again. Each hop of the sign-in sheet is logged (Application Support, Conn, campus, sign-in-hops.log) as time, host, path and status only.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { reload() }
+        .onChange(of: campus.link) { _, _ in reload() }
+    }
+
+    private func reload() { logged = campus.baseURL.host.flatMap { hops?.lastBlocked(campusHost: $0) } }
 }
 
 private struct CampusContentHeight: PreferenceKey {
@@ -309,7 +368,7 @@ private struct CampusStatusInner: View {
                     Text(text)
                 }
             }
-            .buttonStyle(.plain).help(campus.link == .expired ? "Sign in to Campus" : "Campus link")
+            .buttonStyle(.plain).help(campus.link == .expired ? "Sign in to Campus" : campus.link == .blocked ? CampusNetworkBlock.note : "Campus link")
             .accessibilityIdentifier("campus-status")
             if campus.link == .live {
                 Button { if campus.writesEnabled { app.disableCampusWrites() } else { app.requestCampusWrites() } } label: {
@@ -327,7 +386,7 @@ private struct CampusStatusInner: View {
         switch campus.link {
         case .live: return AgentState.done.color
         case .starting: return .yellow
-        case .expired: return AgentState.blocked.color
+        case .expired, .blocked: return AgentState.blocked.color
         default: return .gray
         }
     }
@@ -338,6 +397,7 @@ private struct CampusStatusInner: View {
         case .starting: return "Campus · starting…"
         case .expired: return "Campus · signed out"
         case .unreachable: return "Campus · offline"
+        case .blocked: return "Campus · blocked by the network"
         case .disabled: return ""
         }
     }
@@ -360,7 +420,7 @@ struct CampusSignInSheet: View {
             }
             .padding(.horizontal, 14).frame(height: 40)
             Divider()
-            if let auth = app.campusAuth { CampusSignInWeb(web: auth.signInView).frame(minWidth: 520, minHeight: 560) }
+            if let auth = app.campusAuth { CampusSignInBody(auth: auth) }
             Divider()
             HStack {
                 Text("Conn never sees your password. The sign-in cookie stays inside this web view.").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -380,6 +440,32 @@ struct CampusSignInSheet: View {
     }
 }
 
+/// The sheet's page: Conn's web view on Campus's login, or, when the network refused Campus's host, the same message the sidebar shows with a Try again, in place of nginx's raw page.
+private struct CampusSignInBody: View {
+    @ObservedObject var auth: CampusWebAuth
+
+    var body: some View {
+        ZStack {
+            CampusSignInWeb(web: auth.signInView)
+            if auth.signInRefused {
+                CampusBlockedSheetCard(onTryAgain: { auth.retrySignIn() })
+            }
+        }
+        .frame(minWidth: 520, minHeight: 560)
+    }
+}
+
+/// What the sheet shows over its web view when the network refused Campus's host: the same card on the window's own background. Shared by the sheet and the check's picture.
+struct CampusBlockedSheetCard: View {
+    let onTryAgain: () -> Void
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            CampusBlockedNote(onTryAgain: onTryAgain, id: "campus-blocked-sheet", button: "campus-signin-tryagain", roomy: true).padding(24)
+        }
+    }
+}
+
 /// Settings (Conn > Settings, Cmd+,): the "Campus writes" switch, the second place it lives beside the status bar.
 struct CampusSettingsView: View {
     @EnvironmentObject var app: AppModel
@@ -394,6 +480,7 @@ struct CampusSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if campus.link == .disabled { Text("Campus is not part of this launch.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            CampusConnectionSettingsSection(campus: campus, hops: app.campusHops)
             if let k = app.campusKeeper { CampusSessionSettingsSection(keeper: k) }
             if let b = app.campusBridge { BridgeSettingsSection(bridge: b) }
             Section("Starred conversations") {

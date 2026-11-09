@@ -33,6 +33,9 @@ enum CampusCheck {
         model.mode = savedMode == .editor ? .herdr : savedMode
         model.showWeb = true; model.webTab = .reader
 
+        // 0. A launch behind a blocked network (`--campus-blocked-network`): the blocked note, then the stand-in is let through and the rest runs as a normal launch.
+        if await standInBlocked(base) { await blockedLaunchChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot) }
+
         // 1. Signed out: the section says so and lists nothing; the status bar says so.
         _ = await until(15) { campus.link == .expired }
         report("Campus: before the first sign-in the link is signed out with no rows and no 'as of' time",
@@ -158,7 +161,7 @@ enum CampusCheck {
         model.closeCampusSignIn()
         report("Campus: signing in again brings the list back live", again, "link=\(campus.link)")
 
-        await signedOutChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
+        await blockedChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
 
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
@@ -318,61 +321,129 @@ enum CampusCheck {
         return String(text.dropFirst().dropLast())
     }
 
-    // MARK: 403 when signed out
+    // MARK: a 403 is the network, not a sign-out
 
-    /// Real Campus answers 403 (not 401) to a person who is not signed in. The stand-in answers either; this flips it to 403 and back to what the launch had
-    /// (`--campus-signed-out-403` starts it on 403, which makes the very first step above the "never signed in with a 403" case).
-    static func signedOutChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
-                                control: (String) async -> Void, js: (WKWebView, String) async -> String, shot: (String) async -> Void) async {
+    /// What the stand-in answers now: nginx's 403 page on every path (the way the real Campus is off the company private network), or itself.
+    static func standInBlocked(_ base: URL) async -> Bool {
+        guard let u = URL(string: "/__fake/blocked-network", relativeTo: base), let (d, _) = try? await URLSession.shared.data(from: u) else { return false }
+        return CampusJSON.parse(d)?["on"].bool ?? false
+    }
+
+    /// A launch with `--campus-blocked-network`: nobody has signed in, and the network refuses. The sidebar must say it is the network (Try again), never "Sign in".
+    /// Then the stand-in is let through and the launch carries on as a normal one.
+    static func blockedLaunchChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                                    control: (String) async -> Void, shot: (String) async -> Void) async {
+        let campus = model.campus
+        let blocked = await until(20) { campus.link == .blocked }
+        var asked = false
+        if case .expired = campus.link { asked = true }
+        report("Campus: a launch behind a blocked network (nginx's 403 page on every path) is 'blocked', not signed out: no Sign in note, no rows, no 'as of' time, no asks",
+               blocked && !asked && campus.conversations.isEmpty && campus.asOf == nil && campus.asks.isEmpty && campus.lastBlockedAt != nil,
+               "link=\(campus.link) rows=\(campus.conversations.count)")
+        report("Campus: the blocked note says it is the network and not the sign-in, names Zscaler, and offers Try again",
+               CampusNetworkBlock.title == "Campus refused the connection" && CampusNetworkBlock.note.contains("not your sign-in") && CampusNetworkBlock.note.contains("Zscaler") && CampusNetworkBlock.note.contains("try again"), CampusNetworkBlock.note)
+        await wait(0.6)
+        await shot("campus-0-blocked-launch.png")
+        await control("/__fake/blocked-network?on=0")
+        model.retryCampus()
+        let back = await until(15) { campus.link == .expired }
+        report("Campus: Try again, with the network answering again, finds the plain signed-out state (the sign-in is what is left to do)", back, "link=\(campus.link)")
+    }
+
+    /// The network refusing a signed-in Campus, and a sign-in sheet meeting the refusal: the rows stay, nothing is called a sign-out or "not reachable", the sidebar says
+    /// network and offers Try again, the sheet says the same instead of nginx's raw page and logs each hop, and Try again recovers once the stand-in answers again.
+    static func blockedChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                              control: (String) async -> Void, js: (WKWebView, String) async -> String, shot: (String) async -> Void) async {
         let campus = model.campus
         guard let auth = model.campusAuth else { return }
-        func current() async -> Int {
-            guard let u = URL(string: "/__fake/signed-out-status", relativeTo: campus.baseURL), let (d, _) = try? await URLSession.shared.data(from: u) else { return 401 }
-            return CampusJSON.parse(d)?["code"].int ?? 401
-        }
-        func signIn() async {
-            model.signInToCampus()
-            _ = await until(10) { auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading }
-            _ = await js(auth.signInView, "document.getElementById('go').click(); 'ok'")
-            _ = await until(10) { auth.signInView.url?.path == "/campus/login/ok" && !auth.signInView.isLoading }
-            campus.kick()
-            _ = await until(15) { campus.link == .live }
-            model.closeCampusSignIn()
-        }
-        let launchCode = await current()
+        let host = campus.baseURL.host ?? ""
         let rowsBefore = campus.conversations.count
         let asOfBefore = campus.asOf
+        if campus.link != .live { report("Campus: the blocked-network checks need a live Campus", false, "link=\(campus.link)"); return }
 
-        // A 403 to a signed-out person is the signed-out state: the rows stay, nothing is called "not reachable", and the sidebar offers Sign in.
-        await control("/__fake/signed-out-status?code=403")
-        await control("/__fake/expire")
+        // 1. The network refuses: not a sign-out, not 'not reachable'; the rows stay, nothing is counted as an ask, the refusal is logged and remembered.
+        await control("/__fake/blocked-network?on=1")
         campus.kick()
-        let signedOut = await until(12) { campus.link == .expired }
-        var unreachable = false
-        if case .unreachable = campus.link { unreachable = true }
-        report("Campus: a 403 answer to a signed-out person is the signed-out state (rows kept, 'as of' kept, no asks counted), not 'not reachable'",
-               signedOut && !unreachable && campus.conversations.count == rowsBefore && campus.asOf != nil && campus.asOf! >= asOfBefore! && campus.asks.isEmpty,
-               "link=\(campus.link) rows=\(campus.conversations.count) asOf=\(campus.asOf != nil ? "kept" : "gone")")
-        await wait(0.5)
-        await shot("campus-9b-expired-403.png")
-        await signIn()
-        report("Campus: signing in after a 403 brings the list back live", campus.link == .live && campus.conversations.count == rowsBefore, "link=\(campus.link)")
+        let blocked = await until(15) { campus.link == .blocked }
+        var wrong = false
+        switch campus.link { case .expired, .unreachable: wrong = true; default: break }
+        let loggedBlock = model.campusHops?.lastBlocked(campusHost: host)
+        report("Campus: nginx's 403 page is the blocked state (rows kept, 'as of' kept, no asks counted, the time remembered and logged), not a sign-out and not 'not reachable'",
+               blocked && !wrong && campus.conversations.count == rowsBefore && campus.asOf != nil && asOfBefore != nil && campus.asOf! >= asOfBefore! && campus.asks.isEmpty && campus.lastBlockedAt != nil && loggedBlock != nil,
+               "link=\(campus.link) rows=\(campus.conversations.count) lastBlocked=\(campus.lastBlockedAt != nil) logged=\(loggedBlock != nil)")
+        await wait(0.6)
+        await shot("campus-9b-blocked.png")
+        let settingsText = CampusConnectionSettingsSection.blockedText(link: campus.link, thisRun: campus.lastBlockedAt, logged: loggedBlock)
+        report("Campus: Settings says the network is blocking Campus now, since when", settingsText.hasPrefix("now (since "), settingsText)
 
-        // A 403 that names a missing module is a named error, not a sign-out; the not-reachable note it lands in offers Sign in too.
+        // 2. The sign-in sheet meets the refusal: not the raw page, the same message with Try again; each hop is logged without a query, cookie or token.
+        let hopsBefore = model.campusHops?.recent(1000).count ?? 0
+        model.signInToCampus()
+        let shown = await until(5) { model.campusSignInShown }
+        let refused = await until(15) { auth.signInRefused }
+        let page = await js(auth.signInView, "document.body ? document.body.innerText : ''")
+        let hops = Array((model.campusHops?.recent(1000) ?? []).dropFirst(hopsBefore)).filter { $0.source == "sign-in" }
+        let hopFile = (try? String(contentsOf: model.campusHops!.file, encoding: .utf8)) ?? ""
+        report("Campus: a sign-in sheet that meets nginx's 403 page shows the network message with Try again, never the raw page",
+               shown && refused && !page.contains("403 Forbidden") && !page.contains("nginx"), "shown=\(shown) refused=\(refused) page='\(page.prefix(40))'")
+        report("Campus: each sign-in hop is logged as time, host, path and status (here the 403 on /campus/login), with no query, cookie or token",
+               hops.contains { $0.host == host && $0.path == "/campus/login" && $0.status == 403 } && !hopFile.contains("?") && !hopFile.contains("campus_session") && !hopFile.contains("eyJ"),
+               "hops=\(hops.map { "\($0.path) \($0.status)" })")
+        await wait(0.6)
+        await shot("campus-9c-blocked-sheet.png")
+        // The sheet is its own window, which the window picture does not include: draw its message card (the very view the sheet shows) in light and dark.
+        if let dir = ProcessInfo.processInfo.environment["CONN_UI_CHECK_SHOT_DIR"].map({ URL(fileURLWithPath: $0) }) {
+            for scheme in [ColorScheme.light, .dark] {
+                let r = ImageRenderer(content: CampusBlockedSheetCard(onTryAgain: {}).frame(width: 560, height: 360).environment(\.colorScheme, scheme))
+                r.scale = 2
+                if let img = r.nsImage, let tiff = img.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent("campus-9c-blocked-sheet-card-\(scheme == .dark ? "dark" : "light").png"))
+                }
+            }
+        }
+
+        // 3. Try again in the sheet, with the network answering again, loads the login page.
+        await control("/__fake/blocked-network?on=0")
+        auth.retrySignIn()
+        let login = await until(15) { auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading && !auth.signInRefused }
+        report("Campus: Try again in the sheet, once the network answers, loads Campus's sign-in page and takes the message away", login, "url=\(auth.signInView.url?.path ?? "nil") refused=\(auth.signInRefused)")
+        model.closeCampusSignIn()
+
+        // 4. Try again in the sidebar recovers by itself: the same rows, live.
+        let back = await until(20) { campus.link == .live && campus.conversations.count == rowsBefore }
+        if !back { model.retryCampus() }
+        var live = back
+        if !live { live = await until(15) { campus.link == .live && campus.conversations.count == rowsBefore } }
+        report("Campus: once the network answers again the list is live again with the same rows", live, "link=\(campus.link) rows=\(campus.conversations.count)")
+        report("Campus: Settings then says when the network last blocked Campus", CampusConnectionSettingsSection.blockedText(link: campus.link, thisRun: campus.lastBlockedAt, logged: model.campusHops?.lastBlocked(campusHost: host)) != "never", "")
+
+        // 5. A 403 that names a missing module is a named error (not the network, not a sign-out); the not-reachable note it lands in offers Sign in too.
         await control("/__fake/module-required?on=1")
         campus.kick()
         let named = await until(12) { if case .unreachable = campus.link { return true }; return false }
         var why = ""
         if case .unreachable(let w) = campus.link { why = w }
-        report("Campus: a 403 module_required is a named error (not a sign-out): the note says which module is missing", named && campus.link != .expired && why.contains("workspace module") && why.contains("module_required"), "link=\(campus.link)")
+        report("Campus: a 403 module_required is a named error (not the network, not a sign-out): the note says which module is missing", named && campus.link != .expired && campus.link != .blocked && why.contains("workspace module") && why.contains("module_required"), "link=\(campus.link)")
         await wait(0.5)
-        await shot("campus-9c-module-required.png")
+        await shot("campus-9d-module-required.png")
         await control("/__fake/module-required?on=0")
         campus.kick()
         let healed = await until(15) { campus.link == .live }
         report("Campus: once the module is back the list is live again", healed, "link=\(campus.link)")
-        await control("/__fake/signed-out-status?code=\(launchCode)")
-        report("Campus: the stand-in is left answering what the launch had when signed out", await current() == launchCode, "code=\(launchCode)")
+
+        // 6. A real sign-out (401) is still a sign-out.
+        await control("/__fake/expire")
+        campus.kick()
+        let signedOut = await until(12) { campus.link == .expired }
+        report("Campus: a 401 is still the signed-out state (rows kept), and signing in brings the list back live", signedOut && campus.conversations.count == rowsBefore && campus.asks.isEmpty, "link=\(campus.link)")
+        model.signInToCampus()
+        _ = await until(10) { auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading }
+        _ = await js(auth.signInView, "document.getElementById('go').click(); 'ok'")
+        _ = await until(10) { auth.signInView.url?.path == "/campus/login/ok" && !auth.signInView.isLoading }
+        campus.kick()
+        let signedIn = await until(15) { campus.link == .live }
+        model.closeCampusSignIn()
+        report("Campus: signing in after a 401 brings the list back live", signedIn && campus.conversations.count == rowsBefore, "link=\(campus.link)")
     }
 
     // MARK: Watch

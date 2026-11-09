@@ -26,6 +26,10 @@ public final class CampusStore: ObservableObject {
     /// When the rows were last known to be true: the last good answer or frame.
     @Published public private(set) var asOf: Date?
     @Published public private(set) var streamLive = false
+    /// When the network last began refusing Campus in this run (`CampusLink.blocked`); nil until it does.
+    @Published public private(set) var lastBlockedAt: Date?
+    /// Called each time the link turns blocked from some other state (the app logs it).
+    public var onBlocked: ((Date) -> Void)?
 
     // Slice 2: writes (CampusWrites.swift). Off at every launch: nothing is sent to Campus until the person turns this on.
     /// The "Campus writes" switch (C7). Turning it off while a write waits in its undo window takes that write back.
@@ -106,7 +110,7 @@ public final class CampusStore: ObservableObject {
             switch link {
             case .live: wait = streamLive ? streamPollInterval : pollInterval
             case .starting, .expired: wait = retryInterval
-            case .unreachable: wait = retryInterval * 2
+            case .unreachable, .blocked: wait = retryInterval * 2
             case .disabled: wait = 3600
             }
             var slept: TimeInterval = 0
@@ -118,7 +122,7 @@ public final class CampusStore: ObservableObject {
         var backoff: TimeInterval = 0.5
         while !Task.isCancelled {
             guard let auth = auth else { return }
-            if link == .expired || link == .starting && refreshCount == 0 { try? await Task.sleep(nanoseconds: 100_000_000); continue }
+            if link == .expired || link == .blocked || link == .starting && refreshCount == 0 { try? await Task.sleep(nanoseconds: 100_000_000); continue }
             lastBytes = now()
             var reader = CampusSSEReader()
             let watchdog = Task { [weak self] in
@@ -128,7 +132,8 @@ public final class CampusStore: ObservableObject {
                     if self.now().timeIntervalSince(self.lastBytes) > self.streamIdleLimit { auth.closeEventStream(); return }
                 }
             }
-            // A 403 on the stream is a sign-out too, unless its body names a module refusal; the body arrives with the close, so the 403 waits for it.
+            // A 403 on the stream is the network refusing the connection unless its body is Campus's own JSON error (a module refusal or another named error); the body
+            // arrives with the close, so the 403 waits for it. Never a sign-out.
             var refused403 = false
             for await ev in auth.openEventStream() {
                 if Task.isCancelled { break }
@@ -144,7 +149,7 @@ public final class CampusStore: ObservableObject {
                     lastBytes = now()
                     for f in reader.feed(t) { handle(f) }
                 case .closed(let why):
-                    if refused403, why?.contains("module_required") != true { setExpired() }
+                    if refused403, why?.contains("module_required") != true, why?.contains(" json") != true { setBlocked() }
                     refused403 = false
                 }
             }
@@ -170,6 +175,7 @@ public final class CampusStore: ObservableObject {
         refreshCount += 1
         switch await client.spaces() {
         case .unauthorized: setExpired(); return
+        case .blocked: setBlocked(); return
         case .starting: link = .starting; return
         case .failed(let why):
             if conversations.isEmpty && link != .expired { link = .unreachable(why) } else if link == .live { link = .unreachable(why) }
@@ -181,6 +187,7 @@ public final class CampusStore: ObservableObject {
         for s in spaces {
             switch await client.conversations(in: s) {
             case .unauthorized: setExpired(); return
+            case .blocked: setBlocked(); return
             case .starting: link = .starting; return
             case .failed: failedSpaces.insert(s.id)
             case .ok(let list): for c in list { next[c.id] = merged(c) }
@@ -190,6 +197,7 @@ public final class CampusStore: ObservableObject {
         for a in starAddresses.prefix(CampusStarList.limit) where next[a.id] == nil && !failedSpaces.contains(a.spaceID) {
             switch await client.conversation(kind: a.kind, folder: a.folder, id: a.id) {
             case .unauthorized: setExpired(); return
+            case .blocked: setBlocked(); return
             case .starting: link = .starting; return
             case .failed: continue
             case .ok(var c):
@@ -217,6 +225,7 @@ public final class CampusStore: ObservableObject {
     }
 
     func markExpired() { setExpired() }
+    func markBlocked() { setBlocked() }
     /// A conversation's title as Campus now has it (the agent bridge renames the threads it starts).
     func setTitle(_ id: String, _ title: String) { conversations[id]?.title = title }
     func requestStatus(_ id: String) { scheduleStatus(id) }
@@ -226,6 +235,17 @@ public final class CampusStore: ObservableObject {
         link = .expired
         streamLive = false
         auth?.closeEventStream()
+    }
+
+    /// The network refused the connection (a 403 that is not Campus's own JSON error). The last rows stay; the link is not a sign-out, and signing in does not help.
+    private func setBlocked() {
+        guard link != .blocked else { return }
+        let t = now()
+        lastBlockedAt = t
+        link = .blocked
+        streamLive = false
+        auth?.closeEventStream()
+        onBlocked?(t)
     }
 
     private func loadForm(_ c: CampusConversation) async {
@@ -322,6 +342,7 @@ public final class CampusStore: ObservableObject {
                 conversations[id]?.agent = detail.agent; conversations[id]?.model = detail.model
             }
         case .unauthorized: setExpired()
+        case .blocked: setBlocked()
         case .starting: link = .starting
         case .failed: break
         }
@@ -372,6 +393,7 @@ public final class CampusStore: ObservableObject {
         switch await client.status(of: c) {
         case .ok(let st): applyStatus(id, st)
         case .unauthorized: setExpired()
+        case .blocked: setBlocked()
         default: break
         }
     }

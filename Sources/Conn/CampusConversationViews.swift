@@ -348,6 +348,7 @@ struct CampusTranscriptView: View {
         case .live: return ("live", AgentState.done.color)
         case .starting: return ("starting", .yellow)
         case .expired: return ("signed out", AgentState.blocked.color)
+        case .blocked: return ("blocked", AgentState.blocked.color)
         default: return ("offline", .gray)
         }
     }
@@ -532,7 +533,7 @@ struct CampusComposer: View {
                         Button("Open in web") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
                     }
                 } else if campus.link != .live {
-                    Label(campus.link == .expired ? "Signed out of Campus: sign in to send" : "Campus is not reachable", systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Color.orange)
+                    Label(campus.link == .expired ? "Signed out of Campus: sign in to send" : campus.link == .blocked ? "Campus refused the connection: check Zscaler, then try again" : "Campus is not reachable", systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Color.orange)
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     TextField(placeholder, text: $text, axis: .vertical)

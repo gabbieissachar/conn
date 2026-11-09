@@ -25,12 +25,17 @@ public struct CampusReply: Equatable, Sendable {
     /// `403 {"error":"module_required","module":"ide"}`: the person is signed in, but the account lacks a module this call needs. A named refusal, not a sign-out.
     public var moduleRequired: Bool { status == 403 && CampusJSON.parse(body)?["error"].string == "module_required" }
 
-    /// The sign-in is gone: a redirect to the login page, 401, or 403. Campus answers 403 (not 401) to a person who is not signed in,
-    /// and its own keep-alive stops on either, so Conn reads them the same way. Only a module refusal is a 403 that is not a sign-out.
-    public var signedOut: Bool { loginRedirect || status == 401 || (status == 403 && !moduleRequired) }
+    /// A 403 whose body is not Campus's own JSON error (an HTML page, empty): not Campus answering at all. Campus answers through a private network (Zscaler
+    /// private access); off it, a public ingress refuses every path with an nginx `403 Forbidden` page. It says nothing about the person's sign-in.
+    public var blockedByNetwork: Bool { status == 403 && CampusJSON.parse(body)?.object == nil }
+
+    /// The sign-in is gone: a redirect to the login page, or 401. A 403 is never a sign-out: it is `moduleRequired` (signed in, a module missing), `blockedByNetwork`
+    /// (the network refused the connection), or another JSON refusal that keeps its own text.
+    public var signedOut: Bool { loginRedirect || status == 401 }
 
     /// What a refused or failed answer says to the person.
     public var failureText: String {
+        if blockedByNetwork { return CampusNetworkBlock.short }
         guard moduleRequired else { return "Campus answered \(status)" }
         let name = CampusJSON.parse(body)?["module"].string.flatMap { $0.isEmpty ? nil : $0 }
         return "Signed in, but this Campus account does not have \(name.map { "the \($0) module" } ?? "a module") this needs (403 module_required)"
@@ -63,8 +68,10 @@ public protocol CampusAuth: AnyObject {
 /// What a read of Campus came to.
 public enum CampusFetch<T> {
     case ok(T)
-    /// 401, 403 (not a module refusal) or a redirect to the login: the sign-in is gone.
+    /// 401 or a redirect to the login: the sign-in is gone.
     case unauthorized
+    /// A 403 that is not Campus's own JSON error: the network refused the connection (`CampusNetworkBlock`).
+    case blocked
     /// `503 {"error":"opencode_starting"}`: the person's Instance is booting.
     case starting
     case failed(String)
@@ -97,6 +104,7 @@ public struct CampusClient {
     func fetch<T>(_ r: CampusRequest, _ read: (Data) -> T?) async -> CampusFetch<T> {
         guard let reply = await auth.perform(r) else { return .failed("Campus did not answer") }
         if reply.signedOut { return .unauthorized }
+        if reply.blockedByNetwork { return .blocked }
         if reply.status == 503, CampusJSON.parse(reply.body)?["error"].string == "opencode_starting" { return .starting }
         guard (200..<300).contains(reply.status) else { return .failed(reply.failureText) }
         guard let v = read(reply.body) else { return .failed("Campus answered something Conn does not know") }

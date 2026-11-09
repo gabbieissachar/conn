@@ -169,6 +169,7 @@ public final class BridgeEngine: ObservableObject {
         switch store.link {
         case .live: break
         case .expired: return finish(c, .init(.signedOut, thread: c.thread, reason: "Campus is signed out: sign in in Conn"))
+        case .blocked: return finish(c, .init(.failed, thread: c.thread, reason: CampusNetworkBlock.short))
         case .starting: return finish(c, .init(.failed, thread: c.thread, reason: "Campus is starting the person's workspace: try again in a minute"))
         case .unreachable(let why): return finish(c, .init(.failed, thread: c.thread, reason: "Campus is not reachable: \(why)"))
         case .disabled: return finish(c, .init(.failed, thread: c.thread, reason: "Campus is not part of this Conn"))
@@ -197,6 +198,7 @@ public final class BridgeEngine: ObservableObject {
         let reply = await client.auth.perform(CampusClient.createRequest(in: space, text: text, key: c.requestID, agent: cmd.agent ?? BridgeCommand.defaultAgent))
         guard let r = reply else { return finish(c, .init(.failed, reason: "Campus did not answer")) }
         if r.signedOut { store.markExpired(); return finish(c, .init(.signedOut, reason: "Campus is signed out: sign in in Conn")) }
+        if r.blockedByNetwork { store.markBlocked(); return finish(c, .init(.failed, reason: CampusNetworkBlock.short)) }
         guard (200..<300).contains(r.status) else { return finish(c, .init(.failed, reason: r.failureText)) }
         guard let made = CampusConversation.parseCreated(r.body, space: space) else { return finish(c, .init(.failed, reason: "shape: Campus answered a start with something Conn does not know; no thread id was read")) }
         let addr = CampusAddress(made)
@@ -238,6 +240,7 @@ public final class BridgeEngine: ObservableObject {
             let baseline = await latestAssistant(conv, client: client)?.id
             guard let r = await client.auth.perform(CampusClient.answerRequest(conv, form: form, answers: answers)) else { return finish(c, .init(.failed, thread: id, reason: "Campus did not answer")) }
             if r.signedOut { store.markExpired(); return finish(c, .init(.signedOut, thread: id, reason: "Campus is signed out: sign in in Conn")) }
+            if r.blockedByNetwork { store.markBlocked(); return finish(c, .init(.failed, thread: id, reason: CampusNetworkBlock.short)) }
             guard (200..<300).contains(r.status) else { return finish(c, .init(.failed, thread: id, reason: r.failureText)) }
             finish(c, await awaitRun(conv, baseline: baseline, sent: true))
         case .idle, .unknown:
@@ -246,6 +249,7 @@ public final class BridgeEngine: ObservableObject {
             let baseline = await latestAssistant(conv, client: client)?.id
             guard let r = await client.auth.perform(CampusClient.promptRequest(conv, text: cmd.text, delivery: nil)) else { return finish(c, .init(.failed, thread: id, reason: "Campus did not answer")) }
             if r.signedOut { store.markExpired(); return finish(c, .init(.signedOut, thread: id, reason: "Campus is signed out: sign in in Conn")) }
+            if r.blockedByNetwork { store.markBlocked(); return finish(c, .init(.failed, thread: id, reason: CampusNetworkBlock.short)) }
             guard (200..<300).contains(r.status) else { return finish(c, .init(.failed, thread: id, reason: r.failureText)) }
             finish(c, await awaitRun(conv, baseline: baseline, sent: true))
         }
@@ -272,6 +276,7 @@ public final class BridgeEngine: ObservableObject {
             if !enabled { return .init(.failed, thread: conv.id, url: url(conv), reason: "the Agent bridge was switched off while this request waited") }
             switch await client.status(of: conv) {
             case .unauthorized: store.markExpired(); return .init(.signedOut, thread: conv.id, url: url(conv), reason: "Campus is signed out: sign in in Conn")
+            case .blocked: store.markBlocked(); return .init(.failed, thread: conv.id, url: url(conv), reason: CampusNetworkBlock.short)
             case .starting, .failed:
                 errors += 1
                 if errors >= 4 { return .init(.failed, thread: conv.id, url: url(conv), reason: "Campus stopped answering while the thread was running") }
@@ -341,7 +346,11 @@ public final class BridgeEngine: ObservableObject {
     private func url(_ c: CampusConversation) -> String? { store.webURL(for: c)?.absoluteString }
 
     private func signedOutOrFailed(_ id: String) -> BridgeReply {
-        store.link == .expired ? .init(.signedOut, thread: id, reason: "Campus is signed out: sign in in Conn") : .init(.failed, thread: id, reason: "Campus did not answer")
+        switch store.link {
+        case .expired: return .init(.signedOut, thread: id, reason: "Campus is signed out: sign in in Conn")
+        case .blocked: return .init(.failed, thread: id, reason: CampusNetworkBlock.short)
+        default: return .init(.failed, thread: id, reason: "Campus did not answer")
+        }
     }
 
     /// Write the answer, hand the record back, record the use.
@@ -377,6 +386,7 @@ extension CampusFetch {
         switch self {
         case .ok(let v): return v
         case .unauthorized: store.markExpired(); return nil
+        case .blocked: store.markBlocked(); return nil
         default: return nil
         }
     }

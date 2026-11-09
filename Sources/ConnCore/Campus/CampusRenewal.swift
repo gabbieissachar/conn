@@ -18,6 +18,8 @@ public enum CampusRenewalOutcome: String, Codable, Equatable, Sendable {
     case timeout = "time-out"
     /// The load failed.
     case error
+    /// Campus's sign-in path answered a 403 (the network refused the connection: off the company private network). Not a page that needs the person, so not "sign in again".
+    case blocked
 
     /// The words Settings uses.
     public var label: String {
@@ -26,6 +28,7 @@ public enum CampusRenewalOutcome: String, Codable, Equatable, Sendable {
         case .needsSignIn: return "needs sign-in"
         case .timeout: return "timed out"
         case .error: return "failed"
+        case .blocked: return "blocked by the network"
         }
     }
 }
@@ -53,7 +56,8 @@ public enum CampusRenewalRules {
     /// What the attempt came to. `settled` is the page the hidden view stood still on (nil: it never settled).
     /// Success needs all of: it failed to load nowhere, it did not run out of time, it stood on Campus (not its login page, not another site) and the session
     /// now ends later than it did.
-    public static func outcome(settled: CampusRenewalPage?, timedOut: Bool, failed: Bool, oldExpiry: Date?, newExpiry: Date?) -> CampusRenewalOutcome {
+    public static func outcome(settled: CampusRenewalPage?, timedOut: Bool, failed: Bool, blocked: Bool = false, oldExpiry: Date?, newExpiry: Date?) -> CampusRenewalOutcome {
+        if blocked { return .blocked }
         if failed { return .error }
         if timedOut { return .timeout }
         switch settled {
@@ -100,7 +104,7 @@ public struct CampusRenewalPlanner: Equatable, Sendable {
     public var lead: TimeInterval = 300
     /// Seconds before another try after a time-out or a failed load.
     public var retryAfter: TimeInterval = 60
-    /// Time-outs and failed loads allowed for one expiry; a needs-sign-in answer is never tried again for the same expiry.
+    /// Time-outs, blocked answers and failed loads allowed for one expiry; a needs-sign-in answer is never tried again for the same expiry.
     public var maxAttempts = 3
     public init(lead: TimeInterval = 300, retryAfter: TimeInterval = 60, maxAttempts: Int = 3) { self.lead = lead; self.retryAfter = retryAfter; self.maxAttempts = maxAttempts }
 
@@ -168,7 +172,9 @@ public struct CampusRenewalResult: Equatable, Sendable {
     public var settled: CampusRenewalPage?
     public var timedOut: Bool
     public var failed: Bool
-    public init(settled: CampusRenewalPage? = nil, timedOut: Bool = false, failed: Bool = false) { self.settled = settled; self.timedOut = timedOut; self.failed = failed }
+    /// The sign-in path answered 403: the network refused the connection (a 403 page is never read as "sign in again").
+    public var blocked: Bool
+    public init(settled: CampusRenewalPage? = nil, timedOut: Bool = false, failed: Bool = false, blocked: Bool = false) { self.settled = settled; self.timedOut = timedOut; self.failed = failed; self.blocked = blocked }
 }
 
 /// The web side of the refresh: the session's expiry as the cookie store has it, and one hidden attempt. An implementation never clicks, types, injects script
@@ -265,7 +271,7 @@ public final class CampusSessionKeeper: ObservableObject {
         let old = await renewer.sessionExpiry()
         let result = await renewer.attemptRenewal(timeout: attemptTimeout)
         let new = await renewer.sessionExpiry()
-        let outcome = CampusRenewalRules.outcome(settled: result.settled, timedOut: result.timedOut, failed: result.failed, oldExpiry: old, newExpiry: new)
+        let outcome = CampusRenewalRules.outcome(settled: result.settled, timedOut: result.timedOut, failed: result.failed, blocked: result.blocked, oldExpiry: old, newExpiry: new)
         let a = CampusRenewalAttempt(at: now(), oldExpiry: old, newExpiry: new, outcome: outcome)
         attempts.append(a)
         if attempts.count > 50 { attempts.removeFirst(attempts.count - 50) }

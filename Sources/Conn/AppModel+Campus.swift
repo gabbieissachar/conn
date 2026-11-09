@@ -34,6 +34,11 @@ extension AppModel {
             keeper.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
             keeper.start()
         }
+        // The network refusing Campus is logged as it begins, so Settings can say when it last happened even after a relaunch.
+        campus.onBlocked = { [weak self] t in
+            guard let self = self, let host = self.campus.baseURL.host else { return }
+            self.campusHops?.append(CampusHop(at: t, source: "api", host: host, path: "/api", status: 403))
+        }
         campus.start()
     }
 
@@ -129,6 +134,9 @@ extension AppModel {
 
     /// Show the sign-in sheet's page.
     func signInToCampus() { campusAuth?.beginSignIn() }
+
+    /// "Try again" on the blocked note: ask Campus now instead of waiting for the next look.
+    func retryCampus() { campus.kick() }
 
     func closeCampusSignIn() { campusSignInShown = false; campus.kick(); campusKeeper?.nudge() }
 
@@ -255,9 +263,17 @@ extension AppModel {
 extension AppModel {
     /// Where the attempts are logged: Conn's own folder for a person's launch; a scripted launch writes a folder of its own, never the person's.
     static func makeRenewalLog(config: AppConfig) -> CampusRenewalLog {
-        let dir = config.isScriptedLaunch
+        CampusRenewalLog(file: campusLogDirectory(config: config).appendingPathComponent("session-refresh.log"))
+    }
+
+    /// The sign-in sheet's hops, next to the refresh log: host, path and status only (never a query, a cookie or a token).
+    static func makeHopLog(config: AppConfig) -> CampusHopLog {
+        CampusHopLog(file: campusLogDirectory(config: config).appendingPathComponent("sign-in-hops.log"))
+    }
+
+    private static func campusLogDirectory(config: AppConfig) -> URL {
+        config.isScriptedLaunch
             ? FileManager.default.temporaryDirectory.appendingPathComponent("conn-campus-refresh-\(getpid())", isDirectory: true)
             : ConnMigration.stateDirectory().appendingPathComponent("campus", isDirectory: true)
-        return CampusRenewalLog(file: dir.appendingPathComponent("session-refresh.log"))
     }
 }

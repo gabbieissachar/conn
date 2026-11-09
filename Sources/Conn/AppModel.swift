@@ -60,6 +60,8 @@ final class AppModel: ObservableObject {
     /// Google and Campus finish it unaided; otherwise says "sign in again". nil when Campus is not part of this launch.
     let campusKeeper: CampusSessionKeeper?
     let campusRenewal: CampusSilentRenewal?
+    /// Each hop of the sign-in sheet, and each time the network refused Campus (host, path, status; no query, cookie or token).
+    let campusHops: CampusHopLog?
     /// Asking before the "Agent bridge" switch goes on, and the activity sheet.
     @Published var campusConfirmBridge = false
     @Published var campusBridgeActivityShown = false
@@ -273,6 +275,8 @@ final class AppModel: ObservableObject {
         campusBridge = config.campusEnabled ? AppModel.makeBridge(config: config, env: env, store: campus) : nil
         campusRenewal = campusAuth.map { CampusSilentRenewal(origin: config.campusBase, store: $0.store) }
         campusKeeper = campusRenewal.map { CampusSessionKeeper(renewer: $0, log: AppModel.makeRenewalLog(config: config)) }
+        campusHops = campusAuth == nil ? nil : AppModel.makeHopLog(config: config)
+        campusAuth?.hops = campusHops
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
         let made = FocusRuntime.make(config: config)

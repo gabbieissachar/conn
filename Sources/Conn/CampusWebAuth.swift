@@ -7,12 +7,16 @@
 // Two web views share one website data store: the API view (never shown; sits on a light page of Campus's origin so `fetch` is same-origin)
 // and the sign-in view (shown in a sheet on the login page). A scripted launch uses a non-persistent store, so a check never reads or
 // changes the cookies of a person's own sign-in.
+//
+// The sign-in view also reports what the network does with Campus: Campus answers only on the company private network, and off it a public ingress answers every
+// path with nginx's `403 Forbidden` page. A main-frame 403 (or a failed load) on Campus's own host is not shown as that page: the sheet says it is the network
+// (`signInRefused`), with a Try again. Each hop (time, host, path, status; never a query, cookie or token) goes to `hops`.
 import SwiftUI
 import WebKit
 import ConnCore
 
 @MainActor
-final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDelegate {
+final class CampusWebAuth: NSObject, ObservableObject, CampusAuth, WKNavigationDelegate, WKUIDelegate {
     let origin: URL
     var kind: String { "cookie" }
     let apiView: WKWebView
@@ -21,6 +25,10 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
     let store: WKWebsiteDataStore
     /// The store shows the sign-in sheet.
     var onSignIn: (() -> Void)?
+    /// The sign-in sheet's last main-frame answer from Campus's own host was a refusal (a 403, or a load that failed): the sheet says so instead of showing the raw page.
+    @Published private(set) var signInRefused = false
+    /// Where each hop of the sign-in sheet is logged (nil: not logged).
+    var hops: CampusHopLog?
     private var loaded = false
     private var loading: Task<Void, Never>?
     private var streams: [Int: AsyncStream<CampusStreamEvent>.Continuation] = [:]
@@ -66,8 +74,21 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if webView === apiView { loaded = true } }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if webView === apiView { loaded = false } }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if webView === apiView { loaded = false } }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { loadFailed(webView, error) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { loadFailed(webView, error) }
+
+    private func loadFailed(_ webView: WKWebView, _ error: Error) {
+        if webView === apiView { loaded = false }
+        guard webView === signInView else { return }
+        // A navigation that was cancelled (our own stop of the 403 page, or the next one replacing it) is not a failed load.
+        let e = error as NSError
+        if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
+        if e.domain == "WebKitErrorDomain" && e.code == 102 { return }
+        let failing = (e.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? (e.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+        guard isCampus(failing) || (failing == nil && isCampus(webView.url)), let url = failing ?? webView.url else { return }
+        hops?.append(CampusHop(at: Date(), source: "sign-in", url: url, status: 0))
+        signInRefused = true
+    }
 
     /// Google's sign-in may ask for a new window: it opens in the sign-in view itself (Conn has no other window).
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
@@ -107,9 +128,16 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
         const r = await fetch(path, { headers: { 'Accept': 'text/event-stream' }, credentials: 'same-origin', cache: 'no-store', signal: ctl.signal });
         post({ kind: 'opened', status: r.status });
         if (!r.ok || !r.body) {
-          // A 403 that names a module is a refusal, not a sign-out: the close says so (Campus's JSON error body, read as text).
+          // A 403 whose body is Campus's own JSON error (a module refusal, or another named error) is a refusal; any other body (nginx's page) is the network refusing the
+          // connection. The close says which, as words after the status.
           let why = 'status ' + r.status;
-          if (r.status === 403) { try { if ((await r.text()).indexOf('module_required') >= 0) why += ' module_required'; } catch (e) {} }
+          if (r.status === 403) {
+            try {
+              const t = await r.text();
+              let j = null; try { j = JSON.parse(t); } catch (e) {}
+              if (j && typeof j === 'object') { why += ' json'; if (t.indexOf('module_required') >= 0) why += ' module_required'; }
+            } catch (e) {}
+          }
           post({ kind: 'closed', why: why }); return;
         }
         const reader = r.body.getReader();
@@ -161,7 +189,33 @@ final class CampusWebAuth: NSObject, CampusAuth, WKNavigationDelegate, WKUIDeleg
 
     // MARK: sign-in
 
-    func beginSignIn() { signInView.load(URLRequest(url: origin.appendingPathComponent("campus/login"))); onSignIn?() }
+    func beginSignIn() {
+        signInRefused = false
+        signInView.load(URLRequest(url: origin.appendingPathComponent("campus/login")))
+        onSignIn?()
+    }
+
+    /// "Try again" in the sheet: load the sign-in page afresh.
+    func retrySignIn() {
+        signInRefused = false
+        signInView.load(URLRequest(url: origin.appendingPathComponent("campus/login")))
+    }
+
+    private func isCampus(_ url: URL?) -> Bool { url?.host?.lowercased() == origin.host?.lowercased() }
+
+    /// Each main-frame answer of the sign-in sheet is logged (host, path, status). A 403 from Campus's own host is nginx's refusal, not a page to show: the load is stopped
+    /// and the sheet says it is the network.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        guard webView === signInView, navigationResponse.isForMainFrame, let http = navigationResponse.response as? HTTPURLResponse, let url = http.url else { decisionHandler(.allow); return }
+        hops?.append(CampusHop(at: Date(), source: "sign-in", url: url, status: http.statusCode))
+        if isCampus(url), http.statusCode == 403 {
+            signInRefused = true
+            decisionHandler(.cancel)
+            return
+        }
+        if isCampus(url), http.statusCode < 400, signInRefused { signInRefused = false }
+        decisionHandler(.allow)
+    }
 }
 
 /// Receives the stream's text from the API view without keeping the auth alive (the content controller holds its handlers strongly).

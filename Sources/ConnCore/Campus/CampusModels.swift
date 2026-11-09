@@ -193,8 +193,10 @@ public enum CampusLink: Equatable, Sendable {
     /// Waiting for the first answer, or Campus answered `503 opencode_starting`.
     case starting
     case live
-    /// The sign-in is gone (401, or 403: Campus answers a person who is not signed in with 403). The last rows stay, dimmed, with an "as of" time.
+    /// The sign-in is gone (401, or a redirect to the login). The last rows stay, dimmed, with an "as of" time.
     case expired
+    /// The network refused the connection: a 403 that is not Campus's own JSON error (an nginx page, off the company private network). Not a sign-out: signing in does not help.
+    case blocked
     /// Campus cannot be reached (no network, a server error).
     case unreachable(String)
 }

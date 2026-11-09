@@ -91,7 +91,7 @@ private let growth = CampusSpace(kind: "team", folder: "growth-ops", displayName
     @Test func aSignedOutCampusRefusesTheStart() async throws {
         let (s, auth, world) = await liveStore()
         s.writesEnabled = true
-        auth.override = { _ in CampusReply(status: 403) }
+        auth.override = { _ in CampusReply(status: 401) }
         await s.refresh()
         #expect(s.link == .expired)
         #expect(s.startConversation(in: mine, text: "hello") { _ in } == .notLive)
