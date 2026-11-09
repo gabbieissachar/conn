@@ -3038,6 +3038,19 @@ test('board page: opened in a tab it carries the token once; a script\'s fetch o
   } finally { await t.close(); }
 });
 
+test('board page: the whole board and the board of one session are one page, told apart by ?session= (the query changes nothing about the guards)', async () => {
+  const t = await start({ options: { board: { root: REAL_ROOT, run: fakeBoardRun([]) } } });
+  try {
+    for (const address of [BOARD_PAGE, BOARD_PAGE + '?session=leader-esim', BOARD_PAGE + '?session=leader-esim#t=a']) {
+      const page = await t.open(address);
+      assert.equal(page.status, 200, address);
+      assert.ok(page.raw.includes('content="' + t.token + '"'), 'the token, ' + address);
+      assert.equal(page.headers['x-frame-options'], 'DENY');
+    }
+    assert.equal((await t.request({ path: BOARD_PAGE + '?session=leader-esim', headers: { 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } })).status, 403, 'a script\'s fetch of it is refused as before');
+  } finally { await t.close(); }
+});
+
 test('board writes: no flag, no route; with the flag a mark and an answer reach board_cli.py on stdin behind the token and the origin', async () => {
   const inputs = [];
   const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(2), input }); return JSON.stringify({ ok: true, echoed: JSON.parse(input).task }); };

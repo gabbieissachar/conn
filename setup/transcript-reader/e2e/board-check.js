@@ -11,7 +11,8 @@
 // its sheet with the calls, the reply that asked each, and the thread with why each reply is there; answering is off and says so; the page is read only;
 // nothing scrolls sideways at a desktop or a phone width, and the phone gets a bottom sheet. Round 2, both writes on: a typed card answered on the card
 // closes its task in the scratch home; a reply marked "Not this task" is one line in the task's own reply-marks.jsonl and can be put back; a hold of
-// several prose calls offers no Record button.
+// several prose calls offers no Record button. Also: the board of one session (?session=<id>) shows that session alone, reads only that board, and links to
+// the whole board (board/), which lists every session.
 
 const fs = require('fs');
 const os = require('os');
@@ -202,6 +203,31 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(ev(`return document.documentElement.scrollWidth <= innerWidth;`), 'no sideways scroll at 390 px');
     check(ev(`return getComputedStyle(document.getElementById('colbar')).display !== 'none';`), 'the phone has the column tabs');
     await checkWidth(390, '390 px');
+
+    // ---- the board of one session (board/?session=<id>, the reader's Tasks link from a conversation) and the whole board (board/, the All tasks link)
+    const onePage = () => ev(`const sess = [...document.querySelectorAll('.sessline .sess')]; const a = document.getElementById('all-tasks'); return { search: location.search, only: sess.filter(b => b.classList.contains('only')).length, sess: sess.length, all: a ? a.getAttribute('href') : null, cards: document.querySelectorAll('.card').length, workers: !document.getElementById('workers').hidden, title: document.title, side: document.documentElement.scrollWidth <= innerWidth, linkIn: a ? (a.getBoundingClientRect().right <= innerWidth && a.getBoundingClientRect().left >= 0) : null };`);
+    const boardCalls = () => ev(`return performance.getEntriesByType('resource').map(e => new URL(e.name)).filter(u => u.pathname.includes('/api/transcript-reader/board')).map(u => u.pathname.split('/').pop() + u.search);`);
+    for (const [viewport, label] of [['1100x900x1', '1100 px'], ['390x844x2,mobile,touch', '390 px']]) {
+      axi('open', 'about:blank'); axi('emulate', '--viewport', viewport);
+      axi('open', `http://127.0.0.1:${port}/setup/transcript-reader/board/?session=leader-lab&run=${Date.now()}`);
+      await until(`return { ok: document.querySelectorAll('.card').length > 0 };`, 'the cards of one session', 60000);
+      const one = onePage();
+      check(one.search.startsWith('?session=leader-lab') && one.only === 1 && one.sess === 1 && !one.workers && one.all === '/setup/transcript-reader/board/' && /Lab/.test(one.title), `${label}: the board of one session shows that session alone, with a link to the whole board`, JSON.stringify(one));
+      check(one.side && one.linkIn, `${label}: and nothing scrolls sideways or sits outside the window`, JSON.stringify(one));
+      check(boardCalls().every((c) => /^board\?session=leader-lab/.test(c)), `${label}: the page asked for that board only (no session list, no other board)`, JSON.stringify(boardCalls()));
+    }
+    axi('open', 'about:blank'); axi('emulate', '--viewport', '1100x900x1');
+    axi('open', `http://127.0.0.1:${port}/setup/transcript-reader/board/?session=leader-lab&run=${Date.now()}#t=alpha-route/Z1`);
+    await until(`return { ok: !!document.querySelector('.sheet .callbox') };`, 'a card of the one-session board, from #t=');
+    check(true, 'a card opens from #t=<task>/<call> in the board of one session');
+    ev(`document.getElementById('all-tasks').click(); return true;`);
+    await until(`return { ok: !location.search && document.querySelectorAll('.sessline .sess').length >= 1 && document.querySelectorAll('.card').length > 0 };`, 'the whole board', 60000);
+    const whole = onePage();
+    check(whole.only === 0 && whole.sess >= 1 && whole.all === null && !whole.search, 'All tasks opens the whole board: sessions to switch between, no scope in the address', JSON.stringify(whole));
+    check(boardCalls().some((c) => c === 'board-sessions'), 'the whole board asks for the session list');
+    axi('open', 'about:blank'); axi('open', `http://127.0.0.1:${port}/setup/transcript-reader/board/?session=nothing-here&run=${Date.now()}`);
+    await until(`return { ok: /could not be read/.test(document.getElementById('banners').textContent) };`, 'the banner for a session with no board', 30000);
+    check(onePage().cards === 0 && onePage().all === '/setup/transcript-reader/board/', 'a session with no board says so and still offers the whole board');
     servers.pop().kill();
 
     // ---- round 2: both writes on

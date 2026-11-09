@@ -338,6 +338,22 @@ test('page: the reader\'s live link, markdown renderer, Undo window and comment 
   assert.equal((html.match(/<\/script/gi) || []).length, 1, 'nothing in a pasted file closes the script early');
 });
 
+test('page: one session\'s board (?session=<id>) asks for that board alone: no session list, no other board, no switch, and its own links keep the scope', () => {
+  const js = fs.readFileSync(path.join(__dirname, 'board', 'page', 'board.js'), 'utf8');
+  assert.match(js, /const ONLY = \(\(\) => \{ const v = new URLSearchParams\(location\.search\)\.get\("session"\); return v && \/\^\[A-Za-z0-9\._-\]\{1,128\}\$\/\.test\(v\) \? v : null; \}\)\(\);/, 'the scope is the query\'s session, and only a plain id');
+  const start = js.slice(js.indexOf('async function start() {'));
+  const only = start.slice(start.indexOf('if (ONLY) {'), start.indexOf('return;\n    }') + 'return;\n    }'.length);
+  assert.ok(only.includes('S.session = ONLY') && only.includes('await loadBoard(false)'), 'it reads that one board');
+  assert.doesNotMatch(only, /loadSessions|board-sessions|chooseSession/, 'and asks for no list of sessions, no other board');
+  assert.ok(start.indexOf('if (ONLY) {') < start.indexOf('loadSessions()'), 'before the whole board\'s own start');
+  assert.match(js, /function chooseSession\(id\) \{\s*if \(ONLY \|\| id === S\.session\) return;/, 'there is no other session to switch to');
+  assert.match(js, /ONLY \? location\.search \+ "#t=" : "#s=" \+ encodeURIComponent\(S\.session\) \+ "&t="/, 'a copied card link keeps the page\'s scope');
+  assert.match(js, /el\("a", "alltasks", "All tasks"\); all\.id = "all-tasks"; all\.href = BOARD;/, 'a link to the whole board (board/, as it always opened) is in the header');
+  assert.match(js, /const BOARD = "\/setup\/transcript-reader\/board\/";/);
+  const css = fs.readFileSync(path.join(__dirname, 'board', 'page', 'board.css'), 'utf8');
+  assert.match(css, /\.sessline \.sess\.only \{ cursor: default;/, 'the session\'s own chip is a label, not a switch');
+});
+
 test('page: every rule of markdown.css is a line of the reader\'s own template, so the two cannot drift apart', () => {
   const template = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const rules = fs.readFileSync(path.join(__dirname, 'board', 'page', 'markdown.css'), 'utf8').split('\n').filter((line) => line.startsWith('.rmd .') && line.includes(' {'));

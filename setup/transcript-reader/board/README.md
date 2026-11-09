@@ -19,9 +19,13 @@ With a flag off the route answers 404 and the page hides that control (answers t
 The reader's own switch for worker boards is a small file of the reader's (`board-workers.json`), never a Firstmate home.
 
 ```
-GET  /setup/transcript-reader/board/                                        the Tasks page (open it in a tab; #s=<session>&t=<task>[/<call>] opens a card)
-GET  /api/transcript-reader/state                                           also { board: { page, boards } } where the page is served: the reader's Tasks link (header) shows, and opens
-                                                                            the board in `boards` that reads the conversation on screen (from the boards already read; nothing is built for it)
+GET  /setup/transcript-reader/board/                                        the WHOLE board: every session, a chip per session (open it in a tab; #s=<session>&t=<task>[/<call>] opens a card)
+GET  /setup/transcript-reader/board/?session=<board id>                     ONE session's board alone: that board is read and drawn, nothing else is listed or read for the view (no board-sessions
+                                                                            call, no other board, no worker switch; #s= is ignored); an All tasks link in its header goes to the whole board;
+                                                                            #t=<task>[/<call>] opens a card; a copied card link keeps ?session=
+GET  /api/transcript-reader/state                                           also { board: { page, boards } } where the page is served: the reader's header shows All tasks (always) and Tasks
+                                                                            (only for a conversation named in `boards`, which opens ?session=<that board>; from the boards already read, nothing
+                                                                            is built for it, and a conversation no board reads has no Tasks entry until one that does is read)
 POST /api/transcript-reader/board-mark    { session, task, turn, mark }     flagged
 POST /api/transcript-reader/board-answer  { session, task, call, src, ... } flagged
 POST /api/transcript-reader/board-worker  { leader, task, enabled }         a worker board on or off

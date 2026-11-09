@@ -6,6 +6,11 @@
   "use strict";
   const API = "/api/transcript-reader/";
   const READER = "/setup/transcript-reader/out/prototype.html";
+  const BOARD = "/setup/transcript-reader/board/";
+  /* Two ways in. `board/` is the whole board: every session's board, one at a time, as the chips of the header choose. `board/?session=<id>` is the board of one
+     session alone (the reader's Tasks link opens it from a conversation): that one board is read and drawn, and nothing else is listed or read for the view (no
+     session list, no other board, no worker switch), whatever `#s=` says. `#t=<task>[/<call>]` opens a card in either. */
+  const ONLY = (() => { const v = new URLSearchParams(location.search).get("session"); return v && /^[A-Za-z0-9._-]{1,128}$/.test(v) ? v : null; })();
   const token = (document.querySelector('meta[name="reader-token"]') || {}).content || "";
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -92,7 +97,7 @@
     if (TIMING.whole == null && !S.board.quick && !S.stale) TIMING.whole = t;
   }
   function chooseSession(id) {
-    if (id === S.session) return;
+    if (ONLY || id === S.session) return;
     S.session = id; S.board = null; S.project = "all"; S.q = ""; S.open = null; S.col = "needs"; S.drafts = {}; S.confirm = null; S.error = null; S.stale = false;
     $("find").value = ""; composer.detach(); $("layer").textContent = "";
     history.replaceState(null, "", "#s=" + encodeURIComponent(id));
@@ -115,6 +120,13 @@
       b.append(el("span", "sl", s.label || s.id)); if (S.board && S.board.session.id === s.id) b.append(el("span", "n", String(S.board.items.filter((t) => t.col !== "done").length)));
       b.title = (s.label && s.label !== s.id ? s.label + " · " : "") + s.id + (s.kind === "worker" ? " (a worker you drive)" : ""); b.onclick = () => chooseSession(s.id); sl.append(b);
     });
+    if (ONLY) {
+      /* One session alone: its own name (not a switch), and the way to the whole board. */
+      const b = el("span", "sess only"); b.append(el("span", "sl", (S.board && S.board.session.label) || ONLY));
+      if (S.board) b.append(el("span", "n", String(S.board.items.filter((t) => t.col !== "done").length)));
+      b.title = "The board of this session only (" + ONLY + ")"; sl.append(b);
+      const all = el("a", "alltasks", "All tasks"); all.id = "all-tasks"; all.href = BOARD; all.title = "The board of every session"; sl.append(all);
+    }
     const workers = S.sessions.filter((s) => s.kind === "worker");
     if (workers.length) { const m = el("button", "more", (S.workersOpen ? "Hide workers" : "Workers you drive") + " (" + workers.filter((w) => w.enabled !== false).length + "/" + workers.length + ")"); m.type = "button"; m.onclick = () => { S.workersOpen = !S.workersOpen; renderWorkers(); renderBar(); }; sl.append(m); }
     if (S.board) { const lc = el("span", "lcchip"); lc.append("Lifecycle ", el("b", "", S.board.lifecycle.name)); lc.title = S.board.lifecycle.blurb; sl.append(lc); }
@@ -125,6 +137,7 @@
     if (S.project !== "all" && !counts[S.project]) { const o = el("option", "", S.project + " (0)"); o.value = S.project; sel.append(o); }
     sel.value = S.project; sel.onchange = () => { S.project = sel.value; render(); };
     const name = S.board ? S.board.session.label : S.session || "";
+    if (ONLY) document.title = "Tasks · " + name;  // the tab says which session's board it is
     $("crumb").textContent = name + " · " + (S.project === "all" ? "All projects" : S.project) + (S.board ? " · " + S.board.lifecycle.name : "");
     const bar = $("bar"); bar.classList.toggle("collapsed", phone() && !S.barOpen);
     $("bar-toggle").setAttribute("aria-expanded", String(!bar.classList.contains("collapsed")));
@@ -571,7 +584,7 @@
     const sh = el("aside", "sheet"); sh.setAttribute("role", "dialog"); sh.setAttribute("aria-label", t.title);
     const head = el("div", "sh-head"); const row = el("div", "sh-row"); row.append(el("code", "sh-ref", t.ref));
     const cr = el("button", "copy", "Copy ref"); cr.type = "button"; cr.onclick = () => copy(t.ref, "reference");
-    const cl = el("button", "copy", "Copy link"); cl.type = "button"; cl.onclick = () => copy(location.origin + location.pathname + "#s=" + encodeURIComponent(S.session) + "&t=" + encodeURIComponent(t.ref), "link");
+    const cl = el("button", "copy", "Copy link"); cl.type = "button"; cl.onclick = () => copy(location.origin + location.pathname + (ONLY ? location.search + "#t=" : "#s=" + encodeURIComponent(S.session) + "&t=") + encodeURIComponent(t.ref), "link");
     const x = el("button", "x", "✕"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.onclick = closeSheet;
     row.append(x, cr, cl); head.append(row); head.append(navRow(t)); head.append(el("div", "sh-title", t.title));
     const top = el("div", "c-top"); chips(t, top); const cn = S.board.columns.find((c) => c.id === t.col);
@@ -673,6 +686,15 @@
   window.addEventListener("hashchange", fromHash);
 
   async function start() {
+    if (ONLY) {
+      /* One session: ask for its board and nothing else (no session list, no other board). The page's writes read their flags from the board's own answer. */
+      S.session = ONLY; render();
+      await loadBoard(false);
+      if (S.pendingJump) { const go = S.pendingJump; S.pendingJump = null; go(); } else fromHash();
+      setInterval(() => { if (!document.hidden && Date.now() - S.loadedAt > 45000) loadBoard(false); }, 15000);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - S.loadedAt > 20000) loadBoard(false); });
+      return;
+    }
     render();
     const wanted = new URLSearchParams(location.hash.slice(1)).get("s");
     // A page opened on a board (#s=...) asks for it at once, beside the list of sessions, instead of after it.
