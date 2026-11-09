@@ -422,6 +422,25 @@ test('page: one session\'s board (?session=<id>) asks for that board alone: no s
   assert.match(css, /\.sessline \.sess\.only \{ cursor: default;/, 'the session\'s own chip is a label, not a switch');
 });
 
+test('page: a reply link opens the reader in a new tab and also names its conversation and reply (data-session, data-message) for a host that takes the click, as long as the ids are ones a host would open', () => {
+  const js = fs.readFileSync(path.join(__dirname, 'board', 'page', 'board.js'), 'utf8');
+  const code = js.slice(js.indexOf('  const readerLink = '), js.indexOf('  const S = {'));
+  const sandbox = { READER: '/reader.html', el: (tag, cls, text) => ({ tag, className: cls, textContent: text, dataset: {} }) };
+  vm.createContext(sandbox);
+  const { readerAnchor } = vm.runInContext(code + '\n({ readerAnchor });', sandbox);
+  const a = readerAnchor({ s: '5e551001-0000-4000-8000-000000000001', m: '01000002-0000-4000-8000-000100000002' }, 'open-link', 'open', 'tip');
+  assert.equal(a.href, '/reader.html#s=5e551001-0000-4000-8000-000000000001&m=01000002-0000-4000-8000-000100000002', 'the reader\'s own address, as before');
+  assert.equal(a.target, '_blank'); assert.equal(a.rel, 'noopener'); assert.equal(a.title, 'tip');
+  assert.deepEqual({ ...a.dataset }, { session: '5e551001-0000-4000-8000-000000000001', message: '01000002-0000-4000-8000-000100000002' }, 'the same ids, for Conn\'s Watch column');
+  const odd = readerAnchor({ s: 'a b/c', m: '01000002-0000-4000-8000-000100000002' }, 'open-link', 'open');
+  assert.deepEqual({ ...odd.dataset }, {}, 'a session id a host would not open leaves a plain link (a host that took the click and then dropped it would leave it stuck)');
+  assert.equal(readerAnchor({ s: 'abc', m: 'x' }, 'ghost', 'x').dataset.message, undefined, 'a reply id a host would not follow is left off; the session still goes');
+  assert.equal(readerAnchor({ s: 'abc', m: 'x' }, 'ghost', 'x').dataset.session, 'abc');
+  assert.equal(readerAnchor({ s: 'abc' }, 'ghost', 'x'), null, 'no reply, no link');
+  const sites = js.match(/target = "_blank"/g) || [];
+  assert.equal(sites.length, 2, 'every reply link is built by readerAnchor: only it and the review board link set a target');
+});
+
 test('page: every rule of markdown.css is a line of the reader\'s own template, so the two cannot drift apart', () => {
   const template = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
   const rules = fs.readFileSync(path.join(__dirname, 'board', 'page', 'markdown.css'), 'utf8').split('\n').filter((line) => line.startsWith('.rmd .') && line.includes(' {'));

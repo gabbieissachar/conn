@@ -251,6 +251,7 @@ node --test setup/transcript-reader/api.test.js                            # the
 node setup/transcript-reader/e2e/board-check.js                            # by hand: the page in a real browser against a scratch home and a lab store (24 checks; needs chrome-devtools-axi)
 node setup/transcript-reader/e2e/review-check.js                           # by hand: the Review box and the review round in a real browser against a scratch home (every action, every refusal, the due date, reviewed marks, 1440 and 390 px, light and dark)
 node setup/transcript-reader/e2e/tasks-link-check.js                       # by hand: the reader's Tasks tab and icon in a real browser (flag off and on, which board, 1440 to 330 px, the click and the way back; the Conversation tab on both board pages at a 3 or 4 column Watch's widths)
+node setup/transcript-reader/e2e/board-reply-link-check.js              # by hand: every reply link on a card (thread, asking reply) carries data-session and data-message, and a Watch column's capture handler takes each click, with and without Cmd, instead of the new-window hook that goes nowhere there
 ```
 
 `RealScripts` in `test_collect.py` runs the real snapshot and ask scripts against a scratch home when a Firstmate checkout is installed, and

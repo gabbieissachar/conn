@@ -22,6 +22,17 @@
   const label = (c) => (c.id === "call" || c.id === "wait" || c.id === "default" ? "" : c.id);
   const REVIEW_LINK = /^http:\/\/127\.0\.0\.1:\d+\/session\/\w+$/;
   const readerLink = (l) => (l && l.s && l.m ? READER + "#s=" + encodeURIComponent(l.s) + "&m=" + encodeURIComponent(l.m) : null);
+  /* A link to a reply in the reader: its own address in a new tab (`#s=<session>&m=<reply>`), and the same two ids as `data-session` and `data-message` for a host that takes the
+     click itself. Conn's Watch columns do: a column's web view has no new window and no pane to switch to, so a plain `target=_blank` link goes nowhere there, while a click on
+     `a[data-session]` is taken before the page sees it and opens that conversation by the column rule (README.md, "The Tasks board"). An id a host would not open is left off,
+     which leaves the link a plain one. */
+  const HOST_SESSION = /^[A-Za-z0-9-]{1,64}$/, HOST_MESSAGE = /^[A-Za-z0-9_-]{6,64}$/;
+  function readerAnchor(l, cls, text, title) {
+    const href = readerLink(l); if (!href) return null;
+    const a = el("a", cls, text); a.href = href; a.target = "_blank"; a.rel = "noopener"; if (title) a.title = title;
+    if (HOST_SESSION.test(l.s)) { a.dataset.session = l.s; if (HOST_MESSAGE.test(l.m)) a.dataset.message = l.m; }
+    return a;
+  }
 
   const S = {
     sessions: [], session: null, board: null, write: { marks: false, answer: false, send: false, review: false }, loadedAt: 0, error: null, loading: false,
@@ -343,7 +354,7 @@
       const ul = el("ul");
       g.items.forEach((it) => {
         const li = el("li"); li.append(el("span", "when", fmt(it.d) + " " + it.hm), el("span", "tx", it.text));
-        const link = readerLink(it.link); if (link) { const a = el("a", "mk", "Open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; li.append(a); }
+        const a = readerAnchor(it.link, "mk", "Open"); if (a) li.append(a);
         if (S.write.marks) { const b = el("button", "mk", "Belongs to task…"); b.type = "button"; b.onclick = () => openPicker(it); li.append(b); }
         ul.append(li);
         if (S.picker && S.picker.key === it.key) ul.append(pickerRow(it));
@@ -481,7 +492,7 @@
       const rq = tipChip("your request · task started " + (it.mins <= 0 ? "at once" : it.mins + " min later"), "poss", "Your message with no reply above it, sent shortly before this task started. A possible match: say yes or no."); h.append(rq, el("span", "sp"));
       if (S.write.marks) { h.append(mk("Yes, this task", "in", true), mk("Not this task", "out")); }
     } else { if (it.how) { h.append(tipChip(it.how, "", /^keyed /.test(it.how) ? "Your message uses a call key (like R2) from the reply above it." : it.how === "answer sheet" ? "Your comment from an answer sheet, tied to the reply it quotes." : it.how === "next message" ? "Your message right after this reply." : /^you marked/.test(it.how) ? "You put this message on this card yourself." : it.how)); } h.append(el("span", "sp")); if (S.write.marks && it.marked) h.append(mk("Withdraw mark", "clear")); }
-    const link = readerLink(it.link); if (link) { const a = el("a", "open-link", "open"); a.href = link; a.target = "_blank"; a.rel = "noopener"; a.title = "Open this reply in the conversation view"; h.append(a); }
+    const a = readerAnchor(it.link, "open-link", "open", "Open this reply in the conversation view"); if (a) h.append(a);
     box.append(h);
     if (it.part) box.append(el("div", "th-part", "on: " + it.part));
     if (it.k === "reply") { box.append(replyBody(it)); if (it.lvl !== "out") composer.bind(box, replyTarget(it)); }
@@ -612,7 +623,7 @@
     if (!a) { r.append(el("span", "quiet", th.status === "ok" ? "Asking reply: none found in the conversations the reader keeps (the call may be older than they are)." : "Asking reply: not available while reply threads are off.")); return r; }
     r.append("Asked in the reply of ", el("b", "", fmt(a.d) + " " + a.hm), a.how === "exact" ? tipChip("names this ask", "sure", "The reply carries this call's own ask id, so it is the reply that asked it.") : a.how === "nearest" ? tipChip("nearest reply to the hold time", "poss", "No reply names the ask, so this is the closest one before the call was held. It may not be the one that asked.") : tipChip("set in this reply's turn", "sure", "The call was held by a command the supervisor ran in this reply's turn."));
     r.append(el("div", "ask-q", "“" + short(a.text, 160) + "”"));
-    const link = readerLink(a.link); if (link) { const open = el("a", "ghost", "Open this reply in the reader"); open.href = link; open.target = "_blank"; open.rel = "noopener"; r.append(open); }
+    const open = readerAnchor(a.link, "ghost", "Open this reply in the reader"); if (open) r.append(open);
     return r;
   }
   function callBox(t, c) {
