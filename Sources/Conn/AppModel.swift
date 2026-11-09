@@ -72,6 +72,9 @@ final class AppModel: ObservableObject {
     @Published var campusConfirmWrites = false
     /// Text that goes back into a conversation's box (an Undo, or a send that failed): (conversation id, text).
     let campusDraftRestore = PassthroughSubject<(String, String), Never>()
+    /// Texts taken back that no box has taken yet, by conversation, in the order they were given back. A box that is not on screen when its text comes back (the person moved
+    /// to another conversation while it waited) takes them when it appears, so a taken-back or failed send is never lost.
+    var campusUnclaimedDrafts: [String: [String]] = [:]
     /// The space a "New conversation" sheet is open for (nil: no sheet).
     @Published var campusNewIn: CampusSpace?
     /// The sheet that names a Watch preset to save, or lists the presets to rename and delete (`AppModel+WatchSetups`).

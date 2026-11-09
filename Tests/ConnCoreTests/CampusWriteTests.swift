@@ -99,8 +99,10 @@ import FakeCampusKit
         s.writesEnabled = true
         let c = try #require(s.conversation("ses_fakeOffsite04"))
         #expect(s.send("first", to: c) { _ in } == nil)
-        #expect(s.send("second", to: c) { _ in } == .busy)
+        #expect(s.send("second", to: c) { _ in } == nil)            // typed behind the first: it waits its turn (CampusSendQueueTests)
+        #expect(s.stop(c) == .busy && s.waiting.count == 1)         // any other write still says one at a time
         s.undo()
+        #expect(s.waiting.isEmpty)
         auth.override = { _ in CampusReply(status: 401) }
         await s.refresh()
         #expect(s.send("signed out", to: c) { _ in } == .notLive)

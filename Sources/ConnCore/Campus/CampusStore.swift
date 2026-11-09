@@ -34,7 +34,7 @@ public final class CampusStore: ObservableObject {
     // Slice 2: writes (CampusWrites.swift). Off at every launch: nothing is sent to Campus until the person turns this on.
     /// The "Campus writes" switch (C7). Turning it off while a write waits in its undo window takes that write back.
     @Published public var writesEnabled = false { didSet { if !writesEnabled, oldValue { cancelHeld(reason: "Campus writes were turned off") } } }
-    /// The one write waiting out its undo window, being sent, or just done.
+    /// The one write waiting out its undo window, being sent, or just done. Messages typed behind it are in `waiting`.
     @Published public internal(set) var held: CampusHeld?
     /// Answers picked on open questions, by form id then question index. Memory only.
     @Published public internal(set) var picks: [String: [Int: String]] = [:]
@@ -44,7 +44,12 @@ public final class CampusStore: ObservableObject {
     /// Seconds a write waits before it is sent, with an Undo (the way Conn's Herdr compose box does).
     public var holdSeconds: TimeInterval = 3
     var heldTask: Task<Void, Never>?
-    var heldRestore: (() -> Void)?
+    /// The write in the window (or being sent), whole: its request is built when it is sent, and its restore and success run from here.
+    var heldWrite: CampusPendingWrite?
+    /// Messages typed while a write is in its window or being sent, in the order typed: each goes through its own window when it reaches the front.
+    var waitingWrites: [CampusPendingWrite] = []
+    /// What the banner shows of `waitingWrites` (no text of its own beyond the label the held write has too).
+    @Published public internal(set) var waiting: [CampusWaiting] = []
     var choicesLoading: Set<String> = []
     /// The Idempotency-Key of a start that has not gone through yet, by space and text (CampusWrites.swift).
     var createKeys: [String: String] = [:]

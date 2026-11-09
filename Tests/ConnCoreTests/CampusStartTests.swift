@@ -84,8 +84,10 @@ private let growth = CampusSpace(kind: "team", folder: "growth-ops", displayName
         #expect(s.startConversation(in: mine, text: "first") { _ in } == nil)
         #expect(s.startConversation(in: growth, text: "second") { _ in } == .busy)
         let c = try #require(s.conversation("ses_fakeOffsite04"))
-        #expect(s.send("while a start waits", to: c) { _ in } == .busy)
+        #expect(s.send("while a start waits", to: c) { _ in } == nil)      // a message waits behind a write; another start does not
+        #expect(s.waiting.count == 1)
         s.undo()
+        #expect(s.waiting.isEmpty)
     }
 
     @Test func aSignedOutCampusRefusesTheStart() async throws {

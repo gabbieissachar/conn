@@ -696,6 +696,57 @@ enum CampusCheck {
         let w8 = await log()
         report("Campus writes: closing the 'New conversation' sheet inside the window takes the start back and nothing is sent",
                phaseAfterClose == .undone && model.campusNewIn == nil && w8.count == logBeforeCancel, "phase=\(String(describing: phaseAfterClose)) log=\(w8.count)/\(logBeforeCancel)")
+        // 9. Sending like the other agents: a message typed behind another waits in a queue, Undo takes the lot back in order, Now skips the wait, a failure gives everything back.
+        _ = await until(25) { campus.conversation("ses_fakeOffsite04")?.working != true }
+        _ = await until(10) { campus.held == nil }
+        let offsiteC = campus.conversation("ses_fakeOffsite04")!
+        model.openCampus("ses_fakeOffsite04")
+        let restoredBefore = restored.count
+        let logQ0 = await log().count
+        let firstTaken = model.campusSend("First of two", to: offsiteC, delivery: nil)
+        let secondTaken = model.campusSend("Second of two", to: offsiteC, delivery: nil)
+        await wait(0.5)
+        let queued = campus.held?.phase == .held && campus.waiting.count == 1 && campus.waiting.first?.label.hasSuffix(": Second of two") == true
+        await shot("campus-18-send-queue.png")
+        campus.undo()
+        let undoneAll = campus.held?.phase == .undone && campus.held?.alsoReturned == 1 && campus.waiting.isEmpty
+        let backTexts = restored.suffix(from: restoredBefore).map { $0.1 }
+        // A box that is not on screen when its text comes back takes it when it appears: the first typed on top, and only once.
+        model.campusReturnDraft("Second of two", to: "ses_notShown"); model.campusReturnDraft("First of two", to: "ses_notShown")
+        let claimOrder = model.claimCampusDrafts("ses_notShown") == "First of two\nSecond of two" && model.claimCampusDrafts("ses_notShown") == nil
+        await wait(4)
+        report("Campus sending: a message typed behind another waits in a queue under the banner, and Undo takes both back into their boxes (the first on top) with nothing sent",
+               firstTaken && secondTaken && queued && undoneAll && backTexts == ["Second of two", "First of two"] && claimOrder,
+               "taken=\(firstTaken)/\(secondTaken) queued=\(queued) undone=\(undoneAll) back=\(backTexts)")
+        let logQ1 = await log().count
+        _ = await until(10) { campus.held == nil }
+        _ = model.campusSend("Goes at once", to: campus.conversation("ses_fakeOffsite04")!, delivery: nil)
+        _ = model.campusSend("Goes after its own window", to: campus.conversation("ses_fakeOffsite04")!, delivery: nil)
+        await wait(0.4)
+        let tNow = Date()
+        campus.sendNow()
+        let nowSent = await until(1.5) { campus.timeline("ses_fakeOffsite04")?.items.contains { $0.kind == .user && $0.text == "Goes at once" } == true }
+        let nowTook = Date().timeIntervalSince(tNow)
+        let wNow = await log()
+        let secondWaits = campus.held?.conversationID == "ses_fakeOffsite04" && campus.held?.phase == .held && campus.waiting.isEmpty
+        await shot("campus-19-send-now.png")
+        let bothOut = await until(10) { campus.held?.phase == .sent && campus.timeline("ses_fakeOffsite04")?.items.contains { $0.kind == .user && $0.text == "Goes after its own window" } == true }
+        let wQ = await log()
+        report("Campus sending: Now sends the one at the front at once (well inside the 3-second window); the next waits its own window and goes after it, in order",
+               logQ1 == logQ0 && nowSent && nowTook < 2.0 && wNow.count == logQ1 + 1 && wNow.last?.contains("Goes at once") == true && secondWaits && bothOut && wQ.count == logQ1 + 2 && wQ.last?.contains("Goes after its own window") == true,
+               "now=\(nowSent) in \(String(format: "%.1f", nowTook)) s log=\(wNow.count - logQ1)/\(wQ.count - logQ1) next=\(secondWaits)")
+        _ = await until(25) { campus.conversation("ses_fakeOffsite04")?.working != true }
+        _ = await until(10) { campus.held == nil }
+        await control("/__fake/fail-writes?on=1")
+        let restoredFail = restored.count
+        _ = model.campusSend("Fails one", to: campus.conversation("ses_fakeOffsite04")!, delivery: nil)
+        _ = model.campusSend("Fails two", to: campus.conversation("ses_fakeOffsite04")!, delivery: nil)
+        let failedQ = await until(10) { if case .failed? = campus.held?.phase { return true }; return false }
+        await control("/__fake/fail-writes?on=0")
+        let failBack = restored.suffix(from: restoredFail).map { $0.1 }
+        let wFail = await log()
+        report("Campus sending: when the first of two fails, both texts go back to the box (in the order typed) and the second is never sent",
+               failedQ && failBack == ["Fails two", "Fails one"] && campus.held?.alsoReturned == 1 && campus.waiting.isEmpty && wFail.count == wQ.count, "failed=\(failedQ) back=\(failBack) log=\(wFail.count)/\(wQ.count)")
         _ = await until(10) { campus.held == nil }
         model.disableCampusWrites()
         report("Campus writes: the switch can be turned off again at once", !campus.writesEnabled, "")

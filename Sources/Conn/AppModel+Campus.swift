@@ -166,8 +166,21 @@ extension AppModel {
     @discardableResult
     func campusSend(_ text: String, to c: CampusConversation, delivery: String?) -> Bool {
         let id = c.id
-        if let why = campus.send(text, to: c, delivery: delivery, restore: { [weak self] t in self?.campusDraftRestore.send((id, t)) }) { toast(why.message); return false }
+        if let why = campus.send(text, to: c, delivery: delivery, restore: { [weak self] t in self?.campusReturnDraft(t, to: id) }) { toast(why.message); return false }
         return true
+    }
+
+    /// A text goes back to its conversation's box (on screen now, or when it next is).
+    func campusReturnDraft(_ text: String, to id: String) {
+        campusUnclaimedDrafts[id, default: []].append(text)
+        campusDraftRestore.send((id, text))
+    }
+
+    /// What the box of a conversation should take back in front of what it holds: the texts given back since it last asked, the last given back first (they come back
+    /// last-typed first, so the first one typed ends up on top). Nil when there is none.
+    func claimCampusDrafts(_ id: String) -> String? {
+        guard let all = campusUnclaimedDrafts.removeValue(forKey: id), !all.isEmpty else { return nil }
+        return all.reversed().joined(separator: "\n")
     }
 
     func campusStop(_ c: CampusConversation) { if let why = campus.stop(c) { toast(why.message) } }

@@ -458,23 +458,40 @@ struct CampusTranscriptView: View {
 
 // MARK: - the composer, the Stop button and the undo banner (slice 2)
 
-/// The write waiting out its undo window, sending, or just done: the way Conn's Herdr compose box shows it.
+/// The write waiting out its undo window, sending, or just done: the way Conn's Herdr compose box shows it, with Now to skip the wait. Messages typed behind it wait
+/// in a list under it, each with its own Take back; Undo on the first takes the whole lot back.
 struct CampusHeldBanner: View {
     @EnvironmentObject var app: AppModel
     @ObservedObject var campus: CampusStore
 
     var body: some View {
         if let h = campus.held {
-            HStack(spacing: 8) {
-                switch h.phase {
-                case .held: Image(systemName: "hourglass"); Text("Sending in \(h.secondsLeft) s: \(app.privacy ? "message" : h.label)").lineLimit(1)
-                case .sending: ProgressView().controlSize(.small); Text("Sending…")
-                case .sent: Image(systemName: "checkmark.circle.fill").foregroundStyle(AgentState.done.color); Text("Sent to Campus.")
-                case .undone: Image(systemName: "arrow.uturn.backward"); Text(h.restores ? "Taken back into the box." : "Not sent.")
-                case .failed(let why): Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text("Not sent: \(why).\(h.restores ? " Your text is back in the box." : "")").lineLimit(2)
+            VStack(spacing: 4) {
+                HStack(spacing: 8) {
+                    switch h.phase {
+                    case .held: Image(systemName: "hourglass"); Text("Sending in \(h.secondsLeft) s: \(app.privacy ? "message" : h.label)").lineLimit(1)
+                    case .sending: ProgressView().controlSize(.small); Text("Sending…")
+                    case .sent: Image(systemName: "checkmark.circle.fill").foregroundStyle(AgentState.done.color); Text("Sent to Campus.\(more(h))")
+                    case .undone: Image(systemName: "arrow.uturn.backward"); Text(h.restores ? "Taken back into the box.\(more(h))" : "Not sent.")
+                    case .failed(let why): Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text("Not sent: \(why).\(h.restores ? " Your text is back in the box.\(more(h))" : "")").lineLimit(2)
+                    }
+                    Spacer()
+                    if h.phase == .held {
+                        Button("Now") { campus.sendNow() }.buttonStyle(.borderless).keyboardShortcut(.return, modifiers: [.command, .shift])
+                            .help("Skip the wait and send it now (\u{21E7}\u{2318}\u{21A9})").accessibilityIdentifier("campus-now")
+                        Button(campus.waiting.isEmpty ? "Undo" : "Undo all") { campus.undo() }.buttonStyle(.borderless).keyboardShortcut("z", modifiers: .command)
+                            .help(campus.waiting.isEmpty ? "Take it back (\u{2318}Z)" : "Take it back, and the \(campus.waiting.count) waiting behind it (\u{2318}Z)").accessibilityIdentifier("campus-undo")
+                    }
                 }
-                Spacer()
-                if h.phase == .held { Button("Undo") { campus.undo() }.buttonStyle(.borderless).keyboardShortcut("z", modifiers: .command).accessibilityIdentifier("campus-undo") }
+                ForEach(campus.waiting) { w in
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock").foregroundStyle(.secondary)
+                        Text("Next: \(app.privacy ? "message" : w.label)").lineLimit(1).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Take back") { campus.takeBack(w.id) }.buttonStyle(.borderless).help("Take this one out of the queue and back into its box").accessibilityIdentifier("campus-take-back")
+                    }
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("campus-waiting")
+                }
             }
             .font(.system(size: 12)).padding(.horizontal, 12).padding(.vertical, 7)
             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -482,6 +499,9 @@ struct CampusHeldBanner: View {
             .accessibilityIdentifier("campus-held")
         }
     }
+
+    /// " 2 waiting messages are back in the box too." when messages that waited behind the write were given back with it.
+    private func more(_ h: CampusHeld) -> String { h.alsoReturned == 0 ? "" : " \(h.alsoReturned) waiting \(h.alsoReturned == 1 ? "message is" : "messages are") back in the box too." }
 }
 
 /// The header's star: keeps this conversation in the Reader column's starred row (and takes it out again).
@@ -557,11 +577,18 @@ struct CampusComposer: View {
             .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 2)
         }
         .background(.bar)
-        .onReceive(app.campusDraftRestore.filter { $0.0 == c.id }) { _, t in text = text.isEmpty ? t : t + "\n" + text }
+        .onReceive(app.campusDraftRestore.filter { $0.0 == c.id }) { _ in takeBackDrafts() }
+        .onAppear { takeBackDrafts() }
         .accessibilityIdentifier("campus-composer")
     }
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Put the texts that came back (an Undo, a failed send) in front of what is in the box now.
+    private func takeBackDrafts() {
+        guard let back = app.claimCampusDrafts(c.id) else { return }
+        text = text.isEmpty ? back : back + "\n" + text
+    }
 
     private var placeholder: String {
         if !campus.writesEnabled { return "Campus writes are off" }
