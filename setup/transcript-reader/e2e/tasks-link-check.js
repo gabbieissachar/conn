@@ -11,7 +11,9 @@
 // "Tasks" (the tab of the open header, the icon of the folded one) shows only on a conversation a board reads, appears once that board is known, and opens that one
 // board alone (board/?session=<board>: one board read, no session list, no other board fetched, no switch to another session) with a link to the whole board;
 // nothing scrolls sideways and the folded row keeps every icon in the window at 1440, 1200, 700 and a phone's 390 px, light and dark; a click lands on the right
-// board page, whose Conversation link comes back.
+// board page, whose Conversation link comes back. In a Watch column of 3 or 4 of a host (330 to 480 px) and on a phone, the board's header keeps its Conversation
+// link on the whole board and on one session's board (it must be shown, inside the window, as tall as the Tasks tab, reachable by a click on its own middle, and lead
+// back to the reader), and the reader's own header keeps every control inside the window.
 
 const fs = require('fs');
 const os = require('os');
@@ -21,7 +23,7 @@ const { make, freePort, sleep } = require('./axi');
 
 const folder = fs.mkdtempSync(path.join(process.argv[2] ? path.resolve(process.argv[2]) : os.tmpdir(), 'reader-tasks-link-lab-'));
 const shots = path.resolve(process.argv[3] || path.join(folder, 'screenshots'));
-const { check, ev, until, axi, finish } = make('reader-tasks-link-check');
+const { check, ev, until, axi, click, finish } = make('reader-tasks-link-check');
 
 function startServer(lab, boardLab, port, flags) {
   const out = fs.openSync(path.join(folder, `server-${port}.log`), 'a');
@@ -48,6 +50,8 @@ const onPage = () => ev(`const sess = [...document.querySelectorAll('.sessline .
 const boardCalls = () => ev(`return performance.getEntriesByType('resource').map(e => new URL(e.name)).filter(u => u.pathname.includes('/api/transcript-reader/board')).map(u => u.pathname.split('/').pop() + u.search);`);
 const boardFit = () => ev(`const w = innerWidth, tabs = [...document.querySelectorAll('.bar .tabs > *')].filter(e => e.offsetParent); const link = document.getElementById('all-tasks'); const l = link && link.getBoundingClientRect(); return { scroll: document.documentElement.scrollWidth <= w, outTabs: tabs.filter(e => e.getBoundingClientRect().right > w + 1 || e.getBoundingClientRect().left < -1).length, link: l ? [Math.round(l.left), Math.round(l.width), Math.round(l.height)] : null, win: w };`);
 const inWindow = (r, win) => r && r[0] >= 0 && r[0] + r[2] <= win;
+// The way back on a board page: the Conversation tab as the page lays it out, and what a click on its middle would hit.
+const wayBack = () => ev(`const w = innerWidth, a = document.getElementById('to-reader'), t = [...document.querySelectorAll('.bar .tabs .tab')].find(e => e.getAttribute('aria-selected') === 'true'), b = a.getBoundingClientRect(), tb = t.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return { shown: !!a.offsetParent, rect: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)], inWindow: b.width > 0 && b.left >= 0 && b.right <= w, tall: Math.round(b.height) === Math.round(tb.height) && Math.abs(b.top - tb.top) <= 1, hit: hit === a || a.contains(hit), name: a.textContent.trim(), href: a.getAttribute('href'), scroll: document.documentElement.scrollWidth <= w };`);
 const iconsRow = () => ev(`const win = innerWidth, shown = [...document.querySelectorAll('.bar .title > *')].filter(e => e.offsetParent), rects = shown.map(e => e.getBoundingClientRect()); const out = rects.filter(b => b.right > win + 1 || b.left < -1).length; const f = document.getElementById('follow-quick').getBoundingClientRect(), d = document.getElementById('view-doc').getBoundingClientRect(); return { out, followWithDocs: Math.abs(f.top - d.top) < 2, h: Math.round(document.getElementById('bar').getBoundingClientRect().height) };`);
 const setFolded = (want) => { const now = ev(`return document.getElementById('bar').classList.contains('collapsed');`); if (now !== want) ev(`document.getElementById('bar-toggle').click(); return true;`); };
 
@@ -101,7 +105,7 @@ const setFolded = (want) => { const now = ev(`return document.getElementById('ba
     await until(`return { ok: !document.getElementById('tab-tasks').hidden && document.getElementById('tab-tasks').getAttribute('href').endsWith('?session=leader-lab') };`, 'crew-1 again', 20000);
 
     // ---- the header at each width: open (the tabs among the tabs) and folded (the icon among the icons), light and dark
-    for (const [viewport, label, win] of [['1440x900x1', '1440 px', 1440], ['1200x900x1', '1200 px', 1200], ['700x900x1', '700 px', 700], ['390x844x2,mobile,touch', 'a phone (390 px)', 390]]) {
+    for (const [viewport, label, win] of [['1440x900x1', '1440 px', 1440], ['1200x900x1', '1200 px', 1200], ['700x900x1', '700 px', 700], ['480x900x1', 'a 3-column Watch (480 px)', 480], ['390x844x2,mobile,touch', 'a phone (390 px)', 390], ['330x900x1', 'a 4-column Watch (330 px)', 330]]) {
       axi('emulate', '--viewport', viewport); await sleep(900);
       const phone = /mobile/.test(viewport);
       for (const scheme of (win === 1440 || phone) ? ['light', 'dark'] : ['light']) {
@@ -200,6 +204,29 @@ const setFolded = (want) => { const now = ev(`return document.getElementById('ba
         axi('screenshot', path.join(shots, `tasks-link-board-only-${win}-${scheme}.png`));
       }
     }
+    // ---- the way back to the conversation at a Watch column's widths (3 and 4 columns: roughly 330 to 480 px) and a phone's, on both pages, light and dark
+    for (const [page, query] of [['one session', '?session=leader-lab'], ['the whole board', '']]) {
+      for (const win of [330, 360, 390, 440, 480]) {
+        for (const scheme of (win === 330 || win === 440) ? ['light', 'dark'] : ['light']) {
+          axi('open', 'about:blank'); axi('emulate', '--viewport', `${win}x800x1`, '--color-scheme', scheme);
+          axi('open', `http://localhost:${port}${BOARD}${query}${query ? '&' : '?'}run=${Date.now()}`);
+          await until(`return { ok: document.querySelectorAll('.card').length > 0 };`, 'the cards', 60000);
+          const back = wayBack(), what = `${page}, ${win} px${scheme === 'dark' ? ', dark' : ''}`;
+          check(back.shown && back.inWindow && back.name === 'Conversation', `${what}: the Conversation tab is shown, whole and inside the window`, JSON.stringify(back));
+          check(back.tall && back.hit, `${what}: it is as tall as the Tasks tab and a click on its middle lands on it`, JSON.stringify(back));
+          check(back.scroll, `${what}: nothing scrolls sideways`, JSON.stringify(back));
+          if (scheme === 'dark' || win === 390 || win === 480) axi('screenshot', path.join(shots, `tasks-link-way-back-${page === 'the whole board' ? 'all' : 'one'}-${win}-${scheme}.png`));
+        }
+      }
+    }
+    // a click on it, at the narrowest width, comes back to the reader
+    axi('open', 'about:blank'); axi('emulate', '--viewport', '330x800x1', '--color-scheme', 'light');
+    axi('open', `http://localhost:${port}${BOARD}?session=leader-lab&run=${Date.now()}`);
+    await until(`return { ok: document.querySelectorAll('.card').length > 0 };`, 'the cards at 330 px', 60000);
+    click('link', 'Conversation');
+    await until(`return { ok: /prototype\\.html/.test(location.pathname) && document.getElementById('main').children.length > 0 };`, 'the reader page after a real click at 330 px', 30000);
+    check(true, 'a click on Conversation at 330 px comes back to the reader');
+
     axi('open', 'about:blank'); axi('emulate', '--viewport', '1200x900x1', '--color-scheme', 'light');
     axi('open', `http://localhost:${port}${BOARD}?session=nothing-here&run=${Date.now()}`);
     await until(`return { ok: /could not be read/.test(document.getElementById('banners').textContent) };`, 'the banner for a session with no board', 30000);

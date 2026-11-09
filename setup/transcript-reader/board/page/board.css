@@ -226,7 +226,9 @@ code, .mono { font: 12.5px var(--mono); }
   .bar.collapsed .crumb { display: block; }
   }
 @media (max-width: 720px) { .card .c-ref .copy { display: none; } }
-@media (max-width: 440px) { .tab:not([aria-selected="true"]) { display: none; } }
+/* A Watch column of 3 or 4 on a screen, or a phone: 330 to 440 px. The page's own name steps aside so that the way back to the conversation never does (it used to be
+   the tab that was hidden here, and then nothing on the page led back). Both tabs stay, and the row keeps room for the filters button down to about 250 px. */
+@media (max-width: 440px) { .title .brand { display: none; } .tabs { margin-left: 0; } .title { gap: 6px; } }
 @media (hover: none) and (pointer: coarse), (max-width: 440px) {
   .fchip, .ctab, .opt, .ghost, .primary, .seg button, .copy, .sel, .find { min-height: 44px; }
   .copy { padding: 0 10px; }

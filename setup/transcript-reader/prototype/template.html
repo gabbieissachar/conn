@@ -92,7 +92,8 @@ __HEAD_HOSTED__
   /* In the folded title row the picker needs every pixel: the star is narrower there and sits close to it. */
   .crumb-star { width: 26px; margin-left: -4px; }
   .proto { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--open); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
-  .tabs { display: flex; gap: 4px; margin-top: 6px; }
+  /* A Watch column of 4 (about 330 px) cannot hold Conversation, Documents, Tasks and All tasks on one line: the row wraps rather than cut All tasks off or scroll sideways. */
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .tab { flex: 1 1 auto; white-space: nowrap; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
   .tab[aria-selected="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); font-weight: 600; }
   /* The tabs' own list sits inside the row without a box of its own, so the Tasks link (a link to another page, not a view) can share the row without being a tab. */
