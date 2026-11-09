@@ -101,7 +101,7 @@ test('the shared server refuses anything that names the reader\'s out/ folder, h
 function serverCopy() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-serve-')));
   const organizer = path.join(__dirname, '..', 'herdr-organizer');
-  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js', 'pinstore.js', 'tailnet.js', 'passcode.js', 'compress.js', 'delta.js', 'worker.js', 'copysync.js', 'claude-homes.js', 'board.js']],
+  const files = [[__dirname, 'transcript-reader', ['serve.sh', 'server.js', 'api.js', 'pinstore.js', 'tailnet.js', 'passcode.js', 'compress.js', 'delta.js', 'worker.js', 'copysync.js', 'claude-homes.js', 'board.js', 'board-rounds.js']],
     [organizer, 'herdr-organizer', fs.readdirSync(organizer).filter((name) => name.endsWith('.js'))]];
   for (const [from, folder, names] of files) {
     fs.mkdirSync(path.join(root, 'setup', folder), { recursive: true });
@@ -181,7 +181,8 @@ test('serve.sh --tailnet starts loopback only, with one line of why, when Tailsc
 
     // Without the switch, nothing about the tailnet is attempted, even with a passcode.
     await require('./tailnet').writePasscodeFile(passcodeFile, 'a test passcode');
-    const plain = await run({}, 'start', '--port', port);
+    // (A plain start comes back with the switches the last start kept, so this one is --fresh: the file is ignored.)
+    const plain = await run({}, 'start', '--port', port, '--fresh');
     assert.ok(!/Tailnet/i.test(plain.stdout), plain.stdout);
     await run({}, 'stop', '--port', port);
 

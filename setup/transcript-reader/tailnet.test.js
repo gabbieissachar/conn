@@ -1242,9 +1242,9 @@ test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind t
   assert.equal((await s.onHttps({ path: BOARD_API + 'board-sessions', headers: { Cookie: cookie } })).status, 403, 'the session alone is not enough');
   const read = await s.onHttps({ path: BOARD_API + 'board?session=big-boss', headers: { Cookie: cookie, [TOKEN_HEADER]: token } });
   assert.equal(read.status, 200, read.raw);
-  assert.deepEqual(read.json.write, { marks: false, answer: false, send: false }, 'the phone is told it cannot write');
+  assert.deepEqual(read.json.write, { marks: false, answer: false, send: false, review: false }, 'the phone is told it cannot write');
   const own = await s.onLoopback({ path: BOARD_API + 'board?session=big-boss', headers: { [TOKEN_HEADER]: tokenIn((await s.onLoopback({ path: BOARD_PAGE, headers: NAVIGATE })).raw) } });
-  assert.deepEqual(own.json.write, { marks: true, answer: true, send: true }, 'loopback keeps its flags');
+  assert.deepEqual(own.json.write, { marks: true, answer: true, send: true, review: false }, 'loopback keeps its flags');
   for (const name of ['board-mark', 'board-answer', 'board-worker', 'board-send']) {
     const refused = await s.onHttps({ method: 'POST', path: BOARD_API + name, headers: { Cookie: cookie, Origin: SECURE_ORIGIN(s), 'Content-Type': 'application/json', [TOKEN_HEADER]: token, 'Sec-Fetch-Site': 'same-origin' }, body: { session: 'big-boss', session_id: A, text: 'from the phone' } });
     assert.equal(refused.status, 403, name);
