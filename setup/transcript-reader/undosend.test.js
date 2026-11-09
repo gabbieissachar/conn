@@ -12,8 +12,8 @@ const path = require('path');
 const vm = require('vm');
 const TEMPLATE = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
 
-const { UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend } = vm.runInNewContext(
-  fs.readFileSync(path.join(__dirname, 'prototype', 'undosend.js'), 'utf8') + '\n({ UNDO_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend })', { Math });
+const { UNDO_SECONDS, COMMAND_ASK_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend, sessionCommand, makeCommandAsk } = vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, 'prototype', 'undosend.js'), 'utf8') + '\n({ UNDO_SECONDS, COMMAND_ASK_SECONDS, makeSendHold, makeSendHandoff, resumeSendHandoff, describeSend, sessionCommand, makeCommandAsk })', { Math });
 
 // A clock that only moves when told to, with timers that fire when it passes them.
 function clock() {
@@ -86,14 +86,14 @@ test('Send now runs the send at once, once, and Undo cannot follow it', () => {
 });
 
 test('the dock makes Add into Now only for the held message on screen', () => {
-  assert.match(TEMPLATE, /add\.disabled = held \? false : link\.sending \|\| elsewhere \|\| !dockTyped\(\) \|\| command;/);
+  assert.match(TEMPLATE, /add\.disabled = held \|\| asking \? false : link\.sending \|\| elsewhere \|\| !dockTyped\(\) \|\| command;/);
   assert.match(TEMPLATE, /if \(!add\.dataset\.addSize && add\.getBoundingClientRect\(\)\.width > 0\)/);
   assert.match(TEMPLATE, /const \{ width, height \} = add\.getBoundingClientRect\(\);/);
   assert.match(TEMPLATE, /add\.style\.height = `\$\{height\}px`;/);
-  assert.match(TEMPLATE, /add\.textContent = held \? "Now" : "Add";/);
+  assert.match(TEMPLATE, /add\.textContent = held \? "Now" : asking \? "Keep" : "Add";/);
   assert.match(TEMPLATE, /add\.title = held \? "Send this message now \(Enter; Cmd\+Enter or Ctrl\+Enter\)"/);
-  assert.match(TEMPLATE, /add\.setAttribute\("aria-label", held \? "Send this message now" : "Add to the batch and write the next comment"\);/);
-  assert.match(TEMPLATE, /if \(heldHere\(\)\) sendNow\(\); else \{ addToBatch\(\); dock\("text"\)\.focus\(\); \}/);
+  assert.match(TEMPLATE, /add\.setAttribute\("aria-label", held \? "Send this message now" : asking \? "Do not send the command" : "Add to the batch and write the next comment"\);/);
+  assert.match(TEMPLATE, /if \(heldHere\(\)\) sendNow\(\); else if \(askingHere\(\)\) keepCommand\(\); else \{ addToBatch\(\); dock\("text"\)\.focus\(\); \}/);
   assert.match(TEMPLATE, /if \(e\.isComposing\) return;/);
   assert.match(TEMPLATE, /else if \(e\.key === "Enter" && !e\.shiftKey\) \{ e\.preventDefault\(\); sendNow\(\); \}/);
 });
@@ -271,4 +271,82 @@ test('Undo is offered only where the holder can prove the message never reached 
   };
   for (const [name, [p, options]] of Object.entries(cases)) if (say(p, options).actions.includes('undo')) offered.push(name);
   assert.deepEqual(offered, ['window', 'held', 'queued']);
+});
+
+// ---------------------------------------------------------------- a /clear asks in the page, and a /bearings does not
+
+test('session commands: the six that end, reset, shrink or sign out a session are named, and a skill or any other command is not', () => {
+  for (const text of ['/clear', '/clear now', '/exit', '/quit', '/compact', '/compact keep the plan', '/logout', '/rewind']) assert.ok(sessionCommand(text), text);
+  for (const text of ['/bearings', '/bearings plain', '/clearly', '/clear-all', '/compactor', '/model', '$bearings', 'clear', 'please /clear', '', undefined]) assert.equal(sessionCommand(text), null, String(text));
+  assert.equal(sessionCommand('/clear now').command, '/clear');
+  assert.match(sessionCommand('/clear').says, /starts that session over/);
+});
+
+test('the question a /clear asks is the page\'s own: the first press opens it, the second sends, with no native dialog anywhere', () => {
+  const c = clock();
+  let changes = 0;
+  const ask = makeCommandAsk(c, () => { changes += 1; });
+  assert.equal(ask.open('s1', '/clear'), '');
+  assert.equal(ask.press('s1', '/clear'), 'ask', 'the first press only asks');
+  assert.equal(ask.open('s1', '/clear'), '/clear');
+  assert.match(ask.words('alpha', '/clear'), /^Send \/clear to alpha\? It starts that session over\. Press Confirm, or Keep to leave it\.$/);
+  assert.equal(ask.press('s1', '/clear'), 'send', 'the second press sends');
+  assert.equal(ask.open('s1', '/clear'), '', 'and the question is over');
+  assert.equal(ask.press('s1', '/clear'), 'ask', 'a third press, for a new send, asks again');
+});
+
+test('a skill reference or any other command is never asked about: its first press sends, alone or with words after it', () => {
+  const ask = makeCommandAsk(clock());
+  for (const text of ['/bearings', '/bearings plain', '/model', 'a plain message', '$bearings']) {
+    assert.equal(ask.press('s1', text), 'send', text);
+    assert.equal(ask.open('s1', text), '', text);
+    assert.equal(ask.words('alpha', text), '', text);
+  }
+});
+
+test('the question closes when the text changes, another session is on screen, Keep is pressed or it times out; it never carries over to another send', () => {
+  const c = clock();
+  let changes = 0;
+  const ask = makeCommandAsk(c, () => { changes += 1; });
+  ask.press('s1', '/clear');
+  assert.equal(ask.open('s1', '/clear now'), '', 'other words: not the question asked');
+  assert.equal(ask.press('s1', '/clear now'), 'ask', 'a press with other words asks about those, it does not send what was asked about before');
+  assert.equal(ask.open('s1', '/clear'), '');
+  assert.equal(ask.press('s2', '/clear now'), 'ask', 'the same words in another session ask again');
+  assert.equal(ask.open('s1', '/clear now'), '');
+  ask.press('s2', '/clear now');           // answered: send
+  assert.equal(ask.press('s2', '/exit'), 'ask');
+  ask.sync('s2', '/exit now');
+  assert.equal(ask.open('s2', '/exit'), '', 'the page painting other words closes the question');
+  assert.equal(ask.press('s2', '/exit'), 'ask', 'so the same words typed again ask again');
+  ask.sync('s2', '/exit');
+  assert.equal(ask.open('s2', '/exit'), '/exit', 'painting the same words leaves it open');
+  ask.sync('s3', '/exit');
+  assert.equal(ask.open('s2', '/exit'), '', 'and so does another session on screen');
+  assert.equal(ask.press('s2', '/exit'), 'ask');
+  assert.equal(ask.close(), true, 'Keep closes it');
+  assert.equal(ask.close(), false, 'and there is nothing left to close');
+  assert.equal(ask.open('s2', '/exit'), '');
+  assert.equal(ask.press('s2', '/exit'), 'ask');
+  c.tick(COMMAND_ASK_SECONDS - 1);
+  assert.equal(ask.open('s2', '/exit'), '/exit', 'still open before the time is up');
+  assert.equal(changes, 0);
+  c.tick(2);
+  assert.equal(ask.open('s2', '/exit'), '', 'asked again after the time is up');
+  assert.equal(changes, 1, 'the page paints again when the question closes by itself');
+  assert.equal(ask.press('s2', '/exit'), 'ask');
+  assert.equal(ask.press('s2', 'hello'), 'send', 'sending something else closes it');
+  assert.equal(ask.open('s2', '/exit'), '');
+  c.tick(60);
+  assert.equal(changes, 1, 'a closed question\'s timer does nothing');
+});
+
+test('no native confirm() stands between Send and a message in the conversation view or in the board\'s message box', () => {
+  const code = (file) => fs.readFileSync(path.join(__dirname, file), 'utf8').split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+  const dock = code('prototype/template.html').match(/function sendDock\(\) \{[\s\S]*?\n  \}\n/)[0];
+  assert.doesNotMatch(dock, /confirm\(/);
+  assert.match(dock, /commandAsk\.press\(session\.id, text\) === "ask"/);
+  const board = code('board/page/composer.js').match(/function sendDock\(\) \{[\s\S]*?\n    \}\n/)[0];
+  assert.doesNotMatch(board, /confirm\(/);
+  assert.match(board, /commandAsk\.press\(id, out\) === "ask"/);
 });

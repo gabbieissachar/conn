@@ -11,11 +11,6 @@
   // session and Herdr's state, so a refusal reads the same. With the flag off the box still drafts, quotes, batches and copies, and says why Send is off.
   const boardComposer = (host) => {
     const MAX_SEND = 4000, SENDABLE = new Set(["idle", "working", "done"]), CLEAR_ASK_MS = 6000, FOLD_AT = 90, POLL_MS = 3000, PENDING_KEEP_S = 120;
-    const SESSION_COMMANDS = {
-      "/clear": "starts that session over", "/exit": "ends that session", "/quit": "ends that session",
-      "/compact": "replaces that session's earlier turns with a summary", "/logout": "signs that agent out",
-      "/rewind": "opens a menu in the pane to roll that session back",
-    };
     const make = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
     const button = (text, cls, title) => { const b = make("button", cls, text); b.type = "button"; if (title) b.title = title; return b; };
     const stored = (store, key) => { try { return JSON.parse(store.getItem(key) || "null"); } catch (e) { return null; } };
@@ -31,6 +26,8 @@
       pending: [], foldOpen: false, panes: undefined, batchSig: "", resultTimer: 0 };
     const clock = { now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h) };
     const sendHold = makeSendHold(clock);
+    // A command that ends or resets the session asks in the page first (commandAsk, undosend.js), never with confirm(): a web view with no dialog answers "no".
+    const commandAsk = makeCommandAsk(clock, () => render());
     let holdTimer = 0, pollTimer = 0, attached = false;
     const targets = new WeakMap();  // a reply's box -> its builder: passage => { sid, title, passage, pointer(p) }
 
@@ -160,8 +157,8 @@
     function sendDock() {
       if (link.hold) return;
       const out = outgoing(); if (!out || sendBtn.disabled) return;
-      const id = sid(), command = (out.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
-      if (command && !confirm(`Send ${command} to ${name()}? It ${SESSION_COMMANDS[command]}.`)) return;
+      const id = sid();
+      if (commandAsk.press(id, out) === "ask") { render(); return; }
       const sentItems = batchOf(id).slice(), sentBox = text.value, pointed = Boolean(link.quote), at = clock.now();
       const hold = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, sid: id, text: out, at, deadline: at + UNDO_SECONDS, sentItems, sentBox, pointed };
       const begun = sendHold.begin(() => { endHold(); deliver({ sid: id, text: out, sentItems, sentBox }); }, UNDO_SECONDS, hold);
@@ -256,6 +253,8 @@
         text.value = d.text || ""; grow();
       }
       const batch = batchOf(id), out = outgoing(), command = typed().startsWith("/"), held = heldHere(), over = out.length > MAX_SEND;
+      commandAsk.sync(id, out);
+      const asking = held ? "" : commandAsk.open(id, out);  // a /clear or the like asked about: Send reads Confirm and Add reads Keep until it is answered
       const elsewhere = Boolean(link.hold && link.hold.sid !== id), pane = paneOf();
       const off = whyOff(out, command, batch.length);
       text.placeholder = `Message ${n}`; text.setAttribute("aria-label", `Message ${n}`); text.readOnly = held;
@@ -307,16 +306,16 @@
       const total = batch.length + (typed() ? 1 : 0);
       sendBtn.disabled = held ? false : Boolean(off) || link.sending || !out || over;
       sendBtn.classList.toggle("undo", held);
-      sendBtn.title = held ? "Take the message back before it is sent (Esc)" : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
-      sendBtn.textContent = held ? `Undo ${sendHold.left()}` : batch.length ? `Send ${total}` : "Send";
-      addBtn.disabled = held ? false : link.sending || elsewhere || !typed() || command;
-      addBtn.textContent = held ? "Now" : "Add";
-      addBtn.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
-      addBtn.setAttribute("aria-label", held ? "Send this message now" : "Add to the batch and write the next comment");
+      sendBtn.title = held ? "Take the message back before it is sent (Esc)" : asking ? `Send ${asking} now (Enter)` : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
+      sendBtn.textContent = held ? `Undo ${sendHold.left()}` : asking ? `Confirm ${asking}` : batch.length ? `Send ${total}` : "Send";
+      addBtn.disabled = held || asking ? false : link.sending || elsewhere || !typed() || command;
+      addBtn.textContent = held ? "Now" : asking ? "Keep" : "Add";
+      addBtn.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : asking ? "Do not send the command (Esc)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
+      addBtn.setAttribute("aria-label", held ? "Send this message now" : asking ? "Do not send the command" : "Add to the batch and write the next comment");
       copyBtn.disabled = !out;
       count.hidden = out.length <= 3500; count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`; count.classList.toggle("bad", over);
-      why.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(off && pane && host.sendOn())));
-      why.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : link.result ? link.result.text : off || (pane ? `To ${pane.label} · ${pane.status}${link.sending ? " · sending…" : ""}` : "");
+      why.classList.toggle("bad", !held && !asking && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(off && pane && host.sendOn())));
+      why.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : asking ? commandAsk.words(n, out) : link.result ? link.result.text : off || (pane ? `To ${pane.label} · ${pane.status}${link.sending ? " · sending…" : ""}` : "");
     }
 
     // ---- keys and buttons
@@ -331,10 +330,13 @@
       }
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); addToBatch(); return; }
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); sendDock(); }
-      if (e.key === "Escape") { e.stopPropagation(); if (link.quote) dropQuote(); else text.blur(); }
+      if (e.key === "Escape") { e.stopPropagation(); if (askingHere()) keepCommand(); else if (link.quote) dropQuote(); else text.blur(); }
     });
+    // The question a /clear asks (commandAsk): open for the text in the box, in the conversation on screen. Keep, or Esc, leaves the command unsent.
+    const askingHere = () => Boolean(commandAsk.open(sid(), outgoing()));
+    const keepCommand = () => { commandAsk.close(); render(); text.focus(); };
     sendBtn.addEventListener("click", () => { if (heldHere()) undoHold(); else sendDock(); });
-    addBtn.addEventListener("click", () => { if (heldHere()) sendNow(); else { addToBatch(); text.focus(); } });
+    addBtn.addEventListener("click", () => { if (heldHere()) sendNow(); else if (askingHere()) keepCommand(); else { addToBatch(); text.focus(); } });
     barUndo.addEventListener("click", undoHold);
     chipDrop.addEventListener("click", dropQuote);
     copyBtn.addEventListener("click", async () => { const out = outgoing(); if (!out) return; const ok = await replyViewCopy(out); say(ok, ok ? "Copied." : "Copy failed.", 3000); render(); });

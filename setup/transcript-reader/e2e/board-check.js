@@ -262,6 +262,32 @@ const sheetText = () => ev(`const s = document.querySelector('.sheet'); return s
     check(got.length === 1 && /^PROMPT lab w1:p1 2 comments:/.test(got[0]) && /1\. Re your reply at \d\d:\d\d \("Nathan, here are the calls/.test(got[0]) && /: go with R1/.test(got[0]) && /2\. and R2 too/.test(got[0]), 'the pane got one numbered message, as the conversation view sends a batch', JSON.stringify(got).slice(0, 400));
     await until(`return { ok: /Sent to lab-supervisor/.test(document.querySelector('.cmp-pending') ? document.querySelector('.cmp-pending').innerText : '') || /^Sent to/.test(document.querySelector('.cmp-why').textContent) };`, 'the sent note', 30000);
     check(true, 'the faded message says it was sent');
+    // a skill reference or a slash command goes as typed; /clear asks in the page first (never with confirm(), which a web view without a dialog answers "no")
+    ev(`window.__asked = []; window.confirm = (m) => { window.__asked.push(m); return false; }; return true;`);
+    const typeBox = (v) => ev(`const t = document.querySelector('.cmp textarea'); t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
+    const boxState = () => ev(`return { send: document.querySelector('.cmp .go').textContent, add: document.querySelector('.cmp-row .alt').textContent, ro: document.querySelector('.cmp textarea').readOnly, why: document.querySelector('.cmp-why').textContent, value: document.querySelector('.cmp textarea').value };`);
+    const before = promptsOf().length;
+    typeBox('/bearings plain'); await sleep(300);
+    ev(`document.querySelector('.cmp .go').click(); return true;`); await sleep(500);
+    check(/^Undo \d$/.test(boxState().send), '/bearings plain: Send holds it for the Undo window with no question', JSON.stringify(boxState()));
+    ev(`document.querySelector('.cmp-row .alt').click(); return true;`);
+    for (let i = 0; i < 80 && promptsOf().length === before; i++) await sleep(250);
+    check(promptsOf().length === before + 1 && /^PROMPT lab w1:p1 \/bearings plain\n?$/.test(promptsOf()[before]), '/bearings plain: the pane was given exactly what was typed', JSON.stringify(promptsOf().slice(before)));
+    typeBox('/clear'); await sleep(300);
+    ev(`document.querySelector('.cmp .go').click(); return true;`); await sleep(500);
+    let q = boxState();
+    check(q.send === 'Confirm /clear' && q.add === 'Keep' && !q.ro && /^Send \/clear to lab-supervisor\? It starts that session over\./.test(q.why) && promptsOf().length === before + 1, '/clear: the first press asks in the page (Confirm / Keep) and sends nothing', JSON.stringify(q));
+    axi('screenshot', path.join(folder, 'board-clear-asked.png'));
+    ev(`document.querySelector('.cmp-row .alt').click(); return true;`); await sleep(300);
+    q = boxState();
+    check(q.send === 'Send' && q.add === 'Add' && q.value === '/clear', '/clear: Keep closes the question and leaves the words in the box', JSON.stringify(q));
+    ev(`document.querySelector('.cmp .go').click(); return true;`); await sleep(300);
+    ev(`document.querySelector('.cmp .go').click(); return true;`); await sleep(500);
+    check(/^Undo \d$/.test(boxState().send), '/clear: Confirm holds it for the Undo window', JSON.stringify(boxState()));
+    ev(`document.querySelector('.cmp-row .alt').click(); return true;`);
+    for (let i = 0; i < 80 && promptsOf().length === before + 1; i++) await sleep(250);
+    check(promptsOf().length === before + 2 && /^PROMPT lab w1:p1 \/clear\n?$/.test(promptsOf()[before + 1]), '/clear: the pane was given exactly /clear', JSON.stringify(promptsOf().slice(before + 1)));
+    check(ev(`return window.__asked.length;`) === 0, 'no native dialog was ever asked');
     // a reply from an earlier session than the one the box writes to is described by its words (that session never saw it)
     await openBoard(port, '&t=alpha-route');
     await until(`return { ok: !!document.querySelector('.sheet .cmp') && /To lab-supervisor/.test(document.querySelector('.cmp-why').textContent) };`, 'the box aimed at the live pane', 30000);

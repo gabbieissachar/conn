@@ -55,6 +55,51 @@
     };
   };
 
+  // The commands that end, reset, shrink or sign out the session on the other end ask first. The question is the page's own: a native confirm() is
+  // answered "no" at once by a web view with no dialog (Conn's, the Integrated Browser of VS Code), which left /clear with a Send that did nothing.
+  // The first Send (or Enter) opens the question for exactly this text in exactly this session (Send reads "Confirm /clear", Add reads "Keep"),
+  // the second Send sends, and another text, another session, Keep, Esc or COMMAND_ASK_SECONDS without an answer closes it. Any other message,
+  // /bearings and every other skill or command included, is never asked about: its press is "send".
+  const SESSION_COMMANDS = {
+    "/clear": "starts that session over", "/exit": "ends that session", "/quit": "ends that session",
+    "/compact": "replaces that session's earlier turns with a summary", "/logout": "signs that agent out",
+    "/rewind": "opens a menu in the pane to roll that session back",
+  };
+  const COMMAND_ASK_SECONDS = 6;
+  const sessionCommand = text => {
+    const m = /^\/(clear|exit|quit|compact|logout|rewind)(?=\s|$)/.exec(typeof text === "string" ? text : "");
+    return m ? { command: m[0], says: SESSION_COMMANDS[m[0]] } : null;
+  };
+  // clock: as for makeSendHold. changed() runs when the question closes by itself (the page paints again).
+  const makeCommandAsk = (clock, changed = () => {}) => {
+    let asked = null;
+    const close = () => {
+      if (!asked) return false;
+      clock.cancel(asked.timer);
+      asked = null;
+      return true;
+    };
+    return {
+      // What pressing Send does with this text in this session: "send", or "ask" when the question has just been opened.
+      press(sid, text) {
+        if (!sessionCommand(text)) { close(); return "send"; }
+        if (asked && asked.sid === sid && asked.text === text) { close(); return "send"; }
+        close();
+        const mine = { sid, text, timer: null };
+        asked = mine;
+        mine.timer = clock.after(COMMAND_ASK_SECONDS * 1000, () => { if (asked === mine) { asked = null; changed(); } });
+        return "ask";
+      },
+      // Called as the page paints: a question about other words, or in another session, is over (so the same words typed again, later, ask again).
+      sync(sid, text) { if (asked && (asked.sid !== sid || asked.text !== text)) close(); },
+      // The command being asked about for exactly this text in this session, else "".
+      open: (sid, text) => asked && asked.sid === sid && asked.text === text ? sessionCommand(text).command : "",
+      close,
+      // The question, in words, for the status line.
+      words: (name, text) => { const c = sessionCommand(text); return c ? `Send ${c.command} to ${name}? It ${c.says}. Press Confirm, or Keep to leave it.` : ""; },
+    };
+  };
+
   // What the faded message says at each step, from the record the page keeps of it:
   //   p       { at, label, agent, text, queue?: { state: "held" | "queued" | "sending" | "sent" | "refused", receipt?, cancelling?,
   //             tooLate? } }  (no queue: sent straight to the pane by the page served from the laptop)

@@ -2885,6 +2885,8 @@ __HEAD_HOSTED__
   const heldHere = () => { const here = dockSession(); return Boolean(link.hold && here && link.hold.sid === here.id); };
   const SENDABLE = new Set(["idle", "working", "done"]);
   const MAX_SEND = 4000;
+  // A command that ends or resets the session asks in the page first (commandAsk, undosend.js): never with confirm(), which a web view without a dialog answers "no".
+  const commandAsk = makeCommandAsk({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) }, () => renderDock());
   // Reply and "Comment on this" attach a pointer to the bar and keep what is already typed.
   // A comment already written against another pointer goes into the batch first, so
   // commenting on one passage after another collects them all.
@@ -3122,6 +3124,9 @@ __HEAD_HOSTED__
     const over = out.length > MAX_SEND;
     // While the message is in its Undo window the box is locked (what is in it is what will be sent) and Send turns into Undo.
     const held = Boolean(link.hold && link.hold.sid === session.id);
+    // A /clear or the like asked about: Send reads Confirm and Add reads Keep until it is answered, changed or timed out.
+    commandAsk.sync(session.id, out);
+    const asking = held ? "" : commandAsk.open(session.id, out);
     dock("text").readOnly = held;
     // The photos stay as they are while the message is held or on its way; the button says why when this copy cannot take any.
     paintThumbs(pics, held || link.sending);
@@ -3131,12 +3136,12 @@ __HEAD_HOSTED__
     dock("photo").title = noPhotos || "Add photos (you can also paste or drop pictures)";
     dock("send").disabled = held ? false : Boolean(reason) || link.sending || (!out && !pics.length) || over;
     dock("send").classList.toggle("undo", held);
-    dock("send").title = held ? "Take the message back before it is sent (Esc)" : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
+    dock("send").title = held ? "Take the message back before it is sent (Esc)" : asking ? `Send ${asking} now (Enter)` : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
     const total = batch.length + (dockTyped() ? 1 : 0);
     // A batch sends one numbered message that the box and the pointer do not show whole, so say where it is.
     dock("note").hidden = !batch.length || link.preview;
     dock("note").textContent = `${total} comment${total === 1 ? "" : "s"} - Exact text shows what Send types`;
-    dock("send").textContent = held ? `Undo ${sendHold.left()}` : batch.length ? `Send ${total}` : "Send";
+    dock("send").textContent = held ? `Undo ${sendHold.left()}` : asking ? `Confirm ${asking}` : batch.length ? `Send ${total}` : "Send";
     const add = dock("add");
     if (!add.dataset.addSize && add.getBoundingClientRect().width > 0) {
       const label = add.textContent;
@@ -3147,18 +3152,18 @@ __HEAD_HOSTED__
       add.style.height = `${height}px`;
       add.dataset.addSize = "1";
     }
-    add.disabled = held ? false : link.sending || elsewhere || !dockTyped() || command;
-    add.textContent = held ? "Now" : "Add";
-    add.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
-    add.setAttribute("aria-label", held ? "Send this message now" : "Add to the batch and write the next comment");
+    add.disabled = held || asking ? false : link.sending || elsewhere || !dockTyped() || command;
+    add.textContent = held ? "Now" : asking ? "Keep" : "Add";
+    add.title = held ? "Send this message now (Enter; Cmd+Enter or Ctrl+Enter)" : asking ? "Do not send the command (Esc)" : "Add to the batch and write the next comment (Cmd+Enter or Ctrl+Enter)";
+    add.setAttribute("aria-label", held ? "Send this message now" : asking ? "Do not send the command" : "Add to the batch and write the next comment");
     dock("copy").disabled = !out;
     const count = dock("count");
     count.hidden = out.length <= 3500;
     count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
     count.classList.toggle("bad", over);
     const status = dock("status");
-    status.classList.toggle("bad", !held && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane && session.agent !== "copilot")));  // a Copilot session is read only: that is a plain note, not a fault
-    status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : link.result ? link.result.text : reason || (HOSTED
+    status.classList.toggle("bad", !held && !asking && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane && session.agent !== "copilot")));  // a Copilot session is read only: that is a plain note, not a fault
+    status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : asking ? commandAsk.words(paneName(session.id), out) : link.result ? link.result.text : reason || (HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
       : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${pics.length ? " · " + attach.photos(pics.length) : ""}${link.sending ? " · " + (link.uploading || "sending…") : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
@@ -3167,11 +3172,6 @@ __HEAD_HOSTED__
     document.documentElement.style.setProperty("--dock-h", bar.offsetHeight + "px");
     placeNewReply();
   }
-  const SESSION_COMMANDS = {
-    "/clear": "starts that session over", "/exit": "ends that session", "/quit": "ends that session",
-    "/compact": "replaces that session's earlier turns with a summary", "/logout": "signs that agent out",
-    "/rewind": "opens a menu in the pane to roll that session back",
-  };
   // Send does not send at once: it holds the message in the page for UNDO_SECONDS (undosend.js), with the box locked, and only then
   // asks the server or the queue. Until that moment nothing has left the page, so Undo can say plainly that it was never sent.
   const sendHold = makeSendHold({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) });
@@ -3247,9 +3247,8 @@ __HEAD_HOSTED__
     const text = outgoing(), sentPhotos = dockSession() ? photos.list(dockSession().id).slice() : [];
     if ((!text && !sentPhotos.length) || dock("send").disabled) return;
     const session = dockSession();
-    // These end, reset, shrink or sign out the session, so they ask first.
-    const command = (text.match(/^\/(clear|exit|quit|compact|logout|rewind)\b/) || [])[0];
-    if (command && !confirm(`Send ${command} to ${paneName(session.id)}? It ${SESSION_COMMANDS[command]}.`)) return;
+    // These end, reset, shrink or sign out the session, so the first press only asks (Send reads Confirm); the second sends.
+    if (commandAsk.press(session.id, text) === "ask") { renderDock(); return; }
     // What this send carries. The box stays as it is (locked) through the Undo window, so Undo has the words to give back; when the window
     // ends or Send now is pressed, the send starts and deliverDock empties the box at once (takeSentFromComposer).
     const sid = session.id, sentItems = batchOf(sid).slice(), sentBox = dock("text").value, pointed = Boolean(link.target);
@@ -3560,10 +3559,14 @@ __HEAD_HOSTED__
     }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); addToBatch(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); sendDock(); }
+    if (e.key === "Escape" && askingHere()) { e.preventDefault(); keepCommand(); return; }
     if (e.key === "Escape" && link.target) dropTarget();
   });
+  // The question a /clear asks (commandAsk): open for the text in the box, in the session on screen. Keep, or Esc, leaves the command unsent.
+  const askingHere = () => { const here = dockSession(); return Boolean(here && commandAsk.open(here.id, outgoing())); };
+  const keepCommand = () => { commandAsk.close(); renderDock(); dock("text").focus(); };
   dock("send").addEventListener("click", () => { if (heldHere()) undoHold(); else sendDock(); });
-  dock("add").addEventListener("click", () => { if (heldHere()) sendNow(); else { addToBatch(); dock("text").focus(); } });
+  dock("add").addEventListener("click", () => { if (heldHere()) sendNow(); else if (askingHere()) keepCommand(); else { addToBatch(); dock("text").focus(); } });
   dock("batch-toggle").addEventListener("click", () => { link.batchOpen = !link.batchOpen; renderDock(); });
   // Clear all asks in the page, never with confirm(): a browser that does not show a native dialog (the Integrated Browser of VS Code answers
   // it "no" at once) left the button doing nothing. The first press arms it ("Remove all 3?" in red, with Keep beside it) for CLEAR_ASK_MS,
