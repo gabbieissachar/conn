@@ -21,6 +21,13 @@ from typing import Any
 
 from agent_session_state import PRIVATE_FILE_MODE, ensure_private_file
 from agent_identity_verifier import IdentityCandidate, result_report, verify_pane
+from claude_config_dirs import (
+    claude_resume_command,
+    claude_session_exists as _claude_session_exists,
+    config_dir_field,
+    pid_session_records,
+    session_config_dir,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -470,10 +477,15 @@ def validate_session_id(session_id: str) -> None:
 
 
 def claude_session_exists(session_id: str) -> bool:
-    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
-        return False
-    project_root = Path.home() / ".claude" / "projects"
-    return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
+    """Whether any Claude config folder (~/.claude or another account's CLAUDE_CONFIG_DIR) has a log for this session."""
+    return _claude_session_exists(session_id)
+
+
+def claude_config_dir_of(client: str, session_id: str) -> str | None:
+    """The config folder to record for a Claude session: the one that holds its log, and nothing for the default one."""
+    if client != "claude":
+        return None
+    return config_dir_field(session_config_dir(session_id))
 
 
 @lru_cache(maxsize=2048)
@@ -509,12 +521,12 @@ def clean_session_id(value: str | None) -> str | None:
     return cleaned
 
 
-def default_resume_command(client: str, session_id: str) -> str:
+def default_resume_command(client: str, session_id: str, config_dir: str | None = None) -> str:
     quoted_session = shlex.quote(session_id)
     if client == "codex":
         return f"codex resume {quoted_session}"
     if client == "claude":
-        return f"claude --resume {quoted_session}"
+        return claude_resume_command(session_id, config_dir)
     raise SystemExit(f"unsupported client: {client}")
 
 
@@ -559,6 +571,7 @@ def build_record(
     process_start: str | None = None,
     evidence: list[str] | None = None,
     observed_at: str | None = None,
+    config_dir: str | None = None,
 ) -> dict[str, Any]:
     record = {
         "herdr_session": pane.herdr_session,
@@ -581,6 +594,10 @@ def build_record(
         "updated_at": now_iso(),
         "worktree": worktree,
     }
+    if config_dir:
+        # The Claude config folder the session was started under, when it is not the default one: the resume command
+        # names it too, and a restore that left it out would resume under the wrong account.
+        record["config_dir"] = config_dir
     if restore_source != "manifest":
         record.update(
             {
@@ -654,6 +671,7 @@ def register(args: argparse.Namespace) -> int:
     path = manifest_path(args)
     with manifest_lock(path):
         data = read_manifest(path)
+        config_dir = claude_config_dir_of(args.client, args.session_id)
         record = build_record(
             pane,
             args.client,
@@ -661,9 +679,10 @@ def register(args: argparse.Namespace) -> int:
             cwd=cwd,
             branch=args.branch or branch,
             worktree=args.worktree or worktree,
-            resume_command=args.resume_command or default_resume_command(args.client, args.session_id),
+            resume_command=args.resume_command or default_resume_command(args.client, args.session_id, config_dir),
             status=args.status,
             restore_policy=args.restore_policy,
+            config_dir=config_dir,
         )
         panes = [item for item in data["panes"] if not pane_identity_matches(item, pane)]
         panes.append(record)
@@ -816,20 +835,17 @@ def detect_from_process(pane: PaneInfo) -> tuple[str, str] | None:
             if session_id:
                 return client, session_id
         if client == "claude" and pid is not None and command.strip() == "claude":
-            session_path = Path.home() / ".claude" / "sessions" / f"{pid}.json"
-            try:
-                session_data = json.loads(session_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            session_id = session_data.get("sessionId") if isinstance(session_data, dict) else None
-            session_cwd = session_data.get("cwd") if isinstance(session_data, dict) else None
-            pane_cwd = pane.foreground_cwd or pane.cwd
-            if (
-                isinstance(session_id, str)
-                and isinstance(session_cwd, str)
-                and normalize_path(session_cwd) == normalize_path(pane_cwd)
-            ):
-                return client, session_id
+            # The pid record is in the config folder the process runs under: ~/.claude or another account's folder.
+            for _folder, session_data in pid_session_records(pid):
+                session_id = session_data.get("sessionId")
+                session_cwd = session_data.get("cwd")
+                pane_cwd = pane.foreground_cwd or pane.cwd
+                if (
+                    isinstance(session_id, str)
+                    and isinstance(session_cwd, str)
+                    and normalize_path(session_cwd) == normalize_path(pane_cwd)
+                ):
+                    return client, session_id
     return None
 
 
@@ -1005,6 +1021,7 @@ def _verified_record(pane: dict[str, Any], result: dict[str, Any]) -> dict[str, 
         workspace_label=pane.get("workspace_label") if isinstance(pane.get("workspace_label"), str) else None,
         tab_label=pane.get("tab_label") if isinstance(pane.get("tab_label"), str) else None,
     )
+    config_dir = config_dir_field(candidate.config_dir) if candidate.client == "claude" else None
     return build_record(
         pane_info,
         candidate.client,
@@ -1012,7 +1029,8 @@ def _verified_record(pane: dict[str, Any], result: dict[str, Any]) -> dict[str, 
         cwd=cwd,
         branch=branch,
         worktree=worktree,
-        resume_command=default_resume_command(candidate.client, candidate.session_id),
+        resume_command=default_resume_command(candidate.client, candidate.session_id, config_dir),
+        config_dir=config_dir,
         status="active",
         restore_policy="verified",
         restore_source=_verifier_source(str(result.get("status"))),
@@ -1369,6 +1387,7 @@ def scan(args: argparse.Namespace) -> int:
         if detection and pane_cwd:
             _client, session_id = detection
             worktree, branch = git_context(pane_cwd)
+            config_dir = claude_config_dir_of(client, session_id)
             record = build_record(
                 pane,
                 client,
@@ -1376,9 +1395,10 @@ def scan(args: argparse.Namespace) -> int:
                 cwd=pane_cwd,
                 branch=branch,
                 worktree=worktree,
-                resume_command=default_resume_command(client, session_id),
+                resume_command=default_resume_command(client, session_id, config_dir),
                 status="active",
                 restore_policy="manual_confirm",
+                config_dir=config_dir,
             )
             records.append(record)
             print(f"FOUND {pane.pane_id} {client} source={detection_source}")
@@ -1492,6 +1512,7 @@ def apply_missing(args: argparse.Namespace) -> int:
         if not all(isinstance(v, str) and v for v in [pane_id, workspace_id, tab_id]):
             continue
         validate_session_id(session_id)
+        config_dir = claude_config_dir_of(client, session_id)
         pane = PaneInfo(
             herdr_session=item.get("herdr_session") if isinstance(item.get("herdr_session"), str) else current_herdr_session(),
             pane_id=pane_id,
@@ -1518,7 +1539,7 @@ def apply_missing(args: argparse.Namespace) -> int:
                 resume_command=(
                     item.get("resume_command")
                     if isinstance(item.get("resume_command"), str) and item.get("resume_command")
-                    else default_resume_command(client, session_id)
+                    else default_resume_command(client, session_id, config_dir)
                 ),
                 status=item.get("status") if isinstance(item.get("status"), str) else "active",
                 restore_policy=(
@@ -1526,6 +1547,7 @@ def apply_missing(args: argparse.Namespace) -> int:
                     if isinstance(item.get("restore_policy"), str) and item.get("restore_policy")
                     else "manual_confirm"
                 ),
+                config_dir=config_dir,
             )
         )
 

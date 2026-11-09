@@ -31,6 +31,17 @@ needs a replay contract for resumable Codex and Claude sessions.
 - `herdr-agent-capture-missing` preserves the tmux-era manual repair pattern
   when a pane is known but the resumable session id is not.
 
+A Claude pane may run under a second account's config folder (`CLAUDE_CONFIG_DIR`, for
+example `~/.claude-personal`) instead of `~/.claude`, and Herdr does not say which.
+`claude_config_dirs.py` is the one place that finds the folders (the process's own,
+`~/.claude`, and each other `~/.claude*` folder that holds `projects/`), the folder a
+session's log or a process's pid record is in, and the resume command. The identity
+verifier, the registry and the organizer all use it, so a pane's session is found in the
+folder it really uses. A session that lives outside `~/.claude` is recorded with a
+`config_dir` field, and its resume command names the folder
+(`CLAUDE_CONFIG_DIR=<folder> claude --resume <id>`), so a restore resumes it under the
+same account. A record of the default account has no `config_dir` and the plain command.
+
 State files default to:
 
 ```sh

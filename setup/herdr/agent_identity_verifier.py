@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
+from claude_config_dirs import claude_config_dirs, pid_session_records, process_start_utc
+
 
 SESSION_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 SUPPORTED_CLIENTS = {"claude", "codex"}
@@ -58,6 +60,8 @@ class IdentityCandidate:
     store_shape: str
     candidate_count: int
     observed_at: str
+    # The Claude config folder the session lives in (its pid record or its log was found there); None for Codex.
+    config_dir: str | None = None
 
     def report(self) -> dict[str, Any]:
         """Return the safe, console-facing form of a candidate."""
@@ -81,6 +85,7 @@ class StoreRecord:
     path: Path
     shape: str
     process_start: str | None = None
+    config_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,8 +116,22 @@ def _json_objects(path: Path) -> Iterable[dict[str, Any]]:
 
 
 class ClaudeStore:
+    """The sessions of every Claude config folder (see claude_config_dirs), or of the one folder `home` names.
+
+    A pane may run under any account's config folder and Herdr does not say which, so the default store looks in all of
+    them: its records say which folder each session is in, and a session id held by two folders belongs to the first in
+    lookup order, so a copy never shadows the usual one."""
+
     def __init__(self, home: Path | None = None):
-        self.home = (home or Path.home() / ".claude").expanduser()
+        self._home = home.expanduser() if home is not None else None
+
+    @property
+    def homes(self) -> list[Path]:
+        return [self._home] if self._home is not None else claude_config_dirs()
+
+    @property
+    def home(self) -> Path:
+        return self._home if self._home is not None else (self.homes or [Path.home() / ".claude"])[0]
 
     @property
     def sessions_dir(self) -> Path:
@@ -124,9 +143,17 @@ class ClaudeStore:
 
     def records(self) -> list[StoreRecord]:
         found: dict[str, StoreRecord] = {}
-        if not self.projects_dir.exists():
+        for home in self.homes:
+            for record in self._home_records(home):
+                found.setdefault(record.session_id, record)
+        return list(found.values())
+
+    def _home_records(self, home: Path) -> list[StoreRecord]:
+        found: dict[str, StoreRecord] = {}
+        projects_dir = home / "projects"
+        if not projects_dir.exists():
             return []
-        for path in self.projects_dir.rglob("*.jsonl"):
+        for path in projects_dir.rglob("*.jsonl"):
             candidate_id = path.stem
             if not valid_session_id(candidate_id):
                 continue
@@ -146,7 +173,7 @@ class ClaudeStore:
             session_id = session_id or candidate_id
             if session_id != candidate_id or not valid_session_id(session_id):
                 continue
-            found[session_id] = StoreRecord("claude", session_id, session_cwd, path, "project_jsonl")
+            found[session_id] = StoreRecord("claude", session_id, session_cwd, path, "project_jsonl", None, str(home))
         return list(found.values())
 
     def find(self, session_id: object) -> StoreRecord | None:
@@ -157,13 +184,19 @@ class ClaudeStore:
                 return record
         return None
 
-    def pid_record(self, pid: int) -> dict[str, Any] | None:
-        path = self.sessions_dir / f"{pid}.json"
+    def pid_records(self, pid: int) -> list[tuple[Path, dict[str, Any]]]:
+        """(config folder, pid record) for each folder with a record that describes this live process."""
+        if self._home is None:
+            return pid_session_records(pid)
         try:
-            value = json.loads(path.read_text())
+            value = json.loads((self._home / "sessions" / f"{pid}.json").read_text())
         except (OSError, json.JSONDecodeError):
-            return None
-        return value if isinstance(value, dict) else None
+            return []
+        return [(self._home, value)] if isinstance(value, dict) else []
+
+    def pid_record(self, pid: int) -> dict[str, Any] | None:
+        records = self.pid_records(pid)
+        return records[0][1] if records else None
 
 
 class CodexStore:
@@ -239,12 +272,8 @@ class NativeHandleAdapter:
                 return fields[21] if len(fields) > 21 else None
             except OSError:
                 return None
-        try:
-            result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, check=False, timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        value = result.stdout.strip()
-        return value or None
+        # Claude writes this start marker in a pid record in UTC, so it is read in UTC here whatever this machine's zone is.
+        return process_start_utc(pid)
 
 
 def _store(client: str, stores: dict[str, Any] | None = None) -> Any:
@@ -343,7 +372,7 @@ def _native_candidate(pane: dict[str, Any], stores: dict[str, Any] | None, stamp
     if not record or not record.cwd or not cwd or record.cwd != cwd:
         return None
     evidence = "native_claude" if client == "claude" else "native_codex"
-    return IdentityCandidate(client, session_id, (evidence, "store_header"), _foreground_pid(pane), _foreground_marker(pane), cwd, record.shape, 1, stamp)
+    return IdentityCandidate(client, session_id, (evidence, "store_header"), _foreground_pid(pane), _foreground_marker(pane), cwd, record.shape, 1, stamp, record.config_dir)
 
 
 def _foreground_pid(pane: dict[str, Any]) -> int | None:
@@ -373,7 +402,7 @@ def _candidate_from_argv(pane: dict[str, Any], process: dict[str, Any], stores: 
     cwd = _pane_cwd(pane)
     if not record or not record.cwd or not cwd or record.cwd != cwd:
         return None
-    return IdentityCandidate(client, session_id, ("argv_exact", "store_header"), process.get("pid") if isinstance(process.get("pid"), int) else None, _process_start(process), cwd, record.shape, 1, stamp)
+    return IdentityCandidate(client, session_id, ("argv_exact", "store_header"), process.get("pid") if isinstance(process.get("pid"), int) else None, _process_start(process), cwd, record.shape, 1, stamp, record.config_dir)
 
 
 def _candidate_from_handle(pane: dict[str, Any], stores: dict[str, Any] | None, adapter: HandleAdapter, stamp: str) -> IdentityCandidate | None:
@@ -394,28 +423,34 @@ def _candidate_from_handle(pane: dict[str, Any], stores: dict[str, Any] | None, 
     if len(matches) != 1 or not matches[0].cwd or matches[0].cwd != cwd:
         return None
     record = matches[0]
-    return IdentityCandidate(client, record.session_id, ("open_handle", "store_header"), pid, _foreground_marker(pane) or adapter.process_start(pid), cwd, record.shape, 1, stamp)
+    return IdentityCandidate(client, record.session_id, ("open_handle", "store_header"), pid, _foreground_marker(pane) or adapter.process_start(pid), cwd, record.shape, 1, stamp, record.config_dir)
 
 
-def _candidate_from_pid_record(pane: dict[str, Any], stores: dict[str, Any] | None, adapter: HandleAdapter, stamp: str) -> IdentityCandidate | None:
+def _candidates_from_pid_record(pane: dict[str, Any], stores: dict[str, Any] | None, adapter: HandleAdapter, stamp: str) -> list[IdentityCandidate]:
+    """One candidate for each Claude config folder that holds a pid record for this very process (the same pid, cwd and
+    start marker) and the session log it names. A pane under a second account's folder has its record there."""
     if pane.get("agent") != "claude":
-        return None
+        return []
     pid = _foreground_pid(pane)
     cwd = _pane_cwd(pane)
     if pid is None or cwd is None:
-        return None
-    record = _store("claude", stores).pid_record(pid)
-    if not record or not valid_session_id(record.get("sessionId")):
-        return None
-    record_cwd = normalize_cwd(record.get("cwd"))
-    marker = record.get("procStart") or record.get("startedAt")
-    current_marker = _foreground_marker(pane) or adapter.process_start(pid)
-    if not record_cwd or record_cwd != cwd or not marker or not current_marker or str(marker) != str(current_marker):
-        return None
-    session = _store("claude", stores).find(record["sessionId"])
-    if not session or session.cwd != cwd:
-        return None
-    return IdentityCandidate("claude", record["sessionId"], ("pid_record", "process_start", "store_header"), pid, str(current_marker), cwd, session.shape, 1, stamp)
+        return []
+    store = _store("claude", stores)
+    found: list[IdentityCandidate] = []
+    for home, record in store.pid_records(pid):
+        if not valid_session_id(record.get("sessionId")):
+            continue
+        record_cwd = normalize_cwd(record.get("cwd"))
+        marker = record.get("procStart") or record.get("startedAt")
+        current_marker = _foreground_marker(pane) or adapter.process_start(pid)
+        if not record_cwd or record_cwd != cwd or not marker or not current_marker or str(marker) != str(current_marker):
+            continue
+        session = store.find(record["sessionId"])
+        if not session or session.cwd != cwd:
+            continue
+        # The folder the pid record sits in is the process's own, so it also settles a session id that two folders hold.
+        found.append(IdentityCandidate("claude", record["sessionId"], ("pid_record", "process_start", "store_header"), pid, str(current_marker), cwd, session.shape, 1, stamp, str(home)))
+    return found
 
 
 def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, adapter: HandleAdapter | None = None, stamp: str | None = None) -> dict[str, Any]:
@@ -452,7 +487,7 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
         _native_candidate(pane, stores, stamp),
         _candidate_from_argv(pane, selected_process, stores, stamp),
         _candidate_from_handle(pane, stores, adapter, stamp),
-        _candidate_from_pid_record(pane, stores, adapter, stamp),
+        *_candidates_from_pid_record(pane, stores, adapter, stamp),
     ):
         if candidate:
             current_marker = adapter.process_start(candidate.pid) if candidate.pid is not None else None
@@ -469,10 +504,11 @@ def verify_pane(pane: dict[str, Any], *, stores: dict[str, Any] | None = None, a
                     candidate.store_shape,
                     candidate.candidate_count,
                     candidate.observed_at,
+                    candidate.config_dir,
                 )
             previous = candidates.get(candidate.session_id)
             if previous:
-                candidates[candidate.session_id] = IdentityCandidate(candidate.client, candidate.session_id, tuple(sorted(set(previous.evidence + candidate.evidence))), candidate.pid, candidate.process_start, candidate.cwd, candidate.store_shape, 1, stamp)
+                candidates[candidate.session_id] = IdentityCandidate(candidate.client, candidate.session_id, tuple(sorted(set(previous.evidence + candidate.evidence))), candidate.pid, candidate.process_start, candidate.cwd, candidate.store_shape, 1, stamp, candidate.config_dir or previous.config_dir)
             else:
                 candidates[candidate.session_id] = candidate
     cwd = _pane_cwd(pane)

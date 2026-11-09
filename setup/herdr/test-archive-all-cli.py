@@ -55,11 +55,13 @@ elif args[:2] == ["workspace", "create"]:
     s["created"].append(wid); save(s)
     print(json.dumps({"result": {"workspace_id": wid, "tab_id": f"{wid}:t1"}}))
 elif args[:2] == ["pane", "run"]:
-    s.setdefault("sent", []).append(args[2]); save(s); print(json.dumps({"result": {}}))
+    s.setdefault("sent", []).append(args[2]); s.setdefault("commands", []).append(args[3]); save(s); print(json.dumps({"result": {}}))
 elif args[:2] == ["pane", "process-info"]:
-    # A plain shell prompt, unless the test says a program runs in the pane.
+    # A plain shell prompt, unless the test says a program runs in the pane (or a Claude process, by pid, as Herdr lists it).
     program = s.get("programs", {}).get(args[3])
     running = [{"pid": 1, "name": "zsh"}] + ([{"pid": 2, "name": program}] if program else [])
+    claude_pid = s.get("claude_panes", {}).get(args[3])
+    if claude_pid: running.append({"pid": claude_pid, "name": "claude", "argv": ["claude"], "cmdline": "claude"})
     print(json.dumps({"result": {"process_info": {"shell_pid": 1, "foreground_processes": running}}}))
 elif args[:2] == ["workspace", "focus"]:
     print(json.dumps({"result": {}}))
@@ -70,7 +72,7 @@ else:
 '''
 SRC = Path(__file__).resolve().parent / "workspace-organizer.py"
 root = Path(tempfile.mkdtemp(prefix="real-e2e-"))
-tool = root / "tool"; tool.mkdir(); shutil.copy(SRC, tool / "workspace-organizer.py")
+tool = root / "tool"; tool.mkdir(); shutil.copy(SRC, tool / "workspace-organizer.py"); shutil.copy(SRC.parent / "claude_config_dirs.py", tool / "claude_config_dirs.py")
 bin_dir = root / "bin"; bin_dir.mkdir(); (bin_dir / "herdr").write_text(FAKE_HERDR); (bin_dir / "herdr").chmod(0o755)
 config = root / "config"; sock_dir = config / "herdr" / "sessions" / "e2e"; sock_dir.mkdir(parents=True)
 state_path = root / "state.json"
@@ -382,5 +384,35 @@ assert decoy.read_text() == decoy_text and not list(homes.glob("decoy-task.meta.
 r = run("relink-owner-records", check=0, extra_env=owned); assert "Would update worker record: decoy-task" in r.stdout, r.stdout; ok("the standalone check still finds that record")
 decoy.unlink()
 r = run("relink-owner-records", check=0, extra_env=owned); assert "Every worker record of this session points at a live pane" in r.stdout, r.stdout; ok("a standalone check then finds nothing stale")
+# ---- a Claude pane run under a second account's CLAUDE_CONFIG_DIR (a second account such as ~/.claude-personal) ----
+# Its pid record and session log are in that account's config folder, not in ~/.claude. Its workspace must be archivable, and the
+# resume command it keeps must name that folder, or a restore would resume under the wrong account.
+reset_organizer_state(); fresh()
+account_home = root / "home"; personal = account_home / ".claude-personal"
+(account_home / ".claude" / "projects").mkdir(parents=True); (personal / "projects" / "-enc").mkdir(parents=True); (personal / "sessions").mkdir()
+sid = "44444444-aaaa-4bbb-8ccc-444444444444"
+(personal / "projects" / "-enc" / f"{sid}.jsonl").write_text(json.dumps({"type": "summary", "sessionId": sid, "cwd": "/tmp"}) + "\n")
+(personal / "sessions" / "4242.json").write_text(json.dumps({"pid": 4242, "sessionId": sid, "cwd": "/tmp"}))
+st = state(); snap = st["snapshot"]
+snap["workspaces"].append({"workspace_id": "w60", "label": "Personal", "focused": False})
+snap["tabs"].append({"workspace_id": "w60", "tab_id": "w60:t1", "label": "main"})
+snap["panes"].append({"tab_id": "w60:t1", "pane_id": "w60:p1", "agent": "claude", "agent_status": "idle"})
+st["claude_panes"] = {"w60:p1": 4242}; state_path.write_text(json.dumps(st))
+account = {"HOME": str(account_home)}
+r = run("archive-all", check=0, extra_env=account); preview = json.loads(r.stdout[: r.stdout.rindex("}") + 1])
+assert "w60" in [item["workspace_id"] for item in preview["to_archive"]] and "w60" not in [item["workspace_id"] for item in preview["skipped"]], preview
+ok("a workspace whose Claude runs under ~/.claude-personal is on the archive list, not skipped as an unregistered agent")
+(root / "empty-home" / ".claude" / "projects").mkdir(parents=True)
+r = run("archive-all", check=0, extra_env={"HOME": str(root / "empty-home")}); preview = json.loads(r.stdout[: r.stdout.rindex("}") + 1])
+assert [item["reasons"] for item in preview["skipped"] if item["workspace_id"] == "w60"] == [["unverified_agent_session"]], preview
+ok("the same workspace is skipped when no config folder holds its session (the checks are real)")
+run("archive-all", "--execute", "--confirm", "e2e", check=0, extra_env=account)
+personal_archive = next(a for a in (json.loads(path.read_text()) for path in archives_dir.glob("*.json")) if a["capture"]["workspace"]["label"] == "Personal")
+(restore,) = personal_archive["capture"]["tabs"][0]["agent_restores"]
+expected = f"CLAUDE_CONFIG_DIR={personal} claude --resume {sid}"
+assert restore["restore_status"] == "resumable" and restore["config_dir"] == str(personal) and restore["resume_command"] == expected, restore
+ok("the archive keeps the config folder and a resume command that names it")
+run("restore", "--archive", personal_archive["archive_id"], "--resume-agents", "--execute", "--confirm", personal_archive["archive_id"], check=0, extra_env=account)
+assert state()["commands"][-1] == expected, state().get("commands"); ok("restore resumes the session under that config folder")
 server.close(); shutil.rmtree(root)
 print("ALL REAL-CLI CHECKS PASSED")

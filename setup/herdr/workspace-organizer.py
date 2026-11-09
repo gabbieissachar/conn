@@ -32,6 +32,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
+import claude_config_dirs as claude_dirs
+
 
 ROOT = Path(__file__).resolve().parent
 STATE_DIR = ROOT / "state" / "workspace-organizer"
@@ -422,20 +424,29 @@ def manifest_records() -> list[dict[str, Any]]:
     return [record for record in records if isinstance(record, dict)]
 
 
-def default_resume_command(client: str, session_id: str) -> str | None:
+def default_resume_command(client: str, session_id: str, config_dir: object = None) -> str | None:
     quoted_session = shlex.quote(session_id)
     if client == "codex":
         return f"codex resume {quoted_session}"
     if client == "claude":
-        return f"claude --resume {quoted_session}"
+        return claude_dirs.claude_resume_command(session_id, config_dir)
     return None
 
 
 def claude_session_exists(session_id: object) -> bool:
-    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", session_id):
-        return False
-    project_root = Path.home() / ".claude" / "projects"
-    return any(project_root.rglob(f"{session_id}.jsonl")) if project_root.exists() else False
+    """Whether any Claude config folder (this process's own, ~/.claude, or another account's) has a log for the session."""
+    return claude_dirs.claude_session_exists(session_id, CLAUDE_PROJECTS_DIR.parent)
+
+
+def claude_restore_config_dir(client: object, session_id: object, registered: dict[str, Any] | None = None) -> str | None:
+    """The Claude config folder a resume has to name: where the session's log is, preferring the folder its registry record
+    names, and nothing for the default folder. A pane run under another account (~/.claude-personal) is resumed under that
+    account's folder, or the resume would start under the wrong one and not find the session."""
+    if client != "claude" or not isinstance(session_id, str):
+        return None
+    registered = registered or {}
+    prefer = registered.get("config_dir") if registered.get("session_id") == session_id else None
+    return claude_dirs.config_dir_field(claude_dirs.session_config_dir(session_id, prefer, CLAUDE_PROJECTS_DIR.parent))
 
 
 def codex_session_exists(session_id: object) -> bool:
@@ -646,11 +657,11 @@ def agent_session_from_process(pane: dict[str, Any], session: str | None) -> tup
             pid = process.get("pid")
             if not isinstance(pid, int):
                 continue
-            session_path = Path.home() / ".claude" / "sessions" / f"{pid}.json"
-            session_data = read_json(session_path, {})
-            session_id = session_data.get("sessionId") if isinstance(session_data, dict) else None
-            if claude_session_exists(session_id):
-                return client, session_id
+            # The pid record is in the config folder the process runs under: ~/.claude or another account's folder.
+            for _folder, session_data in claude_dirs.pid_session_records(pid, CLAUDE_PROJECTS_DIR.parent):
+                session_id = session_data.get("sessionId")
+                if claude_session_exists(session_id):
+                    return client, session_id
             match = re.search(r"(?:^|/)claude(?:\s+code)?\s+(?:--resume|resume)\s+([^\s]+)", command)
             if match and claude_session_exists(match.group(1)):
                 return client, match.group(1)
@@ -705,7 +716,8 @@ def agent_restore_records(
             if registered_valid
             else None
         )
-        command = default_resume_command(str(client), str(agent_session_id)) if client and agent_session_id else None
+        config_dir = claude_restore_config_dir(client, agent_session_id, registered) if agent_session_id else None
+        command = default_resume_command(str(client), str(agent_session_id), config_dir) if client and agent_session_id else None
         resumable = bool(command and client in {"codex", "claude"})
         if detected:
             restore_source = "process"
@@ -719,16 +731,17 @@ def agent_restore_records(
             restore_source = "manifest"
         else:
             restore_source = "unavailable"
-        restores.append(
-            {
-                "source_pane_id": pane_id,
-                "client": client,
-                "session_id": agent_session_id,
-                "resume_command": command if resumable else None,
-                "restore_status": "resumable" if resumable else "shell_only",
-                "restore_source": restore_source,
-            }
-        )
+        restore = {
+            "source_pane_id": pane_id,
+            "client": client,
+            "session_id": agent_session_id,
+            "resume_command": command if resumable else None,
+            "restore_status": "resumable" if resumable else "shell_only",
+            "restore_source": restore_source,
+        }
+        if config_dir and resumable:
+            restore["config_dir"] = config_dir
+        restores.append(restore)
     return restores
 
 
@@ -1004,31 +1017,11 @@ CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() /
 
 def claude_projects_dirs() -> list[Path]:
     """Every folder of Claude session logs, in the order a lookup tries them: CLAUDE_PROJECTS_DIR (this process's own config
-    folder), then ~/.claude, then each other ~/.claude<anything> folder by name, then the folder CLAUDE_CONFIG_DIR names. A pane
-    run under another CLAUDE_CONFIG_DIR (a second account such as ~/.claude-personal) keeps its logs in that folder's projects/,
-    and Herdr does not say which folder a pane uses. Only a folder that holds a projects/ folder counts, so a plain file such as
-    ~/.claude.json and a tool's own ~/.claude-xyz folder are left out; no account name is known here, so a new account is found by
-    the next lookup. This is the transcript reader's rule (pmos setup/transcript-reader: otherClaudeHomes)."""
-    home = Path.home()
-    candidates = [CLAUDE_PROJECTS_DIR.parent, home / ".claude"]
-    try:
-        candidates += sorted((entry for entry in home.iterdir() if entry.name.startswith(".claude")), key=lambda entry: entry.name)
-    except OSError:
-        pass
-    named = os.environ.get("CLAUDE_CONFIG_DIR", "")
-    if named:
-        candidates.append(Path(named).expanduser())
-    found: list[Path] = []
-    seen: set[Path] = set()
-    for folder in candidates:
-        projects = folder / "projects"
-        if not folder.is_absolute() or not projects.is_dir():
-            continue
-        real = Path(os.path.realpath(projects))
-        if real not in seen:
-            seen.add(real)
-            found.append(projects)
-    return found
+    folder), then ~/.claude, then each other ~/.claude<anything> folder that holds projects/, then the folder CLAUDE_CONFIG_DIR
+    names. A pane run under another CLAUDE_CONFIG_DIR (a second account such as ~/.claude-personal) keeps its logs there, and
+    Herdr does not say which folder a pane uses. The rule is claude_config_dirs.py's, shared with the identity verifier and the
+    session registry, so each finds a pane's session in the folder it really uses."""
+    return claude_dirs.claude_projects_dirs(CLAUDE_PROJECTS_DIR.parent)
 AGENT_LOG_TAIL_BYTES = 4_000_000
 AGENT_RECENT_PATHS = 400
 ABSOLUTE_PATH_IN_COMMAND = re.compile(r"(?<![\w.])/(?:Users|home|Volumes|opt|private)/[^\s'\"`;|&()<>\\]+")

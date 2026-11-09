@@ -191,6 +191,43 @@ class RegistryTargetPaneTests(unittest.TestCase):
         self.assertIsNone(self.missing_items())
         self.assertEqual(self.herdr_calls(), [])
 
+    def claude_log(self, folder, session_id=SESSION_ID):
+        """A session log under a scratch config folder of the scratch home (~/.claude, or a second account's ~/.claude-personal)."""
+        project = Path(self.env["HOME"]) / folder / "projects" / "-encoded"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / f"{session_id}.jsonl").write_text('{"type":"summary"}\n')
+
+    def register_claude(self, *args):
+        return self.run_registry(
+            "register", "--client", "claude", "--session-id", SESSION_ID, "--cwd", str(self.work), *EXPLICIT,
+            "--herdr-session", "lab", *args,
+        )
+
+    def test_register_a_claude_session_of_a_second_account_records_and_resumes_under_its_config_folder(self):
+        self.claude_log(".claude-personal")
+        result = self.register_claude()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (record,) = self.records()
+        personal = str(Path(self.env["HOME"]) / ".claude-personal")
+        self.assertEqual(record["config_dir"], personal)
+        self.assertEqual(record["resume_command"], f"CLAUDE_CONFIG_DIR={personal} claude --resume {SESSION_ID}")
+
+    def test_register_a_claude_session_of_the_default_account_is_written_as_before(self):
+        self.claude_log(".claude")
+        self.claude_log(".claude-personal", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")  # another session in another account
+        result = self.register_claude()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (record,) = self.records()
+        self.assertNotIn("config_dir", record)
+        self.assertEqual(record["resume_command"], f"claude --resume {SESSION_ID}")
+
+    def test_register_a_claude_session_no_config_folder_has_is_still_refused(self):
+        self.claude_log(".claude-personal", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        result = self.register_claude()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not present in the local session store", result.stderr)
+        self.assertFalse(self.manifest.exists())
+
     def test_capture_missing_without_ids_still_uses_the_current_pane(self):
         result = self.capture_missing()
         self.assertEqual(result.returncode, 0, result.stderr)

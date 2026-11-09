@@ -23,6 +23,10 @@ VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 
+import claude_config_dirs as DIRS
+
+REAL_PROCESS_START_UTC = DIRS.process_start_utc
+
 REGISTRY_SPEC = importlib.util.spec_from_file_location("agent_session_registry", ROOT / "agent-session-registry.py")
 assert REGISTRY_SPEC and REGISTRY_SPEC.loader
 REGISTRY = importlib.util.module_from_spec(REGISTRY_SPEC)
@@ -564,6 +568,115 @@ class VerifierTests(unittest.TestCase):
         with patch.object(REGISTRY, "pane_send_status") as send, patch.object(REGISTRY, "log_status_event"):
             self.assertIsNone(REGISTRY.detect_from_status(busy, lines=20))
         send.assert_not_called()
+
+
+def claude_config_folder(home, name, *, ids=(), cwd="/workspace/project", pid_records=()):
+    """A scratch Claude config folder under `home`: a log per session id, and a sessions/<pid>.json per (pid, session id, start marker)."""
+    folder = Path(home) / name
+    project = folder / "projects" / "encoded"
+    project.mkdir(parents=True)
+    for session_id in ids:
+        (project / f"{session_id}.jsonl").write_text(json.dumps({"sessionId": session_id, "cwd": cwd, "type": "user"}) + "\n")
+    (folder / "sessions").mkdir()
+    for pid, session_id, marker in pid_records:
+        (folder / "sessions" / f"{pid}.json").write_text(json.dumps({"pid": pid, "sessionId": session_id, "cwd": cwd, "procStart": marker}))
+    return folder
+
+
+class ClaudeConfigFolderTests(unittest.TestCase):
+    """A Claude pane run under another account's CLAUDE_CONFIG_DIR (a second account such as ~/.claude-personal) keeps its
+    session log and pid record in that folder, and Herdr does not say which folder it is. The verifier looks in all of them."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        environment = patch.dict(os.environ, {"HOME": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        # The pid records here name fake pids, so no live process start is asked for.
+        live = patch.object(DIRS, "process_start_utc", return_value=None)
+        live.start()
+        self.addCleanup(live.stop)
+
+    def test_a_session_under_a_second_account_folder_is_verified_with_that_folder(self):
+        claude_config_folder(self.home, ".claude")
+        personal = claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,))
+        result = VERIFIER.verify_pane(pane("claude", SESSION_A), adapter=Adapter())
+        self.assertEqual(result["status"], "native_verified")
+        self.assertEqual(result["candidate"].config_dir, str(personal))
+        self.assertNotIn(str(personal), json.dumps(VERIFIER.result_report(result)), "the console form says no folder")
+
+    def test_a_session_under_the_default_folder_names_the_default_folder(self):
+        default = claude_config_folder(self.home, ".claude", ids=(SESSION_A,))
+        claude_config_folder(self.home, ".claude-personal", ids=(SESSION_B,))
+        result = VERIFIER.verify_pane(pane("claude", SESSION_A), adapter=Adapter())
+        self.assertEqual(result["status"], "native_verified")
+        self.assertEqual(result["candidate"].config_dir, str(default))
+
+    def test_a_session_no_config_folder_holds_stays_unresolved(self):
+        claude_config_folder(self.home, ".claude")
+        claude_config_folder(self.home, ".claude-personal", ids=(SESSION_B,))
+        result = VERIFIER.verify_pane(pane("claude", SESSION_A), adapter=Adapter())
+        self.assertNotEqual(result["status"], "native_verified")
+        self.assertIsNone(result["candidate"])
+
+    def test_a_session_held_by_two_folders_belongs_to_the_first_in_lookup_order(self):
+        default = claude_config_folder(self.home, ".claude", ids=(SESSION_A,))
+        claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,))
+        self.assertEqual(VERIFIER.ClaudeStore().find(SESSION_A).config_dir, str(default))
+
+    def test_a_pid_record_in_a_second_account_folder_verifies_the_pane_and_a_stale_one_elsewhere_is_ignored(self):
+        claude_config_folder(self.home, ".claude", ids=(SESSION_B,), pid_records=((41, SESSION_B, "an earlier process"),))
+        personal = claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,), pid_records=((41, SESSION_A, "start-1"),))
+        result = VERIFIER.verify_pane(pane("claude"), adapter=Adapter())
+        self.assertEqual(result["status"], "pid_record_verified")
+        self.assertEqual(result["candidate"].session_id, SESSION_A)
+        self.assertEqual(result["candidate"].config_dir, str(personal))
+
+    def test_two_folders_with_a_live_pid_record_each_for_different_sessions_stay_ambiguous(self):
+        claude_config_folder(self.home, ".claude", ids=(SESSION_B,), pid_records=((41, SESSION_B, "start-1"),))
+        claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,), pid_records=((41, SESSION_A, "start-1"),))
+        result = VERIFIER.verify_pane(pane("claude"), adapter=Adapter())
+        self.assertEqual(result["status"], "candidate_ambiguous")
+        self.assertIsNone(result["candidate"])
+
+    def test_an_explicit_store_home_still_means_that_one_folder(self):
+        claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,))
+        elsewhere = claude_config_folder(self.home, "elsewhere", ids=(SESSION_B,))
+        store = VERIFIER.ClaudeStore(elsewhere)
+        self.assertIsNone(store.find(SESSION_A))
+        self.assertEqual(store.find(SESSION_B).config_dir, str(elsewhere))
+
+    def test_the_start_marker_of_a_process_is_read_in_utc_like_the_pid_record_writes_it(self):
+        if sys.platform.startswith("linux"):
+            self.skipTest("Linux reads the start marker from /proc")
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen["env"] = kwargs.get("env") or {}
+            return SimpleNamespace(stdout="Thu Nov  5 07:09:29 2026\n")
+
+        with patch.object(subprocess, "run", fake_run):
+            self.assertEqual(REAL_PROCESS_START_UTC(41), "Thu Nov  5 07:09:29 2026")
+            self.assertEqual(VERIFIER.NativeHandleAdapter().process_start(41), "Thu Nov  5 07:09:29 2026")
+        self.assertEqual(seen["env"].get("TZ"), "UTC", "ps lists the start in this machine's zone unless it is asked for UTC")
+
+    def test_the_registry_record_of_a_second_account_pane_names_the_folder_in_its_resume_command(self):
+        claude_config_folder(self.home, ".claude")
+        personal = claude_config_folder(self.home, ".claude-personal", ids=(SESSION_A,))
+        value = pane("claude", SESSION_A)
+        record = REGISTRY._verified_record(value, VERIFIER.verify_pane(value, adapter=Adapter()))
+        self.assertEqual(record["config_dir"], str(personal))
+        self.assertEqual(record["resume_command"], f"CLAUDE_CONFIG_DIR={personal} claude --resume {SESSION_A}")
+
+    def test_the_registry_record_of_a_default_account_pane_is_written_as_before(self):
+        claude_config_folder(self.home, ".claude", ids=(SESSION_A,))
+        value = pane("claude", SESSION_A)
+        record = REGISTRY._verified_record(value, VERIFIER.verify_pane(value, adapter=Adapter()))
+        self.assertNotIn("config_dir", record)
+        self.assertEqual(record["resume_command"], f"claude --resume {SESSION_A}")
 
 
 if __name__ == "__main__":

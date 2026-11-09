@@ -862,6 +862,79 @@ class WorkspaceOrganizerTests(unittest.TestCase):
         self.assertEqual(restore[0]["resume_command"], "claude --resume session-123")
         self.assertEqual(restore[0]["restore_source"], "process")
 
+    def test_a_pane_run_under_a_second_account_is_archived_and_resumed_under_that_accounts_config_folder(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        folder = str(personal.parent.parent)
+        sid = "11111111-aaaa-4bbb-8ccc-222222222222"
+        self.write_log(personal, sid)
+        panes = [{"pane_id": "w1:p1", "agent": "claude"}]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=("claude", sid)):
+            (restore,) = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertEqual((restore["restore_status"], restore["restore_source"]), ("resumable", "process"))
+        self.assertTrue(ORGANIZER.is_trusted_restore(restore))
+        self.assertEqual(restore["config_dir"], folder)
+        self.assertEqual(restore["resume_command"], f"CLAUDE_CONFIG_DIR={folder} claude --resume {sid}")
+
+    def test_a_pane_run_under_the_default_account_is_resumed_without_a_config_folder(self):
+        main, task, other, logs = self.agent_world()
+        self.second_account()
+        sid = "11111111-aaaa-4bbb-8ccc-222222222222"
+        default = self.second_account(".claude")
+        self.write_log(default, sid)
+        panes = [{"pane_id": "w1:p1", "agent": "claude"}]
+        with patch.object(ORGANIZER, "agent_session_from_process", return_value=("claude", sid)):
+            (restore,) = ORGANIZER.agent_restore_records(panes, "esim", [])
+        self.assertNotIn("config_dir", restore)
+        self.assertEqual(restore["resume_command"], f"claude --resume {sid}")
+
+    def test_the_process_of_a_pane_under_a_second_account_is_found_by_the_pid_record_in_that_accounts_folder(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        sid = "11111111-aaaa-4bbb-8ccc-222222222222"
+        self.write_log(personal, sid)
+        (personal.parent.parent / "sessions").mkdir()
+        (personal.parent.parent / "sessions" / "4242.json").write_text(json.dumps({"pid": 4242, "sessionId": sid, "cwd": str(main)}))
+        process_info = {"result": {"process_info": {"foreground_processes": [{"pid": 4242, "argv": ["/bin/claude"], "cmdline": "claude"}]}}}
+        pane = {"pane_id": "w1:p1", "agent": "claude"}
+        with patch.object(ORGANIZER, "run_json", return_value=process_info), patch.object(
+            ORGANIZER.claude_dirs, "process_start_utc", return_value=None
+        ):
+            self.assertEqual(ORGANIZER.agent_session_from_process(pane, "esim"), ("claude", sid))
+            (restore,) = ORGANIZER.agent_restore_records([pane], "esim", [])
+        self.assertEqual(restore["config_dir"], str(personal.parent.parent))
+        self.assertEqual(restore["restore_source"], "process")
+
+    def test_a_pid_record_of_a_different_process_under_another_folder_is_not_taken_for_the_panes_session(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        sid = "11111111-aaaa-4bbb-8ccc-222222222222"
+        self.write_log(personal, sid)
+        (personal.parent.parent / "sessions").mkdir()
+        (personal.parent.parent / "sessions" / "4242.json").write_text(
+            json.dumps({"pid": 4242, "sessionId": sid, "cwd": str(main), "procStart": "Mon Oct 12 01:02:03 2026"})
+        )
+        process_info = {"result": {"process_info": {"foreground_processes": [{"pid": 4242, "argv": ["/bin/claude"], "cmdline": "claude"}]}}}
+        with patch.object(ORGANIZER, "run_json", return_value=process_info), patch.object(
+            ORGANIZER.claude_dirs, "process_start_utc", return_value="Thu Nov  5 07:09:29 2026"
+        ):
+            self.assertIsNone(ORGANIZER.agent_session_from_process({"pane_id": "w1:p1", "agent": "claude"}, "esim"))
+
+    def test_a_registered_session_of_a_second_account_is_trusted_and_resumed_under_its_folder(self):
+        main, task, other, logs = self.agent_world()
+        personal = self.second_account()
+        folder = str(personal.parent.parent)
+        sid = "11111111-aaaa-4bbb-8ccc-222222222222"
+        self.write_log(personal, sid)
+        self.assertTrue(ORGANIZER.claude_session_exists(sid))
+        panes = [{"pane_id": "w1:p1", "agent": "claude"}]
+        for extra in ({}, {"config_dir": folder}):
+            manifest = [{"pane_id": "w1:p1", "herdr_session": "esim", "client": "claude", "session_id": sid, **extra}]
+            with patch.object(ORGANIZER, "agent_session_from_process", return_value=None):
+                (restore,) = ORGANIZER.agent_restore_records(panes, "esim", manifest)
+            self.assertEqual(restore["restore_status"], "resumable", extra)
+            self.assertEqual(restore["resume_command"], f"CLAUDE_CONFIG_DIR={folder} claude --resume {sid}", extra)
+
     def test_invalid_claude_manifest_session_is_not_resumable(self):
         panes = [{"pane_id": "w1:p1", "agent": "claude"}]
         manifest = [{"pane_id": "w1:p1", "herdr_session": "esim", "client": "claude", "session_id": "invalid"}]

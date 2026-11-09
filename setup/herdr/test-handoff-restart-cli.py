@@ -162,7 +162,7 @@ save()
 SRC = Path(__file__).resolve().parent / "workspace-organizer.py"
 root = Path(tempfile.mkdtemp(prefix="handoff-e2e-"))
 print(f"scratch folder (left in place): {root}")
-tool = root / "tool"; tool.mkdir(); (tool / "workspace-organizer.py").write_text(SRC.read_text())
+tool = root / "tool"; tool.mkdir(); (tool / "workspace-organizer.py").write_text(SRC.read_text()); (tool / "claude_config_dirs.py").write_text((SRC.parent / "claude_config_dirs.py").read_text())
 bin_dir = root / "bin"; bin_dir.mkdir(); (bin_dir / "herdr").write_text(FAKE_HERDR); (bin_dir / "herdr").chmod(0o755)
 home = root / "home"; home.mkdir()
 fm = home / "fm-homes" / "h1"; (fm / "state").mkdir(parents=True); (fm / "data" / "handoffs").mkdir(parents=True); (fm / "bin").mkdir()
