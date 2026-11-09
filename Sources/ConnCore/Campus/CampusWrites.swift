@@ -56,6 +56,8 @@ public enum CampusWriteRefusal: Error, Equatable, Sendable {
     case busy
     /// Too many messages are already waiting behind the one being sent.
     case queueFull
+    /// The reader page sent more than `maxPageSendsPerMinute` messages in a minute (a person does not; script in the page might).
+    case tooFast
     case invalid
 
     public var message: String {
@@ -63,6 +65,7 @@ public enum CampusWriteRefusal: Error, Equatable, Sendable {
         case .off: return "Campus writes are off. Turn them on in the status bar."
         case .notLive: return "Campus is not reachable: sign in first."
         case .busy: return "One write at a time: wait for the pending one or press Undo."
+        case .tooFast: return "Too many messages from the page in a minute: wait a little."
         case .queueFull: return "\(CampusStore.maxWaiting) messages are already waiting: wait for one to go, or take one back."
         case .invalid: return "That cannot be sent."
         }
@@ -119,6 +122,8 @@ extension CampusStore {
 
     /// The most messages that may wait behind the one in its window.
     public nonisolated static let maxWaiting = 5
+    /// The most messages the reader page may send in a minute.
+    public nonisolated static let maxPageSendsPerMinute = 10
 
     /// A write is in its window or on the wire, or a message waits behind one.
     var busy: Bool {
@@ -309,6 +314,10 @@ extension CampusStore {
         guard writesEnabled else { return .off }
         guard link == .live, auth != nil else { return .notLive }
         if busy && waitingWrites.count >= Self.maxWaiting { return .queueFull }
+        let stamp = now()
+        pageSendTimes = pageSendTimes.filter { stamp.timeIntervalSince($0) < 60 }
+        guard pageSendTimes.count < Self.maxPageSendsPerMinute else { return .tooFast }
+        pageSendTimes.append(stamp)
         let id = c.id
         let short = t.count > 50 ? String(t.prefix(50)) + "…" : t
         let behind = busy

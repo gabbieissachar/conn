@@ -365,13 +365,25 @@ enum CampusCheck {
         guard installed != "\"real\"" else { return }                       // a page that has the bar of its own is checked by the reader's own e2e; the rest drives the stand-in
         await shot("campus-20-page-composer.png")
 
+        // Script in the page cannot send by itself: Conn must have seen a key or a click in this web view just before (this launch has had none), and only a main-frame post counts.
+        let wGesture = await log().count
+        await post("pg-0", "Posted by script, no key or click")
+        let gestureRefused = await untilResults(results, count: 1, wait: wait)
+        let r0 = await results().first ?? [:]
+        let logAfterGesture = await log().count
+        report("Campus embed composer: a send posted by script, with no key or click in the web view, is refused with a reason and nothing is sent",
+               gestureRefused && r0["id"] as? String == "pg-0" && r0["ok"] as? Bool == false && (r0["error"] as? String)?.contains("no key or click") == true && logAfterGesture == wGesture, "result=\(r0)")
+        let savedGesture = CampusEmbedBox.requireGesture
+        CampusEmbedBox.requireGesture = false                                 // the steps below post by script, as a person's click cannot be scripted headlessly
+        defer { CampusEmbedBox.requireGesture = savedGesture }
+
         // A message the page sends goes through the same gate and is typed into Campus at once (the page already held it through its own Undo window), then the page is told.
         let w0 = await log().count
         let t0 = Date()
         await post("pg-1", "From the page: what changed since Monday?")
-        let answered = await untilResults(results, count: 1, wait: wait)
+        let answered = await untilResults(results, count: 2, wait: wait)
         let took = Date().timeIntervalSince(t0)
-        let r1 = await results()
+        let r1 = Array((await results()).dropFirst())
         let w1 = await log()
         let echoed = await until(8) { campus.timeline(id)?.items.contains { $0.kind == .user && $0.text == "From the page: what changed since Monday?" } == true }
         report("Campus embed composer: a message the page sends is typed into the conversation at once (no second wait), exactly as sent, and the page is told it went",
@@ -384,7 +396,7 @@ enum CampusCheck {
         let w2 = await log().count
         await post("pg-2", "Second from the page")
         await post("pg-3", "Third from the page")
-        let both = await untilResults(results, count: 3, wait: wait)
+        let both = await untilResults(results, count: 4, wait: wait)
         let w3 = await log()
         report("Campus embed composer: two sends in a row go out in order and the page is told about each", both && w3.count == w2 + 2 && w3[w2].contains("Second from the page") && w3[w2 + 1].contains("Third from the page"),
                "both=\(both) log=\(w3.suffix(2).map { String($0.suffix(40)) })")
@@ -396,7 +408,7 @@ enum CampusCheck {
         await control("/__fake/fail-writes?on=1")
         let w4 = await log().count
         await post("pg-4", "This one fails")
-        let failedAnswer = await untilResults(results, count: 4, wait: wait)
+        let failedAnswer = await untilResults(results, count: 5, wait: wait)
         await control("/__fake/fail-writes?on=0")
         let r4 = await results().last ?? [:]
         let logAfterFail = await log().count
@@ -405,18 +417,18 @@ enum CampusCheck {
                "result=\(r4)")
         _ = await until(10) { campus.held == nil }
 
-        // Another conversation's id, or a conversation Campus does not list: refused, nothing sent to the one on screen.
-        await post("pg-5", "Lost message", conversation: "ses_nothere")
-        let lost = await untilResults(results, count: 5, wait: wait)
+        // A message that names another conversation than the one on screen is refused (page content is untrusted): nothing is sent to either.
+        await post("pg-5", "Lost message", conversation: "ses_fakeSprint03")
+        let lost = await untilResults(results, count: 6, wait: wait)
         let r5 = await results().last ?? [:]
         let logAfterLost = await log().count
-        report("Campus embed composer: a message for a conversation Campus does not list is refused with a reason and nothing is sent", lost && r5["ok"] as? Bool == false && logAfterLost == w4, "result=\(r5)")
+        report("Campus embed composer: a message that names another conversation than the one on screen is refused with a reason and nothing is sent", lost && r5["ok"] as? Bool == false && (r5["error"] as? String)?.contains("not the conversation on screen") == true && logAfterLost == w4, "result=\(r5)")
 
         // Writes off: the page is told Send is off (and why), and a send it posts anyway is refused.
         model.disableCampusWrites()
         let off = await untilAsync(8, wait: wait) { await js("return window.__cfg && window.__cfg.send === false && window.__cfg.reason.length > 0;") == "true" }
         await post("pg-6", "Should not go")
-        let refusedOff = await untilResults(results, count: 6, wait: wait)
+        let refusedOff = await untilResults(results, count: 7, wait: wait)
         let r6 = await results().last ?? [:]
         let logAfterOff = await log().count
         report("Campus embed composer: with Campus writes off the page's Send is turned off with the reason, and a send posted anyway is refused",

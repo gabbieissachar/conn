@@ -48,6 +48,8 @@ public final class CampusStore: ObservableObject {
     var heldWrite: CampusPendingWrite?
     /// Messages typed while a write is in its window or being sent, in the order typed: each goes through its own window when it reaches the front.
     var waitingWrites: [CampusPendingWrite] = []
+    /// When the reader page's sends were accepted (a rolling minute), for the cap on them.
+    var pageSendTimes: [Date] = []
     /// What the banner shows of `waitingWrites` (no text of its own beyond the label the held write has too).
     @Published public internal(set) var waiting: [CampusWaiting] = []
     var choicesLoading: Set<String> = []
@@ -61,7 +63,7 @@ public final class CampusStore: ObservableObject {
     public let auth: CampusAuth?
     public let baseURL: URL
     public var client: CampusClient? { auth.map(CampusClient.init) }
-    private let now: () -> Date
+    let now: () -> Date
 
     // Timings (a test makes them short).
     public var pollInterval: TimeInterval = 30

@@ -184,11 +184,11 @@ extension AppModel {
     }
 
     /// A message from the reader page's own message bar, which held it through its Undo window already: Campus gets it through the same gate (switch, one at a time, the queue)
-    /// with no second wait, and the page is told how it ended through `answer(id, error)`. It goes to the conversation the page says it was showing (the one on screen when it
-    /// names none), so a message typed for one conversation never lands in another.
+    /// with no second wait, and the page is told how it ended through `answer(id, error)`. A page can only write to the conversation that is on screen in its own column: a message
+    /// that names another one is refused (page content is untrusted, and a message typed for one conversation must never land in another).
     func campusPageSend(_ m: ReaderSend, shownID: String, answer: @escaping (String, String?) -> Void) {
-        let target = m.conversation.isEmpty ? shownID : m.conversation
-        guard let c = campus.conversation(target) else { answer(m.id, "That conversation is not in Campus's list."); return }
+        guard m.conversation.isEmpty || m.conversation == shownID else { answer(m.id, "That is not the conversation on screen in this column, so Conn did not send it."); return }
+        guard let c = campus.conversation(shownID) else { answer(m.id, "That conversation is not in Campus's list."); return }
         if let why = campus.sendFromReader(m.text, to: c, done: { answer(m.id, $0) }) { answer(m.id, why.message) }
     }
 

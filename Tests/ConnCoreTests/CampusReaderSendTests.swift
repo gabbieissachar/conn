@@ -145,6 +145,23 @@ import FakeCampusKit
         #expect(world.writes().isEmpty)
     }
 
+    @Test func theReaderPageMaySendOnlyAFewMessagesAMinute() async throws {
+        let (s, _, world) = await liveStore(hold: 0.01)
+        let c = try #require(s.conversation("ses_fakeSprint03"))
+        var results: [String?] = []
+        for i in 1...CampusStore.maxPageSendsPerMinute {
+            #expect(s.sendFromReader("m\(i)", to: c) { results.append($0) } == nil)
+            #expect(await until(8) { results.count == i })
+        }
+        #expect(s.sendFromReader("one more", to: c) { results.append($0) } == .tooFast)
+        #expect(CampusWriteRefusal.tooFast.message.contains("Too many"))
+        #expect(world.writes().count == CampusStore.maxPageSendsPerMinute && results.count == CampusStore.maxPageSendsPerMinute)
+        // The person's own sends are not counted.
+        _ = s.send("typed in Conn", to: c) { _ in }
+        s.sendNow()
+        #expect(await until(8) { world.writes().count == CampusStore.maxPageSendsPerMinute + 1 })
+    }
+
     @Test func aWorkingConversationTakesItAsSteerAndTheQueueIsCapped() async throws {
         let (s, _, world) = await liveStore(hold: 0.05)
         let kpi = try #require(s.conversation("ses_fakeKpi06"))

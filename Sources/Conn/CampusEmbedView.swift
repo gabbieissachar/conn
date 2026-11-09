@@ -17,6 +17,11 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     static var openExternal: (URL) -> Void = { NSWorkspace.shared.open($0) }
     /// How long a load may take before the native transcript is kept (seconds).
     static var loadTimeout = 8.0
+    /// A `send` from the page is typed into Campus only when Conn itself saw a key or a click in this web view within `gestureWindow` seconds (the page holds a message for its own
+    /// 5-second Undo window first, so the send lands a few seconds after the person's last action). Script in a rendered reply cannot make one. A check turns this off to post
+    /// by script, and one step leaves it on to see the refusal.
+    static var requireGesture = true
+    static let gestureWindow: TimeInterval = 20
 
     let webView: WKWebView
     @Published private(set) var phase = Phase.idle
@@ -43,6 +48,9 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     private var timeout: Task<Void, Never>?
     private var loading: Task<Void, Never>?
     private var proxy: MessageProxy?
+    /// When a key or a click last reached this web view (from the person, as AppKit saw it).
+    private(set) var lastGesture: Date?
+    private var gestureMonitor: Any?
 
     override init() {
         let cfg = WKWebViewConfiguration()
@@ -52,6 +60,29 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
         Self.live.add(self)
+        gestureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated { self?.noteGesture(event) }
+            return event
+        }
+    }
+
+    deinit { if let m = gestureMonitor { NSEvent.removeMonitor(m) } }
+
+    /// Remember a key or a click that was for this web view (its window, and a click inside it or a key while something in it has the keyboard).
+    private func noteGesture(_ event: NSEvent) {
+        guard let window = webView.window, event.window === window else { return }
+        if event.type == .keyDown {
+            if let r = window.firstResponder as? NSView, r.isDescendant(of: webView) { lastGesture = Date() }
+        } else if webView.bounds.contains(webView.convert(event.locationInWindow, from: nil)) {
+            lastGesture = Date()
+        }
+    }
+
+    /// Whether a send from the page may go now: a person's key or click reached this web view within `gestureWindow`.
+    var gestureRecent: Bool {
+        guard Self.requireGesture else { return true }
+        guard let g = lastGesture else { return false }
+        return Date().timeIntervalSince(g) <= Self.gestureWindow
     }
 
     // MARK: loading
@@ -245,6 +276,7 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
             // Only a page with the bar on may send, and only a well-formed message; anything else is answered at once so the page can give the text back.
             guard let id = body["id"] as? String else { return }
             guard composerOn, let msg = CampusEmbed.parseSend(body) else { answerSend(id: id, error: "Conn did not accept that message"); return }
+            guard gestureRecent else { answerSend(id: id, error: "Conn saw no key or click in this column just now, so it did not send."); return }
             if let h = onSend { h(msg) } else { answerSend(id: id, error: "Nothing is listening for it") }
         default: break
         }
@@ -297,7 +329,7 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
 private final class MessageProxy: NSObject, WKScriptMessageHandler {
     weak var box: CampusEmbedBox?
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else { return }
+        guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.box?.message(body) } }
     }
 }
