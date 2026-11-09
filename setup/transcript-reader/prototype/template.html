@@ -1125,6 +1125,9 @@ __HEAD_HOSTED__
     if (sid && ex.reply && partGone(ex, "reply")) return document.createDocumentFragment();
     const open = isOpen(ex);
     const card = $("div", "reply" + (open ? " needs" : "") + (sid && ex.reply && hiddenNow(ex, "reply") ? " gone" : ""));
+    // The turn's id on the card, a contract for a host (README, "A reply card names its turn"): always there when the turn has an id, on the
+    // full page, the lite page and the embed page alike, whatever is pinned, hidden or drawn beside it. data-msg is the pin's key and stays as it was.
+    if (ex.uid) card.dataset.turn = ex.uid;
     const who = $("div", "who");
     const verdict = verdictChip(ex);
     if (verdict) who.append(verdict);

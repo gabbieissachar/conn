@@ -513,6 +513,20 @@ webView.evaluateJavaScript("window.readerEmbed.set(\(json))")   // a JSON object
 
 Checked in a real browser by `e2e/embed-check.js` (below); the page's rules are `embed.test.js`, the build's `test_live.py`, the route's `lite.test.js`.
 
+## A reply card names its turn
+
+A host that lands a column on the latest finished reply (Conn's Watch focus toggle) needs the id of that reply's turn. Every reply card carries it as one attribute, on the full reader page, the lite page and the embed page alike:
+
+```html
+<div class="reply" data-turn="<turn id>" ...>
+```
+
+- **`data-turn`** is the turn's own id: the session log's record id on the full and lite pages (the same id `#s=<session>&m=<turn id>` takes, see "Links to one message"), the block's `id` on the embed page. It is on every reply card the page draws for a turn that has an id, whether or not the reply is pinned, hidden, clipped or open. A message of the captain's (`.input`) has none: the attribute names replies only.
+- **The latest reply** is the last `.reply[data-turn]` in `#main`: `[...document.querySelectorAll('#main .reply[data-turn]')].pop().dataset.turn`. Cards are in conversation order, and a page that redraws one conversation (a new build, a streaming reply) keeps the same ids, so the value can be read at any time and compared with the one read before.
+- **`data-msg` is unchanged**: `<turn id>:reply`, the pin's key, on the full and lite pages only (the embed page has no pins, so no `data-msg`). It stays what it was, an undocumented detail a host should leave behind: read `data-turn`.
+
+Checked in headless Chrome by `e2e/reply-turn-check.js` (full and lite pages: every card has one, none repeated, `data-msg` is `data-turn` plus `:reply`, inputs have none, the last card is the latest reply, a fresh load names the same turns) and `e2e/embed-check.js` (the embed page's cards carry the block ids).
+
 ## Markdown files open in an editor
 
 A markdown file can be opened in an editor from two places, and both are drawn as an element a host can find by one selector, so Conn (or any web view that hosts the reader) can open the file in its own Editor view while a plain browser still does something useful.
@@ -679,6 +693,7 @@ node setup/transcript-reader/e2e/sheet-reply-check.js <scratch folder> [screensh
 node setup/transcript-reader/e2e/sheet-back-latency.js <scratch folder> [rounds]                  # the way back from the sheet, timed (LAB_FILLERS, LAB_BIG_EXCHANGES)
 node setup/transcript-reader/e2e/session-unlisted-check.js <scratch folder> [screenshots folder] # "No transcript yet" for a session the reader does not list
 node setup/transcript-reader/e2e/star-order-check.js <scratch folder> [screenshots folder]       # a new star goes to the top
+node setup/transcript-reader/e2e/reply-turn-check.js <scratch folder> [screenshots folder]       # data-turn on every reply card, data-msg unchanged
 LAB_DOCS=2 node setup/transcript-reader/e2e/file-ref-check.js <scratch folder> [screenshots folder]  # .md paths and the editor button
 ```
 

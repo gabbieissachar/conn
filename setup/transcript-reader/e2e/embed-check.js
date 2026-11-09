@@ -81,6 +81,7 @@ function styleOf(selector, nth = 0) {
     check(first.ok && first.blocks === 4 && first.skipped === 0, 'set takes the fixture whole', JSON.stringify(first));
     check(count('#main .input') === 2 && count('#main .reply') === 2, 'two messages of yours and two replies, drawn by the reader\'s own cards', `${count('#main .input')}/${count('#main .reply')}`);
     check(text('#main .input .who b').join() === 'You,You', 'your messages say You');
+    check(ev(`return [...document.querySelectorAll('#main .reply')].map(c => c.dataset.turn || '').join();`) === 'msg_r1,msg_r2' && count('#main .input[data-turn]') === 0 && count('#main [data-msg]') === 0, 'each reply card names its turn by the block id (data-turn), the inputs do not, and the embed page has no data-msg (nothing to pin)');
     check(text('.reply .md h4').join('|') === 'Voucher redemptions, week 44|Why Australia dipped', 'markdown is markdown: headings are headings (small ones, as in a reply)', text('.reply .md h4').join('|'));
     check(count('.reply .md table') === 1 && count('.reply .md li') >= 6 && count('.reply .md strong') >= 2 && count('.reply .md a[href^="https://"]') === 1 && count('.reply .codebox button.copy') === 1, 'a table, lists, bold, a link and a code box with its Copy button');
     check(!/##|\*\*/.test(text('.md').join(' ')), 'no ## or ** shows through');

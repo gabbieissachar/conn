@@ -306,3 +306,15 @@ test('composer page: the page\'s composer contract in the README matches the con
     assert.ok(section.includes(word), `the composer section names ${word}`);
   }
 });
+
+test('reply turn: every reply card carries its turn id as data-turn, before anything pin- or embed-specific, and the pin key stays data-msg', () => {
+  const card = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('function replyCard('), PAGE_SOURCE.indexOf('const fix = sheetFixOffered('));
+  const turn = card.indexOf('if (ex.uid) card.dataset.turn = ex.uid;');
+  assert.ok(turn > 0, 'the card gets data-turn from the turn\'s id');
+  assert.ok(turn < card.indexOf('if (sid && ex.reply && (!EMBED || embedHost))'), 'it is set for every card, not only where a pin is drawn (the embed page has no pin key)');
+  assert.ok(card.includes('card.dataset.msg = pinKey(ex, "reply");'), 'data-msg is the pin key, as it was');
+  assert.equal(/dataset\.turn/.test(PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('function inputBlock('), PAGE_SOURCE.indexOf('function inputBlock(') + 3000)), false, 'a message of the captain\'s carries no data-turn');
+  const readme = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('## A reply card names its turn'), readme.indexOf('## Markdown files open in an editor'));
+  for (const word of ['`data-turn`', '`.reply[data-turn]`', '`data-msg` is unchanged', 'full reader page, the lite page and the embed page']) assert.ok(section.includes(word), `the README section names ${word}`);
+});
