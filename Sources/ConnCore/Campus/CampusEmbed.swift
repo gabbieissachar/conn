@@ -8,6 +8,17 @@
 // cancelled one goes in, and the page draws it quiet ("Answered: ...").
 import Foundation
 
+/// A message the page's own composer hands the host once its Undo window has ended (`{ "type": "send", ... }`, README "The embed page", "The composer").
+public struct ReaderSend: Equatable, Sendable {
+    public let id: String
+    /// The conversation the page was showing, or empty.
+    public let conversation: String
+    public let text: String
+    /// How many comments the text carries (information only).
+    public let comments: Int
+    public init(id: String, conversation: String, text: String, comments: Int) { self.id = id; self.conversation = conversation; self.text = text; self.comments = comments }
+}
+
 public enum CampusEmbed {
     /// The page's entry point and its handshake (README "The embed page"): the page posts `ready` to the handler named `readerEmbed` and answers `version`.
     public static let handlerName = "readerEmbed"
@@ -58,5 +69,46 @@ public enum CampusEmbed {
         case .cancelled: out["status"] = "cancelled"
         }
         return out
+    }
+
+    // MARK: the page's composer (opt-in): select-to-ask, comments, the batch, Send, Undo, Now
+
+    /// The longest message Conn types for the page (the page itself keeps to 4,000 characters; this is the host's own limit on what any page may hand it).
+    public static let maxSendLength = 8_000
+
+    /// A `send` message from the page, or nil when it is not one Conn will act on (no id, no text, an id that is not a plain token, a text over the limit).
+    public static func parseSend(_ body: [String: Any]) -> ReaderSend? {
+        guard body["type"] as? String == "send", let id = body["id"] as? String, !id.isEmpty, id.count <= 80,
+              id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }),
+              let text = body["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= maxSendLength else { return nil }
+        return ReaderSend(id: id, conversation: body["conversation"] as? String ?? "", text: text, comments: body["comments"] as? Int ?? 0)
+    }
+
+    /// What `readerEmbed.composer(config)` takes: the name shown in the box, whether Send is on, and the sentence shown while it is off.
+    public static func composerConfig(name: String, send: Bool, reason: String) -> String {
+        json(["name": name, "send": send, "reason": send ? "" : reason])
+    }
+
+    /// What `readerEmbed.sent(result)` takes: the answer to one `send`.
+    public static func sentResult(id: String, error: String?) -> String {
+        var o: [String: Any] = ["id": id, "ok": error == nil]
+        if let e = error { o["error"] = e }
+        return json(o)
+    }
+
+    /// Why the page's Send is off, in the words the page shows, or nil when it is on (Campus writes are on and the link is live).
+    public static func sendReason(writesEnabled: Bool, link: CampusLink) -> String? {
+        if !writesEnabled { return "Campus writes are off. Turn them on in the status bar." }
+        switch link {
+        case .live: return nil
+        case .expired: return "Signed out of Campus. Sign in to send."
+        case .blocked: return "Campus refused the connection. Check Zscaler, then try again."
+        default: return "Campus is not reachable."
+        }
+    }
+
+    private static func json(_ o: [String: Any]) -> String {
+        guard let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]), let t = String(data: d, encoding: .utf8) else { return "{}" }
+        return t
     }
 }

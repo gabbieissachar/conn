@@ -303,7 +303,7 @@ struct CampusTranscriptView: View {
                     Divider()
                     if campus.link == .expired { ExpiredBanner() }
                     if campus.link == .starting && !t.loaded { StartingBox() } else { transcript(c, t) }
-                    CampusComposer(campus: campus, c: c, compact: true)
+                    CampusComposer(campus: campus, c: c, compact: true, pageBar: embed.composerOn && embed.phase == .ready && !app.privacy)
                 }
                 .accessibilityIdentifier("campus-transcript")
             } else {
@@ -322,10 +322,14 @@ struct CampusTranscriptView: View {
         if case .unavailable = embed.phase { offered = false }
         let json = offered && !app.privacy ? CampusEmbed.json(id: id, timeline: t, working: c.working) : nil
         let asking = t.openForm ?? (c.needsYou ? campus.openForms[id] : nil)
+        // The page's own message bar (select-to-ask, comments, the batch, Send, Undo, Now), when the page has one: Send is on while Campus writes are on and the link is live.
+        let reason = CampusEmbed.sendReason(writesEnabled: campus.writesEnabled, link: campus.link)
+        let composer = ready ? CampusEmbed.composerConfig(name: c.title, send: reason == nil, reason: reason ?? "") : nil
         return VStack(spacing: 0) {
             ZStack {
                 if !ready { page(c, t) }
-                CampusEmbedPane(box: embed, id: id, json: json, column: column, onLink: { url, command in openLink(url, command: command) })
+                CampusEmbedPane(box: embed, id: id, json: json, column: column, onLink: { url, command in openLink(url, command: command) },
+                                composer: composer, onSend: { m in app.campusPageSend(m, shownID: id) { embed.answerSend(id: $0, error: $1) } })
                     .opacity(ready ? 1 : 0).allowsHitTesting(ready)
                     .opacity(campus.link == .expired ? 0.6 : 1)
                     .accessibilityIdentifier("campus-embed")
@@ -537,6 +541,8 @@ struct CampusComposer: View {
     @ObservedObject var campus: CampusStore
     let c: CampusConversation
     let compact: Bool
+    /// The reader's page has its own message bar for this conversation: this box steps aside (one box, not two), and the banner, the switch and the pickers stay.
+    var pageBar = false
     @State private var text = ""
     @State private var confirm = false
 
@@ -555,7 +561,7 @@ struct CampusComposer: View {
                 } else if campus.link != .live {
                     Label(campus.link == .expired ? "Signed out of Campus: sign in to send" : campus.link == .blocked ? "Campus refused the connection: check Zscaler, then try again" : "Campus is not reachable", systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Color.orange)
                 }
-                HStack(alignment: .bottom, spacing: 8) {
+                if !pageBar { HStack(alignment: .bottom, spacing: 8) {
                     TextField(placeholder, text: $text, axis: .vertical)
                         .textFieldStyle(.plain).lineLimit(1...(compact ? 3 : 6)).font(.system(size: 13))
                         .padding(.horizontal, 10).padding(.vertical, 8)
@@ -571,7 +577,7 @@ struct CampusComposer: View {
                         Button("Send") { submit(nil) }.fixedSize().keyboardShortcut(.return, modifiers: .command).disabled(!on || trimmed.isEmpty).help("⌘↩ sends after a short undo window")
                             .accessibilityIdentifier("campus-send")
                     }
-                }
+                } }
                 if !compact { pickers(on: on) }
             }
             .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 2)

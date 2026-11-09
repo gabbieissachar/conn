@@ -165,6 +165,8 @@ enum CampusCheck {
 
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
+        await embedComposerChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
+
         await starChecks(model: model, report: report, wait: wait, until: until, shot: shot)
 
         await bridgeChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
@@ -313,6 +315,139 @@ enum CampusCheck {
         let looseResult = await phase(loose)
         report("Campus embed: a page without the strict content policy is refused, whatever else it has", looseResult.contains("content policy"), "loose=\(looseResult.prefix(90))")
         model.openCampus("ses_fakeOffsite04")
+    }
+
+    // MARK: the page's own message bar (select-to-ask, comments, Send, Undo, Now)
+
+    /// Conn's half of the reader's composer contract, against the real page copy that `CONN_EMBED_URL` names. That copy may not have the message bar yet (the contract was written
+    /// first), so when it has no `readerEmbed.composer` the check puts a stand-in for the three calls and the `send` post on the page, which is the page's whole side of the
+    /// contract that reaches Conn: what Conn asks of the page (`composer`, `sent`) and what the page posts (`send`).
+    static func embedComposerChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                                    control: (String) async -> Void, shot: (String) async -> Void) async {
+        guard let url = model.web.embedURL, url.isFileURL else {
+            print("ui-check: SKIP Campus embed composer (no CONN_EMBED_URL file)")
+            return
+        }
+        let campus = model.campus
+        let id = "ses_fakeOffsite04"
+        model.watchOn = false
+        model.enableCampusWrites()
+        model.openCampus(id)
+        func box() -> CampusEmbedBox? { CampusEmbedBox.live.allObjects.first { $0.column == nil && $0.shownID == id && $0.phase == .ready && $0.sets > 0 } }
+        guard await until(20, { box() != nil }), let page = box() else { report("Campus embed composer: the page is there", false, "no ready page"); return }
+        func log() async -> [String] {
+            guard let u = URL(string: "/__fake/log", relativeTo: campus.baseURL), let (d, _) = try? await URLSession.shared.data(from: u) else { return [] }
+            return CampusJSON.parse(d)?["writes"].array.compactMap(\.string) ?? []
+        }
+        func js(_ expr: String) async -> String { await page.read("JSON.stringify((function(){ \(expr) })())") }
+        func results() async -> [[String: Any]] {
+            guard let d = await js("return window.__sent || [];").data(using: .utf8), let a = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]] else { return [] }
+            return a
+        }
+        func post(_ sendID: String, _ text: String, conversation: String? = nil) async {
+            let c = conversation ?? id
+            _ = await js("window.__send(\(jsString(sendID)), \(jsString(text)), \(jsString(c))); return 1;")
+        }
+        let installed = await js("""
+            var r = window.readerEmbed; if (typeof r.composer === 'function') return 'real';
+            window.readerEmbed = Object.assign({}, r, {
+              composer: function (c) { window.__cfg = (typeof c === 'string') ? JSON.parse(c) : c; return { ok: true }; },
+              sent: function (x) { (window.__sent = window.__sent || []).push(x); } });
+            window.__send = function (i, t, c) { window.webkit.messageHandlers.readerEmbed.postMessage({ type: 'send', id: i, conversation: c, text: t, comments: 0 }); };
+            return 'shim';
+            """)
+        page.refreshComposer()
+        let on = await until(8) { page.composerOn }
+        let cfgOn = await js("return window.__cfg || null;")
+        let title = campus.conversation(id)?.title ?? ""
+        report("Campus embed composer: the page is asked for its message bar with the conversation's name and Send on, and Conn's own box steps aside",
+               installed != "\"real\"" ? on && cfgOn.contains("\"send\":true") && cfgOn.contains(jsStringContent(title)) : on, "page=\(installed) on=\(on) cfg=\(cfgOn)")
+        guard installed != "\"real\"" else { return }                       // a page that has the bar of its own is checked by the reader's own e2e; the rest drives the stand-in
+        await shot("campus-20-page-composer.png")
+
+        // A message the page sends goes through the same gate and is typed into Campus at once (the page already held it through its own Undo window), then the page is told.
+        let w0 = await log().count
+        let t0 = Date()
+        await post("pg-1", "From the page: what changed since Monday?")
+        let answered = await untilResults(results, count: 1, wait: wait)
+        let took = Date().timeIntervalSince(t0)
+        let r1 = await results()
+        let w1 = await log()
+        let echoed = await until(8) { campus.timeline(id)?.items.contains { $0.kind == .user && $0.text == "From the page: what changed since Monday?" } == true }
+        report("Campus embed composer: a message the page sends is typed into the conversation at once (no second wait), exactly as sent, and the page is told it went",
+               answered && took < 2.5 && r1.first?["id"] as? String == "pg-1" && r1.first?["ok"] as? Bool == true && w1.count == w0 + 1 && w1.last?.contains("/\(id)/prompt") == true && w1.last?.contains("From the page: what changed since Monday?") == true && echoed,
+               "answered=\(answered) in \(String(format: "%.1f", took)) s result=\(r1.first ?? [:]) log=+\(w1.count - w0) echoed=\(echoed)")
+        _ = await until(30) { campus.conversation(id)?.working == false }
+        _ = await until(10) { campus.held == nil }
+
+        // Two sends in a row keep their order (the second waits behind the first).
+        let w2 = await log().count
+        await post("pg-2", "Second from the page")
+        await post("pg-3", "Third from the page")
+        let both = await untilResults(results, count: 3, wait: wait)
+        let w3 = await log()
+        report("Campus embed composer: two sends in a row go out in order and the page is told about each", both && w3.count == w2 + 2 && w3[w2].contains("Second from the page") && w3[w2 + 1].contains("Third from the page"),
+               "both=\(both) log=\(w3.suffix(2).map { String($0.suffix(40)) })")
+        _ = await until(30) { campus.conversation(id)?.working == false }
+        _ = await until(10) { campus.held == nil }
+
+        // A failure tells the page why; nothing is sent; no text goes into Conn's own box.
+        let draftsBefore = model.campusUnclaimedDrafts[id]?.count ?? 0
+        await control("/__fake/fail-writes?on=1")
+        let w4 = await log().count
+        await post("pg-4", "This one fails")
+        let failedAnswer = await untilResults(results, count: 4, wait: wait)
+        await control("/__fake/fail-writes?on=0")
+        let r4 = await results().last ?? [:]
+        let logAfterFail = await log().count
+        report("Campus embed composer: when Campus refuses a send the page is told why (so it can give the text back) and Conn's own box takes nothing",
+               failedAnswer && r4["id"] as? String == "pg-4" && r4["ok"] as? Bool == false && (r4["error"] as? String)?.isEmpty == false && logAfterFail == w4 && (model.campusUnclaimedDrafts[id]?.count ?? 0) == draftsBefore,
+               "result=\(r4)")
+        _ = await until(10) { campus.held == nil }
+
+        // Another conversation's id, or a conversation Campus does not list: refused, nothing sent to the one on screen.
+        await post("pg-5", "Lost message", conversation: "ses_nothere")
+        let lost = await untilResults(results, count: 5, wait: wait)
+        let r5 = await results().last ?? [:]
+        let logAfterLost = await log().count
+        report("Campus embed composer: a message for a conversation Campus does not list is refused with a reason and nothing is sent", lost && r5["ok"] as? Bool == false && logAfterLost == w4, "result=\(r5)")
+
+        // Writes off: the page is told Send is off (and why), and a send it posts anyway is refused.
+        model.disableCampusWrites()
+        let off = await untilAsync(8, wait: wait) { await js("return window.__cfg && window.__cfg.send === false && window.__cfg.reason.length > 0;") == "true" }
+        await post("pg-6", "Should not go")
+        let refusedOff = await untilResults(results, count: 6, wait: wait)
+        let r6 = await results().last ?? [:]
+        let logAfterOff = await log().count
+        report("Campus embed composer: with Campus writes off the page's Send is turned off with the reason, and a send posted anyway is refused",
+               off && refusedOff && r6["ok"] as? Bool == false && (r6["error"] as? String)?.contains("writes are off") == true && logAfterOff == w4, "off=\(off) result=\(r6)")
+        model.enableCampusWrites()
+        _ = await untilAsync(8, wait: wait) { await js("return window.__cfg && window.__cfg.send === true;") == "true" }
+
+        // Privacy mode takes the bar away with the page's content.
+        model.privacy = true
+        let gone = await untilAsync(8, wait: wait) { await js("return window.__cfg === null;") == "true" }
+        model.privacy = false
+        let back = await untilAsync(8, wait: wait) { await js("return window.__cfg && window.__cfg.send === true;") == "true" }
+        report("Campus embed composer: privacy mode takes the page's message bar away and it comes back with the conversation", gone && back, "gone=\(gone) back=\(back)")
+        model.disableCampusWrites()
+    }
+
+    private static func untilResults(_ results: () async -> [[String: Any]], count: Int, wait: (Double) async -> Void) async -> Bool {
+        var t = 0.0
+        while t < 10 { if await results().count >= count { return true }; await wait(0.2); t += 0.2 }
+        return await results().count >= count
+    }
+
+    private static func untilAsync(_ timeout: Double, wait: (Double) async -> Void, _ done: () async -> Bool) async -> Bool {
+        var t = 0.0
+        while t < timeout { if await done() { return true }; await wait(0.2); t += 0.2 }
+        return await done()
+    }
+
+    private static func jsStringContent(_ s: String) -> String {
+        let t = jsString(s)
+        return String(t.dropFirst().dropLast())
     }
 
     private static func jsString(_ s: String) -> String {

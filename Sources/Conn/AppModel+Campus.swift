@@ -183,6 +183,15 @@ extension AppModel {
         return all.reversed().joined(separator: "\n")
     }
 
+    /// A message from the reader page's own message bar, which held it through its Undo window already: Campus gets it through the same gate (switch, one at a time, the queue)
+    /// with no second wait, and the page is told how it ended through `answer(id, error)`. It goes to the conversation the page says it was showing (the one on screen when it
+    /// names none), so a message typed for one conversation never lands in another.
+    func campusPageSend(_ m: ReaderSend, shownID: String, answer: @escaping (String, String?) -> Void) {
+        let target = m.conversation.isEmpty ? shownID : m.conversation
+        guard let c = campus.conversation(target) else { answer(m.id, "That conversation is not in Campus's list."); return }
+        if let why = campus.sendFromReader(m.text, to: c, done: { answer(m.id, $0) }) { answer(m.id, why.message) }
+    }
+
     func campusStop(_ c: CampusConversation) { if let why = campus.stop(c) { toast(why.message) } }
 
     func campusPick(_ form: CampusForm, in c: CampusConversation, question: Int, option: String) {

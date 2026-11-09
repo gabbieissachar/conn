@@ -36,9 +36,14 @@ struct CampusPendingWrite {
     var label: String
     /// What the list of waiting messages says of it, when that is shorter than the banner's line.
     var waitingLabel: String?
+    /// The wait before it is sent: nil is `holdSeconds`. A message the reader page sends has none, because the page already held it through its own Undo window.
+    var window: TimeInterval?
     var request: () -> CampusRequest
     var restore: (() -> Void)?
     var onReply: ((CampusReply) -> Void)?
+    /// Told once how it ended: nil when Campus took it, else why it did not go (failed, taken back, switch turned off). Only the reader page's sends listen; the page then
+    /// gives the message back to its own box, so such a write has no `restore`.
+    var onResult: ((String?) -> Void)?
     var onSuccess: () -> Void
 }
 
@@ -113,7 +118,7 @@ extension CampusStore {
     // MARK: the gate
 
     /// The most messages that may wait behind the one in its window.
-    public static let maxWaiting = 5
+    public nonisolated static let maxWaiting = 5
 
     /// A write is in its window or on the wire, or a message waits behind one.
     var busy: Bool {
@@ -135,7 +140,7 @@ extension CampusStore {
 
     /// Put a write in its window: the banner counts down, and at the end (or at Now) it is sent.
     private func begin(_ w: CampusPendingWrite) {
-        let total = max(0, holdSeconds)
+        let total = max(0, w.window ?? holdSeconds)
         held = CampusHeld(conversationID: w.conversationID, label: w.label, secondsLeft: Int(total.rounded(.up)), phase: .held, restores: w.restore != nil)
         heldWrite = w
         heldTask?.cancel()
@@ -164,14 +169,16 @@ extension CampusStore {
             heldWrite = nil
             w.onReply?(r)
             w.onSuccess()
+            w.onResult?(nil)
             if !advance() { clearHeld(after: 2.5) }
         } else {
             if reply?.signedOut == true { markExpired() }
             if reply?.blockedByNetwork == true { markBlocked() }
             // Nothing is lost: the text goes back into the box, and so does everything that was waiting behind it (in the order typed).
-            let n = returnWaiting()
-            w.restore?(); heldWrite = nil
-            held?.phase = .failed(reply?.failureText ?? "Campus did not answer")
+            let why = reply?.failureText ?? "Campus did not answer"
+            let n = returnWaiting(reason: "An earlier message did not go: \(why)")
+            w.restore?(); w.onResult?(why); heldWrite = nil
+            held?.phase = .failed(why)
             held?.alsoReturned = n
             clearHeld(after: 8)
         }
@@ -180,7 +187,7 @@ extension CampusStore {
     /// The write in the window was sent: the next message waiting starts its own window. False when none waits (or none can go: they come back to their boxes).
     private func advance() -> Bool {
         guard !waitingWrites.isEmpty else { return false }
-        guard writesEnabled, link == .live, auth != nil else { held?.alsoReturned = returnWaiting(); return false }
+        guard writesEnabled, link == .live, auth != nil else { held?.alsoReturned = returnWaiting(reason: "Campus is not reachable or writes were turned off"); return false }
         let next = waitingWrites.removeFirst()
         syncWaiting()
         begin(next)
@@ -189,11 +196,11 @@ extension CampusStore {
 
     /// Give every waiting message back to its box, last first so each lands in front of the one after it and the order typed is kept. Returns how many.
     @discardableResult
-    private func returnWaiting() -> Int {
+    private func returnWaiting(reason: String = "Taken back") -> Int {
         let all = waitingWrites
         waitingWrites = []
         syncWaiting()
-        for w in all.reversed() { w.restore?() }
+        for w in all.reversed() { w.restore?(); w.onResult?(reason) }
         return all.count
     }
 
@@ -210,7 +217,7 @@ extension CampusStore {
         guard held?.phase == .held else { return }
         heldTask?.cancel()
         let n = returnWaiting()
-        heldWrite?.restore?(); heldWrite = nil
+        heldWrite?.restore?(); heldWrite?.onResult?("Taken back"); heldWrite = nil
         held?.phase = .undone
         held?.alsoReturned = n
         clearHeld(after: 2)
@@ -228,11 +235,11 @@ extension CampusStore {
         guard let i = waitingWrites.firstIndex(where: { $0.id == id }) else { return }
         let w = waitingWrites.remove(at: i)
         syncWaiting()
-        w.restore?()
+        w.restore?(); w.onResult?("Taken back")
     }
 
     func cancelHeld(reason: String) {
-        if held?.phase == .held { undo() } else { returnWaiting() }
+        if held?.phase == .held { undo() } else { returnWaiting(reason: reason) }
     }
 
     // MARK: the writes
@@ -289,6 +296,32 @@ extension CampusStore {
         } else {
             begin(w)
         }
+        return nil
+    }
+
+    /// A message the reader page's own composer hands over, after the page held it through its own Undo window (and Now): it goes without a second wait of Conn's, behind the
+    /// write in front of it if there is one, through the same switch, the same one-at-a-time rule and the same queue. `done` is told once: nil when Campus took it, else why
+    /// not (the page then gives the message back to its own box). A refusal is returned at once and `done` is not called. While the run works it goes as Steer, as Send does.
+    @discardableResult
+    public func sendFromReader(_ text: String, to c: CampusConversation, done: @escaping (String?) -> Void) -> CampusWriteRefusal? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return .invalid }
+        guard writesEnabled else { return .off }
+        guard link == .live, auth != nil else { return .notLive }
+        if busy && waitingWrites.count >= Self.maxWaiting { return .queueFull }
+        let id = c.id
+        let short = t.count > 50 ? String(t.prefix(50)) + "…" : t
+        let behind = busy
+        let chosen: String? = c.working ? "steer" : nil
+        let w = CampusPendingWrite(conversationID: id, label: "Send to \(c.title): \(short)", waitingLabel: "To \(c.title): \(short)", window: 0, request: { [weak self] in
+            let late = behind && chosen == nil && self?.conversations[id]?.working == true
+            return CampusClient.promptRequest(c, text: t, delivery: late ? "queue" : chosen)
+        }, restore: nil, onReply: nil, onResult: done, onSuccess: { [weak self] in
+            guard let self = self else { return }
+            if self.timelines[id] != nil { self.timelines[id]!.appendUser(t); self.timelineChanged.send(id) }
+            self.requestStatus(id)
+        })
+        if behind { waitingWrites.append(w); syncWaiting() } else { begin(w) }
         return nil
     }
 

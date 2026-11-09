@@ -29,6 +29,13 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     var column: Int?
     /// A link the person clicked in the page, and whether Cmd was held.
     var onLink: ((URL, Bool) -> Void)?
+    /// A message the page's own composer hands over once it has held it through its Undo window (README "The embed page", "The composer"). Whoever listens answers with `answerSend`.
+    var onSend: ((ReaderSend) -> Void)?
+    /// The page took the composer (`readerEmbed.composer` exists and was called): the page has its own message bar, so Conn's own text box steps aside. False with an older page.
+    @Published private(set) var composerOn = false
+    /// What the page was last asked to show as its bar (name, Send on or off, the reason), to ask again only when it changes.
+    private var composerWanted: String?
+    private var composerAsked: String?
     private var url: URL?
     private var pending: String?
     private var sent: String?
@@ -107,7 +114,9 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
         guard phase == .loading else { return }
         timeout?.cancel(); timeout = nil
         phase = .ready
+        composerAsked = nil
         if let p = pending { pending = nil; send(p) }
+        applyComposer()
     }
 
     private func unavailable(_ why: String) {
@@ -188,6 +197,35 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
         }
     }
 
+    // MARK: the page's own message bar
+
+    /// Ask for the page's message bar (select-to-ask, comments, the batch, Send, Undo, Now) for this conversation, or take it away (nil). Asked again only when it changes or the page
+    /// has reloaded. An older page without `readerEmbed.composer` ignores it, and Conn's own box stays (`composerOn` false).
+    func setComposer(_ config: String?) {
+        composerWanted = config
+        applyComposer()
+    }
+
+    /// Ask the page again for the bar it was last wanted to show (a check installs a stand-in page function after load and calls this).
+    func refreshComposer() { composerAsked = nil; applyComposer() }
+
+    private func applyComposer() {
+        guard phase == .ready, composerAsked != composerWanted else { return }
+        composerAsked = composerWanted
+        let arg = composerWanted ?? "null"
+        Task {
+            let v = try? await webView.callAsyncJavaScript("if (typeof window.readerEmbed.composer !== 'function') { return false; } window.readerEmbed.composer(cfg === 'null' ? null : cfg); return cfg !== 'null';", arguments: ["cfg": arg], in: nil, contentWorld: .page)
+            composerOn = (v as? Bool) == true
+        }
+    }
+
+    /// Tell the page how a `send` ended: nil error means Campus took it (the page keeps its faded message until the conversation shows it), else why not (the page gives it back).
+    func answerSend(id: String, error: String?) {
+        guard phase == .ready else { return }
+        let result = CampusEmbed.sentResult(id: id, error: error)
+        Task { _ = try? await webView.callAsyncJavaScript("if (typeof window.readerEmbed.sent === 'function') { window.readerEmbed.sent(JSON.parse(r)); } return true;", arguments: ["r": result], in: nil, contentWorld: .page) }
+    }
+
     /// Run a script in the page and give its result as text (a check's way of reading what the page drew).
     func read(_ script: String) async -> String {
         let r = try? await webView.evaluateJavaScript(script)
@@ -203,6 +241,11 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
             guard let s = body["url"] as? String, let u = URL(string: s), u.scheme == "https" || u.scheme == "http" else { return }
             let command = NSEvent.modifierFlags.contains(.command)
             if let h = onLink { h(u, command) } else { Self.openExternal(u) }
+        case "send":
+            // Only a page with the bar on may send, and only a well-formed message; anything else is answered at once so the page can give the text back.
+            guard let id = body["id"] as? String else { return }
+            guard composerOn, let msg = CampusEmbed.parseSend(body) else { answerSend(id: id, error: "Conn did not accept that message"); return }
+            if let h = onSend { h(msg) } else { answerSend(id: id, error: "Nothing is listening for it") }
         default: break
         }
     }
@@ -266,6 +309,9 @@ struct CampusEmbedPane: NSViewRepresentable {
     let json: String?
     var column: Int?
     let onLink: (URL, Bool) -> Void
+    /// The page's message bar: its `composer(config)` argument, or nil for none (privacy mode, no conversation).
+    var composer: String?
+    var onSend: ((ReaderSend) -> Void)?
 
     func makeNSView(context: Context) -> WebHostView {
         let v = WebHostView()
@@ -275,7 +321,9 @@ struct CampusEmbedPane: NSViewRepresentable {
     func updateNSView(_ v: WebHostView, context: Context) {
         v.attach(box.webView)
         box.onLink = onLink
+        box.onSend = onSend
         box.column = column
+        box.setComposer(composer)
         box.show(id: id, json: json)
     }
 }
