@@ -3051,6 +3051,33 @@ test('board page: the whole board and the board of one session are one page, tol
   } finally { await t.close(); }
 });
 
+test('board review: no flag, no route; with the flag the outcome reaches board_cli.py on stdin with the board\'s own facts, behind the token, the origin and the loopback', async () => {
+  const inputs = [];
+  const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(2), input }); return JSON.stringify({ ok: true, review: { recorded: true } }); };
+  const run = async (file, args) => (args[2] === 'sessions' ? JSON.stringify({ sessions: [] }) : JSON.stringify({ schema: 'task-board.v1', session: { id: args[4] }, columns: [], source: { snapshot_at: 'now', errors: [] }, items: [{ ref: 'alpha', repo: 'proj', live: true, calls: [] }] }));
+  let t = await start({ options: { board: { run, runInput } } });
+  try {
+    assert.equal((await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'done' })).status, 404, 'review flag off');
+    assert.equal((await t.get('board-sessions')).json.write.review, false);
+  } finally { await t.close(); }
+  t = await start({ options: { board: { run, runInput, review: true } } });
+  try {
+    assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/board-review', headers: { 'Content-Type': 'application/json', Origin: t.origin }, body: {} })).status, 403, 'no token');
+    assert.equal((await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'done' }, { Origin: 'http://evil.example' })).status, 403, 'foreign origin');
+    assert.equal((await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'done' })).status, 409, 'a task the board has not read yet');
+    assert.equal(inputs.length, 0);
+    const read = await t.get('board?session=leader-esim');
+    assert.equal(read.json.write.review, true);
+    const done = await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'delay', until: '2027-01-02', note: 'later', extra: 'ignored', facts: { live: false } });
+    assert.equal(done.status, 200);
+    assert.deepEqual(inputs[0].args.slice(0, 3), ['review', '--session', 'leader-esim']);
+    const sent = JSON.parse(inputs[0].input);
+    assert.equal('extra' in sent, false, 'only the known fields are passed on');
+    assert.equal(sent.facts.live, true, 'the facts are the board\'s own, not the page\'s');
+    assert.equal(sent.until, '2027-01-02');
+  } finally { await t.close(); }
+});
+
 test('board writes: no flag, no route; with the flag a mark and an answer reach board_cli.py on stdin behind the token and the origin', async () => {
   const inputs = [];
   const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(2), input }); return JSON.stringify({ ok: true, echoed: JSON.parse(input).task }); };

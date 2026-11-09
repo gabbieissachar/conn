@@ -1,5 +1,5 @@
-"""`board_cli.py` commands (the Node routes run these): print one session's board as JSON, list the sessions, check a home's config, and the two
-flagged writes: file a reply mark, record an answer. Reads are read only; a write prints `{"ok": true|false, ...}` and changes a Firstmate home only
+"""`board_cli.py` commands (the Node routes run these): print one session's board as JSON, list the sessions, check a home's config, and the
+flagged writes: file a reply mark, record an answer, record a review outcome. Reads are read only; a write prints `{"ok": true|false, ...}` and changes a Firstmate home only
 through that home's own Firstmate command (marks.py, answer.py)."""
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import re
 import sys
 
 from . import answer as answer_lib
+from . import review as review_lib
 from . import homes, lifecycles, threads, transcripts, workers
 from . import marks as marks_lib
 from .build import build_board
@@ -72,6 +73,7 @@ def main(argv=None) -> int:
     for name, help_text in (("check-config", "validate a home's config/task-board.json"),
                             ("mark", "file one reply mark on a task's record (json on stdin: task, turn, mark, source)"),
                             ("answer", "record one answer to a call (json on stdin: task, call, src, option|text|later)"),
+                            ("review", "record a review outcome on a task (json on stdin: task, action done|queue|delay|needs|followup, note, until, title, due, facts)"),
                             ("reply", "print the whole text of one reply, read only (json on stdin: sid, uid)")):
         sub.add_parser(name, help=help_text).add_argument("--session", required=True)
     sub.add_parser("sessions", help="list the sessions that have a board, with the workers you drive and whether each is on")
@@ -113,13 +115,15 @@ def main(argv=None) -> int:
         if text is None:
             return emit({"ok": False, "status": 404, "message": "That reply is not in the conversations this board reads."})
         return emit({"ok": True, "md": text, "words": threads.word_count(text)})
-    if args.command in ("mark", "answer"):
+    if args.command in ("mark", "answer", "review"):
         body = read_stdin()
         root = session.root or registry.fm_root
         try:
             if args.command == "mark":
                 done = marks_lib.write(root, session.home, body.get("task"), body.get("turn"), body.get("mark"), body.get("source") or "card")
                 return emit({"ok": True, "mark": done})
+            if args.command == "review":
+                return emit({"ok": True, "review": review_lib.act(session, root, body)})
             return emit({"ok": True, "answer": answer_lib.answer(session, root, body)})
         except (marks_lib.MarkError, answer_lib.AnswerError) as error:
             return emit({"ok": False, "status": error.status, "message": str(error)})

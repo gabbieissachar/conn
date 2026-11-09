@@ -27,7 +27,7 @@ def build_board(session, collector: Collector, now: float | None = None, threads
     errors, skipped = [], 0
     board = {
         "schema": SCHEMA, "session": session.public(), "generated_at": int(now), "today": today,
-        "lifecycle": {"id": lifecycle["id"], "name": lifecycle["name"], "blurb": lifecycle["blurb"]},
+        "lifecycle": {"id": lifecycle["id"], "name": lifecycle["name"], "blurb": lifecycle["blurb"], "stages": [{"id": c["id"], "name": c["name"]} for c in lifecycle["columns"]]},
         "config": config, "columns": [], "items": [], "projects": [], "counts": {},
         "source": {"errors": errors, "asks": None, "skipped": 0, "snapshot_at": None},
     }

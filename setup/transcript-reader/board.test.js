@@ -272,15 +272,55 @@ function writeFixture({ marks = false, answer = false, reply = { ok: true, mark:
   return { b, runs, inputs };
 }
 
-test('writes: all three are off unless their own flag is on, and off they run nothing', async () => {
-  assert.deepEqual(boardLib.create({ root: ROOT, env: {} }).write, { marks: false, answer: false, send: false });
-  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_MARKS: '1' } }).write, { marks: true, answer: false, send: false });
-  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_ANSWER: '1' } }).write, { marks: false, answer: true, send: false });
-  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_SEND: '1' } }).write, { marks: false, answer: false, send: true });
+test('writes: all four are off unless their own flag is on, and off they run nothing', async () => {
+  assert.deepEqual(boardLib.create({ root: ROOT, env: {} }).write, { marks: false, answer: false, send: false, review: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_MARKS: '1' } }).write, { marks: true, answer: false, send: false, review: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_ANSWER: '1' } }).write, { marks: false, answer: true, send: false, review: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_SEND: '1' } }).write, { marks: false, answer: false, send: true, review: false });
+  assert.deepEqual(boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD_REVIEW: '1' } }).write, { marks: false, answer: false, send: false, review: true });
   const t = writeFixture();
   await assert.rejects(() => t.b.mark('leader-esim', { task: 'a', turn: 't', mark: 'in' }), (e) => e.status === 404 && e.code === 'not_found');
   await assert.rejects(() => t.b.answer('leader-esim', { task: 'a', call: 'Z1', src: 'ask' }), (e) => e.status === 404);
+  await assert.rejects(() => t.b.review('leader-esim', { task: 'a', action: 'done' }), (e) => e.status === 404 && e.code === 'not_found');
   assert.equal(t.inputs.length, 0);
+});
+
+// A review outcome is judged against the board's own last read of the task: its facts come from this side, never from the page.
+function reviewFixture(items, { reply = { ok: true, review: { recorded: true } } } = {}) {
+  const inputs = [];
+  const run = async (file, args) => JSON.stringify({ schema: 'task-board.v1', session: { id: args[args.indexOf('--session') + 1] }, source: { snapshot_at: 'now', errors: [] }, items });
+  const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(1), input }); return JSON.stringify(reply); };
+  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1' }, run, runInput, now: () => 1000, ttlMs: 1000, review: true, quickRead: false });
+  return { b, inputs };
+}
+
+test('review: the facts the Python side judges by are read from the board\'s own last read, and the page\'s own words about them are ignored', async () => {
+  const t = reviewFixture([{ ref: 'alpha', repo: 'proj', live: true, ready: true, branch_state: 'ahead', pr: 'https://git.example.test/o/r/pull/1', merged: false, calls: [{ src: 'ask' }, { src: 'hold' }] }, { ref: 'beta', repo: 'no project', calls: [] }]);
+  await t.b.board('leader-esim');
+  const done = await t.b.review('leader-esim', { task: 'alpha', action: 'done', note: 'ok', until: '2027-01-01', title: 't', due: 'd', facts: { live: false, ready: false } });
+  assert.equal(done.ok, true);
+  assert.deepEqual(t.inputs[0].args.slice(1, 4), ['review', '--session', 'leader-esim']);
+  assert.deepEqual(JSON.parse(t.inputs[0].input), { task: 'alpha', action: 'done', note: 'ok', until: '2027-01-01', title: 't', due: 'd',
+    facts: { live: true, ready: true, branch_state: 'ahead', pr: 'https://git.example.test/o/r/pull/1', merged: false, repo: 'proj', ask_open: true } });
+  assert.equal(t.inputs[0].args.join(' ').includes('alpha'), false, 'the task is not in the process list');
+  await t.b.review('leader-esim', { task: 'beta', action: 'queue' });
+  assert.deepEqual(JSON.parse(t.inputs[1].input).facts, { live: false, ready: false, branch_state: null, pr: null, merged: false, repo: 'no project', ask_open: false });
+});
+
+test('review: a task the board has not read, a bad reference and a bad session never run anything', async () => {
+  const t = reviewFixture([{ ref: 'alpha', calls: [] }]);
+  await assert.rejects(() => t.b.review('leader-esim', { task: 'alpha', action: 'done' }), (e) => e.status === 409 && e.code === 'not_read', 'nothing read yet');
+  await t.b.board('leader-esim');
+  await assert.rejects(() => t.b.review('leader-esim', { task: 'ghost', action: 'done' }), (e) => e.status === 409 && e.code === 'not_read');
+  await assert.rejects(() => t.b.review('leader-esim', { task: '../x', action: 'done' }), (e) => e.status === 400);
+  await assert.rejects(() => t.b.review('../x', { task: 'alpha', action: 'done' }), (e) => e.status === 400);
+  assert.equal(t.inputs.length, 0);
+});
+
+test('review: Firstmate\'s own refusal reaches the page as its status and sentence', async () => {
+  const t = reviewFixture([{ ref: 'alpha', calls: [] }], { reply: { ok: false, status: 409, message: 'A worker still has this task.' } });
+  await t.b.board('leader-esim');
+  await assert.rejects(() => t.b.review('leader-esim', { task: 'alpha', action: 'done' }), (e) => e.status === 409 && e.code === 'refused' && /worker still has/.test(e.message));
 });
 
 test('writes: the body goes to board_cli.py on stdin (never an argument), and the home\'s boards are marked stale after', async () => {

@@ -6,13 +6,14 @@ Firstmate already records. The design, the three review rounds and the calls (R1
 config, the reader half of reply marks, the shared tagger and thread builder, the page with answering on a card, and worker boards.
 
 **Read only by default.** The routes are off unless the reader runs with `PMOS_READER_BOARD=1`, and they are not served on the tailnet listeners
-unless `PMOS_READER_BOARD_TAILNET=1` is set too, and then only on the TLS address, behind the passcode, reads only (the phone's offline copy is its own decision, with its own sealing). Three writes exist, each behind a flag of its own that is off (the first two change a Firstmate home,
+unless `PMOS_READER_BOARD_TAILNET=1` is set too, and then only on the TLS address, behind the passcode, reads only (the phone's offline copy is its own decision, with its own sealing). Four writes exist, each behind a flag of its own that is off (the first, second and fourth change a Firstmate home,
 the third types into a live pane):
 
 | Flag | What it turns on | What it runs |
 | --- | --- | --- |
 | `PMOS_READER_BOARD_MARKS=1` | the page's "Yes, this task" / "Not this task" / "Belongs to task..." | `bin/fm-reply-mark.sh <task> in\|out\|clear <turn> --source card`, one line on `data/<task>/reply-marks.jsonl` |
 | `PMOS_READER_BOARD_ANSWER=1` | "Record this answer" on a call | the one Firstmate command that owns that kind of call (`answer.py`) |
+| `PMOS_READER_BOARD_REVIEW=1` | the Review box in an opened card: Done, Queued, Delay until a date, Needs you, Add a follow-up | the home's own commands (`review.py`, below): `fm-tasks-axi.sh`, `fm-captain-hold.sh` |
 | `PMOS_READER_BOARD_SEND=1` | Send in the message box at the foot of a card | the reader's own guarded Send (`api.js sendPrompt`: the same pane, foreground-session and Herdr checks as the conversation view), for a session this board's own transcripts name as a supervisor |
 
 With a flag off the route answers 404 and the page hides that control (answers then offer "Copy answer for chat", `<task>#<call> = <answer>`).
@@ -154,6 +155,38 @@ shows the exact command first.
 
 Tested with fake commands (argv, stdin, refusals) and with the real scripts against a scratch home made by the test; never against a real home.
 
+## Reviewing a task on its card (`review.py`)
+
+A live write into a Firstmate home, behind `PMOS_READER_BOARD_REVIEW=1`. An opened card has a **Review** box that records what you decided on the task's
+real record. The reader never edits a backlog file: each outcome is the command that already owns that change, run with the session's own `FM_HOME`, and the
+box says which command before it runs (and its own sentence comes back on the card).
+
+| You choose | The task is | Command |
+| --- | --- | --- |
+| Done | held for you | `fm-captain-hold.sh answers --any-origin --source reader-board`, mode `done` |
+| | otherwise | `fm-tasks-axi.sh done <id> --note ...` |
+| Queued | held for you | `fm-captain-hold.sh answers ...`, mode `release` (the command itself refuses it while you are away) |
+| | held another way | `fm-tasks-axi.sh unhold <id>` |
+| | in flight or done, no worker | `fm-tasks-axi.sh reopen <id>` |
+| Delay until a date | any open task no worker has | `fm-captain-hold.sh hold <id> --reason ... --until YYYY-MM-DD` (a date after today, within 400 days) |
+| Needs you | any open task no worker has | `fm-captain-hold.sh hold <id> --reason ...` |
+| Add a follow-up | (a new task) | `fm-tasks-axi.sh add --mint <title> --kind task --queue --body ...` with `Follow-up of: <id>` and `Due by: <date>` lines |
+
+The stages the board can set are the ones the backlog has: needs you, queued, parked until a date, done. The other columns of a lifecycle (Running, Ready
+to land, In review, ...) follow what the worker reports, so a card cannot be moved into them. A button shows only when the session's lifecycle declares
+its stage.
+
+**Refused, with the reason on the card and nothing changed:** Done, Delay and Needs you on a task a worker still has (a `state/<id>.meta`: landing and
+cleanup are Firstmate's, a button must not force them); Done on a task whose branch or PR has not landed; every move on a task with a typed card waiting
+(answer it, or say Later on it, first); Done on a finished task. The facts come from the board's own last read of the task (the Node side passes them, never
+the page) and the worker record is checked again in Python. A task the board has not read is refused ("refresh the board").
+
+Firstmate has no due-date field, so a follow-up's date is a body line (`Due by: YYYY-MM-DD`) that the board reads back: the card says "due 14 Nov" (or
+"overdue" in red once past) and "follow-up of <task>"; the task page links back to the task it follows.
+
+Tested with fake commands (argv, stdin, refusals), with the real scripts against a scratch home (`test_review.py`), and in a browser against a scratch home
+(`e2e/review-check.js`, with `e2e/review_lab.py`): never a real home.
+
 ## Worker boards (`workers.py`)
 
 A worker a leader marked captain-driven gets a board of its own (W1 = a), on by default with an on/off switch ("Workers you drive" on the page).
@@ -198,6 +231,7 @@ python3 -I -m unittest discover -s setup/transcript-reader/board/tests     # the
 node --test setup/transcript-reader/board.test.js                          # board.js: cache, stale-while-revalidate, failures, the flagged writes, the page source
 node --test setup/transcript-reader/api.test.js                            # the routes (flags off by default, guard, loopback only, the page's token)
 node setup/transcript-reader/e2e/board-check.js                            # by hand: the page in a real browser against a scratch home and a lab store (24 checks; needs chrome-devtools-axi)
+node setup/transcript-reader/e2e/review-check.js                           # by hand: the Review box in a real browser against a scratch home (every action, every refusal, the due date, 1440 and 390 px, light and dark)
 node setup/transcript-reader/e2e/tasks-link-check.js                       # by hand: the reader's Tasks tab and icon in a real browser (flag off and on, which board, 1440 to 330 px, the click and the way back; the Conversation tab on both board pages at a 3 or 4 column Watch's widths)
 ```
 

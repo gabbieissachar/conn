@@ -7,6 +7,8 @@
 //   POST /api/transcript-reader/board-worker                  { leader, task, enabled }: turn one worker's board on or off (the reader's own small file; never a Firstmate home)
 //   POST /api/transcript-reader/board-mark                    { session, task, turn, mark: in|out|clear }: file a reply mark on the task's record     (PMOS_READER_BOARD_MARKS=1)
 //   POST /api/transcript-reader/board-answer                  { session, task, call, src, option|text|later }: record an answer to a call            (PMOS_READER_BOARD_ANSWER=1)
+//   POST /api/transcript-reader/board-review                  { session, task, action: done|queue|delay|needs|followup, note, until, title, due }: record what you decided on the task's
+//                                                             real record, through the home's own commands (fm-tasks-axi.sh, fm-captain-hold.sh)    (PMOS_READER_BOARD_REVIEW=1)
 //   GET  /api/transcript-reader/board-reply?session=<id>&sid=<session>&uid=<turn>   the whole text of one reply, read only (for "Show full reply")
 //   POST /api/transcript-reader/board-send                    { session, session_id, text }: send a message to a supervisor's Herdr pane, through the
 //                                                             reader's own guarded Send (api.js sendPrompt)                                           (PMOS_READER_BOARD_SEND=1)
@@ -29,8 +31,8 @@
 //   - a read that fails never replaces a good board: the good one stays, with a line saying the latest read failed.
 // `fresh=1` asks for the newest board there is: quick if the whole one is still on its way.
 //
-// The three writes are separate flags, each off by default and each a no-op 404 while off: a mark is one line on a task's own record and an answer
-// closes a call, both through that home's own Firstmate command (board/marks.py, board/answer.py), never by this module touching a home. A send
+// The writes are separate flags, each off by default and each a no-op 404 while off: a mark is one line on a task's own record, an answer
+// closes a call and a review outcome moves a task (done, queued, delayed to a date, back to needs-you) or adds a follow-up, all through that home's own Firstmate command (board/marks.py, board/answer.py), never by this module touching a home. A send
 // is the reader's own Send (the same checks of the pane, the foreground session and Herdr's state as in the conversation view); this module only
 // decides whether the board may use it (the flag, and a session id that is one of the board's own supervisors). The page learns which writes are on
 // from `write` in every board answer and hides or disables the controls of the others.
@@ -85,7 +87,7 @@ function boardCacheDir(env = process.env) {
 
 function create({ root, env = process.env, run = defaultRun, runInput = defaultRunInput, now = () => Date.now(), pythonBin = 'python3', ttlMs = TTL_MS,
   enabled = env.PMOS_READER_BOARD === '1', marks = env.PMOS_READER_BOARD_MARKS === '1', answer = env.PMOS_READER_BOARD_ANSWER === '1',
-  send = env.PMOS_READER_BOARD_SEND === '1', quickRead = true, persistDir = null, warm = false } = {}) {
+  send = env.PMOS_READER_BOARD_SEND === '1', review = env.PMOS_READER_BOARD_REVIEW === '1', quickRead = true, persistDir = null, warm = false } = {}) {
   const script = path.join(root, 'setup', 'transcript-reader', 'board_cli.py');
   const cache = new Map();  // session -> { value, at, fullAt, building, quickBuilding, retryAt, failure }
   const runEnv = () => ({ ...env });
@@ -224,7 +226,7 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     return cli(['sessions']);
   }
 
-  const write = { marks: Boolean(marks), answer: Boolean(answer), send: Boolean(send) };
+  const write = { marks: Boolean(marks), answer: Boolean(answer), send: Boolean(send), review: Boolean(review) };
 
   // Which board each conversation of the reader belongs to, for the reader page's Tasks link: { <conversation id>: <board session id> }, from the boards
   // already read (their threads name the supervisor conversations each one reads), so it never builds or reads anything. A conversation two boards read goes
@@ -305,6 +307,26 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
   const mark = (session, body) => writeVia('mark', write.marks, session, body);
   const answerCall = (session, body) => writeVia('answer', write.answer, session, body);
 
+  // A review outcome is judged against the board's own last read of the task (a worker still on it, a branch or PR not landed, an open typed card): the facts come
+  // from this side, never from the page, and the Python side checks the worker record again. A task the board has not read is refused (refresh first).
+  const ASK_SRC = 'ask';
+  function reviewFacts(session, task) {
+    const entry = cache.get(session);
+    const item = entry && entry.value && Array.isArray(entry.value.items) ? entry.value.items.find((x) => x && x.ref === task) : null;
+    if (!item) return null;
+    return { live: Boolean(item.live), ready: Boolean(item.ready), branch_state: item.branch_state || null, pr: item.pr || null, merged: Boolean(item.merged), repo: item.repo || null,
+      ask_open: Array.isArray(item.calls) && item.calls.some((c) => c && c.src === ASK_SRC) };
+  }
+  async function reviewTask(session, body) {
+    if (!write.review) throw invalid('Not found.', 404, 'not_found');
+    if (!SESSION_RE.test(session || '')) throw invalid('Invalid session.');
+    const task = body && body.task;
+    if (typeof task !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(task)) throw invalid('That is not a task reference.');
+    const facts = reviewFacts(session, task);
+    if (!facts) throw invalid('The board has not read that task, so nothing was changed. Refresh the board first.', 409, 'not_read');
+    return writeVia('review', write.review, session, { task, action: body.action, note: body.note, until: body.until, title: body.title, due: body.due, facts });
+  }
+
   async function workerSwitch({ leader, task, enabled: on }) {
     if (typeof on !== 'boolean' || !SESSION_RE.test(leader || '') || typeof task !== 'string' || !SESSION_RE.test(task)) throw invalid('Invalid worker.');
     const out = await run(pythonBin, ['-I', script, 'worker-switch', '--leader', leader, '--task', task, '--state', on ? 'on' : 'off'], { env: runEnv(), timeout: 30000 });
@@ -313,7 +335,7 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     return result;
   }
 
-  return { enabled, write, board, sessions, mark, answer: answerCall, workerSwitch, reply, sendCheck, readerBoards, page, ttlMs };
+  return { enabled, write, board, sessions, mark, answer: answerCall, review: reviewTask, workerSwitch, reply, sendCheck, readerBoards, page, ttlMs };
 }
 
 module.exports = { create, boardCacheDir, SESSION_RE, TTL_MS };

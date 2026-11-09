@@ -28,7 +28,9 @@ BRANCH_IN_TEXT = re.compile(r"\bbranch ((?:[A-Za-z0-9._-]+)/[\w./-]+)")
 HEAD_IN_TEXT = re.compile(r"\bhead ([0-9a-f]{7,40})\b")
 PR_IN_TEXT = re.compile(r"(https://[^\s)]+/(?:pull|merge_requests)/\d+)")
 LAVISH = re.compile(r"(http://127\.0\.0\.1:\d+/session/\w+)")
-BOILERPLATE = re.compile(r"^(Captain hold|Resolution|Decision digest|Resolution mode|Captain decision|Task:|Answer|Reconcile|Captain hold origin|Deliverable of|Created:)")
+BOILERPLATE = re.compile(r"^(Captain hold|Resolution|Decision digest|Resolution mode|Captain decision|Task:|Answer|Reconcile|Captain hold origin|Deliverable of|Created:|Due by:|Follow-up of:)")
+DUE_LINE = re.compile(r"^Due by: (\d{4}-\d{2}-\d{2})\s*$")
+FOLLOW_LINE = re.compile(r"^Follow-up of: ([A-Za-z0-9][A-Za-z0-9._-]{0,200})\s*$")
 STALE_QUIET_DAYS = 14
 DONE_DAYS = 7
 CALL_TEXT_LIMIT = 700
@@ -249,6 +251,9 @@ def build_item(session, lifecycle: dict, rec: dict, task: dict | None, asks: lis
         if line.startswith("Captain decision:") and index + 1 < len(body):
             answer = body[index + 1]
     origin = next((m.group(1) for line in body for m in [re.match(r"Captain hold origin: (\S+)", line.strip())] if m), None)
+    # A follow-up added from a card's review (review.py) says when it is due and which task it follows; Firstmate has no due-date field, so these are body lines.
+    due = next((m.group(1) for line in body for m in [DUE_LINE.match(line.strip())] if m), None)
+    follow_of = next((m.group(1) for line in body for m in [FOLLOW_LINE.match(line.strip())] if m), None)
     spawn = re.match(r"s(\d{9,10})", (task or {}).get("spawn_gen") or "")
     started_at = int(spawn.group(1)) if spawn else (collector.created_at(body) or next((e["at"] for e in tail if e.get("at")), None))
     stamps = [c["at"] for c in calls if c.get("at")] + ([last["at"]] if last and last.get("at") else []) + ([started_at] if started_at else [])
@@ -263,5 +268,5 @@ def build_item(session, lifecycle: dict, rec: dict, task: dict | None, asks: lis
         "pr": pr, "latest": ({"state": last["state"], "when": local_stamp(last.get("at")), "at": last.get("at"), "on": last.get("on"), "text": hold_parse.clip(last["text"], 240)} if last else None),
         "idle_days": idle_days, "merged": merged_record, "note": hold_parse.clip(" ".join(note_lines[:2]), 240) or None,
         "answer": hold_parse.clip(answer, 240) if answer else None, "blocked_by": list(unresolved), "driven": facts["captain_driven"], "live": facts["live"],
-        "legacy": legacy_shown, "wait_on": wait_on, "flags": flags, "activity": activity, "origin": origin,
+        "legacy": legacy_shown, "wait_on": wait_on, "flags": flags, "activity": activity, "origin": origin, "due": due, "follow_of": follow_of,
     }

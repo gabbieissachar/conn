@@ -1,6 +1,6 @@
 'use strict';
 // The Tasks board's lab server (board-check.js): the reader's api.js on its own port, no worker, no watcher, and a Herdr that is never there.
-//   node board-lab-server.js <repo root> <port> [--marks] [--answer] [--send] [--warm]
+//   node board-lab-server.js <repo root> <port> [--marks] [--answer] [--send] [--review] [--warm]
 //        [--tailnet-ip <Tailscale IPv4> --passcode-file <file> --https-host <name> --https-port <port> --cert-file <crt> --key-file <key>]
 // With --tailnet-ip it is also reachable from the phone the way the reader's own tailnet copy is (server.js start: the same passcode gate, HTTPS under the machine's
 // Tailscale name), with the board's page and read routes on the TLS address only (api.js, board.tailnet). Its writes stay loopback-only.
@@ -10,7 +10,7 @@ const root = path.resolve(process.argv[2]);
 const port = Number(process.argv[3]);
 if (!Number.isInteger(port) || port === 8768 || port === 8765 || port === 8766) { process.stderr.write('pick another port\n'); process.exit(2); }
 const { create } = require(path.join(root, 'setup', 'transcript-reader', 'api.js'));
-const board = { enabled: true, marks: process.argv.includes('--marks'), answer: process.argv.includes('--answer'), send: process.argv.includes('--send') };
+const board = { enabled: true, marks: process.argv.includes('--marks'), answer: process.argv.includes('--answer'), send: process.argv.includes('--send'), review: process.argv.includes('--review') };
 // --warm: the board remembers its boards on disk (the board cache folder, PMOS_READER_BOARD_CACHE) and reads them all at start, as the reader does when it runs for real.
 if (process.argv.includes('--warm')) { const { boardCacheDir } = require(path.join(root, 'setup', 'transcript-reader', 'board.js')); board.persistDir = boardCacheDir(process.env); board.warm = true; }
 // A lab keeps its own reading list (LAB_OUT), hide list (LAB_HIDDEN, with its pins, stars and flags beside it) and fake Herdr (LAB_HERDR); each left out falls back to the

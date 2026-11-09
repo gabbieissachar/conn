@@ -24,10 +24,10 @@
   const readerLink = (l) => (l && l.s && l.m ? READER + "#s=" + encodeURIComponent(l.s) + "&m=" + encodeURIComponent(l.m) : null);
 
   const S = {
-    sessions: [], session: null, board: null, write: { marks: false, answer: false, send: false }, loadedAt: 0, error: null, loading: false,
+    sessions: [], session: null, board: null, write: { marks: false, answer: false, send: false, review: false }, loadedAt: 0, error: null, loading: false,
     project: "all", q: "", col: "needs", open: null, grouped: true, shut: {}, barOpen: false, workersOpen: false,
     drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {}, order: {},
-    hidden: new Map(), showHidden: false, full: {}, fullText: {}, fullBusy: {},
+    hidden: new Map(), showHidden: false, full: {}, fullText: {}, fullBusy: {}, rv: null,
   };
   /* The message box at the foot of a card (composer.js): it writes to the supervisor conversation this board reads that has a live Herdr pane (the newest if
      several), else the newest one, and says why Send is off. Its send is the board's own flagged route (PMOS_READER_BOARD_SEND=1). */
@@ -170,7 +170,7 @@
     as.append(S.board.session.label + " · read ", el("b", "", d.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })));
     if (S.stale || S.board.quick) as.append(el("span", "", " · refreshing"));
     if (th.asof) as.append(" · transcripts as of " + new Date(th.asof * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
-    const on = [S.write.answer ? "answers" : null, S.write.marks ? "marks" : null, S.write.send ? "messages to the supervisor" : null].filter(Boolean);
+    const on = [S.write.answer ? "answers" : null, S.write.marks ? "marks" : null, S.write.send ? "messages to the supervisor" : null, S.write.review ? "reviews" : null].filter(Boolean);
     as.append(" · " + (on.length ? "writes on: " + on.join(" and ") : "read only"));
   }
 
@@ -203,6 +203,8 @@
     if (flags.includes("stale_merged")) f.append(el("span", "chip warn", "says finished: record still open"));
     if (flags.includes("branch_in_main")) f.append(el("span", "chip stale", "branch already in main"));
     if (t.driven) f.append(el("span", "chip", "you drive"));
+    if (t.due) { const late = t.col !== "done" && t.due < S.board.today; const c = el("span", "chip due" + (late ? " late" : ""), (late ? "overdue · was due " : "due ") + fmt(t.due)); c.title = "Needs to be done by " + t.due; f.append(c); }
+    if (t.follow_of) f.append(el("span", "chip", "follow-up of " + t.follow_of));
     if (flags.includes("quiet_14d")) f.append(el("span", "chip warn", "quiet " + t.idle_days + "d"));
     else if (t.col === "running" && t.idle_days != null && t.idle_days >= 5) f.append(el("span", "chip warn", "quiet " + t.idle_days + "d"));
     return f.children.length ? f : null;
@@ -577,8 +579,93 @@
     if (c.type !== "board") bx.append(answerBar(t, c));
     return bx;
   }
+
+  /* ---- review (T-round): what you decided about a task, recorded on its real record through Firstmate's own commands (board/review.py; PMOS_READER_BOARD_REVIEW=1) ---- */
+  const stageOn = (id) => ((S.board && S.board.lifecycle && S.board.lifecycle.stages) || []).some((x) => x.id === id);
+  const todayPlus = (n) => { const d = new Date(utc(S.board.today) + n * 864e5); return d.toISOString().slice(0, 10); };
+  const captainHeld = (t) => !!t.hold_bucket;
+  /* Why an action cannot run now (null when it can): the same rules board/review.py checks again before it runs anything. */
+  function reviewWhy(t) {
+    const live = !!t.live, unlanded = !!(t.ready || t.branch_state === "ahead" || (t.pr && !t.merged)), card = t.calls.some((c) => c.src === "ask");
+    const worker = "A worker still has this task, so finishing or holding it is Firstmate's job (landing and cleanup).";
+    const cardWhy = "It has an open card waiting for your answer. Answer it (or say Later on it) first.";
+    return {
+      done: t.stage === "done" ? "Already done." : unlanded ? "Its branch or PR has not landed. Land it first." : live ? worker : card ? cardWhy : null,
+      queue: t.stage === "queued" && !t.hold_bucket ? "Already queued." : live && t.stage === "active" ? "A worker is running on it." : card ? cardWhy : null,
+      delay: t.stage === "done" ? "Already done. Move it back to Queued first." : live ? worker : card ? cardWhy : null,
+      needs: t.stage === "done" ? "Already done. Move it back to Queued first." : t.stage === "needs" ? "Already waiting for you." : live ? worker : card ? cardWhy : null,
+      followup: null,
+    };
+  }
+  const RV_LABEL = { done: "Done", queue: "Queued", delay: "Delay until a date…", needs: "Needs you", followup: "Add a follow-up…" };
+  const RV_SHOWS = (a) => a === "followup" || (a === "done" || a === "needs" ? stageOn(a) : a === "queue" ? stageOn("queued") : stageOn("parked"));
+  function rvVia(t, a) {
+    return a === "done" ? (captainHeld(t) ? "fm-captain-hold.sh answers (done)" : "fm-tasks-axi.sh done")
+      : a === "queue" ? (captainHeld(t) ? "fm-captain-hold.sh answers (release)" : t.stage === "queued" ? "fm-tasks-axi.sh unhold" : "fm-tasks-axi.sh reopen")
+      : a === "delay" ? "fm-captain-hold.sh hold --until" : a === "needs" ? "fm-captain-hold.sh hold" : "fm-tasks-axi.sh add";
+  }
+  function rvWords(t, f) {
+    return f.act === "done" ? "mark " + t.ref + " done" : f.act === "queue" ? "move " + t.ref + " to Queued" : f.act === "needs" ? "put " + t.ref + " back in Needs you"
+      : f.act === "delay" ? "hold " + t.ref + " until " + (f.until ? fmt(f.until) : "the date you pick") : "add a follow-up to " + t.ref + (f.due ? ", due " + fmt(f.due) : "");
+  }
+  function rvReady(f) { return f.act === "delay" ? !!f.until : f.act === "followup" ? f.title.trim().length >= 3 : true; }
+  function rvDone(t, act, res) {
+    const r = (res && res.review) || {};
+    return act === "done" ? "Marked " + t.ref + " done" : act === "queue" ? t.ref + " is back in Queued" : act === "needs" ? t.ref + " is back in Needs you"
+      : act === "delay" ? t.ref + " is held until " + fmt((r.after && r.after.until) || S.rv.until) : "Follow-up " + (r.followup || "") + " added" + (r.due ? ", due " + fmt(r.due) : "");
+  }
+  async function rvRecord(t) {
+    const f = S.rv; if (!f || f.busy || !rvReady(f)) return;
+    f.busy = true; f.err = null; renderSheet();
+    const body = { session: S.session, task: t.ref, action: f.act, note: f.note.trim() };
+    if (f.act === "delay") body.until = f.until;
+    if (f.act === "followup") { body.title = f.title.trim(); if (f.due) body.due = f.due; }
+    try {
+      const res = await post("board-review", body);
+      const msg = rvDone(t, f.act, res); S.rv = null; toast(msg); await loadBoard(true);
+    } catch (e) { if (S.rv) { S.rv.busy = false; S.rv.err = e.message; } renderSheet(); }
+  }
+  function reviewSection(t) {
+    const sec = el("div", "sec rv"); sec.dataset.call = "review"; sec.append(el("h4", "", "Review"));
+    const why = reviewWhy(t), on = !!S.write.review, f = S.rv && S.rv.ref === t.ref ? S.rv : null;
+    const row = el("div", "rv-actions"); row.setAttribute("role", "group"); row.setAttribute("aria-label", "Record what you decided about this task");
+    ["done", "queue", "delay", "needs", "followup"].filter(RV_SHOWS).forEach((a) => {
+      const b = el("button", "rv-btn", RV_LABEL[a]); b.type = "button"; b.dataset.act = a; b.setAttribute("aria-pressed", String(!!f && f.act === a));
+      b.disabled = !on || !!why[a]; if (why[a]) b.title = why[a];
+      b.onclick = () => { S.rv = f && f.act === a ? null : { ref: t.ref, act: a, note: f ? f.note : "", until: "", title: "", due: "", busy: false, err: null }; renderSheet(); };
+      row.append(b);
+    });
+    sec.append(row);
+    if (!on) sec.append(el("div", "off-note", "Recording a review is off in this reader (PMOS_READER_BOARD_REVIEW=1 turns it on). The buttons show what it would do."));
+    else {
+      const notes = [...new Set(["done", "queue", "delay", "needs"].filter(RV_SHOWS).map((a) => why[a]).filter(Boolean))];
+      notes.forEach((n) => sec.append(el("div", "rv-why", n)));
+    }
+    if (f && on) {
+      const form = el("form", "rv-form"); form.noValidate = true;
+      const field = (labelText, input) => { const l = el("label"); l.append(el("span", "", labelText), input); form.append(l); return input; };
+      const text = (value, ph, max) => { const i = el("input"); i.type = "text"; i.value = value; i.placeholder = ph || ""; i.maxLength = max; return i; };
+      if (f.act === "followup") { const i = field("What needs doing", text(f.title, "A short title", 140)); i.name = "title"; i.setAttribute("aria-label", "Follow-up title"); i.oninput = () => { f.title = i.value; sync(); }; }
+      if (f.act === "delay" || f.act === "followup") {
+        const d = el("input"); d.type = "date"; d.name = f.act === "delay" ? "until" : "due"; d.value = f.act === "delay" ? f.until : f.due; if (f.act === "delay") d.min = todayPlus(1); else d.min = S.board.today;
+        field(f.act === "delay" ? "Come back on" : "Needs to be done by (optional)", d); d.setAttribute("aria-label", f.act === "delay" ? "Date to come back" : "Due date");
+        d.oninput = () => { if (f.act === "delay") f.until = d.value; else f.due = d.value; sync(); };
+      }
+      const n = field(f.act === "followup" ? "Note on the follow-up (optional)" : "Note (optional)", text(f.note, "", 300)); n.name = "note"; n.setAttribute("aria-label", "Note"); n.oninput = () => { f.note = n.value; sync(); };
+      const says = el("div", "rv-says"); const go = el("button", "primary", f.busy ? "Recording…" : "Record"); go.type = "submit";
+      const cancel = el("button", "ghost", "Cancel"); cancel.type = "button"; cancel.onclick = () => { S.rv = null; renderSheet(); };
+      const sync = () => { says.textContent = ""; says.append("This writes to " + S.board.session.label + "'s Firstmate home through ", el("code", "", rvVia(t, f.act)), ": " + rvWords(t, f) + (f.note.trim() ? " (with your note)" : "") + "."); go.disabled = f.busy || !rvReady(f); };
+      sync(); const bar = el("div", "recbar"); bar.append(go, cancel); form.append(says, bar);
+      if (f.err) form.append(el("div", "err", f.err));
+      form.onsubmit = (e) => { e.preventDefault(); rvRecord(t); };
+      sec.append(form);
+    }
+    return sec;
+  }
   function renderSheet() {
     const t = byRef()[S.open.ref]; if (!t) { S.open = null; composer.detach(); $("layer").textContent = ""; return; }
+    /* The sheet is drawn again on every refresh of the board: a box in the review form keeps its focus and caret across that. */
+    const ae = document.activeElement, focus = ae && ae.name && ae.closest && ae.closest(".rv-form") ? { name: ae.name, a: ae.selectionStart, b: ae.selectionEnd } : null;
     const L = $("layer"); L.textContent = "";
     const scrim = el("div", "scrim"); scrim.onclick = closeSheet; L.append(scrim);
     const sh = el("aside", "sheet"); sh.setAttribute("role", "dialog"); sh.setAttribute("aria-label", t.title);
@@ -602,12 +689,15 @@
       if (t.answer) { const li = el("li"); li.append(el("span", "st done", "your earlier answer"), " ", t.answer); ul.append(li); }
       sec.append(ul); body.append(sec);
     }
+    body.append(reviewSection(t));
     body.append(threadSection(t));
     if (t.note) { const sec = el("div", "sec"); sec.append(el("h4", "", "Note on the task"), el("p", "", t.note)); body.append(sec); }
     const kv = el("dl", "kv"); const add = (k, v) => { kv.append(el("dt", "", k)); const dd = el("dd"); if (v instanceof Node) dd.append(v); else dd.textContent = v; kv.append(dd); };
     add("Session", S.board.session.label + " · project " + t.repo + " · " + (t.kind === "captain" ? "call" : t.kind));
     add("On the board since", fmt(t.since) + " (" + ago(t.since) + ")");
     if (t.until) add("Back on", fmt(t.until));
+    if (t.due) add("Needs to be done by", fmt(t.due) + (t.col !== "done" && t.due < S.board.today ? " · overdue" : ""));
+    if (t.follow_of) { const w = el("span"); const refs = byRef(); if (refs[t.follow_of]) { const b = el("button", "linkbtn", t.follow_of); b.type = "button"; b.onclick = () => jumpTo(t.follow_of); w.append(b); } else w.append(t.follow_of); add("Follow-up of", w); }
     if (t.report) add("Report", t.report);
     if (t.branch) add("Branch", t.branch + (t.head_sha ? " @ " + t.head_sha : "") + (t.legacy ? " · legacy draft branch: nothing to land" : t.ready ? " · ready, not merged" : "") + (t.branch_state === "merged" ? " · already in main" : t.branch_state === "ahead" ? " · " + t.branch_ahead + " commit" + (t.branch_ahead === 1 ? "" : "s") + " not in main" : ""));
     if (t.summary) add("Report says", t.summary);
@@ -615,6 +705,7 @@
     if (t.blocked_by.length) { const w = el("span"); const refs = byRef(); t.blocked_by.forEach((r, i) => { if (i) w.append(", "); if (refs[r]) { const b = el("button", "linkbtn", r); b.type = "button"; b.onclick = () => jumpTo(r); w.append(b); } else w.append(r); }); add("Blocked by", w); }
     const sec = el("div", "sec"); sec.append(el("h4", "", "Details"), kv); body.append(sec);
     sh.append(body); L.append(sh); composer.attach(sh);
+    if (focus) { const n = sh.querySelector('.rv-form [name="' + focus.name + '"]'); if (n) { n.focus({ preventScroll: true }); try { if (focus.a != null) n.setSelectionRange(focus.a, focus.b); } catch (_) { /* a date box has no caret */ } } }
     document.querySelectorAll(".card.current").forEach((n) => n.classList.remove("current"));
     const cur = document.querySelector('.col [data-ref="' + CSS.escape(t.ref) + '"]'); if (cur) cur.classList.add("current");
     if (S.open.scrollTo) { const n = body.querySelector('[data-call="' + S.open.scrollTo + '"]'); if (n) { n.scrollIntoView({ block: "start" }); n.classList.add("flash"); } S.open.scrollTo = null; }
@@ -640,12 +731,12 @@
   }
   function stepSheet(ref) {
     if (!ref || !byRef()[ref]) return;
-    S.open = { ref, scrollTo: null }; S.confirm = null; renderSheet();
+    S.open = { ref, scrollTo: null }; S.confirm = null; S.rv = null; renderSheet();
     const body = document.querySelector(".sh-body"); if (body) body.scrollTop = 0;
     const node = document.querySelector('.col [data-ref="' + CSS.escape(ref) + '"]'); if (node) node.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   function openSheet(ref, callId) { S.open = { ref, scrollTo: callId || null }; render(); }
-  function closeSheet() { S.open = null; S.confirm = null; composer.detach(); $("layer").textContent = ""; }
+  function closeSheet() { S.open = null; S.confirm = null; S.rv = null; composer.detach(); $("layer").textContent = ""; }
 
   /* ---- references: #s=<session>&t=<ref>[/<call>], and the find box ---- */
   function parseRef(s) {

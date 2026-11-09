@@ -51,7 +51,7 @@
 //   GET  /api/transcript-reader/board?session=<id>  the Tasks board of one session (board.js; board/README.md), as JSON; 404 unless the reader is
 //                                                   started with PMOS_READER_BOARD=1, and not on the tailnet listeners unless PMOS_READER_BOARD_TAILNET=1 too (the TLS one only, reads only)
 //   GET  /api/transcript-reader/board-sessions      the sessions that have a board (same flag, same limits)
-//   POST /api/transcript-reader/board-{mark,answer,worker}  the board's writes (board.js): a reply mark and an answer, each behind a flag of its own, and a worker's
+//   POST /api/transcript-reader/board-{mark,answer,review,worker}  the board's writes (board.js): a reply mark, an answer and a review outcome, each behind a flag of its own, and a worker's
 //                                                   on/off switch; GET /setup/transcript-reader/board/ is its page (loopback only)
 //   GET  /api/transcript-reader/board-reply         the whole text of one reply a card shows (board.js), read only
 //   POST /api/transcript-reader/board-send          the card view's message box: the board's flag (PMOS_READER_BOARD_SEND=1) and a supervisor session its own
@@ -1844,11 +1844,11 @@ function create({
     if (pathname.startsWith(API + 'board') && board.enabled && (boardLoopback || (boardTailnet && guards.get(req) === httpsLane.guard))) {
       const boardFail = (error) => { if (error && error.status) { fail(res, error.status, error.code, error.message); return true; } return false; };
       if (pathname === API + 'board-sessions' && req.method === 'GET') {
-        send(res, 200, { status: 'ok', ...(await board.sessions()), write: boardLoopback ? board.write : { marks: false, answer: false, send: false } });
+        send(res, 200, { status: 'ok', ...(await board.sessions()), write: boardLoopback ? board.write : { marks: false, answer: false, send: false, review: false } });
         return;
       }
       if (pathname === API + 'board' && req.method === 'GET') {
-        try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: boardLoopback ? board.write : { marks: false, answer: false, send: false } }); } catch (error) { if (!boardFail(error)) throw error; }
+        try { send(res, 200, { status: 'ok', ...(await board.board(query.get('session'), { fresh: query.get('fresh') === '1' })), write: boardLoopback ? board.write : { marks: false, answer: false, send: false, review: false } }); } catch (error) { if (!boardFail(error)) throw error; }
         return;
       }
       if (pathname === API + 'board-reply' && req.method === 'GET') {
@@ -1866,10 +1866,11 @@ function create({
         } catch (error) { if (!boardFail(error)) throw error; }
         return;
       }
-      if (req.method === 'POST' && (pathname === API + 'board-mark' || pathname === API + 'board-answer' || pathname === API + 'board-worker')) {
+      if (req.method === 'POST' && (pathname === API + 'board-mark' || pathname === API + 'board-answer' || pathname === API + 'board-review' || pathname === API + 'board-worker')) {
         const body = await readJsonBody(req);
         try {
           if (pathname === API + 'board-worker') send(res, 200, { status: 'ok', ...(await board.workerSwitch(body)) });
+          else if (pathname === API + 'board-review') send(res, 200, { status: 'ok', ...(await board.review(body.session, { task: body.task, action: body.action, note: body.note, until: body.until, title: body.title, due: body.due })) });
           else if (pathname === API + 'board-mark') send(res, 200, { status: 'ok', ...(await board.mark(body.session, { task: body.task, turn: body.turn, mark: body.mark, source: 'card' })) });
           else send(res, 200, { status: 'ok', ...(await board.answer(body.session, { task: body.task, call: body.call, src: body.src, option: body.option, text: body.text, later: body.later, calls: body.calls, release: body.release })) });
         } catch (error) { if (!boardFail(error)) throw error; }
