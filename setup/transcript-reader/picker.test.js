@@ -559,61 +559,77 @@ test('sections: with a star ranker the starred group is newest star first, the l
   assert.equal(tied(moved), 1);
 });
 
-// ---- the Tasks link: the tab of the open header and the icon of the folded one, shown only where the server says it serves the board
+// ---- the Tasks links: Tasks (this conversation's board alone: the tab of the open header, the icon of the folded one) and All tasks (the whole board: a tab), shown only where the server says it serves the board
 
-test('page: the Tasks link is a link in the header, an icon among the folded ones and a tab-looking link beside the tabs, hidden until the server says there is a board', () => {
+test('page: Tasks is a link in the header, an icon among the folded ones and a tab-looking link beside the tabs, and All tasks is a second one, both hidden until the server says there is a board', () => {
   const page = pageSource();
   const title = page.match(/<div class="title">([\s\S]*?)<\/div>/)[1];
   assert.match(title, /<a class="view-btn" id="view-tasks" href="\/setup\/transcript-reader\/board\/" aria-label="Tasks" title="[^"]*" hidden>/);
   assert.ok(title.indexOf('id="view-doc"') < title.indexOf('id="view-tasks"') && title.indexOf('id="view-tasks"') < title.indexOf('id="files-quick"'), 'after Documents, before Files');
   assert.match(title.match(/id="view-tasks"[\s\S]*?<\/a>/)[0], /stroke="currentColor" stroke-width="1\.4"/, 'the same stroke weight as its neighbours');
+  assert.doesNotMatch(title, /tasks-all/, 'the folded header has no icon for the whole board: it stays as it was');
   const tabs = page.match(/<div class="tabs">([\s\S]*?)<div id="controls">/)[1];
-  assert.match(tabs, /<div class="tablist" role="tablist">[\s\S]*id="tab-doc"[\s\S]*<\/div>\s*<a class="tab tab-link" id="tab-tasks" href="\/setup\/transcript-reader\/board\/" title="[^"]*" hidden>Tasks<\/a>/, 'the tabs keep their list; the link is beside it, not a tab of it');
+  assert.match(tabs, /<div class="tablist" role="tablist">[\s\S]*id="tab-doc"[\s\S]*<\/div>\s*<a class="tab tab-link" id="tab-tasks" href="\/setup\/transcript-reader\/board\/" title="[^"]*" hidden>Tasks<\/a>\s*<a class="tab tab-link" id="tab-tasks-all" href="\/setup\/transcript-reader\/board\/" title="[^"]*" hidden>All tasks<\/a>/, 'the tabs keep their list; the two links are beside it, not tabs of it');
   assert.doesNotMatch(tabs.match(/<a class="tab tab-link"[^>]*>/)[0], /role=/, 'a link to another page is not a view');
   assert.match(page, /\.tablist \{ display: contents; \}/);
   assert.match(page, /\.tab-link:not\(\[hidden\]\) \{ display: flex;/, 'hidden stays hidden: the link only takes a display when it shows');
-  assert.match(fnBody(page, 'paintBar'), /paintTasksLink\(session\);/, 'every draw of the bar keeps the link right');
-  assert.match(page, /takeState\(s\);\s*paintTasksLink\(data\.sessions\[state\.session\]\);/, 'and the first state, which may come after the page was drawn, shows it');
+  assert.match(fnBody(page, 'paintBar'), /paintTasksLink\(session\);/, 'every draw of the bar keeps the links right');
+  assert.match(page, /takeState\(s\);\s*paintTasksLink\(data\.sessions\[state\.session\]\);/, 'and the first state, which may come after the page was drawn, shows them');
+  assert.match(page, /const hadTasks = tasksLinkSignature\(\);[\s\S]*if \(started && hadTasks !== tasksLinkSignature\(\)\)/, 'a link that shows or goes gives the header its lines again');
   assert.match(fnBody(page, 'takeState'), /link\.board = s\.board && typeof s\.board\.page === "string" \? s\.board : null;/);
 });
 
 function tasksPage({ canLive = true, board = null } = {}) {
   const page = pageSource();
   const make = () => ({ hidden: true, attrs: { href: '/setup/transcript-reader/board/' }, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } });
-  const tab = make(), icon = make();
-  const sandbox = { canLive, link: { board }, document: { getElementById: (id) => ({ 'tab-tasks': tab, 'view-tasks': icon })[id] }, Boolean, Object, encodeURIComponent };
-  const run = vm.runInNewContext(fnBody(page, 'paintTasksLink') + '\n  }\n({ paintTasksLink })', sandbox);
-  return { tab, icon, sandbox, ...run };
+  const tab = make(), icon = make(), all = make();
+  const sandbox = { canLive, link: { board }, document: { getElementById: (id) => ({ 'tab-tasks': tab, 'view-tasks': icon, 'tab-tasks-all': all })[id] }, Boolean, Object, encodeURIComponent };
+  const run = vm.runInNewContext(fnBody(page, 'tasksLinkSignature') + '\n  }\n' + fnBody(page, 'paintTasksLink') + '\n  }\n({ paintTasksLink, tasksLinkSignature })', sandbox);
+  return { tab, icon, all, sandbox, ...run };
 }
+const PAGE = '/setup/transcript-reader/board/';
 
-test('Tasks link: shown on a served page that was told of a board, and nowhere else', () => {
+test('Tasks links: shown on a served page that was told of a board, and nowhere else', () => {
   const off = tasksPage({ board: null });
   off.paintTasksLink({ id: 'aaaaaaaa-1' });
-  assert.equal(off.tab.hidden, true, 'the server did not say there is a board (flag off, a phone on the plain address)');
-  assert.equal(off.icon.hidden, true);
-  const copy = tasksPage({ canLive: false, board: { page: '/setup/transcript-reader/board/', boards: {} } });
+  assert.deepEqual([off.tab.hidden, off.icon.hidden, off.all.hidden], [true, true, true], 'the server did not say there is a board (flag off, a phone on the plain address)');
+  const copy = tasksPage({ canLive: false, board: { page: PAGE, boards: { 'aaaaaaaa-1': 'big-boss' } } });
   copy.paintTasksLink({ id: 'aaaaaaaa-1' });
-  assert.equal(copy.tab.hidden, true, 'a file copy, the hosted copy or the embed page cannot reach a server, so it has no Tasks link');
-  assert.equal(copy.icon.hidden, true);
-  const on = tasksPage({ board: { page: '/setup/transcript-reader/board/', boards: {} } });
-  on.paintTasksLink({ id: 'aaaaaaaa-1' });
-  assert.equal(on.tab.hidden, false);
-  assert.equal(on.icon.hidden, false);
-  assert.equal(on.tab.attrs.href, '/setup/transcript-reader/board/', 'no board reads this conversation: the board page opens on its own first board');
-  on.paintTasksLink(undefined);
-  assert.equal(on.tab.attrs.href, '/setup/transcript-reader/board/', 'no conversation on screen');
+  assert.deepEqual([copy.tab.hidden, copy.icon.hidden, copy.all.hidden], [true, true, true], 'a file copy, the hosted copy or the embed page cannot reach a server, so it has no Tasks link');
 });
 
-test('Tasks link: opens the board that reads the conversation on screen (its newest id or an older one of the same pane), and goes back when the conversation changes', () => {
-  const t = tasksPage({ board: { page: '/setup/transcript-reader/board/', boards: { 'aaaaaaaa-1': 'big-boss', 'older-id-9': 'leader-esim' } } });
+test('Tasks: a conversation no board reads has no Tasks tab and no Tasks icon, and gets them once a board that reads it is known; All tasks stays', () => {
+  const t = tasksPage({ board: { page: PAGE, boards: {} } });
   t.paintTasksLink({ id: 'aaaaaaaa-1', ids: ['aaaaaaaa-1'] });
-  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/#s=big-boss');
-  assert.equal(t.icon.attrs.href, '/setup/transcript-reader/board/#s=big-boss', 'the folded icon goes to the same place');
+  assert.deepEqual([t.tab.hidden, t.icon.hidden], [true, true], 'no board reads this conversation');
+  assert.equal(t.all.hidden, false, 'the whole board is one link away from any conversation');
+  assert.equal(t.all.attrs.href, PAGE);
+  t.paintTasksLink(undefined);
+  assert.deepEqual([t.tab.hidden, t.icon.hidden, t.all.hidden], [true, true, false], 'no conversation on screen: the whole board only');
+  const before = t.tasksLinkSignature();
+  t.sandbox.link.board = { page: PAGE, boards: { 'aaaaaaaa-1': 'leader-esim' } };  // the next state poll: a board that reads it has been read
+  t.paintTasksLink({ id: 'aaaaaaaa-1', ids: ['aaaaaaaa-1'] });
+  assert.deepEqual([t.tab.hidden, t.icon.hidden], [false, false], 'the icon appears once the conversation has a board');
+  assert.notEqual(t.tasksLinkSignature(), before, 'and the header is told its links changed');
+  t.sandbox.link.board = { page: PAGE, boards: {} };  // the boards no longer name it
+  t.paintTasksLink({ id: 'aaaaaaaa-1', ids: ['aaaaaaaa-1'] });
+  assert.deepEqual([t.tab.hidden, t.icon.hidden], [true, true], 'and goes again');
+});
+
+test('Tasks: opens the board of the conversation on screen alone (its newest id or an older one of the same pane), and All tasks stays the whole board', () => {
+  const t = tasksPage({ board: { page: PAGE, boards: { 'aaaaaaaa-1': 'big-boss', 'older-id-9': 'leader-esim' } } });
+  t.paintTasksLink({ id: 'aaaaaaaa-1', ids: ['aaaaaaaa-1'] });
+  assert.equal(t.tab.attrs.href, PAGE + '?session=big-boss', 'one board, named in the query: the page reads that board and no other');
+  assert.equal(t.icon.attrs.href, PAGE + '?session=big-boss', 'the folded icon goes to the same place');
+  assert.equal(t.all.attrs.href, PAGE, 'the whole board has no session in it');
   t.paintTasksLink({ id: 'newest-77', ids: ['older-id-9', 'newest-77'] });
-  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/#s=leader-esim', 'a pane whose earlier session is one the board reads');
+  assert.equal(t.tab.attrs.href, PAGE + '?session=leader-esim', 'a pane whose earlier session is one the board reads');
   t.paintTasksLink({ id: 'other-0', ids: ['other-0'] });
-  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/', 'a conversation no board reads');
-  t.sandbox.link.board = { page: '/setup/transcript-reader/board/', boards: { __proto__: null, constructor: 'x' } };
+  assert.equal(t.tab.hidden, true, 'a conversation no board reads');
+  t.sandbox.link.board = { page: PAGE, boards: { __proto__: null, constructor: 'x' } };
   t.paintTasksLink({ id: 'toString', ids: ['toString'] });
-  assert.equal(t.tab.attrs.href, '/setup/transcript-reader/board/', 'a conversation id is looked up as its own key only');
+  assert.equal(t.tab.hidden, true, 'a conversation id is looked up as its own key only');
+  t.sandbox.link.board = { page: PAGE, boards: { 'odd-1': 'a b&c' } };
+  t.paintTasksLink({ id: 'odd-1', ids: ['odd-1'] });
+  assert.equal(t.tab.attrs.href, PAGE + '?session=a%20b%26c', 'a board id is escaped in the query');
 });
