@@ -48,14 +48,15 @@ final class SystemPresence: PresenceReading {
 
 // MARK: chimes (decision F19)
 
-/// Glass at the end of a session, Tink at the start and the end of an eye break: system sounds, no permission, and a Focus does not mute an app's own sound.
+/// Glass at the end of a session, Submarine when an eye break starts and Hero when it ends: system sounds, no permission, and a Focus does not mute an app's own sound.
+/// Tink (the first pick) was too short and quiet to notice. Submarine (1.5 s sonar ping) and Hero (1.1 s rising two-note, the loudest of the set) are not used by Herdr, Claude's hooks, the pmos notifier (those use Herdr's own Done and Request sounds, the spoken "Approval needed" and the default banner sound) or the session end, and they differ from each other: a ping to look away, a rise for back to it.
 @MainActor
 final class SystemChimes: FocusChiming {
     private var playing: NSSound?
     private func play(_ name: String) { playing = NSSound(named: NSSound.Name(name)); playing?.play() }
     func sessionEnded() { play("Glass") }
-    func eyeBreakStarted() { play("Tink") }
-    func eyeBreakEnded() { play("Tink") }
+    func eyeBreakStarted() { play("Submarine") }
+    func eyeBreakEnded() { play("Hero") }
 }
 
 // MARK: Focus Status (decision F21)
