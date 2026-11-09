@@ -10,7 +10,9 @@
 // Round 1, the review flag off: the Review box is there, every button is off, and it says what turns it on. Round 2, the flag on: each action writes the
 // scratch home's real record through Firstmate's own command (Delay -> a hold with a date -> Parked; Needs you; Queued from a hold; Done; Queued from Done;
 // a follow-up with a due date -> a new card that says when it is due and which task it follows), a task a worker has, a branch that has not landed or a
-// typed card waiting is refused with its reason, nothing scrolls sideways, and a phone's buttons are tap-sized, light and dark.
+// typed card waiting is refused with its reason, nothing scrolls sideways, and a phone's buttons are tap-sized, light and dark. Round 3 is the review round: a
+// recorded outcome marks the task reviewed (a chip on its card, a count in the round line, a line in the reader's own board-rounds.json, never the backlog),
+// Mark reviewed and Undo, the Not yet reviewed filter, a new round that asks first and forgets the marks, and the marks surviving a reload.
 
 const fs = require('fs');
 const os = require('os');
@@ -50,6 +52,9 @@ const press = (act) => ev(`document.querySelector('.sheet .rv-btn[data-act="${ac
 // Fill a box of the open form the way typing does (the page listens to input), then record.
 const fill = (name, value) => ev(`const i = document.querySelector('.sheet .rv-form [name="${name}"]'); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
 const record = () => ev(`document.querySelector('.sheet .rv-form button[type="submit"]').click(); return true;`);
+const rounds = (lab) => { try { return JSON.parse(fs.readFileSync(path.join(lab.conf, 'board-rounds.json'), 'utf8')).rounds['leader-lab'] || null; } catch (e) { return null; } };
+const roundText = () => ev(`const r = document.getElementById('round'); return r.hidden ? '(hidden)' : r.innerText.replace(/\\s+/g, ' ');`);
+const cardHas = (ref, what) => ev(`const c = document.querySelector('.card[data-ref="${ref}"]'); return !!c && [...c.querySelectorAll('.chip')].some(x => ${what});`);
 const backlog = (lab) => fs.readFileSync(lab.backlog, 'utf8');
 async function recorded(what, test) { await until(`const m = document.querySelector('.toast'); return { ok: !!m && ${test} };`, what, 30000); }
 const edges = (label) => {
@@ -72,6 +77,7 @@ const edges = (label) => {
     check(['done', 'delay', 'needs', 'followup'].every((a) => btn(a) && btn(a).off) && btn('queue').off, 'review off: every button is there and off');
     check(/PMOS_READER_BOARD_REVIEW=1/.test(ev(`return document.querySelector('.sheet .rv .off-note').textContent;`)), 'and the box says what turns it on');
     check(/read only/.test(ev(`return document.getElementById('asof').textContent;`)), 'the page still says it is read only');
+    check(roundText() === '(hidden)', 'review off, no round yet: there is no round line');
     servers.forEach((s) => s.kill()); servers.length = 0;
 
     // ---- round 2: the flag on
@@ -80,6 +86,7 @@ const edges = (label) => {
     await openBoard(port);
     check(/writes on: reviews/.test(ev(`return document.getElementById('asof').textContent;`)), 'the page says reviews are on');
     const start = cards();
+    check(/No review round yet/.test(roundText()) && ev(`return !!document.getElementById('round-start');`), 'review on, no round yet: the round line says so and offers Start a round', roundText());
     check(start['rv-queued'] === 'queued' && start['rv-held'] === 'needs' && start['rv-card'] === 'needs', 'the lab opens as built', JSON.stringify(start));
 
     // what each task allows, and why not
@@ -109,6 +116,9 @@ const edges = (label) => {
     await until(`return { ok: document.querySelector('.card[data-ref="rv-queued"]') && document.querySelector('.card[data-ref="rv-queued"]').closest('.col').dataset.col === 'parked' };`, 'the card in Parked until a date');
     check(true, 'Delay: the card moved to Parked until a date');
     check(ev(`return !document.querySelector('.sheet .rv-form');`), 'and the form closed');
+    check(rounds(lab) && rounds(lab).reviewed['rv-queued'] && rounds(lab).reviewed['rv-queued'].outcome === 'delay', 'Delay also marks the task reviewed, in the reader\'s own board-rounds.json', JSON.stringify(rounds(lab)));
+    check(cardHas('rv-queued', `x.textContent === 'reviewed'`) && /started .* · 1 of \d+ open tasks reviewed/.test(roundText()), 'and a round started: the card says reviewed and the round line counts it', roundText());
+    check(!/rv-queued[^\n]*reviewed/i.test(backlog(lab)), 'the mark is not written into the backlog');
 
     // Needs you (a held task goes back to waiting for the captain)
     await openTask('rv-queued'); press('needs'); record();
@@ -146,12 +156,56 @@ const edges = (label) => {
     check(faces && faces.col === 'queued' && faces.due.some((x) => /^due /.test(x)) && faces.due.some((x) => /follow-up of rv-held/.test(x)), 'Follow-up: a new card in Queued says when it is due and which task it follows', JSON.stringify(faces));
     check(ev(`const s = document.querySelector('.card[data-ref="rv-held"]'); return !!s;`), 'the task it follows is unchanged');
 
+    // ---- round 3: the review round
+    await openBoard(port);  // a reload: the marks come back from the reader's own file
+    check(cardHas('rv-queued', `x.textContent === 'reviewed'`) && cardHas('rv-draft', `x.textContent === 'reviewed'`), 'after a reload the reviewed tasks are still reviewed');
+    check(!cardHas('rv-live', `/reviewed/.test(x.textContent)`) && !cardHas('rv-card', `/reviewed/.test(x.textContent)`), 'and a task nobody reviewed has no chip');
+    const before = backlog(lab);
+    await openTask('rv-card');
+    check(rounds(lab).reviewed['rv-card'] === undefined, 'opening a card does not mark it reviewed');
+    ev(`document.querySelector('.sheet .rv-seen-btn').click(); return true;`);
+    await until(`return { ok: !!document.querySelector('.card[data-ref="rv-card"] .chip.rvd') };`, 'the chip on the card');
+    check(rounds(lab).reviewed['rv-card'].outcome === 'seen' && backlog(lab) === before, 'Mark reviewed marks it (outcome seen) and changes nothing on the task');
+    check(/Reviewed .* · marked reviewed/.test(ev(`return document.querySelector('.sheet .rv-seen-t').textContent;`)), 'the card says when, and what you did');
+    const n1 = (/(\d+) of (\d+) open/.exec(roundText()) || []).slice(1).map(Number);
+    ev(`document.querySelector('.sheet .rv-seen [data-round="unmark"]').click(); return true;`);
+    await until(`return { ok: !document.querySelector('.card[data-ref="rv-card"] .chip.rvd') };`, 'the chip gone');
+    check(rounds(lab).reviewed['rv-card'] === undefined && (/(\d+) of/.exec(roundText()) || [])[1] === String(n1[0] - 1), 'Undo takes the mark off and the count drops', roundText());
+    ev(`document.querySelector('.sheet .rv-seen-btn').click(); return true;`);
+    await until(`return { ok: !!document.querySelector('.card[data-ref="rv-card"] .chip.rvd') };`, 'marked again');
+    // the filter
+    const total = ev(`return document.querySelectorAll('.card').length;`);
+    ev(`window.__board.S.open = null; document.getElementById('layer').textContent = ''; document.getElementById('unreviewed').click(); return true;`);
+    const left = ev(`return { cards: document.querySelectorAll('.card').length, rvd: document.querySelectorAll('.col:not([data-col="done"]) .card .chip.rvd').length, n: document.querySelector('#unreviewed .n').textContent, pressed: document.getElementById('unreviewed').getAttribute('aria-pressed') };`);
+    check(left.pressed === 'true' && left.rvd === 0 && left.cards < total && String(left.cards) >= left.n, 'Not yet reviewed shows only the tasks without a mark (done ones stay)', JSON.stringify({ ...left, total }));
+    ev(`document.getElementById('unreviewed').click(); return true;`);
+    check(ev(`return document.querySelectorAll('.card').length;`) === total, 'and pressing it again shows every task');
+    // a new round asks first, keeps the round on "Keep", forgets the marks on "Start"
+    const marks0 = Object.keys(rounds(lab).reviewed).length;
+    ev(`document.getElementById('round-start').click(); return true;`);
+    check(new RegExp('Forget ' + marks0 + ' marks? and start over').test(roundText()), 'Start a new round asks first and says how many marks it forgets', roundText());
+    ev(`[...document.querySelectorAll('#round button')].find(b => /Keep this round/.test(b.textContent)).click(); return true;`);
+    check(Object.keys(rounds(lab).reviewed).length === marks0 && ev(`return !!document.getElementById('round-start');`), 'Keep this round changes nothing');
+    const oldId = rounds(lab).id;
+    await sleep(1100);
+    ev(`document.getElementById('round-start').click(); document.getElementById('round-yes').click(); return true;`);
+    await until(`return { ok: /0 of [0-9]+ open/.test(document.getElementById('round').innerText) };`, 'the new round');
+    check(rounds(lab).id !== oldId && Object.keys(rounds(lab).reviewed).length === 0 && ev(`return document.querySelectorAll('.card .chip.rvd').length;`) === 0, 'a new round forgets the marks and starts again at none', JSON.stringify(rounds(lab)));
+    // the task changed after you reviewed it: the chip says so
+    await openTask('rv-live'); ev(`document.querySelector('.sheet .rv-seen-btn').click(); return true;`);
+    await until(`return { ok: !!document.querySelector('.card[data-ref="rv-live"] .chip.rvd') };`, 'rv-live reviewed');
+    fs.appendFileSync(path.join(lab.home, 'state', 'rv-live.status'), `working [at=${Math.floor(Date.now() / 1000) + 120}]: more work after the review\n`);
+    ev(`document.getElementById('refresh').click(); return true;`);
+    await until(`return { ok: [...document.querySelectorAll('.card[data-ref="rv-live"] .chip.rvd.changed')].length === 1 };`, 'the changed chip', 40000);
+    check(/changed since/.test(ev(`return document.querySelector('.card[data-ref="rv-live"] .chip.rvd').textContent;`)), 'a task that changed after you reviewed it says "reviewed · changed since", and the filter shows it again');
     // the phone: tap-sized buttons and a form that fits, light and dark
     await openBoard(port, '', '390x844x2,mobile,touch');
     await openTask('rv-queued'); press('followup');
     const phone = ev(`const bs = [...document.querySelectorAll('.sheet .rv-btn')].map(b => Math.round(b.getBoundingClientRect().height)), is = [...document.querySelectorAll('.sheet .rv-form input')].map(i => Math.round(i.getBoundingClientRect().height)); return { bs: Math.min(...bs), is: Math.min(...is), fs: getComputedStyle(document.querySelector('.sheet .rv-form input')).fontSize };`);
     check(phone.bs >= 44 && phone.is >= 44 && phone.fs === '16px', 'phone: buttons and boxes are at least 44 px tall and the text is 16 px (no zoom on focus)', JSON.stringify(phone));
     edges('390 px');
+    const rl = ev(`const r = document.getElementById('round').getBoundingClientRect(), bs = [...document.querySelectorAll('#round button')].map(b => Math.round(b.getBoundingClientRect().height)); return { side: document.documentElement.scrollWidth <= innerWidth, inside: r.right <= innerWidth + 1 && r.left >= -1, bs: Math.min(...bs) };`);
+    check(rl.side && rl.inside && rl.bs >= 44, 'phone: the round line fits the width and its buttons are tap-sized', JSON.stringify(rl));
     for (const scheme of ['light', 'dark']) {
       axi('emulate', '--color-scheme', scheme); await sleep(300);
       if (!ev(`return !!document.querySelector('.sheet .rv-form input');`)) { await openTask('rv-queued'); press('followup'); }

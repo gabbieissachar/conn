@@ -9,6 +9,8 @@
 //   POST /api/transcript-reader/board-answer                  { session, task, call, src, option|text|later }: record an answer to a call            (PMOS_READER_BOARD_ANSWER=1)
 //   POST /api/transcript-reader/board-review                  { session, task, action: done|queue|delay|needs|followup, note, until, title, due }: record what you decided on the task's
 //                                                             real record, through the home's own commands (fm-tasks-axi.sh, fm-captain-hold.sh)    (PMOS_READER_BOARD_REVIEW=1)
+//   POST /api/transcript-reader/board-round                   { session, op: start|mark|unmark, task }: the review round (board-rounds.js): a new round, a task marked reviewed,
+//                                                             or the mark taken off; the reader's own small file, never a Firstmate home           (PMOS_READER_BOARD_REVIEW=1)
 //   GET  /api/transcript-reader/board-reply?session=<id>&sid=<session>&uid=<turn>   the whole text of one reply, read only (for "Show full reply")
 //   POST /api/transcript-reader/board-send                    { session, session_id, text }: send a message to a supervisor's Herdr pane, through the
 //                                                             reader's own guarded Send (api.js sendPrompt)                                           (PMOS_READER_BOARD_SEND=1)
@@ -37,6 +39,7 @@
 // decides whether the board may use it (the flag, and a session id that is one of the board's own supervisors). The page learns which writes are on
 // from `write` in every board answer and hides or disables the controls of the others.
 
+const boardRounds = require('./board-rounds');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -87,7 +90,8 @@ function boardCacheDir(env = process.env) {
 
 function create({ root, env = process.env, run = defaultRun, runInput = defaultRunInput, now = () => Date.now(), pythonBin = 'python3', ttlMs = TTL_MS,
   enabled = env.PMOS_READER_BOARD === '1', marks = env.PMOS_READER_BOARD_MARKS === '1', answer = env.PMOS_READER_BOARD_ANSWER === '1',
-  send = env.PMOS_READER_BOARD_SEND === '1', review = env.PMOS_READER_BOARD_REVIEW === '1', quickRead = true, persistDir = null, warm = false } = {}) {
+  send = env.PMOS_READER_BOARD_SEND === '1', review = env.PMOS_READER_BOARD_REVIEW === '1', quickRead = true, persistDir = null, warm = false,
+  roundStore = boardRounds.create({ file: boardRounds.roundsFile(env), now }) } = {}) {
   const script = path.join(root, 'setup', 'transcript-reader', 'board_cli.py');
   const cache = new Map();  // session -> { value, at, fullAt, building, quickBuilding, retryAt, failure }
   const runEnv = () => ({ ...env });
@@ -183,8 +187,12 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     return failure;
   }
 
-  // The board of one session: { board, cached_at, stale }.
-  async function board(session, { fresh = false } = {}) {
+  // The board of one session: { board, cached_at, stale, round }. `round` is the review round of the board (null before the first): which tasks are already reviewed.
+  async function board(session, options) {
+    const answer = await boardOnly(session, options);
+    return { ...answer, round: roundStore.get(session) };
+  }
+  async function boardOnly(session, { fresh = false } = {}) {
     if (!SESSION_RE.test(session || '')) { const error = new Error('Invalid session.'); error.status = 400; error.code = 'bad_request'; throw error; }
     const entry = entryFor(session);
     const age = entry.value ? now() - entry.at : Infinity;
@@ -324,7 +332,22 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     if (typeof task !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(task)) throw invalid('That is not a task reference.');
     const facts = reviewFacts(session, task);
     if (!facts) throw invalid('The board has not read that task, so nothing was changed. Refresh the board first.', 409, 'not_read');
-    return writeVia('review', write.review, session, { task, action: body.action, note: body.note, until: body.until, title: body.title, due: body.due, facts });
+    const done = await writeVia('review', write.review, session, { task, action: body.action, note: body.note, until: body.until, title: body.title, due: body.due, facts });
+    try { roundStore.mark(session, task, body.action); } catch { /* the outcome is recorded; only the reviewed mark could not be kept */ }
+    return { ...done, round: roundStore.get(session) };
+  }
+  // The review round: start a new one (forgets the marks), mark a task reviewed without changing it, or take the mark off. The reader's own file; the flag is the review one.
+  async function roundWrite(session, body) {
+    if (!write.review) throw invalid('Not found.', 404, 'not_found');
+    if (!SESSION_RE.test(session || '')) throw invalid('Invalid session.');
+    const op = body && body.op;
+    if (op === 'start') return { round: roundStore.start(session) };
+    const task = body && body.task;
+    if (typeof task !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(task)) throw invalid('That is not a task reference.');
+    if (!reviewFacts(session, task)) throw invalid('The board has not read that task. Refresh the board first.', 409, 'not_read');
+    if (op === 'mark') return { round: roundStore.mark(session, task, 'seen') };
+    if (op === 'unmark') return { round: roundStore.unmark(session, task) };
+    throw invalid('That is not a round action.');
   }
 
   async function workerSwitch({ leader, task, enabled: on }) {
@@ -335,7 +358,7 @@ function create({ root, env = process.env, run = defaultRun, runInput = defaultR
     return result;
   }
 
-  return { enabled, write, board, sessions, mark, answer: answerCall, review: reviewTask, workerSwitch, reply, sendCheck, readerBoards, page, ttlMs };
+  return { enabled, write, board, sessions, mark, answer: answerCall, review: reviewTask, round: roundWrite, workerSwitch, reply, sendCheck, readerBoards, page, ttlMs };
 }
 
 module.exports = { create, boardCacheDir, SESSION_RE, TTL_MS };

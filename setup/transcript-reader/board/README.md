@@ -13,7 +13,7 @@ the third types into a live pane):
 | --- | --- | --- |
 | `PMOS_READER_BOARD_MARKS=1` | the page's "Yes, this task" / "Not this task" / "Belongs to task..." | `bin/fm-reply-mark.sh <task> in\|out\|clear <turn> --source card`, one line on `data/<task>/reply-marks.jsonl` |
 | `PMOS_READER_BOARD_ANSWER=1` | "Record this answer" on a call | the one Firstmate command that owns that kind of call (`answer.py`) |
-| `PMOS_READER_BOARD_REVIEW=1` | the Review box in an opened card: Done, Queued, Delay until a date, Needs you, Add a follow-up | the home's own commands (`review.py`, below): `fm-tasks-axi.sh`, `fm-captain-hold.sh` |
+| `PMOS_READER_BOARD_REVIEW=1` | the Review box in an opened card: Done, Queued, Delay until a date, Needs you, Add a follow-up, and Mark reviewed with the review round line | the home's own commands (`review.py`, below): `fm-tasks-axi.sh`, `fm-captain-hold.sh` |
 | `PMOS_READER_BOARD_SEND=1` | Send in the message box at the foot of a card | the reader's own guarded Send (`api.js sendPrompt`: the same pane, foreground-session and Herdr checks as the conversation view), for a session this board's own transcripts name as a supervisor |
 
 With a flag off the route answers 404 and the page hides that control (answers then offer "Copy answer for chat", `<task>#<call> = <answer>`).
@@ -184,8 +184,25 @@ the page) and the worker record is checked again in Python. A task the board has
 Firstmate has no due-date field, so a follow-up's date is a body line (`Due by: YYYY-MM-DD`) that the board reads back: the card says "due 14 Nov" (or
 "overdue" in red once past) and "follow-up of <task>"; the task page links back to the task it follows.
 
-Tested with fake commands (argv, stdin, refusals), with the real scripts against a scratch home (`test_review.py`), and in a browser against a scratch home
-(`e2e/review-check.js`, with `e2e/review_lab.py`): never a real home.
+### Already reviewed: the review round (`board-rounds.js`)
+
+A **round** is one pass over the board. Default (say if you want another): **a round starts when you start one from the board** (the round line under the
+header, "Start a round" / "Start a new round"), or by itself with the first mark when there is none; starting one forgets the old marks, and asks first when
+there are marks ("Forget 4 marks and start over?"). There is one round per board session, and no end: it stays until the next one starts.
+
+A task is **reviewed** in the round when you press **Mark reviewed** on its card or **record a review outcome** on it (Done, Queued, Delay, Needs you, a
+follow-up). Opening a card does not count. The card says so ("reviewed" chip on the card, "Reviewed Mon 9 Nov 14:05 · marked done" in its Review box, with
+**Undo**), and the round line counts "3 of 12 open tasks reviewed" with a **Not yet reviewed** filter that hides the reviewed open tasks (finished ones stay).
+A task that moves after you reviewed it (a newer worker report than your mark) shows "reviewed · changed since", comes back into the filter, and offers
+"Mark reviewed again".
+
+The marks live in a small file of the reader's own, **`board-rounds.json`, beside the board's config** (`PMOS_READER_BOARD_ROUNDS` moves it): never a
+Firstmate home and never a backlog body, so a mark changes nothing about the task itself and no Firstmate command runs for it. Route:
+`POST /api/transcript-reader/board-round { session, op: start|mark|unmark, task }`, behind the same review flag, loopback only; every board answer carries
+`round` (`null` before the first, else `{ id, started, reviewed: { <task>: { at, outcome } } }`), shown read only on the phone's TLS address.
+
+Tested with fake commands (argv, stdin, refusals), with the real scripts against a scratch home (`test_review.py`), the round file (`board-rounds.test.js`),
+and in a browser against a scratch home (`e2e/review-check.js`, with `e2e/review_lab.py`): never a real home.
 
 ## Worker boards (`workers.py`)
 
@@ -228,10 +245,11 @@ Placement details (report sections 3, 5 and R7, R8): a go-only hold waits in **Q
 
 ```
 python3 -I -m unittest discover -s setup/transcript-reader/board/tests     # the data layer (fixtures, scratch homes, a lab store, real scratch git repos, real Firstmate scripts on scratch homes)
+node --test setup/transcript-reader/board-rounds.test.js                   # the review round file (marks, new round, bad input, private file)
 node --test setup/transcript-reader/board.test.js                          # board.js: cache, stale-while-revalidate, failures, the flagged writes, the page source
 node --test setup/transcript-reader/api.test.js                            # the routes (flags off by default, guard, loopback only, the page's token)
 node setup/transcript-reader/e2e/board-check.js                            # by hand: the page in a real browser against a scratch home and a lab store (24 checks; needs chrome-devtools-axi)
-node setup/transcript-reader/e2e/review-check.js                           # by hand: the Review box in a real browser against a scratch home (every action, every refusal, the due date, 1440 and 390 px, light and dark)
+node setup/transcript-reader/e2e/review-check.js                           # by hand: the Review box and the review round in a real browser against a scratch home (every action, every refusal, the due date, reviewed marks, 1440 and 390 px, light and dark)
 node setup/transcript-reader/e2e/tasks-link-check.js                       # by hand: the reader's Tasks tab and icon in a real browser (flag off and on, which board, 1440 to 330 px, the click and the way back; the Conversation tab on both board pages at a 3 or 4 column Watch's widths)
 ```
 

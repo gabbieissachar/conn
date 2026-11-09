@@ -27,7 +27,7 @@
     sessions: [], session: null, board: null, write: { marks: false, answer: false, send: false, review: false }, loadedAt: 0, error: null, loading: false,
     project: "all", q: "", col: "needs", open: null, grouped: true, shut: {}, barOpen: false, workersOpen: false,
     drafts: {}, confirm: null, busy: null, notice: {}, picker: null, grp: {}, unfold: {}, order: {},
-    hidden: new Map(), showHidden: false, full: {}, fullText: {}, fullBusy: {}, rv: null,
+    hidden: new Map(), showHidden: false, full: {}, fullText: {}, fullBusy: {}, rv: null, round: null, unrev: false, rConfirm: false, rBusy: false,
   };
   /* The message box at the foot of a card (composer.js): it writes to the supervisor conversation this board reads that has a live Herdr pane (the newest if
      several), else the newest one, and says why Send is off. Its send is the board's own flagged route (PMOS_READER_BOARD_SEND=1). */
@@ -78,7 +78,7 @@
     try {
       const data = await api("board?session=" + encodeURIComponent(asked) + (fresh ? "&fresh=1" : ""));
       if (asked !== S.session) return;
-      S.board = data.board; S.write = data.write || S.write; S.loadedAt = data.cached_at || Date.now(); S.error = null; S.stale = !!data.stale;
+      S.board = data.board; S.round = data.round || null; S.write = data.write || S.write; S.loadedAt = data.cached_at || Date.now(); S.error = null; S.stale = !!data.stale;
       if (data.stale) setTimeout(() => { if (S.session === asked) loadBoard(false); }, 4000);  // an older (or quick) board came at once; the whole one is being built
     } catch (e) { if (asked === S.session) { S.error = e.message; S.board = S.board && S.board.session.id === asked ? S.board : null; } }
     S.loading = false;
@@ -98,15 +98,58 @@
   }
   function chooseSession(id) {
     if (ONLY || id === S.session) return;
-    S.session = id; S.board = null; S.project = "all"; S.q = ""; S.open = null; S.col = "needs"; S.drafts = {}; S.confirm = null; S.error = null; S.stale = false;
+    S.session = id; S.board = null; S.round = null; S.unrev = false; S.rConfirm = false; S.project = "all"; S.q = ""; S.open = null; S.col = "needs"; S.drafts = {}; S.confirm = null; S.error = null; S.stale = false;
     $("find").value = ""; composer.detach(); $("layer").textContent = "";
     history.replaceState(null, "", "#s=" + encodeURIComponent(id));
     render(); loadBoard(false);
   }
 
+  /* ---- review round: which tasks are already reviewed (board-rounds.js; the reader's own file, shown from every board answer) ---- */
+  const mark1 = (t) => (S.round && S.round.reviewed && S.round.reviewed[t.ref]) || null;
+  const isReviewed = (t) => !!mark1(t);
+  const changedSince = (t) => { const m = mark1(t); return !!(m && t.latest && t.latest.at && t.latest.at > m.at); };
+  const WHEN = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" };
+  const stamp = (sec) => new Date(sec * 1000).toLocaleString("en-GB", WHEN);
+  const OUTCOME_WORDS = { seen: "marked reviewed", done: "marked done", queue: "moved to Queued", delay: "delayed to a date", needs: "put back in Needs you", followup: "follow-up added" };
+  function applyRound(round) { S.round = round || null; S.rConfirm = false; render(); }
+  async function roundOp(op, task) {
+    if (S.rBusy) return; S.rBusy = true;
+    try { const res = await post("board-round", { session: S.session, op, task }); S.rBusy = false; applyRound(res.round); return true; }
+    catch (e) { S.rBusy = false; toast(e.message); render(); }
+  }
+  function renderRound() {
+    const box = $("round"); box.textContent = "";
+    const marks = S.round ? Object.keys(S.round.reviewed).length : 0;
+    box.hidden = !S.board || (!S.write.review && !S.round);
+    if (box.hidden) return;
+    const open = items().filter((t) => t.col !== "done"), done = open.filter((t) => isReviewed(t) && !changedSince(t)).length, left = open.length - done;
+    const text = el("span", "rl-text");
+    if (S.round) text.append("Review round · started " + stamp(S.round.started) + " · ", el("b", "", done + " of " + open.length), " open tasks reviewed");
+    else text.append("No review round yet. Press Mark reviewed on a task, or record an outcome on it, and a round starts.");
+    box.append(text);
+    if (S.round) {
+      const f = el("button", "fchip", "Not yet reviewed"); f.type = "button"; f.id = "unreviewed"; f.setAttribute("aria-pressed", String(S.unrev));
+      f.append(el("span", "n", String(left))); f.title = "Show only the open tasks you have not reviewed in this round (or that changed after you did)";
+      f.onclick = () => { S.unrev = !S.unrev; render(); }; box.append(f);
+    }
+    if (S.write.review) {
+      if (S.rConfirm) {
+        const ask = el("span", "rl-ask", "Forget " + marks + " mark" + (marks === 1 ? "" : "s") + " and start over?");
+        const yes = el("button", "fchip warnbtn", "Start a new round"); yes.type = "button"; yes.id = "round-yes"; yes.onclick = () => roundOp("start");
+        const no = el("button", "fchip", "Keep this round"); no.type = "button"; no.onclick = () => { S.rConfirm = false; render(); };
+        box.append(ask, yes, no);
+      } else {
+        const b = el("button", "fchip", S.round ? "Start a new round" : "Start a round"); b.type = "button"; b.id = "round-start";
+        b.title = "A round is one pass over the board. Starting one forgets which tasks you had reviewed."; b.onclick = () => { if (marks) { S.rConfirm = true; render(); } else roundOp("start"); };
+        box.append(b);
+      }
+    }
+  }
+
   /* ---- filters ---- */
   function visible(t, ignore) {
     if (ignore !== "project" && S.project !== "all" && t.repo !== S.project) return false;
+    if (S.unrev && t.col !== "done" && isReviewed(t) && !changedSince(t)) return false;
     if (S.q) { const hay = (t.ref + " " + t.title + " " + t.calls.map((c) => c.id + " " + c.q).join(" ")).toLowerCase(); if (!hay.includes(S.q.toLowerCase())) return false; }
     return true;
   }
@@ -205,6 +248,8 @@
     if (t.driven) f.append(el("span", "chip", "you drive"));
     if (t.due) { const late = t.col !== "done" && t.due < S.board.today; const c = el("span", "chip due" + (late ? " late" : ""), (late ? "overdue · was due " : "due ") + fmt(t.due)); c.title = "Needs to be done by " + t.due; f.append(c); }
     if (t.follow_of) f.append(el("span", "chip", "follow-up of " + t.follow_of));
+    const rm = mark1(t);
+    if (rm) { const ch = changedSince(t), c = el("span", "chip rvd" + (ch ? " changed" : ""), ch ? "reviewed · changed since" : "reviewed"); c.title = "Reviewed " + stamp(rm.at) + " (" + (OUTCOME_WORDS[rm.outcome] || "reviewed") + ")" + (ch ? ", then something changed on it" : ""); f.append(c); }
     if (flags.includes("quiet_14d")) f.append(el("span", "chip warn", "quiet " + t.idle_days + "d"));
     else if (t.col === "running" && t.idle_days != null && t.idle_days >= 5) f.append(el("span", "chip warn", "quiet " + t.idle_days + "d"));
     return f.children.length ? f : null;
@@ -241,7 +286,7 @@
     });
   }
   function render() {
-    renderBar(); renderBanners(); renderWorkers();
+    renderBar(); renderBanners(); renderRound(); renderWorkers();
     const colsEl = $("cols"), colbar = $("colbar");
     const keep = {}; document.querySelectorAll(".col").forEach((c) => { const b = c.querySelector(".col-b"); if (b) keep[c.dataset.col] = b.scrollTop; });
     colsEl.textContent = ""; colbar.textContent = ""; S.order = {};
@@ -636,6 +681,16 @@
       row.append(b);
     });
     sec.append(row);
+    const rm = mark1(t), seen = el("div", "rv-seen");
+    if (rm) {
+      const ch = changedSince(t);
+      seen.append(el("span", "rv-seen-t" + (ch ? " changed" : ""), "Reviewed " + stamp(rm.at) + " · " + (OUTCOME_WORDS[rm.outcome] || "reviewed") + (ch ? " · changed since" : "")));
+      if (on) { const u = el("button", "linkbtn", ch ? "Mark reviewed again" : "Undo"); u.type = "button"; u.dataset.round = ch ? "mark" : "unmark"; u.onclick = () => roundOp(ch ? "mark" : "unmark", t.ref); seen.append(u); }
+    } else if (on) {
+      const m = el("button", "rv-btn rv-seen-btn", "Mark reviewed"); m.type = "button"; m.dataset.round = "mark"; m.onclick = () => roundOp("mark", t.ref);
+      seen.append(m, el("span", "rv-seen-h", "Opening a card does not count; this does."));
+    } else seen.hidden = true;
+    sec.append(seen);
     if (!on) sec.append(el("div", "off-note", "Recording a review is off in this reader (PMOS_READER_BOARD_REVIEW=1 turns it on). The buttons show what it would do."));
     else {
       const notes = [...new Set(["done", "queue", "delay", "needs"].filter(RV_SHOWS).map((a) => why[a]).filter(Boolean))];

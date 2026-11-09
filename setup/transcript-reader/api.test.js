@@ -3060,7 +3060,7 @@ test('board review: no flag, no route; with the flag the outcome reaches board_c
     assert.equal((await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'done' })).status, 404, 'review flag off');
     assert.equal((await t.get('board-sessions')).json.write.review, false);
   } finally { await t.close(); }
-  t = await start({ options: { board: { run, runInput, review: true } } });
+  t = await start({ options: { board: { run, runInput, review: true, roundStore: require('./board-rounds').create({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'api-rounds-')), 'r.json') }) } } });
   try {
     assert.equal((await t.request({ method: 'POST', path: '/api/transcript-reader/board-review', headers: { 'Content-Type': 'application/json', Origin: t.origin }, body: {} })).status, 403, 'no token');
     assert.equal((await t.post('board-review', { session: 'leader-esim', task: 'alpha', action: 'done' }, { Origin: 'http://evil.example' })).status, 403, 'foreign origin');

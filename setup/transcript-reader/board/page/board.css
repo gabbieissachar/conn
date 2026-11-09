@@ -529,3 +529,24 @@ button.why[aria-expanded="true"] { background: var(--wash); box-shadow: 0 0 0 1p
   .rv-btn, .rv-form input { min-height: 44px; }
   .rv-form input { font-size: 16px; }
 }
+
+/* ---- review round: the line under the header, the "reviewed" chip on a card, and Mark reviewed in a card's Review box ---- */
+.roundline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; color: var(--muted); padding: 5px 12px; background: var(--paper); border-bottom: 1px solid var(--line); flex: none; }
+.roundline[hidden] { display: none; }
+.roundline b { color: var(--ink); font-weight: 600; }
+.roundline .rl-text { flex: 1 1 14rem; min-width: 0; }
+.roundline .rl-ask { color: var(--ink); }
+.fchip.warnbtn { background: var(--ask-wash); border-color: var(--ask-line); color: var(--ask); font-weight: 600; }
+.chip.rvd { background: var(--ok-wash); color: var(--ok); border-color: transparent; }
+.chip.rvd::before { content: "\2713\00a0"; }
+.chip.rvd.changed { background: var(--ask-wash); color: var(--ask); border-color: var(--ask-line); }
+.rv-seen { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--muted); }
+.rv-seen[hidden] { display: none; }
+.rv-seen-t { color: var(--ok); font-weight: 600; }
+.rv-seen-t.changed { color: var(--ask); }
+.rv-seen-t::before { content: "\2713\00a0"; }
+.rv-seen-btn { background: var(--ok-wash); border-color: transparent; color: var(--ok); font-weight: 600; }
+@media (hover: none) and (pointer: coarse), (max-width: 440px) {
+  .roundline .fchip { min-height: 44px; padding: 2px 14px; }
+  .rv-seen .linkbtn { min-height: 44px; padding: 0 6px; }
+}

@@ -8,8 +8,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const vm = require('vm');
+const os = require('os');
 const path = require('path');
 const boardLib = require('./board');
+const boardRounds = require('./board-rounds');
 
 const ROOT = '/repo';
 const SCRIPT = path.join(ROOT, 'setup', 'transcript-reader', 'board_cli.py');
@@ -290,8 +292,9 @@ function reviewFixture(items, { reply = { ok: true, review: { recorded: true } }
   const inputs = [];
   const run = async (file, args) => JSON.stringify({ schema: 'task-board.v1', session: { id: args[args.indexOf('--session') + 1] }, source: { snapshot_at: 'now', errors: [] }, items });
   const runInput = async (file, args, options, input) => { inputs.push({ args: args.slice(1), input }); return JSON.stringify(reply); };
-  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1' }, run, runInput, now: () => 1000, ttlMs: 1000, review: true, quickRead: false });
-  return { b, inputs };
+  const roundStore = boardRounds.create({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'board-review-')), 'rounds.json'), now: () => 1000 });
+  const b = boardLib.create({ root: ROOT, env: { PMOS_READER_BOARD: '1' }, run, runInput, now: () => 1000, ttlMs: 1000, review: true, quickRead: false, roundStore });
+  return { b, inputs, roundStore };
 }
 
 test('review: the facts the Python side judges by are read from the board\'s own last read, and the page\'s own words about them are ignored', async () => {
@@ -315,6 +318,31 @@ test('review: a task the board has not read, a bad reference and a bad session n
   await assert.rejects(() => t.b.review('leader-esim', { task: '../x', action: 'done' }), (e) => e.status === 400);
   await assert.rejects(() => t.b.review('../x', { task: 'alpha', action: 'done' }), (e) => e.status === 400);
   assert.equal(t.inputs.length, 0);
+});
+
+test('review round: a board answer carries the round, a recorded outcome marks the task reviewed, a refused one does not, and Firstmate\'s refusal leaves no mark', async () => {
+  const t = reviewFixture([{ ref: 'alpha', calls: [] }, { ref: 'beta', calls: [] }]);
+  assert.equal((await t.b.board('leader-esim')).round, null, 'no round before the first mark');
+  const done = await t.b.review('leader-esim', { task: 'alpha', action: 'delay', until: '2027-01-01' });
+  assert.deepEqual(done.round.reviewed, { alpha: { at: 1, outcome: 'delay' } });
+  assert.deepEqual((await t.b.board('leader-esim')).round.reviewed, { alpha: { at: 1, outcome: 'delay' } });
+  await assert.rejects(() => t.b.review('leader-esim', { task: 'ghost', action: 'done' }), (e) => e.status === 409);
+  assert.deepEqual(Object.keys(t.roundStore.get('leader-esim').reviewed), ['alpha']);
+});
+
+test('review round: mark, unmark and start need the review flag, a session and a task the board has read', async () => {
+  const off = boardLib.create({ root: ROOT, env: {}, roundStore: boardRounds.create({ file: path.join(os.tmpdir(), 'never-written.json') }) });
+  await assert.rejects(() => off.round('leader-esim', { op: 'start' }), (e) => e.status === 404 && e.code === 'not_found');
+  const t = reviewFixture([{ ref: 'alpha', calls: [] }]);
+  await assert.rejects(() => t.b.round('leader-esim', { op: 'mark', task: 'alpha' }), (e) => e.status === 409 && e.code === 'not_read', 'nothing read yet');
+  await t.b.board('leader-esim');
+  assert.deepEqual((await t.b.round('leader-esim', { op: 'mark', task: 'alpha' })).round.reviewed.alpha, { at: 1, outcome: 'seen' });
+  assert.deepEqual((await t.b.round('leader-esim', { op: 'unmark', task: 'alpha' })).round.reviewed, {});
+  assert.deepEqual((await t.b.round('leader-esim', { op: 'start' })).round.reviewed, {});
+  await assert.rejects(() => t.b.round('leader-esim', { op: 'mark', task: 'ghost' }), (e) => e.status === 409);
+  await assert.rejects(() => t.b.round('leader-esim', { op: 'mark', task: '../x' }), (e) => e.status === 400);
+  await assert.rejects(() => t.b.round('../x', { op: 'start' }), (e) => e.status === 400);
+  await assert.rejects(() => t.b.round('leader-esim', { op: 'wipe', task: 'alpha' }), (e) => e.status === 400);
 });
 
 test('review: Firstmate\'s own refusal reaches the page as its status and sentence', async () => {
