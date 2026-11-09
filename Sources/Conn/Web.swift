@@ -35,6 +35,13 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     let lite: Bool
     /// What a lite box opens on, as the address fragment (`s=<session>` or `s=<session>&m=<turn id>`), until it has loaded once.
     private(set) var startFragment: String?
+    /// The column's content is hidden (Watch focus): the page is blurred and takes no click or key. A lite box only; set by `setContentHidden`.
+    @Published private(set) var contentHidden = false
+    /// False from the moment a hidden page starts loading until its blur is in place, so a page that is about to be hidden is never drawn readable first.
+    @Published private(set) var hideApplied = true
+    /// How many times the page was landed on its last reply, and the reply it went to (test hooks).
+    private(set) var landings = 0
+    private(set) var lastLanded: String?
     /// The person clicked, scrolled, typed or focused inside the page (lite boxes only).
     var onUse: (() -> Void)?
     /// The person clicked a session link in the page (`a[data-session]`, which the reader draws where a reply names another session, and
@@ -111,6 +118,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     func load(_ url: URL) {
         phase = .loading
+        if contentHidden { hideApplied = false }
         loadStart = Date()
         if let dir = fixtureDir, url.isFileURL { webView.loadFileURL(url, allowingReadAccessTo: dir) } else { webView.load(URLRequest(url: url)) }
     }
@@ -337,6 +345,81 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         if let s = loadStart { loadSeconds = Date().timeIntervalSince(s) }
         if let h = pendingHash { pendingHash = nil; webView.evaluateJavaScript("location.hash='\(h)'", completionHandler: nil) }
         if kind == .organizer { showContextView() }
+        if contentHidden { applyHidden() }
+    }
+
+    // MARK: hiding a column's content (Watch focus)
+
+    /// Blur the page and make it take no click, key or focus (`on`), or give it back. The blur is a style the page is given (the page's own code and files are not edited), put
+    /// in again whenever the page loads anew while the column stays hidden. The page keeps running behind it, so it is current the moment it is shown.
+    func setContentHidden(_ on: Bool) {
+        guard lite, !released, contentHidden != on else { return }
+        contentHidden = on
+        applyHidden()
+    }
+
+    private func applyHidden() {
+        guard contentHidden else {
+            hideApplied = true
+            if phase == .ready { webView.evaluateJavaScript(WebBox.showScript, completionHandler: nil) }
+            return
+        }
+        hideApplied = false
+        guard phase == .ready else { return }      // the load that is on its way puts it in (didFinish)
+        webView.evaluateJavaScript(WebBox.hideScript) { [weak self] _, _ in self?.hideApplied = true }
+    }
+
+    /// The blur is set on the page's root element through the style object (not a style sheet or attribute the page would have to allow), so a page with a strict content
+    /// policy, the Campus embed page, takes it too.
+    static let hideScript = """
+    (function () {
+      var d = document, h = d.documentElement;
+      h.style.setProperty('filter', 'blur(9px) saturate(.7)', 'important');
+      h.style.setProperty('pointer-events', 'none', 'important');
+      h.style.setProperty('user-select', 'none', 'important');
+      try { if (d.body) { d.body.inert = true; if (d.activeElement && d.activeElement.blur) d.activeElement.blur(); } } catch (e) {}
+      return 'hidden';
+    })()
+    """
+
+    static let showScript = """
+    (function () {
+      var d = document, h = d.documentElement;
+      ['filter', 'pointer-events', 'user-select'].forEach(function (p) { h.style.removeProperty(p); });
+      try { if (d.body) d.body.inert = false; } catch (e) {}
+      return 'shown';
+    })()
+    """
+
+    /// The id of the newest reply in the conversation the page shows, as the reader names a reply in an address (`&m=<turn id>`). The reader marks each reply card
+    /// `data-msg="<turn id>:reply"` (and a message of yours `<turn id>:in`); empty when the page draws none.
+    static let lastReplyScript = """
+    (function () {
+      var n = document.querySelectorAll('[data-msg$=":reply"]');
+      if (!n.length) return '';
+      var k = n[n.length - 1].getAttribute('data-msg') || '';
+      return k.slice(0, k.length - 6);
+    })()
+    """
+
+    /// Put the page on its newest reply (the one a finished turn ended with): scrolled to just under the header and outlined once, by the reader's own landing for `&m=<turn id>`,
+    /// so a clipped reply is opened too. A page that is not drawn yet is tried again for a few seconds. `then` runs when it has landed (or gave up), and is where the blur is lifted:
+    /// the page moves while it is still blurred, so the person never sees it jump.
+    func landOnLastReply(session sid: String, attempt: Int = 0, then: @escaping () -> Void) {
+        guard !released else { then(); return }
+        func again() {
+            guard attempt < 12 else { then(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.landOnLastReply(session: sid, attempt: attempt + 1, then: then) ?? then() }
+        }
+        guard phase == .ready, WebLinkPolicy.isPage(baseURL, webView.url) else { again(); return }
+        webView.evaluateJavaScript(WebBox.lastReplyScript) { [weak self] result, _ in
+            guard let self = self else { then(); return }
+            guard let uid = result as? String, WatchAddress.validTurn(uid) else { again(); return }
+            self.landings += 1
+            self.lastLanded = uid
+            self.showConversation(sid, message: uid, reload: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { then() }
+        }
     }
 
     // MARK: the organizer opens on its Context view

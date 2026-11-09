@@ -322,6 +322,7 @@ final class AppModel: ObservableObject {
         }.store(in: &cancellables)
         wireWatchAsks()
         wireWatchSetups()
+        wireWatchFocus()
         openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
         wireCampus()
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
@@ -453,6 +454,7 @@ final class AppModel: ObservableObject {
         followHerdrClientFocus()
         readerTargetMayHaveChanged()
         refreshDockBadge()
+        watch.observeStates()
     }
 
     private func refreshDockBadge() {

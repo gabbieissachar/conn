@@ -15,10 +15,23 @@ final class WatchModel: ObservableObject {
     /// The last setup of each column count and the saved presets (ConnCore `WatchSetups`): session ids and order only, kept in Conn's own
     /// settings (`setupsKey`). The layout above is written into it as it changes, so a launch opens on the setup it was left in.
     private(set) var setups: WatchSetups
+    /// The columns whose content is hidden (blurred) and the cue a finished turn left on them (ConnCore `WatchAttention`), by session id, kept in Conn's own settings
+    /// (`hiddenKey`): session ids and a pending cue only, no text.
+    private(set) var attention: WatchAttention
     /// Each column's web view, by the column's id. Made when a column is first shown and let go of when it is closed or Watch ends.
     private(set) var boxes: [Int: WebBox] = [:]
     /// How many times each column was asked to draw attention to itself (the view flashes an outline when it changes).
     @Published private(set) var flashes: [Int: Int] = [:]
+    /// How many times a Campus column (by its session key) was asked to land on its newest reply, which its own view does (a reader column's web view is landed from here).
+    @Published private(set) var lands: [String: Int] = [:]
+    /// What the app knows of a session now: the agent's state for a reader session, the conversation's for a Campus one; nil when there is no signal (no agent, Campus
+    /// signed out). The app sets it. Hidden columns watch it for the end of a turn.
+    var stateOf: (String) -> AgentState? = { _ in nil }
+    /// The clock the cue's settling reads (a check moves it).
+    var now: () -> Date = { Date() }
+    private var settleWork: DispatchWorkItem?
+    /// Columns being landed on their newest reply: their blur stays until the page has moved.
+    private var landing: Set<Int> = []
 
     /// THE ONE SWITCH for the turn an open ask sits on: given a session id, the id of the turn that asks (the reader's turn id, which
     /// the lite page takes as `#s=<session>&m=<turn id>` and scrolls to and outlines), or nil when the session has no open ask. Until
@@ -46,12 +59,14 @@ final class WatchModel: ObservableObject {
     private let defaults: UserDefaults
     static let countKey = "conn.watch.columns"
     static let setupsKey = "conn.watch.setups"
+    static let hiddenKey = "conn.watch.hidden"
 
     init(hub: WebHub, defaults: UserDefaults) {
         self.hub = hub
         self.defaults = defaults
         let saved = defaults.object(forKey: WatchModel.countKey) as? Int ?? WatchLayout.defaultCount
         setups = WatchSetups.decode(defaults.data(forKey: WatchModel.setupsKey))
+        attention = WatchAttention.decode(defaults.data(forKey: WatchModel.hiddenKey))
         // A launch opens on the last setup of the count it was left on. Which sessions still exist is asked when Watch turns on.
         if let last = setups.last(forCount: WatchLayout.clamped(saved)), !last.isEmpty { layout = WatchLayout(restoring: last) } else { layout = WatchLayout(count: saved) }
     }
@@ -60,6 +75,17 @@ final class WatchModel: ObservableObject {
     private func layoutChanged() {
         defaults.set(layout.count, forKey: WatchModel.countKey)
         if setups.remember(layout.setup) { persistSetups() }
+        // A session that is no longer in a column is no longer hidden; every page takes the hidden state of the session it shows now.
+        if attention.keep(only: Set(layout.sessions)) { persistAttention() }
+        syncHidden()
+    }
+
+    private func persistAttention() {
+        if let d = attention.encoded() { defaults.set(d, forKey: WatchModel.hiddenKey) }
+    }
+
+    private func syncHidden() {
+        for c in layout.slots.compactMap({ $0 }) where !landing.contains(c.id) { boxes[c.id]?.setContentHidden(attention.isHidden(c.session)) }
     }
 
     private func persistSetups() {
@@ -81,6 +107,7 @@ final class WatchModel: ObservableObject {
 
     private func makeBox(_ column: WatchColumn, message: String?) -> WebBox {
         let b = hub.makeLiteBox(startFragment: WatchAddress.fragment(session: column.session, message: message))
+        b.setContentHidden(attention.isHidden(column.session))
         let id = column.id
         b.onUse = { [weak self] in self?.used(columnID: id) }
         b.onSessionLink = { [weak self] session, message, inReader in self?.sessionLinkClicked(columnID: id, session: session, message: message, inReader: inReader) }
@@ -224,6 +251,72 @@ final class WatchModel: ObservableObject {
     private func dropDeadBoxes() {
         let alive = Set(layout.slots.compactMap { $0?.id })
         for id in boxes.keys where !alive.contains(id) { dropBox(id) }
+    }
+
+    // MARK: focus: hiding a column's content, and the cue
+
+    func isHidden(_ column: WatchColumn) -> Bool { attention.isHidden(column.session) }
+    func cue(_ column: WatchColumn) -> WatchCue? { attention.cue(for: column.session) }
+    func cueTime(_ column: WatchColumn) -> Date? { attention.cueTime(for: column.session) }
+    var hiddenCount: Int { layout.slots.compactMap { $0 }.filter { attention.isHidden($0.session) }.count }
+
+    /// Hide the content of a column (blur it, so it does not pull the eye), or show it again by the same control. Showing a column that holds a cue lands it on the
+    /// reply the finished turn ended with. Returns whether the column is hidden now (nil: no such column).
+    @discardableResult
+    func toggleHidden(column index: Int) -> Bool? {
+        guard layout.slots.indices.contains(index), let column = layout.slots[index] else { return nil }
+        if attention.isHidden(column.session) {
+            let cue = attention.show(column.session)
+            persistAttention()
+            reveal(column, landing: cue != nil)
+            armSettle()
+            objectWillChange.send()
+            return false
+        }
+        attention.hide(column.session, state: stateOf(column.session))
+        persistAttention()
+        if !CampusColumn.isCampus(column.session) { boxes[column.id]?.setContentHidden(true) }
+        armSettle()
+        objectWillChange.send()
+        return true
+    }
+
+    private func reveal(_ column: WatchColumn, landing land: Bool) {
+        if CampusColumn.isCampus(column.session) { if land { lands[column.session, default: 0] += 1 }; return }
+        guard let b = boxes[column.id] else { return }      // Watch is off: the page is made hidden or shown by what the session holds when Watch turns on
+        guard land else { b.setContentHidden(false); return }
+        let id = column.id
+        landing.insert(id)
+        b.landOnLastReply(session: column.session) { [weak self, weak b] in
+            self?.landing.remove(id)
+            b?.setContentHidden(self?.attention.isHidden(column.session) ?? false)
+        }
+    }
+
+    /// Look at the hidden sessions' states (the app calls this when the agents' or Campus's states may have changed): a turn that has ended raises the cue.
+    func observeStates() {
+        guard !attention.isEmpty else { return }
+        let t = now()
+        var raised: [String] = []
+        for s in attention.holds.keys.sorted() where attention.observe(s, state: stateOf(s), now: t) { raised.append(s) }
+        cuesRaised(raised)
+        armSettle()
+    }
+
+    private func cuesRaised(_ sessions: [String]) {
+        guard !sessions.isEmpty else { return }
+        for s in sessions { if let i = layout.index(of: s), let c = layout.slots[i] { flashes[c.id, default: 0] += 1 } }
+        persistAttention()
+        objectWillChange.send()
+    }
+
+    /// A session that stopped working is looked at again once it has stayed stopped long enough to count as the end of its turn.
+    private func armSettle() {
+        settleWork?.cancel(); settleWork = nil
+        guard let due = attention.nextSettle else { return }
+        let w = DispatchWorkItem { [weak self] in self?.observeStates() }
+        settleWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.05, due.timeIntervalSince(now()) + 0.05), execute: w)
     }
 
     // MARK: presets

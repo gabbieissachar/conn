@@ -84,12 +84,14 @@ private struct WatchColumnView: View {
         VStack(spacing: 0) {
             if let column = slot.column, let cid = CampusColumn.id(of: column.session) {
                 // A Campus column (C5): the transcript and a live strip, drawn natively. It is not a reader session.
-                CampusColumnHeader(campus: app.campus, id: cid, watch: watch, index: slot.index)
+                CampusColumnHeader(campus: app.campus, id: cid, watch: watch, index: slot.index, column: column)
                 Divider()
-                CampusTranscriptView(campus: app.campus, id: cid, column: slot.index)
+                WatchCueStrip(watch: watch, column: column, index: slot.index)
+                CampusTranscriptView(campus: app.campus, id: cid, column: slot.index, hidden: watch.isHidden(column), landTick: watch.lands[column.session] ?? 0)
             } else if let column = slot.column {
                 header(column)
                 Divider()
+                WatchCueStrip(watch: watch, column: column, index: slot.index)
                 if let box = watch.box(for: column) { WatchWebPane(box: box) } else { Spacer() }
             } else {
                 emptyColumn
@@ -129,6 +131,7 @@ private struct WatchColumnView: View {
                 Text("no agent").font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
             }
             Spacer(minLength: 4)
+            WatchHideButton(watch: watch, column: column, index: slot.index)
             Button { watch.close(column: slot.index) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Close this column")
                 .accessibilityIdentifier("watch-close")
@@ -155,7 +158,8 @@ private struct WatchWebPane: View {
 
     var body: some View {
         ZStack {
-            WebPaneRep(box: box)
+            // A page that is about to be hidden is not drawn until its blur is in place.
+            WebPaneRep(box: box).opacity(box.contentHidden && !box.hideApplied ? 0 : 1)
             if app.privacy { Rectangle().fill(Color(nsColor: .windowBackgroundColor)); Label("Privacy mode", systemImage: "eye.slash").foregroundStyle(.secondary) }
             if box.phase == .loading { ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(8) }
             if case .failed(let msg) = box.phase, !app.privacy {
@@ -178,6 +182,7 @@ private struct CampusColumnHeader: View {
     let id: String
     let watch: WatchModel
     let index: Int
+    let column: WatchColumn
 
     var body: some View {
         let c = campus.conversation(id)
@@ -192,6 +197,7 @@ private struct CampusColumnHeader: View {
                     .foregroundStyle(campus.link == .live && c.state.waitsOnCaptain ? c.state.color : Color.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
+            WatchHideButton(watch: watch, column: column, index: index)
             Button { watch.close(column: index) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Close this column")
                 .accessibilityIdentifier("watch-close")
@@ -199,5 +205,52 @@ private struct CampusColumnHeader: View {
         .padding(.horizontal, 10).frame(height: 30)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
         .accessibilityIdentifier("watch-campus-header")
+    }
+}
+
+
+/// The control that hides a column's content (blurs it, so it does not pull the eye) and shows it again. The header, with the name and the state, stays readable.
+private struct WatchHideButton: View {
+    @ObservedObject var watch: WatchModel
+    let column: WatchColumn
+    let index: Int
+
+    var body: some View {
+        let hidden = watch.isHidden(column)
+        Button { watch.toggleHidden(column: index) } label: { Image(systemName: hidden ? "eye.slash.fill" : "eye") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(hidden ? Color.accentColor : Color.secondary)
+            .help(hidden ? "Show this column's conversation" : "Hide this column's conversation (blurred). A cue shows here when its turn ends")
+            .accessibilityLabel(hidden ? "Show conversation" : "Hide conversation")
+            .accessibilityIdentifier("watch-hide")
+    }
+}
+
+/// What a hidden column's session did while it was hidden: its turn ended (finished, or ended on a question for the person). It stays until the column is shown, and showing
+/// it lands on the reply that turn ended with.
+private struct WatchCueStrip: View {
+    @ObservedObject var watch: WatchModel
+    let column: WatchColumn
+    let index: Int
+
+    var body: some View {
+        if let cue = watch.cue(column), watch.isHidden(column) {
+            let color = cue == .finished ? AgentState.done.color : AgentState.blocked.color
+            HStack(spacing: 6) {
+                Image(systemName: cue == .finished ? "checkmark.circle.fill" : "exclamationmark.circle.fill").foregroundStyle(color)
+                Text(cue == .finished ? "Finished while hidden" : "Needs you").font(.system(size: 11.5, weight: .semibold))
+                if let at = watch.cueTime(column) { Text(at, style: .time).font(.system(size: 11)).foregroundStyle(.secondary) }
+                Spacer(minLength: 4)
+                Button("Show") { watch.toggleHidden(column: index) }.controlSize(.small)
+                    .help("Show the conversation, at the reply this turn ended with")
+                    .accessibilityIdentifier("watch-cue-show")
+            }
+            .padding(.horizontal, 10).frame(height: 28)
+            .background(color.opacity(0.16))
+            .overlay(alignment: .bottom) { Rectangle().fill(color.opacity(0.5)).frame(height: 1) }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(cue == .finished ? "Finished while hidden" : "Needs you")
+            .accessibilityIdentifier("watch-cue")
+        }
     }
 }

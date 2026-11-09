@@ -87,19 +87,19 @@ function draw(i) {
   for (let k = 1; k <= 12; k++) {
     const uid = `t-${num}-${String(k).padStart(2, '0')}`;
     if (k < 12) {
-      html += `<div class="user" data-msg="${uid}-in">Turn ${k}: ${k === 1 ? 'Summarise what changed since yesterday.' : 'Carry on with the next step.'}</div>` +
-              `<div class="reply" data-msg="${uid}"><p>Turn ${k} reply. ${k === 1 ? 'Two commits landed on the working branch: one tightens input validation, one renames a helper.' : 'Step ' + k + ' is done and the checks pass. Nothing needs you here.'}</p></div>`;
+      html += `<div class="user" data-msg="${uid}:in">Turn ${k}: ${k === 1 ? 'Summarise what changed since yesterday.' : 'Carry on with the next step.'}</div>` +
+              `<div class="reply" data-msg="${uid}:reply"><p>Turn ${k} reply. ${k === 1 ? 'Two commits landed on the working branch: one tightens input validation, one renames a helper.' : 'Step ' + k + ' is done and the checks pass. Nothing needs you here.'}</p></div>`;
     } else {
-      html += `<div class="user" data-msg="${uid}-in">${s[2]}</div>` +
+      html += `<div class="user" data-msg="${uid}:in">${s[2]}</div>` +
               `<div class="reply" data-msg="${uid}x"><p>${s[3]}</p><p class="tools">4 tool steps</p></div>` +
-              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}<p class="refs">Notes in <a class="file-ref" data-ref-file="link" data-path="/nonexistent/conn-fixture/notes.md" href="#">notes.md</a>. See also <a class="session-ref" data-ref="next" data-session="${neighbour(currentId, 1)}" data-message="${replyOf(neighbour(currentId, 1), 5)}" href="#s=${neighbour(currentId, 1)}">the next session</a> (its fifth reply), <a class="session-ref" data-ref="later" data-session="${neighbour(currentId, 2)}" href="#s=${neighbour(currentId, 2)}">the one after that</a> and <a class="session-ref" data-ref="odd" data-session="${neighbour(currentId, 3)}" data-message="x';y" href="#s=${neighbour(currentId, 3)}">one with a reply id the page would not follow</a>.</p>${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
+              `<div class="reply ${wait ? 'wait' : ''}" data-msg="${uid}:reply">${wait ? '<h4>Waiting on you</h4>' : ''}<p>${s[4]}</p>${s[1] === 'working' ? '<p style="color:var(--muted)">Still working…</p>' : ''}<p class="refs">Notes in <a class="file-ref" data-ref-file="link" data-path="/nonexistent/conn-fixture/notes.md" href="#">notes.md</a>. See also <a class="session-ref" data-ref="next" data-session="${neighbour(currentId, 1)}" data-message="${replyOf(neighbour(currentId, 1), 5)}" href="#s=${neighbour(currentId, 1)}">the next session</a> (its fifth reply), <a class="session-ref" data-ref="later" data-session="${neighbour(currentId, 2)}" href="#s=${neighbour(currentId, 2)}">the one after that</a> and <a class="session-ref" data-ref="odd" data-session="${neighbour(currentId, 3)}" data-message="x';y" href="#s=${neighbour(currentId, 3)}">one with a reply id the page would not follow</a>.</p>${wait ? '<ol><li>Yes, run it once</li><li>No, tell me what to do differently</li></ol>' : ''}</div>`;
     }
   }
   convo.innerHTML = html;
   shown = i;
 }
 function land(uid) {
-  const node = convo.querySelector(`[data-msg="${uid}"]`);
+  const node = convo.querySelector(`[data-msg="${uid}:reply"]`);
   if (!node) return false;
   window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - document.querySelector('header').offsetHeight - 8);
   document.querySelectorAll('.is-linked').forEach(el => el.classList.remove('is-linked'));

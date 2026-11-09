@@ -39,6 +39,11 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
     /// The page took the composer (`readerEmbed.composer` exists and was called): the page has its own message bar, so Conn's own text box steps aside. False with an older page.
     @Published private(set) var composerOn = false
     /// What the page was last asked to show as its bar (name, Send on or off, the reason), to ask again only when it changes.
+    /// The column's content is hidden (Watch focus): the page is blurred and takes no click or key, and `hideApplied` is false until the blur is in place.
+    @Published private(set) var contentHidden = false
+    @Published private(set) var hideApplied = true
+    /// How many times the page was landed on its newest reply (test hook).
+    private(set) var landings = 0
     private var composerWanted: String?
     private var composerAsked: String?
     private var url: URL?
@@ -148,6 +153,47 @@ final class CampusEmbedBox: NSObject, ObservableObject, WKNavigationDelegate, WK
         composerAsked = nil
         if let p = pending { pending = nil; send(p) }
         applyComposer()
+        if contentHidden { applyHidden() }
+    }
+
+    // MARK: hiding the content (Watch focus)
+
+    /// Blur the page and make it take no click or key, or give it back (the same blur a reader column's page gets, `WebBox.hideScript`). A page that is not ready yet takes it when it is.
+    func setContentHidden(_ on: Bool) {
+        guard contentHidden != on else { return }
+        contentHidden = on
+        applyHidden()
+    }
+
+    private func applyHidden() {
+        guard contentHidden else {
+            hideApplied = true
+            if phase == .ready { webView.evaluateJavaScript(WebBox.showScript, completionHandler: nil) }
+            return
+        }
+        hideApplied = false
+        guard phase == .ready else { return }
+        webView.evaluateJavaScript(WebBox.hideScript) { [weak self] _, _ in self?.hideApplied = true }
+    }
+
+    /// Put the page on its newest reply, scrolled to just under the top and outlined once, as the reader lands on a reply. False when the page is not ready or draws no reply.
+    @discardableResult
+    func landOnLastReply() async -> Bool {
+        guard phase == .ready else { return false }
+        let script = """
+        (function () {
+          var n = document.querySelectorAll('.reply');
+          if (!n.length) return false;
+          var r = n[n.length - 1];
+          window.scrollTo(0, window.scrollY + r.getBoundingClientRect().top - 8);
+          document.querySelectorAll('.is-linked').forEach(function (e) { e.classList.remove('is-linked'); });
+          void r.offsetWidth; r.classList.add('is-linked');
+          return true;
+        })()
+        """
+        let ok = (try? await webView.evaluateJavaScript(script)) as? Bool ?? false
+        if ok { landings += 1 }
+        return ok
     }
 
     private func unavailable(_ why: String) {

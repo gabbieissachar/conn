@@ -635,6 +635,7 @@ enum CampusCheck {
             }
             report("Campus: the Campus columns in Watch are drawn on the reader's embed page too, one page per column", !columns.isEmpty && drawn, "columns=\(columns.map { "\($0.0):\($0.1.suffix(4))" })")
         }
+        await WatchFocusCheck.campusSteps(model: model, report: report, wait: wait, conversation: "ses_fakeRates01")
         let notShown = herdr.first { a in !watch.layout.sessions.contains { WatchLayout.same($0, a.sessionID!) } }!
         for i in watch.layout.slots.indices where watch.layout.slots[i].map({ CampusColumn.isCampus($0.session) }) == true { watch.used(columnID: watch.layout.slots[i]!.id) }
         let herdrIdx = opened().firstIndex { !CampusColumn.isCampus($0) }!

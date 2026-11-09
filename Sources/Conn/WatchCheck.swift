@@ -132,7 +132,7 @@ enum WatchCheck {
         func agentWith(session: String) -> Agent? { model.snapshot.agents.first { $0.sessionID == session } }
         func opened() -> [String] { model.watch.layout.slots.map { $0?.session ?? "-" } }
         func prefixes(_ l: [String]) -> [String] { l.map { String($0.suffix(4)) } }
-        func linked(_ b: WebBox?) async -> String { guard let b = b else { return "-" }; return await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''") }
+        func linked(_ b: WebBox?) async -> String { guard let b = b else { return "-" }; return await js(b, "((document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||'').replace(/:reply$/,'')") }
         func atBottom(_ b: WebBox?) async -> Bool { guard let b = b else { return false }; return await js(b, "String(window.innerHeight + window.scrollY >= document.body.scrollHeight - 4)") == "true" }
 
         // A. A session that is already open: its column scrolls to the asking reply and flashes; nothing else moves.
@@ -351,11 +351,11 @@ enum WatchCheck {
             guard let b = b else { return "no web view" }
             return await js(b, "(() => { const a = document.querySelector('a[data-ref=\"\(which)\"]'); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, metaKey: \(meta) })) ? 'not prevented' : 'prevented'; })()")
         }
-        func outlined(_ b: WebBox?) async -> String { guard let b = b else { return "-" }; return await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''") }
+        func outlined(_ b: WebBox?) async -> String { guard let b = b else { return "-" }; return await js(b, "((document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||'').replace(/:reply$/,'')") }
         /// How far the reply sits below the page's header, in points: a reply the page landed on is just under it.
         func below(_ b: WebBox?, _ msg: String) async -> Int {
             guard let b = b else { return -999 }
-            return Int(await js(b, "(() => { const n = document.querySelector('[data-msg=\"\(msg)\"]'); const h = document.querySelector('header'); return n ? String(Math.round(n.getBoundingClientRect().top - (h ? h.offsetHeight : 0))) : '-999'; })()")) ?? -999
+            return Int(await js(b, "(() => { const n = document.querySelector('[data-msg=\"\(msg):reply\"]'); const h = document.querySelector('header'); return n ? String(Math.round(n.getBoundingClientRect().top - (h ? h.offsetHeight : 0))) : '-999'; })()")) ?? -999
         }
         func atBottom(_ b: WebBox?) async -> Bool { guard let b = b else { return false }; return await js(b, "String(window.innerHeight + window.scrollY >= document.body.scrollHeight - 4)") == "true" }
         func flash(_ i: Int) -> Int { model.watch.layout.slots[i].flatMap { model.watch.flashes[$0.id] } ?? 0 }

@@ -280,6 +280,10 @@ struct CampusTranscriptView: View {
     let id: String
     /// The Watch column this is drawn in (a link clicked here goes by the column rule), or nil in the Reader column.
     var column: Int?
+    /// The column's content is hidden (Watch focus): blurred, and no click or key reaches it.
+    var hidden = false
+    /// Counts the times the column was asked to land on the newest reply (a finished turn's cue was shown): the transcript scrolls to it.
+    var landTick = 0
     @State private var tick = 0
     @State private var openTools: Set<String> = []
     /// The reader's embed page this conversation is drawn on, once it has loaded (E9=a); until then, or without it, the native `page` below.
@@ -288,9 +292,13 @@ struct CampusTranscriptView: View {
     var body: some View {
         // The outer Group keeps its identity when the conversation changes (the page stays loaded and is handed the other conversation); the inner one does not.
         Group { conversation }
-            .onAppear { embed.start(url: app.web.embedURL) }
+            .blur(radius: hidden ? 9 : 0)
+            .allowsHitTesting(!hidden)
+            .onAppear { embed.start(url: app.web.embedURL); embed.setContentHidden(hidden) }
             .onDisappear { embed.release() }
             .onChange(of: id) { _, _ in embed.retryIfUnavailable(url: app.web.embedURL) }
+            .onChange(of: hidden) { _, now in embed.setContentHidden(now) }
+            .onChange(of: landTick) { _, _ in Task { await embed.landOnLastReply() } }
     }
 
     private var conversation: some View {
@@ -299,11 +307,11 @@ struct CampusTranscriptView: View {
             if let c = campus.conversation(id) {
                 let t = campus.timeline(id) ?? CampusTimeline()
                 VStack(spacing: 0) {
-                    head(c, t)
-                    Divider()
-                    if campus.link == .expired { ExpiredBanner() }
+                    // A hidden column (Watch focus) shows nothing but its blurred transcript: the column's own header already names the conversation and its state.
+                    if !hidden { head(c, t); Divider() }
+                    if campus.link == .expired && !hidden { ExpiredBanner() }
                     if campus.link == .starting && !t.loaded { StartingBox() } else { transcript(c, t) }
-                    CampusComposer(campus: campus, c: c, compact: true, pageBar: embed.composerOn && embed.phase == .ready && !app.privacy)
+                    if !hidden { CampusComposer(campus: campus, c: c, compact: true, pageBar: embed.composerOn && embed.phase == .ready && !app.privacy) }
                 }
                 .accessibilityIdentifier("campus-transcript")
             } else {
@@ -327,14 +335,14 @@ struct CampusTranscriptView: View {
         let composer = ready ? CampusEmbed.composerConfig(name: c.title, send: reason == nil, reason: reason ?? "") : nil
         return VStack(spacing: 0) {
             ZStack {
-                if !ready { page(c, t) }
+                if !ready { if hidden { Color(nsColor: .textBackgroundColor) } else { page(c, t) } }
                 CampusEmbedPane(box: embed, id: id, json: json, column: column, onLink: { url, command in openLink(url, command: command) },
                                 composer: composer, onSend: { m in app.campusPageSend(m, shownID: id) { embed.answerSend(id: $0, error: $1) } })
-                    .opacity(ready ? 1 : 0).allowsHitTesting(ready)
+                    .opacity(ready && (!embed.contentHidden || embed.hideApplied) ? 1 : 0).allowsHitTesting(ready && !hidden)
                     .opacity(campus.link == .expired ? 0.6 : 1)
                     .accessibilityIdentifier("campus-embed")
             }
-            if ready, let f = asking { waiting(f, c).padding(.horizontal, 12).padding(.vertical, 8) }
+            if ready, !hidden, let f = asking { waiting(f, c).padding(.horizontal, 12).padding(.vertical, 8) }
         }
     }
 
@@ -394,6 +402,9 @@ struct CampusTranscriptView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onAppear { if c.needsYou { DispatchQueue.main.async { proxy.scrollTo("ask", anchor: .center) } } }
+            .onChange(of: landTick) { _, _ in
+                if let last = blocks.last(where: { if case .reply = $0 { return true } else { return false } }) { withAnimation { proxy.scrollTo(last.id, anchor: .top) } }
+            }
             .overlay(alignment: .topTrailing) {
                 if c.needsYou && campus.link == .live {
                     Button("Needs you") { withAnimation { proxy.scrollTo("ask", anchor: .center) } }
