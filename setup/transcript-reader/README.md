@@ -418,7 +418,7 @@ http://localhost:8768/setup/transcript-reader/out/live/embed.html      (served: 
 file://<repo>/setup/transcript-reader/out/live/embed.html               (or loaded as a file; WKWebView needs read access to its folder)
 ```
 
-It is the page's fourth mode (`embed`, after `local`, `hosted` and `live`; `prototype/template.html`). It holds no transcript and no token, so the file is the same bytes for the same code and a host may also copy it. A build writes it with the lite page's files (`reader.py rebuild`, or any build; `test_live.py` pins that), and the server serves it like the other pages (`api.js`, `PAGES`). It never calls the server back, whatever address it is opened from: its content policy is `default-src 'none'; connect-src 'none'; frame-src 'none'; img-src 'none'` with its own script allowed by hash, `live.js` treats the page as not served, and every read and write of `localStorage` and `sessionStorage` in it lands in memory. There is no header, message bar, search, pins, hiding, Reply or "Ask about this": the host has its own composer and header. The page follows the web view's light or dark appearance (`prefers-color-scheme`).
+It is the page's fourth mode (`embed`, after `local`, `hosted` and `live`; `prototype/template.html`). It holds no transcript and no token, so the file is the same bytes for the same code and a host may also copy it. A build writes it with the lite page's files (`reader.py rebuild`, or any build; `test_live.py` pins that), and the server serves it like the other pages (`api.js`, `PAGES`). It never calls the server back, whatever address it is opened from: its content policy is `default-src 'none'; connect-src 'none'; frame-src 'none'; img-src 'none'` with its own script allowed by hash, `live.js` treats the page as not served, and every read and write of `localStorage` and `sessionStorage` in it lands in memory. There is no header, search, pins or hiding, and, until the host asks for it ("The composer", below), no message bar, Reply, "Comment on this" or "Ask about this": the host has its own header, and may have its own composer. The page follows the web view's light or dark appearance (`prefers-color-scheme`).
 
 ### The entry point: `window.readerEmbed`
 
@@ -431,7 +431,10 @@ Installed while the page loads, so it exists when the web view's `didFinish` fir
 | `readerEmbed.live(text)` | The **working strip** at the foot: "reading table-a.csv", "thinking", "writing". `""` takes it away. |
 | `readerEmbed.clear()` | Empty the conversation and the strip (the `id` stays). |
 | `readerEmbed.plainText()` | The conversation as plain text, in the words of `CampusTimeline.plainText()` (for the host's Copy). |
-| `readerEmbed.version` | `1`. |
+| `readerEmbed.composer(config)` | Turn the **message bar** on, with select-to-ask, Reply, comments, the batch, Send, Undo and Now (see "The composer", below). `{ "name": "Monthly review", "send": true, "reason": "" }`, or its JSON text. `composer(null)` (or `false`) turns it off. |
+| `readerEmbed.sent(result)` | The host's answer to one `send` message: `{ "id": "<the send's id>", "ok": true }` or `{ "id": ..., "ok": false, "error": "why" }`. |
+| `readerEmbed.composerState()` | What the bar holds, for a host that is about to reload the page: `{ "on": true, "text": "<the box>", "comments": <in the batch>, "holding": <a message is in its Undo window>, "sending": <a send waits for sent()> }`. |
+| `readerEmbed.version` | `1` (the calls above that are new keep it: a host that never calls them sees the page as before). |
 
 A call with text that is not JSON throws a `SyntaxError`, which `evaluateJavaScript`'s completion handler receives; nothing else a host sends can throw. A block of an unknown kind, an empty message and a reply with nothing in it are skipped and counted in `skipped`; a field of the wrong type is read as the empty one, as `CampusJSON` reads Campus's.
 
@@ -469,6 +472,18 @@ The shape is `CampusTimeline.blocks()` of `helm/Sources/ConnCore/Campus/CampusTi
 
 A stream is `set` once with the backfill, then `upsert` of the block each frame changed (and `live(text)`, or `upsert({ "blocks": [...], "live": "writing" })`, for the strip), or, simpler, `set` of the whole timeline on every frame: the page's redraw is per block, so the cost is the changed block's.
 
+### The composer (opt-in)
+
+By default the page has no way to ask anything: a host with its own composer needs nothing more. A host that wants the reader's own way of asking about a reply, in the Campus view too, calls `readerEmbed.composer({ "name": "Monthly review" })` once (after `didFinish`; again whenever the name or the reason changes, and `composer(null)` takes it away). The page then has the controls of the reader's own conversation view, drawn by the same code with the same styles, and **keeps nothing**: the box, the pointer and the batch live in the page's memory, so a reload loses them (`composerState()` says whether there is anything to lose).
+
+- **Select text to ask about it.** Selecting words in a reply offers **Comment on this** beside the selection (Cmd+Enter on a Mac, Ctrl+Enter elsewhere does the same); a reply card has a **Reply** button (it comments on the passage selected, or on the reply); the step sheet has **Ask about this**. Each puts a pointer chip above the box: `Re your reply ("Summary Singapore grew 6%"), the part "Singapore": ...`, with "Sends exactly:" showing the whole line. A reply with no `at` has no time in the pointer.
+- **Batch.** **Add** (or Cmd/Ctrl+Enter) puts the comment in a batch and clears the box for the next; the batch list shows each comment with **Edit** and **✕**, **Clear all** asks in the page ("Remove all 3?" and **Keep**), and **Exact text** shows what Send will type. Several comments go as one message: `3 comments:\n\n1. ...\n\n2. ...`.
+- **Send, Undo, Now.** Send holds the message **in the page** for 5 seconds with the box locked (**Send** reads **Undo 5**, **Add** reads **Now**; the faded message in the conversation has Undo and **Send now**; Esc undoes, Enter sends now). Nothing has left the page until the window ends, so Undo is always "it was never sent". Then the page posts `send` to the host (above). A message that starts with a session command (`/clear`, `/exit`, `/quit`, `/compact`, `/logout`, `/rewind`) asks first in the page (**Confirm**/**Keep**); a message starting with `/` goes alone, never inside a batch, as in the reader. The message is at most 4,000 characters, as in the reader.
+- **What the host does.** On `send` it types `text` into the Campus conversation, then calls `readerEmbed.sent({ id, ok: true })` (the faded message stays until a **new user block** arrives by `set` or `upsert`, whatever its text, then goes: it is the same message now drawn by the conversation) or `sent({ id, ok: false, error })` (the page says why and gives the message back: into the box when it is empty, else into the batch). A host that does not answer within 60 seconds is treated as failed, in words that say it may have gone. A host that is not listening at all (no `readerEmbed` message handler) fails at once: "No host is listening, so nothing was sent."
+- **Config.** `name` (shown as `Message <name>` in the box and `To <name>` under it), `send` (`false` keeps the bar for comments, batching and Copy and turns Send off), `reason` (the sentence shown while `send` is false: "Sign in to Campus to send."). A `send: false` bar never posts.
+- **No photos.** The bar has no photo button here, and a pasted or dropped picture is refused with a word.
+- **Checked** by `e2e/embed-check.js`: every control above against a stand-in host that answers `sent`, in a phone width and a desktop one, light and dark, and that nothing reaches a server or a store.
+
 ### What the page does with them
 
 - **Scrolling.** The first call, and a `set` with another `id`, opens at the latest turn, placed at the top as the reader does. Later updates follow the newest content while you are at the bottom; scrolled up, your place is kept and a **New reply ↓** button offers the way down (it goes when you reach the bottom).
@@ -484,6 +499,7 @@ If the web view has a script message handler named `readerEmbed` (`WKUserContent
 |---|---|
 | `{ "type": "ready", "version": 1 }` | once, when the entry point is installed |
 | `{ "type": "link", "url": "https://..." }` | an `http(s)` link was clicked; the page did not navigate, the host opens it |
+| `{ "type": "send", "id": "<uuid>", "conversation": "<the conversation's id, or empty>", "text": "<the exact message>", "comments": <how many comments it carries> }` | the composer's message left its Undo window (or **Now** was pressed): **type `text` into the conversation exactly as it is**, then answer with `readerEmbed.sent({ id, ok })`. Only with the composer on. |
 
 A host that does not listen needs nothing: the entry point is there when `didFinish` fires, and links open in a new window.
 
