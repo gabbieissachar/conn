@@ -499,7 +499,7 @@ If the web view has a script message handler named `readerEmbed` (`WKUserContent
 |---|---|
 | `{ "type": "ready", "version": 1 }` | once, when the entry point is installed |
 | `{ "type": "link", "url": "https://..." }` | an `http(s)` link was clicked; the page did not navigate, the host opens it |
-| `{ "type": "send", "id": "<uuid>", "conversation": "<the conversation's id, or empty>", "text": "<the exact message>", "comments": <how many comments it carries> }` | the composer's message left its Undo window (or **Now** was pressed): **type `text` into the conversation exactly as it is**, then answer with `readerEmbed.sent({ id, ok })`. Only with the composer on. |
+| `{ "type": "send", "id": "<uuid>", "conversation": "<the conversation's id, or empty>", "text": "<the exact message>", "comments": <how many numbered comments it carries, 0 for a single message> }` | the composer's message left its Undo window (or **Now** was pressed): **type `text` into the conversation exactly as it is**, then answer with `readerEmbed.sent({ id, ok })`. Only with the composer on. |
 
 A host that does not listen needs nothing: the entry point is there when `didFinish` fires, and links open in a new window.
 

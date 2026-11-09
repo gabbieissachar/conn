@@ -87,6 +87,17 @@
       return out;
     }
 
+    // The message bar's config as a host hands it (readerEmbed.composer): { name?, send?, reason? } or its JSON text; null, false, undefined or { off: true }
+    // is no bar. Anything else that is not an object throws, as parse does.
+    function composer(input) {
+      let raw = input;
+      if (typeof raw === "string") raw = JSON.parse(raw);
+      if (raw === null || raw === undefined || raw === false) return null;
+      if (typeof raw !== "object" || Array.isArray(raw)) throw new TypeError("readerEmbed.composer: expected { name, send, reason }, its JSON, or null");
+      if (raw.off === true) return null;
+      return { name: clip(text(raw.name).trim(), 60) || "Campus", send: raw.send !== false, reason: clip(text(raw.reason).trim(), 200) };
+    }
+
     // ---- the reader's turns, made from blocks
     const userTurn = b => ({ source: "captain", kind: "message", label: "You", input: b.text, at: b.at, absorbed: false, uid: b.id });
     // A tool as the step the reader's list and sheet draw (tool_steps.py's short keys): what kind, one line, the command or the file, and
@@ -140,5 +151,5 @@
         return "Campus: " + lines.join("\n");
       }).join("\n\n");
     }
-    return { VERSION, TOOL_KINDS, parse, upsert, view, plain, stepOf, userTurn, replyTurn };
+    return { VERSION, TOOL_KINDS, parse, upsert, composer, view, plain, stepOf, userTurn, replyTurn };
   })();

@@ -17,7 +17,7 @@ const SENTENCE = 'Sending to Copilot is not supported yet.';
 test('the message bar gives a Copilot session its reason before any other, and the server refuses with the same words', () => {
   const chain = page.slice(page.indexOf('let reason = "";'));
   const first = chain.slice(0, chain.indexOf('const command = dockTyped()'));
-  assert.match(first, /^let reason = "";\s*\/\/[^\n]*\n\s*if \(session\.agent === "copilot"\) reason = "Sending to Copilot is not supported yet\. Copy still works\.";\s*\n\s*else if \(HOSTED\)/,
+  assert.match(first, /^let reason = "";\s*\/\/[^\n]*\n\s*if \(session\.agent === "copilot"\) reason = "Sending to Copilot is not supported yet\. Copy still works\.";\s*\n(?:\s*\/\/[^\n]*\n)?\s*else if \(EMBED\) reason = [^\n]*\n\s*else if \(HOSTED\)/,
     'the Copilot reason leads the chain, so no copy (served, hosted or offline) offers Send for it');
   assert.ok(first.includes(SENTENCE));
   assert.ok(api.includes(`const COPILOT_SEND_REFUSAL = '${SENTENCE}';`), 'the server says the same sentence');
@@ -26,7 +26,7 @@ test('the message bar gives a Copilot session its reason before any other, and t
 test('the Copilot reason is a plain note, not drawn as a fault', () => {
   const line = page.split('\n').find((text) => text.includes('status.classList.toggle("bad"'));
   assert.ok(line, 'the status line toggles its fault style');
-  assert.match(line, /Boolean\(reason && pane && session\.agent !== "copilot"\)/);
+  assert.match(line, /Boolean\(reason && pane && session\.agent !== "copilot" && !EMBED\)/);
 });
 
 test('Send checks for a Copilot session before it asks Herdr anything or presses a key', () => {

@@ -232,22 +232,25 @@ test('page: it reaches no server, whatever address it is opened from, and its co
   assert.equal(/<(?:link|img|iframe|script)\s[^>]*(?:src|href)=/i.test(built), false, 'nothing is loaded from anywhere');
 });
 
-test('page: the reader\'s own functions draw the turns, and nothing of the reader\'s controls is there to use', () => {
+test('page: the reader\'s own functions draw the turns, and the reader\'s controls are there only when the host asked for the composer', () => {
   const run = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('function embedPaint('), PAGE_SOURCE.indexOf('function startEmbed()'));
   assert.ok(/inputBlock\(row\.turn, row\.id, key, sid\)/.test(run) && /replyCard\(row\.turn, key, sid\)/.test(run), 'inputBlock and replyCard, the code that draws a Claude or Codex conversation');
   assert.ok(PAGE_SOURCE.includes('const pinKey = (ex, part) => ex.uid && !EMBED ?'), 'no pin or hide button without a key');
-  assert.ok(PAGE_SOURCE.includes('if (sid && ex.reply && !EMBED) {'), 'no Reply button');
-  assert.ok(PAGE_SOURCE.includes('node.ask.hidden = !sid || EMBED;'), 'no "Ask about this" on a step');
+  assert.ok(PAGE_SOURCE.includes('if (sid && ex.reply && (!EMBED || embedHost)) {'), 'a Reply button only with the composer');
+  assert.ok(PAGE_SOURCE.includes('node.ask.hidden = !sid || (EMBED && !embedHost);'), '"Ask about this" on a step only with the composer');
+  assert.ok(PAGE_SOURCE.includes('const dockSession = () => EMBED && !embedHost ? null :'), 'no message bar without the composer');
   assert.ok(PAGE_SOURCE.includes('if (EMBED) state.copySelection = false;'));
   assert.ok(PAGE_SOURCE.includes('if (!EMBED) window.addEventListener("hashchange", followAddress);'));
   assert.ok(PAGE_SOURCE.includes('if (!EMBED) window.addEventListener("pagehide", () => {'));
   assert.ok(PAGE_SOURCE.includes('if (EMBED) startEmbed();\n  else if (!LAZY) openReading(chooseOpening());'), 'the reading list is never opened');
-  assert.match(PAGE_SOURCE, /body\.embed #bar, body\.embed #dock, body\.embed \.float-comment, body\.embed \.copy-note, body\.embed #new-reply \{ display: none !important; \}/);
+  assert.match(PAGE_SOURCE, /body\.embed #bar, body\.embed \.copy-note, body\.embed #new-reply \{ display: none !important; \}/);
+  assert.match(PAGE_SOURCE, /body\.embed:not\(\.embed-composer\) #dock, body\.embed:not\(\.embed-composer\) \.float-comment \{ display: none !important; \}/, 'the bar and "Comment on this" are hidden until the composer is on');
+  assert.match(PAGE_SOURCE, /body\.embed #dock-photo, body\.embed #dock-thumbs \{ display: none !important; \}/, 'no photos in the embed page');
 });
 
 test('page: the entry point is window.readerEmbed with the calls the README names', () => {
   const entry = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('window.readerEmbed = Object.freeze({'), PAGE_SOURCE.indexOf('tell({ type: "ready"'));
-  for (const name of ['version:', 'set:', 'upsert:', 'live:', 'clear:', 'plainText:']) assert.ok(entry.includes(name), name);
+  for (const name of ['version:', 'set:', 'upsert:', 'live:', 'clear:', 'plainText:', 'composer, sent, composerState']) assert.ok(entry.includes(name), name);
   assert.ok(PAGE_SOURCE.includes('tell({ type: "ready", version: embedModel.VERSION });'));
   assert.ok(PAGE_SOURCE.includes('if (!tell({ type: "link", url })) window.open(url, "_blank", "noopener");'), 'a web address never takes the view away');
 });
@@ -257,7 +260,49 @@ test('page: the contract in the README names every call and field the page has',
   const section = readme.slice(readme.indexOf('## The embed page'));
   assert.ok(section.length > 500, 'the README has the section');
   for (const word of ['window.readerEmbed', 'readerEmbed.set', 'readerEmbed.upsert', 'readerEmbed.live', 'readerEmbed.clear', 'readerEmbed.plainText', 'out/live/embed.html',
-    '"kind": "user"', '"kind": "reply"', 'texts', 'tools', 'form', 'stopped', 'streaming', 'status', 'questions', 'options', 'pick', 'answer', 'messageHandlers.readerEmbed', '"type": "link"', '"type": "ready"']) {
+    '"kind": "user"', '"kind": "reply"', 'texts', 'tools', 'form', 'stopped', 'streaming', 'status', 'questions', 'options', 'pick', 'answer', 'messageHandlers.readerEmbed', '"type": "link"', '"type": "ready"', 'readerEmbed.composer', 'readerEmbed.sent', 'readerEmbed.composerState', '"type": "send"', 'The composer']) {
     assert.ok(section.includes(word), `README, "The embed page", names ${word}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------- the composer
+
+test('composer: null, false, undefined and { off: true } are no bar; an object is a bar with the name, send and reason read tolerantly', () => {
+  for (const off of [null, false, undefined, { off: true }, 'null', 'false', '{"off":true}']) assert.equal(model.composer(off), null, String(off));
+  assert.deepEqual(plain(model.composer({})), { name: 'Campus', send: true, reason: '' }, 'the defaults');
+  assert.deepEqual(plain(model.composer({ name: '  Monthly review ', send: true })), { name: 'Monthly review', send: true, reason: '' });
+  assert.deepEqual(plain(model.composer('{"name":"Q3 plan","send":false,"reason":"Sign in to Campus to send."}')), { name: 'Q3 plan', send: false, reason: 'Sign in to Campus to send.' });
+  assert.equal(model.composer({ send: 0 }).send, true, 'only false turns Send off');
+  assert.equal(model.composer({ name: 'x'.repeat(200) }).name.length <= 60, true, 'a name is clipped');
+  assert.equal(model.composer({ name: {}, reason: [] }).name, 'Campus', 'a field of the wrong type is the empty one');
+});
+
+test('composer: what is not a config throws, so a host sees its mistake', () => {
+  assert.throws(() => model.composer('not json'), SyntaxError);
+  assert.throws(() => model.composer(3), TypeError);
+  assert.throws(() => model.composer([1]), TypeError);
+  assert.throws(() => model.composer(true), TypeError);
+});
+
+test('composer page: a send goes to the host as { type: send, id, conversation, text, comments }, and only the host\'s answer ends it', () => {
+  assert.ok(PAGE_SOURCE.includes('tell({ type: "send", id, conversation: embed.conv || "", text, comments })'), 'the message the README names');
+  assert.ok(PAGE_SOURCE.includes('const EMBED_ANSWER_MS = 60000;'), 'a host that never answers is a failure after 60 seconds');
+  assert.ok(/No host is listening, so nothing was sent\./.test(PAGE_SOURCE), 'a host that is not listening fails at once, in words');
+  assert.ok(/may or may not have gone/.test(PAGE_SOURCE), 'and one that does not answer says the message may have gone');
+  assert.ok(PAGE_SOURCE.includes('EMBED ? await embedSend('), 'the embed page never calls the server or the queue');
+  assert.ok(PAGE_SOURCE.includes('body.embed-composer .embed-live { bottom: var(--dock-h, 0px); }'), 'the working strip sits over the bar');
+});
+
+test('composer page: the bar keeps nothing and reaches nothing: the draft and the batch go to memory, and no network call is on its path', () => {
+  const send = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('function embedSend('), PAGE_SOURCE.indexOf('const embedBottom'));
+  assert.equal(/fetch\(|XMLHttpRequest|live\.send|hosted\.|localStorage|sessionStorage/.test(send), false, 'embedSend only tells the host');
+  assert.ok(PAGE_SOURCE.includes('const embedded = typeof MODE === "string" && MODE === "embed";') || LIVE_SOURCE.includes('const embedded = typeof MODE === "string" && MODE === "embed";'));
+});
+
+test('composer page: the page\'s composer contract in the README matches the config the page reads', () => {
+  const readme = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('### The composer (opt-in)'), readme.indexOf('### What the page does with them'));
+  for (const word of ['`name`', '`send`', '`reason`', 'Comment on this', 'Reply', 'Ask about this', 'Clear all', 'Exact text', 'Undo', 'Now', '5 seconds', '`/clear`', '4,000', 'sent({ id, ok: true })', 'sent({ id, ok: false, error })', '60 seconds', 'No host is listening', 'e2e/embed-check.js']) {
+    assert.ok(section.includes(word), `the composer section names ${word}`);
   }
 });

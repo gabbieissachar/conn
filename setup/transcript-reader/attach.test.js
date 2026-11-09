@@ -292,7 +292,7 @@ function deliverWorld({ hosted = false, upload, send } = {}) {
   };
   const photos = attach.makeStore();
   const sandbox = {
-    link: world.link, photos, attach, HOSTED: hosted, Date, setTimeout: () => 0, Number, String, Math,
+    link: world.link, photos, attach, HOSTED: hosted, EMBED: false, Date, setTimeout: () => 0, Number, String, Math,
     live: { upload, send },
     hosted: { enqueue: async () => { throw new Error('the queue is not used here'); } },
     renderDock: () => { world.renders += 1; world.log.push('render ' + world.link.uploading); },
@@ -509,12 +509,14 @@ test('the bar: pictures come from the button, a paste with no words, and a drop 
 });
 
 test('the bar: a copy that cannot carry photos says so in the bar, and holds none', () => {
-  const block = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: true, canLive: false });
+  const block = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: true, EMBED: false, canLive: false });
   assert.equal(block(), 'This copy cannot send photos: its queue carries text only. Open the laptop\'s page for photos.');
-  const readOnly = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: false, canLive: false });
+  const readOnly = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: false, EMBED: false, canLive: false });
   assert.equal(readOnly(), 'Read-only copy: open the served page to send photos.');
-  const live = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: false, canLive: true });
+  const live = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: false, EMBED: false, canLive: true });
   assert.equal(live(), '');
+  const embedded = vm.runInNewContext(pageFunction('photoBlock') + '\n photoBlock', { HOSTED: false, EMBED: true, canLive: false });
+  assert.equal(embedded(), 'This page sends text only.', 'the embed page sends text only, whatever else is true');
   assert.match(page, /dock\("photo"\)\.title = noPhotos \|\| "Add photos/);
   assert.match(page, /dock\("photo"\)\.setAttribute\("aria-disabled", String\(Boolean\(noPhotos\)\)\);/);
   // A pick, a paste or a drop is stopped before anything is held: the answer is the bar's own line, in the error colour.

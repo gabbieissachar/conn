@@ -122,7 +122,7 @@
       const holdHint = working(agent) ? `${p.label} was working, so Claude Code may hold this as a queued message until its turn ends. Press ↑ in the pane to take it back.` : "";
       return {
         stage: late ? "stuck" : working(agent) ? "held-by-agent" : "delivered",
-        say: late ? `${by} · not in the log yet; check the pane · too late to undo here`
+        say: late ? `${by} · ${p.host ? "not in the conversation yet; check it" : "not in the log yet; check the pane"} · too late to undo here`
           : working(agent) ? `${by} · ${p.label} was working · too late to undo here` : `${by} · waiting for ${p.label} · too late to undo here`,
         hint: late ? "" : holdHint, actions: [],
       };

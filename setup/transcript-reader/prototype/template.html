@@ -698,7 +698,11 @@ __HEAD_HOSTED__
   /* The embed page (template mode "embed", README.md "The embed page"): a host's web view that draws one conversation, so the reader's header,
      message bar, search and floating buttons are not there. A strip at the foot says what the agent is doing, and "New reply" offers the
      newest turn when you have scrolled up; both sit over the column the way the message bar does on the reader. */
-  body.embed #bar, body.embed #dock, body.embed .float-comment, body.embed .copy-note, body.embed #new-reply { display: none !important; }
+  body.embed #bar, body.embed .copy-note, body.embed #new-reply { display: none !important; }
+  /* The message bar and "Comment on this" are the host's to ask for (readerEmbed.composer, README.md "The composer"); without it they are not there. */
+  body.embed:not(.embed-composer) #dock, body.embed:not(.embed-composer) .float-comment { display: none !important; }
+  body.embed #dock-photo, body.embed #dock-thumbs { display: none !important; }
+  body.embed-composer .embed-live { bottom: var(--dock-h, 0px); }
   body.embed main { padding-top: 12px; }
   body.embed.embed-working main { padding-bottom: 96px; }
   .embed-live { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); }
@@ -1126,7 +1130,7 @@ __HEAD_HOSTED__
     if (verdict) who.append(verdict);
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
-    if (sid && ex.reply && !EMBED) {
+    if (sid && ex.reply && (!EMBED || embedHost)) {
       const pin = pinButton(ex, "reply", sid);
       if (pin) { who.append(pin); card.dataset.msg = pinKey(ex, "reply"); }
       const hide = hideButton(ex, "reply", sid);
@@ -1134,7 +1138,7 @@ __HEAD_HOSTED__
       const target = replyTarget(ex, sid, card);
       replyTargets.set(card, target);
       const to = $("button", "reply-to", "Reply"); to.type = "button";
-      to.title = "Reply to this in its session. Select a passage first to comment on it.";
+      to.title = EMBED ? "Reply to this in the conversation. Select a passage first to comment on it." : "Reply to this in its session. Select a passage first to comment on it.";
       to.addEventListener("click", () => useTarget(target(selectedPassage(card)), to));
       who.append(to);
     }
@@ -1448,7 +1452,7 @@ __HEAD_HOSTED__
     }
     if (outBox.length) frag.append(section("Output", ...outBox).sec);
     body.replaceChildren(frag);
-    node.ask.hidden = !sid || EMBED;
+    node.ask.hidden = !sid || (EMBED && !embedHost);
   }
   const failureText = entry => HOSTED && entry.error && (entry.error.network || /not reachable/.test(entry.error.message || "")) ? "No output is stored on this device for this step, and the laptop is not reachable. Try again when it answers."
     : `Could not load the output: ${entry.error ? entry.error.message : "unknown error"}`;
@@ -1467,8 +1471,8 @@ __HEAD_HOSTED__
     const { ex, index, sid } = sheet;
     if (!ex || !sid) return;
     const step = ex.steps[index], at = step.at || ex.reply_at || ex.at;
-    const target = { sid, card: null, passage: "", title: `About a step · ${paneName(sid)} · ${fmtWhen(at)}`,
-      pointer: () => `Re your step at ${fmtTime(at)} (${stepsView.KIND[step.k] || "Tool"} "${live.clip(step.s, 80)}"): ` };
+    const target = { sid, card: null, passage: "", title: `About a step · ${paneName(sid)}${at ? " · " + fmtWhen(at) : ""}`,
+      pointer: () => `Re your step${at ? " at " + fmtTime(at) : ""} (${stepsView.KIND[step.k] || "Tool"} "${live.clip(step.s, 80)}"): ` };
     const opener = sheet.opener;
     closeStep();
     useTarget(target, opener);
@@ -2865,6 +2869,11 @@ __HEAD_HOSTED__
   // the reply (time and opening words), quotes a selected passage, and adds the comment.
   // reply card or document body -> passage => the dock's target: { sid, title, passage, pointer, card }
   const replyTargets = new WeakMap();
+  // The embed page's message bar: null until the host asks for it (readerEmbed.composer), then { name, send, reason }. The host's answers to
+  // the sends it was handed wait in embedWaits, by the send's id.
+  let embedHost = null;
+  const embedWaits = new Map();
+  const EMBED_ANSWER_MS = 60000;
   const link = { held: null, panes: undefined, tabs: [], focus: null, build: null, seenSeq: null, first: true, want: null, sending: false, result: null, target: null, dockSid: null, pending: [], newer: false, batchOpen: false, batchSig: null, clearing: null, editing: null, preview: false, listing: null, opening: null, closing: null, message: null, syncedAt: 0, syncFail: null, syncing: false, copy: null, hold: null, flight: null, board: null };
   const dock = id => document.getElementById("dock-" + id);
   // The photos waiting to go with the message, for each session of this tab (attach.js), and the thumbnails of the one on screen.
@@ -2888,7 +2897,7 @@ __HEAD_HOSTED__
     const earlier = !session ? ""
       : ex.from_session ? `[From session ${ex.from_session.slice(0, 8)}, an earlier session in this pane; its log: ${session.file.replace(/[^/]+$/, ex.from_session + ".jsonl")}] `
       : ex.compacted_away ? `[From before this session's last compaction; its log: ${session.file}] ` : "";
-    return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)} · ${fmtWhen(at)}`, pointer: p => earlier + live.pointer(at, ex.reply, p, Boolean(earlier), ex.asks || []) });
+    return passage => ({ sid, card, passage, title: `Reply to ${paneName(sid)}${at ? " · " + fmtWhen(at) : ""}`, pointer: p => earlier + live.pointer(at, ex.reply, p, Boolean(earlier), ex.asks || []) });
   }
   // A conversation by any of its sessions' ids: after a /clear its newest id changes.
   const sessionOf = sid => data.sessions.find(s => (s.ids || [s.id]).includes(sid));
@@ -2899,7 +2908,7 @@ __HEAD_HOSTED__
   const dockTyped = () => dock("text").value.trim();
   const dockMessage = () => { const typed = dockTyped(); return !typed ? "" : link.target && !typed.startsWith("/") ? dockPointer() + typed : typed; };
   // The bar always writes to the session on screen; the Fleet timeline mixes sessions, so it has none.
-  const dockSession = () => state.view !== "fleet" && data.sessions[state.session] && !data.sessions[state.session].placeholder ? data.sessions[state.session] : null;
+  const dockSession = () => EMBED && !embedHost ? null : state.view !== "fleet" && data.sessions[state.session] && !data.sessions[state.session].placeholder ? data.sessions[state.session] : null;
   // The message in its Undo window belongs to the session on screen (its box is locked), as opposed to one switched away from meanwhile.
   const heldHere = () => { const here = dockSession(); return Boolean(link.hold && here && link.hold.sid === here.id); };
   const SENDABLE = new Set(["idle", "working", "done"]);
@@ -3089,7 +3098,7 @@ __HEAD_HOSTED__
     const bar = document.getElementById("dock"), main = document.getElementById("main");
     const session = link.opening ? null : dockSession();  // no bar until the conversation being opened again is back
     bar.hidden = !session;
-    if (bar.hidden) { main.style.paddingBottom = ""; document.documentElement.style.setProperty("--dock-h", "0px"); placeNewReply(); return; }
+    if (bar.hidden) { main.style.paddingBottom = ""; document.documentElement.style.setProperty("--dock-h", "0px"); placeNewReply(); if (EMBED) embedPill(); return; }
     adopt(session);
     if (link.dockSid !== session.id) {
       link.dockSid = session.id; link.result = null; link.batchOpen = false;
@@ -3122,10 +3131,12 @@ __HEAD_HOSTED__
       fillLine(dockPointer(), dockTyped(), command, text);
     }
     // The hosted copy knows the pane as of its build; the laptop checks the pane again when it sends.
-    const pane = HOSTED ? (session.pane && session.pane.live ? session.pane : null) : link.panes ? link.panes[session.id] : null;
+    const pane = EMBED ? { label: embedHost.name } : HOSTED ? (session.pane && session.pane.live ? session.pane : null) : link.panes ? link.panes[session.id] : null;
     let reason = "";
     // A Copilot session is read only: its pane takes no messages from here, on any copy.
     if (session.agent === "copilot") reason = "Sending to Copilot is not supported yet. Copy still works.";
+    // The embed page's host sends, or says why it cannot (readerEmbed.composer).
+    else if (EMBED) reason = embedHost.send === false ? (embedHost.reason || "Sending is off here. Copy still works.") : "";
     else if (HOSTED) reason = !session.pane ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
       : !session.pane.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
     else if (!canLive) reason = "Read-only copy: open the served page to send.";
@@ -3155,7 +3166,7 @@ __HEAD_HOSTED__
     dock("photo").title = noPhotos || "Add photos (you can also paste or drop pictures)";
     dock("send").disabled = held ? false : Boolean(reason) || link.sending || (!out && !pics.length) || over;
     dock("send").classList.toggle("undo", held);
-    dock("send").title = held ? "Take the message back before it is sent (Esc)" : asking ? `Send ${asking} now (Enter)` : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
+    dock("send").title = held ? "Take the message back before it is sent (Esc)" : asking ? `Send ${asking} now (Enter)` : EMBED ? `Send to ${pane.label} (Enter; Shift+Enter for a new line)` : "Send to the session's Herdr pane (Enter; Shift+Enter for a new line)";
     const total = batch.length + (dockTyped() ? 1 : 0);
     // A batch sends one numbered message that the box and the pointer do not show whole, so say where it is.
     dock("note").hidden = !batch.length || link.preview;
@@ -3181,15 +3192,17 @@ __HEAD_HOSTED__
     count.textContent = `${out.length.toLocaleString()} / ${MAX_SEND.toLocaleString()}`;
     count.classList.toggle("bad", over);
     const status = dock("status");
-    status.classList.toggle("bad", !held && !asking && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane && session.agent !== "copilot")));  // a Copilot session is read only: that is a plain note, not a fault
-    status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : asking ? commandAsk.words(paneName(session.id), out) : link.result ? link.result.text : reason || (HOSTED
+    status.classList.toggle("bad", !held && !asking && !elsewhere && (Boolean(link.result && !link.result.ok) || Boolean(reason && pane && session.agent !== "copilot" && !EMBED)));  // a Copilot session is read only: that is a plain note, not a fault
+    status.textContent = held ? `Sending in ${sendHold.left()} s · Undo takes it back` : asking ? commandAsk.words(paneName(session.id), out) : link.result ? link.result.text : reason || (EMBED ? `To ${pane.label}${link.sending ? " · sending…" : ""}` : HOSTED
       ? `Queues for ${pane.label} · ${sessionStatus(session, true).toLowerCase() || "state unknown"} at ${builtAt(data.generated)}${link.sending ? " · queuing…" : ""}`
       : `To ${pane.label} · ${sessionStatus(session).toLowerCase()}${pics.length ? " · " + attach.photos(pics.length) : ""}${link.sending ? " · " + (link.uploading || "sending…") : ""}${link.held ? (narrow.matches ? ` · then following ${link.held}` : ` · Herdr is on ${link.held}; following once ${look.open && !writing() ? "the search is closed" : "this box is sent or left"}`) : ""}`);
     dock("worker").hidden = session.where !== "worker copy";
     // Keep the end of the conversation readable above the bar.
-    main.style.paddingBottom = bar.offsetHeight + 24 + "px";
-    document.documentElement.style.setProperty("--dock-h", bar.offsetHeight + "px");
+    main.style.paddingBottom = bar.offsetHeight + 24 + (EMBED ? embedStripHeight() : 0) + "px";
+    // The embed page's working strip sits exactly on the bar, so it needs the bar's real height (a rounded one leaves a hairline of the page between them).
+    document.documentElement.style.setProperty("--dock-h", (EMBED ? bar.getBoundingClientRect().height : bar.offsetHeight) + "px");
     placeNewReply();
+    if (EMBED) embedPill();
   }
   // Send does not send at once: it holds the message in the page for UNDO_SECONDS (undosend.js), with the box locked, and only then
   // asks the server or the queue. Until that moment nothing has left the page, so Undo can say plainly that it was never sent.
@@ -3246,6 +3259,8 @@ __HEAD_HOSTED__
   function endHold() { link.hold = null; clearInterval(holdTimer); holdTimer = 0; }
   // Redraws the conversation (the faded message lives in it) and keeps the reader where they were.
   function redrawPending(keepPlace = false) {
+    // The embed page's faded message sits after the host's blocks; a message just sent shows at the end, a reply to an older turn keeps the place.
+    if (EMBED) { const stay = keepPlace && !atBottom(); embedPaintPending(); renderDock(); if (!stay) embedBottom(); return; }
     if (state.view !== "reader") { renderDock(); return; }
     const anchor = readingAnchor();
     render();
@@ -3309,6 +3324,8 @@ __HEAD_HOSTED__
     // Taken when the send starts: the log stamps the message when the pane receives it, which is
     // before Herdr answers (emptying the pane's input box first takes a second or more).
     const at = Date.now() / 1000;
+    // The embed page: the user blocks the conversation has now, so the faded message goes when a new one arrives (the host may answer after that).
+    const knownUsers = EMBED ? embedUserIds() : null;
     link.sending = true; link.result = null; link.uploading = ""; link.flight = { sid, text, photos: sentPhotos.length };
     const putBack = takeSentFromComposer({ sid, sentItems, sentBox });
     redrawPending(pointed);
@@ -3317,7 +3334,7 @@ __HEAD_HOSTED__
       const queued = HOSTED ? await hosted.enqueue(sid, text) : null;
       // With photos, each is uploaded first (a photo that fails stops the send, and nothing is typed into the pane), then the send names the
       // saved files and the laptop adds their paths to the text; what it answers is the text as it went.
-      const sent = HOSTED ? { label: (sessionOf(sid) && sessionOf(sid).pane && sessionOf(sid).pane.label) || paneName(sid) } : await attach.deliver(sentPhotos, {
+      const sent = HOSTED ? { label: (sessionOf(sid) && sessionOf(sid).pane && sessionOf(sid).pane.label) || paneName(sid) } : EMBED ? await embedSend({ text, comments: sentItems.length + (sentBox.trim() ? 1 : 0) > 1 ? sentItems.length + (sentBox.trim() ? 1 : 0) : 0 }) : await attach.deliver(sentPhotos, {
         upload: (file, name) => live.upload(file, name),
         send: ids => live.send(sid, text, ids),
         step: (n, of) => { link.uploading = n ? `uploading ${of > 1 ? `photo ${n} of ${of}` : "the photo"}…` : ""; renderDock(); },
@@ -3325,7 +3342,7 @@ __HEAD_HOSTED__
       link.uploading = "";
       link.result = { ok: true, text: HOSTED ? (queued.held ? `Held on this phone at ${fmtTime(at)}.` : `Queued for ${sent.label} at ${fmtTime(at)}. The laptop sends it when it is awake.`) : `Sent to ${sent.label} at ${fmtTime(at)}.` };
       // agent: what Herdr said the agent was doing when the message went in (a working agent holds it as a queued message).
-      link.pending.push({ sid, text: sent.text || text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : { agent: sent.status }) });
+      link.pending.push({ sid, text: sent.text || text, at: HOSTED ? queued.at : at, label: sent.label, ...(HOSTED ? { queue: { id: queued.id, state: queued.held ? "held" : "queued" } } : EMBED ? { host: true, known: knownUsers } : { agent: sent.status }) });
       keepQueued();
       photos.drop(sid, sentPhotos);
       setTimeout(() => { if (link.result && link.result.ok) { link.result = null; renderDock(); } }, HOSTED ? 8000 : 4000);
@@ -3350,7 +3367,9 @@ __HEAD_HOSTED__
   // The faded message for each send of the session on screen: what it says and which buttons it has come from describeSend
   // (undosend.js), so the owner can see whether Undo is still possible.
   function pendingNodes(session) {
-    const landed = p => session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2
+    // The embed page's conversation has no time on its items, so a message the host sent has landed when a user block it did not have then arrives.
+    const landed = p => p.host ? session.exchanges.some(e => e.source === "captain" && e.uid && !p.known.has(e.uid))
+      : session.exchanges.some(e => e.source === "captain" && e.at >= p.at - 2
       && (p.text.startsWith("/") || opening(e.input || "") === opening(p.text)));
     const before = link.pending.length;
     link.pending = link.pending.filter(p => p.sid !== session.id || !landed(p));
@@ -3614,7 +3633,7 @@ __HEAD_HOSTED__
   // Photos. Why none can be added here, or "": the hosted copy's queue carries text only (its words are sealed, and a photo is far past the
   // size the queue takes), and a copy that cannot reach the server sends nothing. Pictures come from the button, a paste or a drop.
   function photoBlock() {
-    return HOSTED ? "This copy cannot send photos: its queue carries text only. Open the laptop's page for photos."
+    return EMBED ? "This page sends text only." : HOSTED ? "This copy cannot send photos: its queue carries text only. Open the laptop's page for photos."
       : !canLive ? "Read-only copy: open the served page to send photos." : "";
   }
   function barSays(ok, text, ms) {
@@ -5075,11 +5094,33 @@ __HEAD_HOSTED__
     embed.strip.hidden = !on;
     embed.strip.querySelector(".txt").textContent = embed.live;
     document.body.classList.toggle("embed-working", on);
-    embedPill();
+    if (embedHost) renderDock();  // the bar and the strip share the foot: the strip sits over the bar, and the conversation's padding is both
+    else embedPill();
   }
+  const embedStripHeight = () => embed.strip && !embed.strip.hidden ? embed.strip.offsetHeight : 0;
   function embedPill() {
+    const bar = document.getElementById("dock");
     embed.pill.hidden = !embed.newer;
-    embed.pill.style.bottom = (embed.strip.hidden ? 0 : embed.strip.offsetHeight) + 12 + "px";
+    embed.pill.style.bottom = (embedHost && !bar.hidden ? bar.offsetHeight : 0) + embedStripHeight() + 12 + "px";
+  }
+  const embedUserIds = () => new Set(data.sessions[0].exchanges.filter(e => e.source === "captain" && e.uid).map(e => e.uid));
+  // The faded messages (one in its Undo window, one on its way, one the host took) after the host's blocks.
+  function embedPaintPending() {
+    const main = document.getElementById("main");
+    main.querySelectorAll(":scope > .input.pending").forEach(n => n.remove());
+    if (embedHost) main.append(...pendingNodes(data.sessions[0]));
+  }
+  // What the host is asked to type: its answer comes with readerEmbed.sent({ id, ok, error }); no answer in EMBED_ANSWER_MS is a failure that says so.
+  function embedSend({ text, comments }) {
+    return new Promise((resolve, reject) => {
+      const id = newHoldId();
+      const timer = setTimeout(() => { embedWaits.delete(id); reject(new Error("The host did not answer, so the message may or may not have gone. Look in the conversation before sending it again.")); }, EMBED_ANSWER_MS);
+      embedWaits.set(id, { resolve, reject, timer });
+      if (!tell({ type: "send", id, conversation: embed.conv || "", text, comments })) {
+        clearTimeout(timer); embedWaits.delete(id);
+        reject(new Error("No host is listening, so nothing was sent."));
+      }
+    });
   }
   const embedBottom = () => window.scrollTo(0, document.documentElement.scrollHeight);
   // Draw embed.blocks into #main: a block whose content is the one already drawn keeps its nodes, a changed one is drawn again where it stands,
@@ -5103,11 +5144,12 @@ __HEAD_HOSTED__
     });
     // What is no longer wanted goes first, so the nodes that stay are never moved (a moved node loses its selection and its scroll).
     for (const [id, old] of was) if (now.get(id) !== old) old.nodes.forEach(n => n.remove());
-    main.querySelectorAll(":scope > .empty").forEach(n => n.remove());
+    main.querySelectorAll(":scope > .empty, :scope > .input.pending").forEach(n => n.remove());
     if (!rows.length) main.append($("div", "empty", "No messages yet."));
     let cursor = main.firstChild;
     for (const row of rows) for (const node of now.get(row.id).nodes) { if (node === cursor) cursor = cursor.nextSibling; else main.insertBefore(node, cursor); }
     embed.held = now;
+    embedPaintPending();
     if (fresh) { embed.newer = false; if (rows.length) showLatest(); else window.scrollTo(0, 0); }
     else if (stick) { embed.newer = false; embedBottom(); }
     else if (changedEnd) embed.newer = true;
@@ -5138,7 +5180,7 @@ __HEAD_HOSTED__
       const got = embedModel.parse(input);
       const opening = embed.conv === null || (replace && got.id !== embed.conv);
       if (opening) {
-        if (embed.conv !== null) { stepOutputs.delete(embed.sid); embed.held = new Map(); document.getElementById("main").replaceChildren(); state.open.clear(); }
+        if (embed.conv !== null) { stepOutputs.delete(embed.sid); embed.held = new Map(); document.getElementById("main").replaceChildren(); state.open.clear(); link.pending = link.pending.filter(p => !p.host); }
         embed.conv = got.id;
         embed.sid = got.id ? `campus:${got.id}` : "campus";
         data.sessions[0].id = embed.sid; data.sessions[0].ids = [embed.sid];
@@ -5147,8 +5189,37 @@ __HEAD_HOSTED__
       if (replace || got.hasLive) embed.live = got.live;
       embedPaint(opening);
       embedLive();
+      if (embedHost) renderDock();  // another conversation has its own box, batch and pointer
       return { ok: true, blocks: embed.blocks.length, skipped: got.skipped };
     };
+    // The message bar on or off (README.md, "The composer"). Turning it on or off draws every block again, since a reply card has a Reply button only
+    // with it; the place being read is kept.
+    const composer = input => {
+      const next = embedModel.composer(input), was = Boolean(embedHost);
+      embedHost = next;
+      document.body.classList.toggle("embed-composer", Boolean(next));
+      data.sessions[0].pane = next ? { label: next.name, live: true } : null;
+      if (!next) { link.target = null; markTarget(); document.getElementById("float-comment").hidden = true; }
+      if (was !== Boolean(next)) {
+        const y = window.scrollY, main = document.getElementById("main");
+        embed.held = new Map(); main.replaceChildren(); embedPaint(false);
+        window.scrollTo(0, y);
+      }
+      renderDock();
+      return { ok: true, on: Boolean(next) };
+    };
+    // The host's answer to one send (README.md, "The composer"): { id, ok } or { id, ok: false, error }.
+    const sent = result => {
+      const answer = result && typeof result === "string" ? JSON.parse(result) : result;
+      const id = answer && typeof answer === "object" && typeof answer.id === "string" ? answer.id : "";
+      const wait = embedWaits.get(id);
+      if (!wait) return { ok: false, error: "No send is waiting for that id." };
+      clearTimeout(wait.timer); embedWaits.delete(id);
+      if (answer.ok === true) wait.resolve({ label: embedHost ? embedHost.name : "the conversation" });
+      else wait.reject(new Error(typeof answer.error === "string" && answer.error.trim() ? answer.error.trim() : "The host could not send it."));
+      return { ok: true };
+    };
+    const composerState = () => ({ on: Boolean(embedHost), text: dock("text").value, comments: batchOf(embed.sid).length, holding: Boolean(link.hold), sending: embedWaits.size > 0 });
     window.readerEmbed = Object.freeze({
       version: embedModel.VERSION,
       // The whole conversation: { id?, live?, blocks }, or a JSON string of it. A different id opens another conversation.
@@ -5160,6 +5231,8 @@ __HEAD_HOSTED__
       clear: () => run({ id: embed.conv || "", blocks: [], live: "" }, true),
       // The conversation as plain text (CampusTimeline.plainText()'s words).
       plainText: () => embedModel.plain(embed.blocks),
+      // The message bar, off until the host asks (README.md, "The composer"), the host's answer to a send, and what the bar holds.
+      composer, sent, composerState,
     });
     tell({ type: "ready", version: embedModel.VERSION });
   }

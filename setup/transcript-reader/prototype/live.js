@@ -157,10 +157,14 @@
     // asking lines, or else the first few hundred characters in place of the opening words.
     function pointer(at, reply, passage, unheld = false, asks = []) {
       const opening = reply.split("\n").map(l => l.replace(/^[\s#>*\-\d.)|]+/, "").replace(/[*`_]/g, "").trim()).find(Boolean) || "";
-      const when = new Date(at * 1000), today = new Date();
-      const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(when);
-      const day = when.toDateString() === today.toDateString() ? "" : new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(when) + " ";
-      let text = `Re your reply at ${day}${time}`;
+      // A reply with no time (the embed page's, when the host sent none) is named by its words alone.
+      let text = "Re your reply";
+      if (at) {
+        const when = new Date(at * 1000), today = new Date();
+        const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(when);
+        const day = when.toDateString() === today.toDateString() ? "" : new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(when) + " ";
+        text = `Re your reply at ${day}${time}`;
+      }
       if (!unheld) text += ` ("${clip(opening, 60)}")`;
       else if (asks.length) text += ` ("${clip(opening, 60)}"), which asked: "${clip(asks.map(a => a.replace(/[*_]/g, "")).join(" / "), 400)}"`;
       else text += `, which began: "${clip(reply.replace(/[*_#>|]/g, ""), 300)}"`;

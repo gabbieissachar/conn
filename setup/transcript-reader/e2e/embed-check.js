@@ -14,6 +14,9 @@
 //      only the block that changed, the working strip, "New reply" when scrolled up and following when at the bottom, a link handed to the host,
 //      a second conversation replacing the first, bad input, and the reader's keys doing nothing.
 //   4. Served over HTTP: one request in all (the page itself), a fetch refused by the page's content policy, nothing in localStorage or sessionStorage.
+//   5. The composer (README.md, "The composer"), against a stand-in host: off until asked; then select to ask, Reply, the pointer, Add, the batch,
+//      Clear all, Send, Undo (button and Esc), Now, a refusal, no host and no answer, /clear asking, Send off with a reason, no photos, at 390 and
+//      1440 px in dark and light, the bar's style held to the reader's own, and the served page making one request in all and storing nothing.
 
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -251,6 +254,197 @@ function styleOf(selector, nth = 0) {
     check(errors.length === 0, 'no error in the console but the two lines about the refused fetch', errors.slice(0, 3).join(' | '));
     axi('emulate', '--viewport', '900x800x1');
     axi('screenshot', path.join(shots, 'embed-wide-served.png'));
+
+    // ---- 5. the composer (README.md, "The composer"): off until the host asks, then the reader's own message bar, with a stand-in host
+    // A host that answers sent() after 150 ms with window.__answer, and records every message it is told.
+    const host = `window.__told = []; window.__answer = { ok: true }; window.webkit = { messageHandlers: { readerEmbed: { postMessage: m => { window.__told.push(m); if (m.type === 'send') setTimeout(() => window.readerEmbed.sent({ id: m.id, ...window.__answer }), 150); } } } }; return true;`;
+    const sends = () => ev(`return window.__told.filter(m => m.type === 'send');`);
+    const box = (value) => ev(`const b = document.getElementById('dock-text'); b.value = ${JSON.stringify(value)}; b.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
+    const press = (id) => ev(`document.getElementById(${JSON.stringify(id)}).click(); return true;`);
+    const dockText = (id) => ev(`return document.getElementById(${JSON.stringify(id)}).textContent.trim().replace(/\\s+/g, ' ');`);
+    const selectIn = (selector, from, to) => {
+      ev(`const p = document.querySelector(${JSON.stringify(selector)}); const n = document.createTreeWalker(p, NodeFilter.SHOW_TEXT).nextNode(); const r = document.createRange(); r.setStart(n, ${from}); r.setEnd(n, ${to}); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); return true;`);
+    };
+    for (const [label, viewport, scheme] of [['phone-dark', '390x844x2', 'dark'], ['desktop-light', '1440x900x1', 'light']]) {
+      axi('emulate', '--viewport', viewport, '--color-scheme', scheme);
+      axi('open', 'about:blank'); axi('open', 'file://' + lab.embed);
+      await until(`return { ok: typeof window.readerEmbed === 'object' };`, `the entry point (composer, ${label})`);
+      set(FIXTURE);
+      ev(host);
+      const tag = `composer ${label}`;
+      // Off by default: a host that never calls composer() sees the page as before.
+      check(!visible('#dock') && !visible('#float-comment') && count('.reply-to') === 0, `${tag}: off by default, with no bar, no "Comment on this" and no Reply`);
+      check(ev(`return window.readerEmbed.composerState().on;`) === false, `${tag}: composerState says it is off`);
+      // On.
+      const on = call(`readerEmbed.composer({ name: 'Monthly review' })`);
+      check(on && on.on === true, `${tag}: composer() turns it on`, JSON.stringify(on));
+      check(visible('#dock') && visible('#dock-text') && visible('#dock-send') && visible('#dock-add'), `${tag}: the message bar has its box, Add and Send`);
+      check(!visible('#dock-photo') && !visible('#dock-thumbs'), `${tag}: and no photo button`);
+      check(count('.reply-to') === 2 && count('.pin, .hide-msg') === 0, `${tag}: each reply has Reply, and still no Pin or Hide`, String(count('.reply-to')));
+      check(ev(`return document.getElementById('dock-text').getAttribute('aria-label') + '|' + document.getElementById('dock-text').placeholder;`) === 'Message Monthly review|Message Monthly review' && (await dockText('dock-status')) === 'To Monthly review', `${tag}: the status reads "To Monthly review"`, await dockText('dock-status'));
+      check(ev(`return document.getElementById('dock-send').disabled;`) === true, `${tag}: Send is off while the box is empty`);
+      // A dropped picture is refused with a word.
+      ev(`const dt = new DataTransfer(); dt.items.add(new File(['x'], 'a.png', { type: 'image/png' })); document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true;`); await sleep(150);
+      check(/This page sends text only\./.test(await dockText('dock-status')) && !visible('#dock-thumbs'), `${tag}: a dropped picture is refused with a word and no thumbnail`, await dockText('dock-status'));
+      await sleep(4200);
+      // The foot: the bar sits at the bottom edge and the last turn can be read above it.
+      ev(`window.scrollTo(0, document.documentElement.scrollHeight); return true;`); await sleep(200);
+      const foot = ev(`const d = document.getElementById('dock').getBoundingClientRect(), l = [...document.querySelectorAll('#main > *')].pop().getBoundingClientRect(); const st = document.querySelector('.embed-live').getBoundingClientRect(); return { dockBottom: Math.round(d.bottom), dockTop: Math.round(d.top), h: innerHeight, lastBottom: Math.round(l.bottom), stripGap: Math.round(Math.abs(st.bottom - d.top) * 100) / 100, stripShown: st.height > 0 };`);
+      check(foot.dockBottom === foot.h && foot.lastBottom <= foot.dockTop, `${tag}: the bar sits on the bottom edge and the last turn ends above it`, JSON.stringify(foot));
+      check(foot.stripShown && foot.stripGap < 0.05, `${tag}: the working strip sits exactly on the bar, with no hairline of the page between`, JSON.stringify(foot));
+      // Select text to ask about it.
+      selectIn('.reply .md p', 0, 12); await sleep(120);
+      check(visible('#float-comment'), `${tag}: selecting words in a reply offers "Comment on this"`);
+      ev(`document.getElementById('float-comment').click(); return true;`); await sleep(120);
+      check(visible('#dock-chip') && /^Reply to Monthly review/.test(await dockText('dock-chip-title')) && (await dockText('dock-line')).startsWith('Re your reply at '), `${tag}: it puts a pointer chip above the box, naming the reply`, (await dockText('dock-chip-title')) + ' | ' + (await dockText('dock-line')).slice(0, 80));
+      check(/the part "/.test(await dockText('dock-line')) || visible('#dock-passage'), `${tag}: and quotes the passage`, await dockText('dock-passage-text'));
+      // Add to the batch.
+      box('the first comment');
+      check(ev(`return !document.getElementById('dock-send').disabled && !document.getElementById('dock-add').disabled;`), `${tag}: typing enables Add and Send`);
+      press('dock-add'); await sleep(120);
+      check(visible('#dock-batch') && count('#dock-batch-list li') === 1 && ev(`return document.getElementById('dock-text').value;`) === '', `${tag}: Add puts the comment in the batch and clears the box`, String(count('#dock-batch-list li')));
+      ev(`document.querySelectorAll('.reply-to')[1].click(); return true;`); await sleep(120);
+      box('the second comment'); press('dock-add'); await sleep(120);
+      check(count('#dock-batch-list li') === 2, `${tag}: Reply on another reply adds a second comment`, String(count('#dock-batch-list li')));
+      check(ev(`return window.readerEmbed.composerState().comments;`) === 2, `${tag}: composerState counts them`);
+      // Clear all asks first; Keep keeps.
+      press('dock-batch-clear'); await sleep(120);
+      check(/Remove all 2\?/.test(await dockText('dock-batch-clear')) && visible('#dock-batch-keep') && count('#dock-batch-list li') === 2, `${tag}: Clear all asks "Remove all 2?" with a Keep`, await dockText('dock-batch-clear'));
+      press('dock-batch-keep'); await sleep(120);
+      check(count('#dock-batch-list li') === 2 && !visible('#dock-batch-keep'), `${tag}: Keep keeps them`);
+      press('dock-batch-clear'); press('dock-batch-clear'); await sleep(150);
+      check(ev(`return window.readerEmbed.composerState().comments;`) === 0 && !visible('#dock-batch'), `${tag}: asked twice, Clear all empties the batch`);
+      // Send, Undo, Esc.
+      box('a plain question'); press('dock-send'); await sleep(250);
+      check(/^Undo \d$/.test(await dockText('dock-send')) && /^Now$/.test(await dockText('dock-add')) && ev(`return document.getElementById('dock-text').readOnly || document.getElementById('dock-text').disabled;`), `${tag}: Send holds the message, the box is locked, Send reads Undo and Add reads Now`, `${await dockText('dock-send')} / ${await dockText('dock-add')}`);
+      check(count('#main > .input.pending') === 1 && /Sending in \d s/.test(await dockText('dock-status')), `${tag}: the faded message is in the conversation, with the countdown`, await dockText('dock-status'));
+      check(sends().length === 0, `${tag}: nothing has been told to the host during the Undo window`);
+      ev(`document.getElementById('dock-text').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`); await sleep(250);
+      check(ev(`return document.getElementById('dock-text').value;`) === 'a plain question' && count('#main > .input.pending') === 0 && sends().length === 0, `${tag}: Esc undoes: the words are back in the box and nothing was sent`);
+      // Send, wait out the window, and the host is told exactly once.
+      press('dock-send');
+      await until(`return { ok: window.__told.some(m => m.type === 'send') };`, 'the send after its Undo window', 12000);
+      const told = sends();
+      check(told.length === 1 && told[0].text === 'a plain question' && told[0].comments === 0 && typeof told[0].id === 'string' && told[0].id.length > 8 && told[0].conversation === FIXTURE.id, `${tag}: after 5 seconds the host is told { send, id, conversation, text, comments } exactly once`, JSON.stringify(told));
+      await sleep(500);
+      check(count('#main > .input.pending') === 1 && ev(`return document.getElementById('dock-text').value;`) === '', `${tag}: the box is empty at once and the faded message waits for the conversation to show it`);
+      upsert({ blocks: [{ kind: 'user', id: 'sent_1', text: 'a plain question' }] }); await sleep(300);
+      check(count('#main > .input.pending') === 0 && count('#main .input') === 3, `${tag}: a new user block from the host takes its place`);
+      // Send now, with a batch: one numbered message.
+      box('first of two'); press('dock-add'); await sleep(100);
+      box('second of two'); press('dock-send'); await sleep(200);
+      press('dock-add'); await until(`return { ok: window.__told.filter(m => m.type === 'send').length === 2 };`, 'the second send (now)', 6000);
+      const batched = sends()[1];
+      check(batched.comments === 2 && batched.text.startsWith('2 comments:\n\n1. ') && batched.text.includes('first of two') && batched.text.includes('second of two'), `${tag}: Now skips the wait; the batch goes as one numbered message`, JSON.stringify(batched).slice(0, 200));
+      upsert({ blocks: [{ kind: 'user', id: 'sent_2', text: '2 comments' }] }); await sleep(300);
+      // A host that cannot send.
+      ev(`window.__answer = { ok: false, error: 'Campus is signed out' }; return true;`);
+      box('this will fail'); press('dock-send'); await sleep(250); press('dock-add');
+      await until(`return { ok: /Campus is signed out/.test(document.getElementById('dock-status').textContent) };`, 'the host\'s error', 8000);
+      check(ev(`return document.getElementById('dock-text').value;`) === 'this will fail' && !visible('#main > .input.pending') && ev(`return document.getElementById('dock-status').classList.contains('bad');`), `${tag}: a refusal says why and gives the message back to the box`, await dockText('dock-status'));
+      ev(`window.__answer = { ok: true }; return true;`);
+      // A session command asks first, and goes alone.
+      box('/clear'); await sleep(150); press('dock-send'); await sleep(150);
+      check(/^Confirm/.test(await dockText('dock-send')) && /Send \/clear to Monthly review\?/.test(await dockText('dock-status')) && sends().length === 3, `${tag}: /clear asks to be confirmed in the page when Send is pressed, and nothing is sent`, await dockText('dock-send') + ' | ' + await dockText('dock-status'));
+      box('/bearings plain'); await sleep(150);
+      check(/^Send$/.test(await dockText('dock-send')), `${tag}: /bearings plain is a plain Send`, await dockText('dock-send'));
+      box(''); await sleep(100);
+      // A host that is not listening.
+      ev(`window.__hostSave = window.webkit; delete window.webkit; return true;`);
+      box('nobody home'); press('dock-send'); await sleep(250); press('dock-add');
+      await until(`return { ok: /No host is listening/.test(document.getElementById('dock-status').textContent) };`, 'the no-host error', 8000);
+      check(ev(`return document.getElementById('dock-text').value;`) === 'nobody home', `${tag}: with no host listening it fails at once and gives the message back`, await dockText('dock-status'));
+      ev(`window.webkit = window.__hostSave; return true;`); box('');
+      // The step sheet's Ask about this.
+      ev(`document.querySelectorAll('.reply .steps-row')[0].click(); document.querySelector('.step').click(); return true;`);
+      await until(`return { ok: !document.querySelector('.step-sheet').hidden };`, 'the step sheet (composer)');
+      check(visible('.step-sheet [data-act="ask"]'), `${tag}: the step sheet has "Ask about this"`);
+      ev(`document.querySelector('.step-sheet [data-act="ask"]').click(); return true;`); await sleep(150);
+      check(visible('#dock-chip') && /^About a step · Monthly review/.test(await dockText('dock-chip-title')), `${tag}: and it points at the step`, await dockText('dock-chip-title'));
+      ev(`document.getElementById('dock-chip-drop').click(); return true;`);
+      // The look: the bar and the conversation, light or dark.
+      box('A comment that is long enough to show how the box grows into a second line when the words run past the width of the bar');
+      axi('screenshot', path.join(shots, `embed-composer-${label}.png`));
+      box('');
+      // Turned off again.
+      call(`readerEmbed.composer(null)`);
+      check(!visible('#dock') && !visible('#float-comment') && count('.reply-to') === 0, `${tag}: composer(null) takes the bar, the button and Reply away`);
+    }
+
+    // The bar looks as the reader's own does: the same elements, measured in the reader's page for a Claude conversation and in this page.
+    axi('emulate', '--viewport', '390x844x2', '--color-scheme', 'dark');
+    const barParts = [['#dock', 0], ['#dock .dock-inner', 0], ['#dock-text', 0], ['#dock-add', 0], ['#dock-send', 0], ['#dock-copy', 0], ['#dock-status', 0], ['.reply .who .reply-to', 0], ['#float-comment', 0]];
+    const seeBar = () => {
+      // Everything the bar can show is on: a batch, a pointer, a long box.
+      ev(`document.querySelector('.reply .who .reply-to').click(); return true;`);
+      box('one comment'); press('dock-add'); box('another');
+      ev(`const s = document.querySelector('.reply .md p'); const n = document.createTreeWalker(s, NodeFilter.SHOW_TEXT).nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 8); getSelection().removeAllRanges(); getSelection().addRange(r); document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); return true;`);
+      return barParts.map(([selector, nth]) => styleOf(selector, nth));
+    };
+    axi('open', 'file://' + lab.reference);
+    await until(`return { ok: document.querySelectorAll('#main .reply').length === 2 };`, 'the reference page (bar)');
+    const readerBar = visible('#dock') ? seeBar() : null;
+    // The reader's box shares its row with the photo button, which this page does not have: the box is that much wider.
+    const photoSlot = ev(`const t = document.getElementById('dock-text').getBoundingClientRect(), p = document.getElementById('dock-photo').getBoundingClientRect(); return Math.round((t.left - p.left) * 1000) / 1000;`);
+    check(readerBar !== null, 'the reader\'s own page has its message bar to measure against');
+    axi('open', 'about:blank'); axi('open', 'file://' + lab.embed);
+    await until(`return { ok: typeof window.readerEmbed === 'object' };`, 'the entry point (bar look)');
+    set(FIXTURE); call(`readerEmbed.composer({ name: 'Monthly review' })`);
+    const embedBar = seeBar();
+    if (readerBar) barParts.forEach(([selector], i) => {
+      const a = readerBar[i], b = embedBar[i];
+      if (!a || !b) { check(Boolean(a) === Boolean(b), `${selector} is in both pages`, `reader ${Boolean(a)}, embed ${Boolean(b)}`); return; }
+      // Allowed: the box's width (the photo button's slot), and the Reply button's margin (the reader's is pushed right by Pin, here by itself: both sit at the right edge).
+      const same = (key) => a[key] === b[key] || (selector === '#dock-text' && key === 'width' && Math.abs(Number.parseFloat(b.width) - Number.parseFloat(a.width) - photoSlot) < 0.5) || (selector === '.reply .who .reply-to' && key === 'marginLeft');
+      const real = Object.keys(a).filter((key) => !same(key));
+      check(real.length === 0, `${selector} looks as it does in the reader`, real.map((key) => `${key}: ${a[key]} vs ${b[key]}`).join('; '));
+    });
+    axi('screenshot', path.join(shots, 'embed-composer-batch-pointer.png'));
+    // A reply the host sent with no time is named by its words alone.
+    set({ id: 'ses_no_time', blocks: [{ kind: 'user', id: 'n1', text: 'No times here' }, { kind: 'reply', id: 'n2', texts: ['Plain **answer** with no time.'], tools: [] }] });
+    ev(`document.querySelector('.reply .who .reply-to').click(); return true;`); await sleep(120);
+    check(/^Reply to Monthly review$/.test(await dockText('dock-chip-title')) && (await dockText('dock-line')).startsWith('Re your reply ("Plain answer with no time.")'), 'composer: a reply with no time is named by its words, with no time in the title or the pointer', (await dockText('dock-chip-title')) + ' | ' + (await dockText('dock-line')));
+
+    // Send off: the bar keeps comments, the batch and Copy; Send says why it is off and never posts.
+    axi('emulate', '--viewport', '390x844x2', '--color-scheme', 'dark');
+    axi('open', 'about:blank'); axi('open', 'file://' + lab.embed);
+    await until(`return { ok: typeof window.readerEmbed === 'object' };`, 'the entry point (send off)');
+    set(FIXTURE); ev(host);
+    call(`readerEmbed.composer({ name: 'Monthly review', send: false, reason: 'Sign in to Campus to send.' })`);
+    box('only a note'); await sleep(150);
+    check(ev(`return document.getElementById('dock-send').disabled;`) === true && (await dockText('dock-status')) === 'Sign in to Campus to send.', 'composer send off: Send is off and the status gives the host\'s reason', await dockText('dock-status'));
+    press('dock-add'); await sleep(120);
+    check(count('#dock-batch-list li') === 1, 'composer send off: Add still batches comments');
+    check(sends().length === 0, 'composer send off: nothing is ever told to the host');
+    axi('screenshot', path.join(shots, 'embed-composer-send-off.png'));
+
+    // No answer from the host: after 60 seconds the page says the message may or may not have gone.
+    axi('open', 'about:blank'); axi('open', 'file://' + lab.embed);
+    await until(`return { ok: typeof window.readerEmbed === 'object' };`, 'the entry point (no answer)');
+    set(FIXTURE);
+    ev(`window.__told = []; window.webkit = { messageHandlers: { readerEmbed: { postMessage: m => window.__told.push(m) } } }; return true;`);
+    call(`readerEmbed.composer({ name: 'Monthly review' })`);
+    box('silence'); press('dock-send'); await sleep(250); press('dock-add');
+    await until(`return { ok: window.__told.some(m => m.type === 'send') };`, 'the send that no one answers', 8000);
+    check(ev(`return window.readerEmbed.composerState().sending;`) === true, 'composer no answer: composerState says a send waits for sent()');
+    await sleep(61000);
+    check(/may or may not have gone/.test(await dockText('dock-status')) && ev(`return document.getElementById('dock-text').value;`) === 'silence', 'composer no answer: after 60 seconds it says the message may or may not have gone, and gives the words back', await dockText('dock-status'));
+    check(ev(`return window.readerEmbed.sent({ id: 'nope', ok: true }).ok;`) === false, 'composer: an answer for an unknown id is refused and changes nothing');
+
+    // Served over HTTP: using the composer reaches no server and keeps nothing.
+    requests.clear();
+    axi('open', `http://127.0.0.1:${port}/embed.html`);
+    await until(`return { ok: typeof window.readerEmbed === 'object' };`, 'the served page (composer)');
+    set(FIXTURE); ev(host);
+    call(`readerEmbed.composer({ name: 'Monthly review' })`);
+    selectIn('.reply .md p', 0, 10); await sleep(100);
+    ev(`document.getElementById('float-comment').click(); return true;`); await sleep(100);
+    box('served comment'); press('dock-add'); await sleep(100); box('served send'); press('dock-send'); await sleep(250); press('dock-add');
+    await until(`return { ok: window.__told.some(m => m.type === 'send') };`, 'the served send', 8000);
+    await sleep(2500);
+    check(requests.list.filter((url) => url !== '/favicon.ico').join() === '/embed.html', 'composer served: one request in all, the page itself', requests.list.join(','));
+    check(ev(`return localStorage.length + sessionStorage.length;`) === 0 && ev(`return document.cookie;`) === '', 'composer served: nothing in localStorage, sessionStorage or cookies, with a comment written and a message sent');
+    check(ev(`return performance.getEntriesByType('resource').length;`) === 0, 'composer served: and no resource was loaded');
   } catch (error) {
     check(false, 'the run', error.message);
   }
