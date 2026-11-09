@@ -37,10 +37,11 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     private(set) var startFragment: String?
     /// The person clicked, scrolled, typed or focused inside the page (lite boxes only).
     var onUse: (() -> Void)?
-    /// The person clicked a session link in the page (`a[data-session]`, which the reader draws where a reply names another session):
-    /// the session it names, and whether the click was a Cmd-click (open it in the normal reader instead of another column).
+    /// The person clicked a session link in the page (`a[data-session]`, which the reader draws where a reply names another session, and
+    /// the Tasks board where a thread links to a reply): the session it names, the reply it names (`data-message`, when it carries a valid
+    /// one), and whether the click was a Cmd-click (open it in the normal reader instead of another column).
     /// Lite boxes only; the full reader page keeps its own behaviour for the same link.
-    var onSessionLink: ((String, Bool) -> Void)?
+    var onSessionLink: ((String, String?, Bool) -> Void)?
     /// A link in a lite page to a conversation in Campus's own web app (`https://<campus>/spaces/<kind>/<folder>/conversations/<id>`): taken before it
     /// leaves Conn, and opened by the Watch column rule (a Cmd-click opens the normal view). `campusHost` is Campus's host; nil takes no such link.
     let campusHost: String?
@@ -140,8 +141,8 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     """
 
     static let sessionLinkMessage = "connSession"
-    /// A click on a session link (`a[data-session="<reader session id>"]`) is taken before the page sees it: the page does not
-    /// navigate, and Conn is told which session the link names and whether Cmd was held. Capture phase on the window, so no handler of
+    /// A click on a session link (`a[data-session="<reader session id>"]`, with `data-message="<turn id>"` when it names one reply) is taken before the page
+    /// sees it: the page does not navigate, and Conn is told which session (and reply) the link names and whether Cmd was held. Capture phase on the window, so no handler of
     /// the page runs for that click and the page itself is not edited. The keyboard (Enter on a focused link) and a middle click arrive
     /// the same way. Only the Watch columns get this script; the full reader page is left alone.
     static let sessionLinkWatch = sessionLinkScript(campusHost: nil)
@@ -163,7 +164,8 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             if (s) {
               e.preventDefault();
               e.stopImmediatePropagation();
-              try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ session: s, reader: !!e.metaKey }); } catch (x) {}
+              var m = a.getAttribute('data-message');
+              try { window.webkit.messageHandlers.\(sessionLinkMessage).postMessage({ session: s, message: typeof m === 'string' ? m : '', reader: !!e.metaKey }); } catch (x) {}
               return;
             }
             if (!CAMPUS_HOST) return;
@@ -456,7 +458,9 @@ private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
             return
         }
         guard let session = body["session"] as? String, WatchAddress.validSession(session) else { return }
-        DispatchQueue.main.async { [weak self] in self?.box?.onSessionLink?(session, reader) }
+        // A reply id the lite page would not follow is left off: the session still opens, at its newest turn.
+        let message = (body["message"] as? String).flatMap { WatchAddress.validTurn($0) ? $0 : nil }
+        DispatchQueue.main.async { [weak self] in self?.box?.onSessionLink?(session, message, reader) }
     }
 }
 

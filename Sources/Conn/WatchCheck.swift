@@ -256,12 +256,13 @@ enum WatchCheck {
 
         // A. The linked session is already open in another column: that column keeps it, flashes once, nothing else moves, and the clicked
         // column does not navigate. (The clicked column is made the most recently used first, so opening the target elsewhere cannot replace it.)
+        // (The link used here and in D is the one that names no reply: a link that names one scrolls the column that has the session, see `replyLinkChecks`.)
         model.watch.used(columnID: id0)
-        model.watch.open(session: n0); await settle(15)
+        model.watch.open(session: l0); await settle(15)
         let boxesA = columnBoxes(), sessA = opened()
-        guard let j = model.watch.layout.index(of: n0), j != 0 else { report("the linked session is open in another column (setup)", false, "columns=\(tails(sessA))"); return }
+        guard let j = model.watch.layout.index(of: l0), j != 0 else { report("the linked session is open in another column (setup)", false, "columns=\(tails(sessA))"); return }
         let statesA = await states(boxesA), flashJ = flash(j), flash0 = flash(0)
-        let resultA = await click(boxesA[0], "next"); await wait(1.0)
+        let resultA = await click(boxesA[0], "later"); await wait(1.0)
         let boxesA2 = columnBoxes(), statesA2 = await states(boxesA2)
         report("a click on a session link in a column does not navigate that column", resultA == "prevented" && statesA2[0] == statesA[0] && boxesA2[0] === boxesA[0] && boxesA2[0]?.phase == .ready,
                "click=\(resultA) before=\(statesA[0].suffix(40)) after=\(statesA2[0].suffix(40))")
@@ -303,8 +304,8 @@ enum WatchCheck {
 
         // D. Cmd-click: leave Watch and show the normal reader on that session.
         let boxesD = columnBoxes(), sessD = opened()
-        let target = await ref(boxesD[0], "next")
-        let resultD = await click(boxesD[0], "next", meta: true); await wait(1.2)
+        let target = await ref(boxesD[0], "later")
+        let resultD = await click(boxesD[0], "later", meta: true); await wait(1.2)
         report("a Cmd-click on a session link leaves Watch: the columns are let go and the normal reader is loaded", resultD == "prevented" && !model.watchOn && model.watch.boxes.isEmpty && model.web.readerBox != nil,
                "click=\(resultD) watchOn=\(model.watchOn) columnViews=\(model.watch.boxes.count) readerBox=\(model.web.readerBox == nil ? "nil" : "present")")
         if let r = model.web.readerBox { await ReaderPinCheck.settled(r, wait: wait) }
@@ -326,6 +327,111 @@ enum WatchCheck {
                    injected == "undefined" && !next.isEmpty && resultE == "not prevented" && navigated.value == "#s=\(next)" && !model.watchOn,
                    "handler=\(injected) click=\(resultE) hash=\(navigated.value.suffix(16)) want=\(next.suffix(16)) watchOn=\(model.watchOn)")
         } else { report("the full reader is there to check its session link", false, "readerBox=nil") }
+
+        model.watchOn = true; await settle(15)
+        await replyLinkChecks(model: model, report: report, wait: wait, settle: settle, columnBoxes: columnBoxes, js: js, withSession: withSession, shot: shot)
+    }
+
+    // MARK: a link that names a reply
+
+    /// The Tasks board's reply links carry `data-session` and `data-message` (the reader's turn id of the reply). The fixture's lite page draws such a link
+    /// (`data-ref="next"`, the fifth reply of the session after its own) and one whose reply id the page would not follow (`data-ref="odd"`). The click runs the
+    /// whole route as in `linkChecks`. Checked: a column that already has the session scrolls to that reply in place; a free column and a replaced column open
+    /// on it; a reply id that is not valid still opens the session, at its newest turn; and a Cmd-click puts the normal reader on that reply.
+    static func replyLinkChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void,
+                                columnBoxes: () -> [WebBox?], js: (WebBox, String) async -> String, withSession: [Agent], shot: (String) async -> Void) async {
+        func opened() -> [String] { model.watch.layout.slots.map { $0?.session ?? "-" } }
+        func tails(_ l: [String]) -> [String] { l.map { String($0.suffix(3)) } }
+        func reply(_ sid: String, _ k: Int) -> String { "t-\(String(format: "%04d", tail(sid)))-\(String(format: "%02d", k))" }
+        func attr(_ b: WebBox?, _ which: String, _ name: String) async -> String {
+            guard let b = b else { return "" }
+            return await js(b, "(document.querySelector('a[data-ref=\"\(which)\"]')||{dataset:{}}).dataset.\(name)||''")
+        }
+        func click(_ b: WebBox?, _ which: String, meta: Bool = false) async -> String {
+            guard let b = b else { return "no web view" }
+            return await js(b, "(() => { const a = document.querySelector('a[data-ref=\"\(which)\"]'); if (!a) return 'no link'; return a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, metaKey: \(meta) })) ? 'not prevented' : 'prevented'; })()")
+        }
+        func outlined(_ b: WebBox?) async -> String { guard let b = b else { return "-" }; return await js(b, "(document.querySelector('.is-linked')||{dataset:{}}).dataset.msg||''") }
+        /// How far the reply sits below the page's header, in points: a reply the page landed on is just under it.
+        func below(_ b: WebBox?, _ msg: String) async -> Int {
+            guard let b = b else { return -999 }
+            return Int(await js(b, "(() => { const n = document.querySelector('[data-msg=\"\(msg)\"]'); const h = document.querySelector('header'); return n ? String(Math.round(n.getBoundingClientRect().top - (h ? h.offsetHeight : 0))) : '-999'; })()")) ?? -999
+        }
+        func atBottom(_ b: WebBox?) async -> Bool { guard let b = b else { return false }; return await js(b, "String(window.innerHeight + window.scrollY >= document.body.scrollHeight - 4)") == "true" }
+        func flash(_ i: Int) -> Int { model.watch.layout.slots[i].flatMap { model.watch.flashes[$0.id] } ?? 0 }
+
+        model.watch.openAskTurnID = { _ in nil }
+        let boxes0 = columnBoxes()
+        guard boxes0.count == 3, boxes0.allSatisfy({ $0 != nil }), let id0 = model.watch.layout.slots[0]?.id else { report("a reply link can be checked (three columns are showing)", false, "columns=\(tails(opened()))"); return }
+        let next = await attr(boxes0[0], "next", "session"), odd = await attr(boxes0[0], "odd", "session")
+        let want = reply(next, 5)
+        let carried = await attr(boxes0[0], "next", "message"), carriedOdd = await attr(boxes0[0], "odd", "message")
+        report("the lite page draws a session link that names one reply (data-message) and one whose reply id the page would not follow",
+               !next.isEmpty && !odd.isEmpty && carried == want && !carriedOdd.isEmpty && !WatchAddress.validTurn(carriedOdd), "next=\(next.suffix(3)) message=\(carried) want=\(want) odd=\(carriedOdd)")
+
+        // A. The session is already in another column: that column scrolls to the reply and outlines it, in place; the clicked column does not move.
+        model.watch.used(columnID: id0)
+        model.watch.open(session: next); await settle(15)
+        guard let j = model.watch.layout.index(of: next), j != 0 else { report("the linked session is open in another column (setup)", false, "columns=\(tails(opened()))"); return }
+        let boxesA = columnBoxes()
+        let loadsA = boxesA.map { $0?.pinsLoaded ?? -1 }, inPlaceA = boxesA.map { $0?.pinsInPlace ?? -1 }, flashA = flash(j)
+        let bottomBefore = await atBottom(boxesA[j])
+        let clickedBefore = await js(boxesA[0]!, "location.hash + '|' + Math.round(scrollY)")
+        let resultA = await click(boxesA[0], "next"); await wait(1.2)
+        let boxesA2 = columnBoxes()
+        let seenA = await outlined(boxesA2[j]), offA = await below(boxesA2[j], want)
+        let clickedAfter = await js(boxesA2[0]!, "location.hash + '|' + Math.round(scrollY)")
+        report("a link that names a reply scrolls the column that has the session to that reply and outlines it, in place (no page load)",
+               resultA == "prevented" && bottomBefore && seenA == want && abs(offA - 8) <= 24 && boxesA2[j]?.pinsInPlace == inPlaceA[j] + 1 && boxesA2[j]?.pinsLoaded == loadsA[j],
+               "click=\(resultA) outlined=\(seenA) want=\(want) below header=\(offA) inPlace \(inPlaceA[j]) -> \(boxesA2[j]?.pinsInPlace ?? -1) loads \(loadsA[j]) -> \(boxesA2[j]?.pinsLoaded ?? -1)")
+        report("... the column is highlighted once, the clicked column did not move, and no column was added or replaced",
+               flash(j) == flashA + 1 && clickedAfter == clickedBefore && zip(boxesA, boxesA2).allSatisfy { $0 === $1 } && opened().filter { $0 == next }.count == 1,
+               "flash \(flashA) -> \(flash(j)) clicked \(clickedBefore) -> \(clickedAfter)")
+        await shot("watch-reply-link.png")
+
+        // B. A free column: it opens on the reply (the page loads with the reply in its address).
+        model.watch.close(column: j)
+        await wait(0.4)
+        guard model.watch.layout.slots.contains(where: { $0 == nil }) else { report("a free column (setup)", false, "columns=\(tails(opened()))"); return }
+        let boxesB = columnBoxes()
+        let resultB = await click(boxesB[0], "next"); await settle(15)
+        let boxesB2 = columnBoxes()
+        guard let k = model.watch.layout.index(of: next), let landedBox = boxesB2[k] else { report("a link to a session that is not shown goes into the free column", false, "click=\(resultB) columns=\(tails(opened()))"); return }
+        let landedB = await ReaderPinCheck.until(want, wait: wait) { await outlined(landedBox) }
+        let offB = await below(landedBox, want)
+        report("a link that names a reply opens a free column on that reply", resultB == "prevented" && k == j && landedB.value == want && abs(offB - 8) <= 24,
+               "click=\(resultB) column=\(k) outlined=\(landedB.value) below header=\(offB) after \(landedB.ms) ms")
+
+        // C. Every column taken: the least recently used column (never the clicked one) is replaced and opens on the reply.
+        model.watch.close(column: k); await wait(0.4)
+        for s in withSession.compactMap(\.sessionID) where model.watch.layout.openCount < model.watch.count && model.watch.layout.index(of: s) == nil && s != next && s != odd { model.watch.open(session: s) }
+        await settle(15)
+        guard model.watch.layout.openCount == model.watch.count, model.watch.layout.index(of: next) == nil, let id1 = model.watch.layout.slots[1]?.id, let id2 = model.watch.layout.slots[2]?.id else { report("every column taken and the linked session not shown (setup)", false, "columns=\(tails(opened()))"); return }
+        model.watch.used(columnID: id1); model.watch.used(columnID: id2)
+        let boxesC = columnBoxes()
+        let resultC = await click(boxesC[0], "next"); await settle(15)
+        let boxesC2 = columnBoxes()
+        let c = model.watch.layout.index(of: next)
+        let landedC = await ReaderPinCheck.until(want, wait: wait) { await outlined(c.flatMap { boxesC2[$0] }) }
+        report("with every column taken a link that names a reply replaces the least recently used column other than the clicked one, and that column opens on the reply",
+               resultC == "prevented" && c == 1 && landedC.value == want && boxesC2[0] === boxesC[0] && boxesC2[2] === boxesC[2],
+               "click=\(resultC) replaced=\(c.map(String.init) ?? "-") outlined=\(landedC.value) columns=\(tails(opened()))")
+
+        // D. A reply id the page would not follow: the session still opens, at its newest turn, and nothing is outlined.
+        let resultD = await click(boxesC2[0], "odd"); await settle(15)
+        let boxesD = columnBoxes()
+        let d = model.watch.layout.index(of: odd)
+        let bottomD = await atBottom(d.flatMap { boxesD[$0] }), outlinedD = await outlined(d.flatMap { boxesD[$0] })
+        report("a link whose reply id is not valid still opens the session, at its newest turn", resultD == "prevented" && d != nil && bottomD && outlinedD.isEmpty, "click=\(resultD) column=\(d.map(String.init) ?? "-") atBottom=\(bottomD) outlined='\(outlinedD)'")
+
+        // E. A Cmd-click leaves Watch for the normal reader, on that reply.
+        let boxesE = columnBoxes()
+        let resultE = await click(boxesE[0], "next", meta: true); await wait(1.2)
+        if let r = model.web.readerBox { await ReaderPinCheck.settled(r, wait: wait) }
+        let wantHash = "#s=\(next)&m=\(want)"
+        let landedE = await ReaderPinCheck.until(wantHash, wait: wait) { model.web.readerBox == nil ? "-" : await js(model.web.readerBox!, "location.hash") }
+        report("a Cmd-click on a link that names a reply puts the normal reader on that session and reply", resultE == "prevented" && !model.watchOn && landedE.value == wantHash && model.webTab == .reader,
+               "click=\(resultE) watchOn=\(model.watchOn) hash=\(landedE.value.suffix(40)) want=\(wantHash.suffix(40))")
 
         model.watchOn = true; await settle(15)
     }

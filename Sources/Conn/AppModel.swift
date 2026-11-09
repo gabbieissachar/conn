@@ -325,7 +325,7 @@ final class AppModel: ObservableObject {
         openAsks.$asks.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.readerTargetMayHaveChanged() } }.store(in: &cancellables)
         wireCampus()
         // A Cmd-click on a session link in a column leaves Watch for the normal reader on that session.
-        watch.onOpenInReader = { [weak self] session in self?.openSessionInReader(session) }
+        watch.onOpenInReader = { [weak self] session, message in self?.openSessionInReader(session, message: message) }
         if config.textPanes { applyVerdict(.ok) }   // starts on the text path before the first pane opens
         probeCompatibility()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateStats() } }
@@ -606,7 +606,7 @@ final class AppModel: ObservableObject {
     /// Show one conversation in the normal reader, leaving Watch if it is on (a Cmd-click on a session link in a Watch column). The
     /// reader is pinned to it the way an ask row pins it: the agent selection's own pin is cancelled and does not run again while
     /// that agent stays selected, so the reader stays on this conversation until another agent is chosen.
-    func openSessionInReader(_ session: String) {
+    func openSessionInReader(_ session: String, message: String? = nil) {
         guard WatchAddress.validSession(session) else { return }
         pinWork?.cancel()
         askPane = selectedPaneID
@@ -614,7 +614,7 @@ final class AppModel: ObservableObject {
         pinWork?.cancel()
         if !showWeb { showWeb = true }
         if webTab != .reader { webTab = .reader }
-        web.box(.reader).pin(sessionID: session)
+        web.box(.reader).pin(sessionID: session, message: message)
     }
 
     /// A Watch column that opens a conversation with an open ask (a click on its row, or any way of choosing the agent) opens on the

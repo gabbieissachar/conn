@@ -28,7 +28,7 @@ final class WatchModel: ObservableObject {
 
     /// A Cmd-click on a session link in a column: leave Watch and show the normal reader on that session. The app sets it (it owns the
     /// view); until it does a Cmd-click opens the session in a column like a plain click.
-    var onOpenInReader: ((String) -> Void)?
+    var onOpenInReader: ((String, String?) -> Void)?
 
     /// A link to a Campus conversation was clicked in a Herdr column (kind, folder, id, Cmd held, the column's index). The app decides: the column rule, or the
     /// normal view for a Cmd-click.
@@ -83,7 +83,7 @@ final class WatchModel: ObservableObject {
         let b = hub.makeLiteBox(startFragment: WatchAddress.fragment(session: column.session, message: message))
         let id = column.id
         b.onUse = { [weak self] in self?.used(columnID: id) }
-        b.onSessionLink = { [weak self] session, inReader in self?.sessionLinkClicked(columnID: id, session: session, inReader: inReader) }
+        b.onSessionLink = { [weak self] session, message, inReader in self?.sessionLinkClicked(columnID: id, session: session, message: message, inReader: inReader) }
         b.onCampusLink = { [weak self] kind, folder, cid, command in
             guard let self = self, self.active, let i = self.columnIndex(id: id) else { return }
             self.used(columnID: id)
@@ -102,11 +102,12 @@ final class WatchModel: ObservableObject {
     /// Every outcome flashes the column once, so the person sees where it went. Nil when the id is not one the page could open.
     ///
     /// `from` is the index of the column a session link was clicked in (see `sessionLinkClicked`): that column counts as used and is
-    /// never the one replaced.
+    /// never the one replaced. `message` is a reply the caller wants the column to land on (a link that names one): it wins over the
+    /// asking turn, and a session that already has a column scrolls to it there too.
     @discardableResult
-    func open(session: String, from clicked: Int? = nil) -> WatchPlacement? {
+    func open(session: String, from clicked: Int? = nil, message: String? = nil) -> WatchPlacement? {
         guard WatchAddress.validSession(session) else { return nil }
-        let ask = openAskTurnID(session)
+        let ask = message.flatMap { WatchAddress.validTurn($0) ? $0 : nil } ?? openAskTurnID(session)
         let placement = layout.open(session, from: clicked)
         let column = layout.slots[placement.column]!
         switch placement {
@@ -141,13 +142,14 @@ final class WatchModel: ObservableObject {
 
     /// A session link in a column was clicked (the column's page did not navigate; see `WebBox.sessionLinkWatch`). A plain click opens
     /// the session by the column rule, as every other way of choosing one does, except that the clicked column is never the one
-    /// replaced. A Cmd-click leaves Watch for the normal reader on that session (`onOpenInReader`). Returns where the session went, or
-    /// nil for a Cmd-click, a column that is gone, or a session the page could not open.
+    /// replaced. A link that names a reply (`message`) lands the column on that exact reply. A Cmd-click leaves Watch for the normal reader on
+    /// that session and reply (`onOpenInReader`). Returns where the session went, or nil for a Cmd-click, a column that is gone, or a session
+    /// the page could not open.
     @discardableResult
-    func sessionLinkClicked(columnID: Int, session: String, inReader: Bool) -> WatchPlacement? {
+    func sessionLinkClicked(columnID: Int, session: String, message: String? = nil, inReader: Bool) -> WatchPlacement? {
         guard active, let index = columnIndex(id: columnID) else { return nil }
-        if inReader, let toReader = onOpenInReader { used(columnID: columnID); toReader(session); return nil }
-        return open(session: session, from: index)
+        if inReader, let toReader = onOpenInReader { used(columnID: columnID); toReader(session, message); return nil }
+        return open(session: session, from: index, message: message)
     }
 
     /// The person used the column (the page reported a click, scroll, key or focus).
