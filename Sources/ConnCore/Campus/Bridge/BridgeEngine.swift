@@ -335,6 +335,8 @@ public final class BridgeEngine: ObservableObject {
         var sawBusy = false, errors = 0
         while true {
             if !enabled { return .init(.failed, thread: conv.id, url: url(conv), reason: "the Agent bridge was switched off while this request waited") }
+            // The person can take a thread away from agents while a request (above all a late watch) waits on it: nothing more is read from it.
+            if ownership.share(for: conv.id) == nil { return Self.noLongerShared(conv.id) }
             // Noted before the status is read: an event that comes while it is being read makes the wait below return at once.
             let seen = wake.count(of: conv.id)
             switch await client.status(of: conv) {
@@ -465,8 +467,12 @@ public final class BridgeEngine: ObservableObject {
         }
     }
 
+    static func noLongerShared(_ id: String) -> BridgeReply { .init(.refused, thread: id, reason: "that thread is no longer shared with agents: nothing was read from it") }
+
     private func finishLate(_ c: Ctx, _ reply: BridgeReply) {
         var reply = reply
+        // Checked again at the write: a thread taken away from agents after the last read gets no text in a file.
+        if reply.thread.map({ ownership.share(for: $0) == nil }) ?? false, reply.status != .failed, reply.status != .refused { reply = Self.noLongerShared(reply.thread ?? "") }
         if reply.thread == nil { reply.thread = c.thread }
         reply.watchLate = false
         let entry = BridgeAuditEntry(at: now(), sender: c.sender.isEmpty ? "?" : c.sender, kind: c.kind, requestID: c.requestID, thread: reply.thread ?? c.thread, action: "late", bytes: c.bytes, sha256: c.sha, outcome: reply.status.rawValue)

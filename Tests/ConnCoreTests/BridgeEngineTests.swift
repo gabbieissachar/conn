@@ -699,6 +699,21 @@ private extension BridgeRegistry {
         #expect(lab.field(l, "status") == "failed" && lab.field(l, "reason")?.contains("switched off") == true, "\(l)")
     }
 
+    @Test func aThreadTakenAwayFromAgentsWhileItIsWatchedGetsNoTextInTheLateFile() async throws {
+        let lab = await Lab(budget: 0.3); lab.on()
+        let addr = CampusAddress(kind: "private", folder: "default", id: "ses_fakeSprint03")
+        lab.ownership.setShared(addr, .read)
+        lab.world.setNextRun(.hold)
+        lab.world.startRun("ses_fakeSprint03", userText: nil, ask: false)
+        let first = try await lab.ask("req-l7", "campus: read ses_fakeSprint03")
+        #expect(lab.field(first, "status") == "working" && lab.field(first, "late") == "req-l7.late", "\(first)")
+        lab.ownership.setShared(addr, nil)
+        lab.world.release("ses_fakeSprint03")
+        await lab.engine.waitLateIdle()
+        let l = late(lab, "req-l7")
+        #expect(lab.field(l, "status") == "refused" && lab.field(l, "reason")?.contains("no longer shared") == true && !l.contains("Released:") && lab.field(l, "reply") == nil, "\(l)")
+    }
+
     @Test func aLateFileIsWrittenOnceAndNeverOverAnother() throws {
         let r = BridgeRegistry(directory: bridgeTempDir("late"))
         try r.register(pid: getpid())
