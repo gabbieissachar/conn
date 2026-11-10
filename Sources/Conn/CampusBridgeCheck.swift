@@ -85,6 +85,26 @@ extension CampusCheck {
         report("Agent bridge: with every timer at 30 s the inbox folder watch and the event stream still answer in seconds (the request is read on arrival, the wait ends on the stream's own idle event)",
                field(woken, "status") == "done" && woken.contains("Woken by the stream.") && wokenIn < 12 && campus.streamLive && bridge.watchingInbox,
                "took=\(String(format: "%.1f", wokenIn)) s status=\(field(woken, "status") ?? "nil") streamLive=\(campus.streamLive) watching=\(bridge.watchingInbox)")
+        // 3c. A run still going when the wait ends is `working` and names its late file; Conn keeps watching and writes the end there as soon as the stream says the run is over (timers still at 30 s).
+        let budget = bridge.waitBudget
+        bridge.waitBudget = 2
+        await control("/__fake/next-run?mode=hold")
+        let working = await ask("req-\(unique)-lt", "campus: continue \(thread)\n---\nTake your time on this one.", timeout: 20)
+        bridge.waitBudget = budget
+        let lateName = "req-\(unique)-lt.late"
+        let notYet = !FileManager.default.fileExists(atPath: reg.replies.appendingPathComponent(lateName).path)
+        let tLate = Date()
+        await control("/__fake/release?c=\(thread)")
+        _ = await until(25) { reg.lateExists("req-\(unique)-lt") }
+        let lateIn = Date().timeIntervalSince(tLate)
+        let lateRaw = (try? String(contentsOf: reg.replies.appendingPathComponent(lateName), encoding: .utf8)) ?? ""
+        let lateBody = lateRaw.components(separatedBy: "\n--\n").dropFirst().joined(separator: "\n--\n")
+        let firstStill = field(await reply("req-\(unique)-lt"), "status") == "working"
+        report("Agent bridge: a run still going when the wait ends is answered working with its late file named, and Conn writes the end of the run there within seconds of the stream's idle event (the first reply stays working)",
+               field(working, "status") == "working" && field(working, "late") == lateName && notYet && field(lateBody, "status") == "done" && lateBody.contains("Released: here is the reply.") && lateIn < 12
+                 && firstStill && bridge.audit.read().contains { $0.requestID == "req-\(unique)-lt" && $0.action == "late" && $0.outcome == "done" },
+               "first=\(field(working, "status") ?? "nil") late=\(field(working, "late") ?? "nil") took=\(String(format: "%.1f", lateIn)) s lateStatus=\(field(lateBody, "status") ?? "nil")")
+        _ = await until(10) { campus.conversation(thread)?.working == false }
         (bridge.pollInterval, bridge.eventPollInterval, bridge.scanInterval, bridge.watchedScanInterval) = timers
 
         // 4. A permission request comes back and is never answered; a question comes back and an answer continues the run.

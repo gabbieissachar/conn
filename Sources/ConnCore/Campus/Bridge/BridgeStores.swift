@@ -142,6 +142,20 @@ public struct BridgeRegistry: Sendable {
         try Self.writeAtomically(Data(text.utf8), to: replies.appendingPathComponent(id))
     }
 
+    /// The name of the file that carries the end of a run after a `working` reply: `<request id>.late`, next to the reply.
+    public static func lateName(_ id: String) -> String { id + ".late" }
+    public func lateExists(_ id: String) -> Bool { FileManager.default.fileExists(atPath: replies.appendingPathComponent(Self.lateName(id)).path) }
+
+    /// The end of a run the first reply left open, in the same format as the reply (`fm-session-reply.v1`), as `<request id>.late`. Written once, never over a file that is there.
+    public func writeLateReply(id: String, body: String, now: Date = Date()) throws {
+        guard BridgeRecordParser.validRequestID(id) else { throw RegisterError.io("bad request id") }
+        guard !lateExists(id) else { return }
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]
+        let text = "schema=\(Self.schemaReply)\nrequest_id=\(id)\nat=\(f.string(from: now))\n--\n\(body)\n"
+        try FileManager.default.createDirectory(at: replies, withIntermediateDirectories: true)
+        try Self.writeAtomically(Data(text.utf8), to: replies.appendingPathComponent(Self.lateName(id)))
+    }
+
     /// Move a record to `handled/`: the acknowledgement.
     public func acknowledge(fileName: String) {
         let from = inbox.appendingPathComponent(fileName)

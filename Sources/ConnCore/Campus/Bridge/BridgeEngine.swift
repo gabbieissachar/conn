@@ -54,6 +54,8 @@ public final class BridgeEngine: ObservableObject {
     public var watchInbox = true
     /// After a send, how long a thread may stay idle without a new reply before the request says so.
     public var startGrace: TimeInterval = 20
+    /// How long Conn keeps watching a thread that was still working when its request's wait ended, to write the end to `<request id>.late`.
+    public var lateBudget: TimeInterval = 1800
     public var preamble = BridgeCommand.preamble
     /// The agents a request may name. A caller never picks the thread's powers: only these (read-only, planning) agents are accepted, `plan` by default; any other name is refused
     /// before anything is sent. Settable from Conn's settings (`conn.campus.bridge.agents`), never from a request.
@@ -72,6 +74,8 @@ public final class BridgeEngine: ObservableObject {
     public let wake = BridgeWake()
     private var frameSubscription: AnyCancellable?
     private var tasks: [String: Task<Void, Never>] = [:]
+    /// Threads still watched after a `working` reply, by request id: each ends by writing `<request id>.late`.
+    private var lateTasks: [String: Task<Void, Never>] = [:]
     /// New threads whose request was accepted but not yet in the audit: they count against the caps at once, so a burst cannot pass the check together.
     private var reservedNew: [String: (home: String, at: Date)] = [:]
     private var runningNew = 0
@@ -168,6 +172,15 @@ public final class BridgeEngine: ObservableObject {
     public func waitIdle() async {
         while true {
             let running = Array(tasks.values)
+            if running.isEmpty { return }
+            for t in running { await t.value }
+        }
+    }
+
+    /// Wait until every thread watched after a `working` reply has been written to its `.late` file (tests).
+    public func waitLateIdle() async {
+        while true {
+            let running = Array(lateTasks.values)
             if running.isEmpty { return }
             for t in running { await t.value }
         }
@@ -315,10 +328,10 @@ public final class BridgeEngine: ObservableObject {
 
     /// Poll the thread's status until it stops. `idle` reads the newest assistant message (text parts only: no reasoning, no tool output); a question or a permission request ends the
     /// wait as `needs-answer`; the budget running out is `working`, not a failure.
-    private func awaitRun(_ conv: CampusConversation, baseline: String?, sent: Bool) async -> BridgeReply {
+    private func awaitRun(_ conv: CampusConversation, baseline: String?, sent: Bool, late: Bool = false) async -> BridgeReply {
         guard let client = store.client else { return .init(.failed, thread: conv.id, reason: "no Campus connection") }
         let start = now()
-        let deadline = start.addingTimeInterval(waitBudget)
+        let deadline = start.addingTimeInterval(late ? lateBudget : waitBudget)
         var sawBusy = false, errors = 0
         while true {
             if !enabled { return .init(.failed, thread: conv.id, url: url(conv), reason: "the Agent bridge was switched off while this request waited") }
@@ -346,7 +359,12 @@ public final class BridgeEngine: ObservableObject {
                     if now().timeIntervalSince(start) > startGrace { return .init(.failed, thread: conv.id, url: url(conv), reason: "the thread did not start a run after the message") }
                 }
             }
-            if now() >= deadline { return .init(.working, thread: conv.id, url: url(conv), reason: "the thread is still working: read it with 'campus: read \(conv.id)'") }
+            if now() >= deadline {
+                if late { return .init(.working, thread: conv.id, url: url(conv), reason: "the thread was still working after \(Int(lateBudget / 60)) minutes and Conn stopped watching it: read it with 'campus: read \(conv.id)'") }
+                var r = BridgeReply(.working, thread: conv.id, url: url(conv), reason: "the thread is still working: Conn keeps watching it and writes its end to the late reply file; or read it with 'campus: read \(conv.id)'")
+                r.watchLate = true
+                return r
+            }
             await wake.wait(for: conv.id, since: seen, timeout: min(waitTimeout(for: conv.id), max(0.01, deadline.timeIntervalSince(now()))))
         }
     }
@@ -414,6 +432,10 @@ public final class BridgeEngine: ObservableObject {
     private func finish(_ c: Ctx, _ reply: BridgeReply) {
         var reply = reply
         if reply.thread == nil { reply.thread = c.thread }
+        // A wait that ran out on a thread Conn can still watch promises the end in `<request id>.late`.
+        let lateThread = reply.watchLate && enabled ? reply.thread.flatMap { store.conversation($0) } : nil
+        reply.watchLate = false
+        if lateThread != nil { reply.lateFile = BridgeRegistry.lateName(c.requestID) }
         let entry = BridgeAuditEntry(at: now(), sender: c.sender.isEmpty ? "?" : c.sender, kind: c.kind, requestID: c.requestID, thread: reply.thread ?? c.thread, action: c.action, bytes: c.bytes, sha256: c.sha, outcome: reply.status.rawValue)
         do {
             try registry.writeReply(id: c.requestID, body: reply.render(), now: now())
@@ -427,6 +449,35 @@ public final class BridgeEngine: ObservableObject {
         audit.append(entry)
         note(BridgeActivity(at: now(), sender: entry.sender, action: c.action, thread: entry.thread, outcome: reply.status.rawValue, reason: reply.reason, bytes: c.bytes))
         refreshCount()
+        if let conv = lateThread { watchLate(c, conv) }
+    }
+
+    /// Keep watching a thread that was still working when the wait ended, and write its end to `<request id>.late` (the same text a reply has). The first reply stays as it is. A Conn
+    /// that quits before the thread ends writes a `failed` late reply as the switch goes off; a Conn that is killed loses the watch (the caller still has `campus: read`).
+    private func watchLate(_ c: Ctx, _ conv: CampusConversation) {
+        let id = c.requestID
+        guard lateTasks[id] == nil else { return }
+        lateTasks[id] = Task { [weak self] in
+            guard let self = self else { return }
+            let out = await self.awaitRun(conv, baseline: nil, sent: false, late: true)
+            self.finishLate(c, out)
+            self.lateTasks[id] = nil
+        }
+    }
+
+    private func finishLate(_ c: Ctx, _ reply: BridgeReply) {
+        var reply = reply
+        if reply.thread == nil { reply.thread = c.thread }
+        reply.watchLate = false
+        let entry = BridgeAuditEntry(at: now(), sender: c.sender.isEmpty ? "?" : c.sender, kind: c.kind, requestID: c.requestID, thread: reply.thread ?? c.thread, action: "late", bytes: c.bytes, sha256: c.sha, outcome: reply.status.rawValue)
+        do { try registry.writeLateReply(id: c.requestID, body: reply.render(), now: now()) } catch {
+            note(BridgeActivity(at: now(), sender: entry.sender, action: "late", thread: entry.thread, outcome: "failed", reason: "could not write the late reply: \(error)", bytes: c.bytes))
+            audit.append(entry); refreshCount()
+            return
+        }
+        audit.append(entry)
+        note(BridgeActivity(at: now(), sender: entry.sender, action: "late", thread: entry.thread, outcome: reply.status.rawValue, reason: reply.reason, bytes: c.bytes))
+        refreshCount()
     }
 
     private func note(_ a: BridgeActivity) {
@@ -434,7 +485,8 @@ public final class BridgeEngine: ObservableObject {
         if activity.count > 100 { activity.removeLast(activity.count - 100) }
     }
 
-    private func refreshCount() { last24h = audit.read(now: now()).count }
+    /// Requests in the last 24 hours (the late reply of a request is not another request).
+    private func refreshCount() { last24h = audit.read(now: now()).filter { $0.action != "late" }.count }
 }
 
 extension CampusFetch {

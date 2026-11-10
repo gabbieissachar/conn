@@ -28,7 +28,7 @@ private final class Lab {
         ownership = BridgeOwnership(defaults: d)
         audit = BridgeAuditLog(file: bridgeTempDir("audit").appendingPathComponent("audit.jsonl"))
         engine = BridgeEngine(store: store, registry: registry, ownership: ownership, audit: audit)
-        engine.limits = limits; engine.waitBudget = budget; engine.pollInterval = 0.02; engine.scanInterval = 0.05; engine.startGrace = 2
+        engine.limits = limits; engine.waitBudget = budget; engine.pollInterval = 0.02; engine.scanInterval = 0.05; engine.startGrace = 2; engine.lateBudget = 5
         await store.refresh()
     }
 
@@ -605,6 +605,114 @@ private extension BridgeRegistry {
         try await Task.sleep(nanoseconds: 700_000_000)
         #expect(lab.engine.activity.isEmpty)
         #expect(FileManager.default.fileExists(atPath: lab.registry.inbox.appendingPathComponent("notes.txt").path))
+    }
+}
+
+@Suite("Bridge: the late reply for a run that outlived the wait") @MainActor struct BridgeLateReplyTests {
+    private func late(_ lab: Lab, _ id: String) -> String {
+        let raw = (try? String(contentsOf: lab.registry.replies.appendingPathComponent(id + ".late"), encoding: .utf8)) ?? ""
+        return raw.components(separatedBy: "\n--\n").dropFirst().joined(separator: "\n--\n")
+    }
+    private func lateHeader(_ lab: Lab, _ id: String) -> String {
+        let raw = (try? String(contentsOf: lab.registry.replies.appendingPathComponent(id + ".late"), encoding: .utf8)) ?? ""
+        return raw.components(separatedBy: "\n--\n").first ?? ""
+    }
+
+    @Test func aWorkingReplyNamesTheLateFileAndTheEndOfTheRunIsWrittenThere() async throws {
+        let lab = await Lab(budget: 0.3); lab.on()
+        lab.world.setNextRun(.hold, reply: "The late answer.")
+        let first = try await lab.ask("req-l1", lab.newText())
+        let thread = try #require(lab.field(first, "thread"))
+        #expect(lab.field(first, "status") == "working" && lab.field(first, "late") == "req-l1.late" && lab.field(first, "reason")?.contains("campus: read \(thread)") == true)
+        #expect(!lab.registry.lateExists("req-l1"))
+        let today = lab.engine.last24h
+        lab.world.release(thread)
+        await lab.engine.waitLateIdle()
+        let l = late(lab, "req-l1")
+        #expect(lab.field(l, "status") == "done" && lab.field(l, "thread") == thread && l.contains("Released: here is the reply."), "\(l)")
+        let h = lateHeader(lab, "req-l1")
+        #expect(h.contains("schema=fm-session-reply.v1") && h.contains("request_id=req-l1"), "\(h)")
+        // The first reply is as it was (final for the id on its own); the late one is a second file.
+        #expect(lab.field(await lab.run("req-l1"), "status") == "working")
+        let entries = lab.audit.read().filter { $0.requestID == "req-l1" }
+        #expect(entries.map(\.action).sorted() == ["late", "new"] && entries.first { $0.action == "late" }?.outcome == "done" && entries.first { $0.action == "late" }?.thread == thread)
+        #expect(lab.engine.last24h == today, "a late reply is not another request")
+        #expect(lab.engine.activity.first?.action == "late" && lab.engine.activity.first?.outcome == "done")
+    }
+
+    @Test func theEndIsWrittenWhenTheStreamSaysSoNotAtTheNextPoll() async throws {
+        let lab = await Lab(budget: 0.3); lab.on()
+        lab.engine.pollInterval = 60; lab.engine.eventPollInterval = 60; lab.engine.settleInterval = 0.1
+        lab.world.setNextRun(.hold)
+        let first = try await lab.ask("req-l2", lab.newText())
+        let thread = try #require(lab.field(first, "thread"))
+        lab.world.release(thread)
+        let t0 = Date()
+        lab.store.handle(CampusFrame(type: "session.idle", sessionID: thread))
+        #expect(await eventually(10) { lab.registry.lateExists("req-l2") })
+        #expect(Date().timeIntervalSince(t0) < 5, "the poll is 60 s")
+    }
+
+    @Test func aReadThatRunsOutIsWatchedToo() async throws {
+        let lab = await Lab(budget: 0.3); lab.on()
+        lab.world.setNextRun(.hold)
+        let first = try await lab.ask("req-l3", lab.newText())
+        let thread = try #require(lab.field(first, "thread"))
+        lab.engine.waitBudget = 0.2
+        let read = try await lab.ask("req-l3r", "campus: read \(thread)")
+        #expect(lab.field(read, "status") == "working" && lab.field(read, "late") == "req-l3r.late")
+        lab.world.release(thread)
+        await lab.engine.waitLateIdle()
+        #expect(lab.field(late(lab, "req-l3r"), "status") == "done" && lab.field(late(lab, "req-l3"), "status") == "done")
+    }
+
+    @Test func aSendToABusyThreadSendsNothingAndPromisesNoLateReply() async throws {
+        let lab = await Lab(budget: 0.3); lab.on()
+        lab.world.setNextRun(.hold)
+        let first = try await lab.ask("req-l4", lab.newText())
+        let thread = try #require(lab.field(first, "thread"))
+        let c = try await lab.ask("req-l4c", "campus: continue \(thread)\n---\nhurry up")
+        #expect(lab.field(c, "status") == "working" && lab.field(c, "late") == nil)
+        lab.world.release(thread)
+        await lab.engine.waitLateIdle()
+        #expect(!lab.registry.lateExists("req-l4c") && lab.registry.lateExists("req-l4"))
+    }
+
+    @Test func aThreadThatNeverEndsGetsALateReplyThatSaysConnStoppedWatching() async throws {
+        let lab = await Lab(budget: 0.2); lab.on()
+        lab.engine.lateBudget = 0.4
+        lab.world.setNextRun(.hold)
+        let first = try await lab.ask("req-l5", lab.newText())
+        let thread = try #require(lab.field(first, "thread"))
+        await lab.engine.waitLateIdle()
+        let l = late(lab, "req-l5")
+        #expect(lab.field(l, "status") == "working" && lab.field(l, "reason")?.contains("stopped watching") == true && lab.field(l, "reason")?.contains("campus: read \(thread)") == true && lab.field(l, "late") == nil, "\(l)")
+    }
+
+    @Test func switchingOffAnswersTheLateReplyAsStopped() async throws {
+        let lab = await Lab(budget: 0.2); lab.on()
+        lab.world.setNextRun(.hold)
+        _ = try await lab.ask("req-l6", lab.newText())
+        lab.engine.setEnabled(false)
+        await lab.engine.waitLateIdle()
+        let l = late(lab, "req-l6")
+        #expect(lab.field(l, "status") == "failed" && lab.field(l, "reason")?.contains("switched off") == true, "\(l)")
+    }
+
+    @Test func aLateFileIsWrittenOnceAndNeverOverAnother() throws {
+        let r = BridgeRegistry(directory: bridgeTempDir("late"))
+        try r.register(pid: getpid())
+        try r.writeLateReply(id: "x1", body: "status: done\nreply: first\n")
+        try r.writeLateReply(id: "x1", body: "status: failed\n")
+        let raw = try String(contentsOf: r.replies.appendingPathComponent("x1.late"), encoding: .utf8)
+        #expect(raw.contains("reply: first") && !raw.contains("failed") && r.lateExists("x1") && !r.replyExists("x1"))
+        #expect(throws: (any Error).self) { try r.writeLateReply(id: "../x", body: "") }
+    }
+
+    @Test func aReplyRendersTheLateLineAfterTheUrl() {
+        var r = BridgeReply(.working, thread: "ses_a", url: "http://x/y", reason: "still going")
+        r.lateFile = "req-1.late"
+        #expect(r.render() == "status: working\nthread: ses_a\nurl: http://x/y\nlate: req-1.late\nreason: still going\n")
     }
 }
 

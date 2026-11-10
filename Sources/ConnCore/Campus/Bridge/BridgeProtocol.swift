@@ -185,6 +185,10 @@ public struct BridgeReply: Equatable, Sendable {
     public var reply: String?
     public var tokensIn: Int?
     public var tokensOut: Int?
+    /// The file Conn will write the end of the run to when this reply is `working` and the thread is still being watched (`<request id>.late`, in the replies folder).
+    public var lateFile: String?
+    /// Set by the engine when the wait ran out on a thread it will keep watching (not written; `lateFile` is what the caller reads).
+    var watchLate = false
 
     public init(_ status: Status, thread: String? = nil, url: String? = nil, reason: String? = nil, question: String? = nil, reply: String? = nil, tokensIn: Int? = nil, tokensOut: Int? = nil) {
         self.status = status; self.thread = thread; self.url = url; self.reason = reason; self.question = question; self.reply = reply; self.tokensIn = tokensIn; self.tokensOut = tokensOut
@@ -197,6 +201,7 @@ public struct BridgeReply: Equatable, Sendable {
         var out = "status: \(status.rawValue)\n"
         if let t = thread { out += "thread: \(t)\n" }
         if let u = url { out += "url: \(u)\n" }
+        if let l = lateFile { out += "late: \(l)\n" }
         if let r = reason { out += "reason: \(Self.oneLine(r))\n" }
         if let q = question { out += "question: \(Self.oneLine(q))\n" }
         if let i = tokensIn, let o = tokensOut { out += "tokens: in=\(i) out=\(o)\n" }
