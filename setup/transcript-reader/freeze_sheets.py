@@ -17,6 +17,11 @@ checks the manifest alone when it is not. The tracked fixtures beside it are inv
 
 Usage (from the repo root):
   python3 setup/transcript-reader/freeze_sheets.py [--sessions FILE] [--parsed DIR] [--out DIR]
+  python3 setup/transcript-reader/freeze_sheets.py --refresh [--out DIR] [--manifest FILE]
+
+--refresh is for a parser change that was meant to change sheets (review groups, a new field). It reads the replies already frozen, never the
+reading list, computes each sheet again with the current code and replaces the `.expect.json` files and the manifest. Copy the old folder
+aside first (`cp -R`, never delete) and read the difference: a change you did not mean to make is a bug, not a refresh.
 
 --sessions is a reading-list file (default out/sessions.txt); --parsed a folder of parsed logs, which the run fills when it parses (default a
 temporary one, so the live reader's out/ is never written). Nothing is deleted: an entry already there with other content stops the run.
@@ -111,13 +116,37 @@ def write_new(path: Path, text: str) -> bool:
     return True
 
 
+def refresh(out: Path, manifest_path: Path) -> int:
+    """Recompute the expectation of every frozen reply with the current code; the replies and their `answer_input` stay as they were."""
+    rows, changed = [], 0
+    for reply_path in sorted(out.glob("*.md")):
+        reply = reply_path.read_text(encoding="utf-8")
+        expect_path = reply_path.with_name(reply_path.stem + ".expect.json")
+        stored = json.loads(expect_path.read_text(encoding="utf-8"))
+        expect = expectation(reply, stored["answer_input"])
+        text = json.dumps(expect, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+        if expect_path.read_text(encoding="utf-8") != text:
+            expect_path.write_text(text, encoding="utf-8")
+            changed += 1
+        rows.append(manifest_row(reply, expect))
+    rows.sort(key=lambda row: row["id"])
+    old = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = {"version": MANIFEST_VERSION, "replies": old["replies"], "unique": len(rows), "entries": rows}
+    manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"{len(rows)} frozen replies recomputed; {changed} expectation file(s) changed")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sessions", default=str(HERE / "out" / "sessions.txt"))
     parser.add_argument("--parsed", help="folder of parsed logs (default: a temporary one)")
     parser.add_argument("--out", default=str(FROZEN))
     parser.add_argument("--manifest", default=str(MANIFEST))
+    parser.add_argument("--refresh", action="store_true", help="recompute the expectations of the replies already frozen (see above)")
     args = parser.parse_args(argv)
+    if args.refresh:
+        return refresh(Path(args.out), Path(args.manifest))
     names = [line.strip() for line in Path(args.sessions).expanduser().read_text(encoding="utf-8").splitlines() if line.strip()]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
