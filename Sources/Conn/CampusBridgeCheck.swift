@@ -74,6 +74,19 @@ extension CampusCheck {
         let afterRead = (await log()).count
         report("Agent bridge: read returns the last reply and sends nothing", field(readBack, "status") == "done" && readBack.contains("Second reply for the follow-up.") && afterRead == before, "status=\(field(readBack, "status") ?? "nil")")
 
+        // 3b. With every timer set to 30 seconds, the event stream and the inbox folder watch still answer in seconds: the request is read the moment it arrives and the wait ends on the
+        // stream's own `session.idle`, not at a poll. (The stand-in's run takes about 4 seconds.)
+        let timers = (bridge.pollInterval, bridge.eventPollInterval, bridge.scanInterval, bridge.watchedScanInterval)
+        bridge.pollInterval = 30; bridge.eventPollInterval = 30; bridge.scanInterval = 30; bridge.watchedScanInterval = 30
+        await control("/__fake/next-run?mode=normal&reply=Woken%20by%20the%20stream.")
+        let tWoken = Date()
+        let woken = await ask("req-\(unique)-wk", "campus: continue \(thread)\n---\nAnd a third question?", timeout: 25)
+        let wokenIn = Date().timeIntervalSince(tWoken)
+        report("Agent bridge: with every timer at 30 s the inbox folder watch and the event stream still answer in seconds (the request is read on arrival, the wait ends on the stream's own idle event)",
+               field(woken, "status") == "done" && woken.contains("Woken by the stream.") && wokenIn < 12 && campus.streamLive && bridge.watchingInbox,
+               "took=\(String(format: "%.1f", wokenIn)) s status=\(field(woken, "status") ?? "nil") streamLive=\(campus.streamLive) watching=\(bridge.watchingInbox)")
+        (bridge.pollInterval, bridge.eventPollInterval, bridge.scanInterval, bridge.watchedScanInterval) = timers
+
         // 4. A permission request comes back and is never answered; a question comes back and an answer continues the run.
         await control("/__fake/next-run?mode=permission")
         let perm = await ask("req-\(unique)-p1", "campus: continue \(thread)\n---\nPlease fetch the page.")

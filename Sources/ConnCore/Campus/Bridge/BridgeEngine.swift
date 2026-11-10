@@ -41,8 +41,17 @@ public final class BridgeEngine: ObservableObject {
     public var limits = BridgeLimits()
     /// How long one request waits for Campus's agent before answering `working` (the caller reads on with `campus: read`).
     public var waitBudget: TimeInterval = 100
+    /// How often a waiting request reads its thread's status when the event stream is not delivering (the fallback). With the stream live the request reads on each event that can
+    /// change the answer (a run ending, a question, a permission request) and only this often otherwise (`eventPollInterval`, a safety net for an event that never came).
     public var pollInterval: TimeInterval = 3
+    public var eventPollInterval: TimeInterval = 10
+    /// A run is read again this soon while an event has just come for it and the status has not caught up yet.
+    public var settleInterval: TimeInterval = 0.5
+    /// How often the inbox is read when its folder cannot be watched (the fallback), and how often as a safety net while the watch is working.
     public var scanInterval: TimeInterval = 2
+    public var watchedScanInterval: TimeInterval = 10
+    /// Watch the inbox folder and read it the moment a record arrives. Off: only the timer reads it.
+    public var watchInbox = true
     /// After a send, how long a thread may stay idle without a new reply before the request says so.
     public var startGrace: TimeInterval = 20
     public var preamble = BridgeCommand.preamble
@@ -58,6 +67,10 @@ public final class BridgeEngine: ObservableObject {
     private let pid: Int32
 
     private var scanTask: Task<Void, Never>?
+    private var inboxWatch: BridgeFolderWatch?
+    private var rescanPending = false
+    public let wake = BridgeWake()
+    private var frameSubscription: AnyCancellable?
     private var tasks: [String: Task<Void, Never>] = [:]
     /// New threads whose request was accepted but not yet in the audit: they count against the caps at once, so a burst cannot pass the check together.
     private var reservedNew: [String: (home: String, at: Date)] = [:]
@@ -71,6 +84,10 @@ public final class BridgeEngine: ObservableObject {
         self.store = store; self.registry = registry; self.ownership = ownership; self.audit = audit; self.callers = callers; self.pid = pid; self.now = now
         registry.clearStale(pid: pid)
         refreshCount()
+        frameSubscription = store.frameSeen.sink { [weak self] f in
+            guard let self = self, let sid = f.sessionID, BridgeWake.wakes(on: f.type) else { return }
+            self.wake.signal(sid, settle: BridgeWake.settles(on: f.type))
+        }
     }
 
     // MARK: the switch
@@ -85,18 +102,37 @@ public final class BridgeEngine: ObservableObject {
             } catch { problem = "Could not register as the session 'campus': \(error)"; return }
             problem = nil
             enabled = true
+            armInboxWatch()
             scanTask = Task { [weak self] in
                 while !Task.isCancelled {
                     self?.scan()
-                    try? await Task.sleep(nanoseconds: UInt64(max(0.02, self?.scanInterval ?? 2) * 1_000_000_000))
+                    self?.armInboxWatch()
+                    let watched = self?.inboxWatch != nil
+                    let every = watched ? (self?.watchedScanInterval ?? 10) : (self?.scanInterval ?? 2)
+                    try? await Task.sleep(nanoseconds: UInt64(max(0.02, every) * 1_000_000_000))
                 }
             }
         } else {
             enabled = false
             scanTask?.cancel(); scanTask = nil
+            inboxWatch?.stop(); inboxWatch = nil
             registry.unregister(pid: pid)
+            wake.signalAll()
         }
     }
+
+    /// Watch the inbox folder (made again when it was removed under the watch): a record is read within milliseconds of arriving. The timer keeps reading it as the fallback.
+    private func armInboxWatch() {
+        guard enabled, watchInbox else { return }
+        if let w = inboxWatch, !w.isLost { return }
+        inboxWatch?.stop(); inboxWatch = nil
+        inboxWatch = BridgeFolderWatch(directory: registry.inbox) { [weak self] in
+            Task { @MainActor in self?.scan() }
+        }
+    }
+
+    /// Whether the inbox is being watched (the check and the tests read this).
+    public var watchingInbox: Bool { inboxWatch != nil && inboxWatch?.isLost == false }
 
     /// Quit: leave the registry so `fm-who campus` does not name a process that is gone.
     public func shutdown() { setEnabled(false) }
@@ -108,11 +144,23 @@ public final class BridgeEngine: ObservableObject {
         guard enabled else { return }
         for (name, data) in registry.pending() where tasks[name] == nil && !finishedBroken.contains(name) {
             let record = BridgeRecordParser.parse(data, fileName: name)
+            // A record that does not read and was written a moment ago may be half written (a writer that does not stage and rename): look again shortly instead of moving it aside.
+            if record == nil, registry.age(of: name).map({ $0 < 1 }) ?? false { rescanSoon(); continue }
             tasks[name] = Task { [weak self] in
                 guard let self = self else { return }
                 await self.process(name: name, record: record)
                 self.tasks[name] = nil
             }
+        }
+    }
+
+    private func rescanSoon() {
+        guard !rescanPending else { return }
+        rescanPending = true
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            self?.rescanPending = false
+            self?.scan()
         }
     }
 
@@ -274,6 +322,8 @@ public final class BridgeEngine: ObservableObject {
         var sawBusy = false, errors = 0
         while true {
             if !enabled { return .init(.failed, thread: conv.id, url: url(conv), reason: "the Agent bridge was switched off while this request waited") }
+            // Noted before the status is read: an event that comes while it is being read makes the wait below return at once.
+            let seen = wake.count(of: conv.id)
             switch await client.status(of: conv) {
             case .unauthorized: store.markExpired(); return .init(.signedOut, thread: conv.id, url: url(conv), reason: "Campus is signed out: sign in in Conn")
             case .blocked: store.markBlocked(); return .init(.failed, thread: conv.id, url: url(conv), reason: CampusNetworkBlock.short)
@@ -297,8 +347,15 @@ public final class BridgeEngine: ObservableObject {
                 }
             }
             if now() >= deadline { return .init(.working, thread: conv.id, url: url(conv), reason: "the thread is still working: read it with 'campus: read \(conv.id)'") }
-            try? await Task.sleep(nanoseconds: UInt64(max(0.01, pollInterval) * 1_000_000_000))
+            await wake.wait(for: conv.id, since: seen, timeout: min(waitTimeout(for: conv.id), max(0.01, deadline.timeIntervalSince(now()))))
         }
+    }
+
+    /// How long to wait for an event before reading the status anyway: the poll interval while the stream is down; the longer safety-net interval while it is live; and, for a few
+    /// seconds after an event for this thread (the status may not have caught up with it), the short settle interval.
+    private func waitTimeout(for id: String) -> TimeInterval {
+        let base = store.streamLive ? max(pollInterval, eventPollInterval) : pollInterval
+        return wake.recent(id, within: 3) ? min(base, settleInterval) : base
     }
 
     /// The newest assistant message with text: its id, its text parts joined, its token counts.

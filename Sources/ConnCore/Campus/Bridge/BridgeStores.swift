@@ -125,6 +125,12 @@ public struct BridgeRegistry: Sendable {
         }
     }
 
+    /// Seconds since the inbox record was last written (nil when it is not there).
+    public func age(of fileName: String, now: Date = Date()) -> TimeInterval? {
+        guard let m = (try? FileManager.default.attributesOfItem(atPath: inbox.appendingPathComponent(fileName).path))?[.modificationDate] as? Date else { return nil }
+        return now.timeIntervalSince(m)
+    }
+
     public func replyExists(_ id: String) -> Bool { FileManager.default.fileExists(atPath: replies.appendingPathComponent(id).path) }
 
     /// The answer, as `fm-session reply` writes it: a staged file renamed into place, so a reader never sees half of it.

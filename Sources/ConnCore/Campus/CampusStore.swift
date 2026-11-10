@@ -21,6 +21,8 @@ public final class CampusStore: ObservableObject {
     /// A view that shows one listens to `timelineChanged` (the conversation id).
     public internal(set) var timelines: [String: CampusTimeline] = [:]
     public let timelineChanged = PassthroughSubject<String, Never>()
+    /// Every event-stream frame that names a conversation, as it arrives (the agent bridge wakes on these instead of only polling a thread's status).
+    public let frameSeen = PassthroughSubject<CampusFrame, Never>()
     /// The question a conversation waits on (from `GET .../form` or `form.created`).
     @Published public internal(set) var openForms: [String: CampusForm] = [:]
     /// When the rows were last known to be true: the last good answer or frame.
@@ -380,6 +382,7 @@ public final class CampusStore: ObservableObject {
         let t = now()
         if asOf.map({ t.timeIntervalSince($0) > 1 }) ?? true { asOf = t }
         guard let sid = f.sessionID else { return }
+        frameSeen.send(f)
         switch f.type {
         case "session.created", "session.renamed", "session.metadata.updated", "session.deleted":
             kick()

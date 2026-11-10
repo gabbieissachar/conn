@@ -440,6 +440,174 @@ private extension BridgeRegistry {
     }
 }
 
+/// Polls without blocking the main actor (the engine's own tasks run on it).
+@MainActor private func eventually(_ timeout: TimeInterval = 15, _ condition: () -> Bool) async -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end {
+        if condition() { return true }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+    return condition()
+}
+
+@Suite("Bridge: waking on the event stream and on the inbox folder") @MainActor struct BridgeWakeTests {
+    private func frame(_ type: String, _ sid: String) -> CampusFrame { CampusFrame(type: type, sessionID: sid) }
+
+    /// A lab whose timers are too slow to matter: whatever answers in time was woken by an event or by the folder watch.
+    private func slowTimers(budget: TimeInterval = 60, slowPoll: Bool = true) async -> Lab {
+        let lab = await Lab(budget: budget)
+        lab.engine.pollInterval = slowPoll ? 60 : 0.02; lab.engine.eventPollInterval = slowPoll ? 60 : 0.02
+        lab.engine.scanInterval = 60; lab.engine.watchedScanInterval = 60; lab.engine.settleInterval = 0.1
+        return lab
+    }
+
+    /// Starts a held run through the bridge and waits until the request is waiting on it (the rename that follows the start has reached the stand-in).
+    private func startHeld(_ lab: Lab, _ id: String) async throws -> String {
+        lab.world.setNextRun(.hold)
+        let before = Set(lab.store.conversations.keys)
+        try lab.drop(id, lab.newText())
+        #expect(await eventually { lab.writes().contains { $0.hasPrefix("PATCH ") } })
+        let thread = try #require(lab.store.conversations.keys.first { !before.contains($0) })
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(!lab.registry.replyExists(id))
+        return thread
+    }
+
+    @Test func theFramesThatWakeARequestAreTheOnesThatCanChangeItsAnswer() {
+        for t in ["session.idle", "session.execution.started", "session.execution.ended", "session.step.ended", "session.interrupted", "form.created", "form.replied", "permission.asked"] { #expect(BridgeWake.wakes(on: t), "\(t)") }
+        for t in ["session.text.delta", "session.reasoning.delta", "session.tool.progress", "session.tool.success", "session.text.started", "session.created"] { #expect(!BridgeWake.wakes(on: t), "\(t)") }
+        #expect(BridgeWake.settles(on: "session.idle") && BridgeWake.settles(on: "form.created") && !BridgeWake.settles(on: "session.step.ended") && !BridgeWake.settles(on: "session.execution.started"))
+    }
+
+    @Test func aWaitReturnsAtOnceForAnEventThatCameAfterTheCountWasTaken() async {
+        let w = BridgeWake()
+        let seen = w.count(of: "ses_a")
+        w.signal("ses_a")
+        let t0 = Date()
+        #expect(await w.wait(for: "ses_a", since: seen, timeout: 30))
+        #expect(Date().timeIntervalSince(t0) < 1)
+        // No event: the wait ends at its timeout and says so.
+        let t1 = Date()
+        #expect(await w.wait(for: "ses_a", since: w.count(of: "ses_a"), timeout: 0.15) == false)
+        #expect(Date().timeIntervalSince(t1) >= 0.1)
+        // An event for another thread does not end it.
+        let other = Task { @MainActor in await w.wait(for: "ses_b", since: w.count(of: "ses_b"), timeout: 0.3) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        w.signal("ses_a")
+        #expect(await other.value == false)
+    }
+
+    @Test func aRunEndingWakesTheWaitAtOnceNotAtTheNextPoll() async throws {
+        let lab = await slowTimers(); lab.on()
+        let thread = try await startHeld(lab, "req-wk1")
+        lab.world.release(thread)
+        let t0 = Date()
+        lab.store.handle(frame("session.idle", thread))
+        #expect(await eventually(10) { lab.registry.replyExists("req-wk1") })
+        let took = Date().timeIntervalSince(t0)
+        let reply = await lab.run("req-wk1")
+        #expect(lab.field(reply, "status") == "done" && reply.contains("Released: here is the reply."), "\(reply)")
+        #expect(took < 5, "answered \(took) s after the event; the poll interval is 60 s")
+    }
+
+    @Test func anEventForAnotherThreadDoesNotWakeIt() async throws {
+        let lab = await slowTimers(); lab.on()
+        let thread = try await startHeld(lab, "req-wk2")
+        lab.world.release(thread)
+        lab.store.handle(frame("session.idle", "ses_someoneElse"))
+        lab.store.handle(frame("session.text.delta", thread))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        #expect(!lab.registry.replyExists("req-wk2"))
+        lab.store.handle(frame("session.idle", thread))
+        #expect(await eventually(10) { lab.registry.replyExists("req-wk2") })
+    }
+
+    @Test func aStatusThatIsBehindTheEventIsReadAgainAfterTheSettleInterval() async throws {
+        let lab = await slowTimers(); lab.on()
+        let thread = try await startHeld(lab, "req-wk3")
+        // The event comes while Campus still says busy: the request reads once, sees busy, and reads again soon (not after 60 s).
+        lab.store.handle(frame("session.idle", thread))
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(!lab.registry.replyExists("req-wk3"))
+        lab.world.release(thread)
+        #expect(await eventually(10) { lab.registry.replyExists("req-wk3") })
+    }
+
+    @Test func withNoEventsTheTimerStillAnswers() async throws {
+        let lab = await Lab(budget: 60); lab.on()          // the lab's 0.02 s poll, no frame ever delivered
+        lab.world.setNextRun(.hold)
+        let before = Set(lab.store.conversations.keys)
+        try lab.drop("req-wk4", lab.newText())
+        #expect(await eventually { lab.writes().contains { $0.hasPrefix("PATCH ") } })
+        let thread = try #require(lab.store.conversations.keys.first { !before.contains($0) })
+        lab.world.release(thread)
+        #expect(await eventually(10) { lab.registry.replyExists("req-wk4") })
+    }
+
+    @Test func switchingOffEndsAWaitAtOnce() async throws {
+        let lab = await slowTimers(); lab.on()
+        _ = try await startHeld(lab, "req-wk5")
+        lab.engine.setEnabled(false)
+        #expect(await eventually(5) { lab.registry.replyExists("req-wk5") })
+        #expect(lab.field(await lab.run("req-wk5"), "reason")?.contains("switched off") == true)
+    }
+
+    // MARK: the inbox folder
+
+    @Test func aRecordIsReadTheMomentItArrivesNotAtTheNextTimer() async throws {
+        let lab = await slowTimers(slowPoll: false); lab.on()
+        #expect(lab.engine.watchingInbox)
+        let t0 = Date()
+        try lab.drop("req-ib1", lab.newText())
+        #expect(await eventually(10) { lab.registry.replyExists("req-ib1") })
+        #expect(Date().timeIntervalSince(t0) < 6, "the timer is 60 s")
+        #expect(lab.field(await lab.run("req-ib1"), "status") == "done")
+    }
+
+    @Test func withoutAFolderWatchTheTimerReadsTheInbox() async throws {
+        let lab = await Lab(); lab.engine.watchInbox = false; lab.on()
+        #expect(!lab.engine.watchingInbox)
+        try lab.drop("req-ib2", lab.newText())
+        #expect(await eventually(10) { lab.registry.replyExists("req-ib2") })
+    }
+
+    @Test func aWatchOnAFolderThatWentAwayIsMadeAgain() async throws {
+        let lab = await Lab(); lab.engine.watchedScanInterval = 0.1; lab.on()
+        #expect(lab.engine.watchingInbox)
+        try FileManager.default.removeItem(at: lab.registry.inbox)
+        #expect(await eventually(5) { !lab.engine.watchingInbox })
+        try FileManager.default.createDirectory(at: lab.registry.inbox, withIntermediateDirectories: true)
+        #expect(await eventually(5) { lab.engine.watchingInbox })
+        try lab.drop("req-ib3", lab.newText())
+        #expect(await eventually(10) { lab.registry.replyExists("req-ib3") })
+    }
+
+    @Test func aRecordStillBeingWrittenIsNotMovedAsideAsUnreadable() async throws {
+        let lab = await slowTimers(slowPoll: false); lab.on()
+        // A writer that does not stage and rename: the file appears empty, the folder watch fires, the content comes a moment later.
+        let name = "001.msg"
+        try FileManager.default.createDirectory(at: lab.registry.inbox, withIntermediateDirectories: true)
+        let url = lab.registry.inbox.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime]
+        let record = "schema=fm-task-inbox.v1\nat=\(iso.string(from: Date()))\nbody-terminator=1\n--\nfm-ask request-id=req-ib4\nfrom-kind=leader\nfrom-ref=leader-esim\nreply-home=/Users/x/firstmate\n--\n\(lab.newText())\n"
+        try Data(record.utf8).write(to: url)
+        #expect(await eventually(10) { lab.registry.replyExists("req-ib4") })
+        #expect(!lab.engine.activity.contains { $0.reason?.contains("unreadable") == true })
+    }
+
+    @Test func aStagedFileAndAFileThatIsNotARecordAreLeftAlone() async throws {
+        let lab = await slowTimers(slowPoll: false); lab.on()
+        try FileManager.default.createDirectory(at: lab.registry.inbox, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: lab.registry.inbox.appendingPathComponent(".staging.abc123").path, contents: Data("half".utf8))
+        FileManager.default.createFile(atPath: lab.registry.inbox.appendingPathComponent("notes.txt").path, contents: Data("x".utf8))
+        try await Task.sleep(nanoseconds: 700_000_000)
+        #expect(lab.engine.activity.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: lab.registry.inbox.appendingPathComponent("notes.txt").path))
+    }
+}
+
 private extension BridgeEngine {
     /// A short wait for a held run (the burst test only needs the requests to be accepted).
     func waitBudgetShort() { waitBudget = 0.25 }
