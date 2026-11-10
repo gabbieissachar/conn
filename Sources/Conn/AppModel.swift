@@ -88,6 +88,10 @@ final class AppModel: ObservableObject {
     @Published var focusPopoverShown = false
     @Published var focusSetupShown = false
     let editor: EditorModel
+    /// The native "Original reply" panel (README "The original reply panel"): the reply an answer sheet was made from, over the whole window.
+    let replyPanel: ReplyPanelModel
+    /// A link clicked in the original reply panel that leaves Conn. A check replaces it so no browser opens.
+    var openReplyLink: (URL) -> Void = { NSWorkspace.shared.open($0) }
     let fallback: FallbackTerminalController
     let renderer: RendererKind
     @Published private(set) var client: HerdrClient
@@ -282,12 +286,15 @@ final class AppModel: ObservableObject {
         campusAuth?.hops = campusHops
         web.campusHost = config.campusBase.host
         editor = EditorModel(defaults: AppModel.defaults)
+        replyPanel = ReplyPanelModel(defaults: AppModel.defaults, key: config.fixture ? "conn.replyPanel.frame.fixture" : "conn.replyPanel.frame")
         let made = FocusRuntime.make(config: config)
         focus = made.coordinator; focusPanel = made.panel; focusStandIns = made.standIns
         fallback = FallbackTerminalController()
         // A link in one web pane that points at the other switches to it and shows that exact address.
         // A click on a file in the reader's page (a link in a reply, a button in its Documents view) opens it in the Editor view, as `conn <path>` does.
         web.onFileRef = { [weak self] path in self?.openReaderFile(path) }
+        // The original reply an answer sheet hands over opens in a panel that floats over the whole window, not inside the column's web view.
+        web.onReplyPanel = { [weak self] content in self?.replyPanel.open(content) }
         web.onShowPane = { [weak self] kind, url in
             guard let self = self else { return }
             self.showWeb = true

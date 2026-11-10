@@ -97,5 +97,56 @@ function render() {
 }
 addEventListener('hashchange', render); render();
 </script>
+<!-- The answer sheet's "Original reply" panel, as the reader's sheet page draws it (README "The original reply panel"): the button, the panel with #reply-body, #reply-meta and #reply-close, the
+     picker that names the conversation, and the page's own handler that draws the reply into the panel. It is hidden here; a check clicks the button the way a person does. -->
+<style>
+  :root { --paper: #ffffff; --wash: #f4f5f8; --faint: #8b93a3; --you: #1f5fd1; --code: #f1f3f6; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  @media (prefers-color-scheme: dark) { :root { --paper: #1b1f27; --wash: #12151b; --faint: #7b8394; --you: #8db4ff; --code: #252a34; } }
+  .reply-panel { position: fixed; z-index: 8; left: 8px; right: 8px; bottom: 8px; height: 52vh; display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+  .rp-body { overflow: auto; padding: 10px 14px 16px; overscroll-behavior: contain; }
+  .rp-body .md { font-size: 15px; }
+  .rp-body .md p { margin: 0 0 .55em; }
+  .rp-body .md ul, .rp-body .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
+  .rp-body .md h4 { margin: .6em 0 .3em; font-size: 15px; }
+  .rp-body .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; }
+  .rp-body .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+  .rp-body .codebox { position: relative; margin: 0 0 .55em; }
+  .rp-body .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; }
+  .rp-body .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--faint); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+  .rp-body .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; }
+  .rp-body .copy::before { content: attr(data-label); }
+  .rp-body .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+  .rp-body .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
+  .rp-body .md th, .rp-body .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
+  .rp-body .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
+  .rp-body .md a { color: var(--you); }
+</style>
+<div id="sheet-fixture" style="display:none">
+  <select class="pick" id="pick"><option>fm-campus-agent-scout · 10:30 · 3 open</option></select>
+  <button class="reply-btn" id="reply-open" type="button" aria-controls="reply-panel" aria-expanded="false">Original reply</button>
+  <section class="reply-panel" id="reply-panel" role="dialog" aria-label="Original reply" hidden>
+    <div class="rp-head"><span>Original reply</span><span class="rp-meta" id="reply-meta"></span><button class="rp-close" id="reply-close" type="button" aria-label="Close the original reply">&#x2715;</button></div>
+    <div class="rp-body" id="reply-body"></div>
+  </section>
+</div>
+<script>
+(function () {
+  var REPLY = '<div class="md"><h4>Summary</h4><p>Singapore grew <b>6%</b>. Notes in <a class="file-ref" data-ref-file="reply-link" data-path="/nonexistent/conn-fixture/reply-notes.md">reply-notes.md</a> and <a data-ref-file="reply-web" href="https://example.test/docs">a web page</a>.</p>'
+    + '<div class="table-wrap"><table><thead><tr><th>Market</th><th>Change</th><th>Note</th></tr></thead><tbody><tr><td>SG</td><td>+6%</td><td>Voucher redemptions up on payday</td></tr><tr><td>MY</td><td>+2%</td><td>Flat after the holiday</td></tr><tr><td>TH</td><td>-1%</td><td>Fewer stores in the campaign</td></tr></tbody></table></div>'
+    + '<div class="codebox"><span class="code-label">sh</span><pre><code>python3 summarise.py --week 44</code></pre><button class="copy" type="button" data-label="Copy"></button></div>'
+    + '<ul><li>First finding</li><li>Second finding</li></ul></div>';
+  var open = false; try { open = sessionStorage.getItem('tr-q-reply') === '1'; } catch (e) {}
+  var btn = document.getElementById('reply-open'), panel = document.getElementById('reply-panel'), body = document.getElementById('reply-body'), meta = document.getElementById('reply-meta'), close = document.getElementById('reply-close');
+  function paint() {
+    btn.setAttribute('aria-expanded', String(open)); panel.hidden = !open; document.body.classList.toggle('reply-open', open);
+    if (!open) return;
+    meta.textContent = 'asked 10:32'; body.innerHTML = REPLY;
+  }
+  function setReply(v) { open = v; try { sessionStorage.setItem('tr-q-reply', v ? '1' : '0'); } catch (e) {} paint(); }
+  btn.addEventListener('click', function () { setReply(!open); });
+  close.addEventListener('click', function () { setReply(false); });
+  paint();
+})();
+</script>
 </body>
 </html>

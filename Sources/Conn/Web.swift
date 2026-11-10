@@ -56,6 +56,10 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     /// The person clicked a file in the page (`.file-ref[data-path]`, in a reply or in the Documents view): the path the page gave, unchecked. Reader pages only (the full
     /// Reader and the Watch columns); the app opens it in the Editor view (`ReaderFileRef`).
     var onFileRef: ((String) -> Void)?
+    /// The person opened the original reply in an answer sheet (the sheet's "Original reply" button): what the page drew, handed over after the page's own panel was closed again
+    /// (`replyScript`, README "The original reply panel"). Reader pages only; the app shows it in the native panel.
+    var onReplyPanel: ((ReplyPanelContent) -> Void)?
+    private var replyProxy: ReplyPanelProxy?
     private var useProxy: UseMessageProxy?
     private var linkProxy: SessionLinkProxy?
     private var fileProxy: FileRefProxy?
@@ -92,8 +96,15 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             cfg.userContentController.addUserScript(WKUserScript(source: WebBox.fileRefScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             cfg.userContentController.add(files, name: WebBox.fileRefMessage)
         }
+        let replies = kind == .reader ? ReplyPanelProxy() : nil
+        if let replies = replies {
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.replyScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            cfg.userContentController.add(replies, name: WebBox.replyMessage)
+        }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
+        replies?.box = self
+        replyProxy = replies
         proxy?.box = self
         useProxy = proxy
         links?.box = self
@@ -214,6 +225,42 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     })();
     """
 
+    static let replyMessage = "connReply"
+    /// The answer sheet's "Original reply" button opens a panel inside the page (`#reply-panel`), which cannot leave the web view it is in. In the same click, after the page's own handler
+    /// has drawn the reply into `#reply-body`, this reads it (the HTML the reader's markdown code made, and the page's styles), closes the page's panel again with the page's own Close
+    /// (so the sheet does not move aside and no panel flashes), and hands the reply to Conn, which shows it in a native panel that floats over the whole window. A click that closed the page's
+    /// panel, or a page without the sheet's elements, is left alone. The page's remembered "open" is reset at load so the next sheet does not open its own panel by itself. The page is not edited.
+    static let replyScript = """
+    (function () {
+      if (window.__connReply) return;
+      window.__connReply = true;
+      try { sessionStorage.setItem('tr-q-reply', '0'); } catch (e) {}
+      function styles() {
+        var out = [];
+        try {
+          Array.prototype.forEach.call(document.styleSheets, function (s) {
+            try { Array.prototype.forEach.call(s.cssRules, function (r) { out.push(r.cssText); }); } catch (e) {}
+          });
+        } catch (e) {}
+        return out.join('\\n');
+      }
+      window.addEventListener('click', function (e) {
+        var t = e.target;
+        var b = t && t.closest ? t.closest('#reply-open') : null;
+        if (!b) return;
+        var panel = document.getElementById('reply-panel'), body = document.getElementById('reply-body');
+        if (!panel || panel.hidden || !body || !body.innerHTML) return;
+        var meta = document.getElementById('reply-meta'), close = document.getElementById('reply-close'), pick = document.getElementById('pick');
+        var head = panel.querySelector('.rp-head span');
+        var source = '';
+        try { var o = pick && pick.selectedOptions && pick.selectedOptions[0]; source = o ? o.text.split(' \\u00b7 ')[0] : ''; } catch (x) {}
+        var msg = { title: head ? head.textContent : '', meta: meta ? meta.textContent : '', source: source, html: body.innerHTML, css: styles() };
+        if (close) close.click();
+        try { window.webkit.messageHandlers.\(replyMessage).postMessage(msg); } catch (x) {}
+      }, false);
+    })();
+    """
+
     /// Show a conversation in this column: at its newest turn, or at one turn (the lite page scrolls to that reply and outlines it).
     /// With `reload` false and the page already showing, only the address changes (the page follows it in place, so the column keeps
     /// its scroll in everything else). With `reload` true, or when the page is not ready or does not follow an address change, the
@@ -246,6 +293,9 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.sessionLinkMessage)
         }
         if fileProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.fileRefMessage) }
+        if replyProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.replyMessage) }
+        replyProxy = nil
+        onReplyPanel = nil
         useProxy = nil
         linkProxy = nil
         fileProxy = nil
@@ -550,6 +600,15 @@ private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// Receives the original reply an answer sheet hands over, without keeping the box alive. What is not a reply Conn can show (no HTML, too big) is dropped.
+private final class ReplyPanelProxy: NSObject, WKScriptMessageHandler {
+    weak var box: WebBox?
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let content = ReplyPanelContent.parse(message.body) else { return }
+        DispatchQueue.main.async { [weak self] in self?.box?.onReplyPanel?(content) }
+    }
+}
+
 /// Receives a file click from a reader page without keeping the box alive. Only a string path is passed on; the app checks it.
 private final class FileRefProxy: NSObject, WKScriptMessageHandler {
     weak var box: WebBox?
@@ -568,6 +627,8 @@ final class WebHub {
     var onShowPane: ((WebKind, URL) -> Void)?
     /// A click on a file in a reader page (the Reader column or a Watch column): the page's `data-path`, unchecked.
     var onFileRef: ((String) -> Void)?
+    /// The original reply an answer sheet in a reader page handed over (the Reader column or a Watch column).
+    var onReplyPanel: ((ReplyPanelContent) -> Void)?
 
     /// A test's stand-in reader: the address the Reader pane (and the asks) use instead of `CONN_READER_URL`.
     private let readerURL: URL?
@@ -604,6 +665,7 @@ final class WebHub {
         }
         box.showInPane = { [weak self] k, url in self?.onShowPane?(k, url) }
         box.onFileRef = { [weak self] path in self?.onFileRef?(path) }
+        box.onReplyPanel = { [weak self] c in self?.onReplyPanel?(c) }
         return box
     }
 
@@ -649,6 +711,7 @@ final class WebHub {
     func makeLiteBox(startFragment: String?) -> WebBox {
         let box = WebBox(kind: .reader, baseURL: liteBaseURL, fixtureDir: fixture ? resourceDir : nil, lite: true, startFragment: startFragment, campusHost: campusHost)
         box.onFileRef = { [weak self] path in self?.onFileRef?(path) }
+        box.onReplyPanel = { [weak self] c in self?.onReplyPanel?(c) }
         return box
     }
 

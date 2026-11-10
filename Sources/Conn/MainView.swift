@@ -682,6 +682,7 @@ struct MainView: View {
                     Button { app.showSwitcher = true } label: { Image(systemName: "magnifyingglass") }.help("Quick switcher (⌘K)")
                 }
             }
+            ReplyPanelLayer(model: app.replyPanel)
             if app.showSwitcher { QuickSwitcher().transition(.opacity) }
             if app.mode == .editor, let q = app.editor.quickOpen { QuickOpenView(model: q, editor: app.editor).transition(.opacity) }
             if let t = app.toastText {
