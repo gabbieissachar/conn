@@ -18,8 +18,9 @@ extension CampusCheck {
         await control("/__fake/run?c=\(id)&text=Find%20the%20placement%20rules&ask=0")
 
         // 1. While it runs: the input is there as soon as the call is made, with no result yet, and the state says running.
-        let running = await until(20) { tool()?.toolStatus == .running && tool()?.input.isEmpty == false }
-        let early = tool()
+        // The call is read at the moment the poll sees it running (reading it again after the poll returns can be too late on a loaded machine: the stand-in's call lasts about a second).
+        var early: CampusItem?
+        let running = await until(20) { if tool()?.toolStatus == .running, tool()?.input.isEmpty == false { early = tool(); return true }; return false }
         await shot("campus-tool-1-running.png")
         report("Campus tool call: while it runs the card has the name, the title and the whole input as code, a running state and no result yet",
                running && early?.title == "campus.search" && early?.input.hasPrefix("const searches = [") == true && early?.input.contains("tools.campus.search") == true && early?.inputFormat == .code && early?.output.isEmpty == true,
