@@ -72,8 +72,11 @@ final class OpenAskStore: ObservableObject {
 
     func stop() { timer?.invalidate(); timer = nil }
 
+    /// A check holds the polling still while it feeds the store answers by hand (`apply`): a poll that lands in between would put the fixture's asks back and make the step depend on the clock.
+    var pollingPaused = false
+
     func refresh() {
-        guard let source = source, !inFlight else { return }
+        guard let source = source, !inFlight, !pollingPaused else { return }
         inFlight = true
         polls += 1
         Task { [weak self] in

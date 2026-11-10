@@ -134,6 +134,10 @@ enum AskRowsCheck {
 
         // 5. The reader goes away: after the forgiven first failure the rows show no asks and the order is today's.
         let feed = store.asks.byPane.values.map { $0 }
+        // From here the steps feed the store answers by hand (`apply`) and read it half a second later: a poll of the fixture feed landing in between would put its asks back and the step would depend
+        // on the clock (it failed one run in a few). Polling stays still for the rest of this check.
+        store.pollingPaused = true
+        defer { store.pollingPaused = false }
         store.apply(nil, at: Date())
         let kept = store.asks.byPane.count == 8
         store.apply(nil, at: Date()); await wait(0.5)

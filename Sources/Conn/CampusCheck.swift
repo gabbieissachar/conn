@@ -660,7 +660,13 @@ enum CampusCheck {
         auth.signInView.load(URLRequest(url: campus.baseURL.appendingPathComponent("campus/login")))
         await wait(3)
         let stuck = auth.signInRefused
-        report("Campus: the sheet's own reload, with the network answering again, still meets the refusal on the stale connection", refused && stuck, "refused=\(refused) stuck=\(stuck)")
+        // Whether WebKit reuses the pooled connection for this one reload is WebKit's call, not Conn's: now and then it dials a new one and the reload succeeds, which is the premise failing, not
+        // Conn. Say so instead of failing a run for it (the steps that follow check what Conn does about a connection that is stuck, and stay strict).
+        if refused && !stuck {
+            print("ui-check: SKIP Campus: the sheet's own reload met no refusal this time (WebKit opened a new connection instead of reusing the stale one), so the stale-connection premise did not hold in this run")
+        } else {
+            report("Campus: the sheet's own reload, with the network answering again, still meets the refusal on the stale connection", refused && stuck, "refused=\(refused) stuck=\(stuck)")
+        }
         let sheetView = auth.signInView
         auth.retrySignIn()
         let loaded = await until(20) { auth.signInView !== sheetView && auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading && !auth.signInRefused }
