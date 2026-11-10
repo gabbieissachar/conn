@@ -102,8 +102,10 @@ private let c = CampusAddress(kind: "private", folder: "default", id: "ses_fakeS
 }
 
 @MainActor private func until(_ timeout: Double = 5, _ cond: () -> Bool) async -> Bool {
-    var t = 0.0
-    while !cond() && t < timeout { try? await Task.sleep(nanoseconds: 20_000_000); t += 0.02 }
+    // A wall-clock deadline with room: the suites run in parallel and one of them holds the main actor for about 20 s, so counting sleeps of 20 ms
+    // (which stretch under that load) gave up before the condition had a turn on the main actor. A passing wait still ends as soon as the condition holds.
+    let end = Date().addingTimeInterval(max(timeout, 30))
+    while !cond() && Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
     return cond()
 }
 

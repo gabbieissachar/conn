@@ -6,8 +6,10 @@ import ConnCore
 import FakeCampusKit
 
 @MainActor private func until(_ timeout: Double = 5, _ cond: () -> Bool) async -> Bool {
-    var t = 0.0
-    while !cond() && t < timeout { try? await Task.sleep(nanoseconds: 20_000_000); t += 0.02 }
+    // A wall-clock deadline with room: the suites run in parallel and one of them holds the main actor for about 20 s, so counting sleeps of 20 ms
+    // (which stretch under that load) gave up before the condition had a turn on the main actor. A passing wait still ends as soon as the condition holds.
+    let end = Date().addingTimeInterval(max(timeout, 30))
+    while !cond() && Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
     return cond()
 }
 
@@ -300,7 +302,7 @@ private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
     }
 
     @Test func theLoopTriesOnItsOwnWhenTheTimeComesAndNudgeReadsTheCookieAgain() async throws {
-        let (keeper, renewer, world, _, _) = make(life: 1, mode: .renews)        // a one-second session: the five-minute lead has long passed
+        let (keeper, renewer, world, _, _) = make(life: 60, mode: .renews)       // a one-minute session: the five-minute lead has long passed, and the session cannot run out before the loop's first look on a slow machine (a one-second one could, and then there was no cookie to renew)
         keeper.pollInterval = 0.1
         world.setSessionLife(3600)
         keeper.start()
