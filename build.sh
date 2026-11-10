@@ -61,7 +61,18 @@ cat > "$APP/Contents/Info.plist.new.$$" <<'PLIST'
 </dict></plist>
 PLIST
 mv -f "$APP/Contents/Info.plist.new.$$" "$APP/Contents/Info.plist"
-# Sign the whole bundle ad hoc, last, so the signature seals Info.plist and every resource above.
-codesign --force --sign - "$APP"
+# Sign the whole bundle, last, so the signature seals Info.plist and every resource above.
+# With the local self-signed identity (name overridable by CONN_SIGN_IDENTITY) every build carries the same
+# signing identity, so macOS privacy grants (Music, iCloud Drive, other apps' data, App Management) survive a
+# rebuild. Without it the build signs ad hoc, where every build is a new app to macOS and grants are lost.
+# A self-signed certificate lists as CSSMERR_TP_NOT_TRUSTED, which is expected, so the lookup does not use -v.
+SIGN_IDENTITY=${CONN_SIGN_IDENTITY:-Conn Local Signing}
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$SIGN_IDENTITY\""; then
+  codesign --force --sign "$SIGN_IDENTITY" "$APP"
+  echo "signed with identity: $SIGN_IDENTITY"
+else
+  codesign --force --sign - "$APP"
+  echo "signed ad hoc (no code-signing identity named \"$SIGN_IDENTITY\" in the keychain; see README \"Signing\")"
+fi
 codesign --verify --verbose=2 "$APP"
 echo "built $APP"

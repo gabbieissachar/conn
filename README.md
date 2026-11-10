@@ -15,7 +15,7 @@ SwiftTerm normally draws from a display-link tick that follows its own dirty mar
 Command Line Tools and SwiftPM only. No Xcode.
 
 ```
-./build.sh                 # build/Conn.app (release), about 5 minutes the first time (SwiftTerm dominates); signed ad hoc, see below
+./build.sh                 # build/Conn.app (release), about 5 minutes the first time (SwiftTerm dominates); signed with "Conn Local Signing" when present, else ad hoc, see below
 ./run.sh                   # live: observe-only client of Herdr session "esim"
 ./run.sh --fixture         # stand-in Herdr with invented agents and pages: safe to screen-share, compose box enabled
 ./run.sh --fixture --renderer grid   # the same with the cell-grid pane view
@@ -33,7 +33,9 @@ CONN_CAMPUS_CHECK_STOP=stale ./run.sh --fixture --campus-check   # the same, end
 CONN_EMBED_URL=file:///path/to/embed.html ./run.sh --fixture --campus-check   # the same, plus the steps that draw Campus on a copy of the reader's embed page (without it they print SKIP)
 ```
 
-**The build installs by rename and signs the bundle.** `build.sh` puts every file into `build/Conn.app` (and `build/FakeHerdr`, `build/FakeCampus`) as a new file plus a rename, never by writing over the old one: macOS caches a code signature per inode, so overwriting a built executable in place makes the next launch die at dyld with "Code Signature Invalid". The last step signs the whole bundle ad hoc (`codesign --force --sign -`) and runs `codesign --verify --verbose=2 build/Conn.app`; the build fails if that does not pass. Check it yourself with `codesign --verify --verbose=2 build/Conn.app`.
+**The build installs by rename and signs the bundle.** `build.sh` puts every file into `build/Conn.app` (and `build/FakeHerdr`, `build/FakeCampus`) as a new file plus a rename, never by writing over the old one: macOS caches a code signature per inode, so overwriting a built executable in place makes the next launch die at dyld with "Code Signature Invalid". The last step signs the whole bundle and runs `codesign --verify --verbose=2 build/Conn.app`; the build fails if that does not pass. Check it yourself with `codesign --verify --verbose=2 build/Conn.app`.
+
+**Signing: one stable identity keeps macOS privacy grants across rebuilds.** An ad hoc signature (`codesign --sign -`) has no identity, so macOS treats every rebuild as a new app and forgets what you allowed it (Music, iCloud Drive, other apps' data, App Management, notifications). `build.sh` therefore signs with the code-signing certificate named `Conn Local Signing` when it is in your keychain (set `CONN_SIGN_IDENTITY` to use another name), prints `signed with identity: ...`, and falls back to ad hoc signing, saying so, when there is no such certificate. To create it once: Keychain Access > Certificate Assistant > Create a Certificate, Name `Conn Local Signing`, Identity Type Self Signed Root, Certificate Type Code Signing, then Create. The certificate lists as `CSSMERR_TP_NOT_TRUSTED` in `security find-identity -p codesigning`; that is expected for a self-signed root and signing works. The build never changes the keychain or any trust setting. The first launch after the switch asks for each permission once more, because the identity differs from the ad hoc one; after that the grants stay.
 
 Conn's first launch migrates app-owned data from Helm when the new locations are absent. It moves `~/Library/Application Support/Helm` to `~/Library/Application Support/Conn` and copies the old `dev.local.helm` UserDefaults domain to `dev.local.conn`, renaming Conn-owned `helm.*` keys to `conn.*`. Existing Conn locations are never overwritten. The migration is covered by unit tests.
 
