@@ -23,6 +23,22 @@ install_file() {
   chmod "$mode" "$tmp"
   mv -f "$tmp" "$dest"
 }
+# Which Conn this build is. macOS finds an app by its bundle identifier (System Settings' "Quit & Reopen", `open -b`, Launch Services),
+# and every copy with the same identifier is a candidate: with eight copies of dev.local.conn registered, "Quit & Reopen" after the
+# App Management switch opened an old worker copy instead of the running one. So only the primary checkout of the repository
+# (not a git worktree, not under a temporary folder) builds the Conn a person runs, "Conn" with dev.local.conn. Every other build
+# (a worker's worktree, a scratch clone) is "Conn (dev)" with dev.local.conn.dev, which no reopen of the real one can pick, and which
+# a person cannot mistake for it in the menu bar or the Dock. CONN_BUNDLE_ID and CONN_BUNDLE_NAME override both.
+primary_checkout() {
+  [ "$(git rev-parse --git-dir 2>/dev/null)" = "$(git rev-parse --git-common-dir 2>/dev/null)" ] || return 1
+  case "$PWD" in /tmp/*|/private/tmp/*|/var/folders/*|/private/var/*) return 1 ;; esac
+  return 0
+}
+if primary_checkout; then DEFAULT_ID=dev.local.conn; DEFAULT_NAME=Conn; else DEFAULT_ID=dev.local.conn.dev; DEFAULT_NAME="Conn (dev)"; fi
+BUNDLE_ID=${CONN_BUNDLE_ID:-$DEFAULT_ID}
+BUNDLE_NAME=${CONN_BUNDLE_NAME:-$DEFAULT_NAME}
+# A build number that grows with the history, so that when two copies do share an identifier Launch Services prefers the newer one.
+BUILD_NUMBER=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture" "$APP/Contents/Resources/bin"
 install_file ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn" 755
 install_file ".build/$CONFIG/FakeHerdr" build/FakeHerdr 755
@@ -33,17 +49,18 @@ done
 install_file Resources/Conn.icns "$APP/Contents/Resources/Conn.icns" 644
 # The `conn` shell command (README "Opening a folder from the terminal"): File > Install 'conn' Command in PATH links it from ~/.local/bin.
 install_file Resources/bin/conn "$APP/Contents/Resources/bin/conn" 755
-cat > "$APP/Contents/Info.plist.new.$$" <<'PLIST'
+cat > "$APP/Contents/Info.plist.new.$$" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>dev.local.conn</string>
-  <key>CFBundleName</key><string>Conn</string>
-  <key>CFBundleDisplayName</key><string>Conn</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleName</key><string>$BUNDLE_NAME</string>
+  <key>CFBundleDisplayName</key><string>$BUNDLE_NAME</string>
   <key>CFBundleExecutable</key><string>Conn</string>
   <key>CFBundleIconFile</key><string>Conn</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleDocumentTypes</key><array><dict>
@@ -75,4 +92,4 @@ else
   echo "signed ad hoc (no code-signing identity named \"$SIGN_IDENTITY\" in the keychain; see README \"Signing\")"
 fi
 codesign --verify --verbose=2 "$APP"
-echo "built $APP"
+echo "built $APP ($BUNDLE_NAME, $BUNDLE_ID, build $BUILD_NUMBER)"
