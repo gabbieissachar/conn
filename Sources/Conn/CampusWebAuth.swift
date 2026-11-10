@@ -1,12 +1,13 @@
 // Campus sign-in, the cookie way (decision C8): the person signs in to Campus inside Conn (Google sign-in in a Conn web view), and every
 // Campus API call then runs same-origin from inside a hidden, signed-in web view. The `campus_session` cookie is HttpOnly and stays in
 // WebKit's own cookie store: Conn's code only ever receives a status, JSON text and event text, and never reads, prints, logs, stores
-// or copies a cookie or a token. `CampusAuth` (ConnCore) is the one seam, so an API key can replace this file's class later without
+// or copies a cookie or a token (the one exception: when the connection is dropped, `CampusWebStores` hands the cookie objects from the old store to the new one without looking at a value). `CampusAuth` (ConnCore) is the one seam, so an API key can replace this file's class later without
 // touching a view.
 //
 // Two web views share one website data store: the API view (never shown; sits on a light page of Campus's origin so `fetch` is same-origin)
 // and the sign-in view (shown in a sheet on the login page). A scripted launch uses a non-persistent store, so a check never reads or
-// changes the cookies of a person's own sign-in.
+// changes the cookies of a person's own sign-in. The store can be replaced by a new one that carries the session (`recycle`, see CampusWebStores): that is how Conn
+// drops a connection that WebKit pooled while the network refused Campus, so "Try again" meets the network as it is now.
 //
 // The sign-in view also reports what the network does with Campus: Campus answers only on the company private network, and off it a public ingress answers every
 // path with nginx's `403 Forbidden` page. A main-frame 403 (or a failed load) on Campus's own host is not shown as that page: the sheet says it is the network
@@ -19,10 +20,17 @@ import ConnCore
 final class CampusWebAuth: NSObject, ObservableObject, CampusAuth, WKNavigationDelegate, WKUIDelegate {
     let origin: URL
     var kind: String { "cookie" }
-    let apiView: WKWebView
-    let signInView: WKWebView
-    /// The one cookie store the API view, the sign-in view and the silent refresh's hidden view share.
-    let store: WKWebsiteDataStore
+    private(set) var apiView: WKWebView
+    /// Published: a replaced store means a new view, and the sheet follows it.
+    @Published private(set) var signInView: WKWebView
+    /// Where the one cookie store the API view, the sign-in view and the silent refresh's hidden view share comes from (it can be replaced).
+    let stores: CampusWebStores
+    var store: WKWebsiteDataStore { stores.current }
+    /// The sign-in sheet is open: a store is not swapped under a person who is signing in by hand (Try again in the sheet is the person's own choice).
+    var sheetOpen = false
+    /// How many times the connection was dropped by replacing the store (a check reads it).
+    private(set) var recycles = 0
+    private var recycling = false
     /// The store shows the sign-in sheet.
     var onSignIn: (() -> Void)?
     /// The sign-in sheet's last main-frame answer from Campus's own host was a refusal (a 403, or a load that failed): the sheet says so instead of showing the raw page.
@@ -36,23 +44,62 @@ final class CampusWebAuth: NSObject, ObservableObject, CampusAuth, WKNavigationD
     private var proxy: CampusStreamProxy?
     static let streamMessage = "connCampusStream"
 
-    init(origin: URL, persistent: Bool) {
+    init(origin: URL, persistent: Bool, defaults: UserDefaults = .standard) {
         self.origin = origin
-        let store: WKWebsiteDataStore = persistent ? .default() : .nonPersistent()
-        self.store = store
-        func config() -> WKWebViewConfiguration { let c = WKWebViewConfiguration(); c.websiteDataStore = store; return c }
-        let apiCfg = config()
+        let stores = CampusWebStores(persistent: persistent, defaults: defaults)
+        self.stores = stores
         let proxy = CampusStreamProxy()
-        apiCfg.userContentController.add(proxy, name: CampusWebAuth.streamMessage)
-        apiView = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: apiCfg)
-        signInView = WKWebView(frame: .zero, configuration: config())
+        let views = CampusWebAuth.makeViews(store: stores.current, proxy: proxy)
+        apiView = views.api
+        signInView = views.signIn
         super.init()
         self.proxy = proxy
         proxy.auth = self
-        apiView.navigationDelegate = self
-        signInView.navigationDelegate = self
-        signInView.uiDelegate = self
-        apiView.allowsBackForwardNavigationGestures = false
+        wire(views.api, views.signIn)
+    }
+
+    private static func makeViews(store: WKWebsiteDataStore, proxy: CampusStreamProxy) -> (api: WKWebView, signIn: WKWebView) {
+        func config() -> WKWebViewConfiguration { let c = WKWebViewConfiguration(); c.websiteDataStore = store; return c }
+        let apiCfg = config()
+        apiCfg.userContentController.add(proxy, name: CampusWebAuth.streamMessage)
+        return (WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: apiCfg), WKWebView(frame: .zero, configuration: config()))
+    }
+
+    private func wire(_ api: WKWebView, _ signIn: WKWebView) {
+        api.navigationDelegate = self
+        signIn.navigationDelegate = self
+        signIn.uiDelegate = self
+        api.allowsBackForwardNavigationGestures = false
+    }
+
+    // MARK: dropping the connection
+
+    /// A network that came back must not meet the answer of a connection that was open while it refused (see CampusWebStores). Not while the sign-in sheet is open.
+    func resetConnection() async { await recycle(whenSheetOpen: false) }
+
+    /// Replace the website data store with a new one that carries the session, and rebuild the web views on it. The page the API view sat on, a stream in it and the
+    /// sign-in view's page are given up; the callers ask again.
+    /// `whenSheetOpen: false` is Conn's own drop: it gives up if the sign-in sheet is open by the time the new store is ready (the check is made at the last moment, with no waiting
+    /// between it and the swap), because a store is not swapped under a person who is signing in by hand.
+    func recycle(whenSheetOpen: Bool = true) async {
+        guard !recycling, let proxy = proxy, whenSheetOpen || !sheetOpen else { return }
+        recycling = true
+        defer { recycling = false }
+        let oldViews = (api: apiView, signIn: signInView)
+        let prepared = await stores.prepare(campusHost: origin.host ?? "")
+        if !whenSheetOpen && sheetOpen { await stores.discard(prepared); return }
+        let retired = stores.install(prepared)
+        let views = CampusWebAuth.makeViews(store: stores.current, proxy: proxy)
+        for id in Array(streams.keys) { endStream(id, abort: false) }
+        loaded = false
+        loading = nil
+        apiView = views.api
+        signInView = views.signIn
+        wire(views.api, views.signIn)
+        for v in [oldViews.api, oldViews.signIn] { v.navigationDelegate = nil; v.uiDelegate = nil; v.stopLoading() }
+        oldViews.api.configuration.userContentController.removeScriptMessageHandler(forName: CampusWebAuth.streamMessage)
+        recycles += 1
+        Task { @MainActor [stores] in await stores.forget(retired) }
     }
 
     // MARK: requests
@@ -195,10 +242,13 @@ final class CampusWebAuth: NSObject, ObservableObject, CampusAuth, WKNavigationD
         onSignIn?()
     }
 
-    /// "Try again" in the sheet: load the sign-in page afresh.
+    /// "Try again" in the sheet: drop the connection (the page that was refused may have come over a stale one), then load the sign-in page afresh.
     func retrySignIn() {
         signInRefused = false
-        signInView.load(URLRequest(url: origin.appendingPathComponent("campus/login")))
+        Task { @MainActor in
+            await self.recycle()
+            self.signInView.load(URLRequest(url: self.origin.appendingPathComponent("campus/login")))
+        }
     }
 
     private func isCampus(_ url: URL?) -> Bool { url?.host?.lowercased() == origin.host?.lowercased() }

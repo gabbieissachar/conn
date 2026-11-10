@@ -282,3 +282,27 @@ public final class CampusSessionKeeper: ObservableObject {
         refreshNeedsSignIn()
     }
 }
+
+
+/// Which cookies belong to Campus's sign-in when Conn moves the session to a new website data store (the store it leaves may also hold other pages' cookies).
+/// Only a cookie's domain is looked at, never its name or value.
+public enum CampusCookieScope {
+    /// Campus's own host or a parent domain of it (written with or without the leading dot).
+    public static func isCampus(domain: String, campusHost: String) -> Bool {
+        let d = domain.lowercased().drop { $0 == "." }
+        let host = campusHost.lowercased()
+        return !d.isEmpty && (host == d || host.hasSuffix("." + d))
+    }
+    /// Campus's own host, and no parent domain: what Conn takes out of a shared store once Campus has moved (a parent domain's cookies serve other sites too).
+    public static func isExactly(domain: String, campusHost: String) -> Bool {
+        let d = domain.lowercased().drop { $0 == "." }
+        return !d.isEmpty && d == campusHost.lowercased()
+    }
+    /// Google's own domains, whose sign-in the silent refresh rides on.
+    public static func isGoogle(domain: String) -> Bool {
+        let d = domain.lowercased().drop { $0 == "." }
+        return d == "google.com" || d.hasSuffix(".google.com")
+    }
+    /// Carried over from a shared store: Campus's and Google's.
+    public static func carriesSignIn(domain: String, campusHost: String) -> Bool { isCampus(domain: domain, campusHost: campusHost) || isGoogle(domain: domain) }
+}

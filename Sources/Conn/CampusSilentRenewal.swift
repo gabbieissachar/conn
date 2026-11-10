@@ -21,7 +21,9 @@ import ConnCore
 @MainActor
 final class CampusSilentRenewal: NSObject, CampusRenewing, WKNavigationDelegate, WKUIDelegate {
     let origin: URL
-    private let store: WKWebsiteDataStore
+    /// The current cookie store (it is replaced when Conn drops a stale connection, see CampusWebStores).
+    private let storeProvider: () -> WKWebsiteDataStore
+    private var store: WKWebsiteDataStore { storeProvider() }
     /// Seconds a login page or another site must stay with no new navigation before it counts as waiting for the person.
     var settleDelay: TimeInterval = 2.5
     private var view: WKWebView?
@@ -43,8 +45,8 @@ final class CampusSilentRenewal: NSObject, CampusRenewing, WKNavigationDelegate,
         var token = 0
     }
 
-    init(origin: URL, store: WKWebsiteDataStore) {
-        self.origin = origin; self.store = store
+    init(origin: URL, store: @escaping () -> WKWebsiteDataStore) {
+        self.origin = origin; self.storeProvider = store
     }
 
     // MARK: the session's end

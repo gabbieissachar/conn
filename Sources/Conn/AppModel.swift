@@ -271,12 +271,12 @@ final class AppModel: ObservableObject {
         promptWatch = PermissionPromptWatch(client: HerdrClient(endpoint: endpoint))
         openAsks = AppModel.makeOpenAskStore(config: config, env: env, web: web, fixtureDir: fixtureDir, herdrSession: endpoint.session)
         // A scripted launch reads cookies from a store of its own, so a check never touches a person's own sign-in.
-        campusAuth = config.campusEnabled ? CampusWebAuth(origin: config.campusBase, persistent: !config.isScriptedLaunch) : nil
+        campusAuth = config.campusEnabled ? CampusWebAuth(origin: config.campusBase, persistent: !config.isScriptedLaunch, defaults: AppModel.defaults) : nil
         campus = CampusStore(auth: campusAuth, baseURL: config.campusBase)
         // A fixture launch keeps its Campus stars apart from the real ones (as it does the reader's chip order).
         campusStars = CampusStarStore(defaults: AppModel.defaults, key: config.fixture ? "conn.campusStars.fixture" : "conn.campusStars")
         campusBridge = config.campusEnabled ? AppModel.makeBridge(config: config, env: env, store: campus) : nil
-        campusRenewal = campusAuth.map { CampusSilentRenewal(origin: config.campusBase, store: $0.store) }
+        campusRenewal = campusAuth.map { CampusSilentRenewal(origin: config.campusBase, store: { [unowned auth = $0] in auth.store }) }
         campusKeeper = campusRenewal.map { CampusSessionKeeper(renewer: $0, log: AppModel.makeRenewalLog(config: config)) }
         campusHops = campusAuth == nil ? nil : AppModel.makeHopLog(config: config)
         campusAuth?.hops = campusHops

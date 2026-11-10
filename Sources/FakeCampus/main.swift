@@ -13,7 +13,8 @@ func option(_ name: String) -> String? { guard let i = args.firstIndex(of: name)
 let world = FakeCampusWorld(authMode: .cookie)
 if let s = option("--step").flatMap(Double.init) { world.stepDelay = s }
 // Off the company private network the real Campus is a public ingress that answers every path with nginx's `403 Forbidden` page; `--blocked-network` starts the stand-in
-// that way (`/__fake/blocked-network?on=1` and `?on=0` flip it live).
+// that way (`/__fake/blocked-network?on=1` and `?on=0` flip it live). `?on=1&sticky=1` also makes the refusal stick to the connections open now (after `/__fake/keep-alive?on=1`
+// lets a client pool them): they keep answering it after `?on=0`, and only a new connection gets through (a connection to the public ingress that outlives the network's return).
 if args.contains("--blocked-network") { world.setBlockedNetwork(true) }
 let server = FakeCampusServer(world: world)
 do { try server.start(port: UInt16(option("--port") ?? "0") ?? 0) } catch { fail("could not listen: \(error)") }

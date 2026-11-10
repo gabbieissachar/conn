@@ -163,6 +163,12 @@ enum CampusCheck {
 
         await blockedChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
 
+        await staleConnectionChecks(model: model, report: report, wait: wait, until: until, control: control, js: js, shot: shot)
+
+        await storeSwapChecks(report: report, host: base.host ?? "127.0.0.1")
+        // CONN_CAMPUS_CHECK_STOP=stale ends the Campus checks here (about a minute instead of the full run), for working on these steps.
+        if ProcessInfo.processInfo.environment["CONN_CAMPUS_CHECK_STOP"] == "stale" { print("ui-check: stopped after the stale-connection steps (CONN_CAMPUS_CHECK_STOP=stale)"); return }
+
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
         await embedComposerChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
@@ -591,6 +597,158 @@ enum CampusCheck {
         let signedIn = await until(15) { campus.link == .live }
         model.closeCampusSignIn()
         report("Campus: signing in after a 401 brings the list back live", signedIn && campus.conversations.count == rowsBefore, "link=\(campus.link)")
+    }
+
+    // MARK: a connection that outlives the refusal
+
+    /// The sign-in sheet is closed and its window is gone (a sheet's window outlives its closing by a moment), so the next step meets a quiet window list.
+    private static func settleSheet(_ model: AppModel, wait: (Double) async -> Void) async {
+        var last = NSApp.windows.count, quiet = 0.0, total = 0.0
+        while quiet < 1.5 && total < 10 {
+            await wait(0.25); total += 0.25
+            let now = NSApp.windows.count
+            if now == last && !model.campusSignInShown { quiet += 0.25 } else { quiet = 0; last = now }
+        }
+    }
+
+    /// Nathan's Zscaler case (2026-11-09 17:13 to 17:33 UTC): the network refused Campus, he turned Zscaler private access on, and "Try again" kept meeting the 403 until Conn
+    /// was quit and reopened. The stand-in models it: with keep-alive on, a connection that is open while the block (sticky) is on, or opens under it, keeps answering the
+    /// refusal after the network answers again; only a new connection gets through. WebKit pools one connection per website data store and reuses it for every page and
+    /// fetch, so a plain look, a reload and a new web view all meet it. Try again must drop it (a new store that carries the session), the sheet's Try again as well, and
+    /// while the network keeps refusing Conn drops it by itself.
+    static func staleConnectionChecks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, until: (Double, () -> Bool) async -> Bool,
+                                      control: (String) async -> Void, js: (WKWebView, String) async -> String, shot: (String) async -> Void) async {
+        let campus = model.campus
+        guard let auth = model.campusAuth else { return }
+        if campus.link != .live { report("Campus: the stale-connection checks need a live Campus", false, "link=\(campus.link)"); return }
+        let rows = campus.conversations.count
+        let savedInterval = campus.blockedResetInterval
+        defer { campus.blockedResetInterval = savedInterval }
+
+        // 1. A connection that the refusal stuck to still answers it after the network answers again: a plain look, even a reload and a new look, meets it.
+        campus.blockedResetInterval = 3600                                    // by itself, not in this step
+        await control("/__fake/keep-alive?on=1")
+        campus.kick()
+        await wait(1.5)                                                       // Conn's calls now ride pooled connections
+        await control("/__fake/blocked-network?on=1&sticky=1")
+        campus.kick()
+        let blocked = await until(15) { campus.link == .blocked }
+        await control("/__fake/blocked-network?on=0")
+        let recyclesBefore = auth.recycles
+        campus.kick()
+        await wait(4)
+        let stillBlocked = campus.link == .blocked
+        report("Campus: the network answers again, yet a plain look on the connection the refusal stuck to still meets the 403 (the stale connection Nathan's Conn kept until it was quit)",
+               blocked && stillBlocked && auth.recycles == recyclesBefore, "blocked=\(blocked) still=\(stillBlocked) link=\(campus.link)")
+
+        // 2. Try again drops it: a new store, the session carried over (not signed out), the rows back, no relaunch.
+        let storeBefore = auth.store
+        model.retryCampus()
+        let live = await until(20) { campus.link == .live && campus.conversations.count == rows }
+        report("Campus: Try again drops the stale connection and the list is live again with the same rows, still signed in, with no relaunch",
+               live && auth.recycles == recyclesBefore + 1 && auth.store !== storeBefore && campus.link != .expired, "link=\(campus.link) recycles=\(auth.recycles - recyclesBefore) rows=\(campus.conversations.count)")
+        await shot("campus-9e-stale-recovered.png")
+
+        // 3. The sign-in sheet over the same stale connection: its plain reload meets the refusal, its Try again recovers.
+        campus.blockedResetInterval = 3600
+        await control("/__fake/blocked-network?on=1&sticky=1")
+        campus.kick()
+        _ = await until(15) { campus.link == .blocked }
+        model.signInToCampus()
+        let refused = await until(15) { auth.signInRefused }
+        await control("/__fake/blocked-network?on=0")
+        auth.signInView.load(URLRequest(url: campus.baseURL.appendingPathComponent("campus/login")))
+        await wait(3)
+        let stuck = auth.signInRefused
+        report("Campus: the sheet's own reload, with the network answering again, still meets the refusal on the stale connection", refused && stuck, "refused=\(refused) stuck=\(stuck)")
+        let sheetView = auth.signInView
+        auth.retrySignIn()
+        let loaded = await until(20) { auth.signInView !== sheetView && auth.signInView.url?.path == "/campus/login" && !auth.signInView.isLoading && !auth.signInRefused }
+        report("Campus: the sheet's Try again drops the connection and loads Campus's sign-in page (the sheet follows the new web view)", loaded, "refused=\(auth.signInRefused) url=\(auth.signInView.url?.path ?? "nil")")
+        model.closeCampusSignIn()
+        let back = await until(20) { campus.link == .live && campus.conversations.count == rows }
+        report("Campus: after that Try again the list is live again too (one store serves the sheet and the list)", back, "link=\(campus.link)")
+
+        // 4. No drop by itself under a person who is signing in by hand.
+        await settleSheet(model, wait: wait)
+        campus.blockedResetInterval = 0.5
+        let recyclesBeforeBlock = auth.recycles
+        await control("/__fake/blocked-network?on=1&sticky=1")
+        campus.kick()
+        _ = await until(15) { campus.link == .blocked }
+        model.signInToCampus()
+        _ = await until(5) { model.campusSignInShown }
+        let atOpen = auth.recycles, viewAtOpen = auth.signInView
+        await wait(3)
+        report("Campus: while the sign-in sheet is open Conn does not swap the store by itself, even while the network keeps refusing", auth.recycles == atOpen && auth.signInView === viewAtOpen, "recycles=\(auth.recycles - atOpen)")
+        model.closeCampusSignIn()
+
+        // 5. Without a click: while the network keeps refusing Conn drops the connection by itself, and meets the network when it is back.
+        await control("/__fake/blocked-network?on=0")
+        let healed = await until(25) { campus.link == .live && campus.conversations.count == rows }
+        report("Campus: with no click at all, a refusal that outlasts the network's return heals by itself (Conn drops the connection while the network keeps refusing)",
+               healed && auth.recycles > recyclesBeforeBlock, "link=\(campus.link) recycles=\(auth.recycles - recyclesBeforeBlock)")
+        await control("/__fake/keep-alive?on=0")
+        await settleSheet(model, wait: wait)
+
+        // 6. The session survived every swap: the cookie is in the new store, so the person was never signed out.
+        report("Campus: the sign-in cookie moved with every store (the list never turned signed out)", await auth.store.httpCookieStore.allCookies().contains { $0.name == "campus_session" && $0.isHTTPOnly } && campus.link == .live, "link=\(campus.link)")
+    }
+
+    /// A person's launch keeps Campus in WebKit's own storage; a scripted launch never does. The person's path (the default store, then a store with an identifier) is run here
+    /// on stores of the check's own: a stand-in for the default store (an identified store seeded with Campus's cookie, Google's and an unrelated site's), then two swaps.
+    /// Every store the check makes is removed again. The person's real stores are never opened.
+    static func storeSwapChecks(report: (String, Bool, String) -> Void, host: String) async {
+        let suite = "dev.local.conn.test.stores.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { report("Campus stores: a settings suite of the check's own", false, ""); return }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let legacyID = UUID()
+        var newID: UUID?
+        do {
+            let legacy = WKWebsiteDataStore(forIdentifier: legacyID)
+            func cookie(_ name: String, _ domain: String, httpOnly: Bool = false) -> HTTPCookie? {
+                var props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: "check-\(name)", .domain: domain, .path: "/", .expires: Date().addingTimeInterval(3600)]
+                if httpOnly { props[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+                return HTTPCookie(properties: props)
+            }
+            for c in [cookie("campus_session", host, httpOnly: true), cookie("SID", ".google.com"), cookie("other", "unrelated.example.test")].compactMap({ $0 }) { await legacy.httpCookieStore.setCookie(c) }
+            let stores = CampusWebStores(persistent: true, defaults: defaults, legacy: { legacy })
+            let startedOnLegacy = stores.current === legacy
+            // Swap 1: the default store's way: only Campus's and Google's cookies move, Campus's host's leave the old store, the rest stays there.
+            let retired1 = stores.install(await stores.prepare(campusHost: host))
+            let moved = await stores.current.httpCookieStore.allCookies().map { $0.name }.sorted()
+            await stores.forget(retired1)
+            let left = await legacy.httpCookieStore.allCookies().map { $0.name }.sorted()
+            let savedID = defaults.string(forKey: "conn.campusStore.id").flatMap(UUID.init(uuidString:))
+            report("Campus stores: the first swap moves Campus's and Google's cookies to a store with an identifier Conn remembers, takes Campus's out of the old store and leaves the rest there",
+                   startedOnLegacy && moved == ["SID", "campus_session"] && left == ["SID", "other"] && savedID != nil && stores.swaps == 1, "moved=\(moved) left=\(left) id=\(savedID != nil)")
+            // A new launch finds the store it was left on.
+            var sameCookies: [String] = []
+            do {
+                let relaunched = CampusWebStores(persistent: true, defaults: defaults, legacy: { legacy })
+                sameCookies = await relaunched.current.httpCookieStore.allCookies().map { $0.name }.sorted()
+            }
+            report("Campus stores: a relaunch opens that store again, with the session in it", sameCookies == ["SID", "campus_session"], "cookies=\(sameCookies)")
+            // Swap 2: a store of Campus's own moves whole, and the old one is removed.
+            let oldID = savedID
+            let retired2 = stores.install(await stores.prepare(campusHost: host))
+            let moved2 = await stores.current.httpCookieStore.allCookies().map { $0.name }.sorted()
+            await stores.forget(retired2)
+            newID = defaults.string(forKey: "conn.campusStore.id").flatMap(UUID.init(uuidString:))
+            let existing = await WKWebsiteDataStore.allDataStoreIdentifiers
+            report("Campus stores: the next swap moves the whole store, remembers the new identifier and removes the old store from disk",
+                   moved2 == ["SID", "campus_session"] && newID != nil && newID != oldID && oldID.map { !existing.contains($0) } == true && newID.map { existing.contains($0) } == true && (defaults.stringArray(forKey: "conn.campusStore.leftovers") ?? []).isEmpty,
+                   "moved=\(moved2) oldGone=\(oldID.map { !existing.contains($0) } ?? false)")
+        }
+        // Clean up: the check's own stores leave nothing behind (WebKit does not remove a store that is still held, so they are let go first).
+        for id in [legacyID, newID].compactMap({ $0 }) {
+            for _ in 0..<10 {
+                if (try? await WKWebsiteDataStore.remove(forIdentifier: id)) != nil { break }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+        let remaining = await WKWebsiteDataStore.allDataStoreIdentifiers
+        report("Campus stores: the check removed every store it made", ![legacyID, newID].compactMap { $0 }.contains { remaining.contains($0) }, "remaining=\(remaining.count)")
     }
 
     // MARK: Watch

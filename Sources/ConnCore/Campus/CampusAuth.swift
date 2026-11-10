@@ -63,6 +63,14 @@ public protocol CampusAuth: AnyObject {
     func closeEventStream()
     /// Show the sign-in (the web view's login page). A key-based auth has nothing to show and does nothing.
     func beginSignIn()
+    /// Drop the connections the requests ride on, so the next request dials afresh. A network that comes back (Zscaler turned on) must not meet the answer of a connection
+    /// that was open while it refused: WebKit pools a connection per website data store and reuses it for every page and fetch, so only a new store gets a new one.
+    /// The sign-in stays (the session moves with the store). A key-based auth has no connection of its own and does nothing.
+    func resetConnection() async
+}
+
+extension CampusAuth {
+    public func resetConnection() async {}
 }
 
 /// What a read of Campus came to.

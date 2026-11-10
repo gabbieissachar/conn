@@ -68,6 +68,13 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var starting = false
     private var failWrites = false
     private var blockedNetwork = false
+    // A "stale route" (sticky block): the answer that a connection opened, or already open, while the network refused keeps coming back on that connection for as long as it
+    // lives, even after the network answers again; only a new connection gets through. That is what a pooled connection to the public ingress does after the private
+    // path comes back. `poisonBelow` is the connection counter at the moment the block was lifted: a connection numbered under it is stale.
+    private var stickyBlock = false
+    private var poisonBelow = 0
+    private var connectionCounter = 0
+    private var keepAlive = false
     private var token = ""
     private var tokenExp = Date.distantPast
     private var tokenSerial = 0
@@ -246,7 +253,21 @@ public final class FakeCampusWorld: @unchecked Sendable {
     public func expireLogin() { lock.lock(); loggedIn = false; lock.unlock(); dropStreams() }
     public func setStarting(_ on: Bool) { lock.lock(); starting = on; lock.unlock() }
     /// While on, every path (the pages, the API and the stream) is answered with nginx's own `403 Forbidden` page: what the public ingress answers off the company private network.
-    public func setBlockedNetwork(_ on: Bool) { lock.lock(); blockedNetwork = on; lock.unlock(); if on { dropStreams() } }
+    /// `sticky`: the refusal also sticks to every connection that is open now or opens while it lasts (see `connectionIsStale`).
+    public func setBlockedNetwork(_ on: Bool, sticky: Bool = false) {
+        lock.lock()
+        if on { stickyBlock = sticky } else if stickyBlock { poisonBelow = connectionCounter; stickyBlock = false }
+        blockedNetwork = on
+        lock.unlock()
+        if on { dropStreams() }
+    }
+    /// A new connection's number (the server asks for one at each accept).
+    public func newConnection() -> Int { lock.lock(); defer { lock.unlock() }; connectionCounter += 1; return connectionCounter }
+    /// Whether the connection numbered `n` still answers the refusal: it was open when a sticky block began, or opened under it.
+    public func connectionIsStale(_ n: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return stickyBlock || n <= poisonBelow }
+    /// While on, the server keeps a connection open after an answer (as the real ingress does), so a client pools it.
+    public func setKeepAlive(_ on: Bool) { lock.lock(); keepAlive = on; lock.unlock() }
+    public var keepsAlive: Bool { lock.lock(); defer { lock.unlock() }; return keepAlive }
     /// The exact page the real ingress answers with (HTML, no Campus JSON).
     public static let nginxForbidden = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
     /// While on, every signed-in API call is refused with `403 {"error":"module_required",...}`: signed in, but the account lacks the module.
@@ -256,12 +277,12 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private func err(_ code: Int, _ msg: String) -> FakeCampusResponse { var r = FakeCampusResponse(); r.status = code; r.body = Self.data(["error": msg]); return r }
 
     /// `cookie` is the request's Cookie header (the HTTP stand-in passes it; the in-process one passes nil and the mode is `.none`).
-    public func route(method: String, path rawPath: String, cookie: String?, body: Data?, headers: [String: String] = [:]) -> FakeCampusResponse {
+    public func route(method: String, path rawPath: String, cookie: String?, body: Data?, headers: [String: String] = [:], staleConnection: Bool = false) -> FakeCampusResponse {
         let comps = URLComponents(string: "http://x" + rawPath)
         let path = comps?.path ?? rawPath
         let query = Dictionary((comps?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
         if path.hasPrefix("/__fake/") { return control(path, query) }
-        lock.lock(); let blocked = blockedNetwork; lock.unlock()
+        lock.lock(); let blocked = blockedNetwork || staleConnection; lock.unlock()
         if blocked { var r = FakeCampusResponse(); r.status = 403; r.contentType = "text/html"; r.body = Data(Self.nginxForbidden.utf8); return r }
         if path == "/campus/login" || path == "/campus/login/ok" {
             var r = FakeCampusResponse(); r.contentType = "text/html; charset=utf-8"
@@ -438,9 +459,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
         case "/__fake/expire": expireLogin(); return ok(["ok": true])
         case "/__fake/starting": setStarting(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/blocked-network":
-            if let on = q["on"] { setBlockedNetwork(on != "0") }                       // without `on`, only reads
+            if let on = q["on"] { setBlockedNetwork(on != "0", sticky: q["sticky"] == "1") }   // without `on`, only reads
             lock.lock(); let on = blockedNetwork; lock.unlock()
             return ok(["on": on])
+        case "/__fake/keep-alive": setKeepAlive(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/module-required": setModuleRequired(q["on"] != "0"); return ok(["ok": true])
         case "/__fake/fail-writes": lock.lock(); failWrites = q["on"] != "0"; lock.unlock(); return ok(["ok": true])
         case "/__fake/log": return ok(["writes": writes()])

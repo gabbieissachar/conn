@@ -431,10 +431,16 @@ struct CampusSignInSheet: View {
         }
         .task {
             // Look again every 2 seconds, so the sheet notices the sign-in the moment it is done.
+            // A sheet that is already gone must not close the next one (a cancelled task used to fall through to the close).
             while !Task.isCancelled {
                 campus.kick()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if campus.link == .live { try? await Task.sleep(nanoseconds: 800_000_000); app.closeCampusSignIn(); return }
+                guard !Task.isCancelled else { return }
+                if campus.link == .live {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    guard !Task.isCancelled else { return }
+                    app.closeCampusSignIn(); return
+                }
             }
         }
     }
@@ -446,7 +452,7 @@ private struct CampusSignInBody: View {
 
     var body: some View {
         ZStack {
-            CampusSignInWeb(web: auth.signInView)
+            CampusSignInWeb(web: auth.signInView).id(ObjectIdentifier(auth.signInView))
             if auth.signInRefused {
                 CampusBlockedSheetCard(onTryAgain: { auth.retrySignIn() })
             }

@@ -47,4 +47,8 @@ public final class FakeCampusAuth: CampusAuth, @unchecked Sendable {
     }
 
     public func beginSignIn() { signInRequests += 1 }
+
+    /// How many times the connection was dropped (a test reads it).
+    public private(set) var resets = 0
+    public func resetConnection() async { resets += 1 }
 }

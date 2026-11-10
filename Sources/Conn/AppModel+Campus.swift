@@ -30,7 +30,7 @@ extension AppModel {
         campusBridge?.ownership.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
         // The silent refresh: it waits while the sign-in sheet is open (the person is signing in by hand) and looks at the session again when the sheet closes.
         if let keeper = campusKeeper {
-            $campusSignInShown.sink { shown in keeper.paused = shown; if !shown { keeper.nudge() } }.store(in: &cancellables)
+            $campusSignInShown.sink { [weak self] shown in keeper.paused = shown; self?.campusAuth?.sheetOpen = shown; if !shown { keeper.nudge() } }.store(in: &cancellables)
             keeper.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.objectWillChange.send() } }.store(in: &cancellables)
             keeper.start()
         }
@@ -135,8 +135,8 @@ extension AppModel {
     /// Show the sign-in sheet's page.
     func signInToCampus() { campusAuth?.beginSignIn() }
 
-    /// "Try again" on the blocked note: ask Campus now instead of waiting for the next look.
-    func retryCampus() { campus.kick() }
+    /// "Try again" on the blocked note: drop the connection (a stale one keeps answering the refusal after the network is back) and ask Campus now.
+    func retryCampus() { campus.retry() }
 
     func closeCampusSignIn() { campusSignInShown = false; campus.kick(); campusKeeper?.nudge() }
 

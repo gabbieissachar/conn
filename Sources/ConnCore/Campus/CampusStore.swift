@@ -73,6 +73,14 @@ public final class CampusStore: ObservableObject {
     public var reconnectMax: TimeInterval = 15
     public var statusDelay: TimeInterval = 0.4
 
+    /// While the network keeps refusing, Conn drops its connection by itself this long after the refusal began (and again this long after each drop), so a network that
+    /// came back is met on a new connection without a click. "Try again" drops it at once.
+    public var blockedResetInterval: TimeInterval = 20
+    private var lastReset = Date.distantPast
+    private var resetRequested = false
+    /// How many times Conn dropped its connection in this run (a test reads it).
+    public private(set) var resetCount = 0
+
     private var loopTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
@@ -109,10 +117,20 @@ public final class CampusStore: ObservableObject {
     /// Ask again now (the sign-in sheet closed, a window came back, a gap was closed).
     public func kick() { kicked = true }
 
+    /// "Try again" on the blocked note: drop the connection (a stale one keeps answering the refusal) and ask now.
+    public func retry() { resetRequested = true; kicked = true }
+
+    private func resetConnection() async {
+        lastReset = now(); resetCount += 1
+        await auth?.resetConnection()
+    }
+
     private func pollLoop() async {
         while !Task.isCancelled {
+            if resetRequested { resetRequested = false; await resetConnection() }
             kicked = false
             await refresh()
+            if link == .blocked, let since = lastBlockedAt, now().timeIntervalSince(max(since, lastReset)) >= blockedResetInterval { await resetConnection() }
             let wait: TimeInterval
             switch link {
             case .live: wait = streamLive ? streamPollInterval : pollInterval

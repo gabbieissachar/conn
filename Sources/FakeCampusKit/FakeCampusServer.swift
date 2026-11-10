@@ -30,10 +30,11 @@ public final class FakeCampusServer: @unchecked Sendable {
 
     private func accept(_ c: NWConnection) {
         c.start(queue: queue)
-        read(c, Data())
+        read(c, Data(), number: world.newConnection())
     }
 
-    private func read(_ c: NWConnection, _ acc: Data) {
+    /// `number` is this connection's own number (see `FakeCampusWorld.connectionIsStale`); one connection serves one request unless keep-alive is on.
+    private func read(_ c: NWConnection, _ acc: Data, number: Int) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
             guard let self = self else { return }
             var buf = acc
@@ -45,18 +46,19 @@ public final class FakeCampusServer: @unchecked Sendable {
                 for l in lines.dropFirst() { if let i = l.firstIndex(of: ":") { headers[l[..<i].lowercased()] = l[l.index(after: i)...].trimmingCharacters(in: .whitespaces) } }
                 let need = Int(headers["content-length"] ?? "0") ?? 0
                 let body = buf[end.upperBound...]
-                if body.count >= need { self.respond(c, lines.first ?? "", headers, Data(body.prefix(need))); return }
+                if body.count >= need { self.respond(c, lines.first ?? "", headers, Data(body.prefix(need)), number: number); return }
             }
             if done || err != nil { c.cancel(); return }
-            self.read(c, buf)
+            self.read(c, buf, number: number)
         }
     }
 
-    private func respond(_ c: NWConnection, _ requestLine: String, _ headers: [String: String], _ body: Data) {
+    private func respond(_ c: NWConnection, _ requestLine: String, _ headers: [String: String], _ body: Data, number: Int) {
         let p = requestLine.split(separator: " ").map(String.init)
         guard p.count >= 2 else { c.cancel(); return }
-        let r = world.route(method: p[0], path: p[1], cookie: headers["cookie"], body: body, headers: headers)
-        var head = "HTTP/1.1 \(r.status) \(r.status == 200 ? "OK" : r.status == 302 ? "Found" : "Status")\r\nContent-Type: \(r.contentType)\r\nCache-Control: no-cache, no-transform\r\nConnection: close\r\n"
+        let r = world.route(method: p[0], path: p[1], cookie: headers["cookie"], body: body, headers: headers, staleConnection: world.connectionIsStale(number))
+        let keep = world.keepsAlive && !r.isStream
+        var head = "HTTP/1.1 \(r.status) \(r.status == 200 ? "OK" : r.status == 302 ? "Found" : "Status")\r\nContent-Type: \(r.contentType)\r\nCache-Control: no-cache, no-transform\r\nConnection: \(keep ? "keep-alive" : "close")\r\n"
         for (k, v) in r.headers { head += "\(k): \(v)\r\n" }
         if r.isStream {
             head += "Transfer-Encoding: chunked\r\n\r\n"
@@ -74,7 +76,10 @@ public final class FakeCampusServer: @unchecked Sendable {
         } else {
             head += "Content-Length: \(r.body.count)\r\n\r\n"
             let payload = Data(head.utf8) + r.body
-            let send = { c.send(content: payload, isComplete: true, completion: .contentProcessed { _ in c.cancel() }) }
+            let send = {
+                if keep { c.send(content: payload, completion: .contentProcessed { e in if e != nil { c.cancel() } else { self.read(c, Data(), number: number) } }) }
+                else { c.send(content: payload, isComplete: true, completion: .contentProcessed { _ in c.cancel() }) }
+            }
             if r.delay > 0 { queue.asyncAfter(deadline: .now() + r.delay, execute: send) } else { send() }
         }
     }

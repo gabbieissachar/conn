@@ -391,10 +391,13 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     })()
     """
 
-    /// The id of the newest reply in the conversation the page shows, as the reader names a reply in an address (`&m=<turn id>`). The reader marks each reply card
-    /// `data-msg="<turn id>:reply"` (and a message of yours `<turn id>:in`); empty when the page draws none.
+    /// The id of the newest reply in the conversation the page shows, as the reader names a reply in an address (`&m=<turn id>`). The reader puts the turn's id on every
+    /// reply card as `data-turn` (pmos README "A reply card names its turn"; a message of yours has none), so the newest reply is the last `.reply[data-turn]`. A reader that
+    /// does not carry it yet marks the card `data-msg="<turn id>:reply"` instead, which is read when no card has `data-turn`. Empty when the page draws no reply.
     static let lastReplyScript = """
     (function () {
+      var t = document.querySelectorAll('.reply[data-turn]');
+      if (t.length) return t[t.length - 1].getAttribute('data-turn') || '';
       var n = document.querySelectorAll('[data-msg$=":reply"]');
       if (!n.length) return '';
       var k = n[n.length - 1].getAttribute('data-msg') || '';

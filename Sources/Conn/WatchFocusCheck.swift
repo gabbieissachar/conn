@@ -72,6 +72,18 @@ enum WatchFocusCheck {
         await settle(model, wait: wait)
         guard model.watch.layout.sessions == [sa, sb, sc], (0...2).allSatisfy({ box($0) != nil }) else { report("Watch focus: three columns showing the three agents", false, "columns=\(tails(model.watch.layout.slots.map { $0?.session }))"); return }
 
+        // 0. The newest reply is named the way the reader now names it (`data-turn` on every reply card, pmos README "A reply card names its turn"), and a reader that has not
+        // got it yet is still understood (`data-msg="<turn id>:reply"`). The script is run over three small documents of their own.
+        func newest(_ html: String) async -> String {
+            let quoted = html.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+            return await js(0, "(function (document) { return \(WebBox.lastReplyScript); })(new DOMParser().parseFromString('\(quoted)', 'text/html'))")
+        }
+        let current = await newest("<main id=\"main\"><div class=\"input\">hi</div><div class=\"reply\" data-turn=\"t-1\" data-msg=\"t-1:reply\">a</div><div class=\"input\">more</div><div class=\"reply\" data-turn=\"t-2\">b</div><div class=\"input\">and</div></main>")
+        let older = await newest("<main><div class=\"user\" data-msg=\"t-1:in\">hi</div><div class=\"reply\" data-msg=\"t-1:reply\">a</div><div class=\"reply\" data-msg=\"t-2x\">tools</div><div class=\"reply\" data-msg=\"t-2:reply\">b</div></main>")
+        let none = await newest("<main><div class=\"input\" data-msg=\"t-1:in\">hi</div></main>")
+        report("the newest reply is the last card with data-turn (an input has none, a card with no data-msg counts); a reader without data-turn is read by data-msg; no reply gives nothing",
+               current == "t-2" && older == "t-2" && none.isEmpty, "current=\(current) older=\(older) none='\(none)'")
+
         // 1. The control hides a column's content and shows it again; the other columns are not touched.
         let before = await pageState(box(0))
         let hid = model.watch.toggleHidden(column: 0)
