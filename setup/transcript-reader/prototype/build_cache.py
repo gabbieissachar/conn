@@ -38,6 +38,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+import bounded_read  # noqa: E402
 import build_prototype as builder  # noqa: E402
 import tool_steps  # noqa: E402
 
@@ -266,9 +267,10 @@ class Thread:
 
 def thread_key(home: dict, parent: Path | None, chain: list[Path]) -> tuple:
     """What a conversation's result is for: its home, the home that holds its inbox, the sessions of its chain as they are written now,
-    and the rules that read them."""
+    the rules that read them, and the folders a read of a named file is not being made in (bounded_read.py): a file left out of the result
+    because its folder did not answer is read again once the folder has had its time, and a conversation is not kept past the change."""
     return (home["id"], str(home["home"]), str(parent) if parent else None, builder.PARSE_RULES,
-            tuple((str(member), builder.listed_version(member)) for member in chain))
+            tuple((str(member), builder.listed_version(member)) for member in chain), bounded_read.held())
 
 
 def derive(home: dict, chain: list[Path], parent: Path | None, cache: Path, key: tuple) -> tuple[Thread, bytes | None]:

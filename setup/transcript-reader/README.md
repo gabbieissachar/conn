@@ -651,6 +651,12 @@ The server writes it into a page only when a browser tab opens that page, and th
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
 A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` on the reader's server, and refused with a 404 by `setup/serve.sh`.
 
+## When the page stops updating
+
+The footer then says "Not syncing since <time>: The rebuild took over a minute and was stopped." That means a rebuild froze, and the server ended it and tried again 30 seconds later with the same result. The cause found so far is a file that cannot be opened: a markdown file a reply names, in `~/Downloads` or `~/Desktop`, which macOS holds behind a permission dialog for the app the reader runs under (Conn, say) until someone answers it, and a cloud folder whose app is not running does the same. Every process that opens a file there waits, the reader's build included (try `ls ~/Downloads` in a terminal under the same app: if it never returns, that is it). Answer the dialog ("<app> would like to access files in your Downloads folder", Allow), or run `tccutil reset SystemPolicyDownloadsFolder <app's bundle id>` (and `SystemPolicyDesktopFolder`) to have macOS ask again.
+
+The reader no longer waits for such a file. A named markdown file is read by a helper thread that is given 3 seconds (`prototype/bounded_read.py`); one that does not answer is left out of the page's documents, like a file that cannot be read, and its folder (all of `~/Downloads`, `~/Desktop` or `~/Documents` when the file is under one of them) is not asked again for 5 minutes, when the build reads it again. A markdown file opened from the page (`md-open`) has 5 seconds and the same 5 minutes of rest, and answers 504 "That folder is not answering" instead of freezing the server. Checked by `e2e/sync-hang-check.js` (below).
+
 ## Speed from a log write to the page
 
 A new reply shows on the page about **1.5 seconds** after the agent writes it, on the owner's own data (66 listed sessions, a 17.6 MB page), where it took 7 to 25 seconds before (median 15). Three things got it there; each stage's numbers are in DESIGN.md, "Quick replies".
@@ -739,6 +745,7 @@ node setup/transcript-reader/e2e/star-order-check.js <scratch folder> [screensho
 node setup/transcript-reader/e2e/reply-turn-check.js <scratch folder> [screenshots folder]       # data-turn on every reply card, data-msg unchanged
 node setup/transcript-reader/e2e/select-copy-defer-check.js <scratch folder> [screenshots folder]   # Copy on select waits 0.8 s; a comment begun in the wait cancels it
 LAB_DOCS=2 node setup/transcript-reader/e2e/file-ref-check.js <scratch folder> [screenshots folder]  # .md paths and the editor button
+node setup/transcript-reader/e2e/sync-hang-check.js <new scratch folder> [--before <git rev>]            # a file that never opens does not stop the page updating
 ```
 
 The message addresses and in-place address changes, in a real browser (by hand: it needs chrome-devtools-axi and Chrome). It builds a lab copy of the reader with made-up logs (`e2e/message_lab.py`), serves it on a free port and drives a browser session of its own: a message address from a fresh load and from another open conversation, in a `/clear` chain's older session, in a folded run of wake-ups, in a clipped reply, a closed pane's conversation, unknown ids, and that a window marker survives each in-place change, then the same landing on the lite page (`out/live/index.html`: a reply scrolled to just under the header and outlined once, from a fresh load and in place):

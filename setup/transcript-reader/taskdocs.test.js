@@ -14,7 +14,7 @@ const os = require('os');
 const path = require('path');
 const { create, TOKEN_HEADER } = require('./api');
 
-async function start() {
+async function start(options = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reader-taskdocs-')));
   const dirs = { home: path.join(base, 'home'), temp: path.join(base, 'temp'), outside: path.join(base, 'outside'), repo: path.join(base, 'repo') };
   for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
@@ -32,7 +32,7 @@ async function start() {
   const server = http.createServer((req, res) => { if (!api.handle(req, res)) { res.writeHead(404); res.end('not here'); } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  api = create({ root: dirs.repo, port, outDir, homeDir: dirs.home, tempRoots: [dirs.temp], now: () => Date.now(), claudeSessionsDir: path.join(base, 'sessions'), pinsFile: path.join(base, 'pins.json') });
+  api = create({ root: dirs.repo, port, outDir, homeDir: dirs.home, tempRoots: [dirs.temp], now: () => Date.now(), claudeSessionsDir: path.join(base, 'sessions'), pinsFile: path.join(base, 'pins.json'), ...options });
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {
@@ -106,4 +106,38 @@ test('md-open: only markdown the list offers, from the home and temp folders aft
     assert.match((await t.openMd('aaaaaaaaac')).json.message, /512 KB/);
     assert.equal((await t.openMd('aaaaaaaaad')).json.text, 'in temp', 'a temp folder is allowed');
   } finally { await t.close(); }
+});
+
+test('md-open: a file that does not answer is given up within the time allowed, and its folder is left alone for a while (the server goes on)', async () => {
+  let clock = 1000000;
+  const t = await start({ mdReadMs: 150, now: () => clock });
+  // The open of one file never returns, as for a file in ~/Downloads that macOS holds behind an unanswered permission dialog.
+  const real = fs.promises.readFile;
+  let reads = 0;
+  fs.promises.readFile = (file, ...rest) => { if (String(file).endsWith('stuck.md')) { reads += 1; return new Promise(() => {}); } return real.call(fs.promises, file, ...rest); };
+  try {
+    fs.writeFileSync(path.join(t.task, 'stuck.md'), 'never read');
+    fs.writeFileSync(path.join(t.task, 'next.md'), 'same folder');
+    fs.mkdirSync(path.join(t.dirs.temp, 'elsewhere'));
+    fs.writeFileSync(path.join(t.dirs.temp, 'elsewhere', 'fine.md'), 'another folder');
+    t.files.bbbbbbbbbb = path.join(t.task, 'stuck.md');
+    t.files.bbbbbbbbbc = path.join(t.task, 'next.md');
+    t.files.bbbbbbbbbd = path.join(t.dirs.temp, 'elsewhere', 'fine.md');
+    t.list();
+    const began = Date.now();
+    const first = await t.openMd('bbbbbbbbbb');
+    assert.equal(first.status, 504);
+    assert.equal(first.json.code, 'unresponsive');
+    assert.match(first.json.message, /not answering/);
+    assert.ok(Date.now() - began < 2000, 'answered after the time allowed, not after the open');
+    const again = Date.now();
+    assert.equal((await t.openMd('bbbbbbbbbc')).status, 504, 'the folder is left alone');
+    assert.ok(Date.now() - again < 100, 'and not waited for');
+    assert.equal(reads, 1, 'not asked again');
+    assert.equal((await t.openMd('bbbbbbbbbd')).json.text, 'another folder', 'another folder is read');
+    assert.equal((await t.request({ method: 'GET', path: '/api/transcript-reader/state', headers: { [TOKEN_HEADER]: t.token } })).status, 200, 'the server answers other requests meanwhile');
+    clock += 5 * 60 * 1000 + 1;
+    fs.promises.readFile = real;
+    assert.equal((await t.openMd('bbbbbbbbbc')).json.text, 'same folder', 'asked again once its time is over');
+  } finally { fs.promises.readFile = real; await t.close(); }
 });

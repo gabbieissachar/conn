@@ -328,6 +328,11 @@ const PRESENCE_MS = 20000;
 const MAX_WAIT_MS = 30000;
 const WARM_MS = 60 * 60 * 1000;  // a page seen this recently keeps the rebuild worker running while it idles
 const RETRY_AFTER_FAILURE_MS = 30000;
+// A markdown file opened on request is read for at most this long, and a folder whose read did not answer is not asked again for the hold: macOS
+// holds Downloads and Desktop behind a permission dialog for an app, and until it is answered an open there waits for good (the build side of this is
+// prototype/bounded_read.py). The read is asynchronous, so a file that never answers costs a request and a pool thread, never the whole server.
+const MD_READ_MS = 5000;
+const MD_HOLD_MS = 5 * 60 * 1000;
 
 class RequestError extends Error {
   constructor(message, status = 400, code = 'error') {
@@ -476,6 +481,8 @@ function create({
   sipsBin = '/usr/bin/sips',
   // The least time between the starts of two rebuilds that changed logs started (REBUILD_EVERY_MS); a test of something else asks for none.
   rebuildEveryMs = REBUILD_EVERY_MS,
+  // How long a markdown file opened on request may take to read (MD_READ_MS); a test of that asks for less.
+  mdReadMs = MD_READ_MS,
   // The Tasks board's data routes (board.js): true or an options object turns them on (the default follows PMOS_READER_BOARD=1).
   board: boardOption,
 } = {}) {
@@ -1659,10 +1666,19 @@ function create({
 
   // What the page asks to open a markdown file it lists without its text (a file in a leader's task folder that no conversation named): the
   // text as it is on disk now, under the same checks as an HTML file or a picture. Read only; the listing is the build's, never the request's.
-  function docOpen(body) {
+  const mdHeld = new Map();  // folder -> when a read in it did not answer
+  async function docOpen(body) {
     const { real, stat } = listedFile(body, OPENABLE.md);
+    const folder = path.dirname(real);
+    const stuck = new RequestError('That folder is not answering (macOS may be waiting for a permission, or a cloud folder is not syncing). Try again in a few minutes.', 504, 'unresponsive');
+    if (mdHeld.has(folder) && now() - mdHeld.get(folder) < MD_HOLD_MS) throw stuck;
+    mdHeld.delete(folder);
+    let timer;
+    const reading = fs.promises.readFile(real, 'utf8');
+    const late = new Promise((resolve) => { timer = setTimeout(resolve, mdReadMs, null); if (timer.unref) timer.unref(); });
     let text;
-    try { text = fs.readFileSync(real, 'utf8'); } catch { throw new RequestError('That file is gone.', 404, 'gone'); }
+    try { text = await Promise.race([reading, late]); } catch { throw new RequestError('That file is gone.', 404, 'gone'); } finally { clearTimeout(timer); }
+    if (text === null) { mdHeld.set(folder, now()); reading.catch(() => {}); throw stuck; }
     return { text, name: path.basename(real), size: stat.size, mtime: stat.mtimeMs / 1000 };
   }
 
@@ -1934,7 +1950,7 @@ function create({
       }
     }
     if (pathname === API + 'md-open' && req.method === 'POST') {
-      send(res, 200, { status: 'ok', ...docOpen(await readJsonBody(req)) });
+      send(res, 200, { status: 'ok', ...(await docOpen(await readJsonBody(req))) });
       return;
     }
     if (pathname === API + 'queue' && req.method === 'POST') {

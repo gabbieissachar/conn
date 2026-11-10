@@ -49,6 +49,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))  # python -I leaves the script's folder off the path
+import bounded_read  # noqa: E402
 import task_tags  # noqa: E402
 import tool_steps  # noqa: E402
 import typed_lines  # noqa: E402  (the typed-ask lines of a turn, found when it is finished)
@@ -2271,7 +2272,8 @@ def attach_documents(sessions: list[dict], html: bool = False, images: bool = Fa
         if key not in documents:
             try:
                 stat = path.stat()
-                body = path.read_text(encoding="utf-8", errors="replace") if not kind else None
+                # A file that does not answer (see bounded_read.py) is left out as one that cannot be read, not waited for.
+                body = bounded_read.read_text(path) if not kind else None
             except OSError:
                 return None
             documents[key] = {"id": key, "name": path.name, "path": str(path), "dir": shown_dir(path), "mention": token, "mtime": stat.st_mtime}
