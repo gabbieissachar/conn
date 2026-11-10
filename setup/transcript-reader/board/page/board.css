@@ -545,6 +545,10 @@ button.why[aria-expanded="true"] { background: var(--wash); box-shadow: 0 0 0 1p
 .rv-seen-t { color: var(--ok); font-weight: 600; }
 .rv-seen-t.changed { color: var(--ask); }
 .rv-seen-t::before { content: "\2713\00a0"; }
+.rv-sent { margin-top: 6px; font-size: 12.5px; font-weight: 600; color: var(--ok); overflow-wrap: anywhere; }
+.rv-sent::before { content: "\2713\00a0"; }
+.rv-sent.bad { color: var(--ask); }
+.rv-sent.bad::before { content: "!\00a0"; }
 .rv-seen-btn { background: var(--ok-wash); border-color: transparent; color: var(--ok); font-weight: 600; }
 @media (hover: none) and (pointer: coarse), (max-width: 440px) {
   .roundline .fchip { min-height: 44px; padding: 2px 14px; }

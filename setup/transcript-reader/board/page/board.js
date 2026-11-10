@@ -665,10 +665,19 @@
       : f.act === "delay" ? "hold " + t.ref + " until " + (f.until ? fmt(f.until) : "the date you pick") : "add a follow-up to " + t.ref + (f.due ? ", due " + fmt(f.due) : "");
   }
   function rvReady(f) { return f.act === "delay" ? !!f.until : f.act === "followup" ? f.title.trim().length >= 3 : true; }
+  /* The note to the home's firstmate that follows a follow-up (review.py `notify`): said in the Review box and the toast, so a note that did not go out is never silent. */
+  const clock = (sec) => new Date(sec * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  function sentWords(n) {
+    if (!n) return null;
+    const at = n.at ? " at " + clock(n.at) : "";
+    return n.ok ? { ok: true, text: "Sent to " + n.home + at }
+      : { ok: false, text: (n.saved ? "Saved in " + n.home + "'s inbox" + at + ", not yet seen" : "Not sent to " + n.home) + (n.reason ? ". " + n.reason : "") };
+  }
   function rvDone(t, act, res) {
     const r = (res && res.review) || {};
     return act === "done" ? "Marked " + t.ref + " done" : act === "queue" ? t.ref + " is back in Queued" : act === "needs" ? t.ref + " is back in Needs you"
-      : act === "delay" ? t.ref + " is held until " + fmt((r.after && r.after.until) || S.rv.until) : "Follow-up " + (r.followup || "") + " added" + (r.due ? ", due " + fmt(r.due) : "");
+      : act === "delay" ? t.ref + " is held until " + fmt((r.after && r.after.until) || S.rv.until)
+      : "Follow-up " + (r.followup || "") + " added" + (r.due ? ", due " + fmt(r.due) : "") + (r.notify ? (r.notify.ok ? ", sent to " + r.notify.home + " at " + clock(r.notify.at) : ", but " + r.notify.home + " was not told") : "");
   }
   async function rvRecord(t) {
     const f = S.rv; if (!f || f.busy || !rvReady(f)) return;
@@ -678,7 +687,9 @@
     if (f.act === "followup") { body.title = f.title.trim(); if (f.due) body.due = f.due; }
     try {
       const res = await post("board-review", body);
-      const msg = rvDone(t, f.act, res); S.rv = null; toast(msg); await loadBoard(true);
+      const msg = rvDone(t, f.act, res); S.rv = null;
+      S.rvSent = f.act === "followup" && res && res.review && res.review.notify ? { ref: t.ref, item: res.review.followup || null, ...sentWords(res.review.notify) } : null;
+      toast(msg); await loadBoard(true);
     } catch (e) { if (S.rv) { S.rv.busy = false; S.rv.err = e.message; } renderSheet(); }
   }
   function reviewSection(t) {
@@ -702,6 +713,9 @@
       seen.append(m, el("span", "rv-seen-h", "Opening a card does not count; this does."));
     } else seen.hidden = true;
     sec.append(seen);
+    if (S.rvSent && S.rvSent.ref === t.ref) {
+      const sent = el("div", "rv-sent" + (S.rvSent.ok ? "" : " bad"), (S.rvSent.item ? S.rvSent.item + ": " : "") + S.rvSent.text); sent.dataset.call = "followup-sent"; sent.setAttribute("role", "status"); sec.append(sent);
+    }
     if (!on) sec.append(el("div", "off-note", "Recording a review is off in this reader (PMOS_READER_BOARD_REVIEW=1 turns it on). The buttons show what it would do."));
     else {
       const notes = [...new Set(["done", "queue", "delay", "needs"].filter(RV_SHOWS).map((a) => why[a]).filter(Boolean))];
@@ -802,7 +816,7 @@
     const node = document.querySelector('.col [data-ref="' + CSS.escape(ref) + '"]'); if (node) node.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   function openSheet(ref, callId) { S.open = { ref, scrollTo: callId || null }; render(); }
-  function closeSheet() { S.open = null; S.confirm = null; S.rv = null; composer.detach(); $("layer").textContent = ""; }
+  function closeSheet() { S.open = null; S.confirm = null; S.rv = null; S.rvSent = null; composer.detach(); $("layer").textContent = ""; }
 
   /* ---- references: #s=<session>&t=<ref>[/<call>], and the find box ---- */
   function parseRef(s) {

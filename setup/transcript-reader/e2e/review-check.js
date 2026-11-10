@@ -149,12 +149,34 @@ const edges = (label) => {
     await openTask('rv-held'); press('followup');
     check(ev(`return document.querySelector('.sheet .rv-form button[type="submit"]').disabled;`), 'Follow-up: Record is off until it has a title');
     fill('title', 'Check the venue deposit'); fill('due', day(5)); fill('note', 'ask for the receipt');
-    record(); await recorded('follow-up added', `/Follow-up/.test(m.textContent)`);
+    record(); await recorded('follow-up added and sent', `/Follow-up/.test(m.textContent) && /sent to Lab at \\d\\d:\\d\\d/.test(m.textContent)`);
     check(/Due by: /.test(backlog(lab)) && backlog(lab).includes('Follow-up of: rv-held') && backlog(lab).includes(day(5)), 'Follow-up: the new task carries its due date and the task it follows', backlog(lab).split('\n').filter((l) => /Check the venue/.test(l)).join(' | '));
     await until(`return { ok: [...document.querySelectorAll('.card')].some(c => /Check the venue deposit/.test(c.innerText)) };`, 'the follow-up card', 30000);
     const faces = ev(`const n = [...document.querySelectorAll('.card')].find(c => /Check the venue deposit/.test(c.innerText)); return n ? { col: n.closest('.col').dataset.col, due: [...n.querySelectorAll('.chip')].map(c => c.textContent), ref: n.dataset.ref } : null;`);
     check(faces && faces.col === 'queued' && faces.due.some((x) => /^due /.test(x)) && faces.due.some((x) => /follow-up of rv-held/.test(x)), 'Follow-up: a new card in Queued says when it is due and which task it follows', JSON.stringify(faces));
     check(ev(`const s = document.querySelector('.card[data-ref="rv-held"]'); return !!s;`), 'the task it follows is unchanged');
+
+    // The home's firstmate is told: a durable note in the home's own inbox, one check wake, and the card says when
+    const notes = () => { try { return fs.readdirSync(path.join(lab.home, 'state', 'inbox')).filter((f) => f.endsWith('.note')); } catch (e) { return []; } };
+    const wakes = () => { try { return fs.readFileSync(path.join(lab.home, 'state', '.wake-queue'), 'utf8').split('\n').filter((l) => l.trim()); } catch (e) { return []; } };
+    const noteText = notes().length ? fs.readFileSync(path.join(lab.home, 'state', 'inbox', notes()[0]), 'utf8') : '';
+    check(notes().length === 1 && wakes().length === 1, 'Follow-up: one durable note in the home\'s inbox and one check wake', JSON.stringify({ notes: notes(), wakes: wakes().length }));
+    check(faces && noteText.includes('Item: ' + faces.ref) && noteText.includes('Title: Check the venue deposit') && noteText.includes('Follow-up of: rv-held') && noteText.includes('Due by: ' + day(5)) && noteText.includes('Note: ask for the receipt'),
+      'the note names the new item, its title, what it follows, the due date and your note', noteText.slice(0, 400));
+    const sentLine = ev(`const e = document.querySelector('.sheet .rv-sent'); return e ? { text: e.textContent, bad: e.classList.contains('bad') } : null;`);
+    check(sentLine && !sentLine.bad && /: Sent to Lab at \d\d:\d\d$/.test(sentLine.text), 'the card says "Sent to Lab at hh:mm"', JSON.stringify(sentLine));
+    if (process.env.REVIEW_SHOTS) { fs.mkdirSync(process.env.REVIEW_SHOTS, { recursive: true }); ev(`document.querySelector('.sheet .rv-sent').scrollIntoView({ block: 'center' }); return true;`); axi('screenshot', path.join(process.env.REVIEW_SHOTS, 'followup-sent-1440.png')); }
+    // A note that cannot be written leaves the item added and says so on the card (never silent)
+    const inbox = path.join(lab.home, 'state', 'inbox');
+    fs.chmodSync(inbox, 0o500);
+    try {
+      await openTask('rv-held'); press('followup');
+      fill('title', 'Chase the hotel again');
+      record(); await recorded('follow-up added', `/Follow-up/.test(m.textContent)`);
+      await until(`return { ok: !!document.querySelector('.sheet .rv-sent.bad') };`, 'the warning on the card', 30000);
+      const bad = ev(`return document.querySelector('.sheet .rv-sent').textContent;`);
+      check(/Lab/.test(bad) && /(Not sent|not yet seen)/.test(bad) && backlog(lab).includes('Chase the hotel again'), 'a note that cannot be written: the item is added and the card says Lab was not told', bad);
+    } finally { fs.chmodSync(inbox, 0o700); }
 
     // ---- round 3: the review round
     await openBoard(port);  // a reload: the marks come back from the reader's own file
@@ -211,6 +233,19 @@ const edges = (label) => {
       if (!ev(`return !!document.querySelector('.sheet .rv-form input');`)) { await openTask('rv-queued'); press('followup'); }
       const look = ev(`const rv = document.querySelector('.sheet .rv'), b = document.querySelector('.sheet .rv-btn[aria-pressed="true"]'), x = getComputedStyle(rv); return { bg: x.backgroundColor, border: x.borderTopColor, pressed: b ? getComputedStyle(b).color : null, ink: getComputedStyle(document.querySelector('.sheet .rv-form input')).color };`);
       check(look.bg !== 'rgba(0, 0, 0, 0)' && look.pressed && look.pressed !== look.bg && look.ink !== look.bg, `phone, ${scheme}: the Review box has its own background and readable text`, JSON.stringify(look));
+    }
+    axi('emulate', '--color-scheme', 'light');
+    // the line that says whether the home was told: the long warning wraps inside the card, and both colours read in light and dark, on a phone
+    const shots = process.env.REVIEW_SHOTS;
+    for (const scheme of ['light', 'dark']) {
+      axi('emulate', '--color-scheme', scheme); await sleep(300);
+      ev(`window.__board.S.rvSent = { ref: 'rv-queued', item: 'check-the-venue-deposit-66', ok: false, text: 'Not sent to Lab. The follow-up is in its backlog, but its inbox did not take the note, so nothing woke it. Mention it in that session.' }; return true;`);
+      await openTask('rv-queued');
+      ev(`window.__lum = (c) => { const [r, g, b] = c.match(/[0-9.]+/g).slice(0, 3).map((v) => { v = Number(v) / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; }; return true;`);
+      const sl = ev(`const e = document.querySelector('.sheet .rv-sent'); if (!e) return null; const sh = document.querySelector('.sheet'); let n = e, bg = 'rgba(0, 0, 0, 0)'; while (n && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bg)) { bg = getComputedStyle(n).backgroundColor; n = n.parentElement; } const a = window.__lum(getComputedStyle(e).color), c = window.__lum(bg), r = e.getBoundingClientRect(), q = sh.getBoundingClientRect(); return { ratio: Math.round((Math.max(a, c) + 0.05) / (Math.min(a, c) + 0.05) * 10) / 10, inside: r.right <= q.right + 1 && r.left >= q.left - 1, side: document.documentElement.scrollWidth <= innerWidth };`);
+      check(sl && sl.ratio >= 4.5 && sl.inside && sl.side, `phone, ${scheme}: the "not told" line wraps inside the card and reads (contrast 4.5 or more)`, JSON.stringify(sl));
+      edges(`390 px, ${scheme}, with the line`);
+      if (shots) { fs.mkdirSync(shots, { recursive: true }); ev(`document.querySelector('.sheet .rv-sent').scrollIntoView({ block: 'center' }); return true;`); axi('screenshot', path.join(shots, `followup-not-told-phone-${scheme}.png`)); }
     }
     axi('emulate', '--color-scheme', 'light');
     for (const scheme of ['light', 'dark']) {

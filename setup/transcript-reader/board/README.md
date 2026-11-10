@@ -171,6 +171,7 @@ box says which command before it runs (and its own sentence comes back on the ca
 | Delay until a date | any open task no worker has | `fm-captain-hold.sh hold <id> --reason ... --until YYYY-MM-DD` (a date after today, within 400 days) |
 | Needs you | any open task no worker has | `fm-captain-hold.sh hold <id> --reason ...` |
 | Add a follow-up | (a new task) | `fm-tasks-axi.sh add --mint <title> --kind task --queue --body ...` with `Follow-up of: <id>` and `Due by: <date>` lines |
+| | then, so the home looks at it | `fm-inbox.sh note --request-id board-followup-<id> --json -`: a durable note in the home's own inbox and one check wake its supervisor must handle |
 
 The stages the board can set are the ones the backlog has: needs you, queued, parked until a date, done. The other columns of a lifecycle (Running, Ready
 to land, In review, ...) follow what the worker reports, so a card cannot be moved into them. A button shows only when the session's lifecycle declares
@@ -180,6 +181,16 @@ its stage.
 cleanup are Firstmate's, a button must not force them); Done on a task whose branch or PR has not landed; every move on a task with a typed card waiting
 (answer it, or say Later on it, first); Done on a finished task. The facts come from the board's own last read of the task (the Node side passes them, never
 the page) and the worker record is checked again in Python. A task the board has not read is refused ("refresh the board").
+
+**A follow-up tells the home.** Adding the item only put it in the backlog, where nobody was looking (a follow-up of 2026-11-06 sat untouched). So after the
+add succeeds, the board tells that home's own Firstmate through its inbox, the way you would with `fm-inbox.sh note`: a durable note and one check wake that the
+home's supervisor must handle and acknowledge. The note holds plain lines: the new item's id, its title, `Follow-up of`, `Due by` (when you gave one), your
+note, the time, and "Take it as your next turn". It carries the request id `board-followup-<item id>`, so a repeat of the same call replays the first note
+instead of making a second. The note goes through the home's own command with that session's `FM_HOME` (a checkout without `fm-inbox.sh` cannot send it).
+The item is added whether or not the note goes out, and the card says which, in the Review box and in the toast ("Sent to Lab at 14:05", or "Not sent to Lab" with
+why). The answer's `review.notify` is `{ok, at, home, note}` when it went; when it did not, `saved` says whether the note was at least written (the supervisor then
+sees it at its next check) and `reason` is the sentence the card shows (`detail` keeps the command's own words). A note failing never undoes the add and never
+asks you to add it again. Only a follow-up sends a note: Done, Queued, Delay and Needs you change a task the home already knows about.
 
 Firstmate has no due-date field, so a follow-up's date is a body line (`Due by: YYYY-MM-DD`) that the board reads back: the card says "due 14 Nov" (or
 "overdue" in red once past) and "follow-up of <task>"; the task page links back to the task it follows.
