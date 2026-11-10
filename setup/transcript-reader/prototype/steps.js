@@ -202,6 +202,13 @@
       const all = String(text || "").replace(/\s+$/, "").split("\n");
       return { text: all.slice(-lines).join("\n"), total: all.length, hidden: Math.max(0, all.length - lines) };
     }
+    // The first <lines> lines of an output, for one that reads from its start (a JSON result: step.of === "json"). Same answer as tail.
+    function head(text, lines = TAIL_LINES) {
+      const all = String(text || "").replace(/\s+$/, "").split("\n");
+      return { text: all.slice(0, lines).join("\n"), total: all.length, hidden: Math.max(0, all.length - lines) };
+    }
+    // The lines an output shows: the first ones for a JSON result, the last ones for anything else.
+    const outputLines = (step, text, lines = TAIL_LINES) => step && step.of === "json" ? head(text, lines) : tail(text, lines);
     // Where a step's output text comes from, and what to say when it is not there:
     //   none     nothing to show (no output was recorded, or an edit that worked)
     //   kept     a file read, or a step that touched a dotfile or credential path: the text is never kept
@@ -223,5 +230,5 @@
     // copy searches what it holds inline).
     const searchText = step => [step.s, step.p, (step.c || "").slice(0, 100)].filter(Boolean).join(" ");
     const windowFrom = builtAt => (builtAt || 0) - WINDOW_DAYS * 86400;
-    return { KIND, FIRST_ROWS, DIFF_ROWS, TAIL_LINES, WINDOW_DAYS, list, key, files, summary, plan, visible, diffRows, clipRows, counts, tail, formatCommand, outputPlan, failedAt, searchText, windowFrom, plural };
+    return { KIND, FIRST_ROWS, DIFF_ROWS, TAIL_LINES, WINDOW_DAYS, list, key, files, summary, plan, visible, diffRows, clipRows, counts, tail, head, outputLines, formatCommand, outputPlan, failedAt, searchText, windowFrom, plural };
   })();

@@ -152,6 +152,52 @@ test('tool names become the reader\'s step kinds, and what a step says comes fro
   assert.equal(steps.summary({ uid: 'r', steps: list }).parts[1], 'edited 2 files', 'a write and an edit are the files changed');
 });
 
+test('a tool with a title, an input and formats: the row says the title, the sheet holds the whole input, a JSON output starts at its first line', () => {
+  const code = 'const hits = await campus.search({ q: "voucher redemptions", limit: 5 });\nreturn hits.map(h => h.title);';
+  const json = '[\n  {\n    "q": "voucher",\n    "hits": 3\n  }\n]';
+  const [row] = turnsOf([reply('r', { tools: [tool('execute', 'const hits = ...', { title: 'campus.search', input: code, inputFormat: 'code', output: json, outputFormat: 'json', detail: '1.2s' })] })]);
+  const step = row.turn.steps[0];
+  assert.equal(step.s, 'campus.search', 'the row says the title, not the first line of the argument');
+  assert.equal(step.n, 'execute', 'the tool\'s own name stays for the sheet\'s second line');
+  assert.equal(step.k, 'other');
+  assert.equal(step.c, code, 'the sheet\'s input is the whole input');
+  assert.equal(step.cf, 'code');
+  assert.equal(step.of, 'json');
+  assert.equal(row.outputs['r:0'], json, 'the whole output is the sheet\'s');
+  // A JSON output shows from its first line, any other from its end.
+  const first = steps.outputLines(step, 'l1\nl2\nl3\nl4', 2), last = steps.outputLines({}, 'l1\nl2\nl3\nl4', 2);
+  assert.deepEqual(plain(first), { text: 'l1\nl2', total: 4, hidden: 2 });
+  assert.deepEqual(plain(last), { text: 'l3\nl4', total: 4, hidden: 2 });
+  assert.equal(steps.outputLines({ of: 'json' }, 'l1\nl2\nl3', Infinity).hidden, 0, 'Show all N lines shows every line');
+});
+
+test('a tool whose input was cut by the host keeps the host\'s own line, and an input over the 6,000 characters is cut by the page', () => {
+  const cut = 'x'.repeat(5960) + '\n… 4,031 more characters not shown';
+  assert.ok(cut.length <= 6000);
+  const step = turnsOf([reply('r', { tools: [tool('execute', 'x', { title: 'campus.run', input: cut, inputFormat: 'text' })] })])[0].turn.steps[0];
+  assert.equal(step.c, cut, 'a cut input is shown as the host sent it, ending in its own line');
+  assert.ok(step.c.endsWith('… 4,031 more characters not shown'));
+  const long = turnsOf([reply('r', { tools: [tool('execute', 'x', { input: 'y'.repeat(9000) })] })])[0].turn.steps[0];
+  assert.equal(long.c.length, 6000, 'a host that sent more is cut at 6,000 characters');
+  assert.ok(long.c.endsWith('…'));
+});
+
+test('a tool without the new fields reads and draws exactly as before, and a format that is not one is dropped', () => {
+  const old = model.parse({ blocks: [reply('r', { tools: [tool('bash', 'ls -la\nmore', { output: 'a\nb' })] })] }).blocks[0].tools[0];
+  assert.deepEqual(plain(old), { tool: 'bash', argument: 'ls -la\nmore', output: 'a\nb', status: 'ok', detail: '' }, 'no title, input or format keys at all');
+  const step = turnsOf([reply('r', { tools: [tool('bash', 'ls -la\nmore', { output: 'a\nb' })] })])[0].turn.steps[0];
+  assert.equal(step.s, 'ls -la');
+  assert.equal(step.c, 'ls -la\nmore');
+  assert.equal(step.cf, undefined);
+  assert.equal(step.of, undefined);
+  const odd = model.parse({ blocks: [reply('r', { tools: [tool('x', 'a', { inputFormat: 'yaml', outputFormat: 'xml', title: 7, input: null })] })] }).blocks[0].tools[0];
+  assert.deepEqual(plain(odd), { tool: 'x', argument: 'a', output: '', status: 'ok', detail: '', title: '7' }, 'only the formats the contract names are kept; a number is its text');
+  // A file tool keeps its path even when the host sent an input.
+  const file = turnsOf([reply('r', { tools: [tool('read', '/a/b.csv', { input: '{"path":"/a/b.csv"}', inputFormat: 'json' })] })])[0].turn.steps[0];
+  assert.equal(file.p, '/a/b.csv');
+  assert.equal(file.c, undefined);
+});
+
 test('a failed tool is a failed step with the tail of its output; a running or stopped one says so in its line', () => {
   const long = 'x'.repeat(900) + 'THE END';
   const list = turnsOf([reply('r', { tools: [tool('bash', 'psql', { status: 'failed', output: long }), tool('read', '/a', { status: 'running' }), tool('bash', 'sleep 9', { status: 'aborted' })] })])[0].turn.steps;
@@ -260,7 +306,7 @@ test('page: the contract in the README names every call and field the page has',
   const section = readme.slice(readme.indexOf('## The embed page'));
   assert.ok(section.length > 500, 'the README has the section');
   for (const word of ['window.readerEmbed', 'readerEmbed.set', 'readerEmbed.upsert', 'readerEmbed.live', 'readerEmbed.clear', 'readerEmbed.plainText', 'out/live/embed.html',
-    '"kind": "user"', '"kind": "reply"', 'texts', 'tools', 'form', 'stopped', 'streaming', 'status', 'questions', 'options', 'pick', 'answer', 'messageHandlers.readerEmbed', '"type": "link"', '"type": "ready"', 'readerEmbed.composer', 'readerEmbed.sent', 'readerEmbed.composerState', '"type": "send"', 'The composer']) {
+    '"kind": "user"', '"kind": "reply"', 'texts', 'tools', 'form', 'stopped', 'streaming', 'status', 'questions', 'options', 'pick', 'answer', 'messageHandlers.readerEmbed', '"type": "link"', '"type": "ready"', 'readerEmbed.composer', 'readerEmbed.sent', 'readerEmbed.composerState', '"type": "send"', 'inputFormat', 'outputFormat', 'more characters not shown', 'The composer']) {
     assert.ok(section.includes(word), `README, "The embed page", names ${word}`);
   }
 });

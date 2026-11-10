@@ -8,6 +8,8 @@
   //   block  { kind: "user", id, text, at? }
   //          { kind: "reply", id, at?, texts: [markdown], tools: [tool], form?: form, stopped?, streaming? }
   //   tool   { tool, argument, output, status: "ok" | "failed" | "running" | "aborted", detail }     (CampusItem's tool fields)
+  //          and, additive (a tool without them is drawn as before): title (the step row's words, "campus.search"), input (the whole input, to
+  //          6000 characters, a cut one ends in a line "… N more characters not shown"), inputFormat "text" | "code" | "json", outputFormat "text" | "json"
   //   form   { id, status: "open" | "answered" | "cancelled", answer?, questions: [{ text, options: [string], pick? }] }   (CampusForm)
   // Reading is tolerant, as Conn's CampusJSON is: a block of an unknown kind or with nothing to show is skipped and counted, a field of the
   // wrong type is the empty one, and nothing a host sends can throw except text that is not JSON at all.
@@ -22,7 +24,7 @@
       webfetch: "searched", websearch: "searched", fetch: "searched",
       task: "agent", agent: "agent", subagent: "agent", skill: "skill", question: "asked", ask: "asked",
     };
-    const SUMMARY_CHARS = 140, COMMAND_CHARS = 600, FAIL_TAIL = 400;
+    const SUMMARY_CHARS = 140, COMMAND_CHARS = 600, INPUT_CHARS = 6000, FAIL_TAIL = 400;
     const text = v => typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : "";
     // Seconds since the epoch; a host that sends milliseconds is read too.
     const epoch = v => typeof v === "number" && Number.isFinite(v) && v > 0 ? (v > 1e11 ? v / 1000 : v) : null;
@@ -41,7 +43,15 @@
     }
     function readTool(raw) {
       if (!raw || typeof raw !== "object") return null;
-      return { tool: text(raw.tool), argument: text(raw.argument), output: text(raw.output), status: STATUS.has(raw.status) ? raw.status : "ok", detail: text(raw.detail) };
+      const inputFormat = ["text", "code", "json"].includes(raw.inputFormat) ? raw.inputFormat : "", outputFormat = ["text", "json"].includes(raw.outputFormat) ? raw.outputFormat : "";
+      const made = { tool: text(raw.tool), argument: text(raw.argument), output: text(raw.output), status: STATUS.has(raw.status) ? raw.status : "ok", detail: text(raw.detail) };
+      // The additive fields are there only when the host sent them, so a tool without them reads exactly as it always did.
+      const title = text(raw.title), input = text(raw.input);
+      if (title) made.title = title;
+      if (input) made.input = input;
+      if (input && inputFormat) made.inputFormat = inputFormat;
+      if (outputFormat) made.outputFormat = outputFormat;
+      return made;
     }
     // One block as the page keeps it, or null when it holds nothing to draw. seen: the ids already taken, so two blocks never share one.
     function readBlock(raw, index, seen) {
@@ -104,12 +114,19 @@
     // whether it failed. A tool still running or stopped says so in its line.
     function stepOf(t, at) {
       const name = t.tool.trim(), kind = TOOL_KINDS[name.toLowerCase()] || "other";
-      const arg = t.argument.trim();
+      const arg = t.argument.trim(), title = (t.title || "").trim(), input = t.input || "";
       const first = arg.split("\n").find(l => l.trim()) || "";
-      const step = { k: kind, n: name || "tool", s: clip(first || name || "tool", SUMMARY_CHARS), at: at || 0 };
-      if (kind === "ran" && arg) step.c = clip(arg, COMMAND_CHARS);
-      else if ((kind === "read" || kind === "edited" || kind === "wrote") && arg) step.p = first;
+      // The row says the tool's own title when the host sent one ("campus.search"), else the first line of what it was given.
+      const step = { k: kind, n: name || "tool", s: clip(title || first || name || "tool", SUMMARY_CHARS), at: at || 0 };
+      const fileKind = kind === "read" || kind === "edited" || kind === "wrote";
+      // The sheet shows the whole input when the host sent one (to INPUT_CHARS, with its own "… N more characters not shown" line), else the
+      // argument as before (COMMAND_CHARS).
+      if (input.trim() && !fileKind) { step.c = clip(input.replace(/\s+$/, ""), INPUT_CHARS); if (t.inputFormat) step.cf = t.inputFormat; }
+      else if (kind === "ran" && arg) step.c = clip(arg, COMMAND_CHARS);
+      else if (fileKind && arg) step.p = first;
       else if (arg && kind !== "ran") step.c = clip(arg, COMMAND_CHARS);
+      // A JSON output starts at its first line in the sheet (a command's output shows its end, where the error is).
+      if (t.outputFormat === "json") step.of = "json";
       const note = t.status === "running" ? "running" : t.status === "aborted" ? "stopped" : "";
       if (note) step.s = `${step.s} (${note})`;
       if (t.output) { step.l = t.output.replace(/\s+$/, "").split("\n").length; step.z = t.output.length; }

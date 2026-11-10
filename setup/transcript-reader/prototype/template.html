@@ -1549,6 +1549,7 @@ __HEAD_HOSTED__
       // Only a command that has something to lay out gets the button; one line with no ; && || | stays as it is.
       const laidOut = step.k === "ran" ? stepsView.formatCommand(input) : input, canFormat = laidOut !== input;
       const pre = $("pre", "step-code", canFormat && stepFormatOn() ? laidOut : input);
+      if (step.cf) pre.dataset.format = step.cf;
       const { sec, lab } = section(label, pre);
       const tools = $("span", "step-tools");
       if (canFormat) tools.append(formatButton());
@@ -1582,7 +1583,7 @@ __HEAD_HOSTED__
     else if (plan.kind === "fetch" || plan.kind === "show") {
       if (entry.state === "ready") {
         if (fullText) {
-          const t = stepsView.tail(fullText, sheet.all.out ? Infinity : stepsView.TAIL_LINES);
+          const t = stepsView.outputLines(step, fullText, sheet.all.out ? Infinity : stepsView.TAIL_LINES);
           outBox.push($("pre", "step-code" + (step.f ? " failed" : ""), t.text));
           if (t.hidden) {
             const more = $("button", "more", `Show all ${t.total} lines`); more.type = "button";

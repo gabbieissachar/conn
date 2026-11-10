@@ -145,6 +145,31 @@ function styleOf(selector, nth = 0) {
     check(ev(`return document.querySelector('.step-title.failed') !== null;`), 'a failed step is marked failed, with the error the host sent');
     ev(`document.querySelector('.step-sheet [data-act="close"]').click(); return true;`);
 
+    // A tool with the Conn worker's additive fields (title, input, inputFormat, outputFormat): the row says the title, the sheet holds the whole input
+    // as code, a JSON output starts at its first line; an older entry in the same reply looks as before.
+    {
+      const lines = Array.from({ length: 40 }, (_, i) => `const hit${i} = await campus.search({ q: "voucher redemptions week ${i}", limit: 5 });`);
+      const input = lines.join('\n').slice(0, 2400) + '\n… 3,641 more characters not shown';
+      const json = JSON.stringify(Array.from({ length: 14 }, (_, i) => ({ q: `voucher ${i}`, hits: i })), null, 2);
+      set({ id: 'rich', blocks: [{ kind: 'user', id: 'ru', text: 'Search the voucher notes' }, { kind: 'reply', id: 'rr', texts: ['Done.'], tools: [
+        { tool: 'execute', title: 'campus.search', argument: 'const hit0 = ...', input, inputFormat: 'code', output: json, outputFormat: 'json', status: 'ok', detail: '1.2s' },
+        { tool: 'bash', argument: 'ls /workspace', output: 'a\nb', status: 'ok', detail: '' }] }] });
+      ev(`document.querySelector('.steps-row').click(); return true;`);
+      check(text('.step .s').join('|') === 'campus.search|ls /workspace', 'a tool with a title: the row says the title, an older tool still says its first line', text('.step .s').join('|'));
+      ev(`document.querySelector('.step').click(); return true;`);
+      await until(`return { ok: !document.querySelector('.step-sheet').hidden };`, 'the rich step sheet');
+      await sleep(300);
+      const rich = ev(`const d = document.querySelector('.step-sheet'); const pres = [...d.querySelectorAll('pre.step-code')]; return { labels: [...d.querySelectorAll('.step-sec > .lab span:first-child')].map(n => n.textContent), input: pres[0].textContent.length, tail: pres[0].textContent.split('\\n').pop(), format: pres[0].dataset.format || '', out: pres[1] ? pres[1].textContent.split('\\n').slice(0, 2).join('|') : '', outLines: pres[1] ? pres[1].textContent.split('\\n').length : 0, more: (d.querySelector('button.more') || {}).textContent || '', meta: d.querySelector('.step-meta').textContent };`);
+      check(rich.labels.join() === 'Input,Output' && rich.input === input.length && rich.tail === '… 3,641 more characters not shown' && rich.format === 'code', 'the sheet holds the whole input as code, with the host\'s own cut line and no command layout toggle', JSON.stringify(rich));
+      check(rich.out === '[|  {' && rich.outLines === 12 && rich.more === 'Show all 58 lines' && /execute/.test(rich.meta), 'a JSON output starts at its first line, 12 lines with Show all N lines, and the tool\'s name is in the second line', JSON.stringify(rich));
+      check(!visible('.step-sheet .step-format'), 'no Format toggle on a tool that is not a command');
+      axi('screenshot', path.join(shots, 'rich-tool-sheet-dark.png'));
+      ev(`document.querySelector('.step-sheet button.more').click(); return true;`); await sleep(250);
+      check(ev(`return [...document.querySelectorAll('.step-sheet pre.step-code')][1].textContent.split('\\n').length;`) === 58, 'Show all N lines shows the whole JSON');
+      ev(`document.querySelector('.step-sheet [data-act="close"]').click(); return true;`);
+      set(FIXTURE);
+    }
+
     // A clipped reply stays open through an update, and an update redraws only the block that changed.
     ev(`document.querySelector('.reply .more').click(); return true;`);
     ev(`window.__nodes = [...document.querySelectorAll('#main > *')]; window.__nodes.forEach((n, i) => n.dataset.mark = 'n' + i); return window.__nodes.length;`);
