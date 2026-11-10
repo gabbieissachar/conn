@@ -611,6 +611,21 @@ __HEAD_HOSTED__
   .kept-note .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
   .float-comment-key { margin-left: 7px; font-weight: 400; font-size: 11px; opacity: .8; }
   .float-comment { position: absolute; z-index: 7; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 3px 11px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  /* The countdown chip beside "Comment on this" (DESIGN.md, "The wait, shown"): a ring drains over the 0.8 s the copy waits, then the chip says
+     what happened. Under the button, not beside it, in a narrow Watch column (placeChip). */
+  .copy-chip { position: absolute; z-index: 7; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 6.9rem; border: 1px solid var(--line); border-radius: 99px; padding: 3px 11px 3px 8px; background: var(--paper); color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.4; box-shadow: 0 2px 8px rgb(0 0 0 / .2); transition: opacity .2s ease; }
+  .copy-chip:disabled { color: var(--muted); cursor: default; opacity: 1; }
+  .copy-chip.out { opacity: 0; }
+  .copy-ring { flex: none; width: 14px; height: 14px; transform: rotate(-90deg); }
+  .copy-ring circle { fill: none; stroke-width: 2; }
+  .copy-ring .track { stroke: var(--line); }
+  .copy-ring .arc { stroke: var(--you); stroke-linecap: round; stroke-dasharray: 34.56; stroke-dashoffset: 0; }
+  .copy-chip[data-phase="paused"] .arc { stroke: var(--ask); }
+  .copy-chip[data-phase="copied"] { border-color: var(--ok); background: var(--ok-wash); color: var(--ok); }
+  .copy-chip[data-phase="copied"]:disabled { color: var(--ok); }
+  .copy-chip[data-phase="copied"] .copy-ring, .copy-chip[data-phase="skipped"] .copy-ring { display: none; }
+  @media (prefers-reduced-motion: reduce) { .copy-chip { transition: none; } .copy-ring { display: none; } }
+  .copy-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
   .copy-note { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 8; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; background: var(--paper); color: var(--muted); font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / .14); opacity: 0; transform: translateY(3px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
   .copy-note.show { opacity: 1; transform: translateY(0); }
   .dock { position: fixed; left: 0; right: var(--rail); bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -2px 10px rgb(0 0 0 / .08); padding-bottom: env(safe-area-inset-bottom); }
@@ -785,6 +800,7 @@ __HEAD_HOSTED__
   body.embed #bar, body.embed .copy-note, body.embed #new-reply { display: none !important; }
   /* The message bar and "Comment on this" are the host's to ask for (readerEmbed.composer, README.md "The composer"); without it they are not there. */
   body.embed:not(.embed-composer) #dock, body.embed:not(.embed-composer) .float-comment { display: none !important; }
+  body.embed .copy-chip, body.embed .copy-live { display: none !important; }
   body.embed #dock-photo, body.embed #dock-thumbs { display: none !important; }
   body.embed-composer .embed-live { bottom: var(--dock-h, 0px); }
   body.embed main { padding-top: 12px; }
@@ -855,6 +871,8 @@ __HEAD_HOSTED__
 <aside class="turnmenu" id="turnmenu" role="dialog" aria-label="Tasks of this turn" hidden></aside>
 <div class="scrim" id="turn-scrim" hidden></div>
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
+<button class="copy-chip" id="copy-chip" type="button" data-phase="counting" hidden><svg class="copy-ring" viewBox="0 0 14 14" aria-hidden="true"><circle class="track" cx="7" cy="7" r="5.5"/><circle class="arc" cx="7" cy="7" r="5.5"/></svg><span class="copy-chip-text">Copy</span></button>
+<div class="copy-live" id="copy-live" role="status" aria-live="polite"></div>
 <div class="copy-note" id="copy-note" role="status" aria-live="polite">Copied</div>
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
 <div class="dock" id="dock" hidden><div class="dock-inner">
@@ -4107,16 +4125,90 @@ __HEAD_HOSTED__
     clearTimeout(copyOnSelect.timer);
     copyOnSelect.timer = setTimeout(() => note.classList.remove("show"), 1100);
   }
+  // The countdown chip beside "Comment on this": what the 0.8 s wait is doing and how it ended. phase is "counting" (the ring drains), "paused"
+  // (the pointer rests on Comment), then "copied" or "skipped" (a comment began first, or the write was refused) for CHIP_RESULT_MS. The chip
+  // is only on screen while "Comment on this" is (a selection with no button gets the corner note when the copy runs).
+  const CHIP_RESULT_MS = 1400, RING = 34.56;
+  const floatButton = document.getElementById("float-comment");
+  const copyChip = document.getElementById("copy-chip"), copyLive = document.getElementById("copy-live");
+  const chipText = copyChip.querySelector(".copy-chip-text"), chipArc = copyChip.querySelector(".arc");
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const chipUi = { phase: null, anim: null, timer: null, fade: null, slot: null };
+  function chipClear() { clearTimeout(chipUi.timer); clearTimeout(chipUi.fade); chipUi.timer = chipUi.fade = null; if (chipUi.anim) { chipUi.anim.cancel(); chipUi.anim = null; } }
+  function chipHide() { chipClear(); chipUi.phase = null; copyChip.hidden = true; copyChip.classList.remove("out"); }
+  // Beside the button, or under it when the window is narrow (a Watch column) or the chip would run off the right edge.
+  function placeChip() {
+    if (copyChip.hidden || floatButton.hidden) return;
+    const left = parseFloat(floatButton.style.left) || 0, top = parseFloat(floatButton.style.top) || 0;
+    chipUi.slot = { left, top, height: floatButton.offsetHeight };
+    const width = document.documentElement.clientWidth, beside = width > 420 && left + floatButton.offsetWidth + 6 + copyChip.offsetWidth <= width - 8;
+    copyChip.style.top = `${beside ? top + (floatButton.offsetHeight - copyChip.offsetHeight) / 2 : top + floatButton.offsetHeight + 4}px`;
+    copyChip.style.left = `${beside ? left + floatButton.offsetWidth + 6 : left}px`;
+  }
+  // The chip follows the button: a countdown with no button to comment with is not drawn, and comes back with the button.
+  // A result outlives the button (a comment began, so the button went): the chip then takes the button's place.
+  function syncChip() {
+    if (chipUi.phase === "counting" || chipUi.phase === "paused") copyChip.hidden = floatButton.hidden;
+    if (copyChip.hidden) return;
+    if (!floatButton.hidden) placeChip();
+    else if (chipUi.slot) {
+      copyChip.style.left = `${chipUi.slot.left}px`;
+      copyChip.style.top = `${chipUi.slot.top + (chipUi.slot.height - copyChip.offsetHeight) / 2}px`;
+    }
+  }
+  function chipCount(from, ms) {
+    chipClear();
+    chipUi.phase = "counting";
+    copyChip.dataset.phase = "counting"; copyChip.disabled = false; copyChip.classList.remove("out");
+    copyChip.setAttribute("aria-label", "Copy selection now");
+    chipText.textContent = selectCopy.chipLabel("counting", reducedMotion.matches);
+    if (!reducedMotion.matches && chipArc.animate) {
+      chipUi.anim = chipArc.animate([{ strokeDashoffset: RING * (1 - from) }, { strokeDashoffset: RING }], { duration: ms, easing: "linear", fill: "forwards" });
+    }
+    syncChip();
+  }
+  function chipPause() {
+    if (chipUi.phase !== "counting") return;
+    chipUi.phase = "paused"; copyChip.dataset.phase = "paused"; chipText.textContent = selectCopy.chipLabel("paused");
+    if (chipUi.anim) chipUi.anim.pause();
+    syncChip();
+  }
+  // The end: the chip says what happened for a moment, tells a screen reader once, then fades.
+  function chipResult(phase) {
+    chipClear();
+    chipUi.phase = phase;
+    const text = selectCopy.chipSpoken(phase);
+    copyChip.dataset.phase = phase; copyChip.disabled = true; copyChip.classList.remove("out");
+    copyChip.setAttribute("aria-label", text);
+    chipText.textContent = selectCopy.chipLabel(phase);
+    copyChip.hidden = false;
+    copyLive.textContent = "";
+    setTimeout(() => { copyLive.textContent = text; }, 30);
+    placeChip();
+    chipUi.timer = setTimeout(() => { copyChip.classList.add("out"); chipUi.fade = setTimeout(chipHide, reducedMotion.matches ? 0 : 220); }, CHIP_RESULT_MS);
+  }
+  function chipChange(event) {
+    if (event.state === "armed" || event.state === "released" || event.state === "soon") chipCount(event.from, event.ms);
+    else if (event.state === "held") chipPause();
+    else if (event.state === "cancelled") { if (event.reason === "comment" && !copyChip.hidden) chipResult("skipped"); else chipHide(); }
+  }
+  new MutationObserver(syncChip).observe(floatButton, { attributes: true, attributeFilter: ["hidden"] });
+  copyChip.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
+  copyChip.addEventListener("click", () => { copyLater.flush(); });
   // The copy waits about 0.8 s (selectcopy.js `deferred`): "Comment on this" begun in that time leaves the clipboard as it was.
   const copyLater = selectCopy.deferred(job => {
-    if (!state.copySelection) return;
+    const inChip = !copyChip.hidden && (chipUi.phase === "counting" || chipUi.phase === "paused");
+    if (!state.copySelection) { chipHide(); return; }
     copyOnSelect.last = job.signature;
-    Promise.resolve(selectCopy.copy(job.text, { navigator, document, isSecureContext: true })).then(ok => { if (ok) showCopied(); }, () => {});
-  });
+    Promise.resolve(selectCopy.copy(job.text, { navigator, document, isSecureContext: true })).then(ok => {
+      if (ok) { if (inChip) chipResult("copied"); else { chipHide(); showCopied(); } }
+      else if (inChip) chipResult("skipped"); else chipHide();
+    }, () => { if (inChip) chipResult("skipped"); else chipHide(); });
+  }, { onChange: chipChange });
   function copySelectionOnMouseUp(event) {
     if (!state.copySelection || matchMedia("(pointer: coarse)").matches) return;
     // A click on "Comment on this" ends in a mouseup on the button: that is the comment starting, not a new selection.
-    if (event && event.target && event.target.closest && event.target.closest("#float-comment")) return;
+    if (event && event.target && event.target.closest && event.target.closest("#float-comment, #copy-chip")) return;
     const selection = window.getSelection();
     if (!selection) return;
     const text = selection.toString();
@@ -4125,7 +4217,7 @@ __HEAD_HOSTED__
     const eligible = boundaries.some(selectCopy.copyArea);
     const check = selectCopy.decide({ text, collapsed: selection.isCollapsed, editable, eligible, signature: selectionSignature(selection, text) }, copyOnSelect.last);
     // The passage on the clipboard is the one selected again: a different selection waiting its turn is dropped.
-    if (!check.copy) { if (check.reason === "repeat") copyLater.cancel(); return; }
+    if (!check.copy) { if (check.reason === "repeat") copyLater.cancel("repeat"); return; }
     const secure = typeof window.isSecureContext === "boolean" ? window.isSecureContext : Boolean(navigator && navigator.clipboard);
     const usesFallback = !(secure && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function");
     if (!usesFallback) { copyLater.arm({ text: check.text, signature: check.signature }); return; }
@@ -4251,7 +4343,6 @@ __HEAD_HOSTED__
   dock("passage-drop").addEventListener("click", () => { if (heldHere()) return; link.target.passage = ""; dock("passage").hidden = true; saveDraft(); renderDock(); });
 
   // Selecting text inside a reply offers "Comment on this" beside the selection.
-  const floatButton = document.getElementById("float-comment");
   function placeFloat() {
     const sel = window.getSelection();
     const node = sel && !sel.isCollapsed ? sel.anchorNode : null;
@@ -4262,6 +4353,7 @@ __HEAD_HOSTED__
     floatButton.style.top = `${rect.bottom + window.scrollY + 6}px`;
     floatButton.style.left = `${Math.max(8, Math.min(rect.left + window.scrollX, document.documentElement.clientWidth - floatButton.offsetWidth - 8))}px`;
     floatButton.card = card;
+    placeChip();
   }
   document.addEventListener("mouseup", event => { copySelectionOnMouseUp(event); setTimeout(placeFloat, 0); });
   document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });

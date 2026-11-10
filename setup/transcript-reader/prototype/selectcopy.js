@@ -61,24 +61,51 @@ const readerSelectCopy = (() => {
   //   hold()      stop the clock, keep the job            release()  start the wait again (the pointer left the button)
   //   soon()      shorten the wait to <grace> ms          flush()    run it now
   // The timer functions and the clock are injected so selectcopy.test.js runs it without waiting.
-  function deferred(run, { delay = 800, grace = 250, setTimer, clearTimer, now } = {}) {
+  // onChange(event) tells the page what the wait is doing, so it can show it (the countdown chip). event.state is one of
+  //   "armed" and "released"   the wait runs from a full ring: { from: 1, ms: <delay> }
+  //   "soon"                   it is shortened: { from: <share of the delay still left>, ms: <grace> }
+  //   "held"                   the clock stopped, the job kept
+  //   "fired"                  the wait ran out or flush() was asked: { by: "timer" | "flush" }, the job is run next
+  //   "cancelled"              the job was dropped: { reason } is what cancel(reason) was given ("comment" when none)
+  // It is called after the state changed and never throws into the caller.
+  function deferred(run, { delay = 800, grace = 250, setTimer, clearTimer, now, onChange } = {}) {
     const set = setTimer || ((fn, ms) => setTimeout(fn, ms));
     const clear = clearTimer || (id => clearTimeout(id));
     const clock = now || (() => Date.now());
-    let job = null, timer = null, due = 0, held = false;
+    const tell = event => { if (typeof onChange === "function") { try { onChange(event); } catch (e) { /* the page's drawing is not the copy's business */ } } };
+    let job = null, timer = null, due = 0, held = false, by = "timer";
     const stop = () => { if (timer !== null) clear(timer); timer = null; };
-    const fire = () => { const next = job; job = null; timer = null; held = false; if (next) run(next); };
+    const fire = () => { const next = job; job = null; timer = null; held = false; if (next) { tell({ state: "fired", by }); by = "timer"; run(next); } };
     const start = ms => { stop(); due = clock() + ms; timer = set(fire, ms); };
     return {
-      arm(next) { job = next; held = false; start(delay); },
-      cancel() { const had = job !== null; stop(); job = null; held = false; return had; },
-      hold() { if (job === null) return false; stop(); held = true; return true; },
-      release() { if (job === null || !held) return false; held = false; start(delay); return true; },
-      soon() { if (job === null || held) return false; if (due - clock() > grace) start(grace); return true; },
-      flush() { if (job === null) return false; stop(); fire(); return true; },
+      arm(next) { job = next; held = false; by = "timer"; start(delay); tell({ state: "armed", from: 1, ms: delay }); },
+      cancel(reason = "comment") { const had = job !== null; stop(); job = null; held = false; if (had) tell({ state: "cancelled", reason }); return had; },
+      hold() { if (job === null) return false; stop(); held = true; tell({ state: "held" }); return true; },
+      release() { if (job === null || !held) return false; held = false; start(delay); tell({ state: "released", from: 1, ms: delay }); return true; },
+      soon() {
+        if (job === null || held) return false;
+        const left = due - clock();
+        if (left > grace) { start(grace); tell({ state: "soon", from: Math.max(0, Math.min(1, left / delay)), ms: grace }); }
+        return true;
+      },
+      flush() { if (job === null) return false; stop(); by = "flush"; fire(); return true; },
       pending() { return job !== null; },
+      held() { return job !== null && held; },
+      // What is left of the wait in ms (0 when none is running), for a page that draws it from the middle.
+      remaining() { return job === null || held || timer === null ? 0 : Math.max(0, due - clock()); },
     };
   }
 
-  return { decide, isEditableTarget, copyArea, fallback, copy, deferred };
+  // The words on the countdown chip beside "Comment on this", and what a screen reader is told when it ends. With reduced motion no ring drains,
+  // so the counting chip says "Copying" instead of "Copy".
+  function chipLabel(phase, reducedMotion = false) {
+    if (phase === "counting") return reducedMotion ? "Copying" : "Copy";
+    if (phase === "paused") return "Copy paused";
+    if (phase === "copied") return "\u2713 Copied";
+    if (phase === "skipped") return "Not copied";
+    return "";
+  }
+  const chipSpoken = phase => phase === "copied" ? "Copied" : phase === "skipped" ? "Not copied" : "";
+
+  return { decide, isEditableTarget, copyArea, fallback, copy, deferred, chipLabel, chipSpoken };
 })();
