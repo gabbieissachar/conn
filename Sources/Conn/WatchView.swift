@@ -131,6 +131,7 @@ private struct WatchColumnView: View {
                 Text("no agent").font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
             }
             Spacer(minLength: 4)
+            WatchSoloButton(watch: watch, column: column, index: slot.index)
             WatchHideButton(watch: watch, column: column, index: slot.index)
             Button { watch.close(column: slot.index) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Close this column")
@@ -197,6 +198,7 @@ private struct CampusColumnHeader: View {
                     .foregroundStyle(campus.link == .live && c.state.waitsOnCaptain ? c.state.color : Color.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
+            WatchSoloButton(watch: watch, column: column, index: index)
             WatchHideButton(watch: watch, column: column, index: index)
             Button { watch.close(column: index) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Close this column")
@@ -208,6 +210,26 @@ private struct CampusColumnHeader: View {
     }
 }
 
+
+/// The control that puts a column on its own: every other column's content is hidden (blurred) and this one is shown; pressed again it shows the others. Next to the eye button, which
+/// does the same for one column. Off when there is no other column.
+private struct WatchSoloButton: View {
+    @ObservedObject var watch: WatchModel
+    let column: WatchColumn
+    let index: Int
+
+    var body: some View {
+        let alone = watch.layout.slots.enumerated().filter { $0.offset != index && $0.element != nil }.isEmpty
+        let focused = watch.isFocused(column: index)
+        Button { watch.focusColumn(index) } label: { Image(systemName: "scope") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(focused ? Color.accentColor : Color.secondary)
+            .disabled(alone)
+            .help(alone ? "No other column to hide" : (focused ? "Show the other columns again" : "Hide every other column and keep only this one"))
+            .accessibilityLabel(focused ? "Show the other columns" : "Only this column")
+            .accessibilityIdentifier("watch-solo")
+    }
+}
 
 /// The control that hides a column's content (blurs it, so it does not pull the eye) and shows it again. The header, with the name and the state, stays readable.
 private struct WatchHideButton: View {

@@ -281,6 +281,30 @@ final class WatchModel: ObservableObject {
         return true
     }
 
+    /// This column is the only one on screen: it is shown and every other column holds a hidden state (and there is another column to hide).
+    func isFocused(column index: Int) -> Bool {
+        guard layout.slots.indices.contains(index), let me = layout.slots[index] else { return false }
+        let others = layout.slots.enumerated().filter { $0.offset != index }.compactMap { $0.element }
+        return !others.isEmpty && !attention.isHidden(me.session) && others.allSatisfy { attention.isHidden($0.session) }
+    }
+
+    /// Put this column on its own: hide every other column (the same hide as the eye button, so each keeps its cue rules and is kept across a quit) and show this one. Pressed again while
+    /// it is the only one on screen, it shows the others again (a cue a hidden column holds lands it on that turn's last reply, as showing it by hand does). Returns whether this column
+    /// is on its own now; nil when there is nothing to hide (a single column, or no such column).
+    @discardableResult
+    func focusColumn(_ index: Int) -> Bool? {
+        guard layout.slots.indices.contains(index), let me = layout.slots[index] else { return nil }
+        let others = layout.slots.enumerated().filter { $0.offset != index && $0.element != nil }.map(\.offset)
+        guard !others.isEmpty else { return nil }
+        if isFocused(column: index) {
+            for i in others where layout.slots[i].map({ attention.isHidden($0.session) }) ?? false { toggleHidden(column: i) }
+            return false
+        }
+        for i in others where !(layout.slots[i].map({ attention.isHidden($0.session) }) ?? true) { toggleHidden(column: i) }
+        if attention.isHidden(me.session) { toggleHidden(column: index) }
+        return true
+    }
+
     private func reveal(_ column: WatchColumn, landing land: Bool) {
         if CampusColumn.isCampus(column.session) { if land { lands[column.session, default: 0] += 1 }; return }
         guard let b = boxes[column.id] else { return }      // Watch is off: the page is made hidden or shown by what the session holds when Watch turns on
