@@ -113,6 +113,9 @@ enum CampusCheck {
         // 6b. The reader's embed page: markdown, steps, links, the working strip, an open question, privacy, and the fallbacks.
         await embedChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
+        // 6c. A tool call with something to read: a code input and a JSON result, live and read again, in the card and on the page's step sheet.
+        await toolCallChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
+
         // 7. Quick switcher rows and Cmd+J.
         let switcher = model.campusSwitcherRows
         report("Campus: the quick switcher lists Campus rows after Herdr's, asks first", switcher.count == 8 && switcher.first?.state == .blocked && switcher.prefix(2).allSatisfy { $0.state == .blocked }, "rows=\(switcher.count) first=\(switcher.first?.state.label ?? "-")")

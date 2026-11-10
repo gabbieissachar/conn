@@ -234,7 +234,6 @@ struct CampusLiveView: View {
     }
 
     @ViewBuilder private func row(_ i: CampusItem, _ c: CampusConversation) -> some View {
-        let mono = Font.system(size: 12, design: .monospaced)
         switch i.kind {
         case .user: gutter("you", CampusText(text: i.text, font: .system(size: 13, weight: .medium)))
         case .step: gutter("step \(i.step)", Text(i.detail).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary))
@@ -245,25 +244,7 @@ struct CampusLiveView: View {
                 }.buttonStyle(.plain)
                 if openReasoning.contains(i.id) { Text(i.text).font(.system(size: 12)).italic().foregroundStyle(.secondary).redacted(reason: app.privacy ? .placeholder : []) }
             })
-        case .tool:
-            gutter("⚙", VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(i.tool.isEmpty ? "tool" : i.tool).font(mono.weight(.semibold))
-                    Text(i.argument).font(mono).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).redacted(reason: app.privacy ? .placeholder : [])
-                    if !i.detail.isEmpty { Text(i.detail).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary) }
-                    switch i.toolStatus {
-                    case .running: ProgressView().controlSize(.mini)
-                    case .ok: Text("✓").foregroundStyle(AgentState.done.color)
-                    case .failed: Text("✕").foregroundStyle(AgentState.blocked.color)
-                    case .aborted: Text("■ stopped").font(.system(size: 11)).foregroundStyle(AgentState.blocked.color)
-                    }
-                }
-                if !i.output.isEmpty {
-                    Text(i.output).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(4)
-                        .padding(6).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
-                        .redacted(reason: app.privacy ? .placeholder : [])
-                }
-            })
+        case .tool: gutter("⚙", CampusToolCard(item: i, privacy: app.privacy))
         case .text: gutter("", CampusText(text: i.text + (i.streaming ? " ▍" : "")))
         case .form: if let f = i.form { gutter("", FormCard(form: f, c: c)) }
         case .stopped: gutter("■", Text("Stopped by you · interrupt sent").font(.system(size: 12)).foregroundStyle(AgentState.blocked.color))
@@ -429,8 +410,8 @@ struct CampusTranscriptView: View {
                         Text("\(tools.count) tool step\(tools.count == 1 ? "" : "s")").font(.system(size: 12)).foregroundStyle(.secondary).underline(true, pattern: .dot)
                     }.buttonStyle(.plain)
                     if openTools.contains(rid) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(tools) { t in Text("\(t.tool) \(t.argument)\(t.detail.isEmpty ? "" : " · " + t.detail)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).redacted(reason: app.privacy ? .placeholder : []) }
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(tools) { CampusToolCard(item: $0, privacy: app.privacy) }
                         }
                     }
                 }

@@ -3,7 +3,7 @@
 // JSON; the web view that carries it is `CampusEmbedBox` (in the app). The JSON is `CampusTimeline.blocks()` field by field:
 //   { "id": <conversation>, "live": <working line, only while it runs>, "blocks": [
 //       { "kind": "user",  "id", "text" },
-//       { "kind": "reply", "id", "texts": [markdown...], "tools": [{ "tool", "argument", "output", "status", "detail" }], "form"?, "stopped", "streaming" } ] }
+//       { "kind": "reply", "id", "texts": [markdown...], "tools": [{ "tool", "argument", "output", "status", "detail", "title"?, "input"?, "inputFormat"?, "outputFormat"? }], "form"?, "stopped", "streaming" } ] }
 // An OPEN question is left out on purpose: the page cannot answer one, so Conn keeps the answer buttons under the page (`CampusTranscriptView`); an answered or
 // cancelled one goes in, and the page draws it quiet ("Answered: ...").
 import Foundation
@@ -45,12 +45,23 @@ public enum CampusEmbed {
         case .reply(let id, let tools, let texts, let form, let stopped):
             var out: [String: Any] = ["kind": "reply", "id": id, "texts": texts.map(\.text).filter { !$0.isEmpty }, "stopped": stopped,
                                       "streaming": texts.contains { $0.streaming }]
-            out["tools"] = tools.map { t -> [String: Any] in ["tool": t.tool, "argument": t.argument, "output": t.output, "status": status(t.toolStatus), "detail": t.detail] }
+            out["tools"] = tools.map(toolJSON)
             if let f = form?.form, !f.isOpen { out["form"] = formJSON(f) }
             let empty = (out["texts"] as? [String])?.isEmpty ?? true
             if empty && tools.isEmpty && out["form"] == nil && !stopped { return nil }
             return out
         }
+    }
+
+    /// One tool step. `argument` is the call's input when that is one piece of text (code or a command: the page shows it in the step's sheet, today cut at 600 characters), else
+    /// the short line. The fields after `detail` are Conn's additions for a call with something to read (a Campus code call: its title, its whole input, its result as JSON):
+    /// each is left out when empty, so a tool that has none sends what it always did.
+    static func toolJSON(_ t: CampusItem) -> [String: Any] {
+        var o: [String: Any] = ["tool": t.tool, "argument": !t.input.isEmpty && t.inputFormat != .json ? t.input : t.argument, "output": t.output, "status": status(t.toolStatus), "detail": t.detail]
+        if !t.title.isEmpty { o["title"] = t.title }
+        if !t.input.isEmpty { o["input"] = t.input; o["inputFormat"] = t.inputFormat.rawValue }
+        if !t.output.isEmpty { o["outputFormat"] = t.outputFormat.rawValue }
+        return o
     }
 
     static func status(_ s: CampusItem.ToolStatus) -> String {

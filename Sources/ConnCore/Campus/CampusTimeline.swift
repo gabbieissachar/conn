@@ -17,12 +17,28 @@ public struct CampusItem: Identifiable, Equatable, Sendable {
     public var detail = ""          // step: "in 2.1k · out 96"; tool: its duration; idle: tokens
     // tool
     public var tool = ""
-    public var argument = ""
-    public var output = ""
+    public var argument = ""        // the short line: the command, the file, the start of the code
+    public var title = ""           // what the call does, in a few words ("campus.search"); empty when Campus gives none
+    public var input = ""           // the whole input as text (code, a command, JSON), cut at `CampusToolCall.inputLimit`
+    public var inputFormat = Format.text
+    public var output = ""          // the result, JSON already indented, cut at `CampusToolCall.outputLimit`
+    public var outputFormat = Format.text
     public var toolStatus = ToolStatus.running
     // form
     public var form: CampusForm?
     public init(id: String, kind: Kind) { self.id = id; self.kind = kind }
+}
+
+extension CampusItem {
+    /// Take what a call or a tool part says about its input: the short line, the whole input, and the title. Never empties a field a frame before it filled.
+    mutating func fillInput(from d: CampusJSON) {
+        let arg = CampusTimeline.argument(d)
+        if !arg.isEmpty { argument = arg }
+        let full = CampusToolCall.input(d)
+        if !full.text.isEmpty { input = full.text; inputFormat = full.format }
+        let t = CampusToolCall.title(d, code: inputFormat == .code ? input : "")
+        if !t.isEmpty { title = t }
+    }
 }
 
 public struct CampusTimeline: Equatable, Sendable {
@@ -90,23 +106,21 @@ public struct CampusTimeline: Equatable, Sendable {
             let n = open[key] ?? add({ var i = CampusItem(id: nextID("t"), kind: .tool); i.tool = Self.toolName(d); return i }(), key: key)
             let name = Self.toolName(d)
             if !name.isEmpty { items[n].tool = name }
-            let arg = Self.argument(d)
-            if !arg.isEmpty { items[n].argument = arg }
+            items[n].fillInput(from: d)
             live = Self.liveText(tool: items[n].tool, argument: items[n].argument)
         case "session.tool.progress":
             if let n = open["tool:" + Self.toolKey(d)], items.indices.contains(n) {
-                let s = d.first("output", "text", "delta").plainText
-                if !s.isEmpty { items[n].output = Self.clip(s) }
+                if let o = CampusToolCall.output(d) { items[n].output = o.text; items[n].outputFormat = o.format }
+                else { let s = d.first("text", "delta").plainText; if !s.isEmpty { items[n].output = Self.clip(s); items[n].outputFormat = .text } }
             }
         case "session.tool.success", "session.tool.failed", "session.tool.error":
             let key = "tool:" + Self.toolKey(d)
             if let n = open[key], items.indices.contains(n) {
                 let ok = f.type == "session.tool.success"
                 items[n].toolStatus = ok ? .ok : .failed
-                let out = d.first("output", "result", "error").plainText
-                if !out.isEmpty { items[n].output = Self.clip(out) }
-                let ms = d.first("duration", "durationMs", "elapsed").number
-                if let ms = ms { items[n].detail = Self.duration(ms) }
+                items[n].fillInput(from: d)
+                if let o = CampusToolCall.output(d) { items[n].output = o.text; items[n].outputFormat = o.format }
+                if let ms = CampusToolCall.milliseconds(d) { items[n].detail = Self.duration(ms) }
             }
             open[key] = nil
         case "session.text.started":
@@ -205,7 +219,7 @@ public struct CampusTimeline: Equatable, Sendable {
     static func toolName(_ d: CampusJSON) -> String { d.first("tool", "name", "toolName").string ?? "" }
     static func toolKey(_ d: CampusJSON) -> String { d.first("callID", "callId", "toolCallID", "toolCallId", "partID", "id").string ?? "current" }
     static func argument(_ d: CampusJSON) -> String {
-        let input = d.first("input", "args", "arguments")
+        let input = CampusToolCall.inputValue(d)
         if let s = input.string { return clip(s, 120) }
         guard let o = input.object else { return "" }
         for k in ["command", "filePath", "path", "pattern", "url", "query", "description", "text"] { if let s = o[k]?.string, !s.isEmpty { return clip(s, 120) } }
@@ -255,11 +269,11 @@ public struct CampusTimeline: Equatable, Sendable {
                         if !t.isEmpty { var i = CampusItem(id: id(m, "r"), kind: .reasoning); i.text = t; out.append(i) }
                     case "tool", "tool-call", "tool-invocation":
                         var i = CampusItem(id: id(m, "t"), kind: .tool)
-                        i.tool = toolName(part); i.argument = argument(part)
-                        i.output = clip(part.first("output", "result").plainText)
+                        i.tool = toolName(part); i.fillInput(from: part)
+                        if let o = CampusToolCall.output(part) { i.output = o.text; i.outputFormat = o.format }
                         let st = part.first("status", "state").string ?? (part["state"]["status"].string ?? "")
                         i.toolStatus = st == "error" || st == "failed" ? .failed : (st == "running" || st == "pending" ? .running : .ok)
-                        if let ms = part.first("duration", "durationMs").number { i.detail = duration(ms) }
+                        if let ms = CampusToolCall.milliseconds(part) { i.detail = duration(ms) }
                         out.append(i)
                     case "form", "question":
                         if let f = CampusForm.parse(part) { var i = CampusItem(id: id(m, "f"), kind: .form); i.form = f; out.append(i) }

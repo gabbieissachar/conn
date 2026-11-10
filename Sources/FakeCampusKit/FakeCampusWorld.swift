@@ -83,7 +83,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var renewals = 0
     private var moduleRequired = false
     /// What the next run does (the agent bridge's checks): the default, end on a question, end on a permission request, or never end until released.
-    public enum NextRun: String { case normal, ask, permission, hold }
+    public enum NextRun: String { case normal, ask, permission, hold, codeTool }
     private var nextRun = NextRun.normal
     private var nextReply: String?
     private var createdKeys: [String: String] = [:]     // Idempotency-Key -> the conversation it made
@@ -156,7 +156,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
     public func emitHeartbeat() { lock.lock(); let subs = subscribers; lock.unlock(); for (_, c) in subs { c.yield(": heartbeat\n\n") } }
 
     var seq = 0
+    /// Called with every event's type and conversation as it is emitted (a lab records when each happened; nothing else uses it).
+    public var onEmit: ((String, String) -> Void)?
     func emit(_ type: String, _ sid: String, _ data: [String: Any] = [:]) {
+        onEmit?(type, sid)
         lock.lock()
         seq += 1
         var d = data; d["sessionID"] = sid
@@ -186,6 +189,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
         emit("session.idle", id)
     }
 
+    /// The `execute` call of the `codeTool` run: invented code and an invented result (no real query, page or person).
+    public static let codeToolCode = "const searches = [ { q: \"placement rules for the home screen\", k: \"home screen placement\" }, { q: \"who owns the feature flags\", k: \"flags owner\" } ];\nconst out = [];\nfor (const s of searches) {\n  try {\n    const r = await tools.campus.search({ query: s.q, keywords: s.k, limit: 10 });\n    out.push({ q: s.q, hits: (r.hits || []).map(h => ({ path: h.path, heading: h.heading })) });\n  } catch (e) { out.push({ q: s.q, error: String(e) }); }\n}\nreturn out;"
+    public static let codeToolResult = "[{\"q\":\"placement rules for the home screen\",\"hits\":[{\"path\":\"product/example/reference/placements\",\"heading\":null,\"link\":\"https://campus.example.test/kb/product/example/placements\",\"snippet\":\"Example placements: what a user meets first\"},{\"path\":\"product/example/reference/sections\",\"heading\":\"Sections\",\"link\":\"https://campus.example.test/kb/product/example/sections\",\"snippet\":\"Sections of the example home screen\"}]},{\"q\":\"who owns the feature flags\",\"hits\":[]}]"
+
     /// Start a scripted run on a conversation: `ask` ends it on a question, otherwise it ends done (unread).
     public func startRun(_ id: String, userText: String?, ask askRequested: Bool) {
         guard conv(id) != nil else { return }
@@ -197,18 +204,27 @@ public final class FakeCampusWorld: @unchecked Sendable {
         emit("session.execution.started", id)
         let delay = stepDelay
         let call = "call_\(gen)"
-        let steps: [() -> Void] = [
+        let head: [() -> Void] = [
             { self.emit("session.step.started", id) },
             { self.emit("session.reasoning.started", id); self.emit("session.reasoning.delta", id, ["delta": "Two tables, so read both first "]) },
             { self.emit("session.reasoning.delta", id, ["delta": "and then diff them merchant by merchant."]); self.emit("session.reasoning.ended", id) },
+        ]
+        // `codeTool`: one Campus-style `execute` call (a `code` input that calls `tools.campus.search`, a JSON result as text parts plus the value), in opencode v2's shape.
+        let tools: [() -> Void] = mode == .codeTool ? [
+            { self.emit("session.tool.input.started", id, ["callID": call + "x", "name": "execute"]); self.emit("session.tool.called", id, ["callID": call + "x", "tool": "execute", "input": ["code": Self.codeToolCode]]) },
+            { self.emit("session.tool.success", id, ["callID": call + "x", "content": [["type": "text", "text": Self.codeToolResult]], "structured": (try? JSONSerialization.jsonObject(with: Data(Self.codeToolResult.utf8))) ?? [:]]); self.emit("session.step.ended", id, ["tokens": ["input": 2100, "output": 96]]) },
+        ] : [
             { self.emit("session.tool.input.started", id, ["callID": call + "a", "tool": "read"]); self.emit("session.tool.called", id, ["callID": call + "a", "tool": "read", "input": ["filePath": "rates/table-a.csv"]]) },
             { self.emit("session.tool.success", id, ["callID": call + "a", "output": "20 rows", "duration": 400]) },
             { self.emit("session.tool.input.started", id, ["callID": call + "b", "tool": "shell"]); self.emit("session.tool.called", id, ["callID": call + "b", "tool": "shell", "input": ["command": "python3 diff_rates.py"]]) },
             { self.emit("session.tool.progress", id, ["callID": call + "b", "output": "diffing"]) },
             { self.emit("session.tool.success", id, ["callID": call + "b", "output": "14 of 20 merchants: B higher", "duration": 1600]); self.emit("session.step.ended", id, ["tokens": ["input": 2100, "output": 96]]) },
+        ]
+        let tail: [() -> Void] = [
             { self.emit("session.step.started", id); self.emit("session.text.started", id); self.emit("session.text.delta", id, ["delta": "Table B pays more on 14 of the 20 merchants. "]) },
             { self.emit("session.text.delta", id, ["delta": "The gap is widest on travel and food delivery."]); self.emit("session.text.ended", id) },
         ]
+        let steps = head + tools + tail
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             for s in steps {
@@ -220,7 +236,9 @@ public final class FakeCampusWorld: @unchecked Sendable {
             guard self.conv(id)?.gen == gen else { return }
             if mode == .hold { return }           // stays busy until `release`
             let answer = say ?? "Table B pays more on 14 of the 20 merchants. The gap is widest on travel and food delivery."
-            let a: [String: Any] = ["id": "msg_a\(UUID().uuidString.prefix(6))", "type": "assistant", "content": [["type": "text", "text": answer]], "tokens": ["input": 3400, "output": 212], "finish": "stop"]
+            var parts: [[String: Any]] = [["type": "text", "text": answer]]
+            if mode == .codeTool { parts.insert(["type": "tool", "callID": call + "x", "name": "execute", "state": ["status": "completed", "input": ["code": Self.codeToolCode], "content": [["type": "text", "text": Self.codeToolResult]]], "time": ["created": 1_000, "ran": 1_100, "completed": 2_300]], at: 0) }
+            let a: [String: Any] = ["id": "msg_a\(UUID().uuidString.prefix(6))", "type": "assistant", "content": parts, "tokens": ["input": 3400, "output": 212], "finish": "stop"]
             if mode == .permission {
                 let perm: [String: Any] = ["id": "per_demo\(gen)", "permission": "bash", "patterns": ["curl https://example.test"]]
                 self.mutate(id) { $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm] }
