@@ -21,7 +21,7 @@ extension AppModel {
     /// What a column holds, in words: the agent's name, the starred or recorded name, or the Campus conversation's title.
     func watchColumnLabel(_ session: String) -> String {
         if let id = CampusColumn.id(of: session) { return campus.conversation(id)?.title ?? "Campus conversation" }
-        if let a = snapshot.agents.first(where: { a in a.sessionID.map { WatchLayout.same($0, session) } ?? false }) { return a.name }
+        if let a = agent(forSession: session) { return a.name }
         return stars.label(for: session, agentNames: agentNamesBySession)
     }
 

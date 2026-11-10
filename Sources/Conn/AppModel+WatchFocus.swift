@@ -13,7 +13,7 @@ extension AppModel {
                 guard self.campus.link == .live, let c = self.campus.conversation(id) else { return nil }
                 return c.state
             }
-            return self.snapshot.agents.first { a in a.sessionID.map { WatchLayout.same($0, session) } ?? false }?.state
+            return self.agent(forSession: session)?.state
         }
         // Campus changes are looked at after they land (the store publishes before it stores the new value).
         campus.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.watch.observeStates() } }.store(in: &cancellables)

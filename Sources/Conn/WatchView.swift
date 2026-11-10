@@ -109,7 +109,7 @@ private struct WatchColumnView: View {
 
     /// The agent running this session now, for its name and Herdr's state.
     private func agent(_ column: WatchColumn) -> Agent? {
-        app.snapshot.agents.first { a in a.sessionID.map { WatchLayout.same($0, column.session) } ?? false }
+        app.agent(forSession: column.session)
     }
 
     private func header(_ column: WatchColumn) -> some View {

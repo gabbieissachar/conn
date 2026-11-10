@@ -43,7 +43,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/fixture" "$APP/Contents/
 install_file ".build/$CONFIG/Conn" "$APP/Contents/MacOS/Conn" 755
 install_file ".build/$CONFIG/FakeHerdr" build/FakeHerdr 755
 install_file ".build/$CONFIG/FakeCampus" build/FakeCampus 755
-for f in fixture-reader.html fixture-lite.html fixture-organizer.html fixture-stars.json fixture-pane-labels.json open-asks.json; do
+for f in fixture-reader.html fixture-lite.html fixture-organizer.html fixture-stars.json fixture-pane-labels.json fixture-glance.json open-asks.json; do
   install_file "Resources/fixture/$f" "$APP/Contents/Resources/fixture/$f" 644
 done
 install_file Resources/Conn.icns "$APP/Contents/Resources/Conn.icns" 644

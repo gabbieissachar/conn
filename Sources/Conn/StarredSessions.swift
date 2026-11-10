@@ -13,17 +13,21 @@ final class StarredSessions: ObservableObject {
     @Published private(set) var order: [String] = []
     /// The reader's own names for sessions it has seen in a pane (`pane-labels.json`), for stars no agent runs now.
     @Published private(set) var recorded: [String: String] = [:]
+    /// Which session ids are one conversation (the reader's glance feed): a column or a star may hold an older id of a conversation than the one Herdr names now.
+    private(set) var chains = ReaderChains()
 
     let starsFile: URL
     let labelsFile: URL
+    let glanceFile: URL?
+    private var glanceSignature: String?
     private let store: StarOrderStore
     private var stars: [String] = []
     private var starsSignature: String?
     private var labelsSignature: String?
     private var timer: Timer?
 
-    init(starsFile: URL, labelsFile: URL, store: StarOrderStore) {
-        self.starsFile = starsFile; self.labelsFile = labelsFile; self.store = store
+    init(starsFile: URL, labelsFile: URL, glanceFile: URL? = nil, store: StarOrderStore) {
+        self.starsFile = starsFile; self.labelsFile = labelsFile; self.glanceFile = glanceFile; self.store = store
         refresh()
     }
 
@@ -50,6 +54,14 @@ final class StarredSessions: ObservableObject {
                 stars = list.map(\.conv)
                 let next = StarOrder.arrange(stars: stars, saved: store.order)
                 if next != order { order = next }
+            }
+        }
+        if let g = glanceFile {
+            let gs = Self.signature(g)
+            if gs != glanceSignature {
+                glanceSignature = gs
+                let next = (try? Data(contentsOf: g)).map(ReaderChains.parse) ?? ReaderChains()
+                if next != chains { chains = next; objectWillChange.send() }
             }
         }
         let l = Self.signature(labelsFile)

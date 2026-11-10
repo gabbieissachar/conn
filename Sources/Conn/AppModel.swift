@@ -269,7 +269,8 @@ final class AppModel: ObservableObject {
         // A fixture launch reads invented stars (never the owner's file) and keeps its order apart from the real one.
         let starsFile = config.fixture ? URL(fileURLWithPath: env["CONN_READER_STARS"] ?? fixtureDir?.appendingPathComponent("fixture-stars.json").path ?? "/nonexistent") : ReaderStars.defaultFile(env: env)
         let labelsFile = config.fixture ? URL(fileURLWithPath: env["CONN_READER_LABELS"] ?? fixtureDir?.appendingPathComponent("fixture-pane-labels.json").path ?? "/nonexistent") : StarLabels.defaultFile(env: env)
-        stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile,
+        let glanceFile = config.fixture ? URL(fileURLWithPath: env["CONN_READER_GLANCE"] ?? fixtureDir?.appendingPathComponent("fixture-glance.json").path ?? "/nonexistent") : ReaderChains.defaultFile(env: env)
+        stars = StarredSessions(starsFile: starsFile, labelsFile: labelsFile, glanceFile: glanceFile,
                                 store: StarOrderStore(defaults: AppModel.defaults, key: config.fixture ? "conn.readerStarOrder.fixture" : "conn.readerStarOrder"))
         stars.start()
         promptWatch = PermissionPromptWatch(client: HerdrClient(endpoint: endpoint))
@@ -656,6 +657,13 @@ final class AppModel: ObservableObject {
         guard !StarSelection.matches(conv: conv, shown: web.box(.reader).shownSession) else { return }
         if webTab != .reader { webTab = .reader }
         web.box(.reader).pin(sessionID: conv)
+    }
+
+    /// The agent that runs the conversation a session id belongs to: the agent whose `agent_session` is that id, or any other id of the same conversation (a column or a star can hold an
+    /// older id from before a `/clear`, while Herdr names the newest). Chains come from the reader's glance feed; without it ids match as they are.
+    func agent(forSession session: String) -> Agent? {
+        let chains = stars.chains
+        return snapshot.agents.first { a in a.sessionID.map { chains.same($0, session) } ?? false }
     }
 
     /// Names of the agents by session id, for the starred sessions an agent runs now.
