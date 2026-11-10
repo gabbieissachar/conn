@@ -98,8 +98,9 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
         }
         let replies = kind == .reader ? ReplyPanelProxy() : nil
         if let replies = replies {
-            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.replyScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-            cfg.userContentController.add(replies, name: WebBox.replyMessage)
+            // A content world of its own: the page's scripts cannot see the script's variables or post to its handler; it still reads the page's DOM and its events reach it.
+            cfg.userContentController.addUserScript(WKUserScript(source: WebBox.replyScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: WebBox.replyWorld))
+            cfg.userContentController.add(replies, contentWorld: WebBox.replyWorld, name: WebBox.replyMessage)
         }
         webView = WKWebView(frame: .zero, configuration: cfg)
         super.init()
@@ -226,6 +227,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     """
 
     static let replyMessage = "connReply"
+    static let replyWorld = WKContentWorld.world(name: "conn-reply")
     /// The answer sheet's "Original reply" button opens a panel inside the page (`#reply-panel`), which cannot leave the web view it is in. In the same click, after the page's own handler
     /// has drawn the reply into `#reply-body`, this reads it (the HTML the reader's markdown code made, and the page's styles), closes the page's panel again with the page's own Close
     /// (so the sheet does not move aside and no panel flashes), and hands the reply to Conn, which shows it in a native panel that floats over the whole window. A click that closed the page's
@@ -293,7 +295,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
             webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.sessionLinkMessage)
         }
         if fileProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.fileRefMessage) }
-        if replyProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.replyMessage) }
+        if replyProxy != nil { webView.configuration.userContentController.removeScriptMessageHandler(forName: WebBox.replyMessage, contentWorld: WebBox.replyWorld) }
         replyProxy = nil
         onReplyPanel = nil
         useProxy = nil
@@ -604,8 +606,16 @@ private final class SessionLinkProxy: NSObject, WKScriptMessageHandler {
 private final class ReplyPanelProxy: NSObject, WKScriptMessageHandler {
     weak var box: WebBox?
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let content = ReplyPanelContent.parse(message.body) else { return }
-        DispatchQueue.main.async { [weak self] in self?.box?.onReplyPanel?(content) }
+        // Only the page's own top frame, from the address Conn loaded it from: the hand-off opens a panel over the whole window, so a frame or a page from elsewhere must not be able to.
+        guard message.frameInfo.isMainFrame, let content = ReplyPanelContent.parse(message.body) else { return }
+        let origin = message.frameInfo.securityOrigin
+        let host = origin.host, scheme = origin.protocol.lowercased()
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let box = self?.box, ReplyPanelOrigin.allows(scheme: scheme, host: host, pageBase: box.baseURL) else { return }
+                box.onReplyPanel?(content)
+            }
+        }
     }
 }
 

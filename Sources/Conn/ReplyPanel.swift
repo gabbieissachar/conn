@@ -278,8 +278,10 @@ final class ReplyWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessage
         if let h = d["href"] as? String, let u = URL(string: h), ["http", "https"].contains(u.scheme?.lowercased() ?? "") { DispatchQueue.main.async { [weak self] in self?.onLink(u) } }
     }
 
-    /// The panel only ever shows its own document: any navigation the page starts is refused (a link was already taken by the script).
+    /// The panel only ever shows its own document: the one load Conn starts (`loadHTMLString`, no base address, so `about:blank`) is allowed, and every other navigation is refused,
+    /// whatever started it (a link was already taken by the script; a refresh or a form in a reply would be refused here too).
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        decisionHandler(action.navigationType == .other ? .allow : .cancel)
+        let u = action.request.url?.absoluteString ?? "about:blank"
+        decisionHandler(action.navigationType == .other && action.targetFrame?.isMainFrame != false && u == "about:blank" ? .allow : .cancel)
     }
 }

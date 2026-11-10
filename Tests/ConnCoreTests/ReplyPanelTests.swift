@@ -36,6 +36,23 @@ import CoreGraphics
         #expect(c?.css == "")
     }
 
+    @Test func stylesCannotEndTheirElementEarly() {
+        let c = ReplyPanelContent.make(title: nil, meta: nil, source: nil, html: "<p>x</p>", css: ".a{color:red}</style><img src=x onerror=1><style>")
+        #expect(c?.css.contains("</") == false)
+        let d = ReplyPanelDocument.html(c!)
+        #expect(!d.contains("</style><img"))
+    }
+
+    @Test func onlyThePageConnLoadedMayHandAReplyOver() {
+        let web = URL(string: "http://localhost:8768/setup/transcript-reader/out/live/index.html")!
+        #expect(ReplyPanelOrigin.allows(scheme: "http", host: "localhost", pageBase: web))
+        #expect(!ReplyPanelOrigin.allows(scheme: "http", host: "evil.example", pageBase: web))
+        #expect(!ReplyPanelOrigin.allows(scheme: "file", host: "", pageBase: web))
+        let file = URL(fileURLWithPath: "/x/fixture-reader.html")
+        #expect(ReplyPanelOrigin.allows(scheme: "file", host: "", pageBase: file))
+        #expect(!ReplyPanelOrigin.allows(scheme: "https", host: "localhost", pageBase: file))
+    }
+
     // MARK: where the panel may sit
 
     private let window = CGSize(width: 1200, height: 800)
@@ -102,6 +119,7 @@ import CoreGraphics
         #expect(d.contains("<div class=\"rp-body\" id=\"reply-body\"><table class=\"t\">"))
         #expect(d.contains("default-src 'none'"))
         #expect(d.contains("style-src 'unsafe-inline'"))
+        #expect(d.contains("base-uri 'none'") && d.contains("form-action 'none'"))
         #expect(!d.contains("script-src"))                                         // nothing the reply holds may run
         #expect(d.range(of: "<style>.t{border:1px solid}</style>")!.lowerBound < d.range(of: "<div class=\"rp-body\"")!.lowerBound)
     }

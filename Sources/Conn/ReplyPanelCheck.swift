@@ -48,8 +48,10 @@ enum ReplyPanelCheck {
         let reader = model.web.box(.reader)
         await ReaderPinCheck.settled(reader, wait: wait)
         await wait(0.3)
-        let injected = await js(reader, "String(window.__connReply)")
-        report("the Reader column's page has Conn's hook for the sheet's Original reply button, and no reply panel is open", injected == "true" && reader.phase == .ready && model.replyPanel.content == nil, "hook=\(injected) phase=\(reader.phase)")
+        let injected = reader.webView.configuration.userContentController.userScripts.contains { $0.source.contains("#reply-open") }
+        let visibleToPage = await js(reader, "String(window.__connReply)")
+        report("the Reader column's page has Conn's hook for the sheet's Original reply button in a world of its own (the page cannot see it), and no reply panel is open",
+               injected && visibleToPage == "undefined" && reader.phase == .ready && model.replyPanel.content == nil, "hook=\(injected) pageSees=\(visibleToPage) phase=\(reader.phase)")
         let before = model.replyPanel.opened
         let click = await openIn(reader)
         let got = await settledOpen()
@@ -118,7 +120,7 @@ enum ReplyPanelCheck {
         while t < 20, !(model.watch.boxes.count >= 1 && model.watch.boxes.values.allSatisfy { $0.phase == .ready && !$0.released }) { await wait(0.25); t += 0.25 }
         await wait(0.6)
         if let column = model.watch.layout.slots.compactMap({ $0 }).compactMap({ model.watch.boxes[$0.id] }).first {
-            let hook = await js(column, "String(window.__connReply)")
+            let hook = column.webView.configuration.userContentController.userScripts.contains { $0.source.contains("#reply-open") } ? "true" : "false"
             let beforeW = model.replyPanel.opened
             let clickW = await openIn(column)
             let gotW = await settledOpen()
@@ -161,7 +163,12 @@ enum ReplyPanelCheck {
         let ran = await panelJS("String(window.__ran)")
         report("a script in a reply does not run in the panel", ran == "undefined", "ran=\(ran)")
         model.replyPanel.close()
-        let none = await js(model.web.box(.organizer), "String(window.__connReply)")
-        report("the Organizer page has no reply hook", none != "true", "hook=\(none)")
+        let none = model.web.box(.organizer).webView.configuration.userContentController.userScripts.contains { $0.source.contains("#reply-open") }
+        report("the Organizer page has no reply hook", !none, "hook=\(none)")
+        // A page's own script cannot reach the hand-off: it is not in the page's world.
+        let before2 = model.replyPanel.opened
+        let forged = await js(reader, "(() => { try { window.webkit.messageHandlers.connReply.postMessage({ html: '<p>forged</p>' }); return 'posted'; } catch (e) { return 'refused'; } })()")
+        await wait(0.5)
+        report("a script in the page cannot post a reply to Conn's hand-off", forged == "refused" && model.replyPanel.opened == before2 && model.replyPanel.content == nil, "result=\(forged) opened=\(model.replyPanel.opened - before2)")
     }
 }

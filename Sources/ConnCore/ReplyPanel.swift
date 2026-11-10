@@ -41,7 +41,8 @@ public struct ReplyPanelContent: Equatable, Sendable {
             return t.count > n ? String(t.prefix(n - 1)) + "\u{2026}" : t
         }
         let t = short(title, maxTitle)
-        let c = (css ?? "").utf8.count <= maxCSS ? (css ?? "") : ""
+        // `</` in styles could end the style element early and let the rest be read as markup; `<\/` is the same text in CSS and cannot.
+        let c = (css ?? "").utf8.count <= maxCSS ? (css ?? "").replacingOccurrences(of: "</", with: "<\\/") : ""
         return ReplyPanelContent(title: t.isEmpty ? "Original reply" : t, meta: short(meta, maxMeta), source: short(source, maxSource), html: html, css: c)
     }
 
@@ -96,6 +97,15 @@ public struct ReplyPanelFrame: Equatable, Codable, Sendable {
     }
 }
 
+/// Where a hand-off may come from: the page Conn loaded (same host over http, or a file page for a fixture launch).
+public enum ReplyPanelOrigin {
+    public static func allows(scheme: String, host: String, pageBase: URL) -> Bool {
+        if pageBase.isFileURL { return scheme == "file" }
+        guard let h = pageBase.host?.lowercased(), !h.isEmpty else { return false }
+        return host.lowercased() == h && (scheme == "http" || scheme == "https")
+    }
+}
+
 /// The page the panel's web view shows: the reader's styles, then the reply under them.
 public enum ReplyPanelDocument {
     /// A whole document for `loadHTMLString`. The reader's styles scope a reply's rules under `.rp-body`, and take their colours from the page's own variables (`--paper`, `--ink`, `--line`,
@@ -106,7 +116,7 @@ public enum ReplyPanelDocument {
         """
         <!doctype html>
         <html><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
         <meta name="color-scheme" content="light dark">
         <style>\(c.css)</style>
         <style>
