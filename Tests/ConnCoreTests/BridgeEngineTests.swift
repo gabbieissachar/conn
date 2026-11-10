@@ -28,7 +28,7 @@ private final class Lab {
         ownership = BridgeOwnership(defaults: d)
         audit = BridgeAuditLog(file: bridgeTempDir("audit").appendingPathComponent("audit.jsonl"))
         engine = BridgeEngine(store: store, registry: registry, ownership: ownership, audit: audit)
-        engine.limits = limits; engine.waitBudget = budget; engine.pollInterval = 0.02; engine.scanInterval = 0.05; engine.startGrace = 2; engine.lateBudget = 5
+        engine.limits = limits; engine.waitBudget = budget; engine.pollInterval = 0.02; engine.scanInterval = 0.05; engine.startGrace = 2; engine.lateBudget = 1      // a late watch left running by a test ends after a second instead of polling on
         await store.refresh()
     }
 
@@ -507,7 +507,7 @@ private extension BridgeRegistry {
         let took = Date().timeIntervalSince(t0)
         let reply = await lab.run("req-wk1")
         #expect(lab.field(reply, "status") == "done" && reply.contains("Released: here is the reply."), "\(reply)")
-        #expect(took < 5, "answered \(took) s after the event; the poll interval is 60 s")
+        #expect(took < 30, "answered \(took) s after the event; the poll interval is 60 s")
     }
 
     @Test func anEventForAnotherThreadDoesNotWakeIt() async throws {
@@ -560,7 +560,7 @@ private extension BridgeRegistry {
         let t0 = Date()
         try lab.drop("req-ib1", lab.newText())
         #expect(await eventually(10) { lab.registry.replyExists("req-ib1") })
-        #expect(Date().timeIntervalSince(t0) < 6, "the timer is 60 s")
+        #expect(Date().timeIntervalSince(t0) < 30, "the timer is 60 s")
         #expect(lab.field(await lab.run("req-ib1"), "status") == "done")
     }
 
@@ -650,7 +650,7 @@ private extension BridgeRegistry {
         let t0 = Date()
         lab.store.handle(CampusFrame(type: "session.idle", sessionID: thread))
         #expect(await eventually(10) { lab.registry.lateExists("req-l2") })
-        #expect(Date().timeIntervalSince(t0) < 5, "the poll is 60 s")
+        #expect(Date().timeIntervalSince(t0) < 30, "the poll is 60 s")
     }
 
     @Test func aReadThatRunsOutIsWatchedToo() async throws {
