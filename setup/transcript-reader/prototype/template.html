@@ -3837,8 +3837,16 @@ __HEAD_HOSTED__
     clearTimeout(copyOnSelect.timer);
     copyOnSelect.timer = setTimeout(() => note.classList.remove("show"), 1100);
   }
+  // The copy waits about 0.8 s (selectcopy.js `deferred`): "Comment on this" begun in that time leaves the clipboard as it was.
+  const copyLater = selectCopy.deferred(job => {
+    if (!state.copySelection) return;
+    copyOnSelect.last = job.signature;
+    Promise.resolve(selectCopy.copy(job.text, { navigator, document, isSecureContext: true })).then(ok => { if (ok) showCopied(); }, () => {});
+  });
   function copySelectionOnMouseUp(event) {
     if (!state.copySelection || matchMedia("(pointer: coarse)").matches) return;
+    // A click on "Comment on this" ends in a mouseup on the button: that is the comment starting, not a new selection.
+    if (event && event.target && event.target.closest && event.target.closest("#float-comment")) return;
     const selection = window.getSelection();
     if (!selection) return;
     const text = selection.toString();
@@ -3846,22 +3854,21 @@ __HEAD_HOSTED__
     const editable = boundaries.some(selectCopy.isEditableTarget);
     const eligible = boundaries.some(selectCopy.copyArea);
     const check = selectCopy.decide({ text, collapsed: selection.isCollapsed, editable, eligible, signature: selectionSignature(selection, text) }, copyOnSelect.last);
-    if (!check.copy) return;
-    copyOnSelect.last = check.signature;
-    const originalRange = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+    // The passage on the clipboard is the one selected again: a different selection waiting its turn is dropped.
+    if (!check.copy) { if (check.reason === "repeat") copyLater.cancel(); return; }
     const secure = typeof window.isSecureContext === "boolean" ? window.isSecureContext : Boolean(navigator && navigator.clipboard);
     const usesFallback = !(secure && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function");
+    if (!usesFallback) { copyLater.arm({ text: check.text, signature: check.signature }); return; }
+    // Plain http: execCommand needs this mouseup's gesture, so the copy cannot wait and there is no moment to comment in.
+    copyOnSelect.last = check.signature;
+    const originalRange = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
     let copied;
     try {
-      copied = selectCopy.copy(check.text, {
-        navigator,
-        document,
-        isSecureContext: secure,
-      });
+      copied = selectCopy.copy(check.text, { navigator, document, isSecureContext: secure });
     } catch (e) { return; }
     Promise.resolve(copied).then(ok => {
       if (!ok) return;
-      if (usesFallback && originalRange) { const current = window.getSelection(); current.removeAllRanges(); current.addRange(originalRange); }
+      if (originalRange) { const current = window.getSelection(); current.removeAllRanges(); current.addRange(originalRange); }
       showCopied();
     }, () => {});
   }
@@ -3990,19 +3997,32 @@ __HEAD_HOSTED__
   document.addEventListener("keyup", e => { if (e.shiftKey || e.key.startsWith("Arrow")) placeFloat(); });
   document.addEventListener("selectionchange", () => { const sel = window.getSelection(); if (!sel || sel.isCollapsed) floatButton.hidden = true; else if (matchMedia("(pointer: coarse)").matches) placeFloat(); });
   floatButton.addEventListener("mousedown", e => e.preventDefault());  // keep the selection while clicking
+  // Comment on this, begun while a copy waits, drops the copy. The pointer on the button holds it (the click is next); leaving without one lets it run.
+  floatButton.addEventListener("pointerenter", () => { copyLater.hold(); });
+  floatButton.addEventListener("pointerleave", () => { copyLater.release(); });
   floatButton.addEventListener("click", () => {
+    copyLater.cancel();
     const card = floatButton.card;
     if (card && replyTargets.has(card)) useTarget(replyTargets.get(card)(selectedPassage(card)), floatButton);
   });
   // Cmd+Enter (Ctrl+Enter off the Mac) with a commentable passage selected does what the button does, box focus included. The button's
   // own state is recomputed first, since a selection made by the keyboard (Cmd+A) draws no button yet. A touch screen has no such key to hint.
   document.addEventListener("keydown", e => {
-    if (!commentKey.pressed(e)) return;
+    if (!commentKey.pressed(e)) { copyOnModifier(e); return; }
     placeFloat();
-    if (floatButton.hidden) return;
+    if (floatButton.hidden) { copyLater.flush(); return; }
     e.preventDefault();
     floatButton.click();
   });
+  // A waiting copy must not outlast the reader's hands leaving the page: a bare Cmd/Ctrl (the start of Cmd+Enter, but also of Cmd+Tab,
+  // which the page never sees past the Cmd) shortens the wait to a quarter second, any other Cmd/Ctrl key copies now, and so does
+  // the window losing focus (best effort: a page that has lost focus can be refused the write).
+  function copyOnModifier(e) {
+    if (!copyLater.pending()) return;
+    if (e.key === "Meta" || e.key === "Control") copyLater.soon();
+    else if (e.metaKey || e.ctrlKey) copyLater.flush();
+  }
+  window.addEventListener("blur", () => { copyLater.flush(); });
   if (!matchMedia("(pointer: coarse)").matches) {
     const keys = commentKey.label(navigator.platform);
     floatButton.title = `Comment on this (${keys})`;

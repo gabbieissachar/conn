@@ -1579,7 +1579,10 @@ class PageShellTest(unittest.TestCase):
         for mode, page in self.pages():
             self.assertIn("const commentKey = (() => {", page, mode)
             self.assertNotIn("/*__COMMENTKEY__*/", page, mode)
-            self.assertIn("if (!commentKey.pressed(e)) return;", page, mode)
+            self.assertIn("if (!commentKey.pressed(e)) { copyOnModifier(e); return; }", page, mode)
+            # Copy on select waits (selectcopy.js `deferred`), and a comment begun in the wait drops the copy.
+            self.assertIn("const copyLater = selectCopy.deferred(", page, mode)
+            self.assertIn("copyLater.cancel();", page, mode)
             self.assertIn("commentKey.label(navigator.platform)", page, mode)
 
     def test_the_reader_pages_carry_the_address_rules_that_address_test_js_runs(self):

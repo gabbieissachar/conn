@@ -55,5 +55,30 @@ const readerSelectCopy = (() => {
     return Promise.resolve(fallback(text, doc));
   }
 
-  return { decide, isEditableTarget, copyArea, fallback, copy };
+  // The copy waits a moment after the selection, so that "Comment on this" (a click, or Cmd/Ctrl+Enter) started in that moment leaves the
+  // clipboard as it was: nothing was written, so there is nothing to take back. One pending job at a time; a new selection replaces it.
+  //   arm(job)    wait <delay> ms, then run(job)          cancel()   drop it (a comment started)
+  //   hold()      stop the clock, keep the job            release()  start the wait again (the pointer left the button)
+  //   soon()      shorten the wait to <grace> ms          flush()    run it now
+  // The timer functions and the clock are injected so selectcopy.test.js runs it without waiting.
+  function deferred(run, { delay = 800, grace = 250, setTimer, clearTimer, now } = {}) {
+    const set = setTimer || ((fn, ms) => setTimeout(fn, ms));
+    const clear = clearTimer || (id => clearTimeout(id));
+    const clock = now || (() => Date.now());
+    let job = null, timer = null, due = 0, held = false;
+    const stop = () => { if (timer !== null) clear(timer); timer = null; };
+    const fire = () => { const next = job; job = null; timer = null; held = false; if (next) run(next); };
+    const start = ms => { stop(); due = clock() + ms; timer = set(fire, ms); };
+    return {
+      arm(next) { job = next; held = false; start(delay); },
+      cancel() { const had = job !== null; stop(); job = null; held = false; return had; },
+      hold() { if (job === null) return false; stop(); held = true; return true; },
+      release() { if (job === null || !held) return false; held = false; start(delay); return true; },
+      soon() { if (job === null || held) return false; if (due - clock() > grace) start(grace); return true; },
+      flush() { if (job === null) return false; stop(); fire(); return true; },
+      pending() { return job !== null; },
+    };
+  }
+
+  return { decide, isEditableTarget, copyArea, fallback, copy, deferred };
 })();
