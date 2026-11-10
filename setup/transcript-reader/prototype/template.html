@@ -105,7 +105,7 @@ __HEAD_HOSTED__
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   /* One pressed style for every toggle, in the "you" blue: yellow belongs to "Needs you" alone, so a switched-on Follow Herdr or Pin never reads as an ask. */
-  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .hide-msg[aria-pressed="true"], .sheet-flag[aria-pressed="true"], .search-row button[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
+  .btn[aria-pressed="true"], .view-btn[aria-pressed="true"], .follow-quick[aria-pressed="true"], .star-btn[aria-pressed="true"], .pin[aria-pressed="true"], .hide-msg[aria-pressed="true"], .sheet-flag[aria-pressed="true"], .search-row button[aria-pressed="true"], .step-sheet .step-format[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); color: var(--you); }
   .btn:focus-visible, .tab:focus-visible, .fold:focus-visible, .bar-toggle:focus-visible, .crumb:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
   /* The hosted copy says when the laptop built it, and says so louder once that is old. */
@@ -422,6 +422,7 @@ __HEAD_HOSTED__
   .step-meta { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
   .step-sec { margin: 10px 0 0; }
   .step-sec > .lab { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
+  .step-tools { display: flex; align-items: center; gap: 6px; }
   .step-code { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px; font: 12.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
   .step-code.failed { border-left: 3px solid var(--open); }
   .diff { margin: 0; border-radius: 8px; background: var(--code); font: 12.5px/1.45 var(--mono); overflow-x: auto; }
@@ -1519,6 +1520,17 @@ __HEAD_HOSTED__
     btn.addEventListener("click", async () => { const ok = await copyText(text); btn.textContent = ok ? "Copied" : "Copy failed"; setTimeout(() => { btn.textContent = "Copy"; }, 1500); });
     return btn;
   }
+  // Format: the Command block shows the command laid out for reading (stepsView.formatCommand); Copy still copies the original.
+  const STEP_FORMAT_KEY = "tr-step-format";
+  let stepFormat = null;
+  const stepFormatOn = () => { if (stepFormat === null) stepFormat = keptValue(STEP_FORMAT_KEY) === "1"; return stepFormat; };
+  function formatButton() {
+    const btn = $("button", "step-copy step-format", "Format"); btn.type = "button";
+    btn.setAttribute("aria-pressed", stepFormatOn() ? "true" : "false");
+    btn.title = "Lay the command out one statement per line";
+    btn.addEventListener("click", () => { stepFormat = !stepFormatOn(); keepValue(STEP_FORMAT_KEY, stepFormat ? "1" : "0"); paintSheet(); });
+    return btn;
+  }
   function paintSheet() {
     const { ex, index, sid } = sheet;
     if (!ex || !sheet.node) return;
@@ -1534,9 +1546,14 @@ __HEAD_HOSTED__
     const input = step.c || step.p || (step.k === "read" || step.k === "edited" || step.k === "wrote" ? step.s : "");
     if (input) {
       const label = step.k === "ran" ? "Command" : step.p ? "File" : "Input";
-      const pre = $("pre", "step-code", input);
+      // Only a command that has something to lay out gets the button; one line with no ; && || | stays as it is.
+      const laidOut = step.k === "ran" ? stepsView.formatCommand(input) : input, canFormat = laidOut !== input;
+      const pre = $("pre", "step-code", canFormat && stepFormatOn() ? laidOut : input);
       const { sec, lab } = section(label, pre);
-      lab.append(copyButton(input));
+      const tools = $("span", "step-tools");
+      if (canFormat) tools.append(formatButton());
+      tools.append(copyButton(input));
+      lab.append(tools);
       frag.append(sec);
     }
     if (step.d) {

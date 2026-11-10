@@ -32,6 +32,9 @@ name those tasks by id, wake up for them, point at replies, run fleet commands, 
 LAB_DOCS=<n> writes n markdown files (a few headings each, long enough to scroll) and one HTML page into <home>/lab-docs/ and makes crew-1's latest reply
 name them, so its Documents view lists them.
 
+LAB_COMMANDS=1 gives crew-1's latest reply six shell steps (a command with ;, && and pipes in the shape of a real one, a plain one, a heredoc, quoted
+; and |, a subshell and a long path), for the step sheet's Format button (step-format-check.js).
+
 Prints one JSON line: what the driver needs.
 """
 
@@ -65,6 +68,15 @@ REFS_REPLY = """Restore check: this is the time-limited item. The worker is wait
 - The tab fm-no-such-tab-anywhere is not on the reader, and crew-1 is this very conversation.
 - Notes are in /lab/crew-3/notes.md and crew-3.md, and a longer name, cp-ontology-search-two, is another thing.
 """
+# LAB_COMMANDS=1: shell commands in the shapes the owner's transcripts have (invented names and paths), one step each.
+LAB_COMMANDS = [
+    "cat /lab/home/.claude/projects/-lab-workspace-firstmate/memory/usage-notes.md; cd /lab/home/treehouse/1/firstmate && grep -rn -i \"campus\" data/captain.md data/learnings.md config 2>/dev/null | cut -c1-300 | head -20; fm-who list 2>&1 | head -20; fm-session list 2>&1 | head",
+    "ls -la /lab/crew-1",
+    "cat > /lab/crew-1/notes.txt <<'EOF'\nfirst line; with | pipe && more\nsecond line\nEOF\ncat /lab/crew-1/notes.txt | wc -l",
+    "echo \"a;b | c && d\" && echo 'x || y' | sed 's/x/z/' || true",
+    "(cd /lab/crew-1 && make build) | tee /lab/crew-1/build.log; echo $(ls /lab/crew-1 | wc -l) files",
+    "python3 /lab/workspace/some/very/long/directory/name/for/a/script/that/keeps/going/and/going/transcript_reader_build_prototype_with_a_long_name.py --out /lab/workspace/another/long/directory/name/out.html && echo built",
+]
 WORK = "/lab/personal-work"
 SPLIT = "/lab/split-fix"
 
@@ -73,7 +85,7 @@ def iso(at):
     return datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def claude_log(path, name, minutes_ago, cwd, latest=None, exchanges=2):
+def claude_log(path, name, minutes_ago, cwd, latest=None, exchanges=2, commands=None):
     """A Claude Code session log with `exchanges` exchanges (two by default) whose last reply is `minutes_ago` old (`latest` is that reply's text, when given)."""
     at = NOW - minutes_ago * 60
     earlier = []
@@ -89,6 +101,14 @@ def claude_log(path, name, minutes_ago, cwd, latest=None, exchanges=2):
         {"type": "user", "uuid": f"u-{name}-2", "timestamp": iso(at - 10), "cwd": cwd, "message": {"role": "user", "content": f"Second question in {name}"}},
         {"type": "assistant", "timestamp": iso(at), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": latest or f"Latest answer in {name}."}]}},
     ]
+    if commands:
+        # Shell steps inside the latest reply: each a tool_use and its result, in the second before the reply's closing text.
+        steps = []
+        for k, command in enumerate(commands):
+            block = {"type": "tool_use", "id": f"cmd{k}", "name": "Bash", "input": {"command": command, "description": f"Run step {k + 1}"}}
+            steps.append({"type": "assistant", "timestamp": iso(at - 8 + k * 0.1), "cwd": cwd, "message": {"role": "assistant", "content": [block]}})
+            steps.append({"type": "user", "timestamp": iso(at - 7.9 + k * 0.1), "cwd": cwd, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"cmd{k}", "content": "ok"}]}})
+        records = records[:-1] + steps + records[-1:]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     os.utime(path, (at, at))
@@ -291,7 +311,8 @@ def main(folder: Path) -> None:
             cwd = str(leader_home(home))
             leader_log(primary / "projects" / "-lab-crew-1" / f"{sid}.jsonl", cwd, "crew-1")
         else:
-            claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named)
+            claude_log(primary / "projects" / f"-lab-crew-{n + 1}" / f"{sid}.jsonl", f"crew-{n + 1}", ages[n], cwd, exchanges=big, latest=named,
+                       commands=LAB_COMMANDS if os.environ.get("LAB_COMMANDS") and n == 0 else None)
         pids[f"crew-{n + 1}"] = sleeper(); record(primary, pids[f"crew-{n + 1}"], sid)
 
     tabs = [{"tab_id": "w1:t1", "label": "cp-ontology-learning"}, {"tab_id": "w1:t2", "label": "cp-ontology-search"}, {"tab_id": "w1:t3", "label": "cp-whatapps-tool"},
