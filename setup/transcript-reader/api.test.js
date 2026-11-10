@@ -2924,6 +2924,17 @@ test('board: behind the same guard as every route, read only, no CORS, and plain
   } finally { await t.close(); }
 });
 
+test('board: the state route tells the reader page whether a mark can be written from where it is served (the flag, and only on loopback)', async () => {
+  let t = await start({ options: { board: { run: boardRunWith([]), marks: true } } });
+  try {
+    assert.deepEqual((await t.get('state')).json.board.write, { marks: true }, 'marks flag on, loopback: the turn menu may offer to add a task');
+  } finally { await t.close(); }
+  t = await start({ options: { board: { run: boardRunWith([]) } } });
+  try {
+    assert.deepEqual((await t.get('state')).json.board.write, { marks: false }, 'marks flag off: it may not');
+  } finally { await t.close(); }
+});
+
 test('board: a build that fails is a plain 502', async () => {
   const t = await start({ options: { board: { run: async () => { throw new Error('boom'); } } } });
   try {
@@ -2944,10 +2955,10 @@ test('board: the state route says where the board is served and which board read
   t = await start({ options: { board: { run: boardRunWith([{ id: 'abcdef12-0000', replies: 3, last: 1 }]) } } });
   try {
     const before = await t.get('state');
-    assert.deepEqual(before.json.board, { page: '/setup/transcript-reader/board/', boards: {} }, 'on, with no board read yet: the page is named, no conversation is');
+    assert.deepEqual(before.json.board, { page: '/setup/transcript-reader/board/', boards: {}, write: { marks: false } }, 'on, with no board read yet: the page is named, no conversation is, and marks cannot be written (that flag is off)');
     await t.get('board?session=leader-esim');
     const after = await t.get('state');
-    assert.deepEqual(after.json.board, { page: '/setup/transcript-reader/board/', boards: { 'abcdef12-0000': 'leader-esim' } });
+    assert.deepEqual(after.json.board, { page: '/setup/transcript-reader/board/', boards: { 'abcdef12-0000': 'leader-esim' }, write: { marks: false } });
     assert.equal((await t.get('state?boot=1')).json.board.page, '/setup/transcript-reader/board/', 'the first call of a page says it too');
   } finally { await t.close(); }
 });
@@ -3095,10 +3106,13 @@ test('board writes: no flag, no route; with the flag a mark and an answer reach 
     assert.equal(mark.status, 200);
     assert.equal(mark.json.echoed, 'alpha');
     assert.deepEqual(inputs[0].args.slice(0, 3), ['mark', '--session', 'leader-esim']);
-    assert.equal(JSON.parse(inputs[0].input).source, 'card', 'the route fixes the source; the page cannot choose it');
+    assert.equal(JSON.parse(inputs[0].input).source, 'reader', 'a mark from the conversation view says so');
+    await t.post('board-mark', { session: 'leader-esim', task: 'alpha', turn: 'abcd1234:ef567890:reply', mark: 'out' });
+    await t.post('board-mark', { session: 'leader-esim', task: 'alpha', turn: 'abcd1234:ef567890:reply', mark: 'out', source: 'anything-else' });
+    assert.deepEqual([inputs[1], inputs[2]].map((i) => JSON.parse(i.input).source), ['card', 'card'], 'the board page\'s mark, and any source but the two known ones, are the board card\'s');
     const answer = await t.post('board-answer', { session: 'leader-esim', task: 'alpha', call: 'Z1', src: 'ask', option: 'a', extra: 'ignored' });
     assert.equal(answer.status, 200);
-    assert.equal('extra' in JSON.parse(inputs[1].input), false, 'only the known fields are passed on');
+    assert.equal('extra' in JSON.parse(inputs[3].input), false, 'only the known fields are passed on');
     assert.equal((await t.post('board-answer', { session: '../x', task: 'a', call: 'Z1', src: 'ask' })).status, 400);
   } finally { await t.close(); }
 });

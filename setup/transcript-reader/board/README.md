@@ -24,10 +24,10 @@ GET  /setup/transcript-reader/board/                                        the 
 GET  /setup/transcript-reader/board/?session=<board id>                     ONE session's board alone: that board is read and drawn, nothing else is listed or read for the view (no board-sessions
                                                                             call, no other board, no worker switch; #s= is ignored); an All tasks link in its header goes to the whole board;
                                                                             #t=<task>[/<call>] opens a card; a copied card link keeps ?session=
-GET  /api/transcript-reader/state                                           also { board: { page, boards } } where the page is served: the reader's header shows All tasks (always) and Tasks
+GET  /api/transcript-reader/state                                           also { board: { page, boards, write: { marks } } } where the page is served (`write.marks`: the marks flag, loopback only; it lets the conversation's turn menu change a turn's tasks): the reader's header shows All tasks (always) and Tasks
                                                                             (only for a conversation named in `boards`, which opens ?session=<that board>; from the boards already read, nothing
                                                                             is built for it, and a conversation no board reads has no Tasks entry until one that does is read)
-POST /api/transcript-reader/board-mark    { session, task, turn, mark }     flagged
+POST /api/transcript-reader/board-mark    { session, task, turn, mark[, source] }     flagged (source: reader from the conversation's turn menu, else card)
 POST /api/transcript-reader/board-answer  { session, task, call, src, ... } flagged
 POST /api/transcript-reader/board-worker  { leader, task, enabled }         a worker board on or off
 GET  /api/transcript-reader/board-reply?session=&sid=&uid=                  the whole text of one reply, read only (for "Show full reply")

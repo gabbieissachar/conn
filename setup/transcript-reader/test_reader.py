@@ -1291,7 +1291,8 @@ class LeaderTasksTest(unittest.TestCase):
         self.assertEqual(tasks["later-one"]["state"], "Queued")
         self.assertEqual(tasks["old-one"], {"title": "Finished long ago", "state": "Done"}, "the backlog's row wins over the archive's")
         self.assertEqual(tasks["checked-in-flight"]["state"], "Done", "a checked row is done")
-        self.assertEqual(tasks["archived-one"], {"title": "Archived work", "state": "Done"}, "a task only the archive knows")
+        self.assertEqual(tasks["archived-one"], {"title": "Archived work", "state": "Done", "archived": True}, "a task only the archive knows, flagged: the reply-mark command refuses it")
+        self.assertNotIn("archived", tasks["old-one"], "a task the backlog still holds can be marked")
 
     def test_a_home_with_no_backlog_has_no_titles_and_a_long_title_is_cut(self):
         with tempfile.TemporaryDirectory() as tmp:

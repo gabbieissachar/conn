@@ -173,6 +173,8 @@ def leader_home(home):
     for name in ("data", "state", "projects"):
         (folder / name).mkdir(parents=True, exist_ok=True)
     (folder / "data" / "backlog.md").write_text(LEADER_BACKLOG, encoding="utf-8")
+    # A task only the archive remembers (the backlog keeps a few recent Done rows): Firstmate's reply-mark command refuses it, so the turn menu never offers it.
+    (folder / "data" / "done-archive.md").write_text("# Archive\n\n## Archived\n- [x] ancient-archived-task - A task long finished and archived (repo: pmos)\n", encoding="utf-8")
     return folder
 
 
@@ -221,7 +223,7 @@ def leader_log(path, cwd, sid_name):
     records, reply_at = [], {}
     for n, (kind, text, reply, command) in enumerate(turns):
         at = stamp(n)
-        uid = f"u-{sid_name}-{n:03d}-aaaaaaaa"
+        uid = f"{n:08x}-aaaa-4000-8000-{n:012d}"  # a log's own record id: its first eight characters tell turns apart (a mark names a turn by them)
         if kind == "you":
             if text.startswith("@POINT"):
                 target = {"@POINT1": 7, "@POINT2": 23, "@POINT3": 31}[text.split()[0]]

@@ -239,3 +239,17 @@ test('the reader page asks with boot on its first poll only, and keeps asking th
   assert.ok(poll.indexOf('bootState = false;') > poll.indexOf('live.state(state.follow, bootState)'), 'after the call');
   assert.ok(poll.indexOf('catch (e) { noteSyncFail(e); throw e; }') < poll.indexOf('bootState = false;'), 'and not when the call failed');
 });
+
+test('a turn\'s task change is one POST of the board\'s mark route with the token, and a refusal keeps its own sentence', async () => {
+  const { live, fetched } = load({ answer: { body: { status: 'ok', mark: { mark: 'in' } } } });
+  const body = { session: 'leader-lab', task: 'bc-39-specs-task', turn: '5e550000:abcdef12:reply', mark: 'in', source: 'reader' };
+  await live.boardMark(body);
+  assert.equal(fetched.length, 1);
+  assert.equal(fetched[0].url, '/api/transcript-reader/board-mark');
+  assert.equal(fetched[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(fetched[0].options.body), body);
+  assert.equal(fetched[0].options.headers['x-transcript-reader-token'], TOKEN);
+  const refused = load({ answer: { status: 409, body: { status: 'error', code: 'refused', message: 'Firstmate did not file the mark: nothing' } } });
+  await assert.rejects(refused.live.boardMark(body), /Firstmate did not file the mark: nothing/);
+  await assert.rejects(load({ hostname: 'example.test' }).live.boardMark(body), /Open the served page/, 'a page no server serves writes nothing');
+});

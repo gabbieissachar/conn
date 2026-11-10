@@ -233,6 +233,120 @@ class MarksTest(Lab):
         self.assertEqual(self.ids(turn), ["bc-39-specs-task"])
 
 
+class MarkKeyTest(Lab):
+    """What the conversation's turn menu needs to file a mark: `mk` on each turn (the turn's own log), `tag_sides` where a tag sits on your message, `board` on the leader."""
+
+    def records(self):
+        return [wrote("Status?", 0, "uu111111aaaa"), said("Nathan, bc-39-specs-task is waiting on your review, nothing else is open today for any work.", 0),
+                wrote("Fine", 5, "uu222222bbbb"), said("Nathan, noted, and the rest is fine and quiet, so you can carry on with other work today.", 5)]
+
+    def test_every_turn_carries_the_first_eight_characters_of_its_own_log(self):
+        turns = self.tagged(self.records())
+        self.assertEqual([t["mk"] for t in turns], [SID[:8], SID[:8]])
+
+    def test_a_conversation_chained_over_a_clear_names_each_turn_by_its_own_log(self):
+        first, second = "aaaa0000-0000-4000-8000-000000000001", "bbbb0000-0000-4000-8000-000000000002"
+        exchanges = builder.session_exchanges(self.records())
+        chain = [Path(f"/x/{first}.jsonl"), Path(f"/x/{second}.jsonl")]
+        loaded = {chain[0]: {"exchanges": exchanges[:1]}, chain[1]: {"exchanges": exchanges[1:]}}
+        builder.attach_task_tags(exchanges, chain, loaded, self.fm, builder.leader_tasks(self.fm))
+        self.assertEqual([t["mk"] for t in exchanges], [first[:8], second[:8]])
+
+    def test_a_turn_with_no_uid_has_no_key_to_mark_it_by(self):
+        exchanges = self.tagged(self.records())
+        exchanges[0]["uid"] = ""
+        task_tags.tag_exchanges(exchanges, [SID, SID], builder.leader_tasks(self.fm), self.fm)
+        self.assertNotIn("mk", exchanges[0])
+        self.assertIn("mk", exchanges[1])
+
+    def test_no_tag_sides_while_every_tag_sits_on_the_reply(self):
+        turn = self.tagged(self.records())[0]
+        self.assertEqual(self.ids(turn), ["bc-39-specs-task"])
+        self.assertNotIn("tag_sides", turn)
+
+    def test_a_tag_that_comes_from_your_message_is_on_its_side_and_one_on_both_is_both(self):
+        records = [wrote("Please look at lv-50-finish-flow", 0, "uu111111aaaa"), said("Nathan, I will look at it and come back to you shortly with the answer.", 0),
+                   wrote("And bc-39-specs-task?", 5, "uu222222bbbb"), said("Nathan, bc-39-specs-task is waiting on your review of the second draft.", 5)]
+        [first, second] = self.tagged(records)
+        self.assertEqual((self.ids(first), first["tag_sides"]), (["lv-50-finish-flow"], ["m"]))
+        self.assertEqual((self.ids(second), second["tag_sides"]), (["bc-39-specs-task"], ["rm"]))
+
+    def test_a_mark_on_your_message_is_on_the_message_side(self):
+        self.mark("lv-50-finish-flow", f"{SID[:8]}:uu111111:in", "in")
+        self.mark("reader-task-tags-build", f"{SID[:8]}:uu111111:reply", "in")
+        [turn, _] = self.tagged(self.records())
+        by = dict(zip(self.ids(turn), turn["tag_sides"]))
+        self.assertEqual((by["lv-50-finish-flow"], by["reader-task-tags-build"]), ("m", "r"))
+
+    def test_a_turn_a_message_tag_is_the_only_source_of_stays_tagged_after_an_out_on_the_reply_alone(self):
+        records = [wrote("Please look at lv-50-finish-flow", 0, "uu111111aaaa"), said("Nathan, I will look at it and come back to you shortly with the answer.", 0)]
+        self.mark("lv-50-finish-flow", f"{SID[:8]}:uu111111:reply", "out")
+        self.assertEqual(self.ids(self.tagged(records)[0]), ["lv-50-finish-flow"], "the page therefore writes the out on the side the tag sits on")
+        self.mark("lv-50-finish-flow", f"{SID[:8]}:uu111111:in", "out")
+        self.assertEqual(self.ids(self.tagged(records)[0]), [])
+
+    def test_tags_taken_off_again_take_the_keys_off_too(self):
+        exchanges = self.tagged(self.records())
+        task_tags.tag_exchanges(exchanges, [SID, SID], {}, self.fm)
+        self.assertTrue(all("mk" not in e and "tag_sides" not in e for e in exchanges))
+
+
+class BoardSessionTest(Lab):
+    """Which Tasks board owns a leader's home: the board registry's own answer, so a mark goes where the board would put it."""
+
+    def setUp(self):
+        super().setUp()
+        task_tags._BOARDS.update(at=0.0, sessions=[])
+        self.addCleanup(lambda: task_tags._BOARDS.update(at=0.0, sessions=[]))
+        self.config = Path(self._tmp.name) / "board.json"
+        self.other = Path(self._tmp.name) / "elsewhere"
+        self.other.mkdir()
+
+    def configure(self, sessions):
+        self.config.write_text(json.dumps({"sessions": sessions}), encoding="utf-8")
+        import os
+        old = os.environ.get("PMOS_READER_BOARD_CONFIG")
+        os.environ["PMOS_READER_BOARD_CONFIG"] = str(self.config)
+        self.addCleanup(lambda: os.environ.pop("PMOS_READER_BOARD_CONFIG", None) if old is None else os.environ.update(PMOS_READER_BOARD_CONFIG=old))
+        task_tags._BOARDS.update(at=0.0, sessions=[])
+
+    def test_the_board_whose_home_the_leader_is_gives_its_id(self):
+        self.configure([{"id": "leader-lab", "label": "Lab", "home": str(self.fm)}, {"id": "leader-else", "label": "Else", "home": str(self.other)}])
+        self.assertEqual(task_tags.board_session(self.fm), "leader-lab")
+        self.assertEqual(task_tags.board_session(self.other), "leader-else")
+
+    def test_a_home_no_board_reads_has_no_board(self):
+        self.configure([{"id": "leader-else", "label": "Else", "home": str(self.other)}])
+        self.assertEqual(task_tags.board_session(self.fm), "")
+        self.assertEqual(task_tags.board_session(None), "")
+
+    def test_a_worker_board_is_not_the_boards_of_a_home(self):
+        self.configure([{"id": "worker-x", "label": "X", "home": str(self.fm), "kind": "worker"}])
+        self.assertEqual(task_tags.board_session(self.fm), "")
+
+    def test_an_unreadable_config_means_no_board_and_no_failed_build(self):
+        self.config.write_text("{not json", encoding="utf-8")
+        import os
+        os.environ["PMOS_READER_BOARD_CONFIG"] = str(self.config)
+        self.addCleanup(lambda: os.environ.pop("PMOS_READER_BOARD_CONFIG", None))
+        task_tags._BOARDS.update(at=0.0, sessions=[])
+        self.assertNotEqual(task_tags.board_session(self.fm), "none-such")
+
+    def test_a_leaders_conversation_names_its_board_and_a_plain_leader_does_not(self):
+        self.configure([{"id": "leader-lab", "label": "Lab", "home": str(self.fm)}])
+        self.assertEqual(builder.leader_info(str(self.fm))["board"], "leader-lab")
+        self.configure([{"id": "leader-else", "label": "Else", "home": str(self.other)}])
+        self.assertNotIn("board", builder.leader_info(str(self.fm)))
+
+    def test_the_answer_is_kept_for_a_few_seconds_and_read_again_after(self):
+        self.configure([{"id": "leader-lab", "label": "Lab", "home": str(self.fm)}])
+        self.assertEqual(task_tags.board_session(self.fm), "leader-lab")
+        self.config.write_text(json.dumps({"sessions": [{"id": "leader-new", "label": "N", "home": str(self.fm)}]}), encoding="utf-8")
+        self.assertEqual(task_tags.board_session(self.fm), "leader-lab")
+        task_tags._BOARDS["at"] -= task_tags.BOARD_MEMO_SECONDS + 1
+        self.assertEqual(task_tags.board_session(self.fm), "leader-new")
+
+
 class BoardAgreementTest(Lab):
     """One source of truth: every reply the board's tagger and marks put on a task, from the turn's own words alone, is tagged with that task here."""
 

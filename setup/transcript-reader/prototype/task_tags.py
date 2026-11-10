@@ -15,6 +15,11 @@ This module only feeds them the conversation's turns and folds the answers into 
 A turn with a tag carries `tags`: `[[task id, "mention+signal"], ...]`, strongest first. A turn with none carries `tag_row`: "upkeep" (routine: a heartbeat, a
 check, a short or routine reply, the board's `is_upkeep`) or "none" (talk with no task). The page's task menu lists the tasks, then those two rows.
 
+What the page needs to change a tag from the conversation (the turn menu, "Add to a task"): every turn of the conversation carries `mk`, the first eight characters of
+the session id of the log that holds it (the board's mark names a turn `<mk>:<first eight of uid>:reply|in`), and a turn whose tags do not all sit on its reply carries
+`tag_sides`, one string per tag in the same order: "r" the reply side, "m" your message's side, "rm" both. A mark is written on the side a tag sits on, so taking a tag
+off a turn whose tag comes from your message's words acts on the message and not on the reply. (`tag_sides` is left out when every tag is "r".)
+
 Only the sure and possible levels of the tagger count, as on the board (weak ones, one shared key or a title word, are never shown). A session divider has no tag.
 What the board has that this does not: a task's branch, PR, review-board links and call keys (they come from the board's live read, which a page build does not
 make), so a reply the board ties to a task by one of those only is not tagged here; the board's thread and this tagging agree on every reply the shared rules
@@ -29,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,10 +43,11 @@ ROOT = HERE.parent  # setup/transcript-reader: where the board package is
 try:  # a copy of the reader without the board package has no tags, never a failed build
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+    from board import homes as homes_lib  # noqa: E402
     from board import marks as marks_lib  # noqa: E402
     from board import tagger  # noqa: E402
 except ImportError:  # pragma: no cover - the board package ships with the reader
-    marks_lib = tagger = None
+    homes_lib = marks_lib = tagger = None
 
 TRIGGER_CHARS = 6000   # a wake-up's own text names the worker or task that woke the supervisor (the board reads the same amount)
 INPUT_CHARS = 6000     # a message of yours is read up to this much
@@ -53,11 +60,34 @@ REASON_ORDER = ("marked", "signal", "mention", "command", "wake", "pointer", "wo
 KEEP_LEVELS = ("sure", "possible")
 UPKEEP_KINDS = ("heartbeat", "supervision", "monitor", "hook", "quiet", "check", "background")
 
+BOARD_MEMO_SECONDS = 20  # the board registry is read at most this often while a build asks for it once per leader
+
 _KEPT: dict[tuple[str, str], dict] = {}
+_BOARDS: dict = {"at": 0.0, "sessions": []}
 
 
 def available() -> bool:
     return tagger is not None and marks_lib is not None
+
+
+def board_session(home: Path | None) -> str:
+    """The id of the Tasks board that owns a leader's home ("" when none does): the session the board's mark route needs to file a mark. It is the board registry's
+    own answer (`board/homes.py`: the config file, else the main home and its registered secondmates), so the conversation and the board never disagree about which
+    home a mark goes to. A worker's board is not one (a worker has no tasks of its own to mark)."""
+    if homes_lib is None or home is None:
+        return ""
+    now = time.monotonic()
+    if now - _BOARDS["at"] > BOARD_MEMO_SECONDS or not _BOARDS["at"]:
+        try:
+            _BOARDS["sessions"] = [(s.id, s.kind, Path(s.home).resolve()) for s in homes_lib.load().sessions]
+        except Exception:  # an unreadable config is no board: the conversation simply has no mark control
+            _BOARDS["sessions"] = []
+        _BOARDS["at"] = now
+    try:
+        target = Path(home).resolve()
+    except (OSError, RuntimeError):
+        return ""
+    return next((sid for sid, kind, where in _BOARDS["sessions"] if kind != "worker" and where == target), "")
 
 
 def tools_text(exchange: dict) -> str:
@@ -156,8 +186,8 @@ def tag_exchanges(exchanges: list[dict], sids: list[str | None], tasks: dict[str
     its session and turn id), <tasks> the home's tasks as `leader_tasks` gives them ({id: {title, state}}), <home> where the marks are, and <pointers> {the index of
     your message: the indexes of the replies its pointers name}."""
     for exchange in exchanges:
-        exchange.pop("tags", None)
-        exchange.pop("tag_row", None)
+        for field in ("tags", "tag_row", "tag_sides", "mk"):
+            exchange.pop(field, None)
     if not available() or not tasks:
         return
     registry = [{"id": task, "title": (record or {}).get("title") or ""} for task, record in sorted(tasks.items())]
@@ -192,13 +222,20 @@ def tag_exchanges(exchanges: list[dict], sids: list[str | None], tasks: dict[str
                 if marks.get(key(i, "in") or "", {}).get(task) != "out":
                     mine.setdefault(task, ["pointer"])
         merged: dict[str, list[str]] = {}
-        for found in (reply_side[i], mine):
+        sides: dict[str, str] = {}
+        for part, found in (("r", reply_side[i]), ("m", mine)):
             for task, reasons in found.items():
                 have = merged.setdefault(task, [])
                 have.extend(r for r in reasons if r not in have)
+                sides[task] = sides.get(task, "") + part
         exchange = exchanges[i]
+        mark_sid = sids[i] if i < len(sids) else None
+        if mark_sid and isinstance(exchange.get("uid"), str) and exchange["uid"]:
+            exchange["mk"] = mark_sid[:8]
         if merged:
             ranked = sorted(merged.items(), key=lambda item: order_key(item[1], item[0]))[:MAX_TAGS]
             exchange["tags"] = [[task, "+".join(sorted(reasons, key=REASON_ORDER.index))] for task, reasons in ranked]
+            if any(sides[task] != "r" for task, _ in ranked):
+                exchange["tag_sides"] = [sides[task] for task, _ in ranked]
         else:
             exchange["tag_row"] = row_of(exchange)

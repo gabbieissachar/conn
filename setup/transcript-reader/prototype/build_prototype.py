@@ -2367,15 +2367,23 @@ def leader_tasks(home: Path) -> dict[str, dict]:
     """The tasks the home's backlog knows, then those only its archive of finished work knows (the backlog keeps a few recent Done rows)."""
     tasks = backlog_tasks(read_small(home / "data" / "backlog.md"))
     for task, record in backlog_tasks(read_small(home / "data" / "done-archive.md"), "Done").items():
-        tasks.setdefault(task, record)
+        if task not in tasks:  # only the archive remembers it: Firstmate's reply-mark command refuses a task that is not in the backlog, so the page must not offer it
+            tasks[task] = {**record, "archived": True}
     return tasks
 
 
 def leader_info(cwd: str) -> dict | None:
     """What a leader's conversation carries for the By task view: the home's folder as the page shows a document's (so a document's folder
-    says which task it is in) and the tasks' titles and states. None for a conversation that is not a leader's."""
+    says which task it is in) and the tasks' titles and states. None for a conversation that is not a leader's. `board` names the Tasks board that owns the
+    home when one does (the session the mark route files a turn's tag under; the turn menu is offered only with it)."""
     home = leader_home(cwd)
-    return {"dir": shown_dir(home / "data"), "tasks": leader_tasks(home)} if home else None
+    if not home:
+        return None
+    info = {"dir": shown_dir(home / "data"), "tasks": leader_tasks(home)}
+    board = task_tags.board_session(home)
+    if board:
+        info["board"] = board
+    return info
 
 
 def home_from_shown(shown: str) -> Path:

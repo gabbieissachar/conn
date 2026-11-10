@@ -171,5 +171,7 @@
       if (passage) text += `, the part "${clip(passage, 100)}"`;
       return text + ": ";
     }
-    return { served, state, sync, steps, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, addTab, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    // A turn's task changed from the conversation: one reply mark of the Tasks board, filed by the server's board-mark route (Firstmate's fm-reply-mark.sh): { session: <the board>, task, turn, mark: "in" | "out" | "clear", source: "reader" }.
+    const boardMark = body => call("board-mark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return { served, state, sync, steps, boardMark, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, addTab, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();

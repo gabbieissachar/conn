@@ -217,7 +217,7 @@ test('remember: only the newest conversations are kept, and bad storage is nothi
 const PAGE = fs.readFileSync(path.join(__dirname, 'prototype', 'template.html'), 'utf8');
 const BLOCK = PAGE.slice(PAGE.indexOf('// ---------------------------------------------------------------- the task menu'), PAGE.indexOf("// ---------------------------------------------------------------- stars: the picker's favourite sessions"));
 
-function pageWith({ width = 1440, stored = {}, session } = {}) {
+function pageWith({ width = 1440, stored = {}, session, canLive = false, marks = false } = {}) {
   const elements = {};
   const element = (id) => elements[id] || (elements[id] = {
     id, hidden: true, textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; } }, classList: { add() {}, remove() {}, toggle() {} },
@@ -234,9 +234,14 @@ function pageWith({ width = 1440, stored = {}, session } = {}) {
     $: (tag, cls, text) => ({ tag, className: cls || '', textContent: text || '', dataset: {}, scrollTop: 0, append() {}, addEventListener() {}, setAttribute() {}, classList: { add() {} },
       querySelector: () => null, querySelectorAll: () => [], replaceChildren() {}, focus() {}, scrollIntoView() {} }),
     paintBar: () => {}, innerHeight: 900,
+    // what the turn menu's block reads of the page around it
+    addEventListener() {}, scrollX: 0, scrollY: 0, canLive, link: { board: marks ? { page: '/board/', boards: {}, write: { marks: true } } : null },
+    refreshData: async () => { env.refreshed += 1; }, refreshed: 0, toasts: [], toast(text, undo) { env.toasts.push({ text, undo }); },
+    timers: [], setTimeout(fn, ms) { env.timers.push({ fn, ms }); return env.timers.length; }, clearTimeout(id) { if (env.timers[id - 1]) env.timers[id - 1].cleared = true; },
+    live: { written: [], rerenders: 0, fail: null, boardMark(body) { this.written.push(body); return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve({ status: 'ok' }); }, rerender() { this.rerenders += 1; return Promise.resolve({}); } },
   };
   vm.createContext(env);
-  vm.runInContext(BLOCK + '\nthis.readTasks = readTasks; this.setTaskOff = setTaskOff; this.paintTaskBanner = paintTaskBanner; this.taskShows = taskShows; this.taskSignature = taskSignature; this.menuShown = menuShown; this.openTaskMenu = openTaskMenu; this.closeTaskMenu = closeTaskMenu; this.getState = () => taskState; this.taskUi = taskUi;', env);
+  vm.runInContext(BLOCK + '\nthis.readTasks = readTasks; this.setTaskOff = setTaskOff; this.paintTaskBanner = paintTaskBanner; this.taskShows = taskShows; this.taskSignature = taskSignature; this.menuShown = menuShown; this.openTaskMenu = openTaskMenu; this.closeTaskMenu = closeTaskMenu; this.getState = () => taskState; this.taskUi = taskUi; this.turnUi = turnUi; this.turnOps = turnOps; this.turnMenuOffered = turnMenuOffered; this.applyTurnOverlay = applyTurnOverlay; this.changeTurn = changeTurn; this.writeMarks = writeMarks; this.marksWritable = marksWritable; this.openTurnMenu = openTurnMenu; this.closeTurnMenu = closeTurnMenu;', env);
   env.kept = kept; env.calls = calls; env.element = element;
   env.readTasks();
   return env;
@@ -324,4 +329,247 @@ test('page: the style rules use the same 820 px as the script, and the rail is t
   assert.ok(/\.taskmenu \{ position: fixed; z-index: 31; left: 0; right: 0; bottom: 0;/.test(style), 'below it the menu is a bottom sheet');
   assert.ok(BLOCK.includes('matchMedia(`(min-width: ${taskTags.RAIL_MIN}px)`)'), 'the script asks the same width');
   assert.ok(/body \{ padding-right: var\(--rail\); \}/.test(style) && /\.dock \{[^}]*right: var\(--rail\)/.test(style), 'the column and the message bar make room through --rail');
+});
+
+// ---- changing a turn's tasks from the conversation (the turn menu): the marks one action writes, the picker, the overlay
+
+const MARKED = (extra = {}) => ({ source: 'captain', uid: 'abcdef12-0000-4000-8000-000000000001', mk: '5e550000', reply: 'Nathan, done.', at: 100, reply_at: 105, ...extra });
+const BIG = {
+  'bc-39-specs-task': { title: 'Write the BC-39 specs', state: 'In flight' },
+  'bc-39-review-round': { title: 'BC-39 review round', state: 'Queued' },
+  'zz-queued-one': { title: 'A queued one', state: 'Queued' },
+  'aa-flight-one': { title: 'An in flight one', state: 'In flight' },
+  'lv-50-finish-flow': { title: 'Finish the LV-50 flow', state: 'Done' },
+  'old-archived': { title: 'Old finished work', state: 'Done', archived: true },
+};
+
+test('markable: a turn with its log id and its own id can be marked, a divider and a turn from a copy built before the keys cannot', () => {
+  assert.equal(taskTags.markable(MARKED()), true);
+  assert.equal(taskTags.markable(MARKED({ mk: undefined })), false, 'a copy built before the keys');
+  assert.equal(taskTags.markable(MARKED({ uid: '' })), false);
+  assert.equal(taskTags.markable(MARKED({ source: 'session' })), false, 'a divider');
+  assert.equal(taskTags.markable(null), false);
+});
+
+test('markKey: the board\'s turn id, the log\'s eight characters then the turn\'s eight then the side', () => {
+  assert.equal(taskTags.markKey(MARKED(), 'reply'), '5e550000:abcdef12:reply');
+  assert.equal(taskTags.markKey(MARKED(), 'in'), '5e550000:abcdef12:in');
+  assert.equal(taskTags.markKey(MARKED({ mk: '' }), 'reply'), '');
+});
+
+test('marksFor add: one in, on the reply, or on your message while the turn has no reply yet', () => {
+  assert.deepEqual(plain(taskTags.marksFor(MARKED(), 'zz-queued-one', 'add')), [{ task: 'zz-queued-one', turn: '5e550000:abcdef12:reply', mark: 'in' }]);
+  assert.deepEqual(plain(taskTags.marksFor(MARKED({ reply: '' }), 'zz-queued-one', 'add')), [{ task: 'zz-queued-one', turn: '5e550000:abcdef12:in', mark: 'in' }], 'a message with no reply yet');
+});
+
+test('marksFor drop: an out on each side the tag sits on, so a tag from your message\'s words really goes', () => {
+  const both = MARKED({ tags: [['bc-39-specs-task', 'mention'], ['zz-queued-one', 'mention'], ['aa-flight-one', 'mention']], tag_sides: ['rm', 'm', 'r'] });
+  assert.deepEqual(plain(taskTags.marksFor(both, 'bc-39-specs-task', 'drop')).map(m => m.turn.split(':')[2] + '=' + m.mark), ['reply=out', 'in=out']);
+  assert.deepEqual(plain(taskTags.marksFor(both, 'zz-queued-one', 'drop')).map(m => m.turn.split(':')[2] + '=' + m.mark), ['in=out']);
+  assert.deepEqual(plain(taskTags.marksFor(both, 'aa-flight-one', 'drop')).map(m => m.turn.split(':')[2] + '=' + m.mark), ['reply=out']);
+  const plainTurn = MARKED({ tags: [['bc-39-specs-task', 'mention']] });
+  assert.deepEqual(plain(taskTags.marksFor(plainTurn, 'bc-39-specs-task', 'drop')).map(m => m.turn.split(':')[2]), ['reply'], 'no tag_sides: the reply');
+});
+
+test('marksFor remove: a clear on each side the tag sits on; anything else writes nothing', () => {
+  const ex = MARKED({ tags: [['zz-queued-one', 'marked']], tag_sides: ['m'] });
+  assert.deepEqual(plain(taskTags.marksFor(ex, 'zz-queued-one', 'remove')), [{ task: 'zz-queued-one', turn: '5e550000:abcdef12:in', mark: 'clear' }]);
+  assert.deepEqual(plain(taskTags.marksFor(ex, 'zz-queued-one', 'nonsense')), []);
+  assert.deepEqual(plain(taskTags.marksFor(MARKED({ mk: '' }), 'zz-queued-one', 'add')), [], 'a turn with no key writes nothing');
+  assert.deepEqual(plain(taskTags.marksFor(ex, '', 'add')), []);
+});
+
+test('undoOf: clear for an in or an out, in again for a clear', () => {
+  const marks = [{ task: 'a', turn: 't:1:reply', mark: 'in' }, { task: 'a', turn: 't:1:in', mark: 'out' }, { task: 'b', turn: 't:2:in', mark: 'clear' }];
+  assert.deepEqual(plain(taskTags.undoOf(marks)).map(m => m.mark), ['clear', 'clear', 'in']);
+  assert.deepEqual(plain(taskTags.undoOf(marks)).map(m => m.turn), ['t:1:reply', 't:1:in', 't:2:in']);
+});
+
+test('tagAction: a tag you added is removed, one the rules made is declined, one that is both is declined', () => {
+  const ex = MARKED({ tags: [['a', 'marked'], ['b', 'mention+signal'], ['c', 'marked+mention']] });
+  assert.deepEqual(['a', 'b', 'c'].map(id => taskTags.tagAction(ex, id)), ['remove', 'drop', 'drop']);
+});
+
+test('turnTags: each tag with its name, state, the reasons in words and its action', () => {
+  const rows = plain(taskTags.turnTags(MARKED({ tags: [['bc-39-specs-task', 'signal+mention'], ['zz-queued-one', 'marked']], tag_sides: ['r', 'm'] }), BIG));
+  assert.deepEqual(rows.map(r => [r.id, r.name, r.state, r.why, r.action, r.side]), [
+    ['bc-39-specs-task', 'Write the BC-39 specs', 'In flight', 'a status wake-up for it, the words name it', 'drop', 'r'],
+    ['zz-queued-one', 'A queued one', 'Queued', 'you marked it', 'remove', 'm'],
+  ]);
+  assert.deepEqual(plain(taskTags.turnTags(MARKED({ tag_row: 'none' }), BIG)), []);
+});
+
+test('pickList: this conversation\'s tasks first, then open ones (in flight before queued), finished ones only on a match, an archived one never, none the turn has', () => {
+  const sum = taskTags.summary([{ source: 'captain', at: 1, tags: [['lv-50-finish-flow', 'x']] }, { source: 'captain', at: 9, tags: [['bc-39-review-round', 'x']] }, { source: 'captain', at: 5, tags: [['old-archived', 'x']] }], BIG);
+  const ex = MARKED({ tags: [['bc-39-specs-task', 'mention']] });
+  const groups = plain(taskTags.pickList(ex, BIG, sum, ''));
+  assert.deepEqual(groups.map(g => [g.key, g.tasks.map(t => t.id)]), [
+    ['touched', ['bc-39-review-round', 'lv-50-finish-flow']],
+    ['open', ['aa-flight-one', 'zz-queued-one']],
+  ]);
+  const found = plain(taskTags.pickList(ex, BIG, sum, 'finish flow'));
+  assert.deepEqual(found.map(g => [g.key, g.tasks.map(t => t.id)]), [['touched', ['lv-50-finish-flow']]]);
+  const finished = plain(taskTags.pickList(MARKED({ tag_row: 'none' }), BIG, taskTags.summary([], BIG), 'old finished'));
+  assert.deepEqual(finished, [], 'an archived task is never offered, even on a match');
+  const done = plain(taskTags.pickList(MARKED({ tag_row: 'none' }), BIG, taskTags.summary([], BIG), 'lv-50'));
+  assert.deepEqual(done.map(g => [g.key, g.tasks.map(t => t.id)]), [['finished', ['lv-50-finish-flow']]], 'a finished task the conversation has not touched shows only when the find matches');
+});
+
+test('pickList: a long list of tasks is built in a millisecond or two', () => {
+  const many = {};
+  for (let i = 0; i < 214; i += 1) many[`task-${String(i).padStart(3, '0')}-thing`] = { title: `Task number ${i}`, state: i % 3 ? 'Queued' : 'In flight' };
+  const start = process.hrtime.bigint();
+  for (let n = 0; n < 50; n += 1) taskTags.pickList(MARKED({ tag_row: 'none' }), many, taskTags.summary([], many), '');
+  const each = Number(process.hrtime.bigint() - start) / 1e6 / 50;
+  assert.ok(each < 5, `${each.toFixed(2)} ms`);
+});
+
+test('overlay: an added tag leads the turn, a dropped one goes, a turn left with none falls to No task, an unchanged turn is the same object', () => {
+  const ex = MARKED({ tags: [['bc-39-specs-task', 'mention']] });
+  const added = plain(taskTags.overlay(ex, [{ task: 'zz-queued-one', action: 'add' }]));
+  assert.deepEqual(added.tags, [['zz-queued-one', 'marked'], ['bc-39-specs-task', 'mention']]);
+  assert.equal('tag_sides' in added, false, 'every tag on the reply: no sides');
+  const onMessage = plain(taskTags.overlay(MARKED({ reply: '', tag_row: 'none' }), [{ task: 'zz-queued-one', action: 'add' }]));
+  assert.deepEqual([onMessage.tags, onMessage.tag_sides, 'tag_row' in onMessage], [[['zz-queued-one', 'marked']], ['m'], false]);
+  const dropped = plain(taskTags.overlay(ex, [{ task: 'bc-39-specs-task', action: 'drop' }]));
+  assert.deepEqual([dropped.tags, dropped.tag_row], [undefined, 'none']);
+  assert.equal(taskTags.overlay(ex, [{ task: 'bc-39-specs-task', action: 'add' }]), ex, 'adding what is there changes nothing');
+  assert.equal(taskTags.overlay(ex, [{ task: 'nothing', action: 'drop' }]), ex);
+  assert.equal(taskTags.overlay(ex, []), ex);
+  assert.deepEqual(plain(ex.tags), [['bc-39-specs-task', 'mention']], 'the turn the build gave is never changed');
+});
+
+test('overlay keeps the sides of the tags that stay in step with them', () => {
+  const ex = MARKED({ tags: [['a', 'mention'], ['b', 'mention']], tag_sides: ['m', 'r'] });
+  const next = plain(taskTags.overlay(ex, [{ task: 'a', action: 'drop' }, { task: 'c', action: 'add' }]));
+  assert.deepEqual(next.tags.map(t => t[0]), ['c', 'b']);
+  assert.equal('tag_sides' in next, false, 'what is left sits on the reply');
+  const keep = plain(taskTags.overlay(ex, [{ task: 'b', action: 'drop' }]));
+  assert.deepEqual([keep.tags.map(t => t[0]), keep.tag_sides], [['a'], ['m']]);
+});
+
+test('refusalText: the command\'s sentence without a path or the tail after a semicolon', () => {
+  assert.equal(taskTags.refusalText("Firstmate did not file the mark: no task ancient-archived-task in this home's backlog (data directory /Users/someone/fm-homes/x/data); a mark is filed in "), "Firstmate did not file the mark: no task ancient-archived-task in this home's backlog");
+  assert.equal(taskTags.refusalText("Firstmate did not file the mark: task 'x' is not in this home's backlog"), "Firstmate did not file the mark: task 'x' is not in this home's backlog");
+  assert.equal(taskTags.refusalText(''), 'the command refused');
+  assert.equal(taskTags.refusalText(undefined), 'the command refused');
+});
+
+test('the words of the toast', () => {
+  assert.equal(taskTags.addedText('bc-39-specs-task', BIG), 'Added to Write the BC-39 specs.');
+  assert.equal(taskTags.droppedText('2026-11-03-esim-annual-global-l3-requirements', {}), 'Taken off esim-annual-global-l3-requirements.');
+});
+
+// ---- the page's turn menu logic (the same block, on stand-ins): when it is offered, what a change writes and shows, how a refusal and an Undo are handled
+
+const markSession = (over = {}) => ({
+  id: 'sess-new', ids: ['sess-old', 'sess-new'], leader: { tasks: BIG, board: 'leader-lab' },
+  exchanges: [
+    { source: 'captain', uid: 'abcdef12-0000', mk: '5e550000', reply: 'Nathan, ok.', at: 100, reply_at: 105, tag_row: 'none' },
+    { source: 'captain', uid: 'bbbbbbbb-0000', mk: '5e550000', reply: 'Nathan, done.', at: 200, reply_at: 205, tags: [['bc-39-specs-task', 'mention']], tag_sides: ['rm'] },
+    { source: 'captain', uid: 'cccccccc-0000', mk: '5e550000', reply: '', at: 300, tag_row: 'none' },
+  ], ...over,
+});
+const markPage = (over = {}) => pageWith({ session: markSession(over.session), canLive: true, marks: true, ...over.page });
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('page: the turn menu is offered only where the server says marks can be written, for a leader\'s turn that has its keys', () => {
+  const page = markPage();
+  const [none, tagged] = page.data.sessions[0].exchanges;
+  assert.equal(page.turnMenuOffered(page.data.sessions[0], none), true, 'a turn with no task');
+  assert.equal(page.turnMenuOffered(page.data.sessions[0], tagged), true, 'a tagged turn');
+  const off = markPage({ page: { marks: false } });
+  assert.equal(off.turnMenuOffered(off.data.sessions[0], off.data.sessions[0].exchanges[0]), false, 'the server did not say marks can be written (flag off, the phone, a copy)');
+  const copy = markPage({ page: { canLive: false } });
+  assert.equal(copy.turnMenuOffered(copy.data.sessions[0], copy.data.sessions[0].exchanges[0]), false, 'a page no server serves');
+  const noBoard = markPage({ session: { leader: { tasks: BIG } } });
+  assert.equal(noBoard.turnMenuOffered(noBoard.data.sessions[0], noBoard.data.sessions[0].exchanges[0]), false, 'no board owns the home');
+  const old = markPage();
+  assert.equal(old.turnMenuOffered(old.data.sessions[0], { ...none, mk: undefined }), false, 'a copy built before the keys');
+  const embed = markPage(); embed.EMBED = true;
+  assert.equal(embed.turnMenuOffered(embed.data.sessions[0], none), false, 'the embed page');
+});
+
+test('page: adding a task shows at once, writes one in on the reply, says so with an Undo, and builds the pages again after one pause', async () => {
+  const page = markPage();
+  const session = page.data.sessions[0], ex = session.exchanges[0];
+  const done = page.changeTurn(session, ex, 'zz-queued-one', 'add');
+  assert.deepEqual(plain(session.exchanges[0].tags), [['zz-queued-one', 'marked']], 'the tag is on the turn before the command has answered');
+  assert.equal(page.calls.render, 1);
+  assert.equal(page.toasts.at(-1).text, 'Saving…');
+  await done;
+  assert.deepEqual(plain(page.live.written), [{ session: 'leader-lab', task: 'zz-queued-one', turn: '5e550000:abcdef12:reply', mark: 'in', source: 'reader' }]);
+  assert.deepEqual(plain(session.exchanges[0].tags), [['zz-queued-one', 'marked']], 'the tag is on the turn while the build has not got it');
+  assert.equal(page.toasts.at(-1).text, 'Added to A queued one.');
+  assert.equal(typeof page.toasts.at(-1).undo, 'function');
+  assert.equal(page.timers.filter((t) => !t.cleared).length, 1, 'one build is asked for');
+  assert.equal(page.timers.at(-1).ms, 1500);
+  await page.timers.at(-1).fn(); await flush();
+  assert.equal(page.live.rerenders, 1);
+  assert.equal(page.refreshed, 1);
+});
+
+test('page: two marks in a row ask for one build, the last one\'s', async () => {
+  const page = markPage();
+  const session = page.data.sessions[0];
+  await page.changeTurn(session, session.exchanges[0], 'zz-queued-one', 'add');
+  await page.changeTurn(session, session.exchanges[2], 'zz-queued-one', 'add');
+  assert.equal(page.timers.filter((t) => !t.cleared).length, 1, 'the first request was cancelled by the second');
+  assert.equal(page.live.written.length, 2);
+  assert.equal(page.live.written[1].turn, '5e550000:cccccccc:in', 'a message with no reply yet is marked on your message');
+});
+
+test('page: a refusal takes the shown change back and says why', async () => {
+  const page = markPage();
+  page.live.fail = 'Firstmate did not file the mark: task is not in this home\'s backlog';
+  const session = page.data.sessions[0];
+  await page.changeTurn(session, session.exchanges[0], 'zz-queued-one', 'add');
+  assert.equal(page.turnOps.length, 0);
+  page.readTasks();
+  assert.equal(session.exchanges[0].tags, undefined, 'the turn is as the build had it');
+  assert.equal(session.exchanges[0].tag_row, 'none');
+  assert.match(page.toasts.at(-1).text, /^Not saved: Firstmate did not file the mark/);
+  assert.equal(page.timers.filter((t) => !t.cleared).length, 0, 'nothing to build');
+});
+
+test('page: Not this task writes an out on each side the tag sits on, in order; Undo clears both and the tag comes back', async () => {
+  const page = markPage();
+  const session = page.data.sessions[0], both = session.exchanges[1];
+  await page.changeTurn(session, both, 'bc-39-specs-task', 'drop');
+  assert.deepEqual(plain(page.live.written.map((w) => [w.turn.split(':')[2], w.mark])), [['reply', 'out'], ['in', 'out']]);
+  assert.equal(session.exchanges[1].tags, undefined, 'the tag is gone from the turn at once');
+  assert.equal(page.toasts.at(-1).text, 'Taken off Write the BC-39 specs.');
+  page.toasts.at(-1).undo();
+  await flush(); await flush();
+  assert.deepEqual(plain(page.live.written.slice(2).map((w) => [w.turn.split(':')[2], w.mark])), [['reply', 'clear'], ['in', 'clear']]);
+  assert.deepEqual(plain(session.exchanges[1].tags.map((t) => t[0])), ['bc-39-specs-task'], 'shown again until the build says what the rules said');
+});
+
+test('page: a change is dropped once a build made after it arrives, and an old one is dropped after two minutes', async () => {
+  const page = markPage();
+  const session = page.data.sessions[0];
+  await page.changeTurn(session, session.exchanges[0], 'zz-queued-one', 'add');
+  page.data.generated = 1;  // a build from long before the write
+  page.readTasks();
+  assert.equal(page.turnOps.length, 1);
+  assert.deepEqual(plain(session.exchanges[0].tags), [['zz-queued-one', 'marked']]);
+  page.data.generated = Date.now() / 1000 + 5;  // a build made after it
+  page.readTasks();
+  assert.equal(page.turnOps.length, 0);
+  assert.equal(session.exchanges[0].tags, undefined, 'the build had no tag here (the file did not change): the page shows what the build says');
+  await page.changeTurn(session, session.exchanges[2], 'zz-queued-one', 'add');
+  page.data.generated = 1;
+  page.turnOps[0].at -= 121000;
+  page.readTasks();
+  assert.equal(page.turnOps.length, 0, 'a change nobody confirmed is not kept for ever');
+});
+
+test('page: a change on a conversation that is not on screen is kept for when it is, and does not touch the one that is', async () => {
+  const page = markPage();
+  const session = page.data.sessions[0];
+  await page.changeTurn(session, session.exchanges[0], 'zz-queued-one', 'add');
+  page.data.sessions[0] = markSession({ id: 'other', ids: ['other'] });
+  page.readTasks();
+  assert.equal(page.data.sessions[0].exchanges[0].tags, undefined);
+  assert.equal(page.turnOps.length, 1);
 });

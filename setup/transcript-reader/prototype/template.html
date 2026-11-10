@@ -480,6 +480,35 @@ __HEAD_HOSTED__
   .trow.off .tt, .trow.off .ts { opacity: .75; }
   .trow.is-here { background: var(--you-wash); transition: background .6s ease-out; }
   .trow.rows { border-top: 1px solid var(--line); }
+  /* The turn menu (tasks of one turn, and adding it to a task): a popover under the chip from 820 px, a bottom sheet in the task menu's own shell below it. It is drawn only
+     where the server says marks can be written (the laptop's own pages), so the phone and the offline copy keep the chip as it was. */
+  .task-chip.add { border-style: dashed; background: none; color: var(--muted); }
+  .task-chip.add:hover { color: var(--you); border-color: var(--you); }
+  .task-chip.quiet { opacity: 0; }
+  @media (hover: hover) and (pointer: fine) { .input:hover .task-chip.quiet, .reply:hover .task-chip.quiet, .task-chip.quiet:focus-visible, .task-chip.quiet[aria-expanded="true"] { opacity: 1; } }
+  @media (hover: none), (pointer: coarse) { .task-chip.quiet { display: none; } }
+  .turnmenu { position: fixed; z-index: 33; left: 0; right: 0; bottom: 0; max-height: 78vh; max-height: 78dvh; display: flex; flex-direction: column; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: 0 -6px 24px rgb(0 0 0 / .25); padding-bottom: env(safe-area-inset-bottom); }
+  #turn-scrim { z-index: 32; }
+  .turnmenu .tm-head h2 { font-size: 15px; }
+  .turnmenu .tm-sub { flex-wrap: wrap; }
+  .turnmenu .tm-list { flex: 1 1 auto; min-height: 0; }
+  .trow.have { align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+  .trow.have .who-tag { flex: 1; min-width: 0; }
+  .trow.have .btn { margin-top: 1px; white-space: nowrap; }
+  .trow.pick { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 0; }
+  .trow.pick .pt { flex: 1; min-width: 0; }
+  .trow.pick:focus-visible, .tm-find input:focus-visible, .tm-foot button:focus-visible { outline: 2px solid var(--you); outline-offset: -2px; }
+  .tm-foot { padding: 6px 10px 8px 14px; border-top: 1px solid var(--line); }
+  .tm-foot button { border: 0; background: none; color: var(--you); font: inherit; font-size: 13px; padding: 6px 0; cursor: pointer; text-align: left; }
+  .tm-foot button:hover { text-decoration: underline; }
+  @media (min-width: 820px) {
+    .turnmenu { position: absolute; z-index: 33; left: var(--tm-x, 0); top: var(--tm-y, 0); right: auto; bottom: auto; width: 22rem; max-width: calc(100vw - 16px); max-height: min(70vh, 34rem); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .28); padding-bottom: 0; }
+  }
+  @media (max-width: 440px), (pointer: coarse) {
+    .turnmenu .trow.have .btn, .turnmenu .tm-head button { min-height: 44px; min-width: 44px; }
+    .trow.pick { min-height: 48px; }
+    .tm-foot button { min-height: 44px; }
+  }
   .view-btn[data-active="true"] { color: var(--you); border-color: var(--you); }
   @media (min-width: 820px) {
     .taskmenu { z-index: 5; left: auto; top: 0; right: 0; bottom: 0; width: var(--rail); max-height: none; border-width: 0 0 0 1px; border-radius: 0; box-shadow: none; padding-bottom: 0; }
@@ -821,6 +850,8 @@ __HEAD_HOSTED__
 <main id="main"></main>
 <aside class="taskmenu" id="taskmenu" hidden></aside>
 <div class="scrim" id="task-scrim" hidden></div>
+<aside class="turnmenu" id="turnmenu" role="dialog" aria-label="Tasks of this turn" hidden></aside>
+<div class="scrim" id="turn-scrim" hidden></div>
 <button class="float-comment" id="float-comment" type="button" hidden>Comment on this</button>
 <div class="copy-note" id="copy-note" role="status" aria-live="polite">Copied</div>
 <button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
@@ -2105,6 +2136,7 @@ __HEAD_HOSTED__
     taskState = null;
     const session = data.sessions[state.session];
     if (EMBED || state.view !== "reader" || !session || session.placeholder || !Array.isArray(session.exchanges)) return;
+    applyTurnOverlay(session);  // a change made from the turn menu that the build does not have yet
     const tasks = (session.leader && session.leader.tasks) || {};
     const sum = taskTags.summary(session.exchanges, tasks);
     if (!sum.tagged || !sum.tasks.length) return;  // no tags (a worker's conversation, an old copy), or nothing but the two rows: no menu
@@ -2273,17 +2305,228 @@ __HEAD_HOSTED__
     icon.dataset.active = String(Boolean(taskState && taskState.active));
     icon.title = taskState && taskState.active ? `${label} (turns of the other tasks are folded)` : label;
   }
+  // A turn's chip (its first task and how many more) or, on a turn with no task where the server lets marks be written, a quiet "+ Task" pill; both open the turn
+  // menu there (changing a turn's tasks), and the chip alone opens the By task menu where they cannot.
   function taskChip(ex) {
-    if (!taskState || ex.source === "session") return null;
-    const c = taskTags.chip(ex, taskState.tasks);
-    if (!c) return null;
+    if (ex.source === "session") return null;
+    const session = data.sessions[state.session], marking = turnMenuOffered(session, ex);
+    if (!taskState && !marking) return null;
+    const c = taskTags.chip(ex, (session && session.leader && session.leader.tasks) || (taskState && taskState.tasks) || {});
+    if (!c) return marking ? addPill(ex, session) : null;
     const chip = $("button", "task-chip"); chip.type = "button"; chip.title = c.title;
     chip.append($("span", "nm", c.text));
     if (c.more) chip.append($("span", "plus", `+${c.more}`));
-    chip.setAttribute("aria-label", `Task: ${c.text}${c.more ? ` and ${c.more} more` : ""}. Open the task menu`);
-    chip.addEventListener("click", () => openTaskMenu(c.ids[0]));
+    chip.setAttribute("aria-label", `Task: ${c.text}${c.more ? ` and ${c.more} more` : ""}. ${marking ? "Open the tasks of this turn" : "Open the task menu"}`);
+    if (marking) { chip.dataset.uid = ex.uid; chip.setAttribute("aria-haspopup", "dialog"); chip.setAttribute("aria-expanded", String(Boolean(turnUi.open && turnUi.open.uid === ex.uid))); }
+    chip.addEventListener("click", () => marking ? openTurnMenu(session, ex, chip) : openTaskMenu(c.ids[0]));
     return chip;
   }
+  function addPill(ex, session) {
+    const pill = $("button", "task-chip add" + (ex.tag_row === "upkeep" ? " quiet" : "")); pill.type = "button"; pill.dataset.uid = ex.uid;
+    pill.append($("span", "nm", "+ Task"));
+    pill.title = "This turn is about no task. Add it to one.";
+    pill.setAttribute("aria-label", "Add this turn to a task"); pill.setAttribute("aria-haspopup", "dialog");
+    pill.setAttribute("aria-expanded", String(Boolean(turnUi.open && turnUi.open.uid === ex.uid)));
+    pill.addEventListener("click", () => openTurnMenu(session, ex, pill));
+    return pill;
+  }
+  // ---------------------------------------------------------------- the turn menu: change a turn's tasks from the conversation (tasktags.js has every rule)
+  // A tag is changed by one reply mark of the Tasks board (the server's board-mark route files it with Firstmate's fm-reply-mark.sh, the same line the board's card writes):
+  // the control is drawn only where the server says marks can be written (the laptop's own pages, the Watch column included; never the phone or a copy), and only for a
+  // leader's conversation a board owns whose turns carry their keys (`mk`). Everything the page writes goes through writeMarks, and what the build made of the marks is
+  // read from the turns' own `tags`, so a later source of tags changes neither the control nor its rules. The new tag shows at once (turnOps), the pages are built again
+  // 1.5 s after the last change, and the build's answer replaces what was shown.
+  const TURN_OPS_KEEP_MS = 120000, MARK_REBUILD_MS = 1500;
+  const turnOps = [];  // changes made here that the build may not hold yet: { ids, uid, task, action, marks, at } (at: when the write finished, 0 while it runs)
+  const turnUi = { open: null, find: "", marksOn: false, locked: false, overlaid: false };
+  const marksWritable = () => canLive && !EMBED && Boolean(link.board && link.board.write && link.board.write.marks);
+  const turnMenuOffered = (session, ex) => Boolean(marksWritable() && session && !session.placeholder && session.leader && session.leader.board && session.leader.tasks
+    && taskTags.markable(ex) && (Array.isArray(ex.tags) && ex.tags.length || ex.tag_row === "none" || ex.tag_row === "upkeep"));
+  // The one place the page writes a mark: one reply mark at a time, in order (a clear after an out must not overtake it).
+  async function writeMarks(board, marks) {
+    for (const m of marks) await live.boardMark({ session: board, task: m.task, turn: m.turn, mark: m.mark, source: "reader" });
+  }
+  // The turns of the conversation on screen with what was changed here laid over them, until a build made after the change says what the files hold. The turn the build
+  // gave is kept (turnBase), so a change that is taken back, or refused, leaves the turn as the build had it.
+  const turnBase = new WeakMap();
+  function applyTurnOverlay(session) {
+    if (!session || !Array.isArray(session.exchanges)) return;
+    const built = (data.generated || 0) * 1000, now = Date.now();
+    for (let i = turnOps.length - 1; i >= 0; i--) {
+      const op = turnOps[i];
+      if (op.at && (built >= op.at || now - op.at > TURN_OPS_KEEP_MS)) turnOps.splice(i, 1);
+    }
+    const ids = new Set(session.ids && session.ids.length ? session.ids : [session.id]);
+    const mine = turnOps.filter(op => op.ids.some(id => ids.has(id)));
+    if (!mine.length && !turnUi.overlaid) return;
+    let left = false;
+    session.exchanges.forEach((ex, i) => {
+      if (!ex) return;
+      const base = turnBase.get(ex) || ex, ops = ex.uid ? mine.filter(op => op.uid === base.uid) : [];
+      const next = ops.length ? taskTags.overlay(base, ops) : base;
+      if (next !== base) { turnBase.set(next, base); left = true; }
+      if (next !== ex) session.exchanges[i] = next;
+    });
+    turnUi.overlaid = left;
+  }
+  function redrawTurns() { const anchor = readingAnchor(); render(); restoreAnchor(anchor); }
+  let markRebuildTimer = null;
+  function scheduleMarkRebuild() {
+    clearTimeout(markRebuildTimer);
+    markRebuildTimer = setTimeout(async () => { try { await live.rerender(); await refreshData(true); } catch (e) { /* what was shown stays for two minutes, and the next build corrects it */ } }, MARK_REBUILD_MS);
+  }
+  const INVERSE = { add: "drop", drop: "add", remove: "add" };
+  async function changeTurn(session, ex, task, action, inverseOf) {
+    const marks = inverseOf ? taskTags.undoOf(inverseOf.marks) : taskTags.marksFor(ex, task, action);
+    if (!marks.length) return;
+    const ids = session.ids && session.ids.length ? session.ids : [session.id], tasks = session.leader.tasks;
+    for (let i = turnOps.length - 1; i >= 0; i--) if (turnOps[i].uid === ex.uid && turnOps[i].task === task) turnOps.splice(i, 1);
+    const op = { ids, uid: ex.uid, task, action: inverseOf ? INVERSE[inverseOf.action] : action, marks, at: 0 };
+    turnOps.push(op);
+    const keyboard = Boolean(turnUi.open) && turnMenuNode().contains(document.activeElement);
+    closeTurnMenu(false);
+    redrawTurns();
+    if (keyboard) focusTurnChip(ex.uid);  // a keyboard user is left on the turn's chip, not on the page
+    toast(inverseOf ? "Putting it back…" : "Saving…");
+    try { await writeMarks(session.leader.board, marks); }
+    catch (e) {
+      const at = turnOps.indexOf(op); if (at >= 0) turnOps.splice(at, 1);
+      redrawTurns(); toast(`Not saved: ${taskTags.refusalText(e.message)}`);
+      return;
+    }
+    op.at = Date.now();
+    scheduleMarkRebuild();
+    if (inverseOf) { toast("Put back."); return; }
+    const undo = () => { const now = turnNow(ex.uid); if (now) changeTurn(session, now.ex, task, null, { marks, action: op.action }); };
+    toast(action === "add" ? taskTags.addedText(task, tasks) : taskTags.droppedText(task, tasks), undo);
+  }
+  function turnNow(uid) {
+    const session = data.sessions[state.session];
+    const at = session && Array.isArray(session.exchanges) ? session.exchanges.findIndex(e => e && e.uid === uid) : -1;
+    return at < 0 ? null : { session, ex: session.exchanges[at] };
+  }
+  const turnMenuNode = () => document.getElementById("turnmenu");
+  function focusTurnChip(uid) { const chip = [...document.querySelectorAll(".task-chip[data-uid]")].find(n => n.dataset.uid === uid); if (chip) chip.focus({ preventScroll: true }); }
+  const fineInput = () => matchMedia("(pointer: fine)").matches;
+  function openTurnMenu(session, ex, anchor) {
+    if (turnUi.open) closeTurnMenu(false);
+    turnUi.open = { uid: ex.uid, anchor }; turnUi.find = "";
+    if (anchor) anchor.setAttribute("aria-expanded", "true");
+    paintTurnMenu(true);
+  }
+  function closeTurnMenu(refocus = true) {
+    const was = turnUi.open; if (!was) return;
+    turnUi.open = null;
+    const node = turnMenuNode(); node.hidden = true; node.replaceChildren();
+    document.getElementById("turn-scrim").hidden = true;
+    if (turnUi.locked) { document.body.style.overflow = ""; turnUi.locked = false; }
+    document.removeEventListener("pointerdown", turnMenuOutside, true);
+    document.querySelectorAll(".task-chip[aria-expanded='true']").forEach(n => n.setAttribute("aria-expanded", "false"));
+    if (refocus) focusTurnChip(was.uid);
+  }
+  function turnMenuOutside(e) {
+    const node = turnMenuNode();
+    if (!turnUi.open || node.contains(e.target) || (e.target.closest && e.target.closest(".task-chip"))) return;
+    closeTurnMenu(false);
+  }
+  function placeTurnMenu(node, anchor) {
+    if (railQuery.matches && anchor && anchor.isConnected) {
+      const r = anchor.getBoundingClientRect(), width = Math.min(352, innerWidth - 16);
+      const left = Math.max(8, Math.min(r.left, innerWidth - width - 8)) + scrollX;
+      node.style.setProperty("--tm-x", left + "px");
+      node.style.setProperty("--tm-y", (r.bottom + scrollY + 6) + "px");
+    }
+  }
+  function paintTurnMenu(first) {
+    const open = turnUi.open, node = turnMenuNode(), scrim = document.getElementById("turn-scrim");
+    if (!open) return;
+    const found = turnNow(open.uid);
+    if (!found || !turnMenuOffered(found.session, found.ex)) { closeTurnMenu(false); return; }
+    const { session, ex } = found, tasks = session.leader.tasks, wide = railQuery.matches;
+    const sum = taskTags.summary(session.exchanges, tasks);
+    node.setAttribute("aria-modal", String(!wide));
+    scrim.hidden = wide;
+    if (!wide && !turnUi.locked) { document.body.style.overflow = "hidden"; turnUi.locked = true; } else if (wide && turnUi.locked) { document.body.style.overflow = ""; turnUi.locked = false; }
+    const head = $("div", "tm-head"), title = $("h2", null, "Tasks of this turn");
+    const close = $("button", "btn", "✕"); close.type = "button"; close.dataset.focus = "x"; close.setAttribute("aria-label", "Close"); close.title = "Close (Esc)";
+    close.addEventListener("click", () => closeTurnMenu());
+    head.append(title, close);
+    const when = ex.reply ? `Reply of ${fmtShortDay(ex.reply_at || ex.at)} ${fmtTime(ex.reply_at || ex.at)}` : `Your message of ${fmtShortDay(ex.at)} ${fmtTime(ex.at)}`;
+    const sub = $("div", "tm-sub"); sub.append($("span", null, when));
+    const list = $("div", "tm-list"), have = taskTags.turnTags(ex, tasks);
+    list.append($("div", "tgroup", have.length ? "On this turn" : "On this turn: no task"));
+    for (const tag of have) {
+      const row = $("div", "trow have"), text = $("div", "who-tag");
+      text.append($("span", "tt", tag.name), $("span", "ts", [tag.state, tag.why].filter(Boolean).join(" · ")));
+      const act = $("button", "btn", tag.action === "remove" ? "Remove" : "Not this task"); act.type = "button"; act.dataset.focus = `a:${tag.id}`;
+      act.title = tag.action === "remove" ? "Take the mark you made off this turn" : "This turn is not about this task: take it off";
+      act.setAttribute("aria-label", `${act.textContent}: ${tag.name}`);
+      act.addEventListener("click", () => changeTurn(session, ex, tag.id, tag.action));
+      row.append(text, act); list.append(row);
+    }
+    const addHead = $("div", "tgroup", "Add to a task");
+    const find = $("div", "tm-find"), box = $("input"); box.type = "search"; box.placeholder = "Find a task"; box.value = turnUi.find; box.dataset.focus = "f"; box.autocomplete = "off"; box.spellcheck = false;
+    box.setAttribute("aria-label", "Find a task to add this turn to"); box.setAttribute("autocapitalize", "off"); box.title = "Words from a task's name, id or state, in any order";
+    find.append(box);
+    const picks = $("div", "tm-picks");
+    const paintPicks = () => {
+      picks.replaceChildren();
+      const groups = taskTags.pickList(ex, tasks, sum, turnUi.find);
+      if (!groups.length) picks.append($("div", "tm-none", turnUi.find.trim() ? "No open task matches." : "No other task to add."));
+      let index = 0;
+      for (const group of groups) {
+        picks.append($("div", "tgroup", group.label));
+        for (const item of group.tasks) {
+          const row = $("button", "trow pick"); row.type = "button"; row.dataset.focus = `p:${item.id}`; row.dataset.task = item.id;
+          const text = $("span", "pt"), meta = [item.title ? taskTags.stem(item.id) : "", item.state, item.last ? `${fmtShortDay(item.last)} ${fmtTime(item.last)}` : ""].filter(Boolean);
+          text.append($("span", "tt", taskTags.nameOf(item.id, tasks)), $("span", "ts", meta.join(" · ")));
+          row.append(text); row.title = `Add this turn to ${taskTags.nameOf(item.id, tasks)}`; row.setAttribute("aria-label", `Add this turn to ${taskTags.nameOf(item.id, tasks)}`);
+          row.addEventListener("click", () => changeTurn(session, ex, item.id, "add"));
+          picks.append(row); index += 1;
+        }
+      }
+    };
+    box.addEventListener("input", () => { turnUi.find = box.value; paintPicks(); });
+    box.addEventListener("keydown", e => {
+      if (e.key === "Enter") { const first = picks.querySelector(".trow.pick"); if (first) { e.preventDefault(); first.click(); } }
+      else if (e.key === "ArrowDown") { const first = picks.querySelector(".trow.pick"); if (first) { e.preventDefault(); first.focus(); } }
+      else if (e.key === "Escape" && box.value) { e.preventDefault(); e.stopPropagation(); box.value = ""; turnUi.find = ""; paintPicks(); }
+    });
+    picks.addEventListener("keydown", e => {
+      const rows = [...picks.querySelectorAll(".trow.pick")], at = rows.indexOf(document.activeElement);
+      if (e.key === "ArrowDown" && at >= 0 && at < rows.length - 1) { e.preventDefault(); rows[at + 1].focus(); }
+      else if (e.key === "ArrowUp" && at >= 0) { e.preventDefault(); (at ? rows[at - 1] : box).focus(); }
+    });
+    paintPicks();
+    list.append(addHead, find, picks);
+    const parts = [head, sub, list];
+    if (have.length && taskState) {
+      const foot = $("div", "tm-foot"), jump = $("button", null, "Show in the By task menu"); jump.type = "button"; jump.dataset.focus = "j";
+      jump.addEventListener("click", () => { closeTurnMenu(false); openTaskMenu(have[0].id); });
+      foot.append(jump); parts.push(foot);
+    }
+    node.replaceChildren(...parts);
+    node.hidden = false;
+    placeTurnMenu(node, open.anchor);
+    if (first) {
+      document.addEventListener("pointerdown", turnMenuOutside, true);
+      if (wide && open.anchor && open.anchor.isConnected) { const r = node.getBoundingClientRect(); if (r.bottom > innerHeight) window.scrollBy(0, Math.min(r.bottom - innerHeight + 12, r.top - 60)); }
+      (fineInput() ? box : close).focus();
+    }
+  }
+  turnMenuNode().addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeTurnMenu(); return; }
+    if (e.key !== "Tab" || railQuery.matches) return;
+    const items = [...e.currentTarget.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  document.getElementById("turn-scrim").addEventListener("click", () => closeTurnMenu());
+  railQuery.addEventListener("change", () => { if (turnUi.open) { if (turnUi.locked) { document.body.style.overflow = ""; turnUi.locked = false; } paintTurnMenu(false); } });
+  addEventListener("resize", () => { if (turnUi.open && railQuery.matches) placeTurnMenu(turnMenuNode(), turnUi.open.anchor); });
+
   // The chip goes in the first header line of the turn that is drawn: your message's, else the reply's.
   function addTaskChip(ex, root) {
     const chip = taskChip(ex);
@@ -4910,6 +5153,13 @@ __HEAD_HOSTED__
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build; link.tabs = s.tabs || [];
     link.board = s.board && typeof s.board.page === "string" ? s.board : null;  // the Tasks page is served from this address: the server says so (and which board reads which conversation)
     link.syncedAt = Date.now() / 1000; link.syncFail = null;
+    // Whether marks can be written from here changes what a leader's turns offer (the chip's menu, the "+ Task" pill): the first answer, or a restart that changed the flag, draws them again.
+    const writable = marksWritable();
+    if (writable !== turnUi.marksOn) {
+      turnUi.marksOn = writable;
+      const reading = data.sessions && data.sessions[state.session];
+      if (state.view === "reader" && reading && reading.leader && reading.leader.board && started) { if (!writable) closeTurnMenu(false); redrawTurns(); }
+    }
     pins.refresh(s.stamps && s.stamps.pins);
     stars.refresh(s.stamps && s.stamps.stars);
     sheetFlags.refresh(s.stamps && s.stamps.flags);

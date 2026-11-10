@@ -1255,6 +1255,8 @@ test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind t
   const stateOf = async (reach, headers) => (await reach({ path: STATE_API, headers })).json;
   assert.equal((await stateOf(s.onHttps, { Cookie: cookie, [TOKEN_HEADER]: token })).board.page, BOARD_PAGE, 'TLS');
   assert.equal((await stateOf(s.onLoopback, { [TOKEN_HEADER]: token })).board.page, BOARD_PAGE, 'loopback');
+  assert.deepEqual((await stateOf(s.onHttps, { Cookie: cookie, [TOKEN_HEADER]: token })).board.write, { marks: false }, 'the phone is told a mark cannot be written from the conversation (it stays read only)');
+  assert.deepEqual((await stateOf(s.onLoopback, { [TOKEN_HEADER]: token })).board.write, { marks: true }, 'loopback is told it can');
   // The plain tailnet address, signed in, still has no board.
   const plain = await s.signedIn();
   assert.equal('board' in (await stateOf(s.onTailnet, { Cookie: plain, [TOKEN_HEADER]: token })), false, 'plain tailnet: no Tasks link');

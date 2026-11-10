@@ -147,5 +147,78 @@
     // The rail's own open or closed: what was chosen wins; else it is open where there is room for it (1030 px) in a conversation that touches two tasks or more.
     const railOpen = (choice, width, sum) => choice === "1" ? true : choice === "0" ? false : width >= RAIL_WIDE && sum.tasks.length >= 2;
 
-    return { UPKEEP, NONE, RAIL_MIN, RAIL_WIDE, REASONS, placement, railRem, stem, productOf, nameOf, summary, groups, matches, visible, only, counts, banner, foldLabel, chip, recall, remember, railOpen };
+
+    // ---------------------------------------------------------------- changing a turn's tasks from the conversation (the turn menu)
+    // A tag is changed by one reply mark of the Tasks board (data/<task>/reply-marks.jsonl, filed by Firstmate's fm-reply-mark.sh through the reader's board-mark route):
+    // `in` adds the task, `out` takes it off, `clear` withdraws an earlier mark. A turn is read on two sides, the reply and your message, and a mark names the side it is
+    // on: `<mk>:<first eight of the turn's uid>:reply|in`, `mk` being the session id of the log that holds the turn (task_tags.py). A tag added here goes on the reply, or
+    // on your message while the turn has no reply yet; a tag is taken off on the side(s) it sits on (`tag_sides`: "r", "m" or "rm", left out when every tag is "r").
+    // Every write the page makes is `marksFor` handed to the page's one writer, and every read of what the build made of them is `tags` itself, so a store that serves the
+    // tags later changes neither the control nor these rules.
+    const SIDE_PARTS = { r: "reply", m: "in" };
+    const hasText = value => typeof value === "string" && value !== "";
+    const markable = ex => Boolean(ex) && ex.source !== "session" && hasText(ex.mk) && hasText(ex.uid);
+    const markKey = (ex, part) => markable(ex) ? `${ex.mk}:${ex.uid.slice(0, 8)}:${part}` : "";
+    const addPart = ex => ex && ex.reply ? "reply" : "in";
+    const tagAt = (ex, id) => tagsOf(ex).findIndex(tag => tag[0] === id);
+    const sideOf = (ex, id) => { const at = tagAt(ex, id); return at < 0 ? "r" : (Array.isArray(ex.tag_sides) && ex.tag_sides[at]) || "r"; };
+    const partsOf = side => { const parts = [...new Set(String(side || "r").split("").map(c => SIDE_PARTS[c]).filter(Boolean))]; return parts.length ? parts : ["reply"]; };
+    const reasonsOf = (ex, id) => { const at = tagAt(ex, id); return at < 0 ? [] : String(tagsOf(ex)[at][1] || "").split("+").filter(Boolean); };
+    // What the panel offers for a tag the turn has: a tag you added is taken off ("remove": its mark is withdrawn), a tag the rules made is declined ("drop": an `out`).
+    const tagAction = (ex, id) => { const reasons = reasonsOf(ex, id); return reasons.length && reasons.every(r => r === "marked") ? "remove" : "drop"; };
+    // The marks one action writes: [{ task, turn, mark }]. add: one `in`; drop: an `out` on each side the tag sits on; remove: a `clear` on each of them.
+    function marksFor(ex, id, action) {
+      if (!markable(ex) || !id) return [];
+      if (action === "add") return [{ task: id, turn: markKey(ex, addPart(ex)), mark: "in" }];
+      const mark = action === "drop" ? "out" : action === "remove" ? "clear" : "";
+      return mark ? partsOf(sideOf(ex, id)).map(part => ({ task: id, turn: markKey(ex, part), mark })) : [];
+    }
+    // What undoes them: `clear` for an `in` or an `out` (the turn goes back to what the rules said), `in` again for a `clear`.
+    const undoOf = marks => marks.map(m => ({ task: m.task, turn: m.turn, mark: m.mark === "clear" ? "in" : "clear" }));
+    // The panel's rows for the tags a turn has: the task, why it is tagged and the one action offered.
+    function turnTags(ex, tasks) {
+      return tagsOf(ex).map(([id, why]) => ({ id, name: nameOf(id, tasks), state: record(tasks, id).state || "", why: String(why).split("+").map(r => REASONS[r] || r).join(", "), action: tagAction(ex, id), side: sideOf(ex, id) }));
+    }
+    // The picker: the tasks this conversation touches (newest first), then the other tasks that are In flight or Queued, then finished ones only when the find box
+    // matches them. A task only the archive remembers is never offered (the command refuses a task that is not in the backlog), nor one the turn already has.
+    const STATE_ORDER = { "In flight": 0, "Queued": 1 };
+    function pickList(ex, tasks, sum, query) {
+      const have = new Set(tagsOf(ex).map(tag => tag[0])), words = String(query || "").trim();
+      const offered = id => !have.has(id) && !(record(tasks, id).archived);
+      const fits = item => !words || matches(item, tasks, words);
+      const touched = ((sum && sum.tasks) || []).filter(item => offered(item.id) && fits(item));
+      const seen = new Set(touched.map(item => item.id)), open = [], finished = [];
+      for (const id of Object.keys(tasks || {})) {
+        if (seen.has(id) || !offered(id)) continue;
+        const item = { id, title: record(tasks, id).title || "", state: record(tasks, id).state || "", turns: 0, last: 0 };
+        if (!fits(item)) continue;
+        if (item.state === "Done") { if (words) finished.push(item); } else open.push(item);
+      }
+      open.sort((a, b) => (STATE_ORDER[a.state] ?? 2) - (STATE_ORDER[b.state] ?? 2) || (a.id < b.id ? -1 : 1));
+      finished.sort((a, b) => (a.id < b.id ? -1 : 1));
+      return [{ key: "touched", label: "In this conversation", tasks: touched }, { key: "open", label: "Other open tasks", tasks: open }, { key: "finished", label: "Finished", tasks: finished }].filter(group => group.tasks.length);
+    }
+    // A change the page shows before the build has it: `ops` are { task, action } (add, drop or remove) for one turn; the turn comes back with them applied, the same object
+    // when they change nothing. An added tag leads (it is `marked`, the strongest reason); a turn left with no tag falls to the "No task" row until the build says better.
+    function overlay(ex, ops) {
+      const tags = tagsOf(ex).map(tag => tag.slice());
+      const sides = tags.map((tag, i) => (Array.isArray(ex.tag_sides) && ex.tag_sides[i]) || "r");
+      let changed = false;
+      for (const op of ops || []) {
+        const at = tags.findIndex(tag => tag[0] === op.task);
+        if (op.action === "add" && at < 0) { tags.unshift([op.task, "marked"]); sides.unshift(addPart(ex) === "reply" ? "r" : "m"); changed = true; }
+        else if ((op.action === "drop" || op.action === "remove") && at >= 0) { tags.splice(at, 1); sides.splice(at, 1); changed = true; }
+      }
+      if (!changed) return ex;
+      const next = { ...ex };
+      delete next.tags; delete next.tag_sides; delete next.tag_row;
+      if (tags.length) { next.tags = tags; if (sides.some(side => side !== "r")) next.tag_sides = sides; } else next.tag_row = "none";
+      return next;
+    }
+    // What the toast says of a refused write: the command's sentence without a folder path in it ("no task x in this home's backlog (data directory /Users/...); a mark is filed in ..." is "no task x in this home's backlog").
+    const refusalText = message => String(message || "").replace(/\s*\([^)]*\/[^)]*\)/g, "").replace(/;.*$/, "").trim() || "the command refused";
+    const addedText = (id, tasks) => `Added to ${nameOf(id, tasks)}.`;
+    const droppedText = (id, tasks) => `Taken off ${nameOf(id, tasks)}.`;
+
+    return { UPKEEP, NONE, RAIL_MIN, RAIL_WIDE, REASONS, placement, railRem, stem, productOf, nameOf, summary, groups, matches, visible, only, counts, banner, foldLabel, chip, recall, remember, railOpen, markable, markKey, marksFor, undoOf, tagAction, turnTags, pickList, overlay, refusalText, addedText, droppedText };
   })();

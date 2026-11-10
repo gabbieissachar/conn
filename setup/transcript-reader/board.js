@@ -5,7 +5,7 @@
 //   GET /api/transcript-reader/board?session=<id>[&fresh=1]   { status, board, cached_at, stale } for one session's board (board/README.md)
 //   GET /api/transcript-reader/board-sessions                 { status, sessions: [...] }: the sessions that have a board (and the workers you drive, each on or off)
 //   POST /api/transcript-reader/board-worker                  { leader, task, enabled }: turn one worker's board on or off (the reader's own small file; never a Firstmate home)
-//   POST /api/transcript-reader/board-mark                    { session, task, turn, mark: in|out|clear }: file a reply mark on the task's record     (PMOS_READER_BOARD_MARKS=1)
+//   POST /api/transcript-reader/board-mark                    { session, task, turn, mark: in|out|clear[, source: reader|card] }: file a reply mark on the task's record (the conversation's turn menu says reader; PMOS_READER_BOARD_MARKS=1)
 //   POST /api/transcript-reader/board-answer                  { session, task, call, src, option|text|later }: record an answer to a call            (PMOS_READER_BOARD_ANSWER=1)
 //   POST /api/transcript-reader/board-review                  { session, task, action: done|queue|delay|needs|followup, note, until, title, due }: record what you decided on the task's
 //                                                             real record, through the home's own commands (fm-tasks-axi.sh, fm-captain-hold.sh)    (PMOS_READER_BOARD_REVIEW=1)

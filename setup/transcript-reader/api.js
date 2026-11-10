@@ -38,7 +38,7 @@
 //   GET  /api/transcript-reader/state[?follow=1][&boot=1]  page build stamps, the session Herdr
 //                                                   has focused, the listed sessions' live panes. boot=1, which a page sends
 //                                                   with its first call only, may be answered from a Herdr reading up to
-//                                                   BOOT_SCAN_MAX_AGE_MS old (a fresh one is taken meanwhile). It also says { board: { page, boards } }
+//                                                   BOOT_SCAN_MAX_AGE_MS old (a fresh one is taken meanwhile). It also says { board: { page, boards, write: { marks } } }
 //                                                   where the Tasks page is served from the address asked (the board's flag, and on the TLS
 //                                                   address its tailnet flag), for the reader page's Tasks link; boards maps a conversation
 //                                                   to the board that reads it, from the boards already read
@@ -1808,7 +1808,7 @@ function create({
     if (pathname === API + 'state' && req.method === 'GET') {
       // Where the Tasks page is served from this address, the reader page shows its Tasks link (and which board each conversation belongs to, from the boards already read).
       const boardHere = board.enabled && (!guards.has(req) || (boardTailnet && guards.get(req) === httpsLane.guard));
-      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')), ...(boardHere ? { board: { page: BOARD_PAGE, boards: board.readerBoards() } } : {}) });
+      send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')), ...(boardHere ? { board: { page: BOARD_PAGE, boards: board.readerBoards(), write: { marks: !guards.has(req) && Boolean(board.write.marks) } } } : {}) });
       return;
     }
     // The open asks of the live panes, for a client that lists them: { generated_at, as_of, asks: [{ pane_id, herdr, session, message, lines, at, tags, older }] }.
@@ -1872,7 +1872,7 @@ function create({
           if (pathname === API + 'board-worker') send(res, 200, { status: 'ok', ...(await board.workerSwitch(body)) });
           else if (pathname === API + 'board-round') send(res, 200, { status: 'ok', ...(await board.round(body.session, { op: body.op, task: body.task })) });
           else if (pathname === API + 'board-review') send(res, 200, { status: 'ok', ...(await board.review(body.session, { task: body.task, action: body.action, note: body.note, until: body.until, title: body.title, due: body.due })) });
-          else if (pathname === API + 'board-mark') send(res, 200, { status: 'ok', ...(await board.mark(body.session, { task: body.task, turn: body.turn, mark: body.mark, source: 'card' })) });
+          else if (pathname === API + 'board-mark') send(res, 200, { status: 'ok', ...(await board.mark(body.session, { task: body.task, turn: body.turn, mark: body.mark, source: body.source === 'reader' ? 'reader' : 'card' })) });
           else send(res, 200, { status: 'ok', ...(await board.answer(body.session, { task: body.task, call: body.call, src: body.src, option: body.option, text: body.text, later: body.later, calls: body.calls, release: body.release })) });
         } catch (error) { if (!boardFail(error)) throw error; }
         return;
