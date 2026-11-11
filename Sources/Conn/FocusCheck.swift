@@ -298,7 +298,12 @@ enum FocusCheck {
             print("ui-check: SKIP Focus pill toolbar room (no toolbar in this launch)")
         }
 
-        // 13. Clean up: leave nothing behind in the test preferences or the marker folder.
+        // 13. The menu-bar item and the focus line at the top of its menu (MenuBarCheck).
+        sw.setResults([.done])
+        await MenuBarCheck.run(model: model, focus: focus, clock: clock, switcher: sw, report: report, wait: wait)
+        sw.setResults([.done])
+
+        // 14. Clean up: leave nothing behind in the test preferences or the marker folder.
         focus.setEyeEnabled(false)
         if focus.session.isActive { focus.stopEarly() }
         await settle()

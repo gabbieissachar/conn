@@ -69,6 +69,8 @@ struct AppConfig {
     /// person who wants to look at the window); a plain `./run.sh` is not.
     var background = false
     var foreground = false
+    /// `--menu-bar`: keep Conn's menu-bar item in a background launch (an accessory app that never takes focus), so a check can look at the real item. A person's own launch has it anyway.
+    var menuBar = false
 
     static func parse(_ a: [String]) -> AppConfig {
         var c = AppConfig()
@@ -123,6 +125,7 @@ struct AppConfig {
             case "--history": c.openHistory = true
             case "--background": c.background = true
             case "--foreground": c.foreground = true
+            case "--menu-bar": c.menuBar = true
             default: break
             }
             i += 1
@@ -138,6 +141,9 @@ struct AppConfig {
         if background || env["CONN_BACKGROUND"] == "1" { return true }
         return hasScriptedHook
     }
+
+    /// Whether the menu-bar item is inserted: always for a person's launch, and in a background launch only when asked for (`--menu-bar`).
+    var showsMenuBarItem: Bool { !runsInBackground || menuBar }
 
     private var hasScriptedHook: Bool {
         uiTour || campusCheck || focusCheck || campusBridgeLab != nil || selftest != nil || shot != nil || tour != nil || probeDraw || editorTest != nil || sendTest != nil || startFallback || quitAfter != nil

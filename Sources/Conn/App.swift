@@ -261,7 +261,7 @@ struct ConnCommands: Commands {
 struct ConnApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let app = MainActor.assumeIsolated { Runtime.model }
-    /// Observed so the menu-bar item below appears and goes with the session (the countdown itself is drawn by `FocusFace`, not by this scene).
+    /// Handed to the menu-bar item and the Focus menu (the countdown itself is drawn by `FocusFace`, not by this scene).
     @ObservedObject private var focus = MainActor.assumeIsolated { Runtime.model.focus }
 
     var body: some Scene {
@@ -274,19 +274,13 @@ struct ConnApp: App {
         .defaultSize(width: 1500, height: 920)
         .commands { ConnCommands(app: app, focus: focus) }
 
-        MenuBarExtra(isInserted: .constant(!Runtime.config.runsInBackground)) {
-            WaitingMenu().environmentObject(app)
+        // Conn's one menu-bar item (MenuBarViews.swift): the logo, the waiting count and, while a focus session exists, its time left. Its menu starts with a focus line.
+        // One item, not a second one for the session: a second item was missing from a real menu bar while the toolbar pill showed the countdown, so the time now rides on
+        // the item that is always there.
+        MenuBarExtra(isInserted: .constant(Runtime.config.showsMenuBarItem)) {
+            WaitingMenu(focus: focus, face: focus.face).environmentObject(app)
         } label: {
-            MenuBarLabel(app: app)
-        }
-        .menuBarExtraStyle(.window)
-
-        // The focus session's second menu-bar item: the countdown, and the same controls, with Conn behind other apps. It is there while a session runs or is paused, and
-        // stays after Done until the person restarts or dismisses it.
-        MenuBarExtra(isInserted: Binding(get: { !Runtime.config.runsInBackground && (focus.session.isActive || focus.session.isDone) }, set: { _ in })) {
-            FocusPanelView(focus: focus, face: focus.face).environmentObject(app)
-        } label: {
-            FocusMenuBarLabel(focus: focus, face: focus.face)
+            MenuBarLabel(app: app, focus: focus, face: focus.face)
         }
         .menuBarExtraStyle(.window)
 

@@ -1,5 +1,5 @@
 // The window: sidebar (spaces and agents), a centre column (Agent, Editor or Herdr's screen), and the web column
-// (reader and organizer), plus the status bar, quick switcher and menu-bar item.
+// (reader and organizer), plus the status bar and quick switcher (the menu-bar item is in MenuBarViews.swift).
 import SwiftUI
 import WebKit
 import ConnCore
@@ -406,7 +406,7 @@ struct WebTabsColumn: View {
     }
 }
 
-// MARK: - Status bar, switcher, menu bar
+// MARK: - Status bar, switcher
 
 struct StatusBar: View {
     @EnvironmentObject var app: AppModel
@@ -542,49 +542,6 @@ struct QuickSwitcher: View {
         }
         app.showSwitcher = false
         app.switcherQuery = ""
-    }
-}
-
-struct WaitingMenu: View {
-    @EnvironmentObject var app: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            let w = app.waiting
-            Text(w.isEmpty ? "Nothing is waiting on you" : "Waiting on you (\(w.count))").font(.system(size: 13, weight: .semibold)).padding(.bottom, 2)
-            ForEach(w) { a in
-                Button {
-                    app.select(a.id)
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                } label: {
-                    HStack(spacing: 8) {
-                        StateGlyph(state: a.state)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(a.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                            Text("\(app.snapshot.workspace(a.workspaceID)?.label ?? "") · \(a.state.label)").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 3).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            Divider().padding(.vertical, 4)
-            Button("Open Conn") { NSApplication.shared.activate(ignoringOtherApps: true) }.buttonStyle(.plain)
-            Button("Quit Conn") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain)
-        }
-        .padding(12).frame(width: 300, alignment: .leading)
-    }
-}
-
-struct MenuBarLabel: View {
-    @ObservedObject var app: AppModel
-    var body: some View {
-        let n = app.waiting.count
-        HStack(spacing: 3) {
-            Image(systemName: n > 0 ? "bell.badge.fill" : "bell")
-            if n > 0 { Text("\(n)") }
-        }
     }
 }
 
