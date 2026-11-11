@@ -139,29 +139,30 @@ public struct CampusPermission: Equatable, Sendable {
     public static let defaultDecisions = [allowOnce, reject]
     /// Whether a standing grant ("always allow") is offered as a button. Off: a wrong click must not turn into a permission that outlasts the thread (README, decision P1).
     public static let offersStandingGrant = false
-    /// The most characters of patterns that Conn will let a person allow. The card always shows every pattern in full (a grant must be read whole, so nothing is cut), but past this
-    /// length it offers only Reject and the way to open the thread in Campus: nobody reads that much on a card, and a tail they did not read is not consent.
+    /// The most characters, as shown on the card, that Conn will let a person allow. The card always shows every pattern in full (a grant must be read whole, so nothing is cut), but past
+    /// this length it offers only Reject and the way to open the thread in Campus: nobody reads that much on a card, and a tail they did not read is not consent.
     public static let approvableLimit = 2_000
 
-    /// A character that could hide or fake part of a command (a line break, a tab, another control, a bidi override or a zero-width mark) is shown as a visible token.
+    /// What the card shows for Campus's text: printable ASCII and the Latin letters (U+00C0 to U+024F, so accented names read as they are) pass; every other character is a visible token,
+    /// `⏎` for a line break, `⇥` for a tab, `<U+202E>` for anything else (other scripts, combining marks, spaces that are not a plain space, controls, bidi overrides, zero-width marks).
+    /// An allowlist, so a character nobody thought of is shown as a token and cannot hide or fake part of a command.
     static func visible(_ s: String) -> String {
         var out = ""
         for u in s.unicodeScalars {
-            switch u.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator:
-                switch u {
-                case "\n", "\r", "\u{2028}", "\u{2029}": out += "⏎"
-                case "\t": out += "⇥"
-                default: out += "<U+" + String(format: "%04X", u.value) + ">"
-                }
-            default: out.unicodeScalars.append(u)
+            let v = u.value
+            let latinLetter = (0xC0...0x24F).contains(v) && v != 0xD7 && v != 0xF7 && [.uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter].contains(u.properties.generalCategory)
+            if (0x20...0x7E).contains(v) || latinLetter { out.unicodeScalars.append(u); continue }
+            switch u {
+            case "\n", "\r", "\u{2028}", "\u{2029}": out += "⏎"
+            case "\t": out += "⇥"
+            default: out += "<U+" + String(format: "%04X", v) + ">"
             }
         }
         return out
     }
 
-    /// Too much to read on a card: only Reject is offered.
-    public var tooLongToApprove: Bool { patterns.joined(separator: ", ").count > Self.approvableLimit }
+    /// Too much to read on a card: only Reject is offered. Measured on the exact text the card shows (the kind and the patterns, escapes counted as shown), in Unicode scalars.
+    public var tooLongToApprove: Bool { question.unicodeScalars.count > Self.approvableLimit }
 
     /// The wire value of the choice the button of that label stands for.
     public func value(for label: String) -> String? { decisions.first { $0.label == label }?.value }

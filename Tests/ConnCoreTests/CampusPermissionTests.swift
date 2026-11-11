@@ -67,6 +67,16 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(g.asText == "Allow bash: " + huge && g.questions[0].options == ["Reject"] && g.permission?.value(for: "Allow once") == nil)
     }
 
+    @Test func onlyPrintableAsciiAndLatinLettersPassAndTheLimitCountsWhatIsShown() throws {
+        // Accented Latin letters read as they are; a Cyrillic look-alike, a no-break space, a combining mark and a soft hyphen are tokens.
+        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_a","permission":"bash","patterns":["ls café/\u0430\u00a0x\u0301\u00ad"]}"#)))
+        #expect(f.asText == "Allow bash: ls café/<U+0430><U+00A0>x<U+0301><U+00AD>")
+        // The kind is shown the same way, and counts toward the limit with the escapes as shown: 300 look-alikes are 2,400 characters on the card.
+        let g = try #require(CampusForm.parsePermission(json(#"{"id":"per_b","permission":"ba\u202esh","patterns":["\#(String(repeating: "\u{430}", count: 300))"]}"#)))
+        #expect(g.asText.hasPrefix("Allow ba<U+202E>sh: <U+0430>") && g.questions[0].options == ["Reject"])
+        #expect(g.permission?.tooLongToApprove == true)
+    }
+
     @Test func lineBreaksControlsAndBidiOverridesAreMadeVisible() throws {
         let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_c","permission":"bash","patterns":["echo ok\nrm -rf ~\u202e txt.exe\u200b"]}"#)))
         #expect(f.asText == "Allow bash: echo ok⏎rm -rf ~<U+202E> txt.exe<U+200B>")
