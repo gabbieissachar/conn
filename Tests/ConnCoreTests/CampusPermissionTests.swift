@@ -77,6 +77,12 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(g.permission?.tooLongToApprove == true)
     }
 
+    @Test func lettersThatPassForAsciiAreTokensEvenAmongTheLatinOnes() throws {
+        // ɑ (U+0251), dotless ı (U+0131), the click letters ǀ (U+01C0) and ǃ (U+01C3), kra ĸ and long s ſ look like a, i, l, !, k and f/s; é, ñ, ł and ß read as they are.
+        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_h","permission":"bash","patterns":["\u0251\u0131\u01c0\u01c3\u0138\u017f \u00e9\u00f1\u0142\u00df"]}"#)))
+        #expect(f.asText == "Allow bash: <U+0251><U+0131><U+01C0><U+01C3><U+0138><U+017F> éñłß")
+    }
+
     @Test func lineBreaksControlsAndBidiOverridesAreMadeVisible() throws {
         let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_c","permission":"bash","patterns":["echo ok\nrm -rf ~\u202e txt.exe\u200b"]}"#)))
         #expect(f.asText == "Allow bash: echo ok⏎rm -rf ~<U+202E> txt.exe<U+200B>")

@@ -143,14 +143,16 @@ public struct CampusPermission: Equatable, Sendable {
     /// this length it offers only Reject and the way to open the thread in Campus: nobody reads that much on a card, and a tail they did not read is not consent.
     public static let approvableLimit = 2_000
 
-    /// What the card shows for Campus's text: printable ASCII and the Latin letters (U+00C0 to U+024F, so accented names read as they are) pass; every other character is a visible token,
+    /// What the card shows for Campus's text: printable ASCII and the precomposed Latin letters of Latin-1 and Latin Extended-A (U+00C0 to U+017F, so accented names read as they are; not the dotless i, kra, long s, and nothing from U+0180 up, where letters such as ɑ, ǀ and ǃ pass for ASCII) pass; every other character is a visible token,
     /// `⏎` for a line break, `⇥` for a tab, `<U+202E>` for anything else (other scripts, combining marks, spaces that are not a plain space, controls, bidi overrides, zero-width marks).
     /// An allowlist, so a character nobody thought of is shown as a token and cannot hide or fake part of a command.
     static func visible(_ s: String) -> String {
+        // Letters that can pass for an ASCII one are shown as tokens even inside the range: dotless i, kra, n with a leading apostrophe, long s.
+        let lookAlikes: Set<UInt32> = [0x131, 0x138, 0x149, 0x17F]
         var out = ""
         for u in s.unicodeScalars {
             let v = u.value
-            let latinLetter = (0xC0...0x24F).contains(v) && v != 0xD7 && v != 0xF7 && [.uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter].contains(u.properties.generalCategory)
+            let latinLetter = ((0xC0...0x17F).contains(v) && v != 0xD7 && v != 0xF7 && !lookAlikes.contains(v)) && [.uppercaseLetter, .lowercaseLetter].contains(u.properties.generalCategory)
             if (0x20...0x7E).contains(v) || latinLetter { out.unicodeScalars.append(u); continue }
             switch u {
             case "\n", "\r", "\u{2028}", "\u{2029}": out += "⏎"
