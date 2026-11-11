@@ -68,16 +68,21 @@ public enum CampusEmbed {
         switch s { case .running: return "running"; case .ok: return "ok"; case .failed: return "failed"; case .aborted: return "aborted" }
     }
 
+    /// A form the page draws quiet once it is over (an open one stays with Conn's own buttons). A single question answered with one of its own options shows that option picked, so a
+    /// permission reads "Allow bash: ... Answered: Allow once" with "Allow once" filled; one answered in Campus's page says "Answered: in Campus".
     static func formJSON(_ f: CampusForm) -> [String: Any] {
+        var answered: String?
+        if case .answered(let t) = f.status { answered = t }
         var out: [String: Any] = ["id": f.id, "questions": f.questions.map { q -> [String: Any] in
             var o: [String: Any] = ["text": q.text, "options": q.options]
-            if let p = q.pick { o["pick"] = p }
+            if let p = q.pick { o["pick"] = p } else if f.questions.count == 1, let a = answered, q.options.contains(a) { o["pick"] = a }
             return o
         }]
         switch f.status {
         case .open: out["status"] = "open"
         case .answered(let t): out["status"] = "answered"; out["answer"] = t
         case .cancelled: out["status"] = "cancelled"
+        case .resolved: out["status"] = "answered"; out["answer"] = "in Campus"
         }
         return out
     }

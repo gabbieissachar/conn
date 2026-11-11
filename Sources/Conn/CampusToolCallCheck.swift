@@ -1,6 +1,7 @@
 // `--campus-check`: a Campus tool call with something to read ("execute campus.search", Done: a `code` input, a JSON result), end to end on the stand-in. The stand-in's
 // `codetool` run sends one `execute` call in opencode v2's shape (the input under `input`, the result as text parts and as a value). The steps check what Conn keeps of it
-// (name, title, whole input as code, indented result, state), what the live view's card shows, and what the reader's embed page draws in its step sheet.
+// (name, title, whole input as code, indented result, state), what the live view's card shows, and what the reader's embed page draws in its step sheet (its step row now
+// says the title, `campus.search`, where it used to say the first line of the code).
 import SwiftUI
 import WebKit
 import ConnCore
@@ -13,6 +14,11 @@ extension CampusCheck {
         model.watchOn = false
         model.openCampus(id)
         _ = await until(10) { campus.timeline(id)?.loaded == true }
+        // A stream that went quiet without closing (seen in this check run before this step, and only noticed by Conn after 45 s of silence) would lose the run's events and leave
+        // the "while it runs" step reading nothing: start from a fresh stream.
+        let reconnectsBefore = campus.reconnects
+        campus.auth?.closeEventStream()
+        _ = await until(15) { campus.reconnects > reconnectsBefore && campus.streamLive }
         func tool() -> CampusItem? { campus.timeline(id)?.items.last { $0.kind == .tool && $0.tool == "execute" } }
         await control("/__fake/next-run?mode=codeTool")
         await control("/__fake/run?c=\(id)&text=Find%20the%20placement%20rules&ask=0")
@@ -54,7 +60,7 @@ extension CampusCheck {
         func dom(_ expr: String) async -> String { await page.read("JSON.stringify((function(){ \(expr) })())") }
         _ = await dom("var r = document.querySelectorAll('#main .reply'); var last = r[r.length - 1]; last.querySelector('.steps-row').click(); return 1;")
         await wait(0.3)
-        _ = await dom("var s = [].filter.call(document.querySelectorAll('#main .step'), function (n) { return n.textContent.indexOf('const searches') >= 0; })[0]; if (s) s.click(); return s ? 1 : 0;")
+        _ = await dom("var s = [].filter.call(document.querySelectorAll('#main .step'), function (n) { return n.textContent.indexOf('const searches') >= 0 || n.textContent.indexOf('campus.search') >= 0; })[0]; if (s) s.click(); return s ? 1 : 0;")
         await wait(0.4)
         let sheet = await dom("var d = document.querySelector('.step-sheet'); if (!d || d.hidden) return null; return { title: d.querySelector('.step-title').textContent, code: [].map.call(d.querySelectorAll('.step-code'), function (n) { return n.textContent; }), labels: [].map.call(d.querySelectorAll('.step-sec h3, .step-sec .lab, .step-sec label'), function (n) { return n.textContent; }) };")
         let parsed = (try? JSONSerialization.jsonObject(with: Data(sheet.utf8))) as? [String: Any]

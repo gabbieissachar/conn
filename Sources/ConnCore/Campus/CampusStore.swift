@@ -237,7 +237,7 @@ public final class CampusStore: ObservableObject {
         // A space that did not answer keeps its rows; a conversation opened from a link stays until it is gone from Campus too.
         for (id, c) in conversations where next[id] == nil && (failedSpaces.contains(c.spaceID) || linked.contains(id)) { next[id] = c }
         if next != conversations { conversations = next }
-        for id in openForms.keys where !(next[id]?.needsYou ?? false) { openForms[id] = nil }
+        for id in openForms.keys where !(next[id]?.needsYou ?? false) { openForms[id] = nil; syncRequests(id) }
         link = .live
         asOf = now()
         for c in next.values where c.needsYou && openForms[c.id] == nil { await loadForm(c) }
@@ -275,12 +275,23 @@ public final class CampusStore: ObservableObject {
         onBlocked?(t)
     }
 
+    /// Read what the thread waits on (a question or a permission request) and show it: on the row, as the open ask, and in the transcript at the end. A permission comes first.
     private func loadForm(_ c: CampusConversation) async {
         guard let client = client else { return }
-        if case .ok(let forms) = await client.openForms(of: c), let f = forms.first {
+        if case .ok(let forms) = await client.openRequests(of: c), let f = forms.first {
             openForms[c.id] = f
             conversations[c.id]?.ask = CampusAsk(text: f.asText, tag: f.tag, at: conversations[c.id]?.updatedAt)
+            syncRequests(c.id)
         }
+    }
+
+    /// The transcript of a thread on screen follows what Campus lists as pending: the open ask is in it (it was not there when it came from a read and not from an event), and an ask
+    /// that is open in it but no longer pending says it was answered in Campus.
+    private func syncRequests(_ id: String) {
+        guard timelines[id]?.loaded == true else { return }
+        var changed = timelines[id]!.resolveOpenForms(except: openForms[id]?.id)
+        if let f = openForms[id], timelines[id]!.showRequest(f) { changed = true }
+        if changed { timelineChanged.send(id) }
     }
 
     /// One conversation named by a link (its kind, folder and id): added to the rows when Campus knows it.
@@ -387,11 +398,10 @@ public final class CampusStore: ObservableObject {
         case "session.created", "session.renamed", "session.metadata.updated", "session.deleted":
             kick()
         case "form.created":
-            if let form = CampusForm.parse(f.data), conversations[sid] != nil {
-                openForms[sid] = form
-                conversations[sid]?.ask = CampusAsk(text: form.asText, tag: form.tag, at: f.created ?? now())
-                conversations[sid]?.needsYou = true; conversations[sid]?.working = false
-            }
+            if let form = CampusForm.parse(f.data) { ask(form, in: sid, at: f.created) }
+        case "permission.asked", "permission.created", "permission.requested":
+            // A permission request is an open ask like a question; the status read that follows confirms the row.
+            if let form = CampusForm.parsePermission(f.data) { ask(form, in: sid, at: f.created) }
         case "session.execution.started", "session.step.started":
             if conversations[sid]?.working == false { conversations[sid]?.working = true; conversations[sid]?.needsYou = false; openForms[sid] = nil }
         default: break
@@ -401,6 +411,13 @@ public final class CampusStore: ObservableObject {
             if timelines[sid]!.loaded { timelines[sid]!.apply(f); timelineChanged.send(sid) } else { queued[sid, default: []].append(f); if queued[sid]!.count > 2000 { queued[sid]!.removeFirst(500) } }
         }
         if !f.type.hasSuffix(".delta"), f.type != "session.tool.progress", conversations[sid] != nil { scheduleStatus(sid) }
+    }
+
+    private func ask(_ form: CampusForm, in sid: String, at: Date?) {
+        guard conversations[sid] != nil else { return }
+        openForms[sid] = form
+        conversations[sid]?.ask = CampusAsk(text: form.asText, tag: form.tag, at: at ?? now())
+        conversations[sid]?.needsYou = true; conversations[sid]?.working = false
     }
 
     private func scheduleStatus(_ id: String) {
@@ -436,6 +453,7 @@ public final class CampusStore: ObservableObject {
         c.unread = st.unread && locallySeen[id] != c.updatedAt && retained[id] == nil
         if !c.needsYou { c.ask = nil; openForms[id] = nil }
         if c != was { conversations[id] = c }
+        if !c.needsYou, timelines[id]?.loaded == true { syncRequests(id) }
         if c.needsYou && openForms[id] == nil { Task { [weak self] in await self?.loadForm(c) } }
         if !c.working, !c.needsYou, timelines[id]?.loaded == true, let last = timelines[id]?.items.last, last.kind != .idle, last.kind != .stopped, last.kind != .user {
             timelines[id]!.finishRun(tokens: timelines[id]!.lastTokens ?? "")

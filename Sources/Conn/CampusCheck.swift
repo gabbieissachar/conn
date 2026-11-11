@@ -59,6 +59,17 @@ enum CampusCheck {
         let closed = await until(10) { !model.campusSignInShown }
         if !closed { model.closeCampusSignIn() }
         report("Campus: the sign-in sheet closes by itself once Campus answers", closed, "closedByItself=\(closed)")
+        // CONN_CAMPUS_CHECK_ONLY=permission runs just the permission steps after the sign-in (about a minute), for working on them.
+        if ProcessInfo.processInfo.environment["CONN_CAMPUS_CHECK_ONLY"] == "permission" {
+            await permissionChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
+            print("ui-check: stopped after the permission steps (CONN_CAMPUS_CHECK_ONLY=permission)")
+            return
+        }
+        if ProcessInfo.processInfo.environment["CONN_CAMPUS_CHECK_ONLY"] == "toolcall" {
+            await toolCallChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
+            print("ui-check: stopped after the tool call steps (CONN_CAMPUS_CHECK_ONLY=toolcall)")
+            return
+        }
         // Only the stand-in's cookie counts: this process shares its cookie file with the person's own Conn (same bundle id), which holds the real Campus sign-in once they have signed in.
         let documentCookie = await js(auth.apiView, "document.cookie")
         let described = String(describing: campus.conversations) + String(describing: campus.openForms) + String(describing: campus.timelines)
@@ -173,6 +184,8 @@ enum CampusCheck {
         if ProcessInfo.processInfo.environment["CONN_CAMPUS_CHECK_STOP"] == "stale" { print("ui-check: stopped after the stale-connection steps (CONN_CAMPUS_CHECK_STOP=stale)"); return }
 
         await writeChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
+
+        await permissionChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 
         await embedComposerChecks(model: model, report: report, wait: wait, until: until, control: control, shot: shot)
 

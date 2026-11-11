@@ -115,7 +115,78 @@ public struct CampusStatus: Equatable, Sendable {
     }
 }
 
+/// A permission the agent asks for (`permission.asked`, one item of `permissions[]` in `GET .../<id>/form`): run a command, write a file, reach a path. It is a grant, not a
+/// chat answer, so it is read plainly and answered only by a person's click. The fields follow opencode's permission request (`id`, `permission`, `patterns[]`); the reply
+/// values are opencode's (`once`, `always`, `reject`). Nobody has seen Campus's own, so every reader here is tolerant and the first real answer is the person's (ROADMAP).
+public struct CampusPermission: Equatable, Sendable {
+    /// One thing the person can answer: what the button says, and the value Campus is sent in `{"decision": ...}`.
+    public struct Decision: Equatable, Sendable {
+        public var label: String
+        public var value: String
+        public init(label: String, value: String) { self.label = label; self.value = value }
+    }
+    /// What is asked for (`bash`, `edit`, `webfetch`, ...), as Campus names it.
+    public var name: String
+    /// The commands, paths or addresses it applies to, as Campus gave them.
+    public var patterns: [String]
+    public var decisions: [Decision]
+
+    public init(name: String, patterns: [String] = [], decisions: [Decision] = CampusPermission.defaultDecisions) { self.name = name; self.patterns = patterns; self.decisions = decisions }
+
+    public static let allowOnce = Decision(label: "Allow once", value: "once")
+    public static let reject = Decision(label: "Reject", value: "reject")
+    /// What Conn offers when the request lists no choices of its own: this one time, or not at all.
+    public static let defaultDecisions = [allowOnce, reject]
+    /// Whether a standing grant ("always allow") is offered as a button. Off: a wrong click must not turn into a permission that outlasts the thread (README, decision P1).
+    public static let offersStandingGrant = false
+    /// The longest the one-line form of the patterns goes (the text is Campus's, possibly a model's tool call).
+    public static let textLimit = 300
+
+    /// The wire value of the choice the button of that label stands for.
+    public func value(for label: String) -> String? { decisions.first { $0.label == label }?.value }
+
+    /// `Allow bash: curl https://example.test`: the one line the row, the card and the page's record show.
+    public var question: String {
+        let joined = patterns.joined(separator: ", ")
+        let what = joined.isEmpty ? "" : ": " + (joined.count > Self.textLimit ? String(joined.prefix(Self.textLimit)) + "…" : joined)
+        return "Allow \(name)\(what)"
+    }
+
+    /// The words on a button for a reply value (`once` is "Allow once").
+    public static func label(forValue v: String) -> String {
+        switch v.lowercased() {
+        case "once", "allow", "allow_once", "approve", "approved", "granted": return "Allow once"
+        case "reject", "rejected", "deny", "denied": return "Reject"
+        case "always", "allow_always": return "Always allow"
+        default: return v.isEmpty ? v : v.prefix(1).uppercased() + v.dropFirst()
+        }
+    }
+
+    static func isStanding(_ value: String) -> Bool { value.lowercased().contains("always") }
+
+    /// The choices a request lists (`options`, `choices`, `decisions` or `replies`: strings, or objects with a label and a value), without a standing grant unless that is on;
+    /// the defaults when it lists none that Conn may offer.
+    static func decisions(in j: CampusJSON) -> [Decision] {
+        let list = j.first("options", "choices", "decisions", "replies").array
+        var out: [Decision] = []
+        for o in list {
+            if let s = o.string, !s.isEmpty { out.append(Decision(label: label(forValue: s), value: s)); continue }
+            guard o.object != nil else { continue }
+            let value = o.first("value", "id", "decision", "reply", "name").string ?? o.first("label", "text", "title").string ?? ""
+            guard !value.isEmpty else { continue }
+            out.append(Decision(label: o.first("label", "text", "title", "name").string ?? label(forValue: value), value: value))
+        }
+        if !offersStandingGrant { out.removeAll { isStanding($0.value) } }
+        // The labels are the buttons: two with the same words would be one choice.
+        var seen: Set<String> = []
+        out = out.filter { seen.insert($0.label).inserted }
+        return out.isEmpty ? defaultDecisions : out
+    }
+}
+
 /// A question the agent put to the person (`form.created`, `GET .../<id>/form`). Campus's question tool: one or more questions, each with options.
+/// A permission ask is carried the same way (one question, its choices as the options, `permission` set) so the row, the cards, the transcript record and the write gate
+/// are one path for both; only the call that answers it differs.
 public struct CampusForm: Equatable, Sendable, Identifiable {
     public struct Question: Equatable, Sendable {
         public var text: String
@@ -123,17 +194,24 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
         public var pick: String?
         public init(text: String, options: [String], pick: String? = nil) { self.text = text; self.options = options; self.pick = pick }
     }
-    public enum Status: Equatable, Sendable { case open, answered(String), cancelled }
+    /// `resolved`: it left Campus's pending list without Conn answering it (answered in Campus's own page or by another client, or withdrawn); shown as "Answered in Campus".
+    public enum Status: Equatable, Sendable { case open, answered(String), cancelled, resolved }
     public var id: String
     public var questions: [Question]
     public var status: Status
+    /// Set when this is a permission ask: what is asked and what each button sends.
+    public var permission: CampusPermission?
 
-    public init(id: String, questions: [Question], status: Status = .open) { self.id = id; self.questions = questions; self.status = status }
+    public init(id: String, questions: [Question], status: Status = .open, permission: CampusPermission? = nil) { self.id = id; self.questions = questions; self.status = status; self.permission = permission }
 
     public var isOpen: Bool { status == .open }
+    public var isPermission: Bool { permission != nil }
     /// The row's ask text and tag (C2/C3: a Campus question is an open ask like a Herdr one).
-    public var asText: String { questions.map(\.text).joined(separator: " ") }
-    public var tag: String { questions.count > 1 ? "Answer sheet · \(questions.count) questions" : "Question · \(questions.first?.options.count ?? 0) options" }
+    public var asText: String { permission?.question ?? questions.map(\.text).joined(separator: " ") }
+    public var tag: String {
+        if let p = permission { return "Permission · \(p.name)" }
+        return questions.count > 1 ? "Answer sheet · \(questions.count) questions" : "Question · \(questions.first?.options.count ?? 0) options"
+    }
 
     /// The form in a payload, whatever it is wrapped in (`form`, `data`, or bare). Option lists of strings or of `{label|text|value}` objects both work.
     public static func parse(_ j: CampusJSON) -> CampusForm? {
@@ -150,12 +228,33 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
         return CampusForm(id: id, questions: questions)
     }
 
+    /// A permission request in a payload: the object itself, or under `permission` or `request` (an event's data). Its `permission` is the kind (`bash`), its `patterns` what it
+    /// applies to. A request with no id, or one that names nothing it asks for, is not read: Conn would have nothing true to show or answer.
+    public static func parsePermission(_ j: CampusJSON) -> CampusForm? {
+        let p = j["permission"].object != nil ? j["permission"] : (j["request"].object != nil ? j["request"] : j)
+        guard let id = p.first("id", "permissionID", "permissionId", "requestID", "requestId").string, validID(id) else { return nil }
+        let name = p.first("permission", "type", "kind", "title", "name").string ?? ""
+        var patterns = p["patterns"].array.compactMap(\.string).filter { !$0.isEmpty }
+        if patterns.isEmpty, let one = p.first("pattern", "path", "command", "description").string, !one.isEmpty { patterns = [one] }
+        guard !name.isEmpty || !patterns.isEmpty else { return nil }
+        let perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p))
+        return CampusForm(id: id, questions: [Question(text: perm.question, options: perm.decisions.map(\.label))], permission: perm)
+    }
+
     public static func validID(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil }
 
-    /// `GET .../<id>/form` answers `{sessionIDs, permissions[], forms[]}`: the open forms.
+    /// `GET .../<id>/form` answers `{sessionIDs, permissions[], forms[]}`: the open forms (questions only: the agent bridge reads this one and never answers a permission).
     public static func parseOpenForms(_ data: Data) -> [CampusForm] {
         guard let root = CampusJSON.parse(data) else { return [] }
         return root["forms"].array.compactMap(parse)
+    }
+
+    /// Everything the agent waits on in that answer, a permission first (it holds up a tool; a question comes when the run has stopped). `permissionsOnly` reads an answer that is the
+    /// permissions themselves: `{permissions: [...]}` or a bare list.
+    public static func parseOpenRequests(_ data: Data, permissionsOnly: Bool = false) -> [CampusForm] {
+        guard let root = CampusJSON.parse(data) else { return [] }
+        let perms = root["permissions"].array.isEmpty && permissionsOnly ? root.array : root["permissions"].array
+        return perms.compactMap(parsePermission) + (permissionsOnly ? [] : root["forms"].array.compactMap(parse))
     }
 
     /// The text of the answers given for a reply: one pick per question.

@@ -59,19 +59,24 @@ private struct OptionChip: View {
     }
 }
 
-/// The question card, read-only here: the questions and their options, and a way to answer in Campus's own page.
+/// The question card: the questions (or the permission asked for) and their choices, to answer here, and what was answered once it is over.
 private struct FormCard: View {
     @EnvironmentObject var app: AppModel
     let form: CampusForm
     let c: CampusConversation
-    var title = "Campus asks you"
+
+    /// The words over the card: a permission ask says so, and a card that is over says it asked.
+    private var heading: String {
+        let ask = form.isOpen ? "Campus asks" : "Campus asked"
+        return form.isPermission ? ask + " permission" : (form.isOpen ? ask + " you" : ask)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(AgentState.blocked.color); Spacer() }
-            if case .answered(let t) = form.status {
-                ForEach(Array(form.questions.enumerated()), id: \.offset) { _, q in Text(q.text).font(.system(size: 13, weight: .semibold)) }
-                Text("Answered: \(t)").font(.system(size: 12)).foregroundStyle(AgentState.done.color)
+            HStack { Text(heading).font(.system(size: 11, weight: .bold)).foregroundStyle(AgentState.blocked.color); Spacer() }
+            if let over = Self.ending(form.status) {
+                ForEach(Array(form.questions.enumerated()), id: \.offset) { _, q in Text(q.text).font(.system(size: 13, weight: .semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                Text(over).font(.system(size: 12)).foregroundStyle(AgentState.done.color)
             } else {
                 ForEach(Array(form.questions.enumerated()), id: \.offset) { qi, q in
                     Text(q.text).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
@@ -86,6 +91,16 @@ private struct FormCard: View {
         .overlay(alignment: .leading) { Rectangle().fill(AgentState.blocked.color).frame(width: 2) }
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .accessibilityElement(children: .contain).accessibilityIdentifier("campus-form-card")
+    }
+
+    /// What a finished ask says about its end, or nil while it is open.
+    static func ending(_ s: CampusForm.Status) -> String? {
+        switch s {
+        case .open: return nil
+        case .answered(let t): return "Answered: \(t)"
+        case .cancelled: return "Cancelled"
+        case .resolved: return "Answered in Campus"
+        }
     }
 }
 
@@ -104,7 +119,7 @@ struct CampusAnswerControls: View {
                 Button("Send answers") { app.campusAnswer(form, in: c) }.controlSize(.small).disabled(!ready).accessibilityIdentifier("campus-send-answers")
                 Text(ready ? "Ready." : "Pick one for each question.").font(.system(size: 11)).foregroundStyle(.secondary)
             } else {
-                Text(campus.writesEnabled ? "Click an answer to send it." : "Campus writes are off: turn them on to answer here.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(campus.writesEnabled ? (form.isPermission ? "Click a choice to send it." : "Click an answer to send it.") : "Campus writes are off: turn them on to answer here.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Button("Answer in web") { if let u = campus.webURL(for: c) { NSWorkspace.shared.open(u) } }.controlSize(.small)
@@ -417,7 +432,7 @@ struct CampusTranscriptView: View {
                 }
                 ForEach(texts) { CampusText(text: $0.text, column: column) }
                 if let f = form?.form {
-                    if f.isOpen { waiting(f, c) } else { FormCard(form: f, c: c, title: "Campus asked") }
+                    if f.isOpen { waiting(f, c) } else { FormCard(form: f, c: c) }
                 }
                 if stopped { Text("Stopped. You interrupted this run.").font(.system(size: 12)).foregroundStyle(AgentState.blocked.color) }
             }
@@ -428,9 +443,9 @@ struct CampusTranscriptView: View {
 
     private func waiting(_ f: CampusForm, _ c: CampusConversation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Waiting on you").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)
+            Text(f.isPermission ? "Waiting on you · permission" : "Waiting on you").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)
             ForEach(Array(f.questions.enumerated()), id: \.offset) { qi, q in
-                Text(q.text).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(q.text).font(.system(size: 13, weight: .semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { CampusOptionButton(campus: campus, form: f, c: c, question: qi, option: $0) } }
             }
             CampusAnswerControls(campus: campus, form: f, c: c)

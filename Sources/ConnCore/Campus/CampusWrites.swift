@@ -91,6 +91,10 @@ extension CampusClient {
     public static func renameRequest(kind: String, folder: String, id: String, title: String) -> CampusRequest { json("PATCH", conversationPath(kind: kind, folder: folder, id: id), ["title": title]) }
     public static func interruptRequest(_ c: CampusConversation) -> CampusRequest { json("POST", conversationPath(c) + "/interrupt", [:]) }
     public static func answerRequest(_ c: CampusConversation, form: CampusForm, answers: [String]) -> CampusRequest {
+        // A permission is answered on its own route with the wire value of the button pressed (`POST .../permission/<id>/reply {"decision"}`, scout report 3.4).
+        if let p = form.permission {
+            return json("POST", conversationPath(c) + "/permission/\(form.id)/reply", ["decision": answers.first.flatMap(p.value(for:)) ?? ""])
+        }
         // One question: its answer as text; several: the answers in order.
         let answer: Any = answers.count == 1 ? answers[0] : answers
         return json("POST", conversationPath(c) + "/form/\(form.id)/reply", ["answer": answer])
@@ -364,9 +368,12 @@ extension CampusStore {
     @discardableResult
     public func answer(_ form: CampusForm, in c: CampusConversation) -> CampusWriteRefusal? {
         guard let answers = pickedAnswers(form), form.isOpen else { return .invalid }
+        // A permission goes out only for a button that stands for a value Campus listed (or the defaults): never an empty decision.
+        if let p = form.permission, answers.first.flatMap(p.value(for:)) == nil { return .invalid }
         let id = c.id
         let text = answers.joined(separator: "; ")
-        return hold(id, label: "Answer \(c.title): \(text)", request: CampusClient.answerRequest(c, form: form, answers: answers), restore: { [weak self] in self?.picks[form.id] = nil }) { [weak self] in
+        let what = form.isPermission ? "Permission for" : "Answer"
+        return hold(id, label: "\(what) \(c.title): \(text)", request: CampusClient.answerRequest(c, form: form, answers: answers), restore: { [weak self] in self?.picks[form.id] = nil }) { [weak self] in
             guard let self = self else { return }
             self.picks[form.id] = nil
             self.openForms[id] = nil

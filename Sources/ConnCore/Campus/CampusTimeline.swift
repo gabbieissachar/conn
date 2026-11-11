@@ -143,8 +143,21 @@ public struct CampusTimeline: Equatable, Sendable {
                 }
             }
             live = ""
+        case "permission.asked", "permission.created", "permission.requested":
+            // A permission ask is a form with one question and its choices as options: it stands in the transcript where the agent stopped.
+            if let form = CampusForm.parsePermission(d) { showRequest(form) }
+            live = ""
+        case "permission.replied", "permission.answered", "permission.resolved", "permission.granted", "permission.rejected", "permission.denied":
+            // The person's own answer is already on the item (it is only marked while open); this is for one given in Campus's page or by another client.
+            if let id = d.first("permissionID", "permissionId", "requestID", "requestId", "id").string {
+                let reply = d.first("reply", "response", "decision").string ?? (f.type == "permission.rejected" || f.type == "permission.denied" ? "reject" : "")
+                markForm(id, status: reply.isEmpty ? .resolved : .answered(CampusPermission.label(forValue: reply)))
+            }
         case "form.replied", "form.answered":
-            if let id = d.first("formID", "formId", "id").string { markForm(id, status: .answered(d.first("answer", "text").plainText)) }
+            if let id = d.first("formID", "formId", "id").string {
+                let answer = d.first("answer", "text").plainText
+                markForm(id, status: answer.isEmpty ? .resolved : .answered(answer))
+            }
         case "form.cancelled", "form.rejected":
             if let id = d.first("formID", "formId", "id").string { markForm(id, status: .cancelled) }
         case "session.idle", "session.execution.ended", "session.execution.finished":
@@ -167,8 +180,33 @@ public struct CampusTimeline: Equatable, Sendable {
         return false
     }
 
+    /// An ask that is still open takes its end (the person's answer, or Campus's). One that already has an end keeps it: an event for an answer Conn sent must not overwrite its words.
     private mutating func markForm(_ id: String, status: CampusForm.Status) {
-        for n in items.indices where items[n].form?.id == id { items[n].form?.status = status }
+        for n in items.indices where items[n].form?.id == id && items[n].form?.isOpen == true { items[n].form?.status = status }
+    }
+
+    /// An ask Campus says is pending (an event, or `GET .../form`): in the transcript at the end, where the agent stopped, unless it is there already. One that was closed only because
+    /// Campus's list did not have it for a moment (`resolveOpenForms`) opens again; one the person answered stays answered.
+    @discardableResult
+    public mutating func showRequest(_ form: CampusForm) -> Bool {
+        if let n = items.firstIndex(where: { $0.form?.id == form.id }) {
+            guard items[n].form?.status == .resolved else { return false }
+            items[n].form?.status = .open
+            return true
+        }
+        var f = form
+        f.status = .open
+        var i = CampusItem(id: nextID("f"), kind: .form); i.form = f; add(i)
+        return true
+    }
+
+    /// Campus no longer lists the asks that are open here (its status says nothing waits, or it waits on another): they were answered elsewhere, so the transcript says so and the
+    /// buttons go. Only an open ask is touched.
+    @discardableResult
+    public mutating func resolveOpenForms(except openID: String? = nil) -> Bool {
+        var changed = false
+        for n in items.indices where items[n].form?.isOpen == true && items[n].form?.id != openID { items[n].form?.status = .resolved; changed = true }
+        return changed
     }
 
     /// The agent finished its turn: nothing streams any more, and the end of the run is marked once.
@@ -277,6 +315,12 @@ public struct CampusTimeline: Equatable, Sendable {
                         out.append(i)
                     case "form", "question":
                         if let f = CampusForm.parse(part) { var i = CampusItem(id: id(m, "f"), kind: .form); i.form = f; out.append(i) }
+                    case "permission", "permission-request", "permission-asked":
+                        if var f = CampusForm.parsePermission(part) {
+                            // A part that carries its reply is a record of an answer; one without is still waiting (the store closes it when Campus no longer lists it).
+                            if let reply = part.first("reply", "response", "decision").string { f.status = .answered(CampusPermission.label(forValue: reply)) }
+                            var i = CampusItem(id: id(m, "f"), kind: .form); i.form = f; out.append(i)
+                        }
                     default: break
                     }
                 }

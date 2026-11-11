@@ -133,6 +133,15 @@ public struct CampusClient {
         await fetch(CampusRequest(path: Self.conversationPath(c) + "/form")) { CampusForm.parseOpenForms($0) }
     }
 
+    /// What the agent waits on: its questions and its permission requests, a permission first. `GET .../form` answers both lists (`{sessionIDs, permissions[], forms[]}`, scout report 3.3);
+    /// when it lists nothing, `GET .../permission` is asked too (the report names it as the other place a permission is listed). Nothing is sent: both are reads.
+    public func openRequests(of c: CampusConversation) async -> CampusFetch<[CampusForm]> {
+        let first = await fetch(CampusRequest(path: Self.conversationPath(c) + "/form")) { CampusForm.parseOpenRequests($0) }
+        guard case .ok(let list) = first, list.isEmpty else { return first }
+        if case .ok(let more) = await fetch(CampusRequest(path: Self.conversationPath(c) + "/permission"), { CampusForm.parseOpenRequests($0, permissionsOnly: true) }), !more.isEmpty { return .ok(more) }
+        return first
+    }
+
     public func messages(of c: CampusConversation) async -> CampusFetch<[CampusItem]> {
         await fetch(CampusRequest(path: Self.conversationPath(c) + "/message?limit=50&order=desc"), CampusTimeline.items(fromMessages:))
     }

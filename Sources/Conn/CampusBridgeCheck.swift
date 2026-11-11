@@ -109,12 +109,14 @@ extension CampusCheck {
 
         // 4. A permission request comes back and is never answered; a question comes back and an answer continues the run.
         await control("/__fake/next-run?mode=permission")
+        // The stand-in's log is the whole run's: the permission steps before these answered one of their own (a person's click), so only what the bridge sent from here on counts.
+        let logBeforePermission = await log().count
         let perm = await ask("req-\(unique)-p1", "campus: continue \(thread)\n---\nPlease fetch the page.")
-        let wp = await log()
+        let wp = Array(await log().dropFirst(logBeforePermission))
         report("Agent bridge: a permission request is returned as needs-answer (reason: permission) and never answered by the bridge", field(perm, "status") == "needs-answer" && field(perm, "reason") == "permission" && !wp.contains { $0.contains("/permission") } && !wp.contains { $0.contains("/\(thread)/form/") },
                "status=\(field(perm, "status") ?? "nil") reason=\(field(perm, "reason") ?? "nil")")
         let blockedAnswer = await ask("req-\(unique)-p2", "campus: continue \(thread)\nanswer: yes allow it")
-        let wp2 = await log()
+        let wp2 = Array(await log().dropFirst(logBeforePermission))
         report("Agent bridge: an 'answer:' from the caller does not answer a permission request either", field(blockedAnswer, "reason") == "permission" && !wp2.contains { $0.contains("/permission") }, "status=\(field(blockedAnswer, "status") ?? "nil")")
         // The permission stays the person's: end that run on the stand-in so the next steps start clean (the stand-in has no route a bridge could use).
         await control("/__fake/release?c=\(thread)")

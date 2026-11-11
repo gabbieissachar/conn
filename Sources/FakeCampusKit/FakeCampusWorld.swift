@@ -25,7 +25,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
         public var agent = "build", model = "general-flash"
         public var messages: [[String: Any]] = []   // oldest first
         public var form: [String: Any]?
-        /// Pending permission requests (`GET .../form` lists them next to the forms). Nothing in Conn answers one; the stand-in has no route that does, so a test can say so.
+        /// Pending permission requests (`GET .../form` lists them next to the forms, `GET .../permission` on its own). `POST .../permission/<id>/reply {"decision"}` answers one:
+        /// `once` and `always` let the run go on, `reject` ends it; any other value is refused with 400 (opencode's values, the only guess there is).
         public var permissions: [[String: Any]] = []
         public var gen = 0                // bumped to cancel a running script
     }
@@ -243,6 +244,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
                 let perm: [String: Any] = ["id": "per_demo\(gen)", "permission": "bash", "patterns": ["curl https://example.test"]]
                 self.mutate(id) { $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm] }
                 self.emit("session.step.ended", id, ["tokens": ["input": 3400, "output": 212]])
+                self.emit("permission.asked", id, perm)
                 return
             }
             if ask {
@@ -351,7 +353,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
             r.body = Data(String(decoding: r.body, as: UTF8.self).replacingOccurrences(of: "{{CAMPUS}}", with: publicBase).utf8)
             return r
         case ("GET", ["status"]): return ok(["state": c.state, "unread": c.unread, "parked": [Any](), "held": [Any](), "spaceDirectory": "/workspace/spaces/\(kind)/\(folder)"])
-        case ("GET", ["form"]): return ok(["sessionIDs": [id], "permissions": c.permissions, "forms": c.form.map { [$0] } ?? []])
+        case ("GET", ["form"]), ("GET", ["requests"]): return ok(["sessionIDs": [id], "permissions": c.permissions, "forms": c.form.map { [$0] } ?? []])
+        case ("GET", ["permission"]): return ok(["sessionIDs": [id], "permissions": c.permissions])
         case ("PATCH", []):
             record("PATCH \(path) \(String(data: body ?? Data(), encoding: .utf8) ?? "")")
             if let t = CampusJSON.parse(body ?? Data())?["title"].string { mutate(id) { $0.title = t } }
@@ -379,8 +382,43 @@ public final class FakeCampusWorld: @unchecked Sendable {
                 startRun(id, userText: nil, ask: false)
                 return ok(["ok": true])
             }
+            if method == "POST", tail.count == 3, tail[0] == "permission", tail[2] == "reply" {
+                record("POST \(path) \(String(data: body ?? Data(), encoding: .utf8) ?? "")")
+                guard c.permissions.contains(where: { $0["id"] as? String == tail[1] }) else { return err(404, "no_such_permission") }
+                let decision = CampusJSON.parse(body ?? Data())?["decision"].string ?? ""
+                guard ["once", "always", "reject"].contains(decision) else { return err(400, "bad_decision") }
+                finishPermission(id, tail[1], decision: decision, announce: true)
+                return ok(["ok": true])
+            }
             return err(404, "not_found")
         }
+    }
+
+    /// A permission answered: it leaves the list, `permission.replied` says so (not when `announce` is off: another client's answer that Conn saw no event for), and the run goes on
+    /// (`once`, `always`) or ends (`reject`).
+    private func finishPermission(_ id: String, _ permID: String, decision: String, announce: Bool) {
+        mutate(id) { $0.permissions.removeAll { $0["id"] as? String == permID } }
+        if announce { emit("permission.replied", id, ["permissionID": permID, "reply": decision]) }
+        if decision == "reject" {
+            mutate(id) { $0.gen += 1; $0.state = "idle"; $0.unread = true }
+            emit("session.idle", id)
+        } else {
+            startRun(id, userText: nil, ask: false)
+        }
+    }
+
+    /// The person answers the pending permission somewhere that is not Conn (Campus's own page): the same end as `POST .../permission/<id>/reply`, recorded as nothing.
+    public func answerPermissionElsewhere(_ id: String, decision: String = "once", announce: Bool = true) {
+        guard let permID = conv(id)?.permissions.first?["id"] as? String else { return }
+        finishPermission(id, permID, decision: decision, announce: announce)
+    }
+
+    /// A thread that waits on a permission (what a run in `permission` mode ends on), without a run: for a check or a test that needs the wait to be there at once.
+    /// `announce` also sends the `permission.asked` event; without it only the status and the listing say so.
+    public func askPermission(_ id: String, name: String = "bash", patterns: [String] = ["curl https://example.test"], announce: Bool = true) {
+        let perm: [String: Any] = ["id": "per_demo\(Int.random(in: 100...999))", "permission": name, "patterns": patterns]
+        mutate(id) { $0.gen += 1; $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm]; $0.unread = false }
+        if announce { emit("permission.asked", id, perm) }
     }
 
     /// `POST /api/spaces/<kind>/<folder>/conversations {"text"}` with an Idempotency-Key: a new conversation that starts a run on the text. The same key answers with the
@@ -488,6 +526,9 @@ public final class FakeCampusWorld: @unchecked Sendable {
         case "/__fake/drop-streams": dropStreams(); return ok(["ok": true])
         case "/__fake/next-run": setNextRun(NextRun(rawValue: q["mode"] ?? "normal") ?? .normal, reply: q["reply"]); return ok(["ok": true])
         case "/__fake/release": if let c = q["c"] { release(c) }; return ok(["ok": true])
+        case "/__fake/permission": if let c = q["c"] { askPermission(c, name: q["name"] ?? "bash", announce: q["announce"] != "0") }; return ok(["ok": true])
+        case "/__fake/permission-answered-elsewhere": if let c = q["c"] { answerPermissionElsewhere(c, decision: q["decision"] ?? "once", announce: q["announce"] != "0") }; return ok(["ok": true])
+        case "/__fake/state": if let c = q["c"], let v = conv(c) { return ok(["state": v.state, "permissions": v.permissions.count, "form": v.form != nil, "unread": v.unread]) }; return err(404, "not_found")
         case "/__fake/run": if let c = q["c"] { startRun(c, userText: q["text"], ask: q["ask"] == "1") }; return ok(["ok": true])
         case "/__fake/subscribers": return ok(["subscribers": subscriberCount])
         default: return err(404, "not_found")
