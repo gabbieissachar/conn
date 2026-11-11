@@ -56,10 +56,21 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(only.questions[0].options == ["Allow once", "Reject"])
     }
 
-    @Test func theTextIsCampusesAndIsCutAt300Characters() throws {
-        let long = String(repeating: "x", count: 500)
-        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_l","permission":"bash","patterns":["\#(long)"]}"#)))
-        #expect(f.asText == "Allow bash: " + String(repeating: "x", count: 300) + "…")
+    @Test func nothingOfWhatIsAskedForIsCutAndAHiddenTailCannotBeAllowed() throws {
+        // A long command is shown whole (the part past a cut could be the part that matters).
+        let medium = String(repeating: "x", count: 1_500)
+        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_l","permission":"bash","patterns":["\#(medium)"]}"#)))
+        #expect(f.asText == "Allow bash: " + medium && f.questions[0].options == ["Allow once", "Reject"])
+        // Past what anyone reads on a card, only Reject is offered, and the text is still whole.
+        let huge = String(repeating: "y", count: 2_500)
+        let g = try #require(CampusForm.parsePermission(json(#"{"id":"per_h","permission":"bash","patterns":["\#(huge)"]}"#)))
+        #expect(g.asText == "Allow bash: " + huge && g.questions[0].options == ["Reject"] && g.permission?.value(for: "Allow once") == nil)
+    }
+
+    @Test func lineBreaksControlsAndBidiOverridesAreMadeVisible() throws {
+        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_c","permission":"bash","patterns":["echo ok\nrm -rf ~\u202e txt.exe\u200b"]}"#)))
+        #expect(f.asText == "Allow bash: echo ok⏎rm -rf ~<U+202E> txt.exe<U+200B>")
+        #expect(!f.asText.contains("\n") && !f.asText.unicodeScalars.contains("\u{202E}"))
     }
 
     @Test func theOpenRequestsListAPermissionFirstAndTheBridgesReadStaysQuestionsOnly() throws {

@@ -139,17 +139,37 @@ public struct CampusPermission: Equatable, Sendable {
     public static let defaultDecisions = [allowOnce, reject]
     /// Whether a standing grant ("always allow") is offered as a button. Off: a wrong click must not turn into a permission that outlasts the thread (README, decision P1).
     public static let offersStandingGrant = false
-    /// The longest the one-line form of the patterns goes (the text is Campus's, possibly a model's tool call).
-    public static let textLimit = 300
+    /// The most characters of patterns that Conn will let a person allow. The card always shows every pattern in full (a grant must be read whole, so nothing is cut), but past this
+    /// length it offers only Reject and the way to open the thread in Campus: nobody reads that much on a card, and a tail they did not read is not consent.
+    public static let approvableLimit = 2_000
+
+    /// A character that could hide or fake part of a command (a line break, a tab, another control, a bidi override or a zero-width mark) is shown as a visible token.
+    static func visible(_ s: String) -> String {
+        var out = ""
+        for u in s.unicodeScalars {
+            switch u.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                switch u {
+                case "\n", "\r", "\u{2028}", "\u{2029}": out += "⏎"
+                case "\t": out += "⇥"
+                default: out += "<U+" + String(format: "%04X", u.value) + ">"
+                }
+            default: out.unicodeScalars.append(u)
+            }
+        }
+        return out
+    }
+
+    /// Too much to read on a card: only Reject is offered.
+    public var tooLongToApprove: Bool { patterns.joined(separator: ", ").count > Self.approvableLimit }
 
     /// The wire value of the choice the button of that label stands for.
     public func value(for label: String) -> String? { decisions.first { $0.label == label }?.value }
 
     /// `Allow bash: curl https://example.test`: the one line the row, the card and the page's record show.
     public var question: String {
-        let joined = patterns.joined(separator: ", ")
-        let what = joined.isEmpty ? "" : ": " + (joined.count > Self.textLimit ? String(joined.prefix(Self.textLimit)) + "…" : joined)
-        return "Allow \(name)\(what)"
+        let joined = Self.visible(patterns.joined(separator: ", "))
+        return "Allow \(Self.visible(name))" + (joined.isEmpty ? "" : ": " + joined)
     }
 
     /// The words on a button for a reply value (`once` is "Allow once").
@@ -237,7 +257,9 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
         var patterns = p["patterns"].array.compactMap(\.string).filter { !$0.isEmpty }
         if patterns.isEmpty, let one = p.first("pattern", "path", "command", "description").string, !one.isEmpty { patterns = [one] }
         guard !name.isEmpty || !patterns.isEmpty else { return nil }
-        let perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p))
+        var perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p))
+        // Too long to read on a card: nothing that grants is offered (what is asked is still shown in full).
+        if perm.tooLongToApprove { perm.decisions = [CampusPermission.reject] }
         return CampusForm(id: id, questions: [Question(text: perm.question, options: perm.decisions.map(\.label))], permission: perm)
     }
 
