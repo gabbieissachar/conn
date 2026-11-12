@@ -62,6 +62,7 @@ PINS_SCRIPT = HERE / "pins.js"
 PICKER_SCRIPT = HERE / "picker.js"
 SENDONCE_SCRIPT = HERE / "sendonce.js"
 UNDOSEND_SCRIPT = HERE / "undosend.js"
+ASKCARDS_SCRIPT = HERE / "askcards.js"
 ATTACH_SCRIPT = HERE / "attach.js"
 COMMENTKEY_SCRIPT = HERE / "commentkey.js"
 SELECTCOPY_SCRIPT = HERE / "selectcopy.js"
@@ -3145,6 +3146,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     page = page.replace("/*__ASKS__*/", ASKS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SENDONCE__*/", SENDONCE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__UNDOSEND__*/", UNDOSEND_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__ASKCARDS__*/", ASKCARDS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ATTACH__*/", ATTACH_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__COMMENTKEY__*/", COMMENTKEY_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SELECTCOPY__*/", SELECTCOPY_SCRIPT.read_text(encoding="utf-8"))

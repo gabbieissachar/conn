@@ -42,6 +42,14 @@
 //                                                   where the Tasks page is served from the address asked (the board's flag, and on the TLS
 //                                                   address its tailnet flag), for the reader page's Tasks link; boards maps a conversation
 //                                                   to the board that reads it, from the boards already read
+//   GET  /api/transcript-reader/permissions[?session=<id>][&rev=<n>&wait=<ms>]   Claude Code's permission asks (permissions.js; README, "Permission asks from Claude")
+//                                                   for one session or all: the open ask(s) and the newest records, with the revision; with rev and wait it answers when
+//                                                   something changed after that revision (or after the wait). Reading it is what tells the server a page is open and
+//                                                   looking. 404 unless the reader is started with PMOS_READER_PERMISSIONS=1
+//   POST /api/transcript-reader/permission-answer   { id, shown, decision: "allow" | "deny" }: answers the ask the hook of that Claude run is holding; loopback only,
+//                                                   refused when what was shown is not the live ask, when the hook is no longer waiting or when Herdr no longer reports the pane at a prompt
+//   POST /api/transcript-reader/permission-ask      the hook's own route (hooks/permission-hook.py), not a page's: loopback only, its own key in a header (not the page token),
+//                                                   and refused when the request carries an Origin or Fetch-Metadata header. Holds the call until an answer or a limit
 //   GET  /api/transcript-reader/open-asks           the conversations that ask you something, one for each live Herdr pane, newest ask
 //                                                   first (README, "The open-asks route"); read from the glance feed and Herdr, parses nothing
 //   GET  /api/transcript-reader/events?reader=<stamp>&sheet=<stamp>&wait=<ms>
@@ -200,6 +208,8 @@ const pinstore = require('./pinstore');
 const workerLib = require('./worker');
 const copySyncLib = require('./copysync');
 const boardLib = require('./board');
+const permissionsLib = require('./permissions');
+const permLogLib = require('./permlog');
 const { otherClaudeHomes, runningClaudeSessions } = require('./claude-homes');
 const { childEnv, defaultRunner, SESSION_NAME_RE } = require('../herdr-organizer/adapter');
 
@@ -462,6 +472,8 @@ function create({
   starsFile = pinstore.defaultStarsFile(env),
   sheetFlagsFile = pinstore.defaultSheetFlagsFile(env),
   hiddenFile = pinstore.defaultHiddenFile(env),
+  permissionsFile = permissionsLib.defaultFile(env),
+  permissionsHookFile = permissionsLib.defaultHookFile(env),
   // Where an HTML file may be shown from, as in build_prototype.resolve_mention: the home folder and the temp folders.
   homeDir = os.homedir(), tempRoots = ['/tmp', os.tmpdir()],
   // The session ids sendPrompt accepts, when not the reading list's: drain.js sends to the
@@ -485,6 +497,8 @@ function create({
   mdReadMs = MD_READ_MS,
   // The Tasks board's data routes (board.js): true or an options object turns them on (the default follows PMOS_READER_BOARD=1).
   board: boardOption,
+  // Claude's permission asks answered from the page (permissions.js): true or an options object turns it on (the default follows PMOS_READER_PERMISSIONS=1).
+  permissions: permissionsOption,
 } = {}) {
   const projectsDir = projectsOption || path.join(os.homedir(), '.claude', 'projects');
   const claudeSessionsDir = claudeSessionsOption || path.join(os.homedir(), '.claude', 'sessions');
@@ -533,6 +547,23 @@ function create({
   const deltas = deltaStore.create();
   // A reader that runs for real (watch: server.js turns it on) remembers each board on disk and reads them all once at start (board.js says why); a test's does not.
   const board = boardLib.create({ root, env, now, pythonBin, persistDir: watch ? boardLib.boardCacheDir(env) : null, warm: watch, ...(boardOption && typeof boardOption === 'object' ? boardOption : {}), ...(boardOption ? { enabled: true } : {}) });
+  // Claude Code's permission asks, answered from the page. The hook (hooks/permission-hook.py) posts an ask and waits; the page shows it and answers it.
+  // Off unless PMOS_READER_PERMISSIONS=1, and then only on the laptop's own page. Herdr is asked afresh for the pane at each answer.
+  const permLog = permLogLib.create();
+  const permissionsOn = permissionsOption === true || (permissionsOption && typeof permissionsOption === 'object') || env.PMOS_READER_PERMISSIONS === '1';
+  const permissions = permissionsLib.create({
+    now, enabled: Boolean(permissionsOn), listed: () => listed(),
+    file: permissionsFile, hookFile: permissionsHookFile,
+    denyInterrupts: env.PMOS_READER_PERMISSIONS_DENY_CONTINUES !== '1',
+    paneStatus: async (sessionId, { fresh = false } = {}) => {
+      const sessions = await scan(fresh ? { fresh: true } : {});
+      const matches = sessions.flatMap((session) => session.panes.filter((pane) => pane.session_id === sessionId));
+      return matches.length === 1 ? matches[0].status : null;
+    },
+    // Whether the session log already holds this tool call's result (permlog.js): the log is found by the session id, never by a path the hook sent.
+    logState: async (record) => permLog.state(claudeLogPath(record.session_id), record.tool, record.input),
+    ...(permissionsOption && typeof permissionsOption === 'object' ? permissionsOption : {}),
+  });
   // The Tasks board on the phone's TLS address: its own flag, off by default (PMOS_READER_BOARD_TAILNET=1 or board.tailnet). Only its page and its read routes go
   // there, behind the same passcode, token, Host and Origin checks as every page of the reader; its writes (mark, answer, worker switch, send) stay loopback-only.
   const boardTailnet = Boolean(board.enabled && httpsLane && ((boardOption && typeof boardOption === 'object' && boardOption.tailnet) || env.PMOS_READER_BOARD_TAILNET === '1'));
@@ -1111,6 +1142,7 @@ function create({
   // Ends what runs for the server: the waiting pages, the watching and the worker.
   function close() {
     for (const waiter of [...waiters]) finishWaiter(waiter);
+    permissions.close();
     stopWatching();
     if (readerWorker) readerWorker.stop();
   }
@@ -1180,6 +1212,7 @@ function create({
         readable: focused.session_id ? Boolean(logPath(focused.session_id)) : false,
       },
       panes,
+      ...(permissions.enabled ? { permissions: { rev: permissions.rev(), open: permissions.open() } } : {}),
       tabs: unlistedPanes(sessions, ids, (scanned && scanned.sessions === sessions && scanned.rollouts) || rolloutsOnce()),
       build: buildInfo(),
     };
@@ -1795,6 +1828,29 @@ function create({
     });
   }
 
+  // The hook's call. It is the one route that is not a page's: Claude Code runs a command that posts the ask here and holds the call until an
+  // answer (permissions.js says what is taken and what is not). A web page cannot make this request: it needs a key only the hook's file holds, a
+  // Host naming loopback, and no Origin or Fetch-Metadata header (every browser fetch carries at least one of them). The key opens nothing else.
+  async function permissionAsk(req, res, listener) {
+    const refuse = (status, code, message) => fail(res, status, code, message);
+    if (!permissions.enabled) { refuse(404, 'not_found', 'Not found.'); return; }
+    if (listener !== 'loopback' || guards.has(req)) { refuse(403, 'refused', 'Not served here.'); return; }
+    if (req.method !== 'POST') { refuse(405, 'not_allowed', 'POST only.'); return; }
+    const host = String(req.headers.host || '').toLowerCase();
+    if (!/^(?:localhost|127\.0\.0\.1|\[::1\]):\d{1,5}$/.test(host)) { refuse(403, 'refused', 'Host not allowed for this endpoint.'); return; }
+    if (req.headers.origin !== undefined || Object.keys(req.headers).some((name) => name.startsWith('sec-fetch-'))) { refuse(403, 'refused', 'Not for a page.'); return; }
+    if (String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json') { refuse(415, 'refused', 'JSON body required.'); return; }
+    if (!permissions.hookKeyMatches(req.headers['x-transcript-reader-hook'])) { refuse(403, 'refused', 'Missing or invalid key.'); return; }
+    let payload;
+    try { payload = await readJsonBody(req, permissionsLib.MAX_SHOWN_BYTES * 2 + 8192); } catch (error) {
+      if (error instanceof RequestError) { refuse(error.status, error.code, error.message); return; }
+      throw error;
+    }
+    const answer = await permissions.ask(payload, { onClose: (fn) => res.on('close', () => { if (!res.writableEnded) fn(); }) });
+    if (res.destroyed || res.writableEnded) return;
+    send(res, 200, { status: 'ok', ...answer });
+  }
+
   async function dispatch(req, res, pathname, query) {
     const verdict = guardFor(req).check(req);
     if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
@@ -1826,6 +1882,33 @@ function create({
       // Where the Tasks page is served from this address, the reader page shows its Tasks link (and which board each conversation belongs to, from the boards already read).
       const boardHere = board.enabled && (!guards.has(req) || (boardTailnet && guards.get(req) === httpsLane.guard));
       send(res, 200, { status: 'ok', ...(await state(query.get('follow') === '1', query.get('boot') === '1')), ...(boardHere ? { board: { page: BOARD_PAGE, boards: board.readerBoards(), write: { marks: !guards.has(req) && Boolean(board.write.marks) } } } : {}) });
+      return;
+    }
+    if (pathname === API + 'permissions' && req.method === 'GET') {
+      if (!permissions.enabled) { fail(res, 404, 'not_found', 'Not found.'); return; }
+      seen();
+      const session = query.get('session');
+      if (session !== null && !SESSION_ID_RE.test(session)) { fail(res, 400, 'bad_request', 'Invalid session id.'); return; }
+      const have = Number(query.get('rev'));
+      const wait = Math.min(Math.max(Number(query.get('wait')) || 0, 0), MAX_WAIT_MS);
+      permissions.list(session, { touch: true });
+      if (Number.isFinite(have) && wait > 0) {
+        const aborted = new Promise((resolve) => res.on('close', resolve));
+        await Promise.race([permissions.wait(have, wait), aborted]);
+        if (res.destroyed) return;
+      }
+      send(res, 200, { status: 'ok', ...permissions.list(session, { touch: true }), write: !guards.has(req) });
+      return;
+    }
+    if (pathname === API + 'permission-answer' && req.method === 'POST') {
+      if (!permissions.enabled) { fail(res, 404, 'not_found', 'Not found.'); return; }
+      if (guards.has(req)) { fail(res, 403, 'not_on_the_phone', 'Permission asks are answered on the laptop only.'); return; }
+      const body = await readJsonBody(req);
+      for (const key of Object.keys(body)) if (!['id', 'shown', 'decision'].includes(key)) throw new RequestError('Unknown field.');
+      try { send(res, 200, { status: 'ok', ask: await permissions.answer(body) }); } catch (error) {
+        if (error instanceof permissionsLib.PermissionError) { fail(res, error.status, error.code, error.message); return; }
+        throw error;
+      }
       return;
     }
     // The open asks of the live panes, for a client that lists them: { generated_at, as_of, asks: [{ pane_id, herdr, session, message, lines, at, tags, older }] }.
@@ -1993,6 +2076,8 @@ function create({
     // only with boardTailnet, and never on the plain tailnet one.
     const boardPage = board.enabled && (url.pathname === BOARD_PAGE || url.pathname === BOARD_PAGE + 'index.html');
     if (boardPage && listener === 'loopback') { serveBoardPage(req, res); return true; }
+    // The Claude hook's route (hooks/permission-hook.py): a command, not a page, so it carries its own key instead of the page token. Loopback only.
+    if (url.pathname === API + 'permission-ask') { permissionAsk(req, res, listener); return true; }
     const page = insideOut(req, url);
     const viewing = !page.inside && url.pathname.startsWith(HTML_ROUTE);
     if (listener === 'tailnet' || listener === 'tailnet-https') {
@@ -2020,7 +2105,7 @@ function create({
     return true;
   }
 
-  return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane };
+  return { handle, guard, scan, sendPrompt, close, tailnet: lane, tailnetHttps: httpsLane, permissions, publishHook: (port) => permissions.publishHook(port) };
 }
 
 module.exports = { create, otherClaudeHomes, checkText, copyId, namesReaderOut, sniffImage, RequestError, API, TOKEN_HEADER, TOKEN_META, COPY_HEADER, PHOTO_LIMITS: { MAX_PHOTOS, MAX_PHOTO_BYTES, MAX_PHOTOS_BYTES } };

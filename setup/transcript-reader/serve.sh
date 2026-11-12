@@ -32,8 +32,8 @@
 #   lab reader on a spare port never inherits or changes the live reader's). A later start or restart with no flags comes
 #   back with the same switches, so a restart by anyone, or by reader.py, never drops the Tasks board or the phone's address.
 #   What is kept: --tailnet, --tailnet-https and --https-port (PMOS_READER_TAILNET, _TAILNET_HTTPS, _HTTPS_PORT) and the
-#   switches PMOS_READER_BOARD, _BOARD_SEND, _BOARD_MARKS, _BOARD_ANSWER, _BOARD_REVIEW, _BOARD_TAILNET, _FLEET_TIMELINE and
-#   _STORE_RECORDER (a path). Anything else in the environment (folders, caches, the passcode file) is not kept.
+#   switches PMOS_READER_BOARD, _BOARD_SEND, _BOARD_MARKS, _BOARD_ANSWER, _BOARD_REVIEW, _BOARD_TAILNET, _FLEET_TIMELINE, _PERMISSIONS (Claude's permission asks answered from the page, README) and
+#   _PERMISSIONS_DENY_CONTINUES, and _STORE_RECORDER (a path). Anything else in the environment (folders, caches, the passcode file) is not kept.
 #   Precedence, highest first: a flag, a set environment variable, the kept file, off. An explicit off: --no-tailnet,
 #   --no-tailnet-https, or the variable set to 0 (PMOS_READER_BOARD_SEND=0 serve.sh restart; for the recorder: off).
 #   --fresh ignores the kept file for this start (flags and environment only); that start is then what is kept.
@@ -88,7 +88,7 @@ source "$REPO_ROOT/setup/tailnet-lib.sh"
 tailnet_served() { tailnet_listening "$(listener)" "$PORT"; }
 
 # ---- Kept settings (see the header) ----
-BOOL_KEYS=(PMOS_READER_BOARD PMOS_READER_BOARD_SEND PMOS_READER_BOARD_MARKS PMOS_READER_BOARD_ANSWER PMOS_READER_BOARD_REVIEW PMOS_READER_BOARD_TAILNET PMOS_READER_FLEET_TIMELINE)
+BOOL_KEYS=(PMOS_READER_BOARD PMOS_READER_BOARD_SEND PMOS_READER_BOARD_MARKS PMOS_READER_BOARD_ANSWER PMOS_READER_BOARD_REVIEW PMOS_READER_BOARD_TAILNET PMOS_READER_FLEET_TIMELINE PMOS_READER_PERMISSIONS PMOS_READER_PERMISSIONS_DENY_CONTINUES)
 SETTINGS_FILE="${PMOS_READER_SETTINGS_FILE:-$HERE/out/serve-settings-$PORT.conf}"
 ALL_KEYS=("${BOOL_KEYS[@]}" PMOS_READER_STORE_RECORDER PMOS_READER_TAILNET PMOS_READER_TAILNET_HTTPS PMOS_READER_HTTPS_PORT)
 

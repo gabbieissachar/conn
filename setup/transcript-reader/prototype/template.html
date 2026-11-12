@@ -687,6 +687,41 @@ __HEAD_HOSTED__
   .input.pending .hint { font-size: 12px; color: var(--muted); margin: 0 0 3px; }
   .input.pending .who > button.undo { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
   .input.pending .who > button:disabled { opacity: .5; }
+  /* A permission ask from a Claude session (DESIGN.md, "Claude permission asks in the reader"): the card where the session stopped, with all of what it asks,
+     and once answered the record of it among the turns. Open: the "needs you" yellow. Allowed: green. Denied: red edge. Anything else: plain. */
+  .ask-card { margin: 14px 0; border: 1px solid var(--ask-line); border-radius: 12px; background: var(--ask-wash); overflow: hidden; }
+  .ask-card.allowed { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: var(--ok-wash); }
+  .ask-card.denied { border-color: color-mix(in srgb, var(--open) 55%, transparent); background: var(--paper); }
+  .ask-card.elsewhere, .ask-card.expired, .ask-card.gone { border-color: var(--line); background: var(--wash); }
+  .ask-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 9px 12px 4px; }
+  .ask-head b { font-size: 15px; }
+  .ask-tag { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--ask); }
+  .ask-card.allowed .ask-tag { color: var(--ok); }
+  .ask-card.denied .ask-tag { color: var(--open); }
+  .ask-card.elsewhere .ask-tag, .ask-card.expired .ask-tag, .ask-card.gone .ask-tag { color: var(--muted); }
+  .ask-time { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ask-where { padding: 0 12px 4px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .ask-body { padding: 2px 12px 6px; }
+  .ask-field { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 2px 10px; padding: 3px 0; font-size: 14px; }
+  .ask-field.block { grid-template-columns: minmax(0, 1fr); }
+  .ask-key { font: 600 12px/1.6 var(--mono); color: var(--muted); }
+  .ask-val { min-width: 0; overflow-wrap: anywhere; }
+  .ask-val.mono { font: 13px/1.5 var(--mono); }
+  pre.ask-val { margin: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: 13px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
+  .ask-card.allowed pre.ask-val { background: var(--paper); }
+  .ask-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 6px 12px 10px; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+  .ask-foot .btn { padding: 5px 14px; font-size: 14px; font-weight: 600; }
+  .ask-foot .btn.allow { border-color: var(--ok); color: var(--ok); }
+  .ask-foot .btn.deny { border-color: var(--open); color: var(--open); }
+  .ask-foot .btn.undo { border-color: var(--you); background: var(--you); color: var(--paper); }
+  .ask-foot .btn:disabled { opacity: .5; cursor: default; }
+  .ask-foot .btn:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .ask-say { font-size: 13px; color: var(--muted); }
+  .ask-say.problem { color: var(--open); font-weight: 600; }
+  .ask-note { padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
+  .ask-card.settled .ask-head, .ask-card.settled .ask-body { opacity: .92; }
+  @media (hover: none) and (pointer: coarse) { .ask-foot .btn { min-height: 44px; padding: 6px 16px; } }
+  @media (max-width: 440px) { .ask-field { grid-template-columns: minmax(0, 1fr); } .ask-head, .ask-where, .ask-body, .ask-foot, .ask-note { padding-left: 10px; padding-right: 10px; } }
   .dock textarea:read-only { opacity: .6; }
   .dock-row button.undo { background: var(--paper); color: var(--you); min-width: 5.2em; font-variant-numeric: tabular-nums; }
   /* Photos for the message: the button that picks them (the same size as Add and Send, 44 px where the screen is touched), a thumbnail for
@@ -2052,7 +2087,7 @@ __HEAD_HOSTED__
     renderLive();
     // The controls above are drawn for every build; the turns below only when they changed (turnsUnchanged, in applyPayload).
     // (The task switches are part of what the turns were drawn from: a change of them always draws again, and this keeps the rule even if a caller forgets.)
-    if (keepTurns && held && held.sid === session.id && held.tasks === taskSignature()) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id), tasks: taskSignature() }; paintPins(); return; }
+    if (keepTurns && held && held.sid === session.id && held.tasks === taskSignature()) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id), tasks: taskSignature() }; paintPins(); paintAsks(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", session.placeholder ? "No transcript yet for this session." : "No turns in this session."), ...(session.placeholder ? [] : pendingNodes(session))); return; }
@@ -2084,6 +2119,7 @@ __HEAD_HOSTED__
     main.append(...pendingNodes(session));
     turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, sid), tasks: taskSignature() };
     paintPins();
+    paintAsks();
   }
   // ---------------------------------------------------------------- drawing the turns again only when they changed (DESIGN.md, 2026-11-05)
   // A build arrives every few seconds while the fleet works, and most builds change another conversation. Drawing the conversation on screen
@@ -3474,6 +3510,7 @@ __HEAD_HOSTED__
   }
 
 /*__UNDOSEND__*/
+/*__ASKCARDS__*/
 /*__ATTACH__*/
 /*__COMMENTKEY__*/
   // ---------------------------------------------------------------- replying to a reply
@@ -3755,7 +3792,7 @@ __HEAD_HOSTED__
     else if (link.panes === undefined) reason = "Connecting to the local server…";
     else if (session.kept) reason = "Its Herdr pane has closed, so Send is off.";
     else if (!pane) reason = "No live Herdr pane runs this session. Copy still works.";
-    else if (pane.status === "blocked") reason = `${pane.label} is at a permission prompt or question. Answer it in Herdr first.`;
+    else if (pane.status === "blocked") reason = askBlockedReason(pane.label, Boolean(openAskHere(session)));
     else if (!SENDABLE.has(pane.status)) reason = `Herdr cannot tell what ${pane.label} is doing (it may be suspended to a shell). Check the pane first.`;
     const command = dockTyped().startsWith("/");
     if (!reason && batch.length && command) reason = "A command goes on its own: send the batch first, or clear it.";
@@ -3975,6 +4012,143 @@ __HEAD_HOSTED__
   function keepQueued() {
     if (!HOSTED) return;
     keep("tr-queued", link.pending.filter(p => p.queue));
+  }
+  // ---------------------------------------------------------------- permission asks from Claude (askcards.js, permissions.js)
+  // A Claude session that is about to show its permission dialog tells the reader first (a hook in its settings, hooks/permission-hook.py), and the
+  // reader keeps the ask open until it is answered here or in the pane. The card shows all of what is asked where the session stopped; the answer is
+  // Allow once or Deny, held in the page for ASK_UNDO_SECONDS so Undo takes it back before anything is sent, and then sent as the one answer for that
+  // one ask: the server refuses it when what is on the card is not the live ask, when the agent moved on, or when the pane no longer waits.
+  // Once answered, the card stays among the turns as the record. Off unless the server says so (state.permissions); the laptop's own page answers, the phone only reads.
+  const perm = { on: false, rev: -1, asks: [], write: false, loop: false, ctl: null, errors: new Map(), sending: new Set() };
+  const askHold = makeSendHold({ now: () => Date.now() / 1000, after: (ms, fn) => setTimeout(fn, ms), cancel: handle => clearTimeout(handle) });
+  let askTimer = 0;
+  const pausePerm = ms => new Promise(resolve => setTimeout(resolve, ms));
+  // What the state poll says: the asks are on, and the revision. The list itself comes from the long wait below.
+  function permNote(p) {
+    if (!p) { if (perm.on) { perm.on = false; perm.asks = []; paintAsks(true); } return; }
+    perm.on = true;
+    if (!perm.loop && !document.hidden) permLoop();
+  }
+  async function permLoop() {
+    if (perm.loop || !perm.on || !live.served) return;
+    perm.loop = true;
+    let failures = 0;
+    try {
+      while (perm.on && !document.hidden) {
+        perm.ctl = new AbortController();
+        try {
+          const a = await live.permissions(perm.rev, perm.ctl.signal);
+          failures = 0;
+          const write = Boolean(a.write);
+          if (a.rev !== perm.rev || write !== perm.write) { perm.rev = a.rev; perm.write = write; perm.asks = a.asks || []; paintAsks(true); }
+        } catch (e) {
+          if (e && e.name === "AbortError") break;
+          if (e && e.status === 404) { perm.on = false; perm.asks = []; paintAsks(true); break; }
+          failures += 1;
+          await pausePerm(Math.min(30000, 1000 * 2 ** failures));
+        }
+      }
+    } finally { perm.loop = false; perm.ctl = null; }
+  }
+  // A page that is hidden stops asking (the server then lets the dialog in the pane be the way, after a short while), and asks again when shown.
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { if (perm.ctl) perm.ctl.abort(); } else if (perm.on) permLoop(); });
+  // The list again now, outside the wait: after an answer or a refusal, so the card shows what the server says.
+  async function refreshAsks() {
+    try { const a = await live.permissions(-1, null, 0); perm.rev = a.rev; perm.write = Boolean(a.write); perm.asks = a.asks || []; } catch (e) { /* the long wait brings it */ }
+    paintAsks(true);
+  }
+  const asksHere = session => perm.on && !EMBED && !HOSTED && session && !session.placeholder ? asksOf(perm.asks, session.ids || [session.id]) : [];
+  const openAskHere = session => asksHere(session).find(a => a.state === "open") || null;
+  function answerAsk(rec, decision) {
+    if (!perm.write || perm.sending.size || rec.state !== "open") return;
+    const job = async () => {
+      clearInterval(askTimer); askTimer = 0;
+      perm.sending.add(rec.id); perm.errors.delete(rec.id); paintAsks(true);
+      try { await live.permissionAnswer({ id: rec.id, shown: rec.digest, decision }); } catch (e) { perm.errors.set(rec.id, e.message); }
+      perm.sending.delete(rec.id);
+      await refreshAsks();
+    };
+    if (!askHold.begin(job, ASK_UNDO_SECONDS, { id: rec.id, decision })) return;
+    perm.errors.delete(rec.id);
+    askTimer = setInterval(paintAskHold, 250);
+    paintAsks(true);
+  }
+  function undoAsk() {
+    if (!askHold.undo()) return false;
+    clearInterval(askTimer); askTimer = 0;
+    paintAsks(true);
+    return true;
+  }
+  // The countdown alone, so a card with a long command is not drawn again four times a second.
+  function paintAskHold() {
+    const held = askHold.meta();
+    if (!held) { clearInterval(askTimer); askTimer = 0; return; }
+    document.querySelectorAll(`.ask-card[data-ask="${held.id}"] [data-ask-left]`).forEach(el => { el.textContent = `${held.decision === "allow" ? "Allowing" : "Denying"} in ${askHold.left()} s · nothing has been answered yet`; });
+    document.querySelectorAll(`.ask-card[data-ask="${held.id}"] .undo`).forEach(el => { el.textContent = `Undo ${askHold.left()}`; });
+  }
+  window.addEventListener("keydown", e => { if (e.key === "Escape" && !e.defaultPrevented && askHold.active()) { e.preventDefault(); undoAsk(); } });
+  function askCard(rec) {
+    const card = $("section", "ask-card " + rec.state + (rec.state === "open" ? "" : " settled"));
+    card.dataset.ask = rec.id; card.setAttribute("role", "group"); card.setAttribute("aria-label", `Permission ask: ${askTitle(rec.tool)}`);
+    const head = $("div", "ask-head");
+    head.append($("span", "ask-tag", rec.state === "open" ? "Needs you" : "Permission ask"), $("b", null, askTitle(rec.tool)), $("span", "ask-time", fmtTime(rec.at)));
+    card.append(head);
+    if (rec.cwd) card.append($("div", "ask-where", `In ${rec.cwd}`));
+    const body = $("div", "ask-body");
+    for (const f of askFields(rec.input)) {
+      const row = $("div", "ask-field" + (f.block ? " block" : "")), key = $("span", "ask-key", f.key);
+      row.append(key);
+      if (f.block) { const pre = $("pre", "ask-val", f.text); pre.tabIndex = 0; pre.setAttribute("aria-label", f.key); row.append(pre); } else row.append($("span", "ask-val" + (f.code ? " mono" : ""), f.text));
+      body.append(row);
+    }
+    card.append(body);
+    const foot = $("div", "ask-foot");
+    if (rec.state === "open") {
+      const held = askHold.meta(), mine = held && held.id === rec.id, sending = perm.sending.has(rec.id);
+      const problem = perm.errors.get(rec.id);
+      if (!perm.write) foot.append($("span", "ask-say", "Answer it on the laptop's own page, or in the pane. This page only shows it."));
+      else if (mine) {
+        const undo = $("button", "btn undo", `Undo ${askHold.left()}`); undo.type = "button"; undo.title = "Take the answer back before it is sent (Esc)";
+        undo.addEventListener("click", undoAsk);
+        const say = $("span", "ask-say"); say.setAttribute("data-ask-left", "");
+        say.textContent = `${held.decision === "allow" ? "Allowing" : "Denying"} in ${askHold.left()} s · nothing has been answered yet`;
+        foot.append(undo, say);
+      } else if (sending) foot.append($("span", "ask-say", "Sending the answer…"));
+      else {
+        const busy = Boolean(askHold.active() || perm.sending.size);
+        const allow = $("button", "btn allow", "Allow once"); allow.type = "button"; allow.disabled = busy;
+        allow.title = "Let Claude do exactly this, this one time (no standing permission)";
+        const deny = $("button", "btn deny", "Deny"); deny.type = "button"; deny.disabled = busy;
+        deny.title = "Refuse it and stop Claude's turn, as Esc does in the pane";
+        allow.addEventListener("click", () => answerAsk(rec, "allow")); deny.addEventListener("click", () => answerAsk(rec, "deny"));
+        foot.append(allow, deny);
+        if (problem) { const say = $("span", "ask-say problem", `Not answered: ${problem}`); say.setAttribute("role", "alert"); foot.append(say); }
+        else foot.append($("span", "ask-say", "This answer covers this one use only. Nothing is remembered."));
+      }
+    } else foot.append($("span", "ask-say", askOutcome(rec, fmtTime).say));
+    card.append(foot);
+    if (rec.suggestions && rec.suggestions.length && rec.state === "open") card.append($("div", "ask-note", `Claude also offers "don't ask again" (${rec.suggestions.join("; ")}). That choice is not offered here: answer in the pane for it.`));
+    return card;
+  }
+  // Draws the open ask(s) at the end of the conversation on screen, and each answered one after the turn it came in. The cards are redrawn alone: the turns are not.
+  function paintAsks(redock = false) {
+    const main = document.getElementById("main");
+    main.querySelectorAll(".ask-card").forEach(n => n.remove());
+    const session = state.view === "reader" ? data.sessions[state.session] : null;
+    const mine = asksHere(session);
+    if (mine.length && main.querySelector("#main > [id^='ex-'], #main > .foldrun, #main > .empty")) {
+      // An answered ask goes where it happened: after the whole turn it came in (its message and its reply), so before the next turn that is on screen.
+      // A turn inside a folded run counts as the run; none after it means the end, where the open ask is too (the records first, in the order they happened).
+      const topOf = i => { const el = document.getElementById("ex-" + i); return el ? el.closest("#main > *") : null; };
+      for (const rec of mine) {
+        const card = askCard(rec);
+        if (rec.state === "open") { main.append(card); continue; }
+        let next = null;
+        for (let j = askPlace(session.exchanges, rec.at) + 1; j < session.exchanges.length && !next; j++) next = topOf(j);
+        if (next) main.insertBefore(card, next); else main.append(card);
+      }
+    }
+    if (redock && state.view === "reader") renderDock();  // what Send says depends on whether an ask is open
   }
   // The faded message for each send of the session on screen: what it says and which buttons it has come from describeSend
   // (undosend.js), so the owner can see whether Undo is still possible.
@@ -5289,6 +5463,7 @@ __HEAD_HOSTED__
   // What the server answered about Herdr and the build, from the poll or from Sync.
   function takeState(s) {
     link.panes = s.panes || {}; link.focus = s.focus; link.build = s.build; link.tabs = s.tabs || [];
+    permNote(s.permissions);
     link.board = s.board && typeof s.board.page === "string" ? s.board : null;  // the Tasks page is served from this address: the server says so (and which board reads which conversation)
     link.syncedAt = Date.now() / 1000; link.syncFail = null;
     // Whether marks can be written from here changes what a leader's turns offer (the chip's menu, the "+ Task" pill): the first answer, or a restart that changed the flag, draws them again.

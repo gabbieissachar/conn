@@ -71,6 +71,8 @@ function start({ root, port = DEFAULT_PORT, tailnet = null, ...options }) {
     v4.once('error', reject);
     v4.listen(port, '127.0.0.1', () => {
       const bound = v4.address().port;
+      // Claude's permission hook finds this server by the file this writes (permissions.js); only a server that is really listening writes it.
+      api.publishHook(bound);
       const ready = (closeLoopback) => {
         const done = (extra) => resolve({ port: bound, tailnet: null, tailnetError: null, httpsError, ...extra, close: () => { api.close(); extra.close(); } });
         if (!tailnet) { done({ close: closeLoopback }); return; }

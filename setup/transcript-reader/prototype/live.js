@@ -77,6 +77,9 @@
     const imageOpen = id => call("image-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     // The text of a markdown file the page lists without it (a file in a leader's task folder that no conversation named): { text, name, size, mtime }.
     const mdOpen = id => call("md-open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    // Claude's permission asks (permissions.js): the list, answered at once or, with a revision and a wait, when something changed after it; and one answer.
+    const permissions = (rev, signal, wait = 25000) => call("permissions?rev=" + encodeURIComponent(rev) + (wait ? "&wait=" + wait : ""), signal ? { signal } : {});
+    const permissionAnswer = body => call("permission-answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     // The pinned messages the server keeps in its owner-only file (pins.js), and one change to them.
     const pinsList = () => call("pins");
     const pinsChange = change => call("pins", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
@@ -173,5 +176,5 @@
     }
     // A turn's task changed from the conversation: one reply mark of the Tasks board, filed by the server's board-mark route (Firstmate's fm-reply-mark.sh): { session: <the board>, task, turn, mark: "in" | "out" | "clear", source: "reader" }.
     const boardMark = body => call("board-mark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    return { served, state, sync, steps, boardMark, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, addTab, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
+    return { served, state, sync, steps, permissions, permissionAnswer, boardMark, pinsList, pinsChange, starsList, starsChange, flagsList, flagsChange, hiddenList, hiddenChange, addTab, rerender, page, delta, send, upload, changeList, htmlOpen, imageOpen, mdOpen, poll, waitForBuilds, pointer, clip };
   })();
