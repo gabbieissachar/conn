@@ -963,6 +963,7 @@ __HEAD_HOSTED__
   // page's shows this conversation's sheets only and links back to it, so a column or a window stays on the conversation it was opened on).
   const SHEET_PAGE = HOSTED || MODE === "live" ? "sheet.html" : "questionnaire.html";
 /*__PINS__*/
+/*__DRAFTSTORE__*/
 /*__PICKER__*/
 /*__ASKS__*/
 /*__MARKDOWN_IT__*/
@@ -3584,11 +3585,14 @@ __HEAD_HOSTED__
     document.querySelectorAll(".is-target-reply").forEach(el => el.classList.remove("is-target-reply"));
     if (link.target && link.target.card) link.target.card.classList.add("is-target-reply");
   }
-  // An unsent message is kept per session in this tab with its pointer and, during Edit, its
-  // place in the batch, so a reload for new code or a switch to another session loses neither.
+  // An unsent message is kept per conversation with its pointer and, during Edit, its place in the batch, so a reload, a switch to
+  // another conversation or a web view let go of (Conn's Watch off, which also drops the Reader column's) loses neither: draftstore.js
+  // holds it in localStorage, one entry per conversation, for 7 days. The page asks it for an entry each time and keeps no copy.
   // { text, sid: the session it was written in, target: { title, passage, pointer, bare }, editing }
-  const drafts = (() => { try { return JSON.parse(sessionStorage.getItem("tr-drafts") || "{}") || {}; } catch (e) { return {}; } })();
-  const draftOf = sid => typeof drafts[sid] === "string" ? { text: drafts[sid], sid } : drafts[sid] || null;
+  const unsent = makeDraftStore({ storage: localStorage, hosted: HOSTED });
+  unsent.migrate(sessionStorage);  // what an older page left in this tab's sessionStorage
+  unsent.prune();
+  const draftOf = sid => unsent.draft(sid);
   const keep = (key, value) => { try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* kept until the page reloads */ } };
   // Sessions this tab closed by hand, which a reload never lists again on its own (see the load code).
   const handClosed = (() => { try { return JSON.parse(sessionStorage.getItem("tr-closed") || "[]") || []; } catch (e) { return []; } })();
@@ -3596,11 +3600,10 @@ __HEAD_HOSTED__
     const session = dockSession(); if (!session) return;
     const text = dock("text").value, target = link.target && link.target.sid === session.id ? link.target : null;
     if (text.trim() || target) {
-      drafts[session.id] = { text, sid: (draftOf(session.id) || {}).sid || session.id,
+      unsent.putDraft(session.id, { text, sid: (draftOf(session.id) || {}).sid || session.id,
         target: target && { title: target.title, passage: target.passage, pointer: target.pointer(target.passage), bare: target.pointer("") },
-        editing: link.editing && link.editing.sid === session.id ? link.editing.index : null };
-    } else delete drafts[session.id];
-    keep("tr-drafts", drafts);
+        editing: link.editing && link.editing.sid === session.id ? link.editing.index : null });
+    } else unsent.dropDraft(session.id);
   }
   // A pointer written before the pane was cleared names a reply the newest session never saw.
   function carried(sid, from) {
@@ -3613,25 +3616,28 @@ __HEAD_HOSTED__
     pointer: p => withNote(carried(sid, from), p ? saved.pointer : saved.bare) });
   // After a /clear the conversation goes on under the pane's newest session, so the drafts and
   // batches written under its earlier ids move to that one.
+  // Storage is read for each earlier id, so this runs when the box comes to a conversation or its list of earlier ids grows, not on every redraw.
+  const adopted = new Map();
   function adopt(session) {
-    for (const id of session.ids || []) {
+    const ids = session.ids || [];
+    if (adopted.get(session.id) === ids.length) return;
+    adopted.set(session.id, ids.length);
+    for (const id of ids) {
       if (id === session.id) continue;
       photos.move(id, session.id);
-      if (batches[id]) { saveBatch(session.id, batches[id].map(item => ({ sid: id, ...item })).concat(batchOf(session.id))); saveBatch(id, []); }
-      if (drafts[id]) {
-        if (!draftOf(session.id)) drafts[session.id] = draftOf(id);
-        delete drafts[id]; keep("tr-drafts", drafts);
+      const older = batchOf(id);
+      if (older.length) { saveBatch(session.id, older.map(item => ({ sid: id, ...item })).concat(batchOf(session.id))); saveBatch(id, []); }
+      const draft = draftOf(id);
+      if (draft) {
+        if (!draftOf(session.id)) unsent.putDraft(session.id, draft);
+        unsent.dropDraft(id);
       }
     }
   }
-  // Comments waiting to go together, kept per session in this tab like drafts. Each keeps its
+  // Comments waiting to go together, kept per conversation like drafts. Each keeps its
   // pointer as written, with and without the passage, so Edit can put it back in the box.
-  const batches = (() => { try { return JSON.parse(sessionStorage.getItem("tr-batches") || "{}") || {}; } catch (e) { return {}; } })();
-  const batchOf = sid => batches[sid] || [];
-  function saveBatch(sid, items) {
-    if (items.length) batches[sid] = items; else delete batches[sid];
-    keep("tr-batches", batches);
-  }
+  const batchOf = sid => unsent.batch(sid);
+  const saveBatch = (sid, items) => unsent.putBatch(sid, items);
   const itemText = (item, sid) => withNote(carried(sid, item.sid), item.pointer) + item.typed;
   const sameBatchItem = (a, b) => a && b && a.sid === b.sid && a.title === b.title && a.passage === b.passage && a.typed === b.typed
     && a.pointer === b.pointer && a.bare === b.bare;
@@ -3956,7 +3962,7 @@ __HEAD_HOSTED__
     if (here && dock("text").value === sentBox) {
       dock("text").value = ""; link.editing = null; link.target = null; markTarget(); saveDraft(); growDock(); boxTaken = true;
     } else if (saved && saved.text === sentBox) {
-      delete drafts[sid]; keep("tr-drafts", drafts); boxTaken = true;
+      unsent.dropDraft(sid); boxTaken = true;
     }
     if (sentItems.length) saveBatch(sid, withoutSentItems(batchOf(sid), sentItems));
     return () => {
@@ -3965,7 +3971,7 @@ __HEAD_HOSTED__
       const now = dockSession();
       if (holds(now) && here) {
         if (!dock("text").value && !link.target) { dock("text").value = sentBox; link.target = target; link.editing = editing; markTarget(); saveDraft(); growDock(); return; }
-      } else if (!draftOf(sid) && saved) { drafts[sid] = saved; keep("tr-drafts", drafts); return; }
+      } else if (!draftOf(sid) && saved) { unsent.putDraft(sid, saved); return; }
       if (sentBox.trim()) saveBatch(sid, batchOf(sid).concat({ sid, title: "Message", passage: "", typed: sentBox, pointer: "", bare: "" }));
     };
   }
@@ -4201,7 +4207,7 @@ __HEAD_HOSTED__
     let where;
     if (!boxText.trim() && !pointed) {
       if (here) { dock("text").value = p.text; link.editing = null; saveDraft(); growDock(); }
-      else { drafts[sid] = { text: p.text, sid: (draft || {}).sid || sid, target: null, editing: null }; keep("tr-drafts", drafts); }
+      else unsent.putDraft(sid, { text: p.text, sid: (draft || {}).sid || sid, target: null, editing: null });
       where = "box";
     } else {
       saveBatch(sid, batchOf(sid).concat({ sid, title: "Message", passage: "", typed: p.text, pointer: "", bare: "" }));

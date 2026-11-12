@@ -59,6 +59,7 @@ TEMPLATE = HERE / "template.html"
 LIVE_SCRIPT = HERE / "live.js"
 HOSTED_SCRIPT = HERE / "hosted.js"
 PINS_SCRIPT = HERE / "pins.js"
+DRAFTSTORE_SCRIPT = HERE / "draftstore.js"
 PICKER_SCRIPT = HERE / "picker.js"
 SENDONCE_SCRIPT = HERE / "sendonce.js"
 UNDOSEND_SCRIPT = HERE / "undosend.js"
@@ -3133,7 +3134,7 @@ HOSTED_HEAD = ('<link rel="manifest" href="manifest.webmanifest">\n<link rel="ap
 def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, str]:
     """The page <template> makes with <data> (payload JSON) in its payload slot, and its template hash.
 
-    The shared live.js goes into the page's script, and pins.js, picker.js, undosend.js, attach.js, commentkey.js, the vendored markdown-it with markdown.js,
+    The shared live.js goes into the page's script, and pins.js, draftstore.js, picker.js, undosend.js, attach.js, commentkey.js, the vendored markdown-it with markdown.js,
     steps.js, find.js, tasktags.js, docfiles.js, address.js and sessionrefs.js into the reader page's (the answer sheet has no slot for them, and gets sendonce.js); mode "hosted" (the hosted copy's shell, sync.py) also pastes seal.js and hosted.js
     there, and the script reads the mode from __MODE__. Mode "live" (the lite page, out/live/index.html) pastes the same two: it loads one
     conversation at a time like the hosted shell and is the served page in every other way (README, "The lite page"). Mode "embed" (the embed page,
@@ -3142,6 +3143,7 @@ def fill_template(template: Path, data: str, mode: str = "local") -> tuple[str, 
     """
     page = template.read_text(encoding="utf-8").replace("/*__LIVE__*/", LIVE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PINS__*/", PINS_SCRIPT.read_text(encoding="utf-8"))
+    page = page.replace("/*__DRAFTSTORE__*/", DRAFTSTORE_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__PICKER__*/", PICKER_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__ASKS__*/", ASKS_SCRIPT.read_text(encoding="utf-8"))
     page = page.replace("/*__SENDONCE__*/", SENDONCE_SCRIPT.read_text(encoding="utf-8"))

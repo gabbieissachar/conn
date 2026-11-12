@@ -55,7 +55,7 @@ function click(name) {
     try { axi('click', '@' + line.match(/uid=(\S+)/)[1]); return; } catch (error) { if (attempt >= 4 || !/STALE_REF/.test(error.message)) throw error; }  // the page drew itself again between the two calls
   }
 }
-const DOCK = `const all = Object.values(JSON.parse(sessionStorage.getItem('tr-batches') || '{}')).flat();
+const DOCK = `const all = Object.keys(localStorage).filter((k) => /^tr-batch:/.test(k)).flatMap((k) => JSON.parse(localStorage.getItem(k)).items);
   return { ok: true, n: all.length, shown: !document.getElementById('dock-batch').hidden, clear: document.getElementById('dock-batch-clear').textContent, keep: !document.getElementById('dock-batch-keep').hidden };`;
 
 (async () => {
