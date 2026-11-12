@@ -36,12 +36,13 @@ def connect(db_path: Path, *, create: bool = True, readonly: bool = False) -> sq
     if not readonly:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = FULL")  # the store may hold the only copy of a session: a commit is on disk
-        conn.execute("PRAGMA secure_delete = ON")  # `forget` removes the text from the file, not only from the index
+        conn.execute("PRAGMA secure_delete = ON")  # `forget` removes the text from the file (it rebuilds the search index and vacuums)
         if schema.version_of(conn) == 0 and not conn.execute("SELECT name FROM sqlite_master WHERE name = 'meta'").fetchone():
             schema.create(conn)
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('created_at', ?)", (str(time.time()),))
         else:
             schema.migrate(conn)
+            schema.ensure_fts_settings(conn)
         for suffix in ("-wal", "-shm"):
             side = Path(str(db_path) + suffix)
             if side.exists():

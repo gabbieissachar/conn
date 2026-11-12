@@ -3,8 +3,9 @@
 W1 made the store an archive, so a person needs a way to take something out of it. Forgetting a session removes, in one transaction,
 its sources, events, turns, search rows, tool steps, links, every identity fact and binding that names it, its Send checks, the Herdr id a pane last reported for it, and its
 parity rows, and its sub-agents with it. It writes a tombstone (`forgotten`), so the next scan does not read the still-present log
-again (it is counted as skipped: forgotten). Then the file is rewritten (`secure_delete` is on, the WAL is truncated and the file is
-vacuumed) so the text is out of the file, not only out of the index.
+again (it is counted as skipped: forgotten). Then the search index is rebuilt from the remaining rows (so no token of the session is left
+in it), and the file is rewritten (`secure_delete` is on, the WAL is truncated and the file is vacuumed) so the text is out of the file,
+not only out of the index. FTS5's own `secure-delete` option is off: it corrupted the index (see `schema.ensure_fts_settings`).
 
 "Backups from that point on" (plan S1 check 5): the next snapshot is taken from this file, so it holds nothing of the session. Earlier
 snapshots already staged or uploaded still do; this code lists them (`older_snapshots`) and never deletes a file. Removing those is a
@@ -61,6 +62,7 @@ def forget(conn: sqlite3.Connection, session_id: str, note: str | None = None, c
         conn.execute(f"UPDATE identity_events SET after_session = NULL WHERE after_session IN ({marks})", ids)
         for forgotten_id in ids:
             conn.execute("INSERT OR REPLACE INTO forgotten(session_id, at, note) VALUES (?, ?, ?)", (forgotten_id, now, note))
+        conn.execute("INSERT INTO search(search) VALUES ('rebuild')")  # the index keeps a deleted row's tokens until it is rewritten
         older = [r[0] for r in conn.execute("SELECT snapshot FROM backups WHERE at <= ? ORDER BY at", (now,))]
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     if vacuum:

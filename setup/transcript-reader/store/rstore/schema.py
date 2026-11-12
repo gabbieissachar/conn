@@ -455,9 +455,31 @@ def create(conn: sqlite3.Connection) -> None:
     """A new store at the current version."""
     conn.executescript(TABLES_V1)
     conn.executescript(VIEWS_V1)
-    conn.execute("INSERT INTO search(search, rank) VALUES ('secure-delete', 1)")  # `forget` removes text from the index file too
+    # FTS5's `secure-delete` option stays off (its default): with it on, a re-derive that deletes and re-inserts a session's turns left
+    # stale index entries behind (`integrity_check`: checksum mismatch for table "search"). `forget` rebuilds the index instead.
     conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def ensure_fts_settings(conn: sqlite3.Connection) -> bool:
+    """Turn FTS5's `secure-delete` off on a store made before it was dropped, and rebuild the index once. True when it did.
+
+    SQLite 3.54.1 corrupts the `search` index when `secure-delete` is on and ingest deletes and re-inserts turns (a scratch replay of
+    the ingest on a copy of the real store broke the index in 2 forced re-derives with it on, and stayed clean for 6 with it off).
+    A store created by the first version of this code has the option on. Call on a writable connection, outside a transaction.
+    """
+    row = conn.execute("SELECT v FROM search_config WHERE k = 'secure-delete'").fetchone()
+    if row is None or int(row[0]) == 0:
+        return False
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("INSERT INTO search(search, rank) VALUES ('secure-delete', 0)")
+        conn.execute("INSERT INTO search(search) VALUES ('rebuild')")  # the index may already be damaged: make it match the content
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    return True
 
 
 # version -> function(conn) that brings a store from version-1 to version. Version 1 is `create`.

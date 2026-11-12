@@ -132,8 +132,8 @@ adds its own `SessionStart` hook (an outside-git change, needs the owner's go) o
 
 Removes a session and its sub-agents everywhere in one transaction (events, turns, search rows, tool steps, links, every fact and binding
 that names it, Send checks, parity rows, the id Herdr last reported for it), writes a tombstone so the next scan does not read the
-still-present log (nor a Codex child of it), then truncates the WAL and vacuums (`secure_delete` and FTS5's secure-delete are on, so the
-text is out of the file: a test searches the raw bytes). **Backups from that point on** are taken from this file and hold nothing of it;
+still-present log (nor a Codex child of it), then truncates the WAL and vacuums (it rebuilds the search index and `secure_delete` is on, so the
+text is out of the file: a test searches the raw bytes; FTS5's own secure-delete option is off, it corrupted the index). **Backups from that point on** are taken from this file and hold nothing of it;
 earlier snapshots still do, and the command lists them (it never deletes anything: move them aside).
 
 ## Backup (W6, W7)

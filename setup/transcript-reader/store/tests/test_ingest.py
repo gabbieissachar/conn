@@ -451,7 +451,7 @@ class Forget(StoreCase):
     def test_forget_removes_a_session_everywhere_and_it_is_never_taken_again(self):
         needle = "ZEBRA-UNIQUE-NEEDLE-4411"
         first = synth.claude_conversation(n_turns=2)
-        next(r for r in first if r["type"] == "user")["message"]["content"] = f"Remember {needle} for later"
+        next(r for r in first if r["type"] == "user")["message"]["content"] = f"Remember {needle} and wqzkrvtoken9917 for later"
         synth.write_jsonl(synth.claude_path(self.home, synth.sid(1)), first)
         synth.write_jsonl(synth.claude_path(self.home, synth.sid(2)), synth.claude_conversation(n_turns=2))
         parent = synth.sid(1)
@@ -461,8 +461,10 @@ class Forget(StoreCase):
         self.conn.execute("INSERT INTO send_checks(at, trigger, session_id, check_result) VALUES (1, 'send', ?, 'ok')", (parent,))
         self.conn.execute("INSERT INTO facts(herdr_session, life, pane_id, source, session_id, observed_at, valid_from) VALUES ('h', '1', 'w1:p1', 'pid_record', ?, 1, 1)", (parent,))
         self.assertTrue(self.conn.execute("SELECT 1 FROM search WHERE search MATCH 'zebra' AND session_id = ?", (parent,)).fetchone())
+        self.conn.execute("INSERT INTO search(search) VALUES ('optimize')")  # one merged segment, as in a long-lived store: a delete only adds a marker to it
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.assertIn(needle.encode(), (self.root / "reader-store.sqlite").read_bytes(), "the needle is in the file before the forget")
+        self.assertIn(b"rvtoken9917", (self.root / "reader-store.sqlite").read_bytes(), "its index token is in the file before the forget (the index stores a term without the first letters it shares with the term before it, so the test looks for its tail)")
         report = forget.forget(self.conn, parent, note="test")
         self.assertEqual(report["sessions"], 2, "a forgotten session takes its sub-agents with it")
         for table in ("sessions", "turns", "events", "sources", "facts", "send_checks"):
@@ -473,7 +475,9 @@ class Forget(StoreCase):
         self.assertTrue(self.one("SELECT 1 FROM forgotten WHERE session_id = ?", parent))
         # The text is out of the file, not only out of the index.
         raw = b"".join(p.read_bytes() for p in self.root.glob("reader-store.sqlite*"))
-        self.assertNotIn(needle.encode(), raw, "secure_delete, the FTS secure-delete option and the vacuum took it out of every file")
+        self.assertFalse(needle.encode() in raw, "secure_delete and the vacuum took it out of every file")
+        self.assertFalse(b"rvtoken9917" in raw, "the index rebuild took the token out of the search index")
+        self.assertEqual(self.conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         # Another scan does not bring it back, even though the log is still on disk.
         self.ing.scan()
         self.assertEqual(self.one("SELECT COUNT(*) FROM sessions WHERE session_id IN (?, 'agent-zz')", parent), 0)
@@ -516,6 +520,41 @@ class Forget(StoreCase):
         synth.write_jsonl(synth.claude_path(self.home, synth.sid(9)), synth.claude_conversation(n_turns=1))
         self.ing.scan()
         self.assertEqual(self.one("SELECT COUNT(*) FROM sessions"), 0)
+
+
+class SearchIndexIntegrity(StoreCase):
+    """FTS5's `secure-delete` option broke the search index on a re-derive (SQLite 3.54.1, real store): it stays off, and an old store is fixed on open."""
+
+    def fts_option(self, conn):
+        row = conn.execute("SELECT v FROM search_config WHERE k = 'secure-delete'").fetchone()
+        return int(row[0]) if row else 0
+
+    def test_a_new_store_has_the_fts_secure_delete_option_off(self):
+        self.assertEqual(self.fts_option(self.conn), 0)
+
+    def test_a_store_made_with_the_option_on_is_turned_off_and_rebuilt_on_open(self):
+        synth.write_jsonl(synth.claude_path(self.home, synth.sid(1)), synth.claude_conversation(n_turns=3))
+        self.ing.scan()
+        before = self.one("SELECT COUNT(*) FROM search")
+        self.assertGreater(before, 0)
+        self.conn.execute("INSERT INTO search(search, rank) VALUES ('secure-delete', 1)")  # what the first version of the code wrote
+        self.assertEqual(self.fts_option(self.conn), 1)
+        self.conn.close()
+        self.conn = db.connect(self.root / "reader-store.sqlite")
+        self.addCleanup(self.conn.close)
+        self.assertEqual(self.fts_option(self.conn), 0)
+        self.assertEqual(self.one("SELECT COUNT(*) FROM search"), before, "the rows are untouched")
+        self.assertEqual(self.conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertFalse(schema.ensure_fts_settings(self.conn), "a second call changes nothing")
+
+    def test_repeated_full_rederives_keep_the_index_whole(self):
+        for n in (1, 2, 3):
+            synth.write_jsonl(synth.claude_path(self.home, synth.sid(n)), synth.claude_conversation(n_turns=6))
+        self.ing.scan()
+        for i in range(4):
+            self.conn.execute("UPDATE sources SET rules = ?", (f"forced-{i}",))
+            self.ing.scan()
+            self.assertEqual(self.conn.execute("PRAGMA integrity_check").fetchone()[0], "ok", f"after re-derive {i + 1}")
 
 
 class Heartbeat(StoreCase):
