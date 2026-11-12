@@ -110,7 +110,9 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         let fromRequests = try #require(CampusForm.parseOpenRequests(requests).first)
         #expect(fromRequests.id == "per_demo0001" && fromRequests.isPermission && fromRequests.isOpen && fromRequests.permission?.name == "shell")
         #expect(fromRequests.asText == "Allow shell: ls -la /workspace/spaces/team/Demo_Team/files/ 2>/dev/null, cat /workspace/spaces/team/Demo_Team/AGENTS.md 2>/dev/null, head -60")
-        #expect(fromRequests.tag == "Permission · shell" && fromRequests.questions[0].options == ["Allow once", "Reject"])
+        #expect(fromRequests.tag == "Permission · shell")
+        // It comes from a tool call, so until that call's own command is read only Reject is on offer, and the card says why.
+        #expect(fromRequests.permission?.needsConfirmation == true && fromRequests.questions[0].options == ["Reject"] && fromRequests.permission?.notice.contains("only Reject") == true)
         // Campus's reason travels with it, as plain text: the typographic apostrophe is not printable ASCII, so it shows as a token, never silently.
         #expect(fromRequests.permission?.reasonShown.hasPrefix("This changes a file the team<U+2019>s Team Instance takes in as trusted") == true)
         let route = Data(#"{"data":[\#(Self.liveItem)]}"#.utf8)
@@ -119,6 +121,35 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(CampusForm.parseOpenForms(Data(#"{"data":[]}"#.utf8)).isEmpty && CampusForm.parseOpenRequests(Data(#"{"data":[]}"#.utf8)).isEmpty)
         // Its forms, when it has some, are in `data`.
         #expect(CampusForm.parseOpenForms(Data(#"{"data":[{"id":"frm_1","questions":[{"question":"Which week?","options":["A","B"]}]}]}"#.utf8)).map(\.id) == ["frm_1"])
+    }
+
+    /// `resources` is Campus's split of the command, not the command: here `ls -la x`, `cat y`, `head -60` stand for `ls -la x; cat y | head -60`, and a call could say `ls` in its
+    /// resources and run something else. The card shows and grants what the tool call itself says (found by `source.messageID` and `source.id`).
+    @Test func anAskFromAToolCallIsShownAndGrantedAgainstTheCallsOwnCommand() throws {
+        let ask = try #require(CampusForm.parsePermission(json(Self.liveItem)))
+        let msgs = { (id: String, tool: String, cmd: String) in Data(#"{"data":[{"id":"\#(id)","type":"assistant","content":[{"type":"tool","id":"\#(tool)","name":"shell","state":{"status":"running","input":{"command":"\#(cmd)"}}}]}]}"#.utf8) }
+        let real = CampusPermission.toolCommands(inMessages: msgs("msg_demo0001", "chatcmpl-tool-demo0001", "ls -la /workspace/demo; cat /workspace/demo/AGENTS.md | head -60"))!
+        let ok = ask.confirmed(calls: real)
+        #expect(ok.asText == "Allow shell: ls -la /workspace/demo; cat /workspace/demo/AGENTS.md | head -60" && ok.questions[0].options == ["Allow once", "Reject"] && ok.permission?.notice == "")
+        #expect(ok.permission?.value(for: "Allow once") == "once")
+        // The resources say `ls`; the call runs something else: the card shows what runs.
+        let swapped = ask.confirmed(calls: CampusPermission.toolCommands(inMessages: msgs("msg_demo0001", "chatcmpl-tool-demo0001", "rm -rf /workspace/demo"))!)
+        #expect(swapped.asText == "Allow shell: rm -rf /workspace/demo" && !swapped.asText.contains("ls -la"))
+        // Not found, another call, or another message: nothing more is offered.
+        for calls in [[], CampusPermission.toolCommands(inMessages: msgs("msg_demo0001", "chatcmpl-tool-other", "ls"))!, CampusPermission.toolCommands(inMessages: msgs("msg_other", "chatcmpl-tool-demo0001", "ls"))!] {
+            let f = ask.confirmed(calls: calls)
+            #expect(f == ask && f.questions[0].options == ["Reject"] && f.permission?.value(for: "Allow once") == nil)
+        }
+        // A command too long to read on a card keeps Reject only, shown whole; and the input is never the reader's clipped copy.
+        let huge = String(repeating: "a", count: CampusPermission.approvableLimit + 50)
+        let big = ask.confirmed(calls: CampusPermission.toolCommands(inMessages: msgs("msg_demo0001", "chatcmpl-tool-demo0001", huge))!)
+        #expect(big.asText == "Allow shell: " + huge && big.questions[0].options == ["Reject"] && big.permission?.notice.contains("Too long") == true)
+        // An empty `resources` falls through to opencode's `patterns`.
+        let fall = try #require(CampusForm.parsePermission(json(#"{"id":"per_f","action":"edit","resources":[],"patterns":["notes/b.md"]}"#)))
+        #expect(fall.asText == "Allow edit: notes/b.md")
+        // An ask that names no tool call (a file edit with its path) is read as before.
+        let edit = try #require(CampusForm.parsePermission(json(#"{"id":"per_e","action":"edit","resources":["notes/a.md"]}"#)))
+        #expect(edit.permission?.needsConfirmation == false && edit.questions[0].options == ["Allow once", "Reject"])
     }
 
     /// The messages of that thread (invented text, the live structure): the tool that waits on the permission is a `shell` part with `state.status: "running"`, `executed: false` and
@@ -221,13 +252,28 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
 @Suite("Campus permissions: the feed and the answer, on the stand-in") @MainActor struct CampusPermissionFeedTests {
     @Test func theLiveShapeReachesTheRowTheTranscriptAndTheWriteGate() async throws {
         let (s, _, world) = await liveStore()
-        world.askPermission("ses_fakeRates01", name: "shell", patterns: ["ls -la /tmp", "head -60"], announce: false)
-        // The stand-in lists it like the live service did: `/form` has `{data: []}`, `/requests` and `/permission` have the permission.
+        world.askPermission("ses_fakeRates01", name: "shell", patterns: ["ls -la /tmp", "head -60"], command: "ls -la /tmp | head -60", announce: false)
+        // The stand-in lists it like the live service did: `/form` has `{data: []}`, `/requests` and `/permission` have the permission, and the waiting tool call is in the messages.
+        await s.refresh()
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
+        let f = try #require(s.openForms["ses_fakeRates01"])
+        #expect(f.asText == "Allow shell: ls -la /tmp | head -60" && f.permission?.reasonShown.contains("approves each change") == true && f.questions[0].options == ["Allow once", "Reject"])
+        #expect(s.conversation("ses_fakeRates01")?.ask?.tag == "Permission · shell")
+    }
+
+    @Test func aToolCallThatCannotBeFoundLeavesOnlyRejectAndTheEventIsUpgradedOnceTheCommandIsRead() async throws {
+        let (s, _, world) = await liveStore()
+        world.askPermission("ses_fakeRates01", patterns: ["ls -la /tmp"], withTool: false, announce: false)
         await s.refresh()
         #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
-        let f = try #require(s.openForms["ses_fakeRates01"])
-        #expect(f.asText == "Allow shell: ls -la /tmp, head -60" && f.permission?.reasonShown.contains("approves each change") == true)
-        #expect(s.conversation("ses_fakeRates01")?.ask?.tag == "Permission · shell")
+        #expect(s.openForms["ses_fakeRates01"]?.questions[0].options == ["Reject"] && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == true)
+        // The same ask by event, with its call among the messages: shown with Reject only at once, then with the command it runs.
+        world.askPermission("ses_fakeDigest02", patterns: ["ls"], command: "ls -la /home", permissionID: "per_ev1", announce: false)
+        s.retain("ses_fakeDigest02")
+        #expect(await until { s.timeline("ses_fakeDigest02")?.loaded == true })
+        s.handle(CampusFrame(type: "permission.asked", sessionID: "ses_fakeDigest02", data: json(#"{"id":"per_ev1","sessionID":"ses_fakeDigest02","action":"shell","resources":["ls"],"source":{"type":"tool","messageID":"msg_ask_per_ev1","id":"chatcmpl-tool-per_ev1"}}"#)))
+        #expect(await until { s.openForms["ses_fakeDigest02"]?.asText == "Allow shell: ls -la /home" && s.openForms["ses_fakeDigest02"]?.questions[0].options == ["Allow once", "Reject"] })
+        #expect(s.timeline("ses_fakeDigest02")?.openForm?.asText == "Allow shell: ls -la /home" && s.timeline("ses_fakeDigest02")?.openForm?.questions[0].options == ["Allow once", "Reject"])
     }
 
     @Test func aThreadThatWaitsOnAPermissionNeedsYouWithTheAskOnItsRow() async throws {
@@ -236,7 +282,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         await s.refresh()
         let c = try #require(s.conversation("ses_fakeRates01"))
         #expect(c.needsYou && c.state == .blocked)
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
         let ask = try #require(s.conversation("ses_fakeRates01")?.ask)
         #expect(ask.text == "Allow shell: curl https://example.test" && ask.tag == "Permission · shell")
         // It counts everywhere a question counts: the asks list (sidebar, AGENTS header, Cmd+J, the menu bar), and the row's state, which a Watch column's header shows.
@@ -260,7 +306,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
         s.retain("ses_fakeRates01")
-        #expect(await until { s.timeline("ses_fakeRates01")?.openForm?.isPermission == true })
+        #expect(await until { (s.timeline("ses_fakeRates01")?.openForm?.isPermission == true && s.timeline("ses_fakeRates01")?.openForm?.permission?.needsConfirmation == false) })
         #expect(s.timeline("ses_fakeRates01")?.items.last?.kind == .form)
     }
 
@@ -272,7 +318,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         s.start()
         #expect(await until { world.subscriberCount == 1 })
         world.askPermission("ses_fakeRates01", announce: true)
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true && s.timeline("ses_fakeRates01")?.openForm != nil })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) && s.timeline("ses_fakeRates01")?.openForm != nil })
         let form = try #require(s.openForms["ses_fakeRates01"])
         let c = try #require(s.conversation("ses_fakeRates01"))
         s.pick(form, question: 0, option: "Allow once")
@@ -298,7 +344,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         s.start()
         #expect(await until { world.subscriberCount == 1 })
         world.askPermission("ses_fakeEmail05")
-        #expect(await until { s.openForms["ses_fakeEmail05"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeEmail05"]?.isPermission == true && s.openForms["ses_fakeEmail05"]?.permission?.needsConfirmation == false) })
         var form = try #require(s.openForms["ses_fakeEmail05"])
         s.pick(form, question: 0, option: "Allow once")
         #expect(s.answer(form, in: try #require(s.conversation("ses_fakeEmail05"))) == nil)
@@ -306,7 +352,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         let firstID = form.id
         #expect(await until { s.held == nil })
         world.askPermission("ses_fakeEmail05")
-        #expect(await until { s.openForms["ses_fakeEmail05"]?.isPermission == true && s.openForms["ses_fakeEmail05"]?.id != firstID })
+        #expect(await until { (s.openForms["ses_fakeEmail05"]?.isPermission == true && s.openForms["ses_fakeEmail05"]?.permission?.needsConfirmation == false) && s.openForms["ses_fakeEmail05"]?.id != firstID })
         #expect(s.conversation("ses_fakeEmail05")?.needsYou == true)
         form = try #require(s.openForms["ses_fakeEmail05"])
         s.pick(form, question: 0, option: "Reject")
@@ -322,7 +368,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         s.writesEnabled = true
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
         let form = try #require(s.openForms["ses_fakeRates01"])
         let c = try #require(s.conversation("ses_fakeRates01"))
         s.pick(form, question: 0, option: "Reject")
@@ -336,7 +382,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         let (s, _, world) = await liveStore()
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
         let form = try #require(s.openForms["ses_fakeRates01"])
         let c = try #require(s.conversation("ses_fakeRates01"))
         s.pick(form, question: 0, option: "Allow once")
@@ -351,7 +397,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         s.writesEnabled = true
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
         // A form whose button sends a value the stand-in does not know (what a wrong guess about Campus's values would look like).
         let perm = CampusPermission(name: "bash", patterns: ["curl https://example.test"], decisions: [.init(label: "Run it", value: "allow")])
         var form = try #require(s.openForms["ses_fakeRates01"])
@@ -370,7 +416,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         s.writesEnabled = true
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
-        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        #expect(await until { (s.openForms["ses_fakeRates01"]?.isPermission == true && s.openForms["ses_fakeRates01"]?.permission?.needsConfirmation == false) })
         let form = try #require(s.openForms["ses_fakeRates01"])
         let c = try #require(s.conversation("ses_fakeRates01"))
         s.pick(form, question: 0, option: "Always allow")
@@ -384,7 +430,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
         s.retain("ses_fakeRates01")
-        #expect(await until { s.timeline("ses_fakeRates01")?.openForm?.isPermission == true })
+        #expect(await until { (s.timeline("ses_fakeRates01")?.openForm?.isPermission == true && s.timeline("ses_fakeRates01")?.openForm?.permission?.needsConfirmation == false) })
         // Answered elsewhere: Campus no longer lists it and says the thread is working again; no event reached Conn.
         s.applyStatus("ses_fakeRates01", CampusStatus(run: .busy))
         let item = try #require(s.timeline("ses_fakeRates01")?.items.last { $0.kind == .form })
@@ -396,7 +442,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         world.askPermission("ses_fakeRates01", announce: false)
         await s.refresh()
         s.retain("ses_fakeRates01")
-        #expect(await until { s.timeline("ses_fakeRates01")?.openForm?.isPermission == true })
+        #expect(await until { (s.timeline("ses_fakeRates01")?.openForm?.isPermission == true && s.timeline("ses_fakeRates01")?.openForm?.permission?.needsConfirmation == false) })
         // Answered in Campus's own page with no event for it: the next list read is what tells Conn.
         world.answerPermissionElsewhere("ses_fakeRates01", announce: false)
         world.release("ses_fakeRates01")

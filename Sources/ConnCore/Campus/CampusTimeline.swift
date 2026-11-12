@@ -190,6 +190,11 @@ public struct CampusTimeline: Equatable, Sendable {
     @discardableResult
     public mutating func showRequest(_ form: CampusForm) -> Bool {
         if let n = items.firstIndex(where: { $0.form?.id == form.id }) {
+            // The same ask with its command now read (or not): the open item takes the newer one.
+            if items[n].form?.isOpen == true, items[n].form?.permission != form.permission || items[n].form?.questions != form.questions {
+                var f = form; f.status = .open; items[n].form = f
+                return true
+            }
             guard items[n].form?.status == .resolved else { return false }
             items[n].form?.status = .open
             return true

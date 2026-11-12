@@ -131,11 +131,75 @@ public struct CampusPermission: Equatable, Sendable {
     public var name: String
     /// The commands, paths or addresses it applies to, as Campus gave them.
     public var patterns: [String]
+    /// The choices the card offers right now: `held` unless something stops a grant (the command is not confirmed, or it is too long to read on a card), then Reject only.
     public var decisions: [Decision]
+    /// The choices the request itself allows (without a standing grant), kept back until `decisions` may offer them.
+    public var held: [Decision]
     /// Why Campus asks, in its words (`message`): "This changes a file the team's Team Instance takes in as trusted ...". Shown under the ask, never part of what is granted.
     public var reason: String
+    /// The tool call this ask holds up (`source: {type: "tool", messageID, id}`). `resources` is Campus's own split of that call's command into parts and is not what runs, so an ask
+    /// that comes from a tool call is granted only against the call itself: Conn reads the call (`state.input.command`) and shows that.
+    public var source: Source?
+    /// What the tool call will really run, read from the call itself (`command`), once Conn has found it.
+    public var command: String?
 
-    public init(name: String, patterns: [String] = [], decisions: [Decision] = CampusPermission.defaultDecisions, reason: String = "") { self.name = name; self.patterns = patterns; self.decisions = decisions; self.reason = reason }
+    public struct Source: Equatable, Sendable {
+        public var type: String
+        public var messageID: String?
+        public var toolID: String?
+        public init(type: String, messageID: String? = nil, toolID: String? = nil) { self.type = type; self.messageID = messageID; self.toolID = toolID }
+        public var isTool: Bool { type == "tool" }
+    }
+
+    public init(name: String, patterns: [String] = [], decisions: [Decision] = CampusPermission.defaultDecisions, reason: String = "", source: Source? = nil, command: String? = nil) {
+        self.name = name; self.patterns = patterns; self.decisions = decisions; self.held = decisions; self.reason = reason; self.source = source; self.command = command
+        refreshDecisions()
+    }
+
+    /// Whether this ask comes from a tool call whose real command Conn has not read: only Reject is offered until it has.
+    public var needsConfirmation: Bool { source?.isTool == true && command == nil }
+
+    mutating func refreshDecisions() { decisions = (needsConfirmation || tooLongToApprove) ? [Self.reject] : held }
+
+    /// The card's note while only Reject is offered, or "".
+    public var notice: String {
+        if needsConfirmation { return "Conn could not read the command this will run, so only Reject is offered. Open the thread in Campus to allow it." }
+        if tooLongToApprove { return "Too long to read on a card, so only Reject is offered. Open the thread in Campus to allow it." }
+        return ""
+    }
+
+    /// One tool call found in a thread's messages: what it will run (`state.input.command`, else its whole input as text).
+    public struct ToolCall: Equatable, Sendable {
+        public var messageID: String
+        public var toolID: String
+        public var command: String
+        public init(messageID: String, toolID: String, command: String) { self.messageID = messageID; self.toolID = toolID; self.command = command }
+    }
+
+    /// The tool calls of `GET .../message` (`{data: [{id, content: [{type: "tool", id, name, state: {input: {command}}}]}]}`) that have an input to show.
+    public static func toolCommands(inMessages data: Data) -> [ToolCall]? {
+        guard let root = CampusJSON.parse(data) else { return nil }
+        var out: [ToolCall] = []
+        for m in root["data"].array {
+            guard let mid = m["id"].string else { continue }
+            for part in m["content"].array where part["type"].string == "tool" {
+                guard let tid = part["id"].string else { continue }
+                // Never the reader's clipped copy of the input: a grant is read whole (the card's own length limit decides what may be allowed).
+                let input = CampusToolCall.inputValue(part)
+                let command = input["command"].string ?? input.string ?? (input.isNull ? "" : CampusJSONText.pretty(input))
+                if !command.isEmpty { out.append(ToolCall(messageID: mid, toolID: tid, command: command)) }
+            }
+        }
+        return out
+    }
+
+    /// The same ask with the command the tool call really runs: what the card then shows and what a grant covers.
+    func confirmed(command c: String) -> CampusPermission {
+        var p = self
+        p.command = c
+        p.refreshDecisions()
+        return p
+    }
 
     /// The most characters of Campus's reason the card shows (it explains the ask; what is granted is shown whole above it and never cut).
     public static let reasonLimit = 400
@@ -184,7 +248,8 @@ public struct CampusPermission: Equatable, Sendable {
 
     /// `Allow bash: curl https://example.test`: the one line the row, the card and the page's record show.
     public var question: String {
-        let joined = Self.visible(patterns.joined(separator: ", "))
+        // The call's own command when it has been read; otherwise Campus's list of resources.
+        let joined = Self.visible(command ?? patterns.joined(separator: ", "))
         return "Allow \(Self.visible(name))" + (joined.isEmpty ? "" : ": " + joined)
     }
 
@@ -271,13 +336,34 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
         guard let id = p.first("id", "permissionID", "permissionId", "requestID", "requestId").string, validID(id) else { return nil }
         let name = p.first("action", "permission", "type", "kind", "title", "name").string ?? ""
         // `resources` is Campus's (the command's parts, or the paths); `patterns` is opencode's. `save` is what an always-allow would keep, which Conn never offers.
-        var patterns = p.first("resources", "patterns").array.compactMap(\.string).filter { !$0.isEmpty }
+        // `resources` counts only when it holds at least one string; an empty or odd one falls through to `patterns`.
+        var patterns = p["resources"].array.compactMap(\.string).filter { !$0.isEmpty }
+        if patterns.isEmpty { patterns = p["patterns"].array.compactMap(\.string).filter { !$0.isEmpty } }
         if patterns.isEmpty, let one = p.first("pattern", "path", "command", "description").string, !one.isEmpty { patterns = [one] }
         guard !name.isEmpty || !patterns.isEmpty else { return nil }
-        var perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p), reason: p["message"].string ?? "")
-        // Too long to read on a card: nothing that grants is offered (what is asked is still shown in full).
-        if perm.tooLongToApprove { perm.decisions = [CampusPermission.reject] }
-        return CampusForm(id: id, questions: [Question(text: perm.question, options: perm.decisions.map(\.label))], permission: perm)
+        var source: CampusPermission.Source?
+        if let st = p["source"].object != nil ? p["source"]["type"].string : nil { source = .init(type: st, messageID: p["source"].first("messageID", "messageId").string, toolID: p["source"]["id"].string) }
+        // Too long to read on a card, or from a tool call whose command is not read yet: nothing that grants is offered (what is asked is still shown in full).
+        let perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p), reason: p["message"].string ?? "", source: source)
+        return CampusForm(permission: perm, id: id)
+    }
+
+    /// An ask built from its permission: the question line and the options are what the permission shows and offers.
+    init(permission perm: CampusPermission, id: String, status: Status = .open) {
+        self.init(id: id, questions: [Question(text: perm.question, options: perm.decisions.map(\.label))], status: status, permission: perm)
+    }
+
+    /// The ask against the command its tool call runs, when that call (`source.messageID` and `source.id`) is among `calls`; the ask as it was when it is not.
+    public func confirmed(calls: [CampusPermission.ToolCall]) -> CampusForm {
+        guard let p = permission, p.needsConfirmation, let src = p.source, let tool = src.toolID,
+              let call = calls.first(where: { $0.toolID == tool && (src.messageID == nil || $0.messageID == src.messageID) }) else { return self }
+        return confirmed(command: call.command)
+    }
+
+    /// This permission ask against the command its tool call really runs.
+    public func confirmed(command: String) -> CampusForm {
+        guard let p = permission else { return self }
+        return CampusForm(permission: p.confirmed(command: command), id: id, status: status)
     }
 
     public static func validID(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil }

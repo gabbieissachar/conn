@@ -51,11 +51,11 @@ import FakeCampusKit
         let t0 = Date()
         _ = s.send("one", to: c) { _ in }
         _ = s.send("two", to: c) { _ in }
-        #expect(await until(8) { world.writes().count == 1 })
-        let first = Date().timeIntervalSince(t0)
         #expect(await until(8) { world.writes().count == 2 })
-        let second = Date().timeIntervalSince(t0)
-        #expect(first >= 0.55 && second - first >= 0.5, "first at \(first) s, second \(second - first) s after it")
+        // The times the stand-in got the two writes, not the times this polling loop noticed them: a loaded machine can delay the loop by far more than the gap being measured.
+        let times = world.writeTimes()
+        let first = times[0].timeIntervalSince(t0), gap = times[1].timeIntervalSince(times[0])
+        #expect(first >= 0.55 && gap >= 0.5, "first at \(first) s, second \(gap) s after it")
     }
 
     @Test func nowSkipsTheWaitOfTheOneAtTheFrontAndNotTheNextOnesWindow() async throws {

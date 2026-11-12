@@ -139,12 +139,21 @@ public struct CampusClient {
     public func openRequests(of c: CampusConversation) async -> CampusFetch<[CampusForm]> {
         let base = Self.conversationPath(c)
         let first = await fetch(CampusRequest(path: base + "/requests")) { CampusForm.parseOpenRequests($0) }
-        if case .ok(let list) = first, !list.isEmpty { return first }
+        if case .ok(let list) = first, !list.isEmpty { return await confirmed(first, list, in: c) }
         let form = await fetch(CampusRequest(path: base + "/form")) { CampusForm.parseOpenRequests($0) }
-        if case .ok(let list) = form, !list.isEmpty { return form }
-        if case .ok(let more) = await fetch(CampusRequest(path: base + "/permission"), { CampusForm.parseOpenRequests($0, permissionsOnly: true) }), !more.isEmpty { return .ok(more) }
+        if case .ok(let list) = form, !list.isEmpty { return await confirmed(form, list, in: c) }
+        if case .ok(let more) = await fetch(CampusRequest(path: base + "/permission"), { CampusForm.parseOpenRequests($0, permissionsOnly: true) }), !more.isEmpty { return await confirmed(.ok(more), more, in: c) }
         if case .ok = first { return first }
         return form
+    }
+
+    /// A permission ask that comes from a tool call is shown and granted against the call itself. Campus's `resources` are its own split of the command into parts (`ls -la x`, `cat y`,
+    /// `head -60` for `ls -la x; cat y | head -60`), which is not what runs, so Conn finds the call (`source.messageID`, `source.id`) in the thread's recent messages and takes its
+    /// `state.input.command`. A call it cannot find leaves the ask with Reject only.
+    public func confirmed(_ fetched: CampusFetch<[CampusForm]>, _ list: [CampusForm], in c: CampusConversation) async -> CampusFetch<[CampusForm]> {
+        guard list.contains(where: { $0.permission?.needsConfirmation == true }) else { return fetched }
+        guard case .ok(let calls) = await fetch(CampusRequest(path: Self.conversationPath(c) + "/message?limit=50&order=desc"), { CampusPermission.toolCommands(inMessages: $0) }) else { return fetched }
+        return .ok(list.map { $0.confirmed(calls: calls) })
     }
 
     public func messages(of c: CampusConversation) async -> CampusFetch<[CampusItem]> {

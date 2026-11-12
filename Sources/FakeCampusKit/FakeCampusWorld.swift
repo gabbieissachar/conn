@@ -93,6 +93,7 @@ public final class FakeCampusWorld: @unchecked Sendable {
     private var subscribers: [Int: AsyncStream<String>.Continuation] = [:]
     private var nextSub = 0
     public private(set) var log: [String] = []
+    private var logTimes: [Date] = []
     private var heartbeat: Timer?
 
     public init(authMode: AuthMode = .none) {
@@ -243,7 +244,8 @@ public final class FakeCampusWorld: @unchecked Sendable {
             let a: [String: Any] = ["id": "msg_a\(UUID().uuidString.prefix(6))", "type": "assistant", "content": parts, "tokens": ["input": 3400, "output": 212], "finish": "stop"]
             if mode == .permission {
                 let perm = Self.permissionObject(id: "per_demo\(gen)", session: id, action: "shell", resources: ["curl https://example.test"])
-                self.mutate(id) { $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm] }
+                let msg = Self.waitingToolMessage(for: perm, command: "curl https://example.test")
+                self.mutate(id) { $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm]; $0.messages.append(msg) }
                 self.emit("session.step.ended", id, ["tokens": ["input": 3400, "output": 212]])
                 self.emit("permission.asked", id, perm)
                 return
@@ -268,8 +270,10 @@ public final class FakeCampusWorld: @unchecked Sendable {
 
     // MARK: the router
 
-    public func record(_ line: String) { lock.lock(); log.append(line); lock.unlock() }
+    public func record(_ line: String) { lock.lock(); log.append(line); logTimes.append(Date()); lock.unlock() }
     public func writes() -> [String] { lock.lock(); defer { lock.unlock() }; return log }
+    /// When each line of `writes()` arrived at the stand-in: a timing check reads these, not the moment a polling test happened to notice the line.
+    public func writeTimes() -> [Date] { lock.lock(); defer { lock.unlock() }; return logTimes }
 
     public func expireLogin() { lock.lock(); loggedIn = false; lock.unlock(); dropStreams() }
     public func setStarting(_ on: Bool) { lock.lock(); starting = on; lock.unlock() }
@@ -399,7 +403,16 @@ public final class FakeCampusWorld: @unchecked Sendable {
     /// A permission request as a live thread listed it: `{id, sessionID, action, resources[], save[], source{type, messageID, id}, message}`. The values are invented.
     public static func permissionObject(id: String, session: String, action: String, resources: [String], message: String = "This writes to a file the team's instance takes in as trusted, so the person approves each change.") -> [String: Any] {
         ["id": id, "sessionID": session, "action": action, "resources": resources, "save": resources.map { ($0.split(separator: " ").first.map(String.init) ?? $0) + " *" },
-         "source": ["type": "tool", "messageID": "msg_demo_ask", "id": "chatcmpl-tool-demo"], "message": message]
+         "source": ["type": "tool", "messageID": "msg_ask_\(id)", "id": "chatcmpl-tool-\(id)"], "message": message]
+    }
+
+    /// The assistant message that holds the tool call a permission waits on, as a live thread had it (`state.status: "running"`, `state.input.command`): the call's own command, which
+    /// is what runs, and which Campus's `resources` only split into parts.
+    public static func waitingToolMessage(for perm: [String: Any], command: String) -> [String: Any] {
+        let source = perm["source"] as? [String: Any] ?? [:]
+        let tool: [String: Any] = ["type": "tool", "id": source["id"] as? String ?? "", "name": perm["action"] as? String ?? "shell", "executed": false,
+                                   "state": ["status": "running", "input": ["command": command], "metadata": [String: Any]()], "time": ["created": 1_000, "ran": 1_100]]
+        return ["id": source["messageID"] as? String ?? "", "type": "assistant", "content": [tool]]
     }
 
     /// A permission answered: it leaves the list, `permission.replied` says so (not when `announce` is off: another client's answer that Conn saw no event for), and the run goes on
@@ -423,9 +436,11 @@ public final class FakeCampusWorld: @unchecked Sendable {
 
     /// A thread that waits on a permission (what a run in `permission` mode ends on), without a run: for a check or a test that needs the wait to be there at once.
     /// `announce` also sends the `permission.asked` event; without it only the status and the listing say so.
-    public func askPermission(_ id: String, name: String = "shell", patterns: [String] = ["curl https://example.test"], announce: Bool = true) {
-        let perm = Self.permissionObject(id: "per_demo\(Int.random(in: 100...999))", session: id, action: name, resources: patterns)
-        mutate(id) { $0.gen += 1; $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm]; $0.unread = false }
+    /// `command` is what the waiting tool call really runs (default: the resources joined with `; `); `withTool: false` leaves the call out of the thread's messages.
+    public func askPermission(_ id: String, name: String = "shell", patterns: [String] = ["curl https://example.test"], command: String? = nil, withTool: Bool = true, permissionID: String? = nil, announce: Bool = true) {
+        let perm = Self.permissionObject(id: permissionID ?? "per_demo\(Int.random(in: 100...999))", session: id, action: name, resources: patterns)
+        let msg = Self.waitingToolMessage(for: perm, command: command ?? patterns.joined(separator: "; "))
+        mutate(id) { $0.gen += 1; $0.state = "needs_you"; $0.form = nil; $0.permissions = [perm]; $0.unread = false; if withTool { $0.messages.append(msg) } }
         if announce { emit("permission.asked", id, perm) }
     }
 

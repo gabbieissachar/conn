@@ -240,7 +240,7 @@ public final class CampusStore: ObservableObject {
         for id in openForms.keys where !(next[id]?.needsYou ?? false) { openForms[id] = nil; syncRequests(id) }
         link = .live
         asOf = now()
-        for c in next.values where c.needsYou && openForms[c.id] == nil { await loadForm(c) }
+        for c in next.values where c.needsYou && needsRequests(c.id) { await loadForm(c) }
         for id in retained.keys where timelines[id]?.loaded != true { await backfill(id) }
     }
 
@@ -401,7 +401,11 @@ public final class CampusStore: ObservableObject {
             if let form = CampusForm.parse(f.data) { ask(form, in: sid, at: f.created) }
         case "permission.asked", "permission.created", "permission.requested":
             // A permission request is an open ask like a question; the status read that follows confirms the row.
-            if let form = CampusForm.parsePermission(f.data) { ask(form, in: sid, at: f.created) }
+            if let form = CampusForm.parsePermission(f.data) {
+                ask(form, in: sid, at: f.created)
+                // From a tool call: only Reject is on offer until the call's own command has been read.
+                if form.permission?.needsConfirmation == true, let c = conversations[sid] { Task { [weak self] in await self?.confirmAsk(form, in: c) } }
+            }
         case "session.execution.started", "session.step.started":
             if conversations[sid]?.working == false { conversations[sid]?.working = true; conversations[sid]?.needsYou = false; openForms[sid] = nil }
         default: break
@@ -411,6 +415,17 @@ public final class CampusStore: ObservableObject {
             if timelines[sid]!.loaded { timelines[sid]!.apply(f); timelineChanged.send(sid) } else { queued[sid, default: []].append(f); if queued[sid]!.count > 2000 { queued[sid]!.removeFirst(500) } }
         }
         if !f.type.hasSuffix(".delta"), f.type != "session.tool.progress", conversations[sid] != nil { scheduleStatus(sid) }
+    }
+
+    /// Nothing is asked of Campus again when the ask is there and, if it comes from a tool call, its command is read.
+    private func needsRequests(_ id: String) -> Bool { openForms[id] == nil || openForms[id]?.permission?.needsConfirmation == true }
+
+    /// An ask that came by event, against the command of the tool call it holds up (one read of the thread's recent messages); the card and the transcript follow.
+    private func confirmAsk(_ form: CampusForm, in c: CampusConversation) async {
+        guard let client = client, case .ok(let list) = await client.confirmed(.ok([form]), [form], in: c), let f = list.first, f != form, openForms[c.id]?.id == f.id else { return }
+        openForms[c.id] = f
+        conversations[c.id]?.ask = CampusAsk(text: f.asText, tag: f.tag, at: conversations[c.id]?.ask?.at)
+        syncRequests(c.id)
     }
 
     private func ask(_ form: CampusForm, in sid: String, at: Date?) {
@@ -454,7 +469,7 @@ public final class CampusStore: ObservableObject {
         if !c.needsYou { c.ask = nil; openForms[id] = nil }
         if c != was { conversations[id] = c }
         if !c.needsYou, timelines[id]?.loaded == true { syncRequests(id) }
-        if c.needsYou && openForms[id] == nil { Task { [weak self] in await self?.loadForm(c) } }
+        if c.needsYou && needsRequests(id) { Task { [weak self] in await self?.loadForm(c) } }
         if !c.working, !c.needsYou, timelines[id]?.loaded == true, let last = timelines[id]?.items.last, last.kind != .idle, last.kind != .stopped, last.kind != .user {
             timelines[id]!.finishRun(tokens: timelines[id]!.lastTokens ?? "")
             timelineChanged.send(id)
