@@ -283,7 +283,7 @@ private extension BridgeRegistry {
         lab.world.setNextRun(.permission)
         let r = try await lab.ask("req-p1", lab.newText())
         let thread = try #require(lab.field(r, "thread"))
-        #expect(lab.field(r, "status") == "needs-answer" && lab.field(r, "reason") == "permission" && lab.field(r, "question")?.contains("bash") == true && lab.field(r, "question")?.contains("never answers") == true)
+        #expect(lab.field(r, "status") == "needs-answer" && lab.field(r, "reason") == "permission" && lab.field(r, "question")?.contains("Allow shell: curl https://example.test") == true && lab.field(r, "question")?.contains("approves each change") == true && lab.field(r, "question")?.contains("never answers") == true)
         // Even an explicit answer from the caller does not answer it.
         let a = try await lab.ask("req-p2", "campus: continue \(thread)\nanswer: yes allow it")
         #expect(lab.field(a, "status") == "needs-answer" && lab.field(a, "reason") == "permission")

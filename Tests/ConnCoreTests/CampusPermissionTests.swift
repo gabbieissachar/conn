@@ -1,6 +1,7 @@
 // Campus in Conn: a permission the agent asks for (a command to run, a file to write) is shown and answered in Conn like a question (task conn-fix-queue-2, Nathan's
 // item 4: "how can we enable the user permission handling right in Conn", and "need to surface the permission ask in transcript view also").
-// Read from the scout report (`GET .../form` lists `permissions[]`, `POST .../permission/<id>/reply {"decision"}`), against the stand-in Campus, with no real Campus.
+// The read shapes are the ones a live thread returned (ROADMAP N38: `GET .../requests` lists `permissions[]`, `.../permission` and `.../form` answer `{data: [...]}`), the reply is
+// `POST .../permission/<id>/reply {"decision"}` (a guess until a person answers one); everything runs against the stand-in Campus, with no real Campus.
 import Testing
 import Foundation
 @testable import ConnCore
@@ -100,6 +101,44 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(CampusForm.parseOpenRequests(bare).isEmpty)
     }
 
+    /// The real answers of a thread that stopped on a permission (live, 2026-11-12), with the names and paths invented: `/form` was `{"data":[]}`, `/permission` `{"data":[...]}`, `/requests`
+    /// `{sessionIDs, permissions, forms}`. Conn read only `/form` and found nothing, so the bridge said "no question could be read" and the card never appeared.
+    static let liveItem = #"{"id":"per_demo0001","sessionID":"ses_demo0001","action":"shell","resources":["ls -la /workspace/spaces/team/Demo_Team/files/ 2>/dev/null","cat /workspace/spaces/team/Demo_Team/AGENTS.md 2>/dev/null","head -60"],"save":["ls *","cat *","head *"],"source":{"type":"tool","messageID":"msg_demo0001","id":"chatcmpl-tool-demo0001"},"message":"This changes a file the team’s Team Instance takes in as trusted (its instructions, agents, agent config or skills), so the person approves each change."}"#
+
+    @Test func theLivePermissionShapeIsReadFromRequestsAndFromThePermissionRoute() throws {
+        let requests = Data(#"{"sessionIDs":["ses_demo0001"],"permissions":[\#(Self.liveItem)],"forms":[]}"#.utf8)
+        let fromRequests = try #require(CampusForm.parseOpenRequests(requests).first)
+        #expect(fromRequests.id == "per_demo0001" && fromRequests.isPermission && fromRequests.isOpen && fromRequests.permission?.name == "shell")
+        #expect(fromRequests.asText == "Allow shell: ls -la /workspace/spaces/team/Demo_Team/files/ 2>/dev/null, cat /workspace/spaces/team/Demo_Team/AGENTS.md 2>/dev/null, head -60")
+        #expect(fromRequests.tag == "Permission · shell" && fromRequests.questions[0].options == ["Allow once", "Reject"])
+        // Campus's reason travels with it, as plain text: the typographic apostrophe is not printable ASCII, so it shows as a token, never silently.
+        #expect(fromRequests.permission?.reasonShown.hasPrefix("This changes a file the team<U+2019>s Team Instance takes in as trusted") == true)
+        let route = Data(#"{"data":[\#(Self.liveItem)]}"#.utf8)
+        #expect(CampusForm.parseOpenRequests(route, permissionsOnly: true).map(\.id) == ["per_demo0001"])
+        // `/form` answered `{"data":[]}` and lists no permission: it is forms only.
+        #expect(CampusForm.parseOpenForms(Data(#"{"data":[]}"#.utf8)).isEmpty && CampusForm.parseOpenRequests(Data(#"{"data":[]}"#.utf8)).isEmpty)
+        // Its forms, when it has some, are in `data`.
+        #expect(CampusForm.parseOpenForms(Data(#"{"data":[{"id":"frm_1","questions":[{"question":"Which week?","options":["A","B"]}]}]}"#.utf8)).map(\.id) == ["frm_1"])
+    }
+
+    /// The messages of that thread (invented text, the live structure): the tool that waits on the permission is a `shell` part with `state.status: "running"`, `executed: false` and
+    /// `state.input.command`; the one before it is `completed` with its output in `state.content[]`. Both show as tool steps with their input, the waiting one still running.
+    @Test func theToolCallThatWaitsOnThePermissionShowsAsARunningStepWithItsCommand() throws {
+        let data = Data(#"{"data":[{"id":"msg_2","type":"assistant","content":[{"type":"tool","id":"chatcmpl-tool-2","name":"shell","executed":false,"state":{"status":"running","input":{"command":"ls -la /workspace/demo; cat /workspace/demo/AGENTS.md | head -60"},"metadata":{}},"time":{"created":1000,"ran":1100}}]},{"id":"msg_1","type":"assistant","content":[{"type":"tool","id":"chatcmpl-tool-1","name":"shell","executed":false,"state":{"status":"completed","input":{"command":"find /workspace/demo -maxdepth 2 | head -50"},"content":[{"type":"text","text":"/workspace/demo\n/workspace/demo/AGENTS.md\n"}],"metadata":{"status":"completed","exit":0}},"time":{"created":10,"ran":20,"completed":30}}],"finish":"tool-calls"}],"cursor":{}}"#.utf8)
+        let tools = try #require(CampusTimeline.items(fromMessages: data)).filter { $0.kind == .tool }
+        #expect(tools.count == 2 && tools.allSatisfy { $0.tool == "shell" })
+        let waiting = try #require(tools.first { $0.toolStatus == .running })
+        #expect(waiting.input.contains("cat /workspace/demo/AGENTS.md") && waiting.output.isEmpty)
+        let done = try #require(tools.first { $0.toolStatus == .ok })
+        #expect(done.input.hasPrefix("find /workspace/demo") && done.output.contains("/workspace/demo/AGENTS.md"))
+    }
+
+    @Test func aLongReasonIsCutButWhatIsGrantedIsNot() throws {
+        let long = String(repeating: "word ", count: 200)
+        let f = try #require(CampusForm.parsePermission(json(#"{"id":"per_r","action":"shell","resources":["ls"],"message":"\#(long)"}"#)))
+        #expect(f.permission?.reasonShown.count == CampusPermission.reasonLimit + 1 && f.permission?.reasonShown.hasSuffix("…") == true && f.asText == "Allow shell: ls")
+    }
+
     @Test func aMessagesPermissionPartIsOpenUntilItCarriesItsReply() throws {
         let data = Data(#"{"data":[{"type":"assistant","id":"m1","content":[{"type":"permission","id":"per_a","permission":"bash","patterns":["ls"]},{"type":"permission","id":"per_b","permission":"edit","patterns":["a.txt"],"reply":"once"},{"type":"permission","id":"per_c","permission":"edit","patterns":["b.txt"],"decision":"reject"}]}]}"#.utf8)
         let forms = try #require(CampusTimeline.items(fromMessages: data)).compactMap(\.form)
@@ -180,6 +219,17 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
 }
 
 @Suite("Campus permissions: the feed and the answer, on the stand-in") @MainActor struct CampusPermissionFeedTests {
+    @Test func theLiveShapeReachesTheRowTheTranscriptAndTheWriteGate() async throws {
+        let (s, _, world) = await liveStore()
+        world.askPermission("ses_fakeRates01", name: "shell", patterns: ["ls -la /tmp", "head -60"], announce: false)
+        // The stand-in lists it like the live service did: `/form` has `{data: []}`, `/requests` and `/permission` have the permission.
+        await s.refresh()
+        #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
+        let f = try #require(s.openForms["ses_fakeRates01"])
+        #expect(f.asText == "Allow shell: ls -la /tmp, head -60" && f.permission?.reasonShown.contains("approves each change") == true)
+        #expect(s.conversation("ses_fakeRates01")?.ask?.tag == "Permission · shell")
+    }
+
     @Test func aThreadThatWaitsOnAPermissionNeedsYouWithTheAskOnItsRow() async throws {
         let (s, _, world) = await liveStore()
         world.askPermission("ses_fakeRates01", announce: false)
@@ -188,7 +238,7 @@ private func json(_ s: String) -> CampusJSON { CampusJSON.parse(s)! }
         #expect(c.needsYou && c.state == .blocked)
         #expect(await until { s.openForms["ses_fakeRates01"]?.isPermission == true })
         let ask = try #require(s.conversation("ses_fakeRates01")?.ask)
-        #expect(ask.text == "Allow bash: curl https://example.test" && ask.tag == "Permission · bash")
+        #expect(ask.text == "Allow shell: curl https://example.test" && ask.tag == "Permission · shell")
         // It counts everywhere a question counts: the asks list (sidebar, AGENTS header, Cmd+J, the menu bar), and the row's state, which a Watch column's header shows.
         #expect(s.asks.map(\.id).contains("ses_fakeRates01") && s.asks.count == 2 && s.asks(inTeam: false) == 2)
         #expect(s.attentionOrder.prefix(2).allSatisfy { $0.state == .blocked })

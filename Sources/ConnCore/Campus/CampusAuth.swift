@@ -133,13 +133,18 @@ public struct CampusClient {
         await fetch(CampusRequest(path: Self.conversationPath(c) + "/form")) { CampusForm.parseOpenForms($0) }
     }
 
-    /// What the agent waits on: its questions and its permission requests, a permission first. `GET .../form` answers both lists (`{sessionIDs, permissions[], forms[]}`, scout report 3.3);
-    /// when it lists nothing, `GET .../permission` is asked too (the report names it as the other place a permission is listed). Nothing is sent: both are reads.
+    /// What the agent waits on: its questions and its permission requests, a permission first. `GET .../requests` lists both (`{sessionIDs, permissions[], forms[]}`, read on a live
+    /// thread that waited on a permission, ROADMAP N38); when it lists nothing or is not there, `GET .../form` (`{data: [forms]}`) and `GET .../permission` (`{data: [permissions]}`)
+    /// are asked too. Nothing is sent: all three are reads. The first answer that lists something wins; when none does, the first answer is returned.
     public func openRequests(of c: CampusConversation) async -> CampusFetch<[CampusForm]> {
-        let first = await fetch(CampusRequest(path: Self.conversationPath(c) + "/form")) { CampusForm.parseOpenRequests($0) }
-        guard case .ok(let list) = first, list.isEmpty else { return first }
-        if case .ok(let more) = await fetch(CampusRequest(path: Self.conversationPath(c) + "/permission"), { CampusForm.parseOpenRequests($0, permissionsOnly: true) }), !more.isEmpty { return .ok(more) }
-        return first
+        let base = Self.conversationPath(c)
+        let first = await fetch(CampusRequest(path: base + "/requests")) { CampusForm.parseOpenRequests($0) }
+        if case .ok(let list) = first, !list.isEmpty { return first }
+        let form = await fetch(CampusRequest(path: base + "/form")) { CampusForm.parseOpenRequests($0) }
+        if case .ok(let list) = form, !list.isEmpty { return form }
+        if case .ok(let more) = await fetch(CampusRequest(path: base + "/permission"), { CampusForm.parseOpenRequests($0, permissionsOnly: true) }), !more.isEmpty { return .ok(more) }
+        if case .ok = first { return first }
+        return form
     }
 
     public func messages(of c: CampusConversation) async -> CampusFetch<[CampusItem]> {

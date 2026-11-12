@@ -80,6 +80,9 @@ private struct FormCard: View {
             } else {
                 ForEach(Array(form.questions.enumerated()), id: \.offset) { qi, q in
                     Text(q.text).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    if let why = form.permission?.reasonShown, !why.isEmpty {
+                        Text("Campus says: \(why)").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("campus-permission-reason")
+                    }
                     FlowLayout(spacing: 6, rowSpacing: 6) { ForEach(q.options, id: \.self) { CampusOptionButton(campus: app.campus, form: form, c: c, question: qi, option: $0) } }
                 }
                 CampusAnswerControls(campus: app.campus, form: form, c: c)

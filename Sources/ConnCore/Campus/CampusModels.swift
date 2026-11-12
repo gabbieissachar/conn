@@ -115,9 +115,11 @@ public struct CampusStatus: Equatable, Sendable {
     }
 }
 
-/// A permission the agent asks for (`permission.asked`, one item of `permissions[]` in `GET .../<id>/form`): run a command, write a file, reach a path. It is a grant, not a
-/// chat answer, so it is read plainly and answered only by a person's click. The fields follow opencode's permission request (`id`, `permission`, `patterns[]`); the reply
-/// values are opencode's (`once`, `always`, `reject`). Nobody has seen Campus's own, so every reader here is tolerant and the first real answer is the person's (ROADMAP).
+/// A permission the agent asks for (`permission.asked`, one item of `permissions[]` in `GET .../<id>/requests`, or of `data[]` in `GET .../<id>/permission`): run a command, write a
+/// file, reach a path. It is a grant, not a chat answer, so it is read plainly and answered only by a person's click. The real shape (seen on a live thread, ROADMAP N38) is
+/// `{id, sessionID, action: "shell", resources: [the command's parts], save: [the patterns "always" would keep], source: {type: "tool", messageID, id}, message: Campus's reason}`;
+/// opencode's older `permission` and `patterns[]` are read too. The reply values are still opencode's (`once`, `always`, `reject`): nobody has answered a real one yet, so the
+/// first real answer is the person's (ROADMAP N38).
 public struct CampusPermission: Equatable, Sendable {
     /// One thing the person can answer: what the button says, and the value Campus is sent in `{"decision": ...}`.
     public struct Decision: Equatable, Sendable {
@@ -130,8 +132,19 @@ public struct CampusPermission: Equatable, Sendable {
     /// The commands, paths or addresses it applies to, as Campus gave them.
     public var patterns: [String]
     public var decisions: [Decision]
+    /// Why Campus asks, in its words (`message`): "This changes a file the team's Team Instance takes in as trusted ...". Shown under the ask, never part of what is granted.
+    public var reason: String
 
-    public init(name: String, patterns: [String] = [], decisions: [Decision] = CampusPermission.defaultDecisions) { self.name = name; self.patterns = patterns; self.decisions = decisions }
+    public init(name: String, patterns: [String] = [], decisions: [Decision] = CampusPermission.defaultDecisions, reason: String = "") { self.name = name; self.patterns = patterns; self.decisions = decisions; self.reason = reason }
+
+    /// The most characters of Campus's reason the card shows (it explains the ask; what is granted is shown whole above it and never cut).
+    public static let reasonLimit = 400
+
+    /// Campus's reason as the card shows it: the same allowlist as the ask, one line, cut at `reasonLimit` with an ellipsis.
+    public var reasonShown: String {
+        let t = Self.visible(reason).trimmingCharacters(in: .whitespaces)
+        return t.count > Self.reasonLimit ? String(t.prefix(Self.reasonLimit)) + "…" : t
+    }
 
     public static let allowOnce = Decision(label: "Allow once", value: "once")
     public static let reject = Decision(label: "Reject", value: "reject")
@@ -256,11 +269,12 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
     public static func parsePermission(_ j: CampusJSON) -> CampusForm? {
         let p = j["permission"].object != nil ? j["permission"] : (j["request"].object != nil ? j["request"] : j)
         guard let id = p.first("id", "permissionID", "permissionId", "requestID", "requestId").string, validID(id) else { return nil }
-        let name = p.first("permission", "type", "kind", "title", "name").string ?? ""
-        var patterns = p["patterns"].array.compactMap(\.string).filter { !$0.isEmpty }
+        let name = p.first("action", "permission", "type", "kind", "title", "name").string ?? ""
+        // `resources` is Campus's (the command's parts, or the paths); `patterns` is opencode's. `save` is what an always-allow would keep, which Conn never offers.
+        var patterns = p.first("resources", "patterns").array.compactMap(\.string).filter { !$0.isEmpty }
         if patterns.isEmpty, let one = p.first("pattern", "path", "command", "description").string, !one.isEmpty { patterns = [one] }
         guard !name.isEmpty || !patterns.isEmpty else { return nil }
-        var perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p))
+        var perm = CampusPermission(name: name.isEmpty ? "a permission" : name, patterns: patterns, decisions: CampusPermission.decisions(in: p), reason: p["message"].string ?? "")
         // Too long to read on a card: nothing that grants is offered (what is asked is still shown in full).
         if perm.tooLongToApprove { perm.decisions = [CampusPermission.reject] }
         return CampusForm(id: id, questions: [Question(text: perm.question, options: perm.decisions.map(\.label))], permission: perm)
@@ -268,18 +282,21 @@ public struct CampusForm: Equatable, Sendable, Identifiable {
 
     public static func validID(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil }
 
-    /// `GET .../<id>/form` answers `{sessionIDs, permissions[], forms[]}`: the open forms (questions only: the agent bridge reads this one and never answers a permission).
+    /// The open forms (questions only) in `GET .../<id>/form`, which answers `{data: [forms]}` (seen live: `{"data":[]}` while a permission waited), or in `GET .../<id>/requests`,
+    /// which answers `{sessionIDs, permissions[], forms[]}`.
     public static func parseOpenForms(_ data: Data) -> [CampusForm] {
         guard let root = CampusJSON.parse(data) else { return [] }
-        return root["forms"].array.compactMap(parse)
+        return (root["forms"].array.isEmpty ? root["data"].array : root["forms"].array).compactMap(parse)
     }
 
-    /// Everything the agent waits on in that answer, a permission first (it holds up a tool; a question comes when the run has stopped). `permissionsOnly` reads an answer that is the
-    /// permissions themselves: `{permissions: [...]}` or a bare list.
+    /// Everything the agent waits on in that answer, a permission first (it holds up a tool; a question comes when the run has stopped). `GET .../requests` answers both lists
+    /// (`{sessionIDs, permissions[], forms[]}`), `GET .../form` the forms in `data`. `permissionsOnly` reads an answer that is the permissions themselves: `GET .../permission` answers
+    /// `{data: [...]}` (seen live), and `{permissions: [...]}` or a bare list are read too.
     public static func parseOpenRequests(_ data: Data, permissionsOnly: Bool = false) -> [CampusForm] {
         guard let root = CampusJSON.parse(data) else { return [] }
-        let perms = root["permissions"].array.isEmpty && permissionsOnly ? root.array : root["permissions"].array
-        return perms.compactMap(parsePermission) + (permissionsOnly ? [] : root["forms"].array.compactMap(parse))
+        var perms = root["permissions"].array
+        if perms.isEmpty && permissionsOnly { perms = root["data"].array.isEmpty ? root.array : root["data"].array }
+        return perms.compactMap(parsePermission) + (permissionsOnly ? [] : parseOpenForms(data))
     }
 
     /// The text of the answers given for a reply: one pick per question.

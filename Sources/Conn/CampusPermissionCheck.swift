@@ -32,7 +32,7 @@ extension CampusCheck {
         let waiting = await until(15) { campus.conversation(id)?.needsYou == true && campus.openForms[id]?.isPermission == true }
         let row = campus.conversation(id)
         report("Campus permission: a thread that waits on a permission needs you, with the ask and its tag on its row, counted with the asks (sidebar, AGENTS header, Cmd+J)",
-               waiting && row?.state == .blocked && row?.ask?.text == "Allow bash: curl https://example.test" && row?.ask?.tag == "Permission · bash" && campus.asks.contains { $0.id == id } && model.waitingTargets.contains(.campus(id)),
+               waiting && row?.state == .blocked && row?.ask?.text == "Allow shell: curl https://example.test" && row?.ask?.tag == "Permission · shell" && campus.asks.contains { $0.id == id } && model.waitingTargets.contains(.campus(id)),
                "needsYou=\(row?.needsYou ?? false) ask='\(row?.ask?.text ?? "-")' tag='\(row?.ask?.tag ?? "-")' targets=\(model.waitingTargets.contains(.campus(id)))")
 
         // 2. The Watch column's state (what its header and its cue read) is the same needs-you mark.
@@ -43,7 +43,7 @@ extension CampusCheck {
         await wait(0.8)
         let open = campus.timeline(id)?.openForm
         report("Campus permission: the ask stands in the transcript at the end, open, with its two choices (Allow once, Reject)",
-               open?.isPermission == true && campus.timeline(id)?.items.last?.kind == .form && open?.questions.first?.options == ["Allow once", "Reject"] && open?.questions.first?.text == "Allow bash: curl https://example.test",
+               open?.isPermission == true && campus.timeline(id)?.items.last?.kind == .form && open?.questions.first?.options == ["Allow once", "Reject"] && open?.questions.first?.text == "Allow shell: curl https://example.test",
                "items=\((campus.timeline(id)?.items ?? []).map(\.kind)) options=\(open?.questions.first?.options ?? [])")
         await shot("campus-permission-1-card.png")
         if embed, let page = box() {
@@ -79,7 +79,7 @@ extension CampusCheck {
             if let page = box() {
                 func dom(_ expr: String) async -> String { await page.read("JSON.stringify((function(){ \(expr) })())") }
                 let text = await dom("return document.querySelector('#main').textContent;")
-                report("Campus permission: the reader's page draws the finished ask quiet, with the question and 'Answered: Allow once'", text.contains("Allow bash: curl https://example.test") && text.contains("Answered: Allow once"), "text=\(text.suffix(200))")
+                report("Campus permission: the reader's page draws the finished ask quiet, with the question and 'Answered: Allow once'", text.contains("Allow shell: curl https://example.test") && text.contains("Answered: Allow once"), "text=\(text.suffix(200))")
                 await shot("campus-permission-4-embed-record.png")
             } else { report("Campus permission: the reader's page draws the finished ask quiet, with the question and 'Answered: Allow once'", false, "no ready page") }
         }

@@ -391,9 +391,10 @@ public final class BridgeEngine: ObservableObject {
 
     // MARK: questions and permissions (never answered here)
 
-    private func openRequests(_ c: CampusConversation, client: CampusClient) async -> (forms: [CampusForm], permissions: [CampusJSON]) {
-        guard let r = await client.auth.perform(CampusRequest(path: CampusClient.conversationPath(c) + "/form")), (200..<300).contains(r.status), let root = CampusJSON.parse(r.body) else { return ([], []) }
-        return (CampusForm.parseOpenForms(r.body), root["permissions"].array)
+    /// What the thread waits on, read the way the store reads it (`GET .../requests`, then `.../form` and `.../permission`): the open questions, and the permission asks apart.
+    private func openRequests(_ c: CampusConversation, client: CampusClient) async -> (forms: [CampusForm], permissions: [CampusForm]) {
+        guard case .ok(let all) = await client.openRequests(of: c) else { return ([], []) }
+        return (all.filter { !$0.isPermission }, all.filter(\.isPermission))
     }
 
     private func needsAnswer(_ c: CampusConversation, client: CampusClient) async -> BridgeReply {
@@ -404,9 +405,12 @@ public final class BridgeEngine: ObservableObject {
     }
 
     /// A permission request is the person's to decide: it is returned, never answered (the stand-in's log must show no `/permission/` write).
-    private func permissionReply(_ c: CampusConversation, _ permissions: [CampusJSON]) -> BridgeReply {
-        let name = permissions.first.flatMap { $0.first("permission", "title", "tool", "name").string } ?? "a permission"
-        return .init(.needsAnswer, thread: c.id, url: url(c), reason: "permission", question: "The thread asks for \(name). Only the person decides this, in Conn or in Campus; the bridge never answers a permission request.")
+    /// The question line names what is asked (the kind and the command or paths, as Conn's card shows them: printable text only) and Campus's reason when it gave one.
+    private func permissionReply(_ c: CampusConversation, _ permissions: [CampusForm]) -> BridgeReply {
+        let p = permissions.first?.permission
+        let what = p?.question ?? "Allow a permission"
+        let why = (p?.reasonShown).flatMap { $0.isEmpty ? nil : " Campus says: \($0)" } ?? ""
+        return .init(.needsAnswer, thread: c.id, url: url(c), reason: "permission", question: "The thread asks: \(what).\(why) Only the person decides this, in Conn or in Campus; the bridge never answers a permission request.")
     }
 
     private func describe(_ f: CampusForm) -> String {
