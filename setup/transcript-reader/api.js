@@ -506,7 +506,8 @@ function create({
   const otherHomes = () => (claudeHomes !== undefined ? claudeHomes : (!projectsOption && !claudeSessionsOption ? otherClaudeHomes({ env }) : []));
   const claudeProjectDirs = () => [projectsDir, ...otherHomes().map((home) => path.join(home, 'projects'))];
   const claudeSessionDirs = () => [claudeSessionsDir, ...otherHomes().map((home) => path.join(home, 'sessions'))];
-  const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER });
+  // Every request a guard refuses is one line in the server's log (tailnet.js refusalLog), on the loopback listener here and on the tailnet ones in their lanes.
+  const guard = createGuard({ port, token, tokenHeader: TOKEN_HEADER, onRefuse: tailnetLane.refusalLog({ listener: 'loopback', log: log || undefined, now }) });
   const laneOptions = tailnet && { token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, now, ...(log ? { log } : {}) };
   const lane = tailnet && tailnetLane.create({ ...laneOptions, ip: tailnet.ip, port: tailnet.port || port });
   // The TLS listener's lane: the same passcode file, sessions and token, its own Host and Origin (https://<name>:<port>).
@@ -515,6 +516,8 @@ function create({
   // Host and Origin, the same token). Set by handle().
   const guards = new WeakMap();
   const guardFor = (req) => guards.get(req) || guard;
+  // The answer to a request the guard refused: the short page for a tab opening the address, otherwise plain(), the route's own answer.
+  const refused = (req, res, verdict, plain) => tailnetLane.refuse(req, res, verdict, guardFor(req).origin, plain);
   const readerScript = path.join(root, 'setup', 'transcript-reader', 'reader.py');
   const copy = copyId(root);
   const runEnv = () => childEnv(env);
@@ -1720,7 +1723,7 @@ function create({
   function serveView(req, res) {
     const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
     const verdict = guardFor(req).check(req, { requireToken: false, crossSite: true });
-    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => text(verdict.status, verdict.message)); return; }
     if (req.method !== 'GET') { text(405, 'GET only'); return; }
     pruneViews();
     const [key, ...segments] = new URL(req.url, 'http://localhost').pathname.slice(HTML_ROUTE.length).split('/');
@@ -1755,7 +1758,7 @@ function create({
   function servePage(req, res, name) {
     const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
     const verdict = guardFor(req).check(req, { requireToken: false });
-    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => text(verdict.status, verdict.message)); return; }
     if (req.method !== 'GET') { text(405, 'GET only'); return; }
     // Only a browser tab opening the page gets it (and so the token), never a script's
     // fetch, a frame or an embed. Like the guard, a request without Fetch-Metadata
@@ -1765,7 +1768,7 @@ function create({
     if ((mode !== undefined && mode !== 'navigate') || (dest !== undefined && dest !== 'document')) {
       // One exception, for the offline copy: its page keeps the shell pages in a cache for the service worker, and asks for them
       // with the token it holds. Whoever holds the token already has what the page would tell it, so nothing more is given away.
-      const own = SHELL_PAGES.has(name) && guardFor(req).check(req).ok;
+      const own = SHELL_PAGES.has(name) && guardFor(req).check(req, { quiet: true }).ok;
       if (!own) { text(403, 'Open this page in its own browser tab.'); return; }
     }
     if (!PAGES.has(name)) { text(404, 'Not found'); return; }
@@ -1785,7 +1788,7 @@ function create({
   function serveBoardPage(req, res) {
     const text = (status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
     const verdict = guardFor(req).check(req, { requireToken: false });
-    if (!verdict.ok) { text(verdict.status, verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => text(verdict.status, verdict.message)); return; }
     if (req.method !== 'GET') { text(405, 'GET only'); return; }
     // Only a browser tab opening the page gets the token, as for every page of the reader.
     const mode = req.headers['sec-fetch-mode'];
@@ -1803,7 +1806,7 @@ function create({
   // The service worker, manifest and icons beside a copy's shell pages: not secret, but behind the same Host, Origin and (on the tailnet) sign-in checks.
   function serveStatic(req, res, folder, name) {
     const verdict = guardFor(req).check(req, { requireToken: false });
-    if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => fail(res, verdict.status, 'refused', verdict.message)); return; }
     if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
     fs.readFile(path.join(outDir, folder, name), (error, body) => {
       if (error) { fail(res, 404, 'not_built', 'Not built yet.'); return; }
@@ -1817,7 +1820,7 @@ function create({
   // cannot read the transcripts here either.
   function serveObject(req, res, folder, name) {
     const verdict = guardFor(req).check(req);
-    if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => fail(res, verdict.status, 'refused', verdict.message)); return; }
     if (req.method !== 'GET') { fail(res, 405, 'not_allowed', 'GET only.'); return; }
     const kind = OBJECTS[folder];
     if (!kind.re.test(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }
@@ -1853,7 +1856,7 @@ function create({
 
   async function dispatch(req, res, pathname, query) {
     const verdict = guardFor(req).check(req);
-    if (!verdict.ok) { fail(res, verdict.status, 'refused', verdict.message); return; }
+    if (!verdict.ok) { refused(req, res, verdict, () => fail(res, verdict.status, 'refused', verdict.message)); return; }
     if (pathname === API + 'page' && req.method === 'GET') {
       const name = query.get('name');
       if (!PAGES.has(name)) { fail(res, 404, 'not_found', 'Not found.'); return; }

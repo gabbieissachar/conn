@@ -26,6 +26,11 @@
 // Every sign-in attempt, refused ones included, is one line in the server log with the
 // client address and the outcome (never the passcode), so a phone that cannot get in can be
 // read from the Mac. The passcode page shows each way a sign-in can fail in words.
+// So is every request the guard refuses, on any route: one line with the method, the path (no query, a
+// viewer's key left out), the listener, the Host, Origin and Fetch-Metadata headers it carried, and never a
+// token, cookie or passcode (refusalLog). A refused page load (a tab opening an address, which the browser
+// would show as bare text) gets a short page that says why and links to the reader's own address
+// (refusedPage); a fetch, a frame or a POST keeps the plain answer.
 //
 // The passcode is stored only as a salted scrypt hash in one owner-only file (set with
 // `serve.sh passcode`, which reads it from the terminal without echo). Sessions are files in a
@@ -324,6 +329,78 @@ function pagesFor(site) {
   return pages;
 }
 
+// ----------------------------------------------------------- refused requests
+
+// A header value or path as one safe token for a log line: printable ASCII only (anything else is "?"), cut at max, "-" when absent.
+const shown = (value, max = 120) => (value === undefined || value === null || value === '' ? '-' : String(value).replace(/[^\x21-\x7e]/g, '?').slice(0, max));
+// The path of a request without its query or fragment, and without the key of an HTML viewer address (api/.../html/<key>/...), which is that
+// address's own credential.
+const loggedPath = (url) => shown(String(url || '').split(/[?#]/)[0].replace(/(\/html\/)[^/]+/, '$1<key>'), 200);
+
+const REFUSALS_PER_MINUTE = 60;
+// What a guard's onRefuse does: one log line per refusal naming the request. At most REFUSALS_PER_MINUTE a minute, so a page that fires
+// at the address in a loop cannot fill the log; the first refusal of the next minute says how many were left out.
+function refusalLog({ listener, log = (line) => process.stderr.write(line + '\n'), now = () => Date.now() }) {
+  let since = -Infinity;
+  let written = 0;
+  let left = 0;
+  return (req, verdict) => {
+    const t = now();
+    if (t - since >= 60 * 1000) {
+      if (left) log(`${new Date(t).toISOString()} Guard: ${left} more refusals on ${listener} in the minute before were not logged`);
+      since = t;
+      written = 0;
+      left = 0;
+    }
+    if (written >= REFUSALS_PER_MINUTE) { left += 1; return; }
+    written += 1;
+    const header = (name) => shown(req.headers && req.headers[name]);
+    log(`${new Date(t).toISOString()} Guard: refused ${shown(req.method, 12)} ${loggedPath(req.url)} on ${listener} (${verdict.status} ${verdict.message}) from=${shown(req.socket && req.socket.remoteAddress)}`
+      + ` host=${header('host')} origin=${header('origin')} sec-fetch-site=${header('sec-fetch-site')} sec-fetch-mode=${header('sec-fetch-mode')} sec-fetch-dest=${header('sec-fetch-dest')}`);
+  };
+}
+
+// A tab opening an address: a GET whose Fetch-Metadata says navigate and document (a fetch, a frame, a POST are not).
+const isNavigation = (req) => String(req.method || '').toUpperCase() === 'GET' && req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document';
+
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const REFUSED_STYLE = STYLE + '\n' + `
+.go{display:flex;align-items:center;min-height:48px;margin-top:14px;padding:10px 12px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);font-weight:600;font-size:15px;line-height:1.3;text-decoration:none;overflow-wrap:anywhere}
+.fine{margin:16px 0 0;font-size:13px}
+`.trim();
+const REFUSED_HEADERS = {
+  'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin',
+  'Content-Security-Policy': `default-src 'none'; style-src ${sourceHash(REFUSED_STYLE)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+};
+
+// What a refused page load says. verdict is the guard's; origin is the address the reader serves on (guard.origin), the link's target
+// with site.home. A page from another site (cross-site) and one from the same site (another port on this machine, another machine of
+// the tailnet) are named as what they are; a Host the reader does not answer on and any other refusal say that instead.
+function refusedPage(verdict, origin, site = READER_SITE) {
+  const address = origin + site.home;
+  const from = verdict.fetchSite === 'same-site' ? 'a link on a page of the same site, such as another port on this machine or another machine on your tailnet'
+    : verdict.fetchSite ? 'a link on a page of another site' : '';
+  const body = from
+    ? `<h1>Opened from another page</h1><p>This address was opened from ${from}. The ${site.noun} does not open that way.</p><p>Open it from its own address:</p>`
+    : /^Host /.test(verdict.message) ? `<h1>Not the ${site.noun}'s address</h1><p>The ${site.noun} does not answer at the address you used.</p><p>Open it from its own address:</p>`
+    : `<h1>The ${site.noun} refused this request</h1><p>${escapeHtml(verdict.message)}.</p><p>Open it from its own address:</p>`;
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex">'
+    + `<title>${escapeHtml(site.title)}</title><style>${REFUSED_STYLE}</style></head><body><main>${body}`
+    + `<a class="go" href="${escapeHtml(address)}" aria-label="${escapeHtml(address)}">${escapeHtml(address).replace(/\//g, '/<wbr>')}</a>`
+    + `<p class="fine">The ${site.noun}'s log on the laptop has this refusal.</p></main></body></html>`;
+}
+
+// The answer to a refused request: the page above for a page load (same status as the guard gave), otherwise plain(), the answer the route
+// had before. origin: guard.origin.
+function refuse(req, res, verdict, origin, plain, site = READER_SITE) {
+  if (!isNavigation(req)) { plain(); return; }
+  res.writeHead(verdict.status, REFUSED_HEADERS);
+  res.end(refusedPage(verdict, origin, site));
+}
+
 // ------------------------------------------------------------------ the listener
 
 const text = (res, status, message) => { res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end(message); };
@@ -369,7 +446,7 @@ const safeNext = (value, site = READER_SITE) => (typeof value === 'string' && va
 // one line of text, the sign-in record (the server's own log by default). site: see READER_SITE. sessionsDir: where
 // sessions are kept; every server given the same passcode file shares it (see createSessions).
 function create({ ip, host = ip, scheme = 'http', port, token, tokenHeader, passcodeFile, sessionsDir = `${passcodeFile}.sessions`, site = READER_SITE, now = () => Date.now(), log = (line) => process.stderr.write(line + '\n') }) {
-  const guard = createGuard({ port, token, tokenHeader, hosts: [host], scheme });
+  const guard = createGuard({ port, token, tokenHeader, hosts: [host], scheme, onRefuse: refusalLog({ listener: scheme === 'https' ? 'tailnet-https' : 'tailnet', log, now }) });
   const pages = pagesFor(site);
   const cookieOf = (req) => cookieOfName(req, COOKIE);
   const currentRecord = recordSource(passcodeFile);
@@ -423,8 +500,7 @@ function create({ ip, host = ip, scheme = 'http', port, token, tokenHeader, pass
     const method = String(req.method).toUpperCase();
     const pathname = url.pathname;
     if (!verdict.ok) {
-      if (pathname === site.signin && method === 'POST') note(req, `refused by the guard (${verdict.status} ${verdict.message})`);
-      text(res, verdict.status, verdict.message);
+      refuse(req, res, verdict, guard.origin, () => text(res, verdict.status, verdict.message), site);
       return true;
     }
     if (pathname === site.signin) {
@@ -462,4 +538,4 @@ function create({ ip, host = ip, scheme = 'http', port, token, tokenHeader, pass
   return { intercept, guard, hasPasscode: () => Boolean(currentRecord()) };
 }
 
-module.exports = { create, isTailnetAddress, defaultPasscodeFile, READER_SITE, writePasscodeFile, makeRecord, parseRecord, passcodeMatches, passcodeProblem, recordSource, createThrottle, createSessions, safeNext, SIGNIN, SIGNOUT, HOME, COOKIE, MIN_PASSCODE };
+module.exports = { create, refusalLog, refusedPage, refuse, isNavigation, isTailnetAddress, defaultPasscodeFile, READER_SITE, writePasscodeFile, makeRecord, parseRecord, passcodeMatches, passcodeProblem, recordSource, createThrottle, createSessions, safeNext, SIGNIN, SIGNOUT, HOME, COOKIE, MIN_PASSCODE };

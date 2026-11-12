@@ -147,7 +147,7 @@ async function start({ env = {}, outParts, options = {} } = {}) {  // options: m
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   let clock = Date.now();
-  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, sheetFlagsFile: tree.sheetFlagsFile, hiddenFile: tree.hiddenFile, now: () => clock, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
+  api = create({ root: tree.root, outDir: tree.outDir, port, runner: herdr.runner, env, projectsDir: tree.projectsDir, claudeSessionsDir: tree.claudeSessionsDir, codexSessionsDir: tree.codexSessionsDir, copilotHomeDir: tree.copilotHomeDir, pinsFile: tree.pinsFile, starsFile: tree.starsFile, sheetFlagsFile: tree.sheetFlagsFile, hiddenFile: tree.hiddenFile, now: () => clock, log: () => {}, pause: async () => {}, rebuildEveryMs: 0, ...(typeof options === 'function' ? options(herdr, tree) : options) });  // no limit on how often rebuilds start, but where a test asks for one
   const host = 'localhost:' + port;
   const origin = 'http://' + host;
   const request = ({ method = 'GET', path: urlPath, headers = {}, body }) => new Promise((resolve, reject) => {

@@ -469,21 +469,24 @@ test('every sign-in attempt is one log line with the client address and what cam
   await post('x'.repeat(5000));
   assert.equal(outcome(), 'bad request (413)');
 
-  // What the guard refuses is a sign-in attempt too: the phone's side of "nothing happens".
+  // What the guard refuses is a sign-in attempt too: the phone's side of "nothing happens". Its line is the guard's own (one line per refusal, the
+  // request's Host, Origin and Fetch-Metadata in it), not a second sign-in line.
+  const refusal = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z Guard: refused POST \/transcript-reader\/signin on tailnet \((.+)\) from=(?:127\.0\.0\.1|::ffff:127\.0\.0\.1) host=\S+ origin=\S+ sec-fetch-site=\S+ sec-fetch-mode=\S+ sec-fetch-dest=\S+$/;
+  const refused = () => { const match = last().match(refusal); assert.ok(match, last()); return match[1]; };
   assert.equal((await post({ passcode: PASSCODE }, { Origin: 'http://evil.example' })).status, 403);
-  assert.equal(outcome(), 'refused by the guard (403 Origin not allowed for this endpoint)');
+  assert.equal(refused(), '403 Origin not allowed for this endpoint');
   assert.equal((await s.onTailnet({ method: 'POST', path: '/transcript-reader/signin', headers: { 'Content-Type': 'application/json' }, body: { passcode: PASSCODE } })).status, 403);
-  assert.equal(outcome(), 'refused by the guard (403 Origin header required)');
+  assert.equal(refused(), '403 Origin header required');
   assert.equal((await post({ passcode: PASSCODE }, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
-  assert.equal(outcome(), 'refused by the guard (403 Cross-site request refused)');
+  assert.equal(refused(), '403 Cross-site request refused');
   assert.equal((await post({ passcode: PASSCODE }, { Host: 'evil.example:' + s.tailnetPort })).status, 403);
-  assert.equal(outcome(), 'refused by the guard (403 Host not allowed for this endpoint)');
+  assert.equal(refused(), '403 Host not allowed for this endpoint');
 
   fs.renameSync(s.passcodeFile, s.passcodeFile + '.gone');
   assert.equal((await s.signIn(PASSCODE)).status, 503);
   assert.equal(outcome(), 'no passcode is set');
 
-  assert.ok(s.lines.every((line) => shape.test(line)), 'one line per attempt, all alike');
+  assert.ok(s.lines.every((line) => shape.test(line) || refusal.test(line)), 'one line per attempt or refusal, all alike');
   assert.equal(s.lines.length, 14);
   const record = s.lines.join('\n');
   for (const secret of [PASSCODE, 'wrong one', 'xxxx']) assert.ok(!record.includes(secret), 'the record never holds a passcode: ' + secret);
@@ -1262,4 +1265,205 @@ test('with PMOS_READER_BOARD_TAILNET the board opens on the TLS address behind t
   assert.equal('board' in (await stateOf(s.onTailnet, { Cookie: plain, [TOKEN_HEADER]: token })), false, 'plain tailnet: no Tasks link');
   assert.equal((await s.onTailnet({ path: BOARD_PAGE, headers: { ...NAVIGATE, Cookie: plain } })).status, 404);
   assert.equal((await s.onTailnet({ path: BOARD_API + 'board-sessions', headers: { Cookie: plain, [TOKEN_HEADER]: token } })).status, 404);
+});
+
+// ------------------------------------------------------------ refused requests: the log line and the page
+
+const SECRETS = { token: 'f'.repeat(64), cookie: 'pmos_session=SESSIONSECRET123', passcode: 'passcode-in-a-query-9', key: 'VIEWERKEYSECRET' };
+const guardLines = (s) => s.lines.filter((line) => / Guard: /.test(line));
+
+test('a guard tells onRefuse of each refusal once, with the Sec-Fetch-Site value that was refused, and a quiet probe is not one', () => {
+  const told = [];
+  const guard = createGuard({ port: 9000, onRefuse: (req, verdict) => told.push([req.method, verdict]) });
+  const get = (headers) => ({ method: 'GET', headers: { host: 'localhost:9000', ...headers } });
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'same-origin' }), { requireToken: false }).ok, true);
+  assert.equal(told.length, 0, 'an answer that passes is not a refusal');
+  assert.deepEqual(guard.check(get({ 'sec-fetch-site': 'same-site' }), { requireToken: false }), { ok: false, status: 403, message: 'Cross-site request refused', fetchSite: 'same-site' });
+  assert.equal(guard.check(get({ 'sec-fetch-site': 'cross-site' }), { requireToken: false }).fetchSite, 'cross-site');
+  assert.equal(guard.check(get({ host: 'evil.example:9000' }), { requireToken: false }).fetchSite, undefined, 'only the Fetch-Metadata refusal names a site');
+  assert.equal(guard.check(get({}), {}).message, 'Missing or invalid token');
+  assert.deepEqual(told.map(([, verdict]) => verdict.message), ['Cross-site request refused', 'Cross-site request refused', 'Host not allowed for this endpoint', 'Missing or invalid token']);
+  guard.check(get({ 'sec-fetch-site': 'cross-site' }), { requireToken: false, quiet: true });
+  assert.equal(told.length, 4, 'a probe is not told');
+  // A log that throws changes no answer.
+  const broken = createGuard({ port: 9000, onRefuse: () => { throw new Error('disk full'); } });
+  assert.equal(broken.check(get({ 'sec-fetch-site': 'cross-site' }), { requireToken: false }).ok, false);
+  assert.equal(createGuard({ port: 9000 }).origin, 'http://localhost:9000');
+  assert.equal(createGuard({ port: 8443, hosts: ['a.ts.net'], scheme: 'https' }).origin, 'https://a.ts.net:8443');
+});
+
+test('a refusal line names the request and holds no token, cookie, passcode, query or viewer key; control characters and long values are tamed', () => {
+  const lines = [];
+  const note = tailnet.refusalLog({ listener: 'tailnet-https', log: (line) => lines.push(line), now: () => Date.UTC(2026, 10, 12, 9, 30, 0) });
+  const req = {
+    method: 'GET', url: `/api/transcript-reader/html/${SECRETS.key}/page.html?token=${SECRETS.token}&passcode=${SECRETS.passcode}#frag`, socket: { remoteAddress: '100.64.0.9' },
+    headers: { host: 'machine.tail1.ts.net:8443', origin: 'https://evil.example', 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document',
+      cookie: SECRETS.cookie, 'x-transcript-reader-token': SECRETS.token, authorization: 'Bearer ' + SECRETS.token, referer: 'https://evil.example/?' + SECRETS.passcode },
+  };
+  note(req, { status: 403, message: 'Cross-site request refused' });
+  assert.deepEqual(lines, ['2026-11-12T09:30:00.000Z Guard: refused GET /api/transcript-reader/html/<key>/page.html on tailnet-https (403 Cross-site request refused) from=100.64.0.9'
+    + ' host=machine.tail1.ts.net:8443 origin=https://evil.example sec-fetch-site=same-site sec-fetch-mode=navigate sec-fetch-dest=document']);
+  for (const secret of Object.values(SECRETS)) assert.ok(!lines[0].includes(secret), secret);
+  // Absent headers are "-"; a header with line breaks or a long run stays one short token on one line.
+  note({ method: 'POST', url: '/x', headers: { host: 'h\r\nGuard: forged line', origin: 'o'.repeat(500) } }, { status: 403, message: 'Origin not allowed for this endpoint' });
+  assert.equal(lines.length, 2);
+  assert.ok(!/[\r\n]/.test(lines[1]));
+  assert.match(lines[1], / from=- host=h\?\?Guard:\?forged\?line origin=o{120} sec-fetch-site=- sec-fetch-mode=- sec-fetch-dest=-$/);
+});
+
+test('a page that fires at the address in a loop fills the log with 60 lines a minute at most, and the next minute says how many were left out', () => {
+  const lines = [];
+  let clock = Date.UTC(2026, 10, 12, 9, 0, 0);
+  const note = tailnet.refusalLog({ listener: 'loopback', log: (line) => lines.push(line), now: () => clock });
+  const refuse = () => note({ method: 'GET', url: '/', headers: {} }, { status: 403, message: 'Cross-site request refused' });
+  for (let i = 0; i < 100; i += 1) refuse();
+  assert.equal(lines.length, 60);
+  clock += 30 * 1000;
+  refuse();
+  assert.equal(lines.length, 60, 'still inside the minute');
+  clock += 31 * 1000;
+  refuse();
+  assert.equal(lines.length, 62);
+  assert.match(lines[60], /Guard: 41 more refusals on loopback in the minute before were not logged$/);
+  assert.match(lines[61], /Guard: refused GET \//);
+});
+
+const refusedBody = (response) => response.raw.replace(/<style>[\s\S]*?<\/style>/, '');
+// The reader's own address in the page: the link's target, and its text (with a break allowed after each slash so a phone wraps it at a path).
+// Its accessible name is the whole address (aria-label), since a screen reader would read each break as a space.
+const addressIn = (response) => {
+  const link = response.raw.match(/<a class="go" href="([^"]*)" aria-label="([^"]*)">(.*?)<\/a>/);
+  assert.ok(link, 'the page has the link');
+  assert.equal(link[2], link[1]);
+  return { href: link[1], text: link[3].replace(/<wbr>/g, '') };
+};
+
+test('a page load the guard refuses gets a short readable page, names same-site and cross-site as what they are, and writes one log line (plain tailnet listener)', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const home = `http://127.0.0.1:${s.tailnetPort}${PAGE}`;
+  const load = (site, extra = {}) => s.onTailnet({ path: PAGE + `?token=${SECRETS.token}`, headers: { 'Sec-Fetch-Site': site, 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', Cookie: SECRETS.cookie, [TOKEN_HEADER]: SECRETS.token, ...extra } });
+
+  const same = await load('same-site');
+  assert.equal(same.status, 403, 'the guard\'s status is kept');
+  assert.match(same.headers['content-type'], /^text\/html/);
+  assert.equal(same.headers['cache-control'], 'no-store');
+  assert.match(refusedBody(same), /<h1>Opened from another page<\/h1>/);
+  assert.match(refusedBody(same), /a link on a page of the same site, such as another port on this machine or another machine on your tailnet/);
+  assert.doesNotMatch(refusedBody(same), /another site|Cross-site/i, 'a same-site load is not called cross-site');
+  assert.deepEqual(addressIn(same), { href: home, text: home }, 'the reader\'s own address, as a link');
+  assert.doesNotMatch(same.raw, /<script|onclick/i);
+
+  const cross = await load('cross-site');
+  assert.equal(cross.status, 403);
+  assert.match(refusedBody(cross), /This address was opened from a link on a page of another site\./);
+  assert.doesNotMatch(refusedBody(cross), /same site/i, 'a cross-site load is not called same-site');
+  assert.equal(addressIn(cross).href, home);
+
+  // Each of them is one line with the request's details, and none holds a secret.
+  const written = guardLines(s);
+  assert.equal(written.length, 2);
+  assert.match(written[0], new RegExp(`^\\S+ Guard: refused GET ${PAGE.replace(/\./g, '\\.')} on tailnet \\(403 Cross-site request refused\\) from=\\S+ host=127\\.0\\.0\\.1:${s.tailnetPort} origin=- sec-fetch-site=same-site sec-fetch-mode=navigate sec-fetch-dest=document$`));
+  assert.match(written[1], /sec-fetch-site=cross-site sec-fetch-mode=navigate sec-fetch-dest=document$/);
+  for (const secret of Object.values(SECRETS)) assert.ok(!s.lines.join('\n').includes(secret), 'the log never holds ' + secret);
+
+  // The page's style is allowed by its hash alone, and it has no script to allow.
+  const csp = same.headers['content-security-policy'];
+  const hash = (text) => `'sha256-${require('crypto').createHash('sha256').update(text).digest('base64')}'`;
+  assert.ok(csp.includes(`style-src ${hash(same.raw.match(/<style>([\s\S]*?)<\/style>/)[1])}`));
+  assert.doesNotMatch(csp, /script-src/);
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(same.raw, /name="viewport"/);
+  // The sentence for a refusal that is not about the site.
+  const host = await load('none', { Host: 'evil.example:' + s.tailnetPort });
+  assert.equal(host.status, 403);
+  assert.match(refusedBody(host), /<h1>Not the reader's address<\/h1>/);
+  assert.equal(addressIn(host).href, home, 'the link is the listener\'s own address, never the Host the request named');
+  assert.ok(!host.raw.includes('evil.example'));
+});
+
+test('what is not a page load keeps its plain answer, and a same-origin or typed load is unchanged (plain tailnet listener)', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const kinds = {
+    fetch: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' },
+    'sub-resource': { 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' },
+    frame: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' },
+    'no metadata but a site': { 'Sec-Fetch-Site': 'cross-site' },
+  };
+  for (const [name, headers] of Object.entries(kinds)) {
+    for (const target of [PAGE, '/api/transcript-reader/state']) {
+      const response = await s.onTailnet({ path: target, headers });
+      assert.equal(response.status, 403, name);
+      assert.match(response.headers['content-type'], /^text\/plain/, name);
+      assert.equal(response.raw, 'Cross-site request refused', name);
+    }
+  }
+  const post = await s.onTailnet({ method: 'POST', path: '/transcript-reader/signin', headers: { Origin: s.phone.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }, body: { passcode: PASSCODE } });
+  assert.equal(post.status, 403);
+  assert.equal(post.raw, 'Cross-site request refused', 'a POST is never answered with the page, whatever it says it is');
+  assert.equal(guardLines(s).length, 4 * 2 + 1, 'each refusal is a line, the plain ones too');
+
+  const before = guardLines(s).length;
+  const typed = await s.onTailnet({ path: PAGE, headers: NAVIGATE });
+  assert.equal(typed.status, 401);
+  assert.match(typed.raw, /type="password"/, 'a load from the address bar still gets the passcode page');
+  const link = await s.onTailnet({ path: PAGE, headers: { ...NAVIGATE, 'Sec-Fetch-Site': 'same-origin' } });
+  assert.equal(link.status, 401);
+  assert.match(link.raw, /type="password"/, 'so does one from a link on the reader itself');
+  assert.equal(guardLines(s).length, before, 'and neither is a refusal');
+});
+
+test('on the loopback listener a refused page load gets the page for the reader\'s own address, and a fetch keeps its JSON answer', async (t) => {
+  const s = await boot();
+  t.after(s.close);
+  const home = `http://localhost:${s.port}${PAGE}`;
+  const nav = (site, target = PAGE, extra = {}) => s.onLoopback({ path: target, headers: { 'Sec-Fetch-Site': site, 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', ...extra } });
+  for (const [site, words] of [['cross-site', /a link on a page of another site/], ['same-site', /a link on a page of the same site/]]) {
+    // The page routes, a hosted object's and an API route's address: all pages when a tab opens them.
+    for (const target of [PAGE, '/setup/transcript-reader/out/hosted/index.html', '/setup/transcript-reader/out/hosted/index.json', '/api/transcript-reader/state', '/setup/transcript-reader/out/hosted/sw.js']) {
+      const response = await nav(site, target);
+      assert.equal(response.status, 403, site + ' ' + target);
+      assert.match(response.headers['content-type'], /^text\/html/, target);
+      assert.match(refusedBody(response), words, target);
+      assert.equal(addressIn(response).href, home, target);
+    }
+  }
+  assert.equal(guardLines(s).filter((line) => / on loopback \(403 Cross-site request refused\) /.test(line)).length, 10);
+  const api = await s.onLoopback({ path: '/api/transcript-reader/state', headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } });
+  assert.equal(api.status, 403);
+  assert.equal(api.json.code, 'refused');
+  assert.equal(api.json.message, 'Cross-site request refused');
+  const fetched = await s.onLoopback({ path: PAGE, headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } });
+  assert.equal(fetched.raw, 'Cross-site request refused');
+  assert.match(fetched.headers['content-type'], /^text\/plain/);
+  // Same-origin and typed loads are what they were.
+  assert.equal((await nav('none')).status, 200);
+  assert.equal((await nav('same-origin')).status, 200);
+  const before = guardLines(s).length;
+  await nav('none');
+  assert.equal(guardLines(s).length, before);
+  // A viewer address is its own credential: a refused load of one never writes its key.
+  const viewer = await s.onLoopback({ path: `/api/transcript-reader/html/${SECRETS.key}/page.html`, headers: { Host: 'evil.example:80' } });
+  assert.equal(viewer.status, 403);
+  assert.ok(!s.lines.join('\n').includes(SECRETS.key));
+  assert.ok(guardLines(s).some((line) => line.includes('/api/transcript-reader/html/<key>/page.html on loopback')));
+});
+
+test('the TLS listener says refused page loads in its own words and address, and logs them as tailnet-https', async (t) => {
+  const s = await bootSecure(t);
+  if (!s) return;
+  const home = `${SECURE_ORIGIN(s)}${PAGE}`;
+  const response = await s.onHttps({ path: PAGE, headers: { 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' } });
+  assert.equal(response.status, 403);
+  assert.match(response.headers['content-type'], /^text\/html/);
+  assert.deepEqual(addressIn(response), { href: home, text: home }, 'the reader\'s name and port, as a link');
+  assert.match(refusedBody(response), /same site/);
+  const written = guardLines(s);
+  assert.equal(written.length, 1);
+  assert.match(written[0], new RegExp(`Guard: refused GET ${PAGE.replace(/\./g, '\\.')} on tailnet-https \\(403 Cross-site request refused\\) from=\\S+ host=${HOST.replace(/\./g, '\\.')}:${s.httpsPort} origin=- sec-fetch-site=same-site `));
+  const fetched = await s.onHttps({ path: PAGE, headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' } });
+  assert.equal(fetched.raw, 'Cross-site request refused');
+  assert.equal(guardLines(s).length, 2);
 });
