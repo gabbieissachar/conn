@@ -9,6 +9,9 @@
 // Like everything this reader writes it is the owner's alone (folder 0700, file 0600). It is
 // read and written only through api.js's pins route, behind the same guard as Send.
 //
+// Newest pin first: a pin added goes to the top, and the file is always written in that order. A file from before (oldest first) is read in that order
+// too, and put in it by normalize() when the server starts.
+//
 // PMOS_READER_PINS names another file; the default is ~/.config/pmos-transcript-reader/pins.json.
 //
 // The starred sessions of the session picker are kept the same way, by the same code, in a file beside it:
@@ -89,6 +92,7 @@ const PINS = {
   make: (body, epoch) => ({ key: body.key, conv: body.conv, at: body.at, pinned: epoch, ...descriptionField(body.description) }),
   valid: (pin) => Boolean(pin) && typeof pin === 'object' && KEY_RE.test(pin.key) && CONV_RE.test(pin.conv)
     && Number.isFinite(pin.at) && Number.isFinite(pin.pinned) && validDescription(pin.description),
+  order: (a, b) => b.pinned - a.pinned,  // newest pinned first; a stable sort, so pins of one moment keep the order they were in
 };
 
 function validDescription(description) {

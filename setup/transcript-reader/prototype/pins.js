@@ -27,16 +27,18 @@
   // One kept list, as the page holds it: <ask> names the server's calls ({ list, change }), <id> the field that
   // names an item, <add> and <remove> its two operations, <noun> and <undo> the words of the cap's message, <make>
   // the item an add builds from its other fields, and <storage> where this browser keeps it.
-  const kept = ({ storage, ask, id, add, remove, edit = "edit", noun, undo, make, sound, max }) => {
+  const kept = ({ storage, ask, id, add, remove, edit = "edit", noun, undo, make, sound, max, order }) => {
     const BROWSER = HOSTED ? "tr-hosted-" + storage : "tr-" + storage;
     let items = [];
     let rev = 0;
     let where = "browser";
     const listeners = new Set();
     const notify = () => listeners.forEach(fn => { try { fn(); } catch (e) { /* a listener's own trouble */ } });
-    const list = saved => saved[noun];
+    // <order>, when a list has one (the pins: newest pinned first), puts the items in it whatever order they came in; a stable sort.
+    const arrange = all => order ? all.slice().sort(order) : all;
+    const list = saved => arrange(saved[noun]);
     function browserItems() {
-      try { const saved = JSON.parse(localStorage.getItem(BROWSER) || "[]"); return Array.isArray(saved) ? saved.filter(sound) : []; } catch (e) { return []; }
+      try { const saved = JSON.parse(localStorage.getItem(BROWSER) || "[]"); return Array.isArray(saved) ? arrange(saved.filter(sound)) : []; } catch (e) { return []; }
     }
     function saveBrowser(all) {
       try { localStorage.setItem(BROWSER, JSON.stringify(all)); return true; } catch (e) { return false; }
@@ -72,7 +74,7 @@
       const was = items;
       const added = !has(key);
       if (added && items.length >= max) throw new Error(`There are ${max} ${noun} already: ${undo} some first.`);
-      items = added ? [...items, make(key, more)] : items.filter(p => p[id] !== key);
+      items = added ? arrange([...items, make(key, more)]) : items.filter(p => p[id] !== key);
       notify();
       try {
         if (where === "file") {
@@ -99,7 +101,7 @@
     window.addEventListener("storage", e => { if (where === "browser" && e.key === BROWSER) { items = browserItems(); notify(); } });
     return {
       load, refresh, has, toggle, update, onChange: fn => listeners.add(fn),
-      replace: all => { items = Array.isArray(all) ? all.filter(sound) : []; if (where === "browser") saveBrowser(items); notify(); },
+      replace: all => { items = Array.isArray(all) ? arrange(all.filter(sound)) : []; if (where === "browser") saveBrowser(items); notify(); },
       all: () => items.slice(), count: () => items.length,
       where: () => where,
     };
@@ -111,6 +113,7 @@
     make: (key, more) => ({ key, ...more, pinned: Date.now() / 1000 }),
     sound: p => Boolean(p) && typeof p.key === "string" && typeof p.conv === "string" && Number.isFinite(p.at) && Number.isFinite(p.pinned)
       && validPinDescription(p.description),
+    order: (a, b) => b.pinned - a.pinned,  // newest pinned first, as the server's file has them (pinstore.js)
   });
   // Pin or unpin a message: its key, the conversation and the time it was written.
   const pins = {

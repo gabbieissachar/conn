@@ -524,6 +524,7 @@ function create({
   const seenLive = new Set();
   let sending = false;
   const pins = pinstore.create({ file: pinsFile, now });
+  pins.normalize();  // a pins file from before is oldest first; the newest pin goes first now, in the file and so on every page
   const stars = pinstore.createStars({ file: starsFile, now });
   stars.normalize();  // a stars file from before is oldest first; Conn's row reads the file as it stands, and the newest star goes first
   const sheetFlags = pinstore.createSheetFlags({ file: sheetFlagsFile, now });

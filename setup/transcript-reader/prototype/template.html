@@ -2781,7 +2781,7 @@ __HEAD_HOSTED__
   function pinsLabel() { return pins.count() ? `Pins · ${pins.count()}` : "Pins"; }
   // The Pins control in the open controls and the pin icon in the folded header open the same panel, which sits at the foot of the header so either shows it.
   function togglePins() { state.pinsOpen = !state.pinsOpen; paintPins(); }
-  // The list in the header: this conversation's pins in reading order, or every pin, newest pinned first.
+  // The list in the header: this conversation's pins, or every pin, each newest pinned first.
   function paintPins() {
     document.querySelectorAll("button.pin").forEach(paintPinButton);
     const toggle = document.getElementById("pins-toggle");
@@ -2792,7 +2792,8 @@ __HEAD_HOSTED__
     const locate = pinLocator();
     const current = data.sessions[state.session];
     const rows = pins.all().map(p => ({ p, at: locate(p) })).map(row => ({ ...row, here: row.at ? row.at.si === state.session : Boolean(current) && (current.ids || [current.id]).includes(row.p.conv) }));
-    const here = rows.filter(row => row.here).sort((a, b) => (a.at ? a.at.index : 1e9) - (b.at ? b.at.index : 1e9) || a.p.at - b.p.at);
+    // Newest pinned first in both lists; pins of one moment keep reading order.
+    const here = rows.filter(row => row.here).sort((a, b) => b.p.pinned - a.p.pinned || (a.at ? a.at.index : 1e9) - (b.at ? b.at.index : 1e9) || a.p.at - b.p.at);
     const shown = state.pinsScope === "all" ? rows.slice().sort((a, b) => b.p.pinned - a.p.pinned) : here;
     const panel = $("div", "pins");
     const scope = $("div", "pins-scope");

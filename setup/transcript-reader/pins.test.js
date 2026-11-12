@@ -292,3 +292,36 @@ test('stars: another tab\'s change arrives through the revision the poll carries
   await t.stars.refresh(undefined);  // a server that does not report stars
   assert.equal(heard, 1);
 });
+
+const keys = (t) => Array.from(t.pins.all(), (p) => p.key);  // arrays made inside the page's sandbox are not this realm's: read them out as plain ones
+
+// ---------------------------------------------------------------------------------------------------- pins: newest first (2026-11-12)
+
+test('pins: the newest pinned is first in this browser, for a new pin and for a list kept before, and the browser keeps that order', async () => {
+  const storage = new Map([['tr-pins', JSON.stringify([pin(K2, { pinned: 10 }), pin(K1, { pinned: 30 })])]]);
+  const t = load({ served: false, storage });
+  await t.pins.load();
+  assert.deepEqual(keys(t), [K1, K2], 'a list kept oldest first is read newest first');
+  const K3 = 'abcdef12-3456-4789-8abc-def012345679:in';
+  await t.pins.toggle(K3, CONV, 1);
+  assert.deepEqual(keys(t), [K3, K1, K2], 'a pin added goes to the top');
+  assert.deepEqual(Array.from(JSON.parse(storage.get('tr-pins')), (p) => p.key), [K3, K1, K2], 'and the browser keeps that order');
+  await t.pins.toggle(K3, CONV, 1);
+  await t.pins.toggle(K3, CONV, 1);
+  assert.equal(keys(t)[0], K3, 'unpin then pin again puts it back on top');
+});
+
+test('pins: a list from a server that still has them oldest first is shown newest first, and a pin added shows on top before the server answers', async () => {
+  const server = serverWith([pin(K2, { pinned: 10 }), pin(K1, { pinned: 30 })], 4);
+  const t = load({ server });
+  await t.pins.load();
+  assert.deepEqual(keys(t), [K1, K2]);
+  const K3 = 'abcdef12-3456-4789-8abc-def012345679:in';
+  const seen = [];
+  t.pins.onChange(() => seen.push(keys(t).join()));
+  await t.pins.toggle(K3, CONV, 1);
+  assert.equal(seen[0], [K3, K1, K2].join(), 'on top at once');
+  assert.equal(keys(t)[0], K3, 'and after the server answered (it stamps a later time)');
+  t.pins.replace([pin(K1, { pinned: 1 }), pin(K2, { pinned: 5 })]);
+  assert.deepEqual(keys(t), [K2, K1], 'a list handed in is put in order too');
+});

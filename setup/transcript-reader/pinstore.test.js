@@ -238,10 +238,54 @@ test('stars: a star added goes to the top, and the file is written in that order
   store.change({ op: 'unstar', conv: C2 });
   clock += 1000;
   assert.deepEqual(store.change({ op: 'star', conv: C2 }).stars.map((star) => star.conv), [C2, C3, C1]);
-  // Pins keep the order they always had: the order they were pinned in.
-  const pins = create({ file: path.join(folder, 'pins.json'), now: () => clock });
+});
+
+// ---------------------------------------------------------------------------------------------------- pins: newest first (2026-11-12)
+
+const K3 = 'abcdef12-3456-4789-8abc-def012345679:in';
+
+test('pins: a pin added goes to the top, and the file is written in that order; a description, edit or unpin keeps the order', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'pins.json');
+  let clock = 1_000_000;
+  const pins = create({ file, now: () => clock });
   pins.change({ op: 'pin', key: K1, conv: CONV, at: 1 });
-  assert.deepEqual(pins.change({ op: 'pin', key: K2, conv: CONV, at: 2 }).pins.map((pin) => pin.key), [K1, K2]);
+  clock += 1000;
+  pins.change({ op: 'pin', key: K2, conv: CONV, at: 2, description: 'Handoff' });
+  clock += 1000;
+  const after = pins.change({ op: 'pin', key: K3, conv: CONV, at: 3 });
+  assert.deepEqual(after.pins.map((pin) => pin.key), [K3, K2, K1], 'the newest pinned first, whatever the messages\' own order');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).pins.map((pin) => pin.key), [K3, K2, K1], 'and so in the file');
+  assert.equal(after.pins[1].description, 'Handoff', 'the description stays on its pin');
+  assert.deepEqual(pins.change({ op: 'describe', key: K1, description: 'Oldest' }).pins.map((pin) => pin.key), [K3, K2, K1]);
+  assert.deepEqual(pins.change({ op: 'unpin', key: K2 }).pins.map((pin) => pin.key), [K3, K1]);
+  // Unpinning and pinning again puts it back on top.
+  clock += 1000;
+  assert.deepEqual(pins.change({ op: 'pin', key: K2, conv: CONV, at: 2 }).pins.map((pin) => pin.key), [K2, K3, K1]);
+});
+
+test('pins: a file from before (oldest first) is read newest first, and normalize() puts it in that order once, keeping descriptions and moving the revision', () => {
+  const folder = fresh();
+  const file = path.join(folder, 'pins.json');
+  const old = [
+    { key: K1, conv: CONV, at: 1, pinned: 10, description: 'First' },
+    { key: K2, conv: CONV, at: 2, pinned: 30 },
+    { key: K3, conv: CONV, at: 3, pinned: 20, description: 'Third' },
+  ];
+  fs.writeFileSync(file, JSON.stringify({ version: 1, rev: 6, pins: old }));
+  const store = create({ file });
+  assert.deepEqual(store.read().pins.map((pin) => pin.key), [K2, K3, K1], 'read in order whatever the file holds');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pins[0].key, K1, 'the file is not touched by a read');
+  assert.equal(store.normalize(), true);
+  const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(written.pins, [old[1], old[2], old[0]], 'the same pins, descriptions included, newest first');
+  assert.equal(written.rev, 7, 'the revision moved, so a page holding the old list takes the new one');
+  assert.equal(store.normalize(), false, 'once');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).rev, 7);
+  assert.equal(create({ file: path.join(folder, 'none.json') }).normalize(), false, 'no file, nothing written');
+  fs.writeFileSync(path.join(folder, 'bad.json'), 'not json');
+  assert.equal(create({ file: path.join(folder, 'bad.json') }).normalize(), false, 'a file that is not pins is left alone');
+  assert.equal(fs.readFileSync(path.join(folder, 'bad.json'), 'utf8'), 'not json');
 });
 
 test('stars: a file from before (oldest first) is read newest first, and normalize() puts it in that order once, moving the revision', () => {
