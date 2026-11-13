@@ -123,9 +123,15 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     var pid: Int32? { (webView.value(forKey: "_webProcessIdentifier") as? Int).map { Int32($0) } }
 
+    /// The address a load without a fragment starts at. A Watch column's page (`lite`) carries `watch=1`, which tells it that the column's own
+    /// header already names the session (see `WatchAddress.columnFlag`); every other page is loaded at its plain base.
+    private var startURL: URL {
+        lite ? (WatchAddress.pageURL(base: baseURL, fragment: nil, pin: nil, column: true) ?? baseURL) : baseURL
+    }
+
     func loadIfNeeded() {
         guard phase == .idle, !released else { return }
-        if let f = startFragment { loadFragment(f) } else { load(baseURL) }
+        if let f = startFragment { loadFragment(f) } else { load(startURL) }
     }
 
     func load(_ url: URL) {
@@ -137,7 +143,7 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
 
     func reload() {
         phase = .loading; loadStart = Date()
-        if webView.url == nil { if let f = startFragment { loadFragment(f) } else { load(baseURL) } } else { webView.reload() }
+        if webView.url == nil { if let f = startFragment { loadFragment(f) } else { load(startURL) } } else { webView.reload() }
     }
 
     // MARK: a Watch column
@@ -347,15 +353,12 @@ final class WebBox: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelega
     }
 
     /// The pin as a page load. A live page gets a `?conn=<n>` query so WKWebView treats it as a new document and not as a
-    /// fragment jump; a fixture file takes the hash once it has loaded.
+    /// fragment jump (a Watch column's page also `watch=1`, see `startURL`); a fixture file takes the hash once it has loaded.
     private func loadFragment(_ fragment: String) {
         pinsLoaded += 1
-        if fixtureDir != nil { pendingHash = fragment; load(baseURL); return }
+        if fixtureDir != nil { pendingHash = fragment; load(startURL); return }
         pinCounter += 1
-        var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "conn", value: "\(pinCounter)")]
-        comps.fragment = fragment
-        if let url = comps.url { load(url) }
+        if let url = WatchAddress.pageURL(base: baseURL, fragment: fragment, pin: pinCounter, column: lite) { load(url) }
     }
 
     /// Ask the reader for its open asks from inside the page. The reader's routes need the per-start token, which the reader writes

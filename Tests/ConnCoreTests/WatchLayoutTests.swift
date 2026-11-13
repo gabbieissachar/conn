@@ -247,4 +247,38 @@ import ConnCore
         #expect(WatchAddress.fragment(session: "a'b", message: nil) == nil)
         #expect(WatchAddress.fragment(session: String(repeating: "a", count: 65), message: nil) == nil)
     }
+
+    // MARK: the page is told it is a Watch column
+
+    @Test func aWatchColumnsPageIsLoadedWithTheColumnFlagAfterTheLoadCounter() {
+        let base = URL(string: "http://localhost:8768/setup/transcript-reader/out/live/index.html")!
+        let frag = WatchAddress.fragment(session: a, message: "t12ad57c7c69734480c8aaddb")
+        #expect(WatchAddress.pageURL(base: base, fragment: nil, pin: nil, column: true)?.absoluteString == base.absoluteString + "?watch=1")
+        #expect(WatchAddress.pageURL(base: base, fragment: frag, pin: 3, column: true)?.absoluteString == base.absoluteString + "?conn=3&watch=1#s=\(a)&m=t12ad57c7c69734480c8aaddb")
+        // The flag is a query item and never part of the fragment: the page's address parser takes only `#s=...&m=...` and would refuse anything more.
+        #expect(WatchAddress.pageURL(base: base, fragment: frag, pin: 3, column: true)?.fragment == "s=\(a)&m=t12ad57c7c69734480c8aaddb")
+    }
+
+    @Test func thePlainReaderPageNeverGetsTheColumnFlag() {
+        let base = URL(string: "http://localhost:8768/setup/transcript-reader/out/index.html")!
+        #expect(WatchAddress.pageURL(base: base, fragment: nil, pin: nil, column: false)?.absoluteString == base.absoluteString)
+        #expect(WatchAddress.pageURL(base: base, fragment: "s=\(a)", pin: 7, column: false)?.absoluteString == base.absoluteString + "?conn=7#s=\(a)")
+    }
+
+    @Test func aBaseAddressKeepsItsOwnQueryAndConnsTwoItemsAreAlwaysSetAnew() {
+        let base = URL(string: "http://localhost:8768/live/index.html?lab=1&conn=1&watch=1")!
+        #expect(WatchAddress.pageURL(base: base, fragment: "s=\(a)", pin: 4, column: true)?.absoluteString == "http://localhost:8768/live/index.html?lab=1&conn=4&watch=1#s=\(a)")
+        #expect(WatchAddress.pageURL(base: base, fragment: nil, pin: nil, column: false)?.absoluteString == "http://localhost:8768/live/index.html?lab=1")
+    }
+
+    @Test func aFilePageIsLoadedAsItIsBecauseAFileAddressCannotCarryAQuery() {
+        // The stand-in page of a check is a file: WKWebView answers "The URL can't be shown" to a file address with a query (the first run of the
+        // Watch check with the flag on said so), and the page takes its hash after it has loaded.
+        let base = URL(fileURLWithPath: "/tmp/fixture/fixture-lite.html")
+        for column in [true, false] {
+            let url = WatchAddress.pageURL(base: base, fragment: "s=\(a)", pin: 2, column: column)
+            #expect(url == base)
+            #expect(url?.query == nil)
+        }
+    }
 }

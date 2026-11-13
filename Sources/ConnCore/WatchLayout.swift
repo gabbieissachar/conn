@@ -197,4 +197,27 @@ public enum WatchAddress {
         if let m = message, validTurn(m) { return "s=\(session)&m=\(m)" }
         return "s=\(session)"
     }
+
+    /// The query item that tells a lite page it is a Watch column (`watch=1`). The column's own header already names the session, so a
+    /// page that reads the flag leaves out its session picker; a page that does not read it ignores it (checked on the reader's lite
+    /// page of 2026-11-13: it renders as before). The contract with the reader is `data/conn-fix-queue-2/watch-picker-note.md`.
+    public static let columnFlag = URLQueryItem(name: "watch", value: "1")
+
+    /// The address a lite page is loaded at. `pin` is the load counter (`conn=<n>`, which makes WKWebView treat the load as a new
+    /// document and not as a fragment jump); `column` adds `watch=1`, for a Watch column's page and nothing else (the full reader page
+    /// never gets it). The query's own items come first, then `conn`, then `watch`; the fragment is `#s=...` as `fragment(session:message:)` made it.
+    ///
+    /// A file page (a stand-in for a check) is returned as it is: WKWebView refuses to show a file address that carries a query ("The URL can't be
+    /// shown"), and such a page takes its hash after it has loaded.
+    public static func pageURL(base: URL, fragment: String?, pin: Int?, column: Bool) -> URL? {
+        if base.isFileURL { return base }
+        guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        // Whatever else the base address asks for stays; Conn's own two items are always set here, never copied from an earlier load.
+        var items = (comps.queryItems ?? []).filter { $0.name != "conn" && $0.name != columnFlag.name }
+        if let pin = pin { items.append(URLQueryItem(name: "conn", value: "\(pin)")) }
+        if column { items.append(columnFlag) }
+        comps.queryItems = items.isEmpty ? nil : items
+        comps.fragment = fragment
+        return comps.url
+    }
 }

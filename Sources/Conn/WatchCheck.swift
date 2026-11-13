@@ -68,6 +68,15 @@ enum WatchCheck {
                "views=\(ids.count) phases=\(boxes.map { String(describing: $0?.phase) }) path=\(boxes.first??.webView.url?.path ?? "-")")
         report("the columns are readable widths side by side", widths.count == boxes.count && widths.allSatisfy { $0 >= WatchArea.minColumnWidth - 1 },
                "widths=\(widths.map { Int($0) }) window=\(Int(win.contentView?.frame.width ?? 0))")
+        // The column's own header names the session, so the page is told it is a Watch column (`watch=1`, ROADMAP N39): a page that reads the
+        // flag leaves out its session picker. Conn's half only: the reader's lite page of 2026-11-13 ignores the flag, and the stand-in page does too.
+        // The stand-in is a file, and WKWebView refuses a file address with a query, so only a launch on a served page (`CONN_LITE_URL`, or the real
+        // reader) can show the flag in the page's own address; the stand-in launch shows that the page is loaded as it is.
+        var searches: [String] = []
+        for b in boxes { searches.append(b == nil ? "-" : await js(b!, "location.search")) }
+        let filePage = model.web.liteBaseURL.isFileURL
+        report(filePage ? "a stand-in (file) column page is loaded as it is: a file address cannot carry watch=1" : "every column's page is loaded with watch=1, so it knows it is a Watch column",
+               searches.count == boxes.count && searches.allSatisfy { filePage ? $0.isEmpty : $0.contains("watch=1") }, "search=\(searches)")
         let titles = await withTaskGroupTitles(boxes, fixture: fixture)
         // The fixture page names a conversation by its session number modulo its 14 invented titles, so two sessions can share a title:
         // "not the same twice" is judged on the address each column was opened on, which the title only mirrors. With the real reader a
@@ -102,6 +111,8 @@ enum WatchCheck {
                "on=\(model.watchOn) columnViews=\(model.watch.boxes.count) readerBox=\(model.web.readerBox == nil ? "nil" : "present") phase=\(model.web.readerBox.map { String(describing: $0.phase) } ?? "-")")
         if let r = model.web.readerBox { await ReaderPinCheck.settled(r, wait: wait) }
         report("the reader loads again after Watch", model.web.readerBox?.phase == .ready, "phase=\(model.web.readerBox.map { String(describing: $0.phase) } ?? "-")")
+        let readerSearch = model.web.readerBox.map { $0.webView.url?.query ?? "" }
+        report("the full reader page is not told it is a Watch column (no watch= in its address)", readerSearch.map { !$0.contains("watch=") } ?? false, "query=\(readerSearch ?? "-")")
         let again = await key("W", 13, [.command, .shift])
         await settle()
         report("turning Watch on again opens the same sessions", again && model.watchOn && model.watch.layout.openCount == 3, "sessions=\(model.watch.layout.sessions.map { String($0.prefix(8)) })")
