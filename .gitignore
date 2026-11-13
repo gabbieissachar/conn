@@ -7,3 +7,9 @@ build/
 .env.*
 !.env.example
 .deps/
+setup/transcript-reader/out/
+setup/herdr/state/*
+!setup/herdr/state/.gitignore
+__pycache__/
+*.pyc
+node_modules/
