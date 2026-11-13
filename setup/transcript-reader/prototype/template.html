@@ -102,6 +102,10 @@ __HEAD_HOSTED__
   .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
   .pick-row { flex: 1 1 100%; min-width: 0; display: flex; gap: 6px; align-items: stretch; }
   .pick-row select { flex: 1 1 auto; }
+  /* A Watch column has no session picker: what is left of the row is the star, which sits at the start of the pills' row instead of taking a line of its own. */
+  .pick-row.star-only { flex: 0 0 auto; }
+  /* Folded, a Watch column's header keeps no session name or picker (the star stays, in its second row). */
+  .bar.collapsed.nopick .title > :is(.crumb, .crumb-session) { display: none; }
   .controls select { flex: 1 1 100%; min-width: 0; max-width: 100%; font: inherit; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
   .btn { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   /* One pressed style for every toggle, in the "you" blue: yellow belongs to "Needs you" alone, so a switched-on Follow Herdr or Pin never reads as an ask. */
@@ -809,6 +813,13 @@ __HEAD_HOSTED__
     .bar.collapsed .title > :is(#view-tasks, #tasks-quick, #queue-quick) { order: 3; margin-top: 0; }
     .bar.collapsed .title::after { content: ""; order: 6; flex: 0 0 100%; height: 0; }
     .bar.collapsed .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { order: 7; margin-top: 6px; }
+    /* A Watch column, with no picker to fill the first line: the jumps go up beside the live badge, Search and the fold button, and the star joins the second line with the icons, so
+       the header is two lines at every Watch width (three at 330 px before). */
+    .bar.collapsed.nopick .title > .jump { order: 1; margin-top: 0; }
+    .bar.collapsed.nopick .title > .live { margin-left: auto; }
+    .bar.collapsed.nopick .title > .crumb-star { order: 7; margin: 6px 0 0; }
+    /* The Tasks and Queue icons went up beside Search to spare the picker's line; with no picker the first line is full of jumps, so they go back to the icons' line. */
+    .bar.collapsed.nopick .title > :is(#view-tasks, #tasks-quick, #queue-quick) { order: 7; margin-top: 6px; }
     .bar.collapsed .asof:not(.stale) { display: none; }
     .bar.searching .title::after, .bar.searching .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { display: none !important; }
   }
@@ -967,6 +978,9 @@ __HEAD_HOSTED__
   const LAZY = MODE === "hosted" || MODE === "live";
   const HOSTED = MODE === "hosted";
   const EMBED = MODE === "embed";
+  // A Watch column: Conn loads the lite page with ?watch=1 (conn=<n>&watch=1), and its own column header already names the conversation, so this page draws no session
+  // picker (DESIGN.md, "Watch columns have no session picker"). Read once, on the lite page only: the full page, the hosted copy and the embed page ignore the flag.
+  const WATCH = MODE === "live" && new URLSearchParams(location.search).get("watch") === "1";
   // What the embed page keeps: nothing past the page itself. Every read and write of localStorage and sessionStorage in this script lands
   // here, so the pins, the read marks, the drafts and the rest of what the reader keeps in a browser are never written, whatever code reaches them.
   const memoryStorage = () => { const held = new Map(); return { getItem: k => held.has(k) ? held.get(k) : null, setItem: (k, v) => { held.set(k, String(v)); }, removeItem: k => { held.delete(k); }, clear: () => held.clear(), key: i => [...held.keys()][i] ?? null, get length() { return held.size; } }; };
@@ -1950,7 +1964,11 @@ __HEAD_HOSTED__
       docs.addEventListener("change", () => chooseDocument(docs.value));
       pick.select = made; pick.docs = docs; pick.star = starButton(); pick.row = $("div", "pick-row"); pick.row.append(made, docs, pick.star);
     }
-    if (session) { pick.select.hidden = state.view === "doc"; pick.docs.hidden = state.view !== "doc"; }
+    if (session) {
+      pick.select.hidden = state.view === "doc"; pick.docs.hidden = state.view !== "doc";
+      if (WATCH) pick.select.hidden = true;  // a Watch column has no session picker; the document picker stays
+      pick.row.classList.toggle("star-only", WATCH && state.view !== "doc");
+    }
     return { row, select: session ? pick.select : $("select"), star: session ? pick.star : starButton(), pickRow: session ? pick.row : $("div", "pick-row") };
   }
   function pickSession(value) {
@@ -6002,6 +6020,7 @@ __HEAD_HOSTED__
     const pick = state.view === "reader" && data.sessions.length > 1;
     const docPick = state.view === "doc" && Boolean(session);  // folded, the Documents view's line is a document picker, and a session is chosen from the Conversation
     bar.classList.toggle("pick", pick);
+    bar.classList.toggle("nopick", WATCH && state.view === "reader" && Boolean(session));  // a Watch column on a conversation: no session name or picker in the folded header
     bar.classList.toggle("docpick", docPick);
     const quick = document.getElementById("follow-quick");
     quick.hidden = !canLive || state.view !== "reader";
