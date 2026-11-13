@@ -35,6 +35,10 @@ name them, so its Documents view lists them.
 LAB_COMMANDS=1 gives crew-1's latest reply six shell steps (a command with ;, && and pipes in the shape of a real one, a plain one, a heredoc, quoted
 ; and |, a subshell and a long path), for the step sheet's Format button (step-format-check.js).
 
+LAB_BURST=<n> makes crew-1 a conversation in which n replies arrive at once (the reply queue, reply-queue-check.js): a leader's session when its workers
+all report in the same few minutes, one question and one reply every 12 seconds, the newest 30 seconds old, a few of them asking something of the owner.
+burst_more() appends more of them to the log while a page has it open.
+
 Prints one JSON line: what the driver needs.
 """
 
@@ -268,6 +272,49 @@ def leader_log(path, cwd, sid_name):
     os.utime(path, (now - 200, now - 200))
 
 
+BURST_WORKERS = ["reader-fix-batch", "bc-39-specs-task", "lv-50-finish-flow", "esim-annual-global-l3", "ab-12-alpha-copy", "organizer-phone-access", "confluence-section-edit"]
+BURST_LINES = [
+    "The worker reports its branch is ready and the checks are green; nothing needs you for it yet.",
+    "The worker finished the second section and starts the third; it expects to be done within the hour.",
+    "The worker found two files that disagree on the market list and kept the newer one; the other is noted in its report.",
+    "The worker is waiting on a review of its draft before it starts the last part.",
+    "The worker's run stopped on a failing test that has nothing to do with its change; I re-ran it and it passed.",
+]
+
+
+def burst_turn(n, at, cwd):
+    """The two records of burst turn n (a message from the owner and the reply to it): the message's time is `at`, the reply's four seconds after. Every sixth reply asks something."""
+    worker = BURST_WORKERS[n % len(BURST_WORKERS)]
+    uid = f"{0xb0000 + n:08x}-bbbb-4000-8000-{n:012d}"
+    body = f"Nathan, {worker} (report {n + 1}):\n\n- {BURST_LINES[n % len(BURST_LINES)]}\n- {BURST_LINES[(n + 2) % len(BURST_LINES)]}\n"
+    if n % 6 == 5:
+        body += f"\nShall I merge {worker} when it is green? Reply with A1=yes or A1=no."
+    return [
+        {"type": "user", "uuid": uid, "timestamp": iso(at), "cwd": cwd, "message": {"role": "user", "content": f"Where is {worker}?"}},
+        {"type": "assistant", "timestamp": iso(at + 4), "cwd": cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": body}]}},
+    ]
+
+
+def burst_log(path, cwd, count):
+    """`count` replies one after another, 12 seconds apart, the newest 30 seconds old."""
+    records = []
+    for n in range(count):
+        records += burst_turn(n, NOW - 30 - (count - 1 - n) * 12, cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    os.utime(path, (NOW - 26, NOW - 26))
+
+
+def burst_more(path, first, count, cwd="/lab/crew-1"):
+    """Appends turns first .. first+count-1 to a burst log, 3 seconds apart, ending now: replies that arrive while a page has the conversation open."""
+    now = time.time()
+    records = []
+    for k in range(count):
+        records += burst_turn(first + k, now - (count - k) * 3 - 4, cwd)
+    with open(path, "a", encoding="utf-8") as out:
+        out.write("".join(json.dumps(r) + "\n" for r in records))
+
+
 def sleeper():
     """A process the reader can see is alive; the driver stops it."""
     return subprocess.Popen(["sleep", "6000"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True).pid
@@ -307,7 +354,9 @@ def main(folder: Path) -> None:
         named = ("The notes are written:\n\n" + "\n".join(f"- `{d}`" for d in docs)) if docs and n == 0 else None
         if os.environ.get("LAB_REFS") and n == 0:
             named = REFS_REPLY.format(crew=CREW[2])
-        if os.environ.get("LAB_LEADER") and n == 0:
+        if os.environ.get("LAB_BURST") and n == 0:
+            burst_log(primary / "projects" / "-lab-crew-1" / f"{sid}.jsonl", cwd, int(os.environ["LAB_BURST"]))
+        elif os.environ.get("LAB_LEADER") and n == 0:
             cwd = str(leader_home(home))
             leader_log(primary / "projects" / "-lab-crew-1" / f"{sid}.jsonl", cwd, "crew-1")
         else:

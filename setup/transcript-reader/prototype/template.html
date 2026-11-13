@@ -565,13 +565,29 @@ __HEAD_HOSTED__
   #search [data-scope][aria-disabled="true"] { opacity: .45; }
   .hide-msg { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .pin + .hide-msg { margin-left: 0; }
+  /* Queue: a reply set aside to go through later (replyqueue.js, DESIGN.md, "The reply queue"). The pill is first of the group, so Pin, Hide and Reply keep their
+     places. On a queued reply it reads Done and is the one filled pill; the card gets a blue edge and a chip with its place in the queue. The yellow edge of a reply
+     that needs you stays yellow. */
+  .queue-btn { margin-left: auto; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+  .queue-btn + .pin { margin-left: 0; }
+  .queue-btn.done { border-color: var(--you); background: var(--you); color: var(--paper); font-weight: 600; }
+  .queue-btn:focus-visible, .queue-done:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .reply.queued { border-color: var(--you); box-shadow: 0 0 0 1px var(--you); }
+  .reply.queued.needs { border-left-color: var(--ask-line); }
+  .chip.queue { background: var(--you-wash); color: var(--you); font-weight: 600; }
+  /* On a phone's width and in a Watch column the chip, the time and four pills do not fit one line, and the pills would split across two: the chip takes the first line. */
+  @media (max-width: 440px) { .who > .chip.queue { margin-right: 100%; } }
+  #queue-panel { min-width: 0; margin-top: 4px; }
+  .queue-done { border: 1px solid var(--you); background: var(--paper); color: var(--you); border-radius: 99px; padding: 2px 11px; font-size: 12px; font-weight: 600; }
+  .queue-clear { margin-left: auto; }
+  .view-btn .qn { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px; background: var(--you); color: var(--paper); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
   .hide-msg + .reply-to { margin-left: 0; }
   .hide-msg:focus-visible, .undo-toast button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   .gone { opacity: .6; border-style: dashed; }
   .gone > .who::after { content: "hidden"; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 99px; padding: 0 7px; order: 9; }
-  .undo-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--dock-h, 0px) + 14px); z-index: 30; display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px); padding: 8px 8px 8px 14px; border-radius: 99px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .undo-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--dock-h, 0px) + 14px); z-index: 30; display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100vw - 32px); padding: 8px 8px 8px 14px; border-radius: 99px; background: var(--ink); color: var(--paper); font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
   .undo-toast[hidden] { display: none; }
-  .undo-toast button { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 99px; padding: 3px 12px; font-weight: 600; }
+  .undo-toast button { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 99px; padding: 3px 12px; font-weight: 600; white-space: nowrap; }
   /* Marking a reply's answer sheet wrong or missing: a small button after Reply, and the panel it opens under the reply's header line. */
   .sheet-flag { border: 1px solid var(--line); background: var(--paper); border-radius: 99px; padding: 0 9px; font-size: 12px; color: var(--muted); }
   .sheet-flag:focus-visible, .sheetfix button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
@@ -674,7 +690,7 @@ __HEAD_HOSTED__
     .dock-row button { min-height: 44px; min-width: 44px; }
     .dock textarea { min-height: 44px; }
     .dock-acts button, .dock-head button, .dock-batch li button { padding: 8px 6px; }
-    .pin, .reply-to { padding-top: 7px; padding-bottom: 7px; }
+    .pin, .reply-to, .queue-btn { padding-top: 7px; padding-bottom: 7px; }
     .hide-msg { padding-top: 7px; padding-bottom: 7px; }
     .undo-toast button { min-height: 44px; }
   }
@@ -788,8 +804,9 @@ __HEAD_HOSTED__
     .bar.collapsed .title > .live { order: 3; }
     .bar.collapsed .title > .search-toggle { order: 4; }
     .bar.collapsed .title > .bar-toggle { order: 5; }
-    /* The Tasks icon goes up beside the search where the width wraps: the second line has room for the jumps, Documents, the answer sheet, Pins and Follow, and no more. */
-    .bar.collapsed .title > :is(#view-tasks, #tasks-quick) { order: 3; margin-top: 0; }
+    /* The Tasks icon goes up beside the search where the width wraps: the second line has room for the jumps, Documents, the answer sheet, Pins and Follow, and no more.
+       The Queue icon goes up with it, so a queue does not cost the header a third line. */
+    .bar.collapsed .title > :is(#view-tasks, #tasks-quick, #queue-quick) { order: 3; margin-top: 0; }
     .bar.collapsed .title::after { content: ""; order: 6; flex: 0 0 100%; height: 0; }
     .bar.collapsed .title > :is(.jump, .view-btn, .to-sheet, .follow-quick) { order: 7; margin-top: 6px; }
     .bar.collapsed .asof:not(.stale) { display: none; }
@@ -810,7 +827,7 @@ __HEAD_HOSTED__
     .bar .asof a.offline-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; }
     .search-row input { height: 44px; }
     .search-row button { height: 44px; min-width: 44px; }
-    .pin-item, .pin-x { min-height: 44px; }
+    .pin-item, .pin-x, .queue-done { min-height: 44px; }
   }
   /* Three pills, three icons and Follow are 380 px of fingertip, more than a 390 px phone leaves: a 4 px gap and 4 px inside each pill bring the row
      to 356 px, one row (a narrower screen wraps Follow onto a row of its own). */
@@ -854,7 +871,7 @@ __HEAD_HOSTED__
 <body>
 <header class="bar" id="bar">
   <div class="bar-inner">
-    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="view-btn" id="view-tasks" href="/setup/transcript-reader/board/" aria-label="Tasks" title="Tasks: the board of this session's open items and calls" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="1.8" y="2.6" width="3.6" height="10.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="6.2" y="2.6" width="3.6" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="10.6" y="2.6" width="3.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></a><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="expand-quick" type="button" aria-label="Expand" title="Expand" aria-pressed="false" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2L9 7M2 14l5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="view-btn" id="tasks-quick" type="button" aria-controls="taskmenu" aria-pressed="false" aria-label="By task" title="By task" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2 3.2h12L9.4 8.5v4.3L6.6 11.4V8.5L2 3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
+    <div class="title"><span class="name">Transcript reader</span><span class="proto">prototype</span><button class="crumb" id="crumb" type="button"></button><select class="crumb-session" id="crumb-session" aria-label="Session"></select><select class="crumb-doc" id="crumb-doc" aria-label="Document"></select><button class="star-btn crumb-star" id="crumb-star" type="button" aria-label="Star this session" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M8 1.6l1.9 4.2 4.6.5-3.4 3.1 1 4.5L8 11.5 3.9 13.9l1-4.5L1.5 6.3l4.6-.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><span class="live" id="live"></span><button class="jump" id="jump-prev" type="button" aria-label="Previous message from you" title="Previous message from you (k)">↑ You</button><button class="jump" id="jump-next" type="button" aria-label="Next message from you" title="Next message from you (j)">You ↓</button><button class="jump ask" id="jump-ask" type="button" aria-label="Next reply that needs you" title="Next reply that needs you (n)">Ask ↓</button><button class="view-btn" id="view-conv" type="button" aria-label="Conversation" title="Conversation" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2.5 3h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.4L5.4 14v-2.8H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="view-btn" id="view-doc" type="button" aria-label="Documents" title="Documents" aria-pressed="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 1.8h5l3.5 3.5v8.4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.9v3.5h3.4M5.4 8.4h5.2M5.4 11h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="view-btn" id="view-tasks" href="/setup/transcript-reader/board/" aria-label="Tasks" title="Tasks: the board of this session's open items and calls" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="1.8" y="2.6" width="3.6" height="10.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="6.2" y="2.6" width="3.6" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="10.6" y="2.6" width="3.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></a><button class="view-btn" id="files-quick" type="button" aria-label="Files" title="Files" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.8 4.2h4.6l1.4 1.6h6.4v6.8a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M1.8 4.2v-.6a1 1 0 0 1 1-1h3.5l1.4 1.6h5.5a1 1 0 0 1 1 1v.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="expand-quick" type="button" aria-label="Expand" title="Expand" aria-pressed="false" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2L9 7M2 14l5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><a class="to-sheet" href="questionnaire.html" title="Answer sheet" aria-label="Answer sheet"><span class="txt">Answer sheet<span class="go"> →</span></span><svg class="sheet-ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.6 2.5H4.5a1 1 0 0 0-1 1v9.7a1 1 0 0 1 1 1h7a1 1 0 0 0 1-1V3.5a1 1 0 0 0-1-1h-1.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><rect x="5.6" y="1.4" width="4.8" height="2.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7.6l1 1 1.7-1.9M5.5 11.2l1 1 1.7-1.9M9.8 7.7h1.7M9.8 11.3h1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></a><button class="view-btn" id="pins-quick" type="button" aria-controls="pins-panel" aria-pressed="false" aria-label="Pins" title="Pins" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.3 1.8h5.4M6.4 1.8v4L4.1 8.5a.5.5 0 0 0 .4.9h7a.5.5 0 0 0 .4-.9L9.6 5.8v-4M8 9.4v4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="view-btn" id="queue-quick" type="button" aria-controls="queue-panel" aria-pressed="false" aria-label="Queue" title="Queue" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5.8 4h8M5.8 8h8M5.8 12h8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="2.6" cy="4" r="1" fill="currentColor"/><circle cx="2.6" cy="8" r="1" fill="currentColor"/><circle cx="2.6" cy="12" r="1" fill="currentColor"/></svg><span class="qn" id="queue-quick-n" hidden></span></button><button class="view-btn" id="hidden-quick" type="button" aria-pressed="false" aria-label="Hidden" title="Hidden" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M1.6 8s2.3-4.2 6.4-4.2S14.4 8 14.4 8s-2.3 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 13.2L13.2 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="view-btn" id="tasks-quick" type="button" aria-controls="taskmenu" aria-pressed="false" aria-label="By task" title="By task" hidden><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2 3.2h12L9.4 8.5v4.3L6.6 11.4V8.5L2 3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="follow-quick" id="follow-quick" type="button" hidden>Follow</button><button class="search-toggle" id="search-toggle" type="button" aria-controls="search" aria-expanded="false" aria-label="Search" title="Search this conversation or all of them (/ or Cmd/Ctrl+F)" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 10l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button><button class="bar-toggle" id="bar-toggle" type="button" aria-controls="bar-more"></button></div>
     <div class="asof" id="asof" hidden><span id="asof-text"></span><a class="offline-link" id="offline-link" href="bucket/index.html" hidden title="The sealed copy, which this phone can keep and read with the laptop shut">Offline copy</a><button class="sync" id="sync" type="button">Sync</button></div>
     <div class="search" id="search" role="search" hidden>
       <div class="search-row">
@@ -898,6 +915,7 @@ __HEAD_HOSTED__
       <div id="controls"></div>
     </div>
     <div id="pins-panel" hidden></div>
+    <div id="queue-panel" hidden></div>
     <div class="task-banner" id="task-banner" role="status" hidden><span id="task-banner-text"></span><button class="btn" id="task-banner-all" type="button" title="Switch every task back on">Show all</button></div>
   </div>
 </header>
@@ -964,6 +982,7 @@ __HEAD_HOSTED__
   const SHEET_PAGE = HOSTED || MODE === "live" ? "sheet.html" : "questionnaire.html";
 /*__PINS__*/
 /*__DRAFTSTORE__*/
+/*__REPLYQUEUE__*/
 /*__PICKER__*/
 /*__ASKS__*/
 /*__MARKDOWN_IT__*/
@@ -988,7 +1007,7 @@ __HEAD_HOSTED__
   // { open(), close(), shown() }
   const reveals = new Map();
   // open: what the reader expanded (long replies, folded wake-ups, working notes), so a refresh keeps it.
-  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, showHidden: false, docPage: "list" };
+  const state = { view: "reader", session: 0, showWakes: false, open: new Set(), fleetHome: "all", hideRoutine: true, openOnly: false, follow: true, copySelection: true, barOpen: true, pinsOpen: false, pinsScope: "here", pinEditing: null, queueOpen: false, showHidden: false, docPage: "list" };
   // The lite page is opened on one conversation (a column that is pinned to it) and stays there until Follow is turned on for it, in its own
   // setting; the local page follows unless it was turned off.
   const FOLLOW_KEY = MODE === "live" ? "tr-live-follow" : "tr-follow";
@@ -1299,8 +1318,12 @@ __HEAD_HOSTED__
     if (verdict) who.append(verdict);
     if (ex.typed) who.append(typedChip(ex.typed));
     if (ex.reminder_lines && ex.reminder_lines.length && ex.verdict !== "needs-you") who.append($("span", "chip reminder", "reminds you of open items"));
+    const standing = sid && ex.reply ? queueChip(ex) : null;  // where the reply stands in the queue, shown before the time while it is queued
+    if (standing) who.append(standing);
     who.append($("span", null, fmtWhen(ex.reply_at || ex.at)));
     if (sid && ex.reply && (!EMBED || embedHost)) {
+      const queue = queueButton(ex, sid, card, standing);
+      if (queue) who.append(queue);
       const pin = pinButton(ex, "reply", sid);
       if (pin) { who.append(pin); card.dataset.msg = pinKey(ex, "reply"); }
       const hide = hideButton(ex, "reply", sid);
@@ -2012,6 +2035,7 @@ __HEAD_HOSTED__
     }
     const session = data.sessions[state.session];
     const exs = session ? session.exchanges : [];
+    readQueue();  // the cards below ask it for their place in the queue
     const controls = document.getElementById("controls");
     const { row, select, star, pickRow } = pickerRow(controls, session);
     fillSessions(select);
@@ -2043,6 +2067,11 @@ __HEAD_HOSTED__
     pinned.setAttribute("aria-pressed", String(state.pinsOpen)); pinned.setAttribute("aria-controls", "pins-panel");
     pinned.title = "Pinned messages: this conversation's, or every conversation's";
     pinned.addEventListener("click", togglePins);
+    const queueToggle = $("button", "btn", queueLabel()); queueToggle.id = "queue-toggle"; queueToggle.type = "button";
+    queueToggle.setAttribute("aria-pressed", String(state.queueOpen)); queueToggle.setAttribute("aria-controls", "queue-panel");
+    queueToggle.title = "Replies you set aside to go through: this conversation's, oldest first";
+    queueToggle.hidden = Boolean(session.placeholder) || EMBED;
+    queueToggle.addEventListener("click", toggleQueuePanel);
     const hiddenToggle = $("button", "btn", hiddenLabel()); hiddenToggle.id = "hidden-toggle"; hiddenToggle.type = "button";
     hiddenToggle.setAttribute("aria-pressed", String(state.showHidden));
     hiddenToggle.title = state.showHidden ? "Hide the hidden messages again" : "Show the messages and replies hidden from this conversation, each with Show again";
@@ -2056,7 +2085,7 @@ __HEAD_HOSTED__
     if (pickRow.parentNode !== row) row.append(pickRow);
     for (const turnsOnly of [prev, next, needs, wakes]) turnsOnly.hidden = Boolean(session.placeholder);  // there are no turns to go between
     const tasksToggle = taskButton();
-    row.append(prev, next, needs, wakes, ...(tasksToggle ? [tasksToggle] : []), pinned, hiddenToggle, copyToggle, shut, follow);
+    row.append(prev, next, needs, wakes, ...(tasksToggle ? [tasksToggle] : []), pinned, queueToggle, hiddenToggle, copyToggle, shut, follow);
     paintStar(star);
     const count = p => exs.filter(p).length;
     const summary = $("div", "summary", summaryLine(exs.length, [
@@ -2088,7 +2117,7 @@ __HEAD_HOSTED__
     renderLive();
     // The controls above are drawn for every build; the turns below only when they changed (turnsUnchanged, in applyPayload).
     // (The task switches are part of what the turns were drawn from: a change of them always draws again, and this keeps the rule even if a caller forgets.)
-    if (keepTurns && held && held.sid === session.id && held.tasks === taskSignature()) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id), tasks: taskSignature() }; paintPins(); paintAsks(); return; }
+    if (keepTurns && held && held.sid === session.id && held.tasks === taskSignature()) { turnsDrawn = { sid: session.id, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, session.id), tasks: taskSignature() }; paintPins(); paintQueue(); paintAsks(); return; }
 
     const main = document.getElementById("main"); main.replaceChildren();
     if (!exs.length) { main.append($("div", "empty", session.placeholder ? "No transcript yet for this session." : "No turns in this session."), ...(session.placeholder ? [] : pendingNodes(session))); return; }
@@ -2120,6 +2149,7 @@ __HEAD_HOSTED__
     main.append(...pendingNodes(session));
     turnsDrawn = { sid, exchanges: exs, context: turnsContext(exs, data.documents, data.steps_from, sid), tasks: taskSignature() };
     paintPins();
+    paintQueue();
     paintAsks();
   }
   // ---------------------------------------------------------------- drawing the turns again only when they changed (DESIGN.md, 2026-11-05)
@@ -2741,11 +2771,13 @@ __HEAD_HOSTED__
     return btn;
   }
   let toastTimer = null;
-  function toast(text, undo) {
+  function toast(text, undo, next) {
     let node = document.getElementById("undo-toast");
     if (!node) { node = $("div", "undo-toast"); node.id = "undo-toast"; node.setAttribute("role", "status"); document.body.append(node); }
     clearTimeout(toastTimer);
     node.replaceChildren($("span", null, text));
+    // next: { label, run }, a second button before Undo (the queue's Next).
+    if (next) { const b = $("button", null, next.label); b.type = "button"; b.addEventListener("click", () => { node.hidden = true; clearTimeout(toastTimer); next.run(); }); node.append(b); }
     if (undo) { const b = $("button", null, "Undo"); b.type = "button"; b.addEventListener("click", () => { node.hidden = true; clearTimeout(toastTimer); undo(); }); node.append(b); }
     node.hidden = false;
     toastTimer = setTimeout(() => { node.hidden = true; }, 8000);
@@ -2826,6 +2858,7 @@ __HEAD_HOSTED__
     const host = document.getElementById("pins-panel");
     if (!host) return;
     if (!state.pinsOpen) { host.replaceChildren(); paintBar(); return; }
+    if (state.queueOpen) { state.queueOpen = false; paintQueue(); }  // one panel at a time: the Queue panel gives way to the Pins panel
     const locate = pinLocator();
     const current = data.sessions[state.session];
     const rows = pins.all().map(p => ({ p, at: locate(p) })).map(row => ({ ...row, here: row.at ? row.at.si === state.session : Boolean(current) && (current.ids || [current.id]).includes(row.p.conv) }));
@@ -2920,6 +2953,183 @@ __HEAD_HOSTED__
     });
   }
   pins.onChange(paintPins);
+
+  // ---------------------------------------------------------------- the reply queue: replies set aside to go through later (replyqueue.js holds the store and the rules)
+  // Nathan, 2026-11-13: many replies arrive at once and some are missed. A Queue pill on each reply sets it aside (one tap, no panel, no keyboard); the header
+  // counts them (the Queue control, and an icon in the folded header while the conversation has a queue); the Queue panel lists them oldest first and goes to
+  // each in place; Done takes one off. Opening a reply never takes it off. It is not a pin: it is temporary, belongs to one conversation and is kept in this
+  // browser only (a Watch column and the Reader column share it, the phone has its own). DESIGN.md, "The reply queue".
+  const replyQueue = makeReplyQueue({ storage: localStorage, hosted: HOSTED });
+  if (!EMBED) replyQueue.prune();
+  const queueKey = ex => pinKey(ex, "reply");
+  const queueConv = session => ({ home: session.id, ids: session.ids || [session.id] });
+  // The conversation on screen's queue as the page last read it: a card asks this, never the storage, so a redraw of a long conversation reads storage once.
+  const queued = { items: [], rows: [], place: new Map() };
+  const queueMarks = new WeakMap();  // a reply card -> its key, its button and its chip
+  let queueSeen = "";  // the queue's keys as the page last read them (replyQueue.signature), so a change made elsewhere is told from none
+  function readQueue() {
+    const session = data.sessions[state.session];
+    const items = EMBED || !session || session.placeholder ? [] : replyQueue.items(queueConv(session).ids);
+    queued.items = items;
+    queued.rows = replyQueue.rows(items, session && session.exchanges, ex => hiddenNow(ex, "reply"));
+    queued.place = new Map(queued.rows.map((row, i) => [row.item.key, i + 1]));
+    queueSeen = items.map(item => item.key).join("|");
+  }
+  const queueLabel = () => queued.items.length ? `Queue · ${queued.items.length}` : "Queue";
+  function queueChip(ex) {
+    if (!queueKey(ex)) return null;  // the embed page and a page built before turns had ids: no key, no queue
+    const chip = $("span", "chip queue"); chip.hidden = true;
+    return chip;
+  }
+  function queueButton(ex, sid, card, chip) {
+    const key = queueKey(ex);
+    if (!key || !chip) return null;
+    const btn = $("button", "queue-btn"); btn.type = "button";
+    queueMarks.set(card, { key, button: btn, chip });
+    card.dataset.rq = key;
+    paintQueueCard(card);
+    btn.addEventListener("click", () => {
+      const session = sessionOf(sid);
+      if (session && replyQueue.has(queueConv(session).ids, key)) doneQueued(key); else queueReply(ex, sid);
+    });
+    return btn;
+  }
+  // A reply's card follows the queue: the blue edge, its place ("Queued · 2 of 5"), and the pill, which reads Queue until it is queued and Done after.
+  function paintQueueCard(card) {
+    const mark = queueMarks.get(card);
+    if (!mark) return;
+    const place = queued.place.get(mark.key), on = place !== undefined;
+    card.classList.toggle("queued", on);
+    mark.chip.hidden = !on;
+    if (on) {
+      mark.chip.textContent = `Queued · ${place} of ${queued.rows.length}`;
+      mark.chip.title = `Number ${place} of ${queued.rows.length} in this conversation's queue, oldest first. Done takes it off.`;
+    }
+    mark.button.textContent = on ? "Done" : "Queue";
+    mark.button.classList.toggle("done", on);
+    mark.button.setAttribute("aria-label", on ? "Done: take this reply off the queue" : "Add this reply to the queue");
+    mark.button.title = on ? "Reviewed: take this reply off the queue" : "Set this reply aside in the queue, to go through later";
+  }
+  function queueReply(ex, sid) {
+    const session = sessionOf(sid);
+    if (!session) return;
+    const conv = queueConv(session), at = ex.reply_at || ex.at, anchor = readingAnchor();
+    try { replyQueue.add(conv.home, conv.ids, { key: queueKey(ex), at: Number.isFinite(at) ? at : 0 }); }
+    catch (e) { link.listing = { text: `Could not queue the reply: ${e.message}` }; renderLive(); return; }
+    paintQueue(); restoreAnchor(anchor);
+  }
+  // Done: the reply is off the queue. A toast says how many are left, with Undo and, while there are more, Next (the oldest one left); it takes nothing else with it
+  // (a pin stays a pin, a hidden reply stays hidden).
+  function doneQueued(key) {
+    const session = data.sessions[state.session];
+    if (!session) return;
+    const conv = queueConv(session), gone = replyQueue.remove(conv.home, conv.ids, key), anchor = readingAnchor();
+    paintQueue(); restoreAnchor(anchor);
+    if (!gone) return;
+    const left = queued.items.length;
+    toast(left ? `Done · ${left} left` : "Done · queue empty", () => putBack(conv, [gone]), left ? { label: "Next ↓", run: queueNext } : null);
+  }
+  function putBack(conv, items) {
+    try { replyQueue.restore(conv.home, conv.ids, items); } catch (e) { link.listing = { text: `Could not put the reply back: ${e.message}` }; renderLive(); }
+    paintQueue();
+  }
+  function clearQueue() {
+    const session = data.sessions[state.session];
+    if (!session) return;
+    const conv = queueConv(session), items = replyQueue.clear(conv.home, conv.ids);
+    paintQueue();
+    if (items.length) toast(`Cleared ${items.length}`, () => putBack(conv, items));
+  }
+  // Next: the oldest queued reply that can be shown, in place. Opening a reply does not take it off: only Done does.
+  function queueNext() {
+    readQueue();
+    const row = replyQueue.next(queued.rows);
+    if (row) openQueued(row);
+    else toast(queued.items.length ? "None of the queue is on the page" : "The queue is empty");
+  }
+  function openQueued(row) {
+    if (!row.ex || !data.sessions[state.session]) return;
+    if (row.state === "hidden" && !state.showHidden) { state.showHidden = true; render(); }  // a hidden reply is shown where it is: the Hidden view goes on
+    state.pinsOpen = false; state.queueOpen = false; link.listing = null;
+    goTo(state.session, row.index, "reply", {}, () => {
+      paintQueue();
+      const card = [...document.querySelectorAll("#main [data-rq]")].find(el => el.dataset.rq === row.item.key);
+      if (!card) return;
+      window.scrollTo(0, window.scrollY + card.getBoundingClientRect().top - document.getElementById("bar").offsetHeight - 8);
+      card.classList.remove("is-target"); void card.offsetWidth; card.classList.add("is-target");
+    });
+  }
+  function toggleQueuePanel() {
+    state.queueOpen = !state.queueOpen;
+    if (state.queueOpen) state.pinsOpen = false;
+    paintPins(); paintQueue();
+  }
+  // The panel in the header: the queue oldest first, each row a button that goes to the reply in place, with Done beside it. A reply that is no longer on the
+  // page (older than the page keeps, or left with a compaction) stays in the list, last, until it is Done: nothing leaves the queue unseen.
+  function paintQueuePanel() {
+    const host = document.getElementById("queue-panel");
+    if (!host) return;
+    if (!state.queueOpen) { host.replaceChildren(); return; }
+    const old = host.querySelector(".pins-list"), top = old && old.scrollTop;
+    const panel = $("div", "pins queue"), head = $("div", "pins-scope");
+    const rows = queued.rows;
+    const note = $("span", "queue-note", rows.length ? `${rows.length} to go through, oldest first` : "");
+    note.title = "Opening a reply keeps it here. Only Done takes it off.";
+    head.append(note);
+    if (rows.length > 1) {
+      const clear = $("button", "btn queue-clear", "Clear all"); clear.type = "button"; clear.title = "Take every reply off the queue (Undo brings them back)";
+      clear.addEventListener("click", clearQueue);
+      head.append(clear);
+    }
+    panel.append(head);
+    if (!rows.length) panel.append($("div", "pins-note", "Nothing queued in this conversation. Queue on a reply sets it aside here, to come back to; Done takes it off."));
+    else {
+      const list = $("ul", "pins-list");
+      rows.forEach((row, i) => {
+        const item = $("li"), body = $("div", "pin-body"), open = $("button", "pin-item"); open.type = "button";
+        const when = fmtWhen(row.ex ? row.ex.reply_at || row.ex.at : row.item.at);
+        if (row.ex) {
+          open.append($("span", "pin-meta", `${i + 1} · Reply · ${when}${row.state === "hidden" ? " · hidden" : ""}`), $("span", "pin-text", replyQueue.snippet(row.ex.reply)));
+          open.title = row.state === "hidden" ? "This reply is hidden: go to it with the hidden ones shown" : "Go to this reply";
+          open.addEventListener("click", () => openQueued(row));
+        } else {
+          open.classList.add("gone"); open.disabled = row.state === "gone";
+          open.append($("span", "pin-meta", `${i + 1} · Reply · ${when}`),
+            $("span", "pin-text", row.state === "gone" ? "No longer on the page: older than the page keeps, or left with a compaction. Done takes it off." : "Loading the conversation…"));
+        }
+        body.append(open);
+        const actions = $("div", "pin-actions"), done = $("button", "queue-done", "Done"); done.type = "button";
+        done.setAttribute("aria-label", "Done: take this reply off the queue"); done.title = "Reviewed: take this reply off the queue";
+        done.addEventListener("click", () => doneQueued(row.item.key));
+        actions.append(done);
+        item.append(body, actions); list.append(item);
+      });
+      panel.append(list);
+    }
+    host.replaceChildren(panel);
+    if (top) { const fresh = host.querySelector(".pins-list"); if (fresh) fresh.scrollTop = top; }
+  }
+  // Everything the queue shows, from what the storage holds now: the cards on screen, the header's control and icon, the panel.
+  function paintQueue() {
+    readQueue();
+    document.querySelectorAll("#main [data-rq]").forEach(paintQueueCard);
+    const toggle = document.getElementById("queue-toggle");
+    if (toggle) { toggle.textContent = queueLabel(); toggle.setAttribute("aria-pressed", String(state.queueOpen)); }
+    paintQueuePanel();
+    paintBar();
+  }
+  // Another page on this origin changed the queue (a Watch column, the Reader column, another tab): this one follows, by the storage's own event and, where a web
+  // view does not send it, when the page is shown again, focused or polled.
+  function queueFollow() {
+    const session = data.sessions[state.session];
+    const now = !EMBED && session && !session.placeholder ? replyQueue.signature(queueConv(session).ids) : "";
+    if (now === queueSeen) return;
+    queueSeen = now;
+    paintQueue();
+  }
+  window.addEventListener("storage", e => { if (e.key === null || (e.key && e.key.startsWith(replyQueue.prefix))) queueFollow(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) queueFollow(); });
+  window.addEventListener("focus", queueFollow);
 
   // ---------------------------------------------------------------- message addresses: #s=<session>&m=<turn id> (address.js)
   // A link to one message: the conversation, scrolled to that turn's reply (its message when it has no reply), with what hides it opened in
@@ -5483,6 +5693,7 @@ __HEAD_HOSTED__
     stars.refresh(s.stamps && s.stamps.stars);
     sheetFlags.refresh(s.stamps && s.stamps.flags);
     hiddenStore.refresh(s.stamps && s.stamps.hidden);
+    queueFollow();
   }
   // The server (or the hosted copy's folder) stopped answering: after a few seconds the page says so, with since when.
   const syncFailing = () => Boolean(link.syncFail) && Date.now() - link.syncFail.since > 8000;
@@ -5808,6 +6019,7 @@ __HEAD_HOSTED__
     paintTasksLink(session);
     paintTasksQuick();
     paintPinsIcon(session);
+    paintQueueIcon(session);
     paintHiddenIcon(session);
     for (const id of ["jump-prev", "jump-next", "jump-ask"]) document.getElementById(id).hidden = state.view !== "reader" || !session || !session.exchanges.length;
     document.documentElement.style.setProperty("--bar-h", bar.offsetHeight + "px");
@@ -5867,6 +6079,17 @@ __HEAD_HOSTED__
     icon.title = state.pinsOpen ? `${label} (open)` : label;
     document.getElementById("pins-panel").hidden = !state.pinsOpen || state.view !== "reader" || look.open;
   }
+  // The queue icon of the folded header: the Queue control's own switch, with the count on it. It is there while this conversation has a queue (or its
+  // panel is open), so a header with nothing queued is as it was.
+  function paintQueueIcon(session) {
+    const icon = document.getElementById("queue-quick"), badge = document.getElementById("queue-quick-n"), count = queued.items.length, label = queueLabel();
+    icon.hidden = EMBED || state.view !== "reader" || !session || session.placeholder || (!count && !state.queueOpen);
+    icon.setAttribute("aria-pressed", String(state.queueOpen));
+    icon.setAttribute("aria-label", label);
+    icon.title = state.queueOpen ? `${label} (open)` : label;
+    badge.hidden = !count; badge.textContent = count > 99 ? "99+" : String(count);
+    document.getElementById("queue-panel").hidden = !state.queueOpen || state.view !== "reader" || look.open;
+  }
   // The eye icon of the folded header: the Hidden control's own switch, shown only while this conversation has hidden messages (or they are on
   // show), so the folded header stays as it was otherwise.
   function paintHiddenIcon(session) {
@@ -5912,12 +6135,14 @@ __HEAD_HOSTED__
   document.getElementById("files-quick").addEventListener("click", () => { if (slideOver()) setSideOpen(!docSideOpen); else showDocList(); });
   document.getElementById("expand-quick").addEventListener("click", () => setDocExpanded(!docExpanded));
   document.getElementById("pins-quick").addEventListener("click", togglePins);
+  document.getElementById("queue-quick").addEventListener("click", toggleQueuePanel);
   document.getElementById("hidden-quick").addEventListener("click", toggleShowHidden);
   document.addEventListener("keydown", e => {
     if (["SELECT", "TEXTAREA", "INPUT"].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey || state.view !== "reader") return;
     if (e.key === "j") jump("captain", 1);
     if (e.key === "k") jump("captain", -1);
     if (e.key === "n") jump("needs", 1);
+    if (e.key === "q") queueNext();
     if (e.key === "w") { state.showWakes = !state.showWakes; render(); }
     if (e.key === "/" && data.sessions[state.session]) { e.preventDefault(); openSearch("here"); }
   });
