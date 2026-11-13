@@ -1,5 +1,7 @@
 # Transcript reader
 
+> Moved from pmos on 2026-11-13. The canonical copy now lives in the Conn repo at `~/workspace/conn/setup/transcript-reader/`; its imported history is kept in this repository.
+
 Reads Firstmate Claude Code, Codex and GitHub Copilot CLI session logs back as a conversation, and lets you answer a reply in its own Herdr pane (Claude and Codex panes, a Claude under any config folder included; a Copilot session is read only).
 Design and decisions: `DESIGN.md`.
 
@@ -11,7 +13,7 @@ python3 setup/transcript-reader/reader.py          # rebuild every listed sessio
 ```
 
 `reader.py` also has `remove`, `list` and `panes` (live Herdr panes to pick from), and `adopt` (what Sync runs to list the live panes the list lacks).
-The reader has its own server, in its own process, apart from `setup/serve.sh` and the pages that one serves. `reader.py` starts it when needed, on port **8768** (8765 and 8766 belong to other pages). For another port, set `PMOS_READER_PORT`, which `reader.py` and `serve.sh` both read. `serve.sh --port` changes only that one command: `reader.py` still looks on 8768 and starts its own server there.
+The reader has its own server, in its own process, apart from the separate organizer server and pmos's other pages. `reader.py` starts it when needed, on port **8768** (8765, 8766 and 8767 belong to other pages). For another port, set `PMOS_READER_PORT`, which `reader.py` and `serve.sh` both read. `serve.sh --port` changes only that one command: `reader.py` still looks on 8768 and starts its own server there.
 `reader.py` checks which copy of the repo answers on the port and says so, with where that other copy runs (`Port 8768 serves another copy of the repo (/path)`).
 Start and stop it by hand with `bash setup/transcript-reader/serve.sh [start|stop|restart|status|passcode|cert] [--port <port>] [--tailnet] [--tailnet-https]` (the rest are for the phone, below). `stop` only stops this copy's own reader server, never another copy's or another app's.
 After changing `api.js`, `server.js` or `worker.js`, restart it: `bash setup/transcript-reader/serve.sh restart`. **A server started before the quick-reply change (see "Speed from a log write to the page") needs one restart to get it**: until then it rebuilds the old way, on the page's poll, and an open page learns of a build on its next 2-second tick. `reader.py` and the page code need no restart: the server runs the `reader.py` it finds when it starts its worker (a restart, or ten minutes idle), and that worker starts itself again from the new files when `reader.py` or the builders change.
@@ -194,7 +196,7 @@ bash setup/transcript-reader/serve.sh status                # "Tailnet address s
 Then open `http://<the Mac's Tailscale address>:8768` on the phone (`tailscale ip -4` prints it), type the passcode and it opens the reader.
 
 - **What listens.** Loopback as before, plus the address `tailscale ip -4` gives, on the same port. Never `0.0.0.0` or another interface (the server refuses any address outside Tailscale's 100.64.0.0/10). If Tailscale is not running, or no passcode is set, it starts loopback only and says why in one line.
-- **The passcode.** `serve.sh passcode` reads it from the terminal without echo; it is never an argument, printed or logged, and there is no default. Only a salted scrypt hash is stored, in `out/passcode.json` (owner-only, gitignored with the rest of `out/`; `PMOS_READER_PASSCODE_FILE` names another file). A new passcode signs every phone out at once, and so does removing the file. The Herdr organizer page on port 8765 uses this same passcode and file (below): one passcode, one sign-in for both.
+- **The passcode.** `serve.sh passcode` reads it from the terminal without echo; it is never an argument, printed or logged, and there is no default. Only a salted scrypt hash is stored, in `out/passcode.json` (owner-only, gitignored with the rest of `out/`; `PMOS_READER_PASSCODE_FILE` names another file). A new passcode signs every phone out at once, and so does removing the file. The Herdr organizer page on port 8767 uses this same passcode and file (below): one passcode, one sign-in for both.
 - **What a signed-in phone gets.** A correct passcode sets a session cookie (`pmos_session`: HttpOnly, SameSite=Strict, a random token whose hash names a small owner-only file in `out/passcode.json.sessions/`), so a server restart keeps the phone signed in, and a session ends after 30 days without use. The cookie is on top of the usual checks: every page and API route, Send and pins included, still needs the Host and Origin to be exactly the tailnet address and port, Fetch-Metadata and the page's token. Requests on `localhost` need no sign-in, as before.
 - **What works from the phone.** The whole reader, the message bar included, as on the Mac: the live badge, Sync, Follow Herdr, Pins (kept on the Mac), the Documents tab, and every way to send to the session's Herdr pane (a message, with photos from the phone's library or camera, with the Send button, Reply, "Comment on this", the batch with Add then Send, "Message about this file", the answer sheet's Send, and a `/` command after its confirm). The page counts as served, and so enables all of it, on `localhost` or on a Tailscale address (100.64.0.0/10) with the token the server writes into the page; a file copy or any other address stays read-only. If the Mac's server restarts, the page reloads once to pick up the new page token (a draft in the box is kept), and the phone stays signed in; after a new passcode it reloads to the passcode page and a correct passcode brings the same page back. On a touch screen Send, Add, the links under the box and the Pin and Reply pills are 44 px (Pin and Reply 34 px) tall.
 - **Wrong passcodes.** The third wrong one in a row from an address locks it for 30 seconds, and each after that doubles the lock up to 15 minutes.
@@ -269,26 +271,26 @@ The steps of a turn (their summaries, commands, diffs and a failed step's last 4
 
 ### Not verified
 
-This was run in Playwright's WebKit with the iPhone profile (393 px) against this copy's own server and a scratch self-signed certificate, not on a real iPhone and not with the real Tailscale certificate (it cannot be issued until HTTPS certificates are on, and nothing here asks Tailscale for one). What a phone adds: whether iOS keeps the storage of a page that is not on the Home Screen, the Home Screen app's separate storage and cookies, and the real wait for a shut Mac (the page treats no answer within 8 seconds as "not reachable"; the end-to-end run stops the server, which refuses at once). The Herdr organizer page on port 8765 stays on plain http: it has its own server and does not share this listener.
+This was run in Playwright's WebKit with the iPhone profile (393 px) against this copy's own server and a scratch self-signed certificate, not on a real iPhone and not with the real Tailscale certificate (it cannot be issued until HTTPS certificates are on, and nothing here asks Tailscale for one). What a phone adds: whether iOS keeps the storage of a page that is not on the Home Screen, the Home Screen app's separate storage and cookies, and the real wait for a shut Mac (the page treats no answer within 8 seconds as "not reachable"; the end-to-end run stops the server, which refuses at once). The Herdr organizer page on port 8767 stays on plain http: it has its own server and does not share this listener.
 
 ## Open the Herdr organizer from the phone
 
-The Herdr workspace organizer page (`apps/wip-herdr-workspace-organizer.html`) is served by the shared app server, `setup/serve.sh`, on port 8765. It can listen on the same Tailscale address as the reader, with the same passcode and the same sign-in: signing in to either app signs the phone in to both, and signing out of one signs out of both. It is off unless you ask for it.
+The Herdr workspace organizer page (`apps/wip-herdr-workspace-organizer.html`) is served by the dedicated `setup/organizer-serve.sh` on port 8767. It can listen on the same Tailscale address as the reader, with the same passcode and the same sign-in: signing in to either app signs the phone in to both, and signing out of one signs out of both. It is off unless you ask for it.
 
 ```bash
 bash setup/transcript-reader/serve.sh passcode    # once, the same passcode as the reader (skip it if the reader's is set)
-bash setup/serve.sh --restart --tailnet           # or start --tailnet; PMOS_SERVE_TAILNET=1 is the same switch
-bash setup/serve.sh status                        # "Tailnet address served: http://100.x.y.z:8765/apps/wip-herdr-workspace-organizer.html"
+bash setup/organizer-serve.sh --restart --tailnet # or start --tailnet; CONN_ORGANIZER_TAILNET=1 is the same switch
+bash setup/organizer-serve.sh status              # "Tailnet address served: http://100.x.y.z:8767/apps/wip-herdr-workspace-organizer.html"
 ```
 
-Then open `http://<the Mac's Tailscale address>:8765/apps/wip-herdr-workspace-organizer.html` on the phone (`tailscale ip -4` prints the address), type the passcode and the page opens. Restarting `setup/serve.sh` restarts the shared server for every app it serves; they come back on loopback as before.
+Then open `http://<the Mac's Tailscale address>:8767/apps/wip-herdr-workspace-organizer.html` on the phone (`tailscale ip -4` prints the address), type the passcode and the page opens. Restarting `setup/organizer-serve.sh` restarts the organizer only; the reader and pmos apps are separate.
 
-- **What listens.** Loopback as before, plus the Tailscale address on port 8765, with a request handler of its own that serves only the organizer page, its API (`/api/herdr-organizer/*`), its Refresh snapshot route and the sign-in. Every other path, the other apps and every file of the repo included, answers 404 there, signed in or not. Never `0.0.0.0` or another interface. If Tailscale is not running, or no passcode is set, it starts loopback only and says why in one line.
-- **The passcode.** The reader's (`PMOS_READER_PASSCODE_FILE`, else `setup/transcript-reader/out/passcode.json`); `setup/serve.sh` has no passcode command of its own.
+- **What listens.** Loopback as before, plus the Tailscale address on port 8767, with a request handler of its own that serves only the organizer page, its API (`/api/herdr-organizer/*`), its Refresh snapshot route and the sign-in. Every other path, the other apps and every file of the repo included, answers 404 there, signed in or not. Never `0.0.0.0` or another interface. If Tailscale is not running, or no passcode is set, it starts loopback only and says why in one line.
+- **The passcode.** The reader's (`PMOS_READER_PASSCODE_FILE`, else `setup/transcript-reader/out/passcode.json`); `setup/organizer-serve.sh` has no passcode command of its own.
 - **Every guard stays.** The page's API still needs the Host and Origin to be exactly the tailnet address and port, Fetch-Metadata, JSON bodies, the per-start token and one change at a time, plus the sign-in. Everything the page can do on the Mac it can do from the phone, restarts and switch files included, each behind its own confirm as before.
 - **At phone width.** On a touch screen every button, tab, field and checkbox row is at least 44 px tall, and long commands wrap. The page loads its fonts from Google, so the phone needs internet access as well as the tailnet.
-- **When it will not open.** The passcode page says why in words, and each sign-in attempt is one line in `/tmp/pmos-serve-8765.log` on the Mac. A browser on the Mac itself may be sent through a corporate proxy that blocks tailnet addresses; use `localhost` there.
-- **Sign out.** `http://<address>:8765/herdr-organizer/signout`.
+- **When it will not open.** The passcode page says why in words, and each sign-in attempt is one line in `/tmp/conn-organizer-serve-8767.log` on the Mac. A browser on the Mac itself may be sent through a corporate proxy that blocks tailnet addresses; use `localhost` there.
+- **Sign out.** `http://<address>:8767/herdr-organizer/signout`.
 
 ## The lite page and the glance feed
 
@@ -679,10 +681,10 @@ Checked: `permissions.test.js` (the broker, the routes, the hook command and its
 - Sends a prompt to one Herdr pane, only on a Send click (or, for the hosted copy's Send, when `drain.js` carries out a queued request), and only to the one live pane whose agent runs that listed session. It refuses an agent waiting at a permission prompt (a prompt the reader shows as an ask, "Permission asks from Claude", is answered through the hook, never by typing). It never starts, stops or closes a Herdr session, tab or pane, and never addresses the default Herdr session. Undo only renames or empties files in a copy's `q/` folder (the `unqueue` route); it sends nothing to a pane.
 
 The server routes are in `api.js`: the pages under `out/` (the hosted shell and its objects in `out/hosted/` and `out/bucket/` too, and the lite page and its objects in `out/live/`) and `/api/transcript-reader/*` use the Herdr organizer's guard (exact Host and Origin, Fetch-Metadata, a per-start token) and send no CORS header, so another website cannot read the transcripts or send a prompt.
-The reader's server serves nothing else, and `setup/serve.sh` refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
+The reader's server serves nothing else and refuses any request into the reader's `out/` folder, so no other app shares the pages' origin. Still, no endpoint hands out the token.
 The server writes it into a page only when a browser tab opens that page, and the page refuses frames and cuts off whoever opened it.
 A restarted server has a new token: an open page reloads itself once to pick it up (not while you are typing).
-A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` on the reader's server, and refused with a 404 by `setup/serve.sh`.
+A path that the file system resolves into `out/` (another letter case, Unicode form or a symlink) is answered by `api.js` on the reader's server and refused with a 404 there.
 
 ## When the page stops updating
 

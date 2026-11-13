@@ -138,8 +138,10 @@ test('serve.sh starts, reports, restarts and stops this copy\'s server without h
     assert.match((await run('stop', '--port', port)).stdout, /Stopped the reader server/);
   }
   assert.match((await run('status', '--port', port)).stdout, /Nothing listens/);
-  const refused = await run('start', '--port', '8765');
-  assert.strictEqual(refused.code, 2);
+  for (const reserved of ['8765', '8767']) {
+    const refused = await run('start', '--port', reserved);
+    assert.strictEqual(refused.code, 2, reserved);
+  }
   assert.ok(!fs.existsSync(path.join(__dirname, 'out', `server-${port}.log`)), 'nothing written in this repo copy');
   process.umask(umask);
 });
@@ -267,7 +269,7 @@ esac
     assert.match((await run({ PMOS_READER_TAILNET_HTTPS: '1', FAKE_CERT_MODE: 'off' }, 'start', '--port', port)).stdout, /HTTPS address not served/);
     await run({}, 'stop', '--port', port);
     // A bad HTTPS port is refused up front.
-    for (const bad of ['80', '443', port, '8765', 'abc']) assert.strictEqual((await run({}, 'start', '--port', port, '--tailnet-https', '--https-port', bad)).code, 2, bad);
+    for (const bad of ['80', '443', port, '8765', '8767', 'abc']) assert.strictEqual((await run({}, 'start', '--port', port, '--tailnet-https', '--https-port', bad)).code, 2, bad);
 
     if (!real) { t.diagnostic('no Tailscale address on this machine: the served-HTTPS path was not run'); return; }
     // The certificate is there: HTTPS is served under the name Tailscale reported, the cert files are owner-only, the

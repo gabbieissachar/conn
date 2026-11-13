@@ -3,7 +3,7 @@
 #
 #   tools/lsregister-clean.sh              dry run: print each registered copy and what would happen
 #   tools/lsregister-clean.sh --apply      unregister the copies that are not the real one
-#   CONN_KEEP=/path/Conn.app tools/lsregister-clean.sh   the copy to keep (default: ~/workspace/helm/build/Conn.app)
+#   CONN_KEEP=/path/Conn.app tools/lsregister-clean.sh   the copy to keep (default: ~/workspace/conn/build/Conn.app)
 #
 # Why: macOS opens an app by bundle identifier ("Quit & Reopen" after a privacy switch, `open -b`), and every copy with the same
 # identifier is a candidate. Worker worktrees and scratch builds register themselves as dev.local.conn, so a reopen can land on an old one.
@@ -12,7 +12,7 @@
 # Launch Services registers it again the next time it is opened through Finder or `open`.
 set -euo pipefail
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
-KEEP=${CONN_KEEP:-$HOME/workspace/helm/build/Conn.app}
+KEEP=${CONN_KEEP:-$HOME/workspace/conn/build/Conn.app}
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 

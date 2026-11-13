@@ -440,7 +440,7 @@ enum UICheck {
         report("a reloaded organizer page opens on Context", reloaded == "context", "view=\(reloaded)")
 
         // Links between Conn's panes stay in Conn; links that leave open in the browser (recorded here, never opened).
-        // The pages' real addresses are http://localhost:8768 and :8765, so this part needs the live servers.
+        // The pages' real addresses are http://localhost:8768 and :8767, so this part needs the live servers.
         if model.config.fixture {
             print("ui-check: SKIP links between the reader and organizer servers (the fixture pages are local files; WebLinkPolicyTests cover the rule)")
         } else {

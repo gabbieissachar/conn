@@ -8,7 +8,7 @@
 //
 // It builds the lab (message_lab.py: made-up session logs under a scratch HOME, a copy of this reader's code with its own out/, a Herdr
 // that sees nothing), starts that copy's server on a free port, and drives a browser session of its own (CHROME_DEVTOOLS_AXI_SESSION), never
-// the owner's tabs, servers (8765, 8768) or Herdr. It checks, from a fresh load and from another conversation already open:
+// the owner's tabs, servers (8767, 8768) or Herdr. It checks, from a fresh load and from another conversation already open:
 //   - a message address opens the conversation scrolled to the message, with the message outlined, whether the message sits in the
 //     conversation's older session (a /clear chain), inside a folded run of wake-ups, or in a long reply that is clipped;
 //   - an unknown message id opens the conversation and says so; #s= and &d= still open as they always did;

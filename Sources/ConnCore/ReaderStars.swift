@@ -106,7 +106,7 @@ public enum StarLabels {
     /// reader Conn loads (README "Organizer and reader").
     public static func defaultFile(env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> URL {
         if let f = env["CONN_READER_LABELS"], !f.isEmpty { return URL(fileURLWithPath: f) }
-        return URL(fileURLWithPath: home + "/workspace/pmos/setup/transcript-reader/out/pane-labels.json")
+        return URL(fileURLWithPath: home + "/workspace/conn/setup/transcript-reader/out/pane-labels.json")
     }
 
     /// The name for a star: the Herdr agent running that session now (its name is what the rest of Conn calls it), else

@@ -56,7 +56,7 @@ import Foundation
     }
 
     @Test func theDefaultFileIsTheReadersGlanceFeedUnlessTheEnvironmentNamesAnother() {
-        #expect(ReaderChains.defaultFile(env: [:], home: "/h").path == "/h/workspace/pmos/setup/transcript-reader/out/glance.json")
+        #expect(ReaderChains.defaultFile(env: [:], home: "/h").path == "/h/workspace/conn/setup/transcript-reader/out/glance.json")
         #expect(ReaderChains.defaultFile(env: ["CONN_READER_GLANCE": "/x/g.json"], home: "/h").path == "/x/g.json")
     }
 }

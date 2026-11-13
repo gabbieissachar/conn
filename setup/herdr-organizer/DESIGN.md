@@ -1,7 +1,7 @@
 # Herdr restart tools - design note
 
 Status: decided in the step 1 brainstorm (2026-10-04). Built on branch `fm/herdr-organizer-app-tools`.
-App: `apps/wip-herdr-workspace-organizer.html`, served by `setup/serve.sh`.
+App: `apps/wip-herdr-workspace-organizer.html`, served by `setup/organizer-serve.sh`.
 
 ## Purpose and flow
 
@@ -65,11 +65,11 @@ The page never runs `herdr-organizer archive`, `archive-all --execute`, restore,
 
 ## Cross-site protection
 
-`setup/serve.sh` sends `Access-Control-Allow-Origin: *` on every response and its listener had no host argument (it bound all interfaces).
+The old shared `setup/serve.sh` sent `Access-Control-Allow-Origin: *` on every response and its listener had no host argument (it bound all interfaces).
 Any web page the user visits could otherwise call a write endpoint on localhost.
 Every `/api/herdr-organizer/*` request therefore passes these checks, all covered by tests:
 
-- The listener binds to loopback only (`127.0.0.1` and `::1`). This changes the whole server, not just these routes. (Opt-in since 2026-10-27: one more listener on the owner's Tailscale address, with a handler of its own that answers only this page and its routes; see "Phone access".)
+- The organizer server binds to loopback only (`127.0.0.1` and `::1`). Its opt-in Tailscale listener answers only this page and its routes; see "Phone access".
 - The Host header must be one of `localhost`, `127.0.0.1`, `[::1]` on the served port (defeats DNS rebinding).
 - `Origin` is required on POST and must equal the served origin exactly (scheme, host and port). On GET it may be absent (same-origin) but must match when present.
 - `Sec-Fetch-Site`, when sent, must be `same-origin` or `none`.
@@ -124,7 +124,7 @@ An independent review of this branch confirmed the HTTP guard (token, exact Host
 Kept as documented follow-ups:
 
 - The manual session id is on the command line of the registry's `register` call for the life of that one process. It is never echoed or logged. Accepting it on stdin is companion task 2 below and is the next privacy hardening step.
-- The listener change in `setup/serve.sh` makes every app that script serves loopback-only, which removes LAN access to the unrelated local apps. That is the intended protection for this cockpit, but confirm it is intended for the shared server before release.
+- The dedicated `setup/organizer-serve.sh` keeps the organizer's loopback listener and Tailscale allow-list separate from pmos's other apps.
 - The reviewer could not complete a live visual check, so a second person should open the page and look at it before release. The author checked it in a browser at desktop and 390 px width.
 - The raw snapshot file is still reachable through the shared static file handler, which sends a wildcard CORS header. The page no longer uses it. Closing that is outside this change.
 
@@ -191,9 +191,9 @@ Decided 2026-10-12 (adaptive review, then built directly in the working trees). 
 
 ## Architecture
 
-All new code is isolated under `setup/herdr-organizer/` so `serve.sh` stays a thin shell (its Node program lives in a bash string, which is hard to test).
+All new code is isolated under `setup/herdr-organizer/` so `organizer-serve.sh` stays a thin shell (its Node program lives in a bash string, which is hard to test).
 
-- `api.js` - request guard and dispatcher; `serve.sh` requires it and delegates `/api/herdr-organizer/*` before the CORS handler.
+- `api.js` - request guard and dispatcher; `organizer-serve.sh` requires it and delegates `/api/herdr-organizer/*` before the CORS handler.
 - `adapter.js` - the only place that spawns Herdr tooling. Fixed argument builders, and parsers for the verifier and preflight text output. The runner is injectable so tests use fixtures.
 - `guard.js` - Host, Origin, Fetch-Metadata and token checks.
 - `redact.js` - share report builder and leak scan.
@@ -201,14 +201,14 @@ All new code is isolated under `setup/herdr-organizer/` so `serve.sh` stays a th
 - `phone.js` and `snapshot-refresh.js` - the opt-in Tailscale listener and its allow-list, and the Refresh snapshot command both listeners share ("Phone access").
 - `test/` - `node --test` tests with fixtures.
 
-The tool root defaults to `personal/01-System/setup/herdr` and can be overridden with `HERDR_ORGANIZER_TOOL_ROOT`, so tests and local runs can use a scratch copy and never write into a real registry or bundle directory.
+The tool root defaults to `setup/herdr` and can be overridden with `HERDR_ORGANIZER_TOOL_ROOT`, so tests and local runs can use a scratch copy and never write into a real registry or bundle directory.
 `HERDR_LAB_HELPER`, when set, is passed through to the organizer (it already routes Herdr calls through the isolated lab).
 
 ## Phone access (2026-10-27)
 
 The owner works remotely and wanted this page on their iPhone the way the transcript reader is: over Tailscale, opt-in, behind a passcode. Built on branch `fm/organizer-phone-access`.
 
-**Where it lives: a second listener inside the shared app server (port 8765), with a request handler of its own.** `setup/serve.sh --tailnet` (or `PMOS_SERVE_TAILNET=1`) finds the Mac's Tailscale address (`tailscale ip -4`, shared helper `setup/tailnet-lib.sh`), checks the reader's passcode file has a hash, and passes both to the node program. `phone.js` binds that one address on the same port, next to the loopback listeners. Off by default; without Tailscale or without a passcode the server starts on loopback only and prints one line of why. `serve.sh status` says whether the address is served.
+**Where it lives: its own organizer server on port 8767, with a request handler of its own.** `setup/organizer-serve.sh --tailnet` (or `CONN_ORGANIZER_TAILNET=1`) finds the Mac's Tailscale address (`tailscale ip -4`, shared helper `setup/tailnet-lib.sh`), checks the reader's passcode file has a hash, and passes both to the node program. `phone.js` binds that one address on the same port, next to the loopback listeners. Off by default; without Tailscale or without a passcode the server starts on loopback only and prints one line of why. `organizer-serve.sh status` says whether the address is served.
 
 Alternatives weighed:
 
@@ -225,7 +225,7 @@ Alternatives weighed:
 
 **The page at phone width.** One change to behaviour: Refresh snapshot now sends the token and a JSON body (the tailnet guard's rule for every POST; loopback ignores both). One CSS block under `@media (pointer: coarse)` (so desktop is untouched): buttons, selects, fields and checkbox rows at least 44 px tall, checkboxes 22 px, long commands wrapping instead of widening the page. The confirm boxes are inline cards, not overlays, so they follow the page width. Checked in Playwright WebKit with the iPhone 15 profile (393 px wide, touch) against the real Tailscale address, on all five views: no horizontal scroll and no visible control under 44 px, and a confirm box with a long command fits (that one is injected, since a real one needs a passing preflight). It found what Chrome's emulation did not: iOS Safari draws a native `select` at its own short height whatever `min-height` says, so under `pointer: coarse` a select is drawn by the page, with its own arrow. 26 checks, screenshots and the script are in the task data folder. The page already had a 600 px and a 640 px layout (header scrolls away, tabs wrap, panels full width).
 
-**Tests.** `test/phone.test.js`: off by default (no switch, no lane, no listener, and a loopback request is unchanged), the allow-list, sign-in before every route, the guard per listener, one lock across both, one sign-in for both apps against the reader's real server code, the page's references against the list, and `serve.sh --tailnet` end to end on the real Tailscale address (skipped when Tailscale is not up): off by default, the reason without a passcode, then the page and 404 for everything else.
+**Tests.** `test/phone.test.js`: off by default (no switch, no lane, no listener, and a loopback request is unchanged), the allow-list, sign-in before every route, the guard per listener, one lock across both, one sign-in for both apps against the reader's real server code, the page's references against the list, and `organizer-serve.sh --tailnet` end to end on the real Tailscale address (skipped when Tailscale is not up): off by default, the reason without a passcode, then the page and 404 for everything else.
 
 **Accepted.** Plain HTTP (Tailscale encrypts the link; no padlock, no `Secure` cookie). A passcode guess gets its free tries on each server, and a restart clears a lock (the throttle is per process, as the reader's always was; a shared, persisted throttle was weighed and left out: the passcode is 8+ characters behind scrypt and the address is reachable only from the tailnet). A browser on the Mac may be sent through a corporate proxy that blocks tailnet addresses (use `localhost` there).
 
@@ -254,7 +254,7 @@ The page is built against the interface as it exists today, through the adapter.
 
 ## Test isolation notes
 
-- Local runs use an untracked symlink `personal/01-System` to the user's checkout (never committed) for read-only access, with `HERDR_ORGANIZER_TOOL_ROOT` pointing at a scratch copy of the tool scripts for anything that writes. The link sits inside the empty `personal/` directory because git refuses a symlink at the submodule path itself.
+- Local runs use the imported `setup/herdr` tool tree for normal checks, with `HERDR_ORGANIZER_TOOL_ROOT` pointing at a scratch copy of the tool scripts for anything that writes.
 - Read-only Herdr commands against a real session are fine; anything that changes state goes through the isolated lab helper or fixtures.
 - Lab availability: the lab helper refuses to provision because it requires exactly one running default Herdr session and the default session is stopped on this machine (`fleet-state tripwire requires exactly one running default session`). No session was started to work around it. Lab-dependent checks were done with fixtures instead: the server tests fake the `herdr` binary, and `test/integration.test.js` runs the real registry and store check (Python) against a temporary copy of the tool scripts, a synthetic Codex store and a faked `herdr`, so nothing touches a real Herdr session, the real registry or the real client stores. `--apply`, a manual save and a seal were never run against the real session.
 - `python3 -m unittest setup/herdr-organizer/test/test_store_check.py` covers the store check with synthetic stores; `node --test setup/herdr-organizer/test/*.test.js` covers the server.
@@ -264,7 +264,7 @@ The page is built against the interface as it exists today, through the adapter.
 - Phase 1 (read-only views, share report, clean up empty tabs in every workspace): done. 48 server tests pass. Driven in a browser at desktop and 390 px width against the real `esim` session and captured real verifier and preflight output.
 - Phase 2 (guarded actions: apply verified identities, manual identity form, per-item acknowledgements and seal): done. Each action needs a confirm token and runs one at a time. 64 server tests and 9 store-check tests pass; the real registry write is covered by the integration test (private 0600 file in a 0700 directory, duplicate and folder guards). Driven in a browser against a fixture-backed server: apply confirm, folder-differs override, masked result, acknowledgement ticks, re-check, seal.
 - Phase 3 (sealed bundle list, restart checklist derived from machine state, reconcile preview and copy-only confirm and rollback commands): done. 69 server tests pass. The checklist, the not-attached state, the preview counts and the copy buttons were driven in a browser against a fixture-backed server with temporary bundles, at desktop and 390 px width. HTML in labels was confirmed to render as text.
-- Archive all and group restore: done. `archive-all`, `restore-batch`, `list-batches` and `delete-batch` in the organizer (22 new Python tests, 99 in the organizer file), `archive-all-preview` action (6 server tests) and four page checks. Driven in a browser against a fixture-backed server at desktop width and at 390 px (no horizontal overflow); the real `archive-all` preview was run read-only against the live `esim` session. Review fixes: verified skipped panes get apply instead of a dead-end form, the run record is closed out on interruption, runs are serialized, omitted workspaces are reported. `personal/01-System/setup/herdr/test-archive-all-cli.py` runs the real command line (preview, execute, wrong confirm, restore, second restore, Ctrl-C mid-run, concurrent run) against a scratch copy of the tool, a fake `herdr` binary and a fake Herdr socket. The execute forms have still not been run against a real Herdr session.
+- Archive all and group restore: done. `archive-all`, `restore-batch`, `list-batches` and `delete-batch` in the organizer (22 new Python tests, 99 in the organizer file), `archive-all-preview` action (6 server tests) and four page checks. Driven in a browser against a fixture-backed server at desktop width and at 390 px (no horizontal overflow); the real `archive-all` preview was run read-only against the live `esim` session. Review fixes: verified skipped panes get apply instead of a dead-end form, the run record is closed out on interruption, runs are serialized, omitted workspaces are reported. `setup/herdr/test-archive-all-cli.py` runs the real command line (preview, execute, wrong confirm, restore, second restore, Ctrl-C mid-run, concurrent run) against a scratch copy of the tool, a fake `herdr` binary and a fake Herdr socket. The execute forms have still not been run against a real Herdr session.
 - Review fixes: bundle members are validated against the live session list (default, unknown, missing, malformed and repeated members are incompatible, and no preview process starts), the preview re-validates immediately before spawning, bundle components that are links or not regular files are refused, the manual identity write path uses one strict live-pane validator with normalized values, and the page no longer falls back to the raw static snapshot. 82 server tests (including the integration tests against the real tool scripts) and 9 store-check tests pass. Test cleanup removes only the entries each test created, one at a time.
 - Add selected tabs to a restore group: done. `add-tabs-to-batch` in the organizer (19 Python unit tests, 145 in the file), a real-CLI end-to-end section (preview, wrong confirm, merge into an open layout, new member, whole-workspace close, restore-batch over the result, Ctrl-C mid add), the third panel mode and two page checks (109 server and page tests). Driven in a browser against the live snapshot at desktop width and at 390 px (no overflow). The execute form has not been run against a real Herdr session.
 - Archive group tab and working folders: done. One group per session (`archive-all` adds to it, restore and delete take members out, older groups merge once), its own tab, and per-tab `cd` commands. The snapshot's `working_folders` carry each tab's folders with a `source`: `pane` is the folder Herdr reports for the shell, `agent_files` is the clone a Claude agent really works in, inferred from its session log (the worktree of the shell folder's own repository that the agent's recent tool calls wrote to most (edits, writes and file-changing shell commands; reads count only when nothing was written; a shell command is parsed per path, so `2>/dev/null`, `2>&1`, a quoted `>` and the source side of a `cp` are not writes). `readSnapshot` is the one place a local path reaches the page: it validates each folder (absolute, one line, no session id, socket or resume text) and leaves only those out of the private-value scan. Not inferred for Codex agents or when the log is missing. The page only copies the `cd`.

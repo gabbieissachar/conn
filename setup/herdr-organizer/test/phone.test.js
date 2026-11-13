@@ -1,8 +1,8 @@
 'use strict';
 
 // Tests for the organizer page on the phone over Tailscale (phone.js, api.js with a tailnet option,
-// serve.sh --tailnet). The tailnet listener is bound to 127.0.0.1 on a second free port, so a test needs
-// no Tailscale; the serve.sh test at the end uses the real Tailscale address and skips itself when
+// organizer-serve.sh --tailnet). The tailnet listener is bound to 127.0.0.1 on a second free port, so a test needs
+// no Tailscale; the organizer-serve.sh test at the end uses the real Tailscale address and skips itself when
 // `tailscale ip -4` does not answer. Passcodes here are test values in scratch files, never the owner's.
 // Run from the repo root: node --test setup/herdr-organizer/test/phone.test.js
 
@@ -35,14 +35,14 @@ function repoTree(tree) {
   tree.write('repo/apps/wip-herdr-workspace-organizer.html', PAGE_BODY);
   tree.write('repo/apps/task-control-plane.html', 'ANOTHER APP');
   tree.write('repo/README.md', 'REPO FILE');
-  tree.write('repo/setup/serve.sh', 'SCRIPT');
+  tree.write('repo/setup/organizer-serve.sh', 'SCRIPT');
   tree.write('repo/personal/notes.md', 'PRIVATE NOTES');
   tree.write('repo/setup/transcript-reader/out/prototype.html', 'PRIVATE TRANSCRIPTS');
   tree.write('repo/.git/config', 'GIT CONFIG');
   return tree.abs('repo');
 }
 
-// The organizer API with a loopback listener (as serve.sh has it) and the phone listener, on two ports.
+// The organizer API with a loopback listener (as organizer-serve.sh has it) and the phone listener, on two ports.
 async function boot({ passcode = PASSCODE, withTailnet = true, refresh } = {}) {
   const tree = tempTree('herdr-phone-');
   const root = repoTree(tree);
@@ -141,7 +141,7 @@ test('the default passcode file is the reader\'s, and a path in the environment 
 // ---------------------------------------------------------------- the allow-list
 
 const NOT_ON_THE_LIST = [
-  '/', '/index.html', '/README.md', '/apps/task-control-plane.html', '/apps/', '/apps', '/apps/index.html', '/setup/serve.sh', '/personal/notes.md', '/.git/config',
+  '/', '/index.html', '/README.md', '/apps/task-control-plane.html', '/apps/', '/apps', '/apps/index.html', '/setup/organizer-serve.sh', '/personal/notes.md', '/.git/config',
   '/setup/transcript-reader/out/prototype.html', '/api/pmos-health', '/api/git-state', '/api/captain-holds', '/api/packet-tree?base=apps', '/api/write-file',
   '/api/control-plane-outbox', '/api/refetch-flow-packet', '/api/frame-catalogs', '/api/refresh/anything', '/api/transcript-reader/state', '/transcript-reader/signin',
   '/herdr-organizer', '/herdr-organizer/', '/herdr-organizer/other', '/api/herdr-workspace-organizer', '/api/herdr-workspace-organizer/', '/api/herdr-workspace-organizer/snapshot/x',
@@ -449,7 +449,7 @@ test('the page\'s Refresh snapshot sends the token and a JSON body, as the phone
   assert.match(call, /\[api\.header\]: token/);
 });
 
-// ---------------------------------------------------------------- serve.sh --tailnet, end to end on the real address
+// ---------------------------------------------------------------- organizer-serve.sh --tailnet, end to end on the real address
 
 function tailscaleAddress() {
   for (const bin of ['tailscale', '/opt/homebrew/bin/tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
@@ -464,7 +464,7 @@ function tailscaleAddress() {
 const listenerPids = (port) => { try { return execFileSync('lsof', ['-tiTCP:' + port, '-sTCP:LISTEN'], { encoding: 'utf8' }).split('\n').filter(Boolean).map(Number); } catch { return []; } };
 const refuses = (ip, port) => new Promise((resolve) => { const socket = net.connect({ host: ip, port, timeout: 1500 }); socket.once('connect', () => { socket.destroy(); resolve(false); }); socket.once('error', () => resolve(true)); socket.once('timeout', () => { socket.destroy(); resolve(true); }); });
 
-test('serve.sh: the Tailscale address is off by default, needs a passcode, then serves the organizer page and nothing else', { skip: tailscaleAddress() ? false : 'Tailscale is not running here' }, async (t) => {
+test('organizer-serve.sh: the Tailscale address is off by default, needs a passcode, then serves the organizer page and nothing else', { skip: tailscaleAddress() ? false : 'Tailscale is not running here' }, async (t) => {
   const ip = tailscaleAddress();
   const tree = tempTree('herdr-phone-serve-');
   const passcodeFile = tree.abs('config/passcode.json');
@@ -476,7 +476,7 @@ test('serve.sh: the Tailscale address is off by default, needs a passcode, then 
     HERDR_ORGANIZER_ROLLOVER_HOMES: 'scratch=' + tree.abs('fm-home'), HERDR_ORGANIZER_GAUGE_SCRIPT: tree.abs('gauge.sh'),
   };
   const ports = [];
-  const serve = (port, ...args) => execFileSync('bash', [path.join(REPO, 'setup', 'serve.sh'), '--port', String(port), ...args], { cwd: REPO, env, encoding: 'utf8', timeout: 30000 });
+  const serve = (port, ...args) => execFileSync('bash', [path.join(REPO, 'setup', 'organizer-serve.sh'), '--port', String(port), ...args], { cwd: REPO, env, encoding: 'utf8', timeout: 30000 });
   const stop = (port) => { for (const pid of listenerPids(port)) { try { process.kill(pid); } catch { /* gone */ } } };
   t.after(async () => {
     for (const port of ports) stop(port);
@@ -500,18 +500,18 @@ test('serve.sh: the Tailscale address is off by default, needs a passcode, then 
   // 1. Off by default: the shared server starts on loopback only.
   const plainPort = await freePort(); ports.push(plainPort);
   const plain = serve(plainPort);
-  assert.match(plain, /Server started/);
+  assert.match(plain, /Organizer server started/);
   assert.doesNotMatch(plain, /Tailnet/);
   assert.equal(await refuses(ip, plainPort), true, 'nothing listens on the Tailscale address without --tailnet');
-  assert.match(execFileSync('bash', [path.join(REPO, 'setup', 'serve.sh'), '--port', String(plainPort), 'status'], { cwd: REPO, env, encoding: 'utf8' }), /Tailnet address not served/);
-  assert.equal((await getFrom('127.0.0.1', plainPort, '/README.md', {})).status, 200, 'loopback serves the repo as before');
+  assert.match(execFileSync('bash', [path.join(REPO, 'setup', 'organizer-serve.sh'), '--port', String(plainPort), 'status'], { cwd: REPO, env, encoding: 'utf8' }), /Tailnet address not served/);
+  assert.equal((await getFrom('127.0.0.1', plainPort, '/README.md', {})).status, 404, 'loopback serves only the organizer');
   stop(plainPort);
   await new Promise((resolve) => setTimeout(resolve, 500));
 
   // 2. Asked for but no passcode: loopback only, and the reason in plain words.
   const noPasscodePort = await freePort(); ports.push(noPasscodePort);
   const noPasscode = serve(noPasscodePort, '--tailnet');
-  assert.match(noPasscode, /Tailnet address not served: no passcode is set\. Set one \(shared with the transcript reader\) with: bash setup\/transcript-reader\/serve\.sh passcode/);
+  assert.match(noPasscode, /Tailnet address not served: no passcode is set\. Set one with: bash setup\/transcript-reader\/serve\.sh passcode/);
   assert.equal(await refuses(ip, noPasscodePort), true);
   stop(noPasscodePort);
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -521,13 +521,13 @@ test('serve.sh: the Tailscale address is off by default, needs a passcode, then 
   const port = await freePort(); ports.push(port);
   const started = serve(port, '--tailnet');
   assert.match(started, new RegExp(`Tailnet address served: http://${ip.replace(/\./g, '\\.')}:${port}/apps/wip-herdr-workspace-organizer\\.html`));
-  assert.match(execFileSync('bash', [path.join(REPO, 'setup', 'serve.sh'), '--port', String(port), 'status'], { cwd: REPO, env, encoding: 'utf8' }), /Tailnet address served/);
+  assert.match(execFileSync('bash', [path.join(REPO, 'setup', 'organizer-serve.sh'), '--port', String(port), 'status'], { cwd: REPO, env, encoding: 'utf8' }), /Tailnet address served/);
   const origin = `http://${ip}:${port}`;
   const unsigned = await getFrom(ip, port, PAGE_PATH, NAVIGATE);
   assert.equal(unsigned.status, 401);
   assert.match(unsigned.raw, /<form id="f"/);
   assert.equal(unsigned.raw.includes('Workspace organizer'), false);
-  for (const target of ['/README.md', '/apps/index.html', '/apps/task-control-plane.html', '/setup/serve.sh', '/api/pmos-health', '/api/git-state', '/', '/setup/transcript-reader/out/prototype.html']) {
+  for (const target of ['/README.md', '/apps/index.html', '/apps/task-control-plane.html', '/setup/organizer-serve.sh', '/api/pmos-health', '/api/git-state', '/', '/setup/transcript-reader/out/prototype.html']) {
     assert.equal((await getFrom(ip, port, target, NAVIGATE)).status, 404, 'signed out: ' + target);
   }
   const signed = await getFrom(ip, port, SIGNIN, { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' }, 'POST', { passcode: PASSCODE, next: PAGE_PATH });
@@ -537,7 +537,7 @@ test('serve.sh: the Tailscale address is off by default, needs a passcode, then 
   assert.equal(page.status, 200);
   assert.match(page.raw, /Workspace organizer/);
   assert.equal(page.raw, fs.readFileSync(path.join(REPO, 'apps', 'wip-herdr-workspace-organizer.html'), 'utf8'));
-  for (const target of ['/README.md', '/apps/index.html', '/apps/task-control-plane.html', '/setup/serve.sh', '/api/pmos-health', '/api/git-state', '/api/captain-holds', '/', '/setup/transcript-reader/out/prototype.html', '/personal/x']) {
+  for (const target of ['/README.md', '/apps/index.html', '/apps/task-control-plane.html', '/setup/organizer-serve.sh', '/api/pmos-health', '/api/git-state', '/api/captain-holds', '/', '/setup/transcript-reader/out/prototype.html', '/personal/x']) {
     const response = await getFrom(ip, port, target, { ...NAVIGATE, Cookie: cookie });
     assert.equal(response.status, 404, 'signed in: ' + target);
     assert.equal(response.raw, 'Not found');
@@ -548,7 +548,7 @@ test('serve.sh: the Tailscale address is off by default, needs a passcode, then 
   assert.equal(writeFile.status, 404, 'the shared server\'s write route is not on the tailnet');
   // the same token is refused where the Host is not the tailnet address
   assert.equal((await getFrom('127.0.0.1', port, '/api/herdr-organizer/token', { Host: `${ip}:${port}` })).status, 403, 'the tailnet Host is not accepted on loopback');
-  // loopback is unchanged: no sign-in, the repo is served as before
-  assert.equal((await getFrom('127.0.0.1', port, '/README.md', {})).status, 200);
+  // loopback is separate from the phone lane: no sign-in, only organizer routes
+  assert.equal((await getFrom('127.0.0.1', port, PAGE_PATH, {})).status, 200);
   assert.equal((await getFrom('127.0.0.1', port, '/api/herdr-organizer/token', {})).status, 200);
 });

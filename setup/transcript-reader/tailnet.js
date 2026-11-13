@@ -46,7 +46,7 @@ const SIGNIN = '/transcript-reader/signin';
 const SIGNOUT = '/transcript-reader/signout';
 const HOME = '/setup/transcript-reader/out/prototype.html';
 // One cookie name for every site that shares the passcode: browsers scope a cookie to the address, not the port, so
-// the one sign-in reaches the reader (port 8768) and the organizer (port 8765) alike.
+// the one sign-in reaches the reader (port 8768) and the organizer (port 8767) alike.
 const COOKIE = 'pmos_session';
 // What differs between the pages that use this module: where the sign-in lives, where a signed-in phone
 // lands, and the words (the passcode, the cookie and the sessions are shared). prefix is the folder the sign-in routes sit under; landing is

@@ -1,6 +1,6 @@
 'use strict';
 
-// HTTP surface for the Herdr restart tools. serve.sh requires this module and
+// HTTP surface for the Herdr restart tools. organizer-serve.sh requires this module and
 // hands it every /api/herdr-organizer/* request before its shared CORS handling.
 //
 //   GET  /api/herdr-organizer/token   same-origin only; returns the per-start token
@@ -97,14 +97,14 @@ function validateParams(spec, params) {
 // tailnet: { ip, passcodeFile[, port] } when phone.js also listens on the Mac's Tailscale address; log takes
 // one line of text, the sign-in record (the server's stderr when left out).
 function create({ root, port, toolRoot, adapter, token, now = () => new Date(), env = process.env, rollover, switches, preview, tailnet = null, log } = {}) {
-  const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'personal', '01-System', 'setup', 'herdr');
+  const resolvedToolRoot = toolRoot || env.HERDR_ORGANIZER_TOOL_ROOT || path.join(root, 'setup', 'herdr');
   const guard = createGuard({ port, token });
   const lane = tailnet && tailnetLane.create({ ip: tailnet.ip, port: tailnet.port || port, token: guard.token, tokenHeader: TOKEN_HEADER, passcodeFile: tailnet.passcodeFile, site: ORGANIZER_SITE, ...(log ? { log } : {}) });
   // The guard that holds for a request: the loopback one, or the tailnet listener's (its own Host and
   // Origin, the same token). Set by handle().
   const guards = new WeakMap();
   const guardFor = (req) => guards.get(req) || guard;
-  // The firstmate home and code root the context gauge reads, as serve.sh names them.
+  // The firstmate home and code root the context gauge reads, as organizer-serve.sh names them.
   const fmHome = env.HERDR_ORGANIZER_FM_HOME || path.join(os.homedir(), 'fm-homes', 'pmos');
   const gaugeScript = env.HERDR_ORGANIZER_GAUGE_SCRIPT || path.join(os.homedir(), 'workspace', 'firstmate', 'bin', 'fm-ctx-gauge.sh');
   const tools = adapter || createAdapter({ toolRoot: resolvedToolRoot, env, fmHome, gaugeScript });

@@ -1,7 +1,7 @@
 'use strict';
 
-// The Herdr organizer page on the owner's phone, over Tailscale. Opt-in: serve.sh adds this listener
-// to the shared app server (port 8765) only when started with --tailnet, Tailscale answered with an
+// The Herdr organizer page on the owner's phone, over Tailscale. Opt-in: organizer-serve.sh adds this listener
+// to the organizer server (port 8767) only when started with --tailnet, Tailscale answered with an
 // address and a passcode is set. See DESIGN.md "Phone access".
 //
 // It is a listener of its own, bound to the one Tailscale address, with its own request handler.
@@ -40,7 +40,7 @@ const PAGE_HEADERS = {
   'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'none'",
 };
 
-// What serve.sh passes to the node program once it has found a Tailscale address and a passcode:
+// What organizer-serve.sh passes to the node program once it has found a Tailscale address and a passcode:
 // null when the switch is off, { ip, passcodeFile } when on (the reader's passcode file: one passcode, one sign-in). A value that is not a Tailscale address throws.
 function tailnetFromEnv(env = process.env, root) {
   const ip = String(env.PMOS_SERVE_TAILNET_IP || '').trim();
@@ -106,7 +106,7 @@ function createHandler({ root, api, refresh = refreshSnapshot, assets = ASSETS }
 }
 
 // Binds the one address given (never 0.0.0.0, never another interface) next to the loopback listeners
-// serve.sh already has, when the passcode file holds a hash. Resolves to { ip, port, close, error }:
+// organizer-serve.sh already has, when the passcode file holds a hash. Resolves to { ip, port, close, error }:
 // error says why nothing listens (loopback keeps serving), ip and port say where the phone connects.
 function listen({ root, api, tailnet, port, refresh, assets }) {
   const lane = api.tailnet;

@@ -4,7 +4,7 @@ import ConnCore
 
 @Suite("Web link policy") struct WebLinkPolicyTests {
     let reader = URL(string: "http://localhost:8768/setup/transcript-reader/out/prototype.html")!
-    let organizer = URL(string: "http://localhost:8765/apps/wip-herdr-workspace-organizer.html")!
+    let organizer = URL(string: "http://localhost:8767/apps/wip-herdr-workspace-organizer.html")!
     var panes: [String: URL] { ["Reader": reader, "Organizer": organizer] }
     func route(_ s: String, from own: URL) -> WebLinkRoute { WebLinkPolicy.route(for: URL(string: s)!, ownBase: own, panes: panes) }
 
@@ -18,8 +18,8 @@ import ConnCore
     }
 
     @Test func linksInsideThePageAndNonWebAddressesStay() {
-        #expect(route("http://localhost:8765/apps/other.html#a", from: organizer) == .allow)
-        #expect(route("http://127.0.0.1:8765/api/herdr-organizer/token", from: organizer) == .allow)
+        #expect(route("http://localhost:8767/apps/other.html#a", from: organizer) == .allow)
+        #expect(route("http://127.0.0.1:8767/api/herdr-organizer/token", from: organizer) == .allow)
         #expect(route("about:blank", from: organizer) == .allow)
         #expect(route("mailto:a@b.c", from: organizer) == .allow)
         #expect(route("http://localhost:8768/setup/transcript-reader/out/prototype.html#s=1", from: reader) == .allow)
@@ -33,7 +33,7 @@ import ConnCore
     }
 
     @Test func aLinkFromTheReaderToTheOrganizerSwitchesPanesToo() {
-        let url = "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
+        let url = "http://localhost:8767/apps/wip-herdr-workspace-organizer.html"
         #expect(route(url, from: reader) == .showInPane(pane: "Organizer", url: URL(string: url)!))
     }
 
@@ -43,7 +43,7 @@ import ConnCore
         #expect(WebLinkPolicy.isPage(base, base))
         #expect(WebLinkPolicy.isPage(base, URL(string: "http://127.0.0.1:8768/setup/transcript-reader/out/prototype.html#s=abc")!))
         #expect(!WebLinkPolicy.isPage(base, URL(string: "http://localhost:8768/setup/transcript-reader/out/other.html")!))
-        #expect(!WebLinkPolicy.isPage(base, URL(string: "http://localhost:8765/setup/transcript-reader/out/prototype.html")!))
+        #expect(!WebLinkPolicy.isPage(base, URL(string: "http://localhost:8767/setup/transcript-reader/out/prototype.html")!))
         #expect(!WebLinkPolicy.isPage(base, URL(string: "https://localhost:8768/setup/transcript-reader/out/prototype.html")!))
         #expect(!WebLinkPolicy.isPage(base, nil))
         let file = URL(fileURLWithPath: "/tmp/fixture/fixture-reader.html")

@@ -2,7 +2,7 @@
 
 // Cross-site protection for the Herdr organizer API.
 //
-// serve.sh sends Access-Control-Allow-Origin: * on its other routes, so any web
+// The old shared server sent Access-Control-Allow-Origin: * on its other routes, so any web
 // page the user visits could call a localhost endpoint. Every route handled by
 // this module therefore requires, all at once:
 //   - a Host header naming loopback on the served port (defeats DNS rebinding),

@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "store_check.py"
-TOOL_ROOT = Path(os.environ.get("HERDR_ORGANIZER_TOOL_ROOT") or HERE.parents[2] / "personal" / "01-System" / "setup" / "herdr")
+TOOL_ROOT = Path(os.environ.get("HERDR_ORGANIZER_TOOL_ROOT") or HERE.parents[2] / "setup" / "herdr")
 
 CLAUDE_ID = "aaaaaaaa-1111-4222-8333-444444444444"
 CODEX_ID = "bbbbbbbb-1111-4222-8333-444444444444"

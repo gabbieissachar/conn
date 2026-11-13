@@ -94,7 +94,7 @@ HERDR_GRACE = 900  # seconds after a Herdr session's server starts during which 
 DROPPED_KEEP_DAYS = 14  # a dropped session whose log has not changed for this long is forgotten (as Closed panes does)
 REPO = HERE.parent.parent
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
-DEFAULT_PORT = "8768"  # the reader's own server (serve.sh in this folder); 8765 and 8766 are other pages
+DEFAULT_PORT = "8768"  # the reader's own server (serve.sh in this folder); 8765, 8766 and 8767 are other pages
 PREFIX = re.compile(r"^[0-9a-f]{6,}[0-9a-f-]*$")
 
 

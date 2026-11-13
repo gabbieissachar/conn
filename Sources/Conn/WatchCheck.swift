@@ -510,7 +510,7 @@ enum WatchCheck {
     /// The lite page opened with `&m=<turn id>` from the reader's feed scrolls to and outlines that reply.
     static func liveGlanceCheck(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
         // The address with a turn id: when the reader's feed names an open ask, a column opened on it scrolls to and outlines that reply.
-        let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/pmos/setup/transcript-reader/out/glance.json")
+        let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/conn/setup/transcript-reader/out/glance.json")
         guard let data = try? Data(contentsOf: glance), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let convs = root["conversations"] as? [[String: Any]] else { print("ui-check: SKIP lite page with &m= (no glance feed)"); return }
         let live = Set(model.snapshot.agents.compactMap(\.sessionID))
@@ -532,7 +532,7 @@ enum WatchCheck {
     /// does: the clicked column must not navigate, the named session must be in another column, a Cmd-click must leave Watch for the
     /// normal reader pinned to it, and in that reader the same link must be the page's own. Read only: nothing is sent to a pane.
     static func liveSessionLinks(model: AppModel, report: (String, Bool, String) -> Void, wait: (Double) async -> Void, settle: (Double) async -> Void, js: (WebBox, String) async -> String) async {
-        let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/pmos/setup/transcript-reader/out/glance.json")
+        let glance = URL(fileURLWithPath: NSHomeDirectory() + "/workspace/conn/setup/transcript-reader/out/glance.json")
         guard let data = try? Data(contentsOf: glance), let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let convs = root["conversations"] as? [[String: Any]] else { print("ui-check: SKIP session links on the real lite page (no glance feed)"); return }
         let listed = convs.compactMap { $0["id"] as? String }

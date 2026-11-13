@@ -1,6 +1,6 @@
 // Where a link clicked inside one of Conn's web panes goes.
 //
-// Conn shows two pages from local servers (the transcript reader on :8768 and the organizer on :8765). A link between them
+// Conn shows two pages from local servers (the transcript reader on :8768 and the organizer on :8767). A link between them
 // belongs inside Conn: it switches to the other pane and loads that exact address, hash included. Everything else that
 // leaves the page opens in the default browser, and links inside the page stay where they are.
 import Foundation

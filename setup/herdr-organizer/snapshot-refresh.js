@@ -3,12 +3,12 @@
 // The organizer page's "Refresh snapshot" button, when no session is picked, posts to
 // /api/herdr-workspace-organizer/snapshot. The route takes no input: it runs one fixed command,
 // `workspace-organizer.py snapshot`, which reads Herdr and rewrites the live snapshot file.
-// serve.sh (loopback) and phone.js (the Tailscale listener, behind its guard and passcode) both
+// organizer-serve.sh (loopback) and phone.js (the Tailscale listener, behind its guard and passcode) both
 // answer it with this, so the command lives in one place.
 
 const { spawn: nodeSpawn } = require('child_process');
 
-const SCRIPT = 'personal/01-System/setup/herdr/workspace-organizer.py';
+const SCRIPT = 'setup/herdr/workspace-organizer.py';
 
 // Resolves to { status, body }: 200 with the tool's output, or 500 with why it failed. Never rejects.
 function refreshSnapshot(root, { spawn = nodeSpawn } = {}) {

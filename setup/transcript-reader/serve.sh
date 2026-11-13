@@ -1,7 +1,7 @@
 #!/bin/bash
 # The transcript reader's own server: start, stop, restart and status, on its own port.
 # It serves only the reader's pages and /api/transcript-reader/* (server.js), apart
-# from setup/serve.sh and the pages that one serves.
+# from the separate organizer server and pmos's other pages.
 #
 # Usage: bash setup/transcript-reader/serve.sh [start|stop|restart|status|passcode|cert] [--port <port>] [--tailnet] [--tailnet-https] [--no-tailnet] [--no-tailnet-https] [--https-port <port>] [--fresh]
 #   start    start it if it is not running (the default command)
@@ -14,7 +14,7 @@
 #            echo, stored only as a salted hash in out/passcode.json (never an argument)
 #   cert     fetch or renew the Tailscale HTTPS certificate for this machine's name (tailscale cert); a
 #            running server picks a renewed one up within the hour
-# Port: --port, else PMOS_READER_PORT, else 8768. 8765 and 8766 belong to other pages.
+# Port: --port, else PMOS_READER_PORT, else 8768. 8765, 8766 and 8767 belong to other pages.
 # --tailnet (or PMOS_READER_TAILNET=1), on start and restart: also listen on this Mac's Tailscale
 #   IPv4 address (tailscale ip -4), same port, so a phone on the tailnet opens it by that address
 #   after typing the passcode. Loopback stays as it is. Without Tailscale up or without a passcode
@@ -67,7 +67,7 @@ if [[ ! "$PORT" =~ ^[0-9]{2,5}$ ]] || (( PORT < 1 || PORT > 65535 )); then
   echo "Invalid port: $PORT"
   exit 2
 fi
-if [[ "$PORT" == "8765" || "$PORT" == "8766" ]]; then
+if [[ "$PORT" == "8765" || "$PORT" == "8766" || "$PORT" == "8767" ]]; then
   echo "Port $PORT belongs to other pages. Pick another with --port or PMOS_READER_PORT (default 8768)."
   exit 2
 fi
@@ -82,7 +82,7 @@ served_copy() { curl --max-time 2 -sI "http://localhost:$PORT/" 2>/dev/null | tr
 # Where the process listening on the port was started (server.js runs from its repo copy's root).
 where() { lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
 
-# tailnet_ip and tailnet_listening: setup/tailnet-lib.sh, shared with setup/serve.sh.
+# tailnet_ip and tailnet_listening: setup/tailnet-lib.sh, shared with setup/organizer-serve.sh.
 source "$REPO_ROOT/setup/tailnet-lib.sh"
 # The Tailscale address the process on the port listens on, if any.
 tailnet_served() { tailnet_listening "$(listener)" "$PORT"; }
@@ -335,8 +335,8 @@ resolve_settings                                                    # (first wit
 [[ "$COMMAND" == restart ]] && adopt_running
 load_saved
 resolve_settings
-if [[ ! "$HTTPS_PORT" =~ ^[0-9]{2,5}$ ]] || (( HTTPS_PORT < 1024 || HTTPS_PORT > 65535 )) || [[ "$HTTPS_PORT" == "$PORT" || "$HTTPS_PORT" == "8765" || "$HTTPS_PORT" == "8766" ]]; then
-  echo "Invalid HTTPS port: $HTTPS_PORT (1024 to 65535, not the reader's own port or 8765/8766)"
+if [[ ! "$HTTPS_PORT" =~ ^[0-9]{2,5}$ ]] || (( HTTPS_PORT < 1024 || HTTPS_PORT > 65535 )) || [[ "$HTTPS_PORT" == "$PORT" || "$HTTPS_PORT" == "8765" || "$HTTPS_PORT" == "8766" || "$HTTPS_PORT" == "8767" ]]; then
+  echo "Invalid HTTPS port: $HTTPS_PORT (1024 to 65535, not the reader's own port or 8765/8766/8767)"
   exit 2
 fi
 

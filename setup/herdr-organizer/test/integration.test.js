@@ -16,7 +16,7 @@ const { createAdapter, defaultRunner } = require('../adapter');
 const { client, tempTree } = require('./helpers');
 const http = require('http');
 
-const REAL_TOOL_ROOT = process.env.HERDR_ORGANIZER_TOOL_ROOT || path.join(__dirname, '..', '..', '..', 'personal', '01-System', 'setup', 'herdr');
+const REAL_TOOL_ROOT = process.env.HERDR_ORGANIZER_TOOL_ROOT || path.join(__dirname, '..', '..', '..', 'setup', 'herdr');
 const available = fs.existsSync(path.join(REAL_TOOL_ROOT, 'agent-session-registry.py'));
 const ID = '0f1e2d3c-4b5a-4968-8777-665544332211';
 

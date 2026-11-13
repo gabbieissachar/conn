@@ -667,9 +667,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
     const session = await requireSession(sessionName);
     const result = await runner(pythonBin, [organizerScript, '--session', session, 'archive-all'], { env: runEnv(), timeoutMs: 180000 });
     if (result.timedOut) throw timeoutError('The archive preview', 180000);
-    // An older copy of the organizer (this command lives in the personal project) rejects the subcommand.
+    // An older copy of the organizer rejects the subcommand.
     if (result.code !== 0 && /invalid choice: '?archive-all|unrecognized arguments: archive-all/.test(String(result.stderr))) {
-      throw new AdapterError('The organizer tool on this machine does not have archive-all yet. Update personal/01-System/setup/herdr/workspace-organizer.py, then preview again.', 501, 'tool_outdated');
+      throw new AdapterError('The organizer tool on this machine does not have archive-all yet. Update setup/herdr/workspace-organizer.py, then preview again.', 501, 'tool_outdated');
     }
     const preview = result.code === 0 ? parse.parseArchiveAllPreview(result.stdout) : null;
     if (!preview || preview.session !== session) throw new AdapterError(scrub(result.stderr || result.stdout || 'The archive preview failed.'), 502, 'archive_preview_failed');

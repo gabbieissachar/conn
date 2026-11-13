@@ -451,7 +451,7 @@ function requestsOut(root, outDir, req, url) {
   return { inside: false };
 }
 
-// For a server that serves repo files for other apps (setup/serve.sh): whether the request
+// For a server that serves repo files for other apps (setup/organizer-serve.sh): whether the request
 // names the reader's out/ folder, which that server must refuse.
 function namesReaderOut(root, req) {
   let url;

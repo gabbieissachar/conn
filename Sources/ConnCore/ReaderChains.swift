@@ -48,7 +48,7 @@ public struct ReaderChains: Equatable, Sendable {
     /// The file a launch reads: `CONN_READER_GLANCE`, else the reader's own place for it (beside `pane-labels.json`).
     public static func defaultFile(env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> URL {
         if let f = env["CONN_READER_GLANCE"], !f.isEmpty { return URL(fileURLWithPath: f) }
-        return URL(fileURLWithPath: home + "/workspace/pmos/setup/transcript-reader/out/glance.json")
+        return URL(fileURLWithPath: home + "/workspace/conn/setup/transcript-reader/out/glance.json")
     }
 
     /// The same conversation: the same session (`WatchLayout.same`: equal ids, or one is the first characters of the other), or two ids of one chain.

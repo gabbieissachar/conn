@@ -8,7 +8,7 @@ const http = require('http');
 const path = require('path');
 const root = path.resolve(process.argv[2]);
 const port = Number(process.argv[3]);
-if (!Number.isInteger(port) || port === 8768 || port === 8765 || port === 8766) { process.stderr.write('pick another port\n'); process.exit(2); }
+if (!Number.isInteger(port) || port === 8768 || port === 8765 || port === 8766 || port === 8767) { process.stderr.write('pick another port\n'); process.exit(2); }
 const { create } = require(path.join(root, 'setup', 'transcript-reader', 'api.js'));
 const board = { enabled: true, marks: process.argv.includes('--marks'), answer: process.argv.includes('--answer'), send: process.argv.includes('--send'), review: process.argv.includes('--review') };
 // --warm: the board remembers its boards on disk (the board cache folder, PMOS_READER_BOARD_CACHE) and reads them all at start, as the reader does when it runs for real.

@@ -45,7 +45,7 @@ same account. A record of the default account has no `config_dir` and the plain 
 State files default to:
 
 ```sh
-/Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/state/
+/Users/nguyen.tran/workspace/conn/setup/herdr/state/
 ```
 
 The registry creates this sidecar directory with mode `0700`, and keeps its
@@ -60,7 +60,7 @@ Source these in shells that launch or resume Codex or Claude inside herdr:
 
 ```sh
 source /Users/nguyen.tran/workspace/pmos/setup/codex-shortcuts.zsh
-source /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-shortcuts.zsh
+source /Users/nguyen.tran/workspace/conn/setup/herdr/agent-session-shortcuts.zsh
 ```
 
 ## Core Commands
@@ -89,7 +89,7 @@ Session IDs are redacted from the normal listing. Use
 Normalize the manifest field order after manual edits or migrations:
 
 ```sh
-python3 /Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/agent-session-registry.py normalize
+python3 /Users/nguyen.tran/workspace/conn/setup/herdr/agent-session-registry.py normalize
 ```
 
 Legacy evidence scan and explicit status capture:
@@ -210,7 +210,7 @@ the final explicit step for unresolved idle or done panes. Its diagnostics are
 appended to:
 
 ```sh
-personal/01-System/setup/herdr/state/herdr-agent-status-capture.jsonl
+setup/herdr/state/herdr-agent-status-capture.jsonl
 ```
 
 The JSONL file records outcomes and identifiers, not pane output. A login hook
@@ -234,7 +234,7 @@ herdr-agent-capture-missing --client codex
 This writes:
 
 ```sh
-/Users/nguyen.tran/workspace/pmos/personal/01-System/setup/herdr/state/herdr-agent-missing-sessions.json
+/Users/nguyen.tran/workspace/conn/setup/herdr/state/herdr-agent-missing-sessions.json
 ```
 
 Fill `session_id`, then apply it:

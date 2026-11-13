@@ -1,11 +1,11 @@
-# pmOS herdr agent session shortcuts.
+# Conn Herdr agent session shortcuts.
 #
 # Source after setup/codex-shortcuts.zsh so codex-r can auto-register the
 # current herdr pane when a resume session id is known.
 
-_pmos_repo="${PMOS_REPO:-${PMOS_ROOT:-/Users/nguyen.tran/workspace/pmos}}"
+_pmos_repo="${PMOS_REPO:-${CONN_REPO:-${PMOS_ROOT:-/Users/nguyen.tran/workspace/conn}}}"
 export PMOS_REPO="${PMOS_REPO:-$_pmos_repo}"
-_pmos_herdr_agent_root="$_pmos_repo/personal/01-System/setup/herdr"
+_pmos_herdr_agent_root="$_pmos_repo/setup/herdr"
 _pmos_herdr_agent_registry="$_pmos_herdr_agent_root/agent-session-registry.py"
 _pmos_herdr_agent_restore="$_pmos_herdr_agent_root/agent-session-restore.py"
 _pmos_herdr_workspace_organizer="$_pmos_herdr_agent_root/workspace-organizer.py"
@@ -132,9 +132,9 @@ herdr-organizer() {
 }
 
 herdr-organizer-ui() {
-  local organizer_port="${HERDR_ORGANIZER_UI_PORT:-8766}"
+  local organizer_port="${HERDR_ORGANIZER_UI_PORT:-8767}"
   herdr-organizer snapshot "$@" || return
-  (cd "$_pmos_repo" && bash setup/serve.sh --port "$organizer_port") || return
+  bash "$_pmos_repo/setup/organizer-serve.sh" --port "$organizer_port" || return
   open "http://localhost:${organizer_port}/apps/wip-herdr-workspace-organizer.html"
 }
 

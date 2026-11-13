@@ -1,4 +1,4 @@
-// Web panes: the captain's existing transcript reader (:8768) and Herdr organizer (:8765) shown in WKWebView.
+// Web panes: the Conn repo's transcript reader (:8768) and Herdr organizer (:8767) shown in WKWebView.
 // With --fixture the same two slots load invented local pages instead, so nothing private reaches a screenshot.
 // Conn only loads these pages. It never serves them, restarts their servers or writes to them.
 import SwiftUI
@@ -654,7 +654,7 @@ final class WebHub {
         if kind == .reader, let u = readerURL { return u }
         let env = ProcessInfo.processInfo.environment
         let reader = env["CONN_READER_URL"] ?? "http://localhost:8768/setup/transcript-reader/out/prototype.html"
-        let organizer = env["CONN_ORGANIZER_URL"] ?? "http://localhost:8765/apps/wip-herdr-workspace-organizer.html"
+        let organizer = env["CONN_ORGANIZER_URL"] ?? "http://localhost:8767/apps/wip-herdr-workspace-organizer.html"
         return URL(string: kind == .reader ? reader : organizer)!
     }
 
