@@ -2171,6 +2171,7 @@ function create({
     if (listener === 'tailnet' || listener === 'tailnet-https') {
       const lanes = listener === 'tailnet' ? lane : httpsLane;
       if (!lanes) { res.writeHead(403, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not served here'); return true; }
+      const asksForBoard = boardPage && boardTailnet && listener === 'tailnet-https';
       if (lanes.intercept(req, res, url, (page.inside && page.name.endsWith('.html')) || asksForBoard || windowed, viewing)) return true;
       guards.set(req, lanes.guard);
       if (asksForBoard) { serveBoardPage(req, res); return true; }
