@@ -1,0 +1,67 @@
+<!doctype html>
+<!--
+  The windowed lite page (setup/transcript-reader/storeapi/page.js builds it; served by api.js only when the store API is on).
+  It holds no transcript: it reads one session's turns, a window at a time, from the store API and keeps them current from the stream.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="reader-token" content="__READER_TOKEN__">
+<title>Reader (windowed)</title>
+<style>
+/*__STYLE__*/
+  .bar-inner .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  .bar-inner .row select { flex: 1 1 auto; min-width: 0; height: 30px; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+  .bar-inner .row input { flex: 0 1 11rem; min-width: 0; height: 30px; font: inherit; font-size: 14px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+  .strip { display: flex; gap: 6px; overflow-x: auto; margin-top: 6px; padding-bottom: 2px; }
+  .ask-chip { flex: none; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-color: var(--ask-line); background: var(--ask-wash); color: var(--ask); }
+  .ask-chip b { font-weight: 700; }
+  .older { max-width: var(--col); margin: 0 auto; padding: 8px 12px 0; text-align: center; }
+  .note { max-width: var(--col); margin: 8px auto 0; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+  .note.bad { color: var(--open); }
+  .empty { max-width: var(--col); margin: 40px auto; padding: 0 12px; color: var(--muted); text-align: center; }
+  .results { margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); max-height: min(58vh, 32rem); overflow-y: auto; overscroll-behavior: contain; }
+  .results .notes { padding: 5px 10px; }
+  .hit { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); background: none; padding: 7px 10px; font-size: 14px; }
+  .hit .when { color: var(--faint); font-size: 12px; }
+  .hit .snip { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .hit mark { background: var(--ask-wash); color: inherit; border-radius: 3px; }
+  .back { position: fixed; right: 14px; bottom: 96px; z-index: 6; border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 99px; padding: 4px 13px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .dock-row { display: flex; gap: 6px; align-items: flex-end; }
+  .dock-row textarea { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); resize: none; min-height: 38px; max-height: 8rem; }
+  .dock-row textarea:disabled { opacity: .6; }
+  #send { border: 1px solid var(--you); background: var(--you); color: var(--paper); border-radius: 10px; padding: 7px 14px; font-weight: 600; }
+  #send:disabled { opacity: .5; cursor: default; }
+  main { padding-bottom: 96px; }
+  .turn { display: block; }
+</style>
+</head>
+<body>
+<header class="bar" id="bar">
+  <div class="bar-inner">
+    <div class="title"><span class="name">Reader</span><span class="proto">windowed</span><span class="live" id="pane"></span><span class="live" id="conn"></span></div>
+    <div class="row"><select id="session" aria-label="Session"></select><input id="q" type="search" placeholder="Search" aria-label="Search the starred and open conversations" autocomplete="off" spellcheck="false" enterkeyhint="search"></div>
+    <div class="strip" id="asks-strip" hidden></div>
+    <div class="asof"><span id="asof"></span></div>
+    <div class="results" id="results" hidden></div>
+  </div>
+</header>
+<div class="older"><button class="btn" id="older" type="button" hidden>Load earlier turns</button></div>
+<div class="note" id="note" role="status" aria-live="polite" hidden></div>
+<main id="main"></main>
+<div class="empty" id="empty" hidden>Nothing to show yet.</div>
+<button class="new-reply" id="new-reply" type="button" hidden>New reply ↓</button>
+<button class="back" id="back" type="button" hidden>Back to the latest</button>
+<div class="dock" id="dock"><div class="dock-inner"><div class="dock-row"><textarea id="text" rows="1" placeholder="Message" aria-label="Message (Cmd+Enter or Ctrl+Enter sends)"></textarea><button id="send" type="button" title="Send to the session's Herdr pane (Cmd+Enter)">Send</button></div></div></div>
+<script>
+(() => {
+"use strict";
+/*__MARKDOWN_IT__*/
+/*__MARKDOWN__*/
+/*__WINDOWED__*/
+})();
+</script>
+</body>
+</html>

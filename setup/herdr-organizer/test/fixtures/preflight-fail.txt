@@ -1,0 +1,32 @@
+{
+  "sessions": [
+    {
+      "session": "project-a",
+      "process_classes": {
+        "verified_resumable_supported_agent": 2,
+        "disposable_shell": 1,
+        "busy_agent": 1,
+        "blocker": 1
+      },
+      "failure_count": 4
+    }
+  ],
+  "ready_to_seal": false
+}
+Preflight failures:
+- blocker (1): Review the foreground process. A deliberately volatile process may use the exact acknowledgement below.
+  project-a|w3|w3:t2|w3:p2 workspace 'Gamma space', tab 'gamma-tab' reason=blocker status=idle
+    --allow-volatile-pane 'project-a|w3|w3:t2|w3:p2'
+- busy_agent (1): Let the agent finish before retrying preflight.
+  project-a|w2|w2:t1|w2:p1 workspace 'Beta space', tab 'beta-tab' reason=busy_agent agent=claude status=working trusted_restore=true
+- mixed_workspace_cwd (1): This workspace has mixed pane CWDs without a workspace CWD. A rebuild uses the first pane's CWD; acknowledge only if that is acceptable.
+  project-a|w1|| workspace 'Alpha space'
+    --allow-mixed-cwd-workspace 'project-a|w1'
+- unverified_recovery_identity (1): Recovery identity is not verified. Run herdr-agent-capture-history in this named session, or herdr-agent-capture-status for an idle or done pane, then retry.
+  project-a|w1|w1:t2|w1:p2 workspace 'Alpha space', tab 'codex tab' reason=unverified_recovery_identity agent=codex status=idle trusted_restore=false
+Summary:
+ready_to_seal no
+failure counts: busy agents 1; blockers 1; mixed-cwd workspaces 1; unverified recovery identity 1; other 0
+Next: let working or blocked agents finish, then retry preflight.
+Next: review the foreground process and acknowledge only an intended volatile pane.
+Next: resolve the mixed-CWD workspace or use its explicit acknowledgement.

@@ -1,0 +1,12 @@
+native_verified workspace='Alpha space' tab='alpha-tab' pane='[pane]' pane_id=w1:p1 candidates=1 exact=1 evidence=cwd_candidate,native_claude,store_header
+candidate_ambiguous workspace='Alpha space' tab='codex tab' pane='[pane]' pane_id=w1:p2 candidates=3 exact=0 evidence=cwd_candidate
+  hint: multiple client sessions share this cwd without exact evidence; confirm manually
+unresolved workspace="Beta's space" tab='beta-tab' pane='[pane]' pane_id=w2:p1 candidates=0 exact=0 evidence=none
+  hint: supported agent must be idle or done
+applied verified registrations: 1
+Summary:
+total panes: 3
+verified: native 1; argv 0; handle 0; pid record 0
+ambiguous: 1; unresolved: 1
+safe to apply with --apply: 1; manual: 2
+apply result: written 1; skipped 0; initially verified 1

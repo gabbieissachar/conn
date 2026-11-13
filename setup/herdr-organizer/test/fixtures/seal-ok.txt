@@ -1,0 +1,10 @@
+{
+  "bundle_id": "recovery-20261004T120000Z-0123456789",
+  "session_count": 1,
+  "ready": true
+}
+Recovery bundle sealed. Restart only after retaining this ready bundle locally.
+Summary:
+ready_to_seal yes
+failure counts: busy agents 0; blockers 0; mixed-cwd workspaces 0; unverified recovery identity 0; other 0
+Next: retain the ready bundle locally, then restart when ready.

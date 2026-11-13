@@ -1,0 +1,55 @@
+{
+  "session": "project-a",
+  "workspace_total": 5,
+  "to_archive": [
+    {
+      "workspace_id": "w1",
+      "label": "Alpha",
+      "tab_count": 2,
+      "pane_count": 3,
+      "resumable_agent_panes": 1
+    },
+    {
+      "workspace_id": "w2",
+      "label": "Beta",
+      "tab_count": 1,
+      "pane_count": 1,
+      "resumable_agent_panes": 0
+    }
+  ],
+  "skipped": [
+    {
+      "workspace_id": "w3",
+      "label": "Busy",
+      "active_pane_ids": [
+        "w3:p1"
+      ],
+      "reasons": [
+        "active_agent"
+      ]
+    },
+    {
+      "workspace_id": "w4",
+      "label": "Needs id",
+      "unverified_panes": [
+        {
+          "pane_id": "w4:p2",
+          "client": "codex"
+        }
+      ],
+      "reasons": [
+        "unverified_agent_session"
+      ]
+    },
+    {
+      "workspace_id": "w5",
+      "label": "Too big",
+      "error": "Could not reach Herdr socket /Users/someone/.config/herdr/herdr.sock: refused",
+      "reasons": [
+        "capture_failed"
+      ]
+    }
+  ],
+  "running_inside": null
+}
+Preview only. Re-run with --execute --confirm 'project-a' to archive 2 workspace(s) and skip 3.

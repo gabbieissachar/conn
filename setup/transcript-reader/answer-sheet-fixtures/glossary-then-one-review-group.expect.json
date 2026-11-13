@@ -1,0 +1,18 @@
+{
+  "why": "Flagged 2026-11-06: one review group (X1 to X6, and the reply line asks for X1 to X6) in a reply that opened with a recap section, a Key | In plain words table of calls from earlier groups (Z2, Z3 and others). Its answer sheet listed Z2 and Z3 beside X1 to X6 and began with that recap. It is one sheet for one group: only X1 to X6, the choices without the slashes that separated them, and a text that leaves the recap out and keeps the group's own section.",
+  "sheet": true,
+  "title": "Nathan, that was unclear on my side. I used bare keys such as Z2 and R1 without saying what they were, so this is what they meant, and then the group to answer now.",
+  "intro_starts": "Nathan, that was unclear",
+  "intro_lacks": ["what those keys meant", "Personal script", "Z3"],
+  "left_out": [],
+  "cards": [
+    {"key": "X1", "question": "Where it lives.", "options": [["a", "a Board view inside the reader (it is already running, works on your phone)", true], ["b", "a standalone page", false], ["c", "inside the admin tool", false], ["needs explanation", "", false], ["defer", "", false]], "recommended": "a)"},
+    {"key": "X2", "question": "What a card is.", "options": [["a", "one task, with its open decisions, latest status and report link", true], ["b", "one decision, linked to its task", false], ["needs explanation", "", false], ["defer", "", false]], "recommended": "a)"},
+    {"key": "X3", "question": "Columns.", "options": [["a", "by who acts next: Needs you, Ready, Running, Parked, Done", true], ["b", "by project", false], ["needs explanation", "", false], ["defer", "", false]], "recommended": "a)"},
+    {"key": "X4", "question": "Cold-read context. Every Needs-you card must make sense on its own:", "options": [["a", "the card carries its own summary", true], ["b", "it links to the report", false], ["needs explanation", "", false], ["defer", "", false]], "recommended": "a)"},
+    {"key": "X5", "question": "Answering.", "options": [["a", "answer on the card, recorded the way chat records it today", true], ["b", "the board only links to the chat", false], ["c", "both", false], ["needs explanation", "", false], ["defer", "", false]], "recommended": "a)"},
+    {"key": "X6", "question": "Which homes.", "options": [["a", "this home only", false], ["b", "every home with a filter", true], ["needs explanation", "", false], ["defer", "", false]], "recommended": "b)"}
+  ],
+  "locked": [],
+  "resolved": []
+}

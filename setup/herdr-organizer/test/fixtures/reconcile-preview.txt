@@ -1,0 +1,13 @@
+{
+  "sessions": [
+    {
+      "session": "project-a",
+      "workspaces": {
+        "adopt": 3,
+        "rebuild": 1,
+        "ambiguous": 1
+      }
+    }
+  ]
+}
+Preview only. Re-run with --confirm 'recovery-20261004T120000Z-0123456789' after attaching every bundled named session.

@@ -1,0 +1,2 @@
+# The frozen sheets hold the private text of real replies (freeze_sheets.py); only frozen-manifest.json, which has digests and counts, is tracked.
+frozen/

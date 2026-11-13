@@ -1,0 +1,18 @@
+{
+  "sessions": [
+    {
+      "session": "project-a",
+      "process_classes": {
+        "verified_resumable_supported_agent": 3,
+        "disposable_shell": 1
+      },
+      "failure_count": 0
+    }
+  ],
+  "ready_to_seal": true
+}
+Preflight passed. No recovery bundle was written.
+Summary:
+ready_to_seal yes
+failure counts: busy agents 0; blockers 0; mixed-cwd workspaces 0; unverified recovery identity 0; other 0
+Next: retain the ready bundle locally, then restart when ready.

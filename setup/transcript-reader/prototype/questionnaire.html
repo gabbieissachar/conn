@@ -1,0 +1,805 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE: answering a grill-me review's decision cards in the page.
+  build_questionnaire.py fills the payload slot below with private transcript text, so the built
+  page lives in the gitignored out/ folder. No remote requests or fonts; served by the
+  reader's own server (setup/transcript-reader/serve.sh), it calls only that local server
+  (live.js) to send the answers.
+  The hosted copy's sheet (sheet.html, sync.py) is this page with no payload: it loads its folder's
+  index.json and then one conversation's questionnaires at a time (hosted.js), and only copies.
+  The lite page's sheet (out/live/sheet.html, build_prototype.write_live) is the same page in mode "live": it loads
+  the same way, from the lite page's index.json and a/<conversation>.json, but it is served and live like this one:
+  Send goes straight to the pane, and a build is taken where it is. It is opened from a conversation of the lite
+  page (#q=<session>:<time>, or #s=<session>), shows only that conversation's sheets, and links back to it.
+  Every sheet holds the reply it was made from (q.reply). The "Original reply" button opens it beside the sheet in a panel, drawn by the reader's own
+  markdown code (markdown-it and markdown.js are pasted in below, as in the reader page), so a table or a code box reads as it does in the conversation.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src '__SCRIPT_HASH__'; connect-src 'self'; __CSP_HOSTED__base-uri 'none'; form-action 'none'">
+<meta name="reader-token" content="__READER_TOKEN__">
+__HEAD_HOSTED__
+<meta name="template" content="__TEMPLATE_HASH__">
+<title>Answer sheet (prototype)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: #1d2433; --muted: #5d6779; --faint: #8b93a3; --line: #dfe3ea; --paper: #ffffff; --wash: #f4f5f8;
+    --you: #1f5fd1; --you-wash: #e9f0fd; --ask: #8a5a00; --ask-wash: #fff3d6; --ask-line: #f0c45c;
+    --ok: #2f6b45; --ok-wash: #e8f3ec; --open: #b4232d; --code: #f1f3f6;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e7e9ee; --muted: #a3aab8; --faint: #7b8394; --line: #343a46; --paper: #1b1f27; --wash: #12151b;
+      --you: #8db4ff; --you-wash: #1d2a44; --ask: #ffd27a; --ask-wash: #3a2f15; --ask-line: #a3802e;
+      --ok: #8fd3a8; --ok-wash: #1b3024; --open: #ff8a8a; --code: #252a34;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.5 var(--sans); }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  a { color: var(--you); overflow-wrap: anywhere; }
+  :focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+  .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--line); }
+  .inner { max-width: 30rem; margin: 0 auto; padding: 8px 12px; }
+  .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+  .proto { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }
+  select.pick { width: 100%; margin-top: 6px; font-size: 14px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .meta-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .meta-row .meta { margin-top: 0; flex: 1 1 auto; min-width: 0; }
+  .reply-btn { flex: none; border: 1px solid var(--line); background: var(--paper); color: var(--you); border-radius: 99px; padding: 2px 11px; font-size: 12px; font-weight: 600; }
+  .reply-btn[aria-expanded="true"] { background: var(--you-wash); border-color: var(--you); }
+  /* The hosted copy's "As of" line, as the reader's: the laptop's build time, in the warning colour once it is old. */
+  .asof { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .asof.stale { color: var(--ask); font-weight: 600; }
+  .title a { margin-left: auto; font-size: 13px; font-weight: 600; text-decoration: none; }
+  .sent { background: var(--you-wash); border-radius: 10px; padding: 7px 10px; margin-bottom: 12px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .sent .what { flex: 1 1 14rem; min-width: 0; }
+  .sent code { font: 12px var(--mono); overflow-wrap: anywhere; }
+  .sent button { border: 1px solid var(--you); background: var(--paper); color: var(--you); border-radius: 8px; padding: 5px 12px; font-size: 13px; font-weight: 600; }
+  main { max-width: 30rem; margin: 0 auto; padding: 10px 12px 190px; }
+  body.no-dock main { padding-bottom: 24px; }
+
+  details.context { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin-bottom: 12px; }
+  details.context summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+  .md { font-size: 15px; }
+  .md p { margin: .4em 0; }
+  .md h4 { margin: .7em 0 .2em; font-size: 15px; }
+  .md .li { padding-left: 1.1em; text-indent: -.8em; margin: 0 0 .25em; }
+  .md code, .card code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; }
+
+  .group-head { margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .group-head:first-of-type { border-top: 0; padding-top: 0; }
+  .group-head h2 { margin: 0 0 2px; font-size: 14px; font-weight: 700; color: var(--ink); }
+  .group-head h2 .gtitle { font-weight: 500; color: var(--muted); }
+  .group-head h2 .gtitle::before { content: " \00b7  "; }
+  .group-head .md p { margin: .2em 0; font-size: 14px; color: var(--muted); }
+  .key { display: inline-block; font: 700 12px var(--mono); background: var(--ask-wash); color: var(--ask); border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
+  .key.done { background: var(--ok-wash); color: var(--ok); }
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .card.answered { border-left: 4px solid var(--ok); }
+  .q { font-weight: 600; }
+  .rec { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+  .rec b { color: var(--ink); font-weight: 600; }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt { border: 1px solid var(--line); background: var(--wash); border-radius: 99px; padding: 5px 11px; font-size: 14px; text-align: left; }
+  /* A picked answer is a wash with an outline and a tick, so Send stays the only filled control. */
+  .opt[aria-pressed="true"] { background: var(--you-wash); border-color: var(--you); box-shadow: inset 0 0 0 1px var(--you); color: var(--ink); font-weight: 600; }
+  .opt[aria-pressed="true"]::before { content: "\2713"; margin-right: 5px; color: var(--you); }
+  .opt .star { color: var(--ask); font-size: 12px; margin-left: 4px; }
+  /* A sent answer: shown picked and not changeable until "Answer again". */
+  .opt:disabled { cursor: default; color: var(--ink); }
+  .opt:disabled[aria-pressed="false"] { opacity: .55; }
+  .other[readonly] { background: var(--wash); }
+  .opt-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .other { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--paper); font-size: 14px; resize: vertical; min-height: 2.4em; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .section { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 6px; }
+  .done-item, .locked-item { font-size: 14px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .done-item small, .locked-item small { color: var(--muted); display: block; }
+  .locked-item { color: var(--muted); }
+  /* A typed ask (a record Firstmate's captain-ask command wrote): where it came from and how it was checked, and each card's gate beside the backlog's own hold reason. */
+  .typed-row { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--you); border-radius: 12px; padding: 7px 12px; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+  .typed-row b { color: var(--ink); font-weight: 600; }
+  .typed-row .check { white-space: nowrap; }
+  .typed-row .check.bad { color: var(--open); font-weight: 600; }
+  .typed-row .lag { margin-top: 4px; color: var(--ask); }
+  .gate { font-size: 12px; color: var(--muted); margin: 4px 0 6px; overflow-wrap: anywhere; }
+  .gate b { color: var(--ink); font-weight: 600; }
+  .gate.stale, .gate.closed { color: var(--ask); }
+  .gate .why { display: block; margin-top: 1px; }
+
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--paper); border-top: 1px solid var(--line); }
+  .dock .inner { padding: 8px 12px 10px; }
+  .dock .line { font: 13px/1.4 var(--mono); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; max-height: 5.6em; overflow-y: auto; }
+  .dock .line .ptr { color: var(--muted); }
+  .dock .line.none { color: var(--muted); font-family: var(--sans); font-size: 13px; }
+  .dock .why { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 1em; }
+  .dock .why.bad { color: var(--open); }
+  .dock .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  .dock .count { flex: 1 1 100%; font-size: 12px; color: var(--muted); }
+  .dock #send { margin-left: auto; }
+  .dock button { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+  .dock button:disabled { opacity: .45; cursor: default; }
+  .dock button.primary { background: var(--you); border-color: var(--you); color: var(--paper); font-weight: 600; }
+  .empty { color: var(--muted); text-align: center; padding: 30px 0; }
+  [hidden] { display: none !important; }
+
+  /* The original reply, beside the sheet. Where the window is wide the sheet moves to the left and the reply takes the rest, so both are read at once;
+     on a narrower one it floats above the answer line, over the lower part of the sheet, and Close gives the sheet back. */
+  .reply-panel { position: fixed; z-index: 8; left: 8px; right: 8px; bottom: calc(var(--dock-h, 0px) + 8px); height: 52vh; display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .22); }
+  .rp-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); font-size: 14px; font-weight: 700; }
+  .rp-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--muted); }
+  .rp-close { flex: none; width: 32px; height: 32px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; font-size: 14px; line-height: 1; }
+  .rp-body { overflow: auto; padding: 10px 14px 16px; overscroll-behavior: contain; }
+  @media (min-width: 900px) {
+    body.reply-open .bar .inner, body.reply-open main, body.reply-open .dock .inner { margin-left: 16px; margin-right: 0; }
+    .reply-panel { top: 12px; left: calc(30rem + 48px); right: 16px; bottom: 12px; height: auto; }
+  }
+  /* The reply is drawn as the reader draws a reply (markdown.js): the same rules for prose, tables and code boxes. */
+  .rp-body .md { font-size: 15px; }
+  .rp-body .md > :is(p, ul, ol, blockquote, hr, h1, h2, h3, h4, h5, h6) { max-width: 75ch; }
+  .rp-body .md p { margin: 0 0 .55em; }
+  .rp-body .md ul, .rp-body .md ol { margin: 0 0 .55em; padding-left: 1.5em; }
+  .rp-body .md li { margin: 0 0 .25em; }
+  .rp-body .md li > p { margin: 0 0 .35em; }
+  .rp-body .md li > ul, .rp-body .md li > ol { margin: .25em 0; }
+  .rp-body .md li.task { list-style: none; position: relative; }
+  .rp-body .md li.task::before { content: "\2610"; position: absolute; left: -1.4em; }
+  .rp-body .md li.task.done::before { content: "\2611"; }
+  .rp-body .md h4 { margin: .6em 0 .3em; font-size: 15px; }
+  .rp-body .md code { font: 13px var(--mono); background: var(--code); border-radius: 4px; padding: 0 3px; overflow-wrap: anywhere; }
+  .rp-body .md pre { font: 12px/1.45 var(--mono); background: var(--code); border-radius: 6px; padding: 7px 9px; overflow-x: auto; white-space: pre; margin: 0 0 .55em; }
+  .rp-body .md .local-link { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+  .rp-body .md hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
+  .rp-body .md blockquote { border-left: 3px solid var(--line); padding-left: 9px; color: var(--muted); margin: 0 0 .55em; }
+  .rp-body .codebox { position: relative; margin: 0 0 .55em; }
+  .rp-body .codebox pre { margin: 0; padding-right: 4.4rem; min-height: 2.2rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .rp-body .code-label { position: absolute; left: 9px; top: -7px; font: 10px var(--sans); color: var(--faint); background: var(--paper); border-radius: 4px; padding: 0 4px; }
+  .rp-body .copy { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; user-select: none; -webkit-user-select: none; }
+  .rp-body .copy::before { content: attr(data-label); }
+  .rp-body .copy:hover { color: var(--you); border-color: var(--you); }
+  .rp-body .table-wrap { overflow-x: auto; margin: 0 0 .7em; border: 1px solid var(--line); border-radius: 8px; }
+  .rp-body .md table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.4; }
+  .rp-body .md th, .rp-body .md td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); min-width: 5.5rem; }
+  .rp-body .md th { background: var(--wash); border-top: 0; font-weight: 650; white-space: nowrap; }
+  .rp-body .md td:first-child, .rp-body .md th:first-child { min-width: 2.5rem; }
+  /* A sealed copy asks for its passphrase first; the picker and the answer line wait for it. */
+  .locked .pick, .locked .meta, .locked .asof, .locked .dock { display: none; }
+  /* On a phone or a touch screen every control is at least 44 px tall. */
+  @media (max-width: 440px), (pointer: coarse) {
+    .proto { display: none; }
+    .title a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; }
+    select.pick, .opt, .dock button, .sent button, .reply-btn, .rp-close { min-height: 44px; }
+    .rp-close { min-width: 44px; }
+    details.context summary { padding: 10px 0; margin: -8px 0; }
+    .other { min-height: 44px; }
+    .dock button { padding: 6px 12px; font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<header class="bar"><div class="inner">
+  <div class="title">Answer sheet <span class="proto">prototype</span><a href="prototype.html">← Reader</a></div>
+  <select class="pick" id="pick" aria-label="Answer sheet"></select>
+  <div class="meta-row"><div class="meta" id="meta"></div><button class="reply-btn" id="reply-open" type="button" aria-controls="reply-panel" aria-expanded="false" title="The reply this sheet was made from, beside the sheet" hidden>Original reply</button></div>
+  <div class="asof" id="asof" hidden aria-live="polite"></div>
+</div></header>
+<main id="main"></main>
+<div class="dock"><div class="inner">
+  <div class="line" id="line" aria-live="polite"></div>
+  <div class="acts">
+    <span class="count" id="count"></span>
+    <button id="recommended">Fill recommended</button>
+    <button id="clear">Clear</button>
+    <button id="copy">Copy</button>
+    <button class="primary" id="send" title="Send this exact text to the session's Herdr pane">Send</button>
+  </div>
+  <div class="why" id="why" aria-live="polite"></div>
+</div></div>
+<section class="reply-panel" id="reply-panel" role="dialog" aria-label="Original reply" hidden>
+  <div class="rp-head"><span>Original reply</span><span class="rp-meta" id="reply-meta"></span><button class="rp-close" id="reply-close" type="button" aria-label="Close the original reply" title="Close (Esc)">&#x2715;</button></div>
+  <div class="rp-body" id="reply-body"></div>
+</section>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+(() => {
+  "use strict";
+  // Two questions, as in the reader page: does the list come from an index and each conversation's questionnaires load when one is
+  // picked, with no payload (LAZY: the hosted copy's sheet, and the lite page's), and is there a laptop to ask (HOSTED: only the
+  // hosted copy's, where Send queues the line for the laptop, which sends it to the session's pane when it is awake and writes a
+  // receipt this page then shows). The lite page's sheet is lazy and not hosted: it sends straight to the pane, as the local sheet does.
+  const MODE = "__MODE__";  // "local", "hosted" or "live"
+  const LAZY = MODE !== "local";
+  const HOSTED = MODE === "hosted";
+/*__LIVE__*/
+/*__SENDONCE__*/
+/*__MARKDOWN_IT__*/
+/*__MARKDOWN__*/
+/*__HOSTED__*/
+  let data = LAZY ? { generated: 0, questionnaires: [] } : JSON.parse(document.getElementById("payload").textContent);
+  const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  // When the laptop built the copy: the time alone today, with the day before that.
+  const builtAt = s => new Date(s * 1000).toDateString() === new Date().toDateString()
+    ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : fmtWhen(s);
+  const fmtWhen = s => s ? new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(s * 1000)) : "";
+  function inline(text) {
+    // Transcript text comes from outside, so every quote is escaped before any markup is added.
+    const esc = String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    return esc.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(https?:\/\/[^\s<>"')]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+  }
+  function markdown(text) {
+    const box = $("div", "md"); let pre = null, table = null;
+    text.split("\n").forEach(line => {
+      if (line.trimStart().startsWith("```")) { pre = pre ? null : box.appendChild($("pre")); return; }
+      if (pre) { pre.textContent += (pre.textContent ? "\n" : "") + line; return; }
+      if (line.trimStart().startsWith("|")) { table = table || box.appendChild($("pre")); table.textContent += (table.textContent ? "\n" : "") + line; return; }
+      table = null;
+      if (!line.trim()) return;
+      const h = line.match(/^#{1,6}\s+(.*)/), li = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)/);
+      const el = h ? $("h4") : li ? $("div", "li") : $("p");
+      el.innerHTML = h ? inline(h[1]) : li ? "• " + inline(li[1]) : inline(line);
+      box.append(el);
+    });
+    return box;
+  }
+
+  let qs = [];  // set below, once the address has said whose sheets these are
+  const state = { q: 0 };
+  // "What this is about" stays as you left it, across re-renders and reloads.
+  const openContexts = new Set();
+  try { JSON.parse(sessionStorage.getItem("tr-q-context") || "[]").forEach(k => openContexts.add(k)); } catch (e) { /* starts closed */ }
+  const answers = {};   // questionnaire index -> { key: value }
+  // Questionnaires the owner opened again after answering them ("Answer again"), kept for the tab.
+  const again = new Set();
+  try { JSON.parse(sessionStorage.getItem("tr-q-again") || "[]").forEach(k => again.add(k)); } catch (e) { /* starts locked */ }
+  const storeKey = q => `tr-q:${q.session}:${Math.round(q.at || 0)}`;
+  function load(i) {
+    if (answers[i]) return answers[i];
+    try { answers[i] = JSON.parse(localStorage.getItem(storeKey(qs[i])) || "{}"); } catch (e) { answers[i] = {}; }
+    return answers[i];
+  }
+  function save() { try { localStorage.setItem(storeKey(qs[state.q]), JSON.stringify(load(state.q))); } catch (e) { /* draft not kept */ } }
+  const clean = v => v.replace(/[;\n\r]+/g, ", ").replace(/\s+/g, " ").trim();
+  function setAnswer(key, value) {
+    const a = load(state.q);
+    if (value && clean(value)) a[key] = clean(value); else delete a[key];
+    save(); renderDock();
+  }
+  const fields = q => [...q.cards.map(c => ({ ...c, kind: "card" })), ...q.corrections.map(k => ({ key: k, kind: "correction", ...q.resolved.find(r => r.key === k) }))];
+
+  /* rules:start - pure: they take the questionnaire and the picked answers and touch nothing else (sheet.test.js runs this block alone). */
+  // The answers a questionnaire already sent in its session (keyed lines the owner wrote after the reply). Until "Answer again"
+  // those cards show what was sent, not a draft, and they are left out of what Send types.
+  const sentOf = (q, reopened) => reopened ? {} : (q.sent || {});
+  const settledKeys = (q, reopened) => q.cards.map(c => c.key).filter(k => k in sentOf(q, reopened));
+  const isAnswered = (q, reopened) => q.cards.length > 0 && settledKeys(q, reopened).length === q.cards.length;
+  // The open cards: not sent yet. (build_questionnaire.open_cards counts the same way for the picker of the hosted copy.)
+  const openCards = (q, reopened) => q.cards.filter(c => !(c.key in sentOf(q, reopened)));
+  // The picked answers Send types, in card order, with the corrections after them.
+  const answerLine = (q, a, reopened) => {
+    const skip = new Set(settledKeys(q, reopened));
+    return fields(q).filter(f => a[f.key] && !skip.has(f.key)).map(f => `${f.key}=${a[f.key]}`).join(";");
+  };
+  // The text Copy and Send use: the pointer to the reply that asked, then the answers; nothing when nothing is picked.
+  const messageOf = (q, a, pointerText, reopened) => answerLine(q, a, reopened) ? pointerText + answerLine(q, a, reopened) : "";
+  // "Fill recommended": the open cards with no answer yet whose choices name a recommended one, in card order.
+  const fillPlan = (q, a, reopened) => openCards(q, reopened).filter(c => !a[c.key]).map(c => ({ key: c.key, option: c.options.find(o => o.recommended) })).filter(x => x.option).map(x => ({ key: x.key, value: x.option.value }));
+  // What the owner reads under the line Send types: which open cards it leaves out.
+  const leftOut = (q, a, reopened) => openCards(q, reopened).filter(c => !a[c.key]).map(c => c.key);
+  const listKeys = keys => keys.length < 3 ? keys.join(" and ") : keys.slice(0, -1).join(", ") + " and " + keys[keys.length - 1];
+  const countText = (q, a, reopened) => {
+    const open = openCards(q, reopened), left = leftOut(q, a, reopened);
+    const done = open.length - left.length;
+    return `${done} of ${open.length} answered` + (done && left.length ? `. ${listKeys(left)} ${left.length > 1 ? "are" : "is"} left out of what Send types.` : "");
+  };
+  // The sheet is one conversation's when its address names one: #s=<session 8>, or #q=<session 8>:<time> as a reply's link has it. The reader
+  // links here from the conversation on screen, so the list holds that conversation's sheets and not every conversation's. No address (a
+  // bookmark of the page itself) lists them all.
+  const sessionOfAddress = hash => { const a = new URLSearchParams(hash.replace(/^#/, "")); return (a.get("s") || (a.get("q") || "").split(":")[0]).toLowerCase(); };
+  const inSession = (q, only) => !only || [q.session, q.from_session].some(id => String(id || "").toLowerCase().startsWith(only));
+  /* rules:end */
+  const addressed = new URLSearchParams(location.hash.slice(1));
+  const onlySession = sessionOfAddress(location.hash);
+  const ofSession = q => inSession(q, onlySession);
+  qs = data.questionnaires.filter(ofSession);
+
+  // ---------------------------------------------------------------- shared pieces
+  function optionButtons(card, onPick) {
+    // A card the session already has an answer for shows that answer, picked and not changeable (until "Answer again").
+    const sent = card.key in sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const a = sent ? sentOf(qs[state.q], false) : load(state.q), wrap = $("div", "opts");
+    const custom = a[card.key] != null && !card.options.some(o => o.value === a[card.key]);
+    card.options.forEach(o => {
+      const b = $("button", "opt", o.value); b.setAttribute("aria-pressed", String(a[card.key] === o.value));
+      if (o.recommended) { const s = $("span", "star", "★ recommended"); b.append(s); }
+      b.disabled = sent;
+      b.addEventListener("click", () => { setAnswer(card.key, a[card.key] === o.value ? "" : o.value); onPick(); });
+      wrap.append(b);
+    });
+    const other = $("button", "opt", "Write my own"); other.setAttribute("aria-pressed", String(custom));
+    other.disabled = sent;
+    if (!sent || custom) wrap.append(other);
+    const box = $("textarea", "other"); box.placeholder = `Your answer for ${card.key}`; box.rows = 1;
+    box.value = custom ? a[card.key] : ""; box.hidden = !custom; box.readOnly = sent;
+    other.addEventListener("click", () => { box.hidden = false; box.focus(); });
+    box.addEventListener("input", () => { setAnswer(card.key, box.value); wrap.querySelectorAll(".opt").forEach(b => b.setAttribute("aria-pressed", String(b === other && !!box.value.trim()))); });
+    const frag = document.createDocumentFragment(); frag.append(wrap, box);
+    const notes = sent ? [] : card.options.filter(o => o.note && o.note !== card.recommended);  // the recommended one is already shown above
+    notes.forEach(o => { const n = $("div", "opt-note"); n.innerHTML = `<code>${inline(o.value).replace(/<\/?code>/g, "")}</code> ${inline(o.note)}`; frag.append(n); });
+    return frag;
+  }
+  function recLine(card) {
+    if (!card.recommended) return null;
+    const r = $("div", "rec"); r.innerHTML = "<b>Recommended:</b> " + inline(card.recommended); return r;
+  }
+  function dependsHint(card) {
+    const keys = (card.depends || "").match(/\b[A-Z]\d{1,2}\b/g) || [];
+    const sent = sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const missing = keys.filter(k => !load(state.q)[k] && !(k in sent));
+    return missing.length ? $("div", "hint", `Depends on ${missing.join(", ")}, not answered yet`) : null;
+  }
+  function correctionCard(f) {
+    const card = $("div", "card");
+    const head = $("div", "q"); head.append($("span", "key done", f.key), document.createTextNode("Already answered. Correct it? (optional)")); card.append(head);
+    const r = $("div", "rec"); r.innerHTML = `<b>You sent:</b> ${inline(f.submitted || "")}<br><b>Read as:</b> ${inline(f.decision || "")}`; card.append(r);
+    const box = $("textarea", "other"); box.placeholder = `Leave empty to keep ${f.key} as read`; box.value = load(state.q)[f.key] || "";
+    box.addEventListener("input", () => { setAnswer(f.key, box.value); card.classList.toggle("answered", !!box.value.trim()); });
+    card.append(box); return card;
+  }
+  function cardNode(card, onPick = () => render()) {
+    const sent = card.key in sentOf(qs[state.q], again.has(storeKey(qs[state.q])));
+    const el = $("div", "card" + (sent || load(state.q)[card.key] ? " answered" : ""));
+    const head = $("div", "q"); head.append($("span", "key", card.key)); head.append(Object.assign(document.createElement("span"), { innerHTML: inline(card.question) }));
+    el.append(head);
+    [recLine(card), gateLine(card), chatHint(card), sent ? null : dependsHint(card)].forEach(n => n && el.append(n));
+    el.append(optionButtons(card, onPick));
+    return el;
+  }
+  // ---------------------------------------------------------------- typed asks (README, "Typed asks")
+  const CHECKS = [["linked", "linked to its turn"], ["unmodified", "file unmodified"], ["writer", "written by this conversation"]];
+  const GATE_SAYS = {
+    open: "held for you in the backlog",
+    stale: "held again since this was asked, so it is a different call now",
+    closed: "no longer a call held for you (closed elsewhere)",
+    unknown: "the backlog could not be read",
+  };
+  function typedRow(q) {
+    const t = q.typed, row = $("div", "typed-row"), w = t.writer || {};
+    const who = [w.role ? (w.captain_driven ? "a worker you drive" : w.role) : "", t.home ? "in " + t.home : "", w.session ? "session " + w.session : "", w.task ? "task " + w.task : ""].filter(Boolean).join(", ");
+    const head = $("div"); head.append($("b", null, "Typed ask"), document.createTextNode(` · written by ${who || "Firstmate"}${t.created_at ? " · " + fmtWhen(t.created_at) : ""} · record ${t.sha}${t.kind && t.kind !== "decision" ? " · " + t.kind : ""}`));
+    row.append(head);
+    const checks = $("div");
+    CHECKS.forEach(([name, label], i) => { const c = $("span", "check" + (t.checks && t.checks[name] ? "" : " bad"), (t.checks && t.checks[name] ? "✓ " : "✗ ") + label); if (i) checks.append(document.createTextNode(" · ")); checks.append(c); });
+    row.append(checks);
+    if (t.chat && t.chat.length) {
+      const lag = $("div", "lag", t.lag && t.lag.length
+        ? `You answered ${listKeys(t.chat)} in chat and the record was not told (${listKeys(t.lag)} over an hour ago): the leader has not run its answered call.`
+        : `You answered ${listKeys(t.chat)} in chat. The record is not told yet; it counts as answered here.`);
+      row.append(lag);
+    }
+    return row;
+  }
+  function gateLine(card) {
+    const t = card.typed, g = t && t.gate;
+    if (!g) return null;
+    const line = $("div", "gate " + g.state);
+    line.append($("b", null, "Backlog: " + g.task), document.createTextNode(" - " + (GATE_SAYS[g.state] || g.state) + (g.mode === "release" ? " (answering frees held work)" : "")));
+    if (g.reason) line.append($("span", "why", "Hold reason: " + g.reason));
+    return line;
+  }
+  function chatHint(card) {
+    const c = card.typed && card.typed.chat;
+    return c ? $("div", "hint", `You answered ${card.key} in chat (${c.value}). The record has not been told.`) : null;
+  }
+  function aside(q) {
+    const frag = document.createDocumentFragment();
+    if (q.resolved.length) {
+      frag.append($("div", "section", "Already answered"));
+      q.resolved.forEach(r => { const d = $("div", "done-item"); d.innerHTML = `<span class="key done">${inline(r.key)}</span>${inline(r.submitted)}<small>${inline(r.decision)}</small>`; frag.append(d); });
+    }
+    if (q.locked.length) {
+      frag.append($("div", "section", "Opens after these answers"));
+      q.locked.forEach(l => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(l.key)}</span>${inline(l.text)}`; frag.append(d); });
+    }
+    // A typed ask's cards that will not be asked any more: withdrawn, replaced by a later ask, expired, or whose held task changed or closed.
+    if (q.typed && q.typed.closed && q.typed.closed.length) {
+      frag.append($("div", "section", "Not asked any more"));
+      q.typed.closed.forEach(c => { const d = $("div", "locked-item"); d.innerHTML = `<span class="key">${inline(c.key)}</span>${inline(c.state.replace("-", " "))}`; frag.append(d); });
+    }
+    // One sheet is one review group: the calls of another group that the reply only mentions (a recap) are not cards here.
+    if (q.left_out && q.left_out.length) {
+      frag.append($("div", "section", "Not on this sheet"));
+      const d = $("div", "locked-item"); d.textContent = `${q.left_out.join(", ")}: calls of another group that this reply mentions. They are not asked here.`; frag.append(d);
+    }
+    return frag;
+  }
+  function groupHead(g) {
+    const head = $("section", "group-head"), title = $("h2", null, `Review group ${g.label}`);
+    if (g.title) title.append($("span", "gtitle", g.title));
+    head.append(title);
+    if (g.text) head.append(markdown(g.text));
+    return head;
+  }
+  function context(q) {
+    const d = $("details", "context"); d.append($("summary", null, "What this is about"));
+    d.open = openContexts.has(storeKey(q));
+    d.addEventListener("toggle", () => {
+      if (d.open) openContexts.add(storeKey(q)); else openContexts.delete(storeKey(q));
+      try { sessionStorage.setItem("tr-q-context", JSON.stringify([...openContexts])); } catch (e) { /* not kept */ }
+    });
+    d.append(markdown(q.intro || q.title)); return d;
+  }
+
+  // ---------------------------------------------------------------- page
+  function viewCards(q, main) {
+    if (q.typed) main.append(typedRow(q));
+    main.append(context(q));
+    // A reply written in review groups: each group's own heading and lead-in stand above its cards (one answer line still covers them all).
+    let group = null;
+    q.cards.forEach(c => {
+      if (q.groups && q.groups.length && c.group != null && c.group !== group) { group = c.group; main.append(groupHead(q.groups[group])); }
+      main.append(cardNode(c));
+    });
+    // Once every card is answered in the session, an optional correction is only shown when it was sent too, and not changeable.
+    const reopened = again.has(storeKey(q)), answered = isAnswered(q, reopened);
+    q.corrections.filter(k => !answered || k in sentOf(q, reopened)).forEach(k => {
+      const card = correctionCard({ key: k, ...q.resolved.find(r => r.key === k) });
+      if (answered) { const box = card.querySelector("textarea"); box.value = q.sent[k]; box.readOnly = true; card.classList.add("answered"); }
+      main.append(card);
+    });
+    main.append(aside(q));
+  }
+  // ---------------------------------------------------------------- dock, header
+  // The exact text Copy and Send use: a pointer to the reply that asked, then the answers.
+  // A questionnaire from before a /clear goes to the pane's newest session, which never saw
+  // it, and one from before a compaction is held only as a summary: both name the log and
+  // give the questions the answers are keyed to.
+  const pointer = q => {
+    const earlier = q.from_session ? `[From session ${q.from_session.slice(0, 8)}, before a /clear; its log: ${q.log}] `
+      : q.compacted_away ? `[From before this session's last compaction; its log: ${q.log}] ` : "";
+    return earlier + live.pointer(q.at, q.reply, "", Boolean(earlier), q.cards.map(c => `${c.key}: ${c.question}`));
+  };
+  const reopenedNow = q => again.has(storeKey(q));
+  const message = q => messageOf(q, load(state.q), pointer(q), reopenedNow(q));
+  function renderDock() {
+    const q = qs[state.q]; if (!q) return;
+    const a = load(state.q), reopened = reopenedNow(q), line = document.getElementById("line"); line.replaceChildren();
+    // Nothing to send once every card is answered: the dock goes, and the page says so above the cards.
+    const finished = isAnswered(q, reopened);
+    document.querySelector(".dock").hidden = finished; document.body.classList.toggle("no-dock", finished);
+    // What Send types, character for character; the cards it leaves out are named under it.
+    const text = message(q);
+    line.classList.toggle("none", !text);
+    if (text) { const mark = pointer(q); line.append($("span", "ptr", mark), text.slice(mark.length)); }
+    else line.textContent = "Pick an answer and the line Send types shows here.";
+    document.getElementById("count").textContent = countText(q, a, reopened);
+    const fill = fillPlan(q, a, reopened), button = document.getElementById("recommended");
+    button.disabled = !fill.length;
+    button.title = fill.length ? `Fill ${listKeys(fill.map(f => f.key))} with the recommended choice` : "No open card with a recommended choice is left to fill";
+    renderSend();
+  }
+  // Send needs the served page and a live Herdr pane for the session; the reason shows when it cannot.
+  const link = { pane: undefined, result: null };
+  // What stays under a sent questionnaire once the result message has gone: Send is off for exactly these answers.
+  const sentLine = gone => `${gone.word} at ${gone.at}. Change an answer to send again.`;
+  function renderSend() {
+    const q = qs[state.q], button = document.getElementById("send"), why = document.getElementById("why");
+    const pane = q && link.pane ? link.pane[q.session] : null;
+    let reason = "";
+    if (HOSTED) {
+      // The pane as of the laptop's last build; the laptop checks it again when it sends.
+      const seen = q && q.pane;
+      reason = !seen ? "No Herdr pane was seen running this session, so Send is off. Copy still works."
+        : !seen.live ? "Its Herdr pane has closed, so Send is off. Copy still works." : "";
+      const gone = q && sendOnce.sentFor(storeKey(q), message(q));
+      button.disabled = Boolean(reason) || sendOnce.busy() || !q || !message(q) || Boolean(gone);
+      button.textContent = gone ? gone.word : "Send";
+      why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
+      const asleep = hosted.stale(data.generated);
+      why.textContent = link.result ? link.result.text : reason || (gone ? sentLine(gone) : asleep
+        ? `The laptop looks asleep (last build ${builtAt(data.generated)}): Send queues this line for ${seen.label}, and it goes out when the laptop is awake.`
+        : `Send queues this line for ${seen.label}; the laptop sends it when it is awake.`);
+      return;
+    }
+    if (!live.served) reason = "Read-only copy: open the served page to send.";
+    else if (link.pane === undefined) reason = "Connecting to the local server…";
+    else if (!pane) reason = "No live Herdr pane runs this session, so Send is off. Copy still works.";
+    else if (pane.status === "blocked") reason = `${pane.label} is waiting at a permission prompt or question. Answer it in Herdr first.`;
+    const gone = q && sendOnce.sentFor(storeKey(q), message(q));
+    button.disabled = Boolean(reason) || sendOnce.busy() || !message(q) || Boolean(gone);
+    button.textContent = gone ? gone.word : "Send";
+    why.classList.toggle("bad", Boolean(link.result && !link.result.ok));
+    why.textContent = link.result ? link.result.text : reason || (gone ? sentLine(gone) : pane ? `Send goes straight to ${pane.label} in Herdr ${pane.herdr}.` : "");
+  }
+  async function sendAnswers() {
+    const q = qs[state.q], text = message(q); if (!text) return;
+    // Taken before anything is awaited, so a second tap before the first render sends nothing.
+    const key = storeKey(q); if (!sendOnce.begin(key, text)) return;
+    link.result = null; renderSend();
+    const clock = at => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(at));
+    try {
+      if (HOSTED) {
+        const queued = await hosted.enqueue(q.session, text);
+        const label = (q.pane && q.pane.label) || q.session.slice(0, 8);
+        // With the laptop not reachable the line is held on this phone and goes to the laptop's queue when it answers (hosted.flush).
+        link.result = { ok: true, text: queued.held ? `Held on this phone at ${clock(queued.at * 1000)}. It goes to the laptop when it is reachable.` : `Queued for ${label} at ${clock(queued.at * 1000)}. The laptop sends it when it is awake.` };
+        sendOnce.done(key, text, queued.held ? "Held" : "Queued", clock(queued.at * 1000)); renderSend();
+        await watchReceipt(queued.id, label, clock, key, text, Boolean(queued.held));
+        return;
+      }
+      const sent = await live.send(q.session, text);
+      sendOnce.done(key, text, "Sent", clock(Date.now()));
+      link.result = { ok: true, text: `Sent to ${sent.label} at ${clock(Date.now())}.` };
+    } catch (e) { sendOnce.failed(); link.result = { ok: false, text: e.message }; }
+    renderSend();
+    setTimeout(() => { link.result = null; renderSend(); }, 6000);
+  }
+  // The hosted copy: the laptop's receipt for a queued line, asked about every 4 seconds (up to a day) and shown in place.
+  async function watchReceipt(id, label, clock, key, text, held = false) {
+    link.watching = id;
+    for (let tries = 0; tries < 21600 && link.watching === id; tries += 1) {
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      if (document.hidden) continue;
+      if (held) {
+        // Held on this phone: it goes to the laptop's queue once the laptop answers; one the laptop will not take (refused, or over
+        // 12 hours old) did not go, so it can be sent again.
+        const mine = (await hosted.flush()).find(x => x.id === id);
+        if (mine && mine.state !== "queued") {
+          sendOnce.forget(key, text);
+          link.result = { ok: false, text: mine.state === "expired" ? "Not sent: it was held on this phone for over 12 hours without the laptop being reachable. Send it again if it still matters." : `Not sent: ${mine.reason || "the laptop refused it."}` };
+          renderSend();
+          return;
+        }
+        if ((await hosted.heldIds()).has(id)) continue;
+        held = false;
+        sendOnce.relabel(key, text, "Queued");
+        link.result = { ok: true, text: "Queued for the laptop. It sends it when it is awake." };
+        renderSend();
+      }
+      const receipt = await hosted.receipt(id).catch(() => null);
+      if (!receipt || receipt.state === "sending" || link.watching !== id) continue;
+      // A line the laptop refused did not go, so it can be sent again.
+      if (receipt.state === "sent") sendOnce.relabel(key, text, "Sent"); else sendOnce.forget(key, text);
+      link.result = receipt.state === "sent" ? { ok: true, text: `Sent by the laptop to ${receipt.label || label} at ${clock(receipt.at * 1000)}.` }
+        : { ok: false, text: `Not sent: ${receipt.reason || "the laptop refused it."}` };
+      renderSend();
+      setTimeout(() => { if (link.watching === id) { link.result = null; link.watching = null; renderSend(); } }, 30000);
+      return;
+    }
+  }
+  function render() {
+    const q = qs[state.q], main = document.getElementById("main"); main.replaceChildren();
+    if (!q) { main.append($("div", "empty", onlySession ? "This conversation has no answer sheet: no reply of it asks for keyed answers." : "No answer sheet found in the listed sessions.")); paintReply(); return; }
+    if (!q.cards) { paintReply(); main.append($("div", "empty", "Loading…")); openSheet(q).then(render, e => main.replaceChildren($("div", "empty", `Could not load this: ${e.message}`))); return; }
+    const meta = document.getElementById("meta");
+    const where = q.pane ? `${q.pane.label}${q.pane.title && q.pane.title !== q.pane.label ? " · " + q.pane.title : ""}` : q.session.slice(0, 8);
+    meta.textContent = `${where} · asked ${fmtWhen(q.at)}`;
+    if (Object.keys(q.sent || {}).length) {
+      // The answers already sent in the session, so an old questionnaire is not answered twice by mistake. Those cards show
+      // them picked and read-only; "Answer again" opens them.
+      const reopened = reopenedNow(q), sent = $("div", "sent"), what = $("div", "what");
+      const line = $("code", null, Object.entries(q.sent).map(([k, v]) => `${k}=${v}`).join(";"));
+      const when = q.sent_at ? " " + fmtWhen(q.sent_at) : "";  // a sheet whose answers carry no time says none, rather than "Part answered : ..."
+      what.append(reopened ? `You answered this${when}: ` : isAnswered(q, false) ? `Answered${when}: ` : `Part answered${when}: `, line);
+      sent.append(what);
+      if (!reopened && settledKeys(q, false).length) {
+        const reopen = $("button", null, "Answer again");
+        reopen.addEventListener("click", () => {
+          again.add(storeKey(q));
+          try { sessionStorage.setItem("tr-q-again", JSON.stringify([...again])); } catch (e) { /* not kept */ }
+          render();
+        });
+        sent.append(reopen);
+      }
+      main.append(sent);
+    }
+    viewCards(q, main);
+    renderDock();
+    paintReply();
+  }
+  // ---------------------------------------------------------------- the original reply, beside the sheet
+  // The reply is part of the sheet's data (q.reply), so it is there offline and in the hosted copy too. It is drawn by markdownView, which is the reader's
+  // own: tables, code boxes, lists and links as the conversation draws them, and nothing in it can add markup (raw HTML is off). Open or closed is kept for the
+  // tab, so the next sheet opens beside its reply too.
+  let replyOpen = false;
+  try { replyOpen = sessionStorage.getItem("tr-q-reply") === "1"; } catch (e) { /* starts closed */ }
+  // The panel floats above the answer line on a narrow window, so it needs the line's height, which changes with the window and with what is picked.
+  const dockHeight = () => { const dock = document.querySelector(".dock"); document.documentElement.style.setProperty("--dock-h", (dock.hidden ? 0 : dock.offsetHeight) + "px"); };
+  if (window.ResizeObserver) new ResizeObserver(dockHeight).observe(document.querySelector(".dock"));
+  function paintReply() {
+    const q = qs[state.q], button = document.getElementById("reply-open"), panel = document.getElementById("reply-panel");
+    const has = Boolean(q && q.cards && q.reply), show = has && replyOpen;
+    button.hidden = !has;
+    button.setAttribute("aria-expanded", String(show));
+    panel.hidden = !show;
+    document.body.classList.toggle("reply-open", show);
+    dockHeight();
+    if (!show) { panel.removeAttribute("data-key"); return; }
+    // Drawn again only for another sheet: a rebuild of the same one leaves the reading place alone.
+    if (panel.dataset.key === storeKey(q)) return;
+    panel.dataset.key = storeKey(q);
+    document.getElementById("reply-meta").textContent = `asked ${fmtWhen(q.at)}`;
+    const body = document.getElementById("reply-body");
+    const box = $("div", "md"); box.innerHTML = markdownView.render(q.reply, { ask: [], reminder: [], doc: false }).html;
+    body.replaceChildren(box); body.scrollTop = 0;
+  }
+  function setReply(open) {
+    replyOpen = open;
+    try { sessionStorage.setItem("tr-q-reply", open ? "1" : "0"); } catch (e) { /* not kept */ }
+    paintReply();
+  }
+  document.getElementById("reply-open").addEventListener("click", () => setReply(!replyOpen));
+  document.getElementById("reply-close").addEventListener("click", () => setReply(false));
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && replyOpen && !document.getElementById("reply-panel").hidden) setReply(false); });
+  document.getElementById("reply-body").addEventListener("click", e => {
+    const button = e.target.closest("button.copy"); if (!button) return;
+    const text = button.parentElement.querySelector("pre").textContent;
+    navigator.clipboard.writeText(text).then(() => { button.dataset.label = "Copied"; setTimeout(() => { button.dataset.label = "Copy"; }, 1200); }, () => {});
+  });
+  async function copy() {
+    const text = message(qs[state.q]); if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+      // Some embedded browsers block the clipboard API; fall back to a selected text box.
+      const t = $("textarea"); t.value = text; document.body.append(t); t.select();
+      try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+      t.remove();
+    }
+    const b = document.getElementById("copy"); b.textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  }
+
+  const pick = document.getElementById("pick");
+  // "3 open", or "answered" once the session holds an answer for every card. The hosted list says it before the cards load.
+  const pickState = q => {
+    const open = q.cards ? openCards(q, reopenedNow(q)).length : q.open;
+    return open ? `${open} open` : "answered";
+  };
+  function fillPick() {
+    pick.replaceChildren(...qs.map((q, i) => new Option(`${q.pane ? q.pane.label : q.session.slice(0, 8)} · ${fmtWhen(q.at)} · ${pickState(q)}`, i)));
+    pick.value = String(state.q);
+  }
+  // ---------------------------------------------------------------- hosted copy
+  // The reader's "As of" line: how old the cards are, and "Laptop asleep or not syncing since" once the build is older than the
+  // sync's heartbeat, since cards answered at the keyboard since then still show as open.
+  function paintAsOf() {
+    const line = document.getElementById("asof");
+    line.hidden = !HOSTED || !data.generated;
+    if (line.hidden) return;
+    const old = hosted.stale(data.generated);
+    line.classList.toggle("stale", old || Boolean(hosted.outdated()));
+    line.textContent = hosted.outdated() || (old ? `Laptop asleep or not syncing since ${builtAt(data.generated)}` : `As of ${builtAt(data.generated)}`);
+    line.title = `The laptop built this copy at ${fmtWhen(data.generated)}; the cards and the Herdr states are as of then.`;
+  }
+  // A lazy copy's list comes from its index, where a conversation's ids are all its /clear chain's.
+  const inConversation = (index, session) => !onlySession || ((index.conversations || []).find(c => c.id === session) || { ids: [session] }).ids.some(id => id.startsWith(onlySession));
+  // The list from the index: one entry per questionnaire, its cards loaded with its conversation's sheet.
+  function hostedList(index, before = []) {
+    const panes = new Map((index.conversations || []).map(c => [c.id, c.pane || null]));
+    const kept = new Map(before.filter(q => q.cards).map(q => [storeKey(q), q]));
+    const list = [];
+    for (const [session, sheet] of Object.entries(index.sheets || {})) {
+      if (!inConversation(index, session)) continue;
+      for (const item of sheet.list) {
+        const old = kept.get(`tr-q:${session}:${Math.round(item.at || 0)}`);
+        list.push(old && old.sheet.stamp === sheet.stamp ? { ...old, pane: panes.get(session) } : { session, at: item.at, open: item.open, title: item.title, pane: panes.get(session), cards: null, sheet });
+      }
+    }
+    return list.sort((a, b) => (b.at || 0) - (a.at || 0));
+  }
+  async function openSheet(q) {
+    const found = ((await hosted.object(q.sheet)).questionnaires || []).find(x => Math.round(x.at || 0) === Math.round(q.at || 0));
+    if (!found) throw new Error("this answer sheet is not in its conversation's copy any more");
+    Object.assign(q, found, { pane: q.pane, sheet: q.sheet });
+  }
+  {
+    // The way back: the reader (the lazy copies' is index.html) on the conversation this sheet is of.
+    const back = document.querySelector(".title a");
+    back.href = (LAZY ? "index.html" : "prototype.html") + (onlySession ? "#s=" + encodeURIComponent(onlySession.slice(0, 8)) : "");
+    if (LAZY && !HOSTED) back.textContent = onlySession ? "← Conversation" : "← Conversations";
+  }
+  fillPick();
+  pick.addEventListener("change", () => {
+    state.q = Number(pick.value);
+    // Kept in the address, so a reload after a rebuild reopens the same questionnaire. A list of every conversation keeps it as #pick, which
+    // does not narrow the list to that conversation on the next load (#q is a reply's link, and does).
+    history.replaceState(null, "", (onlySession ? "#q=" : "#pick=") + encodeURIComponent(`${qs[state.q].session.slice(0, 8)}:${Math.round(qs[state.q].at || 0)}`));
+    render();
+  });
+  document.getElementById("copy").addEventListener("click", copy);
+  document.getElementById("send").addEventListener("click", sendAnswers);
+  document.getElementById("clear").addEventListener("click", () => { answers[state.q] = {}; save(); render(); });
+  document.getElementById("recommended").addEventListener("click", () => {
+    const a = load(state.q), q = qs[state.q];
+    fillPlan(q, a, reopenedNow(q)).forEach(f => { a[f.key] = f.value; });
+    save(); render();
+  });
+  // The reader links here as #q=<session 8>:<asked at>, to open on that questionnaire.
+  const wanted = addressed.get("q") || addressed.get("pick") || "";
+  function openLinked() {
+    const linked = qs.findIndex(q => `${q.session.slice(0, 8)}:${Math.round(q.at || 0)}` === wanted);
+    if (linked >= 0) { state.q = linked; pick.value = String(linked); }
+    render();
+  }
+  if (!LAZY) openLinked();
+  else {
+    // The newer index's list and, when the sheet on screen changed, its cards again, at the same scroll position.
+    async function takeIndex(next) {
+      const shown = qs[state.q], before = JSON.stringify(shown);
+      data = { generated: next.as_of || 0, index: next }; qs = hostedList(next, qs);
+      Object.keys(answers).forEach(k => delete answers[k]);
+      const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
+      state.q = index >= 0 ? index : 0;
+      fillPick(); paintAsOf();
+      if (qs[state.q] && !qs[state.q].cards) await openSheet(qs[state.q]);
+      if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); } else renderDock();
+    }
+    // A sealed copy is opened first (the reader's shell may have remembered the key on this device); the lite page's files are plain.
+    (HOSTED ? hosted.prepare().then(state => state === "locked" ? hosted.askPassphrase() : null) : Promise.resolve()).then(() => hosted.index()).then(index => {
+      data = { generated: index.as_of || 0, index }; qs = hostedList(index);
+      fillPick(); paintAsOf(); openLinked();
+      if (!HOSTED) { liveRefresh = refreshLive; return; }
+      // Every 30 seconds while visible: a newer index brings the new list, and the open questionnaire
+      // again when its sheet changed. New page code reloads it.
+      hosted.poll(async () => {
+        const next = await hosted.index();
+        if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.sheet_template); if (!hosted.outdated()) return; }
+        if ((next.as_of || 0) <= data.generated) { paintAsOf(); renderDock(); return; }  // the time passes on an unchanged copy
+        await takeIndex(next);
+      });
+    }, e => document.getElementById("main").replaceChildren($("div", "empty", `Could not load the answer sheets: ${e.message}`)));
+    // The lite page's sheet takes in a build as the local one does (below): from the index the build wrote, which new page code reloads.
+    async function refreshLive() {
+      const next = await hosted.index();
+      if (next.sheet_template !== document.querySelector('meta[name="template"]').content) { hosted.pageChanged(next.sheet_template); return; }
+      if ((next.as_of || 0) > data.generated) await takeIndex(next);
+    }
+  }
+  // Served, the sheet takes in a rebuild where it is: the open questionnaire is redrawn
+  // only when it changed, at the same scroll position, and never while a text box is
+  // being typed in. Only new page code reloads it.
+  async function refresh() {
+    const next = new DOMParser().parseFromString(await live.page("questionnaire.html"), "text/html");
+    const template = doc => (doc.querySelector('meta[name="template"]') || {}).content;
+    if (template(next) !== template(document)) { location.reload(); return; }
+    const payload = JSON.parse(next.getElementById("payload").textContent);
+    if (payload.generated <= data.generated) return;
+    const shown = qs[state.q], before = JSON.stringify(shown);
+    data = payload; qs = data.questionnaires.filter(ofSession);
+    Object.keys(answers).forEach(k => delete answers[k]);  // indexes may have moved; drafts reload from storage
+    const index = shown ? qs.findIndex(q => storeKey(q) === storeKey(shown)) : -1;
+    state.q = index >= 0 ? index : 0;
+    fillPick();
+    if (JSON.stringify(qs[state.q]) !== before) { const y = window.scrollY; render(); window.scrollTo(0, y); }
+    else renderDock();
+  }
+  // The lite page's sheet has nothing to refresh until its first index has come (liveRefresh is set then).
+  let liveRefresh = null;
+  const idle = () => !(document.activeElement && document.activeElement.tagName === "TEXTAREA") && !sendOnce.busy();
+  if (!HOSTED) live.poll(async () => {
+    const s = await live.state(false);
+    link.pane = s.panes || {}; renderSend();
+    if (MODE === "live") { if (liveRefresh && idle() && s.stamps && s.stamps.reader > data.generated) await liveRefresh(); return; }
+    const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+    if (s.stamps && s.stamps.sheet && s.stamps.sheet > data.generated && !typing && !sendOnce.busy()) await refresh();
+  });
+  // A newer sheet is taken as soon as the server publishes it (see live.waitForBuilds), by the same rule. The lite page's is made by the
+  // same build as its reader page, so it waits on that build's stamp.
+  if (!HOSTED) live.waitForBuilds(() => MODE === "live" ? { reader: data.generated } : { sheet: data.generated }, async () => {
+    if (MODE === "live") { if (liveRefresh && idle()) await liveRefresh(); return; }
+    const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+    if (!typing && !sendOnce.busy()) await refresh();
+  });
+})();
+</script>
+</body>
+</html>

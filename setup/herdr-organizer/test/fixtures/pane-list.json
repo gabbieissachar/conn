@@ -1,0 +1,6 @@
+{"result":{"type":"pane_list","panes":[
+{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"idle","cwd":"/fixture/work/alpha","foreground_cwd":"/fixture/work/alpha","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"11111111-2222-4333-8444-555555555555"},"terminal_title":"private terminal title"},
+{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent":"codex","agent_status":"idle","cwd":"/fixture/work/alpha","foreground_cwd":"/fixture/work/alpha/sub"},
+{"pane_id":"w2:p1","workspace_id":"w2","tab_id":"w2:t1","agent":"claude","agent_status":"working","cwd":"/fixture/work/beta","foreground_cwd":"/fixture/work/beta"},
+{"pane_id":"w2:p2","workspace_id":"w2","tab_id":"w2:t1","agent":"","agent_status":"unknown","cwd":"/fixture/work/beta","foreground_cwd":"/fixture/work/beta"}
+]}}

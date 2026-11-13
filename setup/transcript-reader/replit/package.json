@@ -1,0 +1,15 @@
+{
+  "name": "transcript-reader-host",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The hosted transcript reader: sign-in, sealed-object storage and an upload endpoint. It never decrypts anything.",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@replit/object-storage": "^1.0.0"
+  }
+}
