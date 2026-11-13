@@ -715,7 +715,9 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
           const list = Array.isArray(tab.working_folders) ? tab.working_folders : [];
           const valid = list.filter((item) => item && typeof item.path === 'string' && FOLDER_PATH.test(item.path)
             && Array.isArray(item.pane_ids) && item.pane_ids.every((id) => typeof id === 'string' && PANE_ID.test(id)));
-          entry.folders = valid.map((item) => ({ path: item.path, source: item.source === 'agent_files' ? 'agent_files' : 'pane', pane_ids: item.pane_ids.slice() }));
+          entry.folders = valid
+            .map((item) => ({ path: item.path, source: item.source === 'agent_files' ? 'agent_files' : 'pane', pane_ids: item.pane_ids.slice() }))
+            .filter((item) => findLeaks(item.path).every((kind) => kind === 'private-path'));
           tab.working_folders = [];
         }
         if ('agent_sessions' in tab) {
@@ -729,9 +731,8 @@ function createAdapter({ toolRoot, runner = defaultRunner, env = process.env, py
         kept.push(entry);
       }
     }
-    // A folder may be a local path, but not a client session id, a socket, a bundle id or a resume command.
-    const folderLeaks = kept.some((entry) => (entry.folders || []).some((item) => findLeaks(item.path).some((kind) => kind !== 'private-path')));
-    if (folderLeaks || findLeaks(JSON.stringify(snapshot)).length) throw new AdapterError('The snapshot contains private values and was not shown.', 502, 'snapshot_invalid');
+    // A folder may be a local path, but entries with a client session id, socket, bundle id or resume command are omitted.
+    if (findLeaks(JSON.stringify(snapshot)).length) throw new AdapterError('The snapshot contains private values and was not shown.', 502, 'snapshot_invalid');
     for (const entry of kept) {
       if (entry.folders) entry.tab.working_folders = entry.folders;
       if (entry.sessions) entry.tab.agent_sessions = entry.sessions;

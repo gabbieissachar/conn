@@ -515,7 +515,7 @@ test('cleanup-preview: a workspace whose every tab is empty is reported as closi
   } finally { await server.close(); }
 });
 
-test('snapshot-data: a tab keeps its working folders, and a path anywhere else still refuses the snapshot', async () => {
+test('snapshot-data: keeps safe folders, omits unsafe folder entries, and still refuses paths elsewhere', async () => {
   const { tempTree } = require('./helpers');
   const tree = tempTree('herdr-organizer-test-');
   const snapshot = 'state/workspace-organizer/live-snapshot.json';
@@ -541,9 +541,20 @@ test('snapshot-data: a tab keeps its working folders, and a path anywhere else s
     const cleaned = await post('snapshot-data');
     assert.equal(cleaned.status, 200);
     assert.deepEqual(cleaned.json.data.workspaces[0].tabs[0].working_folders, [{ path: '/tmp/ok', source: 'pane', pane_ids: ['w9Z:p1'] }]);
-    // A client session id inside a folder path still blocks the snapshot.
-    write({ workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ working_folders: [{ path: '/tmp/11111111-2222-4333-8444-555555555555', pane_ids: ['w9Z:p1'] }] })] }], archives: [] });
-    assert.equal((await post('snapshot-data')).status, 502);
+    // A client session id inside one folder path omits only that folder and preserves the group and workspaces.
+    const offendingFolder = '/workspace/project/11111111-2222-4333-8444-555555555555';
+    write({
+      herdr_session: 'project-a',
+      workspaces: [{ id: 'w9Z', label: 'Alpha', tabs: [tab({ working_folders: [{ path: offendingFolder, pane_ids: ['w9Z:p1'] }] })] }],
+      archives: [],
+      batches: [{ batch_id: 'batch-20261007-102949', herdr_session: 'project-a', members: [{ archive_id: '20261007-project-a-w9Z', status: 'archived', tabs: [] }] }],
+    });
+    const preserved = await post('snapshot-data');
+    assert.equal(preserved.status, 200);
+    assert.equal(preserved.json.data.workspaces[0].label, 'Alpha');
+    assert.equal(preserved.json.data.workspaces[0].tabs[0].working_folders.length, 0);
+    assert.equal(preserved.json.data.batches[0].batch_id, 'batch-20261007-102949');
+    assert.equal(preserved.raw.includes(offendingFolder), false, 'the unsafe folder is not exposed');
   } finally {
     await server.close();
     tree.cleanup();
